@@ -605,7 +605,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 function_scope,
             );
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
-            const parent_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
+            const parent_ref = try self.makeCurrentClassSuperRef(super_class_span, self.current_super_class_old_idx, function_scope);
             const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
             const new_target_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, new_target_name_span);
             try self.addSyntheticRefInScope(new_target_ref, new_target_symbol, function_scope, .{ .read = true });

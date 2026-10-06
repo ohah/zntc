@@ -405,6 +405,22 @@ pub fn makeIdentifierRefWithSymbol(self: anytype, name_span: Span, old_idx: Node
     return ref;
 }
 
+/// Create a reference to the active class IIFE's exact `_super` parameter.
+/// Callers that refer to source bindings continue through the explicit fallback.
+pub fn makeCurrentClassSuperRef(
+    self: anytype,
+    name_span: Span,
+    old_idx: NodeIndex,
+    reference_scope: @import("../../semantic/scope.zig").ScopeId,
+) Error!NodeIndex {
+    if (self.active_class_super_parameter) |parameter| {
+        const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, parameter.name_span);
+        try self.addSyntheticRefInScope(ref, parameter.symbol_id, reference_scope, .{ .read = true });
+        return ref;
+    }
+    return makeIdentifierRefWithSymbol(self, name_span, old_idx);
+}
+
 /// JSX -> `React.createElement` 변환처럼 transformer 가 *원본 AST 에 없는*
 /// 식별자 노드를 만들 때, 그 이름으로 root scope (module/global) 의 binding
 /// 을 lookup 하여 symbol_id 를 attach 한다 (#2196).

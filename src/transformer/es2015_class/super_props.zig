@@ -58,7 +58,7 @@ pub fn SuperProps(comptime Transformer: type) type {
 
             const callee = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
 
-            const parent_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
+            const parent_ref = try self.makeCurrentClassSuperRef(super_class_span, self.current_super_class_old_idx, self.current_scope);
             const new_target_ref = if (self.active_derived_constructor_new_target) |new_target| blk: {
                 const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, new_target.name_span);
                 try self.addSyntheticRefInScope(ref, new_target.symbol_id, self.current_scope, .{ .read = true });
@@ -312,7 +312,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// ClassName.prototype static_member_expression 생성.
         /// class_name_old_idx는 OLD AST 노드 — symbol 기반 리네이밍 대상.
         fn buildPrototypeRef(self: *Transformer, class_name_span: Span, class_name_old_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const class_ref = try self.makeIdentifierRefWithSymbol(class_name_span, class_name_old_idx);
+            const class_ref = try self.makeCurrentClassSuperRef(class_name_span, class_name_old_idx, self.current_scope);
             try self.trackUserReadFromBinding(class_ref, class_name_old_idx, self.current_scope);
             const proto_prop = try es_helpers.makePropertyName(self, "prototype");
             return es_helpers.makeStaticMember(self, class_ref, proto_prop, span);
@@ -362,7 +362,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 return buildSuperBaseViaProtoChain(self, super_class_span, span);
             }
             if (self.current_super_is_static) {
-                const class_ref = try self.makeIdentifierRefWithSymbol(super_class_span, self.current_super_class_old_idx);
+                const class_ref = try self.makeCurrentClassSuperRef(super_class_span, self.current_super_class_old_idx, self.current_scope);
                 try self.trackUserReadFromBinding(class_ref, self.current_super_class_old_idx, self.current_scope);
                 return class_ref;
             }

@@ -262,42 +262,6 @@ pub fn PrivateFields(comptime Transformer: type) type {
             }
         }
 
-        /// Bind a generated class IIFE parameter and its exact emitted uses.
-        /// The walk stays within this completed wrapper AST; nested wrappers
-        /// that were already lowered keep their own SymbolIds.
-        pub fn trackGeneratedParameterSymbols(self: *Transformer, root: NodeIndex, binding: NodeIndex, root_scope: ScopeId) Transformer.Error!void {
-            if (!self.semantic_edit_enabled or binding.isNone()) return;
-            const name = self.ast.getText(self.ast.getNode(binding).data.string_ref);
-            const binding_span = self.ast.getNode(binding).span;
-            const id = try self.declareSyntheticInScope(binding, binding_span, .parameter, root_scope) orelse return;
-
-            const Work = struct { node: NodeIndex, scope: ScopeId };
-            var stack: std.ArrayList(Work) = .empty;
-            defer stack.deinit(self.allocator);
-            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
-            defer seen.deinit(self.allocator);
-            try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
-            while (stack.pop()) |work| {
-                if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
-                const raw = @intFromEnum(work.node);
-                if (seen.contains(raw)) continue;
-                try seen.put(self.allocator, raw, {});
-                const node = self.ast.getNode(work.node);
-                const scope = self.outputOwnedScope(work.node) orelse work.scope;
-                if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
-                    if (std.mem.eql(u8, self.ast.getText(node.data.string_ref), name) and self.getSymbolIdAt(work.node) == null) {
-                        const flags: ReferenceFlags = if (node.tag == .assignment_target_identifier)
-                            .{ .write = true }
-                        else
-                            .{ .read = true };
-                        try self.addSyntheticRefInScope(work.node, id, scope, flags);
-                    }
-                }
-                var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
-                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
-            }
-        }
-
         fn functionSymbolKind(self: *Transformer, node: Node) SymbolKind {
             const flags = self.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
             const FnFlags = ast_mod.FunctionFlags;
