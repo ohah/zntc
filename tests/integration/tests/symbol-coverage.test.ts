@@ -7402,6 +7402,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'constructor var unary values retain exact bindings and references',
+        source:
+          'class UnaryValues { constructor(input, flag) { var negative = -input; var positive = +input; var inverted = !flag; var complemented = ~input; this.negative = negative; this.positive = positive; this.inverted = inverted; this.complemented = complemented; } } var unaryValues = new UnaryValues(4, false); console.log(unaryValues.negative, unaryValues.positive, unaryValues.inverted, unaryValues.complemented);',
+        graph: 'retained',
+        output: '-4 4 true -5\n',
+      },
+      {
         name: 'constructor let local stays on reanalysis',
         source:
           'class LexicalLocal { constructor() { let value = 6; this.value = value; } } console.log(new LexicalLocal().value);',
@@ -7449,6 +7456,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class UnresolvedBinaryLocal { constructor() { var value = unboundBinaryValue + 1; this.value = value; } } console.log(typeof UnresolvedBinaryLocal);',
         graph: 'reanalyzed',
         output: 'function\n',
+      },
+      {
+        name: 'unresolved constructor unary reference stays on reanalysis',
+        source:
+          'class UnresolvedUnaryLocal { constructor() { var value = -unboundUnaryValue; this.value = value; } } console.log(typeof UnresolvedUnaryLocal);',
+        graph: 'reanalyzed',
+        output: 'function\n',
+      },
+      {
+        name: 'constructor typeof initializer stays on reanalysis',
+        source:
+          'class TypeofLocal { constructor(input) { var value = typeof input; this.value = value; } } console.log(new TypeofLocal(3).value);',
+        graph: 'reanalyzed',
+        output: 'number\n',
+      },
+      {
+        name: 'constructor delete initializer stays on reanalysis',
+        source:
+          'class DeleteLocal { constructor() { var removed = delete this.value; this.removed = removed; } } console.log(new DeleteLocal().removed);',
+        graph: 'reanalyzed',
+        output: 'true\n',
       },
       {
         name: 'destructured constructor parameter stays on reanalysis',

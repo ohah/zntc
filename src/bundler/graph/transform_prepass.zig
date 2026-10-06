@@ -561,6 +561,13 @@ fn isSafeConstructorBinaryOperator(operator: token_mod.Kind) bool {
     };
 }
 
+fn isSafeConstructorUnaryOperator(operator: token_mod.Kind) bool {
+    return switch (operator) {
+        .plus, .minus, .bang, .tilde => true,
+        else => false,
+    };
+}
+
 fn isSafeConstructorValue(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -573,6 +580,15 @@ fn isSafeConstructorValue(
         return isSafeConstructorBinaryOperator(operator) and
             isSafeConstructorValue(ast, semantic, value.data.binary.left) and
             isSafeConstructorValue(ast, semantic, value.data.binary.right);
+    }
+    if (value.tag == .unary_expression) {
+        const extras = ast.extra_data.items;
+        const extra = value.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        return isSafeConstructorUnaryOperator(operator) and
+            isSafeConstructorValue(ast, semantic, operand_idx);
     }
     return switch (value.tag) {
         .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
