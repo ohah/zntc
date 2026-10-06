@@ -549,6 +549,14 @@ fn isBoundSourceIdentifierBinding(
     return hasValidSourceSymbol(ast, semantic, node_idx, .binding_identifier);
 }
 
+fn isBoundSourceIdentifierAssignmentTarget(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    return hasValidSourceSymbol(ast, semantic, node_idx, .assignment_target_identifier);
+}
+
 fn isSafeConstructorBinaryOperator(operator: token_mod.Kind) bool {
     return switch (operator) {
         .l_angle,
@@ -654,6 +662,38 @@ fn isSafeConstructorVarDeclaration(
     return true;
 }
 
+fn isSafeConstructorLocalAssignment(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    assignment: ast_mod.Node,
+) bool {
+    if (assignment.tag != .assignment_expression) return false;
+    const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
+    switch (operator) {
+        .eq, .plus_eq, .minus_eq => {},
+        else => return false,
+    }
+    const target_idx = assignment.data.binary.left;
+    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
+        !isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx)) return false;
+    return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
+}
+
+fn isSafeConstructorLocalUpdate(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    update: ast_mod.Node,
+) bool {
+    if (update.tag != .update_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = update.data.extra;
+    if (extra > extras.len or extras.len - extra < 2) return false;
+    const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+    if (operator != .plus2 and operator != .minus2) return false;
+    const target_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
+}
+
 fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -691,15 +731,25 @@ fn isSimpleParamsConstructorBodyGraphSafe(
         const assignment_idx = statement.data.unary.operand;
         if (assignment_idx.isNone() or @intFromEnum(assignment_idx) >= ast.nodes.items.len) return false;
         const assignment = ast.getNode(assignment_idx);
-        if (assignment.tag != .assignment_expression or
-            assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) return false;
+        if (assignment.tag == .update_expression) {
+            if (!isSafeConstructorLocalUpdate(ast, semantic, assignment)) return false;
+            continue;
+        }
+        if (assignment.tag != .assignment_expression) return false;
+        if (assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) {
+            if (!isSafeConstructorLocalAssignment(ast, semantic, assignment)) return false;
+            continue;
+        }
 
         const target_idx = assignment.data.binary.left;
         const value_idx = assignment.data.binary.right;
         if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
             value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
         const target = ast.getNode(target_idx);
-        if (target.tag != .static_member_expression) return false;
+        if (target.tag != .static_member_expression) {
+            if (!isSafeConstructorLocalAssignment(ast, semantic, assignment)) return false;
+            continue;
+        }
         const member_extra = target.data.extra;
         if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0) return false;
 
