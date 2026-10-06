@@ -7486,6 +7486,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 2 3 4\n',
       },
       {
+        name: 'constructor safe try catch finally keeps the exact catch binding',
+        source:
+          'class ConstructorTryCatchFinally { constructor(input) { try { if (input) throw input; this.value = 1; } catch (error) { this.value = error; } finally { this.finalized = true; } } } var caughtConstructor = new ConstructorTryCatchFinally(7); var normalConstructor = new ConstructorTryCatchFinally(0); console.log(caughtConstructor.value, caughtConstructor.finalized, normalConstructor.value, normalConstructor.finalized);',
+        graph: 'retained',
+        output: '7 true 1 true\n',
+      },
+      {
+        name: 'constructor optional catch binding stays on reanalysis',
+        source:
+          'class ConstructorOptionalCatch { constructor() { try { throw 2; } catch { this.caught = true; } } } console.log(new ConstructorOptionalCatch().caught);',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
         name: 'constructor local plus assignment retains exact references',
         source:
           'class LocalPlusAssignment { constructor(input) { var value = input; value += 1; this.value = value; } } console.log(new LocalPlusAssignment(3).value);',
@@ -7715,6 +7729,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class LexicalSwitchCase { constructor(input) { switch (input) { case 1: let value = 3; this.value = value; break; default: this.value = 0; } } } console.log(new LexicalSwitchCase(1).value);',
         graph: 'reanalyzed',
         output: '3\n',
+      },
+      {
+        name: 'constructor call in catch body stays on reanalysis',
+        source:
+          'function readCaughtValue(value) { return value + 1; } class CalledCatchBody { constructor(input) { try { throw input; } catch (error) { this.value = readCaughtValue(error); } } } console.log(new CalledCatchBody(7).value);',
+        graph: 'reanalyzed',
+        output: '8\n',
+      },
+      {
+        name: 'constructor call in finally body stays on reanalysis',
+        source:
+          'function finishConstructor() { return 1; } class CalledFinallyBody { constructor() { try { this.value = 1; } finally { this.finalized = finishConstructor(); } } } console.log(new CalledFinallyBody().finalized);',
+        graph: 'reanalyzed',
+        output: '1\n',
       },
       {
         name: 'constructor call in if branch stays on reanalysis',
