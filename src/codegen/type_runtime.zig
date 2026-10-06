@@ -1042,6 +1042,12 @@ fn namespaceLocalName(self: anytype, name_idx: NodeIndex, source_name: []const u
         if (self.options.generated_iife_scope_owner_map != null) {
             const sid = self.sourceSymbolId(name_idx) orelse return error.MissingNamespaceDeclarationSymbol;
             if (sid >= self.options.semantic_symbols.len) return error.InvalidNamespaceDeclarationSymbol;
+            const symbol = self.options.semantic_symbols[sid];
+            if (symbol.synthetic_kind != null or symbol.name.start > symbol.name.end or symbol.name.end > self.ast.source.len or
+                !std.mem.eql(u8, symbol.nameText(self.ast.source), source_name))
+            {
+                return error.InvalidNamespaceDeclarationSymbol;
+            }
             if (metadata.renames.get(sid)) |renamed| return renamed;
             return source_name;
         } else if (self.sourceSymbolId(name_idx)) |sid| {
