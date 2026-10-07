@@ -91,6 +91,16 @@ const EXACT_OBSERVATION_FIELD_COUNT = 6;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 11;
 const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = ['scope_owner_mismatch', 'scope_owner_parent_mismatch'];
 
+function expectCjsWrapperModuleParamMatchesBody(bundle: string, moduleId: string) {
+  const escapedModuleId = moduleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const wrapper = bundle.match(
+    new RegExp(`"${escapedModuleId}"\\(([^,]+),\\s*([^)]+)\\) \\{([\\s\\S]*?)\\n\\t\\}\\n\\}\\);`),
+  );
+  expect(wrapper, `${moduleId}: CommonJS wrapper missing`).not.toBeNull();
+  const moduleParam = wrapper?.[2].trim();
+  expect(wrapper?.[3], `${moduleId}: wrapper body missing`).toContain(`${moduleParam}.exports`);
+}
+
 function exactSchemaProblems(identity: string): string[] {
   const expectations = [
     ['invariant_counter_count', EXACT_ZERO_COUNTERS.length],
@@ -5413,6 +5423,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(entryIdentity, proc.stderr).toMatch(/clean=1(?:\s|$)/);
       expect(Number(entryIdentity?.match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
 
+      expectCjsWrapperModuleParamMatchesBody(readFileSync(output, 'utf8'), 'dep.ts');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42\n');
@@ -5789,6 +5800,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
 
       const bundle = readFileSync(output, 'utf8');
       expect(bundle).toContain('__commonJS');
+      expectCjsWrapperModuleParamMatchesBody(bundle, 'dep.ts');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42\n');
@@ -6070,6 +6082,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         );
       expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
 
+      expectCjsWrapperModuleParamMatchesBody(readFileSync(output, 'utf8'), 'index.js');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('function symbol Red Circle user-require user-Symbol 1\n');

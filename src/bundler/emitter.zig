@@ -2388,12 +2388,18 @@ pub fn emitModule(
             if (preamble_lines_out) |out| out.* = 0;
         } else {
             const basename = module.wrapperId();
+            // Identifier-only minification also renames the exact CJS wrapper
+            // parameter SymbolIds. Keep the textual callback declaration in
+            // sync with body references just like the whitespace-minified
+            // function/arrow wrapper above.
+            const wrapper_params = try std.fmt.allocPrint(allocator, "{s}, {s}", .{ cjs_ex_name, cjs_mod_name });
+            defer allocator.free(wrapper_params);
             try wrapped.appendSlice(allocator, "var ");
             try wrapped.appendSlice(allocator, var_name);
             try wrapped.appendSlice(allocator, " = ");
             try wrapped.appendSlice(allocator, cjs_factory_name);
             try wrapped.appendSlice(allocator, "({\n\t");
-            try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "exports, module", false, !options.unsupported.object_extensions, false);
+            try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, wrapper_params, false, !options.unsupported.object_extensions, false);
             try wrapped.appendSlice(allocator, "\n");
             // preamble_lines: 래퍼 헤더 2줄 + preamble 내 줄바꿈 수
             if (preamble_lines_out) |out| {
