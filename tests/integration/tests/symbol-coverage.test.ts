@@ -739,6 +739,40 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 generator while and do-while extraction preserve per-iteration closures', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-generator-loop-callers-'));
+    const file = join(FIXTURE_DIR, '4819-generator-loop-callers.mjs');
+    try {
+      const reference = spawnSync('node', [file], { encoding: 'utf8' });
+      expect(reference.status, reference.stderr).toBe(0);
+
+      for (const minified of [false, true]) {
+        const output = join(dir, minified ? 'minified.js' : 'plain.js');
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, '--target=es5', ...(minified ? ['--minify-identifiers'] : []), '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${minified ? 'minified' : 'plain'}: ${proc.stderr}`).toBe(0);
+
+        const identity = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, proc.stderr).toBeDefined();
+        expect(exactSchemaProblems(identity ?? ''), proc.stderr).toEqual([]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout, minified ? 'minified' : 'plain').toBe(reference.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('for-of catch parameter keeps exact identity beside an outer _err', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-catch-err-identity-'));
     const file = join(dir, 'entry.mjs');

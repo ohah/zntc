@@ -1126,6 +1126,171 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
     try std.testing.expectEqual(@as(usize, 1), argument_refs);
 }
 
+fn expectGeneratedLoopExactIdentity(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    const transformed_root = try transformer.transform();
+    try std.testing.expect(!transformed_root.isNone());
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var exact = try coverage.checkExact(
+        allocator,
+        transformer.ast,
+        transformed_root,
+        transformer.parser_node_count,
+        transformer.symbol_ids.items,
+        edited.symbols.items,
+        edited.scopes,
+        edited.scope_maps,
+        &edited.scope_owner_map,
+        edited.references,
+        transformer.helper_ref_nodes.items,
+        &edited.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &transformer.explicit_global_reference_nodes,
+        &transformer.reference_origin_map,
+    );
+    try std.testing.expect(exact.isClean());
+
+    var source_loop_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, index| {
+        if (!std.mem.eql(u8, symbol.nameText(parser.ast.source), "_loop")) continue;
+        source_loop_id = @intCast(index);
+    }
+    const outer_id = source_loop_id orelse return error.MissingOuterLoopDecoy;
+
+    var generated_loop_id: ?u32 = null;
+    for (edited.symbols.items, 0..) |symbol, index| {
+        if (index < original_symbol_count or symbol.kind != .variable_var) continue;
+        if (!std.mem.startsWith(u8, transformer.ast.getText(symbol.name), "_loop")) continue;
+        try std.testing.expect(generated_loop_id == null);
+        generated_loop_id = @intCast(index);
+    }
+    const loop_id = generated_loop_id orelse return error.MissingGeneratedLoopSymbol;
+    try std.testing.expect(loop_id != outer_id);
+
+    const generated = edited.symbols.items[loop_id];
+    const loop_name = transformer.ast.getText(generated.name);
+    const owner_scope_index = generated.scope_id.toIndex();
+    try std.testing.expect(owner_scope_index < edited.scope_maps.len);
+    try std.testing.expectEqual(@as(?usize, loop_id), edited.scope_maps[owner_scope_index].get(loop_name));
+
+    var binding_count: usize = 0;
+    var identifier_reads: usize = 0;
+    for (edited.symbol_ids, 0..) |maybe_id, node_index| {
+        if (maybe_id != loop_id) continue;
+        const node = transformer.ast.nodes.items[node_index];
+        switch (node.tag) {
+            .binding_identifier => binding_count += 1,
+            .identifier_reference => {
+                try std.testing.expectEqualStrings(loop_name, transformer.ast.getText(node.data.string_ref));
+                identifier_reads += 1;
+            },
+            else => return error.UnexpectedGeneratedLoopSymbolNode,
+        }
+    }
+    try std.testing.expect(binding_count > 0);
+    try std.testing.expect(identifier_reads > 0);
+
+    var reference_reads: usize = 0;
+    var reference_writes: usize = 0;
+    var call_scope: ?ScopeId = null;
+    var outer_reads: usize = 0;
+    for (edited.references) |reference| {
+        const id = @intFromEnum(reference.symbol_id);
+        if (id == loop_id) {
+            if (reference.flags.declare) {
+                continue;
+            }
+            try std.testing.expect(!reference.node_index.isNone());
+            try std.testing.expectEqual(.identifier_reference, transformer.ast.getNode(reference.node_index).tag);
+            try std.testing.expectEqual(loop_id, edited.symbol_ids[@intFromEnum(reference.node_index)].?);
+            if (reference.flags.read) {
+                try std.testing.expect(!reference.flags.write);
+                call_scope = reference.scope_id;
+                reference_reads += 1;
+            }
+            if (reference.flags.write) {
+                try std.testing.expect(!reference.flags.read);
+                reference_writes += 1;
+            }
+        } else if (id == outer_id and reference.flags.read) {
+            if (transformer.ast.getNode(reference.node_index).tag != .identifier_reference) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(reference.node_index).data.string_ref), "_loop")) continue;
+            outer_reads += 1;
+        }
+    }
+    try std.testing.expect(reference_reads > 0);
+    try std.testing.expectEqual(@as(u32, @intCast(reference_reads + reference_writes)), generated.reference_count);
+    try std.testing.expectEqual(@as(u32, @intCast(reference_writes)), generated.write_count);
+    try std.testing.expect(outer_reads > 0);
+
+    var visible_scope = call_scope orelse return error.MissingGeneratedLoopCallScope;
+    var visible = false;
+    for (0..edited.scopes.len) |_| {
+        if (visible_scope.isNone() or visible_scope.toIndex() >= edited.scopes.len) break;
+        if (visible_scope == generated.scope_id) {
+            visible = true;
+            break;
+        }
+        visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+    }
+    try std.testing.expect(visible);
+}
+
+test "#4819 while-extracted generator loop keeps exact binding and call identity" {
+    try expectGeneratedLoopExactIdentity(
+        \\export function* collect() {
+        \\  const _loop = 7;
+        \\  let index = 0;
+        \\  while (index < 2) {
+        \\    let value = index++;
+        \\    yield () => value + _loop;
+        \\  }
+        \\}
+    );
+}
+
+test "#4819 do-while-extracted generator loop keeps exact binding and call identity" {
+    try expectGeneratedLoopExactIdentity(
+        \\export function* collect() {
+        \\  const _loop = 7;
+        \\  let index = 0;
+        \\  do {
+        \\    let value = index++;
+        \\    yield () => value + _loop;
+        \\  } while (index < 2);
+        \\}
+    );
+}
+
 test "#4819 tagged template helpers keep distinct function and data scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
