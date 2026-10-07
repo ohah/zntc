@@ -14,6 +14,8 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     extends: ?[]const u8 = null,
     generator: ?[]const u8 = null,
     rest: ?[]const u8 = null,
+    array_like_to_array: ?[]const u8 = null,
+    to_consumable_array: ?[]const u8 = null,
     class_private_method_init: ?[]const u8 = null,
     class_private_method_get: ?[]const u8 = null,
     class_static_private_access: ?[]const u8 = null,
@@ -2120,7 +2122,18 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.spread_array) {
-        try buf.appendSlice(allocator, if (minify) SPREAD_ARRAY_RUNTIME_MIN else SPREAD_ARRAY_RUNTIME);
+        const array_like_name = helperName("__arrayLikeToArray", minify);
+        const to_consumable_name = helperName("__toConsumableArray", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{ .default_name = array_like_name, .local_name = local_names.array_like_to_array orelse array_like_name },
+            .{ .default_name = to_consumable_name, .local_name = local_names.to_consumable_array orelse to_consumable_name },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) SPREAD_ARRAY_RUNTIME_MIN else SPREAD_ARRAY_RUNTIME,
+            &replacements,
+        );
     }
 }
 
