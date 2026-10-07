@@ -1148,7 +1148,9 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__classPrivateMethodInit", minify));
             const is_direct_class_private_method_get = directly_emitted_names.class_private_method_get != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__classPrivateMethodGet", minify));
-            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            const is_direct_call_super = directly_emitted_names.call_super != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__callSuper", minify));
+            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_call_super and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1718,6 +1720,8 @@ fn transpileWithCallbackInternal(
             local_names.class_private_method_init = try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodInit", options.minify_whitespace);
         if (transformer.runtime_helpers.class_private_method_get)
             local_names.class_private_method_get = try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodGet", options.minify_whitespace);
+        if (transformer.runtime_helpers.call_super)
+            local_names.call_super = try standaloneRuntimeHelperSymbolName(&transformer, "__callSuper", options.minify_whitespace);
         if (transformer.runtime_helpers.async_helper)
             local_names.async_helper = try standaloneRuntimeHelperSymbolName(&transformer, "__async", options.minify_whitespace);
         if (transformer.runtime_helpers.async_values)
@@ -4009,6 +4013,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try runtime_aliases.put(allocator, "__classCallCheck", "__classCallCheck2");
     try runtime_aliases.put(allocator, "__classPrivateMethodInit", "__classPrivateMethodInit2");
     try runtime_aliases.put(allocator, "__classPrivateMethodGet", "__classPrivateMethodGet2");
+    try runtime_aliases.put(allocator, "__callSuper", "__callSuper2");
     try runtime_aliases.put(allocator, "__taggedTemplateLiteral", "__taggedTemplateLiteral2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
@@ -4024,6 +4029,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try helper_scope_map.put(allocator, "__classCallCheck2", 10);
     try helper_scope_map.put(allocator, "__classPrivateMethodInit2", 11);
     try helper_scope_map.put(allocator, "__classPrivateMethodGet2", 12);
+    try helper_scope_map.put(allocator, "__callSuper2", 13);
     const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
@@ -4116,6 +4122,13 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .declaration_span = @import("lexer/token.zig").Span.EMPTY,
             .synthetic_name = "__classPrivateMethodGet2",
         },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__callSuper2",
+        },
     };
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
@@ -4148,6 +4161,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__classPrivateMethodInit2", private_method_init_resolved);
     const private_method_get_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodGet", false);
     try std.testing.expectEqualStrings("__classPrivateMethodGet2", private_method_get_resolved);
+    const call_super_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__callSuper", false);
+    try std.testing.expectEqualStrings("__callSuper2", call_super_resolved);
     const tagged_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", false);
     try std.testing.expectEqualStrings("__taggedTemplateLiteral2", tagged_resolved);
 
@@ -4210,6 +4225,11 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodGet", false),
+    );
+    _ = transformer.helper_scope_map.remove("__callSuper2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__callSuper", false),
     );
     _ = transformer.helper_scope_map.remove("__taggedTemplateLiteral2");
     try std.testing.expectError(

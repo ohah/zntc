@@ -644,6 +644,47 @@ console.log(${sourceName}, new C().run());
     });
   }
 
+  for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 call-super preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$cS' : '__callSuper';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+class Base { constructor(value) { this.value = value; } }
+class Child extends Base { constructor(value) { super(value); this.ready = true; } }
+var child = new Child(7);
+console.log(${sourceName}, child.value, child.ready);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$cS[a-zA-Z0-9_$]*)=function\(Parent,args,NewTarget\)/)?.[1]
+        : code.match(/var (__callSuper\d*) = function\(Parent, args, NewTarget\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(
+        minify
+          ? `${emittedHelper}(_super,[value],_newTarget)`
+          : `${emittedHelper}(_super, [value], _newTarget)`,
+      );
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 7 true\n');
+    });
+  }
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
