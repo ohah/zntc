@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .tagged_template_literal = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .values = true, .tagged_template_literal = true },
         false,
         false,
         .{
@@ -1518,6 +1518,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .generator = "__generator2",
             .rest = "__rest2",
             .async_helper = "__async2",
+            .values = "__values2",
             .tagged_template_literal = "__taggedTemplateLiteral2",
         },
     );
@@ -1525,8 +1526,9 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const generator_index = std.mem.indexOf(u8, combined.items, "var __generator2 = function").?;
     const rest_index = std.mem.indexOf(u8, combined.items, "var __rest2 = function").?;
     const async_index = std.mem.indexOf(u8, combined.items, "var __async2 = (fn) =>").?;
+    const values_index = std.mem.indexOf(u8, combined.items, "var __values2 = function(o)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < tagged_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < values_index and values_index < tagged_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local directly" {
@@ -1606,6 +1608,34 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected async loca
         try std.testing.expect(std.mem.startsWith(u8, output.items, case.prefix));
         try std.testing.expect(!std.mem.startsWith(u8, output.items, case.canonical));
     }
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected values local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .values = true },
+        false,
+        false,
+        .{ .values = "__values2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __values2 = function(o)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __values = function(o)"));
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .values = true },
+        true,
+        false,
+        .{ .values = "__values2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var __values2=function(o)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var __values=function(o)"));
 }
 
 test "appendRuntimeHelpers: generator only" {

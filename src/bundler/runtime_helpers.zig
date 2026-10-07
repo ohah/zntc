@@ -16,6 +16,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     rest: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     tagged_template_literal: ?[]const u8 = null,
+    values: ?[]const u8 = null,
 };
 
 // ============================================================
@@ -1776,7 +1777,14 @@ fn appendRuntimeHelpersInternal(
     // __values 는 yield* / for-of / __asyncValues fallback 모두 사용 — async_values 가 켜져 있으면
     // 그 안에서 typeof __values 체크하므로 함께 emit 필요.
     if (helpers.values or helpers.async_values) {
-        try buf.appendSlice(allocator, if (minify) VALUES_RUNTIME_MIN else VALUES_RUNTIME);
+        const default_name = helperName("__values", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) VALUES_RUNTIME_MIN else VALUES_RUNTIME,
+            default_name,
+            local_names.values orelse default_name,
+        );
     }
     // __await 는 async generator step() 안에서 instanceof check 사용 — async_generator 가
     // 켜져 있으면 함께 emit. (#1911)
