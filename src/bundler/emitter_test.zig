@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .public_field = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .public_field = true, .wrap_regex = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true },
         false,
         false,
         .{
@@ -1521,6 +1521,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .async_values = "__asyncValues2",
             .values = "__values2",
             .public_field = "__publicField2",
+            .wrap_regex = "__wrapRegExp2",
             .keep_names = "__name2",
             .class_private_method_init = "__classPrivateMethodInit2",
             .class_private_method_get = "__classPrivateMethodGet2",
@@ -1541,6 +1542,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const async_values_index = std.mem.indexOf(u8, combined.items, "var __asyncValues2 = function(o)").?;
     const values_index = std.mem.indexOf(u8, combined.items, "var __values2 = function(o)").?;
     const public_field_index = std.mem.indexOf(u8, combined.items, "var __publicField2 = function(obj, key, value)").?;
+    const wrap_regex_index = std.mem.indexOf(u8, combined.items, "var __wrapRegExp2 = function()").?;
     const keep_names_index = std.mem.indexOf(u8, combined.items, "var __name2 = (function(defineProperty)").?;
     const private_method_init_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodInit2 = function(obj, privateSet)").?;
     const private_method_get_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodGet2 = function(receiver, privateSet, fn)").?;
@@ -1552,7 +1554,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < public_field_index and public_field_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < public_field_index and public_field_index < wrap_regex_index and wrap_regex_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected keep-names local directly" {
@@ -1581,6 +1583,38 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected keep-names
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $nm2=(function(d)"));
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $nm=(function(d)"));
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected wrap-regexp local and self references directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .wrap_regex = true },
+        false,
+        false,
+        .{ .wrap_regex = "__wrapRegExp2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __wrapRegExp2 = function()"));
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "__wrapRegExp2 = function(re, groups)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "return __wrapRegExp2.apply(this, arguments)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __wrapRegExp = function()") == null);
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .wrap_regex = true },
+        true,
+        false,
+        .{ .wrap_regex = "$wR2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $wR2=function()"));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "$wR2=function(re,groups)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "return $wR2.apply(this,arguments)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $wR=function()") == null);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {

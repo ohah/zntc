@@ -725,6 +725,44 @@ console.log(JSON.stringify([f(7), ${sourceName}]));
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 wrap-regexp preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$wR' : '__wrapRegExp';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+var match = 'item-7'.match(/(?<kind>[a-z]+)-(?<count>\\d+)/);
+console.log(${sourceName}, match.groups.kind, match.groups.count);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$wR[a-zA-Z0-9_$]*)=function\(\)/)?.[1]
+        : code.match(/var (__wrapRegExp\d*) = function\(\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(
+        minify ? `${emittedHelper}=function(re,groups)` : `${emittedHelper} = function(re, groups)`,
+      );
+      expect(code).toContain(`match(${emittedHelper}(`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 item 7\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 call-super preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$cS' : '__callSuper';
       const fixture = await createFixture({
