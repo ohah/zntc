@@ -1478,6 +1478,51 @@ test "appendRuntimeHelpersWithExtendsLocalName emits the selected local directly
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $eX=function") == null);
 }
 
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .generator = true },
+        false,
+        false,
+        null,
+        "__generator2",
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __generator2 = function()"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __generator = function()"));
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .generator = true },
+        true,
+        false,
+        null,
+        "$g2",
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $g2=function()"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $g=function()"));
+
+    var combined: std.ArrayList(u8) = .empty;
+    defer combined.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &combined,
+        std.testing.allocator,
+        .{ .extends = true, .generator = true },
+        false,
+        false,
+        "__extends2",
+        "__generator2",
+    );
+    const extends_index = std.mem.indexOf(u8, combined.items, "var __extends2 = function").?;
+    const generator_index = std.mem.indexOf(u8, combined.items, "var __generator2 = function").?;
+    try std.testing.expect(extends_index < generator_index);
+}
+
 test "appendRuntimeHelpers: generator only" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);

@@ -1630,18 +1630,69 @@ pub fn appendRuntimeHelpersWithExtendsLocalName(
     es5_compat: bool,
     extends_local_name: ?[]const u8,
 ) !void {
-    if (!helpers.extends) return appendRuntimeHelpers(buf, allocator, helpers, minify, es5_compat);
+    return appendRuntimeHelpersWithStandaloneLocalNames(
+        buf,
+        allocator,
+        helpers,
+        minify,
+        es5_compat,
+        extends_local_name,
+        null,
+    );
+}
 
-    const default_name = helperName("__extends", minify);
-    const local_name = extends_local_name orelse default_name;
-    if (std.mem.eql(u8, local_name, default_name)) {
-        return appendRuntimeHelpers(buf, allocator, helpers, minify, es5_compat);
+/// Emit standalone inline helpers with the exact local spellings selected for
+/// helpers whose declarations have been migrated off the preamble rewriter.
+pub fn appendRuntimeHelpersWithStandaloneLocalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    helpers: RuntimeHelpers,
+    minify: bool,
+    es5_compat: bool,
+    extends_local_name: ?[]const u8,
+    generator_local_name: ?[]const u8,
+) !void {
+    var remaining = helpers;
+
+    if (helpers.extends) {
+        const default_name = helperName("__extends", minify);
+        const local_name = extends_local_name orelse default_name;
+        if (!std.mem.eql(u8, local_name, default_name)) {
+            try appendExtendsRuntimeWithLocalName(buf, allocator, local_name, minify);
+        } else {
+            try buf.appendSlice(allocator, if (minify) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
+        }
+        remaining.extends = false;
     }
 
-    try appendExtendsRuntimeWithLocalName(buf, allocator, local_name, minify);
-    var remaining = helpers;
-    remaining.extends = false;
+    if (helpers.generator) {
+        const default_name = helperName("__generator", minify);
+        const local_name = generator_local_name orelse default_name;
+        if (!std.mem.eql(u8, local_name, default_name)) {
+            try appendGeneratorRuntimeWithLocalName(buf, allocator, local_name, minify);
+        } else {
+            try buf.appendSlice(allocator, if (minify) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME);
+        }
+        remaining.generator = false;
+    }
+
     try appendRuntimeHelpers(buf, allocator, remaining, minify, es5_compat);
+}
+
+fn appendGeneratorRuntimeWithLocalName(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    local_name: []const u8,
+    minify: bool,
+) !void {
+    const template = if (minify) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME;
+    const default_name = helperName("__generator", minify);
+    const name_start = "var ".len;
+    std.debug.assert(std.mem.startsWith(u8, template[name_start..], default_name));
+
+    try buf.appendSlice(allocator, template[0..name_start]);
+    try buf.appendSlice(allocator, local_name);
+    try buf.appendSlice(allocator, template[name_start + default_name.len ..]);
 }
 
 fn appendExtendsRuntimeWithLocalName(

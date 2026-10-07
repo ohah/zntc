@@ -98,6 +98,62 @@ console.log($eX, new Child() instanceof Base);
     expect(runtime.stdout).toBe('40 true\n');
   });
 
+  test('standalone ES5 generator preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var __generator = 40;
+function* values() { yield 7; }
+var iterator = values();
+console.log(__generator, iterator.next().value, iterator.next().done);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/var __generator2 = function\(\)/);
+    expect(code).toMatch(/return __generator2\(/);
+    expect(code).not.toMatch(/return __generator\(/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 7 true\n');
+  });
+
+  test('standalone minified ES5 generator preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var $gn = 40;
+function* values() { yield 7; }
+var iterator = values();
+console.log($gn, iterator.next().value, iterator.next().done);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, [
+      'input.ts',
+      '--target=es5',
+      '--minify-whitespace',
+      '-o',
+      output,
+    ]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    const emittedHelper = code.match(/var (\$g[a-zA-Z0-9_$]*)=function\(\)/)?.[1];
+    expect(emittedHelper).toBeDefined();
+    expect(emittedHelper).not.toBe('$gn');
+    expect(code).toContain(`return ${emittedHelper}(`);
+    expect(code).not.toMatch(/return \$gn\(/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 7 true\n');
+  });
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
