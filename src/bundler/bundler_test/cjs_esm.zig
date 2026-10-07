@@ -1307,6 +1307,29 @@ test "ESM wrap: __esm runtime injected in bundle output" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exports_esm") != null);
 }
 
+test "ESM wrap: factory SymbolId avoids source binding collision" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const __esm = 'source';\neval('console.log(__esm)');\nimport value from './consumer.cjs';\nconsole.log(value);");
+    try writeFile(tmp.dir, "consumer.cjs", "const mod = require('./dep.ts');\nmodule.exports = mod.value;");
+    try writeFile(tmp.dir, "dep.ts", "export const value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .cjs,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "const __esm = \"source\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __esm$1 =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__esm$1({") != null);
+}
+
 test "ESM wrap: CJS requires ESM — (init_xxx(), __toCommonJS(exports_xxx)) pattern" {
     // CJS 모듈에서 ESM 모듈을 require() → (init_xxx(), __toCommonJS(exports_xxx))
     var tmp = std.testing.tmpDir(.{});

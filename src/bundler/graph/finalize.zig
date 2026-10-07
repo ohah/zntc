@@ -227,6 +227,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
 
     var cjs_runtime_identity_registered = false;
     var to_binary_runtime_identity_registered = false;
+    var esm_runtime_identity_registered = false;
     var existing_cjs_it = self.modules.iterator(0);
     while (existing_cjs_it.next()) |m| {
         // The module that originally owned this graph-level identity can stop
@@ -237,11 +238,15 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             registerCjsRuntimeFactorySymbol(m);
             cjs_runtime_identity_registered = true;
         }
-        if (!to_binary_runtime_identity_registered and findToBinaryRuntimeSymbol(m) != null) {
-            registerToBinaryRuntimeSymbol(m);
+        if (!to_binary_runtime_identity_registered and findBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary") != null) {
+            registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
             to_binary_runtime_identity_registered = m.to_binary_runtime_symbol != null;
         }
-        if (cjs_runtime_identity_registered and to_binary_runtime_identity_registered) break;
+        if (!esm_runtime_identity_registered and findBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm") != null) {
+            registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+            esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
+        }
+        if (cjs_runtime_identity_registered and to_binary_runtime_identity_registered and esm_runtime_identity_registered) break;
     }
     var it = self.modules.iterator(0);
     while (it.next()) |m| {
@@ -252,6 +257,10 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
                 registerCjsRuntimeFactorySymbol(m);
                 cjs_runtime_identity_registered = m.cjs_runtime_factory_symbol != null;
             }
+        }
+        if (m.wrap_kind == .esm and !esm_runtime_identity_registered) {
+            registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+            esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
         }
         const needs_init = m.init_symbol == null;
         const needs_exports = m.exports_symbol == null;
@@ -356,45 +365,68 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             var semantic_it = self.modules.iterator(0);
             while (semantic_it.next()) |m| {
                 if (m.semantic == null or m.parse_arena == null) continue;
-                registerToBinaryRuntimeSymbol(m);
+                registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
                 if (m.to_binary_runtime_symbol != null) break;
+            }
+        }
+    }
+
+    // ESM wrappers can be emitted from semantic-less modules in plugin or
+    // incremental paths. Anchor their graph-level factory identity to an
+    // available parsed module, keeping fixed names only for fully semantic-less
+    // graphs.
+    if (!esm_runtime_identity_registered) {
+        var has_esm_wrapper = false;
+        var esm_it = self.modules.iterator(0);
+        while (esm_it.next()) |m| {
+            if (m.wrap_kind == .esm) {
+                has_esm_wrapper = true;
+                break;
+            }
+        }
+        if (has_esm_wrapper) {
+            var semantic_it = self.modules.iterator(0);
+            while (semantic_it.next()) |m| {
+                if (m.semantic == null or m.parse_arena == null) continue;
+                registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+                if (m.esm_runtime_factory_symbol != null) break;
             }
         }
     }
 }
 
-fn registerToBinaryRuntimeSymbol(m: *Module) void {
+fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) void {
     const sem = if (m.semantic) |*value| value else return;
     const arena = if (m.parse_arena) |value| value.allocator() else return;
-    if (findToBinaryRuntimeSymbol(m) == null) {
-        m.to_binary_runtime_symbol = semantic_symbol.extendSymbol(
+    if (findBundlerRuntimeHelperSymbol(m, identity, name) == null) {
+        identity.* = semantic_symbol.extendSymbol(
             arena,
             &sem.symbols,
             .variable_var,
             .bundler_runtime_helper,
-            "__toBinary",
+            name,
             Span.EMPTY,
         ) catch null;
     }
-    _ = findToBinaryRuntimeSymbol(m);
+    _ = findBundlerRuntimeHelperSymbol(m, identity, name);
 }
 
-fn findToBinaryRuntimeSymbol(m: *Module) ?semantic_symbol.SymbolId {
+fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) ?semantic_symbol.SymbolId {
     const sem = if (m.semantic) |*value| value else return null;
-    if (m.to_binary_runtime_symbol) |existing| {
+    if (identity.*) |existing| {
         const raw: usize = @intFromEnum(existing);
         if (raw < sem.symbols.items.len) {
             const symbol = sem.symbols.items[raw];
             if (symbol.synthetic_kind == .bundler_runtime_helper and
-                std.mem.eql(u8, symbol.synthetic_name, "__toBinary")) return existing;
+                std.mem.eql(u8, symbol.synthetic_name, name)) return existing;
         }
-        m.to_binary_runtime_symbol = null;
+        identity.* = null;
     }
     for (sem.symbols.items, 0..) |symbol, index| {
         if (symbol.synthetic_kind != .bundler_runtime_helper or
-            !std.mem.eql(u8, symbol.synthetic_name, "__toBinary")) continue;
-        m.to_binary_runtime_symbol = @enumFromInt(index);
-        return m.to_binary_runtime_symbol;
+            !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
+        identity.* = @enumFromInt(index);
+        return identity.*;
     }
     return null;
 }

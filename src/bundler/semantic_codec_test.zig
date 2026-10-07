@@ -160,6 +160,15 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
         .synthetic_kind = .bundler_runtime_helper,
         .synthetic_name = "__toBinary",
     });
+    try ana.symbols.append(alloc, .{
+        .name = Span.EMPTY,
+        .scope_id = .none,
+        .kind = .variable_var,
+        .decl_flags = @import("../semantic/symbol.zig").SymbolKind.variable_var.declFlags(),
+        .declaration_span = Span.EMPTY,
+        .synthetic_kind = .bundler_runtime_helper,
+        .synthetic_name = "__esm",
+    });
     const sem = ModuleSemanticData{
         .symbols = ana.symbols,
         .scopes = ana.scopes.items,
@@ -236,7 +245,7 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     try testing.expectEqual(@as(usize, 1), runtime_helper_preambles);
     try testing.expectEqual(@as(usize, 1), cjs_runtime_factories);
     try testing.expectEqual(@as(usize, 4), cjs_runtime_internal_locals);
-    try testing.expectEqual(@as(usize, 1), bundler_runtime_helpers);
+    try testing.expectEqual(@as(usize, 2), bundler_runtime_helpers);
     try testing.expectEqual(@as(?usize, helper_symbol_id), decoded.helper_scope_map.get("__inlineRuntimeHelper"));
     try testing.expectEqual(sem.namespace_member_owners.count(), decoded.namespace_member_owners.count());
     var it = sem.namespace_member_owners.iterator();

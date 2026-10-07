@@ -182,7 +182,7 @@ pub fn emitEsmWrappedModule(
     // RFC #3940 L.4c-2a-ii: wrapper-name 을 build-scope rename_table 경유로. parity 로 byte-identical.
     const rename_tbl: ?*const RenameTable = if (linker) |l| &l.rename_table else null;
     const esm_factory_name = if (linker) |l|
-        l.esmFactoryRuntimeName()
+        try l.esmFactoryRuntimeName()
     else if (options.minify_whitespace)
         rt.NAMES.ESM_FACTORY_MIN
     else

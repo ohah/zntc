@@ -2111,6 +2111,42 @@ describe('에셋 로더 + RN 프리셋', () => {
     expect(result.bundleOutput).toContain('__toBinary$1("AQ==")');
   });
 
+  test('ESM factory SID avoids a direct-eval source binding collision', async () => {
+    const result = await bundleAndRun(
+      {
+        'entry.ts': `const __esm = 'source';\neval('console.log(__esm)');\nimport value from './consumer.cjs';\nconsole.log(value);`,
+        'consumer.cjs': `const mod = require('./dep.ts');\nmodule.exports = mod.value;`,
+        'dep.ts': `export const value = 42;`,
+      },
+      'entry.ts',
+      ['--format=cjs'],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('source\n42');
+    expect(result.bundleOutput).toContain('var __esm$1 =');
+    expect(result.bundleOutput).toContain('__esm$1({');
+  });
+
+  test('minified ESM factory SID avoids a direct-eval source binding collision', async () => {
+    const result = await bundleAndRun(
+      {
+        'entry.ts': `const $e = 'source';\neval('console.log($e)');\nimport value from './consumer.cjs';\nconsole.log(value);`,
+        'consumer.cjs': `const mod = require('./dep.ts');\nmodule.exports = mod.value;`,
+        'dep.ts': `export const value = 42;`,
+      },
+      'entry.ts',
+      ['--format=cjs', '--minify-whitespace'],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('source\n42');
+    expect(result.bundleOutput).toContain('var $e$1=');
+    expect(result.bundleOutput).toContain('$e$1({');
+  });
+
   test('loader=dataurl 의 MIME — .svg → image/svg+xml', async () => {
     const fixture = await createFixture({
       'entry.ts': `const svg = require('./vec.svg');\nconsole.log(svg);`,

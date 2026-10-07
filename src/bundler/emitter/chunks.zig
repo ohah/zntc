@@ -695,7 +695,7 @@ pub fn emitChunks(
             else
                 "__commonJS";
             const esm_factory_name = if (linker) |l|
-                l.esmFactoryRuntimeName()
+                try l.esmFactoryRuntimeName()
             else if (options.minify_whitespace)
                 rt.NAMES.ESM_FACTORY_MIN
             else

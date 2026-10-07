@@ -136,6 +136,40 @@ test "CodeSplitting: binary helper identity is stable in lazy asset chunk" {
     try std.testing.expect(found_source_binding);
 }
 
+test "CodeSplitting: ESM factory identity is stable in lazy chunk" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "console.log(import('./lazy'));\n");
+    try writeFile(tmp.dir, "lazy.ts", "const __esm = 'lazy';\neval('void __esm');\nimport value from './consumer.cjs';\nexport const result = value;");
+    try writeFile(tmp.dir, "consumer.cjs", "const mod = require('./dep.ts');\nmodule.exports = mod.value;");
+    try writeFile(tmp.dir, "dep.ts", "export const value = 42;");
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    var found_factory_chunk = false;
+    var found_source_binding = false;
+    for (outs) |output| {
+        if (std.mem.indexOf(u8, output.contents, "__esm$1({") != null) {
+            found_factory_chunk = true;
+            try std.testing.expect(std.mem.indexOf(u8, output.contents, "var __esm$1 =") != null);
+        }
+        if (std.mem.indexOf(u8, output.contents, "__esm =") != null and
+            std.mem.indexOf(u8, output.contents, "lazy") != null) found_source_binding = true;
+    }
+    try std.testing.expect(found_factory_chunk);
+    try std.testing.expect(found_source_binding);
+}
+
 test "CodeSplitting: shared module produces common chunk" {
     // 2개 엔트리가 같은 모듈을 공유 → 공통 청크로 추출.
     var tmp = std.testing.tmpDir(.{});
