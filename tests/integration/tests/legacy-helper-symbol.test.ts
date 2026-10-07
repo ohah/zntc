@@ -154,6 +154,59 @@ console.log($gn, iterator.next().value, iterator.next().done);
     expect(runtime.stdout).toBe('40 7 true\n');
   });
 
+  test('standalone ES5 rest preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var __rest = 40;
+const { a, ...copy } = { a: 1, b: 2 };
+console.log(__rest, copy.b);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/var __rest2 = function\(s, e\)/);
+    expect(code).toMatch(/__rest2\(/);
+    expect(code).not.toMatch(/\b__rest\(/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 2\n');
+  });
+
+  test('standalone minified ES5 rest preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var $rs = 40;
+const { a, ...copy } = { a: 1, b: 2 };
+console.log($rs, copy.b);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, [
+      'input.ts',
+      '--target=es5',
+      '--minify-whitespace',
+      '-o',
+      output,
+    ]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    const emittedHelper = code.match(/var (\$rs[a-zA-Z0-9_$]*)=function\(s,e\)/)?.[1];
+    expect(emittedHelper).toBeDefined();
+    expect(emittedHelper).not.toBe('$rs');
+    expect(code).toContain(`${emittedHelper}(`);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 2\n');
+  });
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
