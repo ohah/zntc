@@ -1708,8 +1708,8 @@ pub fn appendRuntimeHelpersWithExtendsLocalName(
     );
 }
 
-/// Emit standalone inline helpers with the exact local spellings selected for
-/// helpers whose declarations have been migrated off the preamble rewriter.
+/// Emit standalone inline helpers with exact local spellings for declarations
+/// and cross-helper references.
 pub fn appendRuntimeHelpersWithStandaloneLocalNames(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -1899,12 +1899,22 @@ fn appendRuntimeHelpersInternal(
     }
     if (helpers.async_values) {
         const default_name = helperName("__asyncValues", minify);
-        try appendRuntimeTemplateWithLocalName(
+        const values_name = helperName("__values", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{
+                .default_name = default_name,
+                .local_name = local_names.async_values orelse default_name,
+            },
+            .{
+                .default_name = values_name,
+                .local_name = local_names.values orelse values_name,
+            },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
             buf,
             allocator,
             if (minify) ASYNC_VALUES_RUNTIME_MIN else ASYNC_VALUES_RUNTIME,
-            default_name,
-            local_names.async_values orelse default_name,
+            &replacements,
         );
     }
     // __values 는 yield* / for-of / __asyncValues fallback 모두 사용 — async_values 가 켜져 있으면

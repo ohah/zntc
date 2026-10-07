@@ -573,6 +573,81 @@ process().then(total => console.log(__values, total));
   }
 
   for (const minify of [false, true]) {
+    test(
+      'standalone async-values sibling helper owns a SymbolId without sync for-of, ' +
+        (minify ? 'minified' : 'plain'),
+      async () => {
+        const fixture = await createFixture({
+          'input.ts': `
+const __values = function () { throw new Error('user __values must not handle iteration'); };
+async function sum() {
+  var total = 0;
+  for await (var value of [7]) total += value;
+  return total;
+}
+sum().then(total => console.log(__values.name, total));
+`,
+        });
+        cleanup = fixture.cleanup;
+        const output = join(fixture.dir, 'out.js');
+        const result = await runZntcInDir(fixture.dir, [
+          'input.ts',
+          '--target=es2017',
+          ...(minify ? ['--minify-whitespace'] : []),
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+
+        const code = readFileSync(output, 'utf8');
+        expect(code).toMatch(/var __values2\s*=\s*function\(o\)/);
+        expect(code).toMatch(/typeof __values2\s*===\s*["']function["']\s*\?\s*__values2\(o\)/);
+        expect(code).not.toMatch(/typeof __values\s*===\s*["']function["']\s*\?\s*__values\(o\)/);
+
+        const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(runtime.status, runtime.stderr).toBe(0);
+        expect(runtime.stdout).toBe('__values 7\n');
+      },
+    );
+  }
+
+  for (const minify of [false, true]) {
+    test(
+      'standalone async-generator yield-star reserves its hidden __await preamble SymbolId, ' +
+        (minify ? 'minified' : 'plain'),
+      async () => {
+        const fixture = await createFixture({
+          'input.ts': `
+var __await = 'user';
+async function* delegated() { yield 4; }
+async function* values() { yield* delegated(); }
+values().next().then(function (result) { console.log(__await, result.value); });
+`,
+        });
+        cleanup = fixture.cleanup;
+        const output = join(fixture.dir, 'out.js');
+        const result = await runZntcInDir(fixture.dir, [
+          'input.ts',
+          '--target=es2017',
+          ...(minify ? ['--minify-whitespace'] : []),
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+
+        const code = readFileSync(output, 'utf8');
+        expect(code).toMatch(/var __await2\s*=\s*function\(v,\s*s\)/);
+        expect(code).toMatch(/__await2\(new Promise/);
+        expect(code).not.toMatch(/__yieldStar\([^)]*__await\(/);
+
+        const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(runtime.status, runtime.stderr).toBe(0);
+        expect(runtime.stdout).toBe('user 4\n');
+      },
+    );
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 async-values preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$aV' : '__asyncValues';
       const fixture = await createFixture({
