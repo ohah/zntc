@@ -17,6 +17,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     class_private_method_init: ?[]const u8 = null,
     class_private_method_get: ?[]const u8 = null,
     call_super: ?[]const u8 = null,
+    super_get: ?[]const u8 = null,
     class_call_check: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     async_values: ?[]const u8 = null,
@@ -1879,7 +1880,14 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.super_get) {
-        try buf.appendSlice(allocator, if (minify) SUPER_GET_RUNTIME_MIN else SUPER_GET_RUNTIME);
+        const default_name = helperName("__superGet", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) SUPER_GET_RUNTIME_MIN else SUPER_GET_RUNTIME,
+            default_name,
+            local_names.super_get orelse default_name,
+        );
     }
     if (helpers.super_set) {
         try buf.appendSlice(allocator, if (minify) SUPER_SET_RUNTIME_MIN else SUPER_SET_RUNTIME);
