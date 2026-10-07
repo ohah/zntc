@@ -225,7 +225,7 @@ pub const Linker = struct {
 
     /// CJS factory is currently emitted from raw runtime text. The single-bundle
     /// identity name comes from the normal rename pass; this cached spelling is
-    /// retained for semantic-less wrappers and stable graph-wide split aliases.
+    /// retained when the graph has no semantic owner and for stable split aliases.
     cjs_factory_runtime_name: ?[]const u8 = null,
     cjs_factory_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
     /// ESM factory has the same raw-preamble boundary as the CJS factory.
@@ -1003,7 +1003,7 @@ pub const Linker = struct {
     /// Discover the graph-level runtime identity before emitted chunks are
     /// prepared. Single-bundle naming happens in computeRenames. Split outputs
     /// select their stable alias through that same pass with a graph-wide set of
-    /// source-visible names; semantic-less wrappers keep the string fallback.
+    /// source-visible names; graphs without a semantic owner keep the string fallback.
     pub fn prepareCjsRuntimeName(self: *Linker) !void {
         if (self.cjs_factory_runtime_name != null) return;
         var has_included_cjs_runtime = false;

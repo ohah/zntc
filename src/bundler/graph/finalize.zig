@@ -305,6 +305,30 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             ) catch null;
         }
     }
+
+    // Asset/disabled CJS wrappers have no semantic table of their own. If the
+    // graph still contains parsed JavaScript, anchor the graph-level runtime
+    // factory identity to the first semantic module so linker naming can use
+    // the ordinary SymbolID rename path instead of a source-name string scan.
+    // Keep the string fallback only for graphs with no semantic module at all.
+    if (!cjs_runtime_identity_registered) {
+        var has_cjs_wrapper = false;
+        var cjs_it = self.modules.iterator(0);
+        while (cjs_it.next()) |m| {
+            if (m.wrap_kind == .cjs) {
+                has_cjs_wrapper = true;
+                break;
+            }
+        }
+        if (has_cjs_wrapper) {
+            var semantic_it = self.modules.iterator(0);
+            while (semantic_it.next()) |m| {
+                if (m.semantic == null or m.parse_arena == null) continue;
+                registerCjsRuntimeFactorySymbol(m);
+                if (m.cjs_runtime_factory_symbol != null) break;
+            }
+        }
+    }
 }
 
 /// Add a semantic identity for the graph-level CJS runtime factory. The helper

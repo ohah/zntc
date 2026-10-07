@@ -186,6 +186,52 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     );
 }
 
+test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the runtime factory" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import fs from 'fs';\n" ++
+            "export const __commonJS = typeof fs;\n" ++
+            "console.log(__commonJS);\n",
+    );
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
+    const entry = @constCast(r.graph.getModule(entry_index) orelse return error.TestUnexpectedResult);
+    const entry_sem = entry.semantic orelse return error.TestUnexpectedResult;
+    const runtime_inner = entry.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        semantic_symbol.SyntheticKind.cjs_runtime_factory,
+        entry_sem.symbols.items[@intFromEnum(runtime_inner)].synthetic_kind.?,
+    );
+
+    var has_semantic_less_cjs = false;
+    var module_it = r.graph.modulesIterator();
+    while (module_it.next()) |module| {
+        if (module.wrap_kind == .cjs and module.semantic == null) has_semantic_less_cjs = true;
+    }
+    try std.testing.expect(has_semantic_less_cjs);
+
+    try r.linker.computeRenames();
+    const runtime_id = bundler_symbol.SymbolID.make(entry_index, @intFromEnum(runtime_inner));
+    const runtime_name = r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("__commonJS", runtime_name);
+
+    // The source binding and helper share the emitted bundle scope. The output
+    // identity keeps the helper's preferred name and the source binding moves.
+    const source_scope = entry_sem.scope_maps[0];
+    const source_inner = source_scope.get("__commonJS") orelse return error.TestUnexpectedResult;
+    const source_id = bundler_symbol.SymbolID.make(entry_index, source_inner);
+    const source_name = r.linker.rename_table.get(source_id) orelse "__commonJS";
+    try std.testing.expect(!std.mem.eql(u8, runtime_name, source_name));
+}
+
 test "linker: re-export chain resolved" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

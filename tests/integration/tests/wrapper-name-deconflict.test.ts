@@ -25,6 +25,67 @@ import { createFixture, runNode, runZntc } from './helpers';
 const LEGACY = 'module.exports = { foo(){ return "FOO"; } };';
 
 describe('#4530: 래퍼 심볼 ↔ 사용자 top-level 심볼 deconflict', () => {
+  test('semantic-less disabled CJS wrapper uses the graph runtime SymbolID', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.mjs':
+        'import fs from "fs";\n' +
+        'export const __commonJS = typeof fs;\n' +
+        'console.log(__commonJS);',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '-o',
+        out,
+        '--format=esm',
+        '--platform=browser',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const output = readFileSync(out, 'utf8');
+      expect(output).toContain('var __commonJS =');
+      expect(output).toMatch(/__commonJS\$\d+/);
+
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('object');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('code splitting keeps the runtime SymbolID for a semantic-less disabled CJS wrapper', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.mjs':
+        'import fs from "fs";\n' +
+        'export const __commonJS = typeof fs;\n' +
+        'console.log(__commonJS);',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '--outdir',
+        outDir,
+        '--splitting',
+        '--format=esm',
+        '--platform=browser',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const output = readFileSync(join(outDir, 'entry.js'), 'utf8');
+      expect(output).toContain('var __commonJS =');
+      expect(output).toMatch(/__commonJS\$\d+/);
+
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('object');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('CJS runtime preamble 이름을 ESM 사용자 binding이 재선언하지 않는다', async () => {
     const { dir, cleanup } = await createFixture({
       'legacy.cjs': 'module.exports = 7;',
