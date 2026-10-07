@@ -89,6 +89,13 @@ const EXACT_SINGLETON_FIELDS = [
 ] as const;
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 11;
+const EXACT_SCHEMA_FIELDS = new Set<string>([
+  'invariant_counter_count',
+  'observation_field_count',
+  'diagnostic_field_count',
+  ...EXACT_SINGLETON_FIELDS.map(([field]) => field),
+  ...EXACT_ZERO_COUNTERS,
+]);
 const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = ['scope_owner_mismatch', 'scope_owner_parent_mismatch'];
 
 function expectCjsWrapperModuleParamMatchesBody(bundle: string, moduleId: string) {
@@ -101,7 +108,7 @@ function expectCjsWrapperModuleParamMatchesBody(bundle: string, moduleId: string
   expect(wrapper?.[3], `${moduleId}: wrapper body missing`).toContain(`${moduleParam}.exports`);
 }
 
-function exactSchemaProblems(identity: string): string[] {
+function exactKnownValueProblems(identity: string): string[] {
   const expectations = [
     ['invariant_counter_count', EXACT_ZERO_COUNTERS.length],
     ['observation_field_count', EXACT_OBSERVATION_FIELD_COUNT],
@@ -128,6 +135,49 @@ function exactSchemaProblems(identity: string): string[] {
     }
     const value = matches[0].match(/=(\d+)/)?.[1] ?? 'missing';
     if (value !== '0') problems.push(counter + '=' + value + ', expected 0');
+  }
+  return problems;
+}
+
+function exactSchemaProblems(identity: string): string[] {
+  const isReportLine =
+    identity.startsWith('zntc: symbol-identity ') ||
+    identity.startsWith('zntc: symbol-identity-prepass ');
+  const payloadMarker = ': generated_bindings=';
+  const payloadMarkerIndex = isReportLine ? identity.lastIndexOf(payloadMarker) : -1;
+  if (isReportLine && payloadMarkerIndex === -1) {
+    return ['missing exact report payload'];
+  }
+  const payload = payloadMarkerIndex === -1 ? identity : identity.slice(payloadMarkerIndex + 2);
+  const problems = exactKnownValueProblems(payload);
+  const counts = new Map<string, number>();
+  const values = new Map<string, string>();
+  for (const token of payload.trim().split(/\s+/)) {
+    const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\S+)$/);
+    if (!match) {
+      problems.push('malformed exact report field ' + token);
+      continue;
+    }
+    const [, field, value] = match;
+    counts.set(field, (counts.get(field) ?? 0) + 1);
+    values.set(field, value);
+    if (!EXACT_SCHEMA_FIELDS.has(field)) {
+      problems.push('unexpected exact report field ' + field);
+      continue;
+    }
+    const valuePattern = field === 'legacy_debt_fingerprint' ? /^[0-9a-fA-F]+$/ : /^\d+$/;
+    if (!valuePattern.test(value)) {
+      problems.push('malformed exact report value ' + field + '=' + value);
+    }
+  }
+
+  for (const field of EXACT_SCHEMA_FIELDS) {
+    const occurrences = counts.get(field) ?? 0;
+    if (occurrences !== 1) {
+      problems.push(field + ' occurrences=' + occurrences + ', expected 1');
+    } else if (field === 'clean' && values.get(field) !== '1') {
+      problems.push('clean=' + values.get(field) + ', expected 1');
+    }
   }
   return problems;
 }
@@ -324,6 +374,41 @@ describe('symbol identity coverage gate (#4819)', () => {
       .concat(EXACT_ZERO_COUNTERS.map((counter) => counter + '=0'))
       .join(' ');
     expect(exactSchemaProblems(complete)).toEqual([]);
+    expect(exactSchemaProblems(complete.replace(' clean=1', ' clean=0'))).toContain(
+      'clean=0, expected 1',
+    );
+    expect(exactSchemaProblems(complete + ' future_counter=0')).toContain(
+      'unexpected exact report field future_counter',
+    );
+    expect(exactSchemaProblems(complete + ' malformed')).toContain(
+      'malformed exact report field malformed',
+    );
+    expect(
+      exactSchemaProblems(complete.replace(' external=3', ' external=not-a-number')),
+    ).toContain('malformed exact report value external=not-a-number');
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          'invariant_counter_count=' + EXACT_ZERO_COUNTERS.length,
+          'invariant_counter_count=999',
+        ),
+      ),
+    ).toContain('invariant_counter_count=999, expected ' + EXACT_ZERO_COUNTERS.length);
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          ' observation_field_count=6',
+          ' observation_field_count=6 observation_field_count=6',
+        ),
+      ),
+    ).toContain('observation_field_count occurrences=2, expected 1');
+    const reportPayload = 'generated_bindings=1 ' + complete.replace('generated_bindings=1 ', '');
+    const reportWithMarkerInPath =
+      'zntc: symbol-identity /tmp/input: generated_bindings=3.js: ' + reportPayload;
+    expect(exactSchemaProblems(reportWithMarkerInPath)).toEqual([]);
+    expect(exactSchemaProblems('zntc: symbol-identity input.js: clean=1')).toContain(
+      'missing exact report payload',
+    );
     expect(exactSchemaProblems(complete.replace(' write_count_mismatch=0', ''))).toContain(
       'write_count_mismatch occurrences=0, expected 1',
     );
@@ -780,7 +865,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       "const _err = 'outer';",
       'const iterable = {',
       '  [Symbol.iterator]() {',
-      '    return { next() { throw new Error(\'iterator failed\'); } };',
+      "    return { next() { throw new Error('iterator failed'); } };",
       '  },',
       '};',
       'try {',

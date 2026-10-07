@@ -152,7 +152,7 @@
 ## 검증과 완료 보고
 
 - 구조 검사는 AST, SID, reference, scope owner/map의 일관성을 검사한다. `clean=1`만으로 원본 프로그램과 같은 의미라고 판정하지 않는다.
-- exact identity 보고서와 synthetic coverage 보고서는 알려진 필드의 단일 출현을 잠근다. 누락·중복·잘못된 값·미등록 counter가 있으면 fixture × target gate가 실패해야 한다.
+- exact identity 보고서와 synthetic coverage 보고서는 알려진 필드의 단일 출현을 잠근다. exact parser는 clean=1과 등록된 필드만 허용하며, 누락·중복·잘못된 토큰/값·미등록 필드나 counter가 있으면 fixture × target gate가 실패해야 한다. 보고 경로에 marker 문자열이 있어도 실제 payload만 해석한다.
 - source AST scope-owner gate는 owner kind mismatch와 owner-parent mismatch를 모두 0으로 요구한다. TypeScript namespace body block은 namespace function scope에, Flow component의 합성 구현 함수 선언은 `flow_component_wrapper` function scope에 내용을 방문하므로 각각 별도 scope owner가 없는 구문 wrapper다.
 - 실행 검사는 원본을 실행 가능한 엔진에서 실행한 결과와 변환 출력을 비교한다. shadowing, closure, 평가 순서·횟수, 읽기/쓰기, direct `eval` 및 외부 이름 충돌을 포함한다.
 - 적용된 변경에 따라 standalone/bundle, native/downlevel target, 기본 출력/identifier-minify/전체 minify를 비교한다. code splitting, JSX, helper, plugin/cache 경계는 해당 생성자를 이관할 때 포함한다.
