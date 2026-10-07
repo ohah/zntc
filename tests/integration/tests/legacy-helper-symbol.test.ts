@@ -685,6 +685,48 @@ console.log(${sourceName}, child.value, child.ready);
     });
   }
 
+  for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 super-get preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$sPg' : '__superGet';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+class Base { get value() { return this._value; } }
+class Child extends Base { read() { return super.value; } }
+var child = new Child();
+child._value = 7;
+console.log(${sourceName}, child.read());
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$sPg[a-zA-Z0-9_$]*)=function\(parent,prop,receiver\)/)?.[1]
+        : code.match(/var (__superGet\d*) = function\(parent, prop, receiver\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(
+        minify
+          ? `${emittedHelper}(_super.prototype,"value",this)`
+          : `${emittedHelper}(_super.prototype, "value", this)`,
+      );
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 7\n');
+    });
+  }
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
