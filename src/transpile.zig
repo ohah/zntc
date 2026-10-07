@@ -1109,6 +1109,7 @@ fn rewriteRuntimeHelperPreamble(
     transformer: *Transformer,
     preamble: []const u8,
     minify: bool,
+    extends_emitted_directly: bool,
 ) TranspileError![]const u8 {
     var scanner = Scanner.init(allocator, preamble) catch return error.OutOfMemory;
     defer scanner.deinit();
@@ -1123,7 +1124,9 @@ fn rewriteRuntimeHelperPreamble(
             const start: usize = token.span.start;
             const end: usize = token.span.end;
             const name = preamble[start..end];
-            if (runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            const is_direct_extends = extends_emitted_directly and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__extends", minify));
+            if (!is_direct_extends and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1138,6 +1141,26 @@ fn rewriteRuntimeHelperPreamble(
     if (!changed) return preamble;
     try output.appendSlice(allocator, preamble[copied_until..]);
     return output.items;
+}
+
+/// Resolve the standalone helper's output spelling through the exact semantic
+/// helper SymbolId. Name-only fallback remains for low-level transformers
+/// without semantic ownership.
+fn standaloneRuntimeHelperSymbolName(
+    transformer: *Transformer,
+    base_name: []const u8,
+    minify: bool,
+) TranspileError![]const u8 {
+    const canonical_name = runtime_helper_names.helperName(base_name, minify);
+    const local_name = es_helpers.resolveRuntimeHelperName(transformer, canonical_name) catch return error.OutOfMemory;
+    if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports) return local_name;
+
+    const raw_id = transformer.helper_scope_map.get(local_name) orelse return error.TransformError;
+    if (raw_id >= transformer.symbols.len) return error.TransformError;
+    const symbol = transformer.symbols[raw_id];
+    if (symbol.kind != .import_binding or !std.mem.eql(u8, symbol.synthetic_name, local_name))
+        return error.TransformError;
+    return symbol.synthetic_name;
 }
 
 /// 소스 문자열을 트랜스파일한다. I/O 없음, 순수 함수.
@@ -1660,9 +1683,26 @@ fn transpileWithCallbackInternal(
     const has_helpers = transformer.runtime_helpers.hasAny();
     const helper_preamble = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
-        rt.appendRuntimeHelpers(&buf, arena_alloc, transformer.runtime_helpers, options.minify_whitespace, transformer.runtime_es5_compat) catch
+        const extends_local_name = if (transformer.runtime_helpers.extends)
+            try standaloneRuntimeHelperSymbolName(&transformer, "__extends", options.minify_whitespace)
+        else
+            null;
+        rt.appendRuntimeHelpersWithExtendsLocalName(
+            &buf,
+            arena_alloc,
+            transformer.runtime_helpers,
+            options.minify_whitespace,
+            transformer.runtime_es5_compat,
+            extends_local_name,
+        ) catch
             return error.OutOfMemory;
-        break :blk try rewriteRuntimeHelperPreamble(arena_alloc, &transformer, buf.items, options.minify_whitespace);
+        break :blk try rewriteRuntimeHelperPreamble(
+            arena_alloc,
+            &transformer,
+            buf.items,
+            options.minify_whitespace,
+            transformer.runtime_helpers.extends,
+        );
     } else "";
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .module_format = options.module_format,
@@ -3900,6 +3940,75 @@ test "stage 3 데코레이터 헬퍼 호출은 minify 에서 preamble 과 같은
     try std.testing.expect(std.mem.indexOf(u8, r.code, "__esDecorate(") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "__runInitializers(") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "$eD(") != null);
+}
+
+test "#4819 standalone helper preamble resolves its emitted name through SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+
+    var runtime_aliases: std.StringHashMapUnmanaged([]const u8) = .empty;
+    try runtime_aliases.put(allocator, "__extends", "__extends2");
+    var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    try helper_scope_map.put(allocator, "__extends2", 0);
+    const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{.{
+        .name = @import("lexer/token.zig").Span.EMPTY,
+        .scope_id = .none,
+        .kind = .import_binding,
+        .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+        .synthetic_name = "__extends2",
+    }};
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    transformer.runtime_helper_aliases = runtime_aliases;
+    transformer.helper_scope_map = helper_scope_map;
+    transformer.symbols = &helper_symbols;
+    transformer.semantic_edit_enabled = true;
+
+    const resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__extends", false);
+    try std.testing.expectEqualStrings("__extends2", resolved);
+
+    _ = transformer.helper_scope_map.remove("__extends2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__extends", false),
+    );
+}
+
+test "#4819 standalone extends preamble and call share the collision-free helper name" {
+    const es5 = TranspileOptions{
+        .es_target = .es5,
+        .unsupported = @import("transformer/compat.zig").fromESTarget(.es5),
+    };
+    var r = try transpile(
+        std.testing.allocator,
+        "var __extends = 40; class Base {} class Child extends Base {} console.log(__extends, new Child() instanceof Base);",
+        "input.js",
+        es5,
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "var __extends = 40") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "var __extends2 = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "__extends2(Child, _super)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.code, "__extends(Child, _super)") == null);
+
+    var minified_options = es5;
+    minified_options.minify_whitespace = true;
+    var minified = try transpile(
+        std.testing.allocator,
+        "var $eX = 40; class Base {} class Child extends Base {} console.log($eX, new Child() instanceof Base);",
+        "input.js",
+        minified_options,
+    );
+    defer minified.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, minified.code, "var $eX=40") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.code, "var $eX2=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.code, "$eX2(Child,_super)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.code, "$eX(Child,_super)") == null);
 }
 
 test "#4760 es5 블록 스코핑은 심볼로 충돌을 판정한다 (#4758 · #4764 · 매개변수)" {

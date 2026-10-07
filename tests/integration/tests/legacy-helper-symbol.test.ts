@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { createFixture, runZntcInDir, ZNTC_BIN } from './helpers';
@@ -42,6 +42,60 @@ describe('legacy runtime helper symbols (#4819)', () => {
   afterEach(async () => {
     await cleanup?.();
     cleanup = undefined;
+  });
+
+  test('standalone ES5 extends preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var __extends = 40;
+class Base {}
+class Child extends Base {}
+console.log(__extends, new Child() instanceof Base);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/var __extends2 = function/);
+    expect(code).toMatch(/__extends2\(Child, _super\)/);
+    expect(code).not.toMatch(/__extends\(Child, _super\)/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 true\n');
+  });
+
+  test('standalone minified ES5 extends preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var $eX = 40;
+class Base {}
+class Child extends Base {}
+console.log($eX, new Child() instanceof Base);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, [
+      'input.ts',
+      '--target=es5',
+      '--minify-whitespace',
+      '-o',
+      output,
+    ]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/var \$eX2=function/);
+    expect(code).toMatch(/\$eX2\(Child,_super\)/);
+    expect(code).not.toMatch(/\$eX\(Child,_super\)/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 true\n');
   });
 
   for (const target of ['es5', 'es2020'] as const) {
