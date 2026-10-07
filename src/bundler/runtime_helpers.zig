@@ -22,12 +22,15 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     super_set: ?[]const u8 = null,
     class_call_check: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
+    async_generator: ?[]const u8 = null,
+    await_helper: ?[]const u8 = null,
     async_values: ?[]const u8 = null,
     tagged_template_literal: ?[]const u8 = null,
     values: ?[]const u8 = null,
     read: ?[]const u8 = null,
     public_field: ?[]const u8 = null,
     wrap_regex: ?[]const u8 = null,
+    yield_star: ?[]const u8 = null,
     keep_names: ?[]const u8 = null,
     tdz: ?[]const u8 = null,
 };
@@ -1730,6 +1733,59 @@ fn appendRuntimeTemplateWithLocalName(
 /// Emit a runtime helper whose own template refers back to its top-level local.
 /// The wrap-regexp template uses its name in executable code only, so replace
 /// every self-reference together with the declaration from the selected SID.
+const RuntimeTemplateNameReplacement = struct {
+    default_name: []const u8,
+    local_name: []const u8,
+};
+
+fn isRuntimeIdentifierChar(char: u8) bool {
+    return std.ascii.isAlphanumeric(char) or char == '_' or char == '$';
+}
+
+/// Replace complete ASCII helper identifier spellings in static templates.
+/// The selected async-generator templates contain no matching names in strings.
+fn appendRuntimeTemplateWithLocalNamesAndReferences(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    template: []const u8,
+    replacements: []const RuntimeTemplateNameReplacement,
+) !void {
+    var has_replacements = false;
+    for (replacements) |replacement| {
+        if (!std.mem.eql(u8, replacement.local_name, replacement.default_name)) {
+            has_replacements = true;
+            break;
+        }
+    }
+    if (!has_replacements) return buf.appendSlice(allocator, template);
+
+    var offset: usize = 0;
+    var copied_until: usize = 0;
+    while (offset < template.len) {
+        var matched: ?RuntimeTemplateNameReplacement = null;
+        for (replacements) |replacement| {
+            if (replacement.local_name.len == 0 or
+                !std.mem.startsWith(u8, template[offset..], replacement.default_name)) continue;
+            const after = offset + replacement.default_name.len;
+            const has_identifier_before = offset > 0 and isRuntimeIdentifierChar(template[offset - 1]);
+            const has_identifier_after = after < template.len and isRuntimeIdentifierChar(template[after]);
+            if (!has_identifier_before and !has_identifier_after) {
+                matched = replacement;
+                break;
+            }
+        }
+        if (matched) |replacement| {
+            try buf.appendSlice(allocator, template[copied_until..offset]);
+            try buf.appendSlice(allocator, replacement.local_name);
+            offset += replacement.default_name.len;
+            copied_until = offset;
+        } else {
+            offset += 1;
+        }
+    }
+    try buf.appendSlice(allocator, template[copied_until..]);
+}
+
 fn appendRuntimeTemplateWithLocalNameAndReferences(
     buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
@@ -1737,16 +1793,10 @@ fn appendRuntimeTemplateWithLocalNameAndReferences(
     default_name: []const u8,
     local_name: []const u8,
 ) !void {
-    if (std.mem.eql(u8, local_name, default_name)) return buf.appendSlice(allocator, template);
-
-    var offset: usize = 0;
-    while (std.mem.indexOf(u8, template[offset..], default_name)) |relative_index| {
-        const index = offset + relative_index;
-        try buf.appendSlice(allocator, template[offset..index]);
-        try buf.appendSlice(allocator, local_name);
-        offset = index + default_name.len;
-    }
-    try buf.appendSlice(allocator, template[offset..]);
+    const replacements = [_]RuntimeTemplateNameReplacement{
+        .{ .default_name = default_name, .local_name = local_name },
+    };
+    try appendRuntimeTemplateWithLocalNamesAndReferences(buf, allocator, template, &replacements);
 }
 
 // ============================================================
@@ -1830,15 +1880,56 @@ fn appendRuntimeHelpersInternal(
     }
     // __await 는 async generator step() 안에서 instanceof check 사용 — async_generator 가
     // 켜져 있으면 함께 emit. (#1911)
-    if (helpers.await_helper or helpers.async_generator) {
-        try buf.appendSlice(allocator, if (minify) AWAIT_RUNTIME_MIN else AWAIT_RUNTIME);
+    if (helpers.await_helper or helpers.async_generator or helpers.yield_star) {
+        const default_name = helperName("__await", minify);
+        try appendRuntimeTemplateWithLocalNameAndReferences(
+            buf,
+            allocator,
+            if (minify) AWAIT_RUNTIME_MIN else AWAIT_RUNTIME,
+            default_name,
+            local_names.await_helper orelse default_name,
+        );
     }
     if (helpers.async_generator) {
-        try buf.appendSlice(allocator, if (minify) ASYNC_GENERATOR_RUNTIME_MIN else ASYNC_GENERATOR_RUNTIME);
+        const async_generator_name = helperName("__asyncGenerator", minify);
+        const await_name = helperName("__await", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{
+                .default_name = async_generator_name,
+                .local_name = local_names.async_generator orelse async_generator_name,
+            },
+            .{
+                .default_name = await_name,
+                .local_name = local_names.await_helper orelse await_name,
+            },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) ASYNC_GENERATOR_RUNTIME_MIN else ASYNC_GENERATOR_RUNTIME,
+            &replacements,
+        );
     }
     // __yieldStar 는 __await 를 부르므로 그 뒤에 온다(위 await_helper 분기가 이미 emit).
     if (helpers.yield_star) {
-        try buf.appendSlice(allocator, if (minify) YIELD_STAR_RUNTIME_MIN else YIELD_STAR_RUNTIME);
+        const yield_star_name = helperName("__yieldStar", minify);
+        const await_name = helperName("__await", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{
+                .default_name = yield_star_name,
+                .local_name = local_names.yield_star orelse yield_star_name,
+            },
+            .{
+                .default_name = await_name,
+                .local_name = local_names.await_helper orelse await_name,
+            },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) YIELD_STAR_RUNTIME_MIN else YIELD_STAR_RUNTIME,
+            &replacements,
+        );
     }
     if (helpers.public_field) {
         const default_name = helperName("__publicField", minify);
