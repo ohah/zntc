@@ -166,6 +166,62 @@ describe('#4530: 래퍼 심볼 ↔ 사용자 top-level 심볼 deconflict', () =>
     }
   });
 
+  test('code-splitting CJS runtime 별칭은 나중에 로드되는 청크의 unresolved global도 피한다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = 7;',
+      'later.cjs': 'module.exports = 9;',
+      'late.mjs':
+        'import value from "./later.cjs";\n' +
+        'export const result = `${typeof __commonJS}:${value}`;',
+      'entry.mjs':
+        'import value from "./legacy.cjs";\n' +
+        'console.log(value);\n' +
+        'import("./late.mjs").then(({ result }) => console.log(result));',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '--outdir',
+        outDir,
+        '--splitting',
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('7\nundefined:9');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('preserve-modules CJS runtime 별칭은 CJS 본문의 unresolved global을 가리지 않는다', async () => {
+    const { dir, cleanup } = await createFixture({
+      'legacy.cjs': 'module.exports = () => typeof __commonJS;',
+      'entry.mjs': 'import read from "./legacy.cjs";\nconsole.log(read());',
+    });
+    try {
+      const outDir = join(dir, 'dist');
+      const res = await runZntc([
+        '--bundle',
+        join(dir, 'entry.mjs'),
+        '--preserve-modules',
+        '--outdir',
+        outDir,
+        '--format=esm',
+      ]);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+      const { stdout, stderr } = await runNode(join(outDir, 'entry.js'));
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim()).toBe('undefined');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('ESM runtime 별칭은 같은 이름의 unresolved source global을 가리지 않는다', async () => {
     const { dir, cleanup } = await createFixture({
       'dep.mjs': 'export const value = 7;',

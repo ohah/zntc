@@ -1001,8 +1001,9 @@ pub const Linker = struct {
     }
 
     /// Discover the graph-level runtime identity before emitted chunks are
-    /// prepared. Single-bundle naming happens in computeRenames; code-split and
-    /// semantic-less paths keep the stable string alias used by their preambles.
+    /// prepared. Single-bundle naming happens in computeRenames. Split outputs
+    /// select their stable alias through that same pass with a graph-wide set of
+    /// source-visible names; semantic-less wrappers keep the string fallback.
     pub fn prepareCjsRuntimeName(self: *Linker) !void {
         if (self.cjs_factory_runtime_name != null) return;
         var has_included_cjs_runtime = false;
@@ -1020,11 +1021,86 @@ pub const Linker = struct {
             }
         }
         const graph_wide_alias = self.graph.code_splitting or self.graph.preserve_modules;
-        if (has_included_cjs_runtime and
-            (graph_wide_alias or self.cjs_factory_runtime_symbol_id == null))
-        {
+        if (!has_included_cjs_runtime) return;
+        if (graph_wide_alias) {
+            if (self.cjs_factory_runtime_symbol_id) |symbol_id| {
+                self.cjs_factory_runtime_name = try self.calculateGraphWideCjsRuntimeName(symbol_id);
+            } else {
+                self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
+            }
+        } else if (self.cjs_factory_runtime_symbol_id == null) {
             self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
         }
+    }
+
+    /// Code-split and preserve-modules emit each chunk in an independent rename
+    /// pass, but all emitted runtime preambles must use one name. Run the exact
+    /// runtime SymbolID through calculateRenames once against graph-wide source
+    /// globals and wrapper spellings, then cache that chosen output name for the
+    /// per-chunk passes to restore into rename_table.
+    fn calculateGraphWideCjsRuntimeName(self: *Linker, symbol_id: bundler_symbol.SymbolID) ![]const u8 {
+        const module_index = @intFromEnum(symbol_id.module);
+        const owner_module = self.getModule(module_index) orelse return error.CjsRuntimeFactoryOwnerMissing;
+
+        // A prior whole-graph pass may already have assigned this same output
+        // identity. Do not treat that old spelling as occupied by another
+        // symbol while selecting its stable graph-wide alias.
+        const previous_name = self.rename_table.get(symbol_id);
+        if (previous_name) |name| _ = self.canonical_names_used.fetchRemove(name);
+        errdefer if (previous_name) |name| self.canonical_names_used.put(self.allocator, name, {}) catch {};
+
+        const previous_reserved_globals = self.reserved_globals;
+        self.reserved_globals = .empty;
+        var restore_reserved_globals = true;
+        defer if (restore_reserved_globals) {
+            self.reserved_globals.deinit(self.allocator);
+            self.reserved_globals = previous_reserved_globals;
+        };
+
+        for (self.global_identifiers) |name| {
+            try self.reserved_globals.put(self.allocator, name, {});
+        }
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (m.semantic) |sem| {
+                var unresolved = sem.unresolved_references.keyIterator();
+                while (unresolved.next()) |name| {
+                    try self.reserved_globals.put(self.allocator, name.*, {});
+                }
+            }
+            const wrapper_names = [_]?[]const u8{
+                m.getInitName(null),
+                m.getExportsName(null),
+                m.getRequireName(null),
+                m.wrapper_name_synthetic,
+            };
+            for (wrapper_names) |name| {
+                if (name) |value| try self.reserved_globals.put(self.allocator, value, {});
+            }
+        }
+
+        var name_to_owners: NameToOwnersMap = .empty;
+        defer {
+            var owners_it = name_to_owners.valueIterator();
+            while (owners_it.next()) |owners| owners.deinit(self.allocator);
+            name_to_owners.deinit(self.allocator);
+        }
+
+        const base = if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+        try self.addNameOwner(&name_to_owners, base, .{
+            .module_index = module_index,
+            .exec_index = owner_module.exec_index,
+            .path = owner_module.path,
+            .symbol_id = symbol_id,
+        });
+        try self.calculateRenames(&name_to_owners, false);
+
+        const selected = self.rename_table.get(symbol_id) orelse return error.CjsRuntimeFactoryNameMissing;
+        const result = try self.allocator.dupe(u8, selected);
+        self.reserved_globals.deinit(self.allocator);
+        self.reserved_globals = previous_reserved_globals;
+        restore_reserved_globals = false;
+        return result;
     }
 
     /// Reserve the already selected spelling so a scope-hoisted user binding
