@@ -954,6 +954,53 @@ console.log(${sourceNames.join(', ')}, Counter.read(), Counter.write(9), Counter
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}array-spread helper pair uses collision-free SymbolId names`, async () => {
+      const arrayLikeSourceName = minify ? '$aL' : '__arrayLikeToArray';
+      const spreadSourceName = minify ? '$tA' : '__toConsumableArray';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${arrayLikeSourceName} = 40;
+var ${spreadSourceName} = 41;
+var arrayLike: any = { 0: 'a', 1: 'b', length: 2 };
+var values = [...arrayLike];
+var iterable = [...new Set([3, 4])];
+console.log(${arrayLikeSourceName}, ${spreadSourceName}, values.join(''), iterable.join(','));
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const helperNames = minify
+        ? [
+            code.match(/var (\$aL[a-zA-Z0-9_$]*)=function\(arr,len\)/)?.[1],
+            code.match(/var (\$tA[a-zA-Z0-9_$]*)=function\(arr\)/)?.[1],
+          ]
+        : [
+            code.match(/var (__arrayLikeToArray\d*) = function\(arr, len\)/)?.[1],
+            code.match(/var (__toConsumableArray\d*) = function\(arr\)/)?.[1],
+          ];
+      expect(helperNames.every(Boolean)).toBe(true);
+      expect(helperNames[0]).not.toBe(arrayLikeSourceName);
+      expect(helperNames[1]).not.toBe(spreadSourceName);
+      expect(code).toContain(`${helperNames[0]}(`);
+      expect(code).toContain(`${helperNames[1]}(`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 41 ab 3,4\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 keep-names preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$nm' : '__name';
       const fixture = await createFixture({

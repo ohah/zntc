@@ -1144,6 +1144,10 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__using", minify));
             const is_direct_call_dispose = directly_emitted_names.call_dispose != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__callDispose", minify));
+            const is_direct_array_like_to_array = directly_emitted_names.array_like_to_array != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__arrayLikeToArray", minify));
+            const is_direct_to_consumable_array = directly_emitted_names.to_consumable_array != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__toConsumableArray", minify));
             const is_direct_static_private_access = directly_emitted_names.class_static_private_access != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__classCheckPrivateStaticAccess", minify));
             const is_direct_static_private_descriptor = directly_emitted_names.class_static_private_descriptor != null and
@@ -1180,7 +1184,7 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__superGet", minify));
             const is_direct_super_set = directly_emitted_names.super_set != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__superSet", minify));
-            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_async_generator and !is_direct_await and !is_direct_yield_star and !is_direct_using and !is_direct_call_dispose and !is_direct_static_private_access and !is_direct_static_private_descriptor and !is_direct_static_private_get and !is_direct_static_private_set and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_keep_names and !is_direct_wrap_regex and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_class_private_field_set and !is_direct_call_super and !is_direct_super_get and !is_direct_super_set and !is_direct_metadata and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_async_generator and !is_direct_await and !is_direct_yield_star and !is_direct_using and !is_direct_call_dispose and !is_direct_array_like_to_array and !is_direct_to_consumable_array and !is_direct_static_private_access and !is_direct_static_private_descriptor and !is_direct_static_private_get and !is_direct_static_private_set and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_keep_names and !is_direct_wrap_regex and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_class_private_field_set and !is_direct_call_super and !is_direct_super_get and !is_direct_super_set and !is_direct_metadata and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1507,6 +1511,10 @@ fn transpileWithCallbackInternal(
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classStaticPrivateFieldSpecGet", options.minify_whitespace));
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classStaticPrivateFieldSpecSet", options.minify_whitespace));
     }
+    if (transformer.runtime_helpers.spread_array) {
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__arrayLikeToArray", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__toConsumableArray", options.minify_whitespace));
+    }
     if (analyzer_storage) |*analyzer| {
         if (transformer.finishSemanticEdit() catch return error.TransformError) |edited| {
             analyzer.applyEdit(edited);
@@ -1750,6 +1758,10 @@ fn transpileWithCallbackInternal(
             local_names.generator = try standaloneRuntimeHelperSymbolName(&transformer, "__generator", options.minify_whitespace);
         if (transformer.runtime_helpers.rest)
             local_names.rest = try standaloneRuntimeHelperSymbolName(&transformer, "__rest", options.minify_whitespace);
+        if (transformer.runtime_helpers.spread_array) {
+            local_names.array_like_to_array = try standaloneRuntimeHelperSymbolName(&transformer, "__arrayLikeToArray", options.minify_whitespace);
+            local_names.to_consumable_array = try standaloneRuntimeHelperSymbolName(&transformer, "__toConsumableArray", options.minify_whitespace);
+        }
         if (transformer.runtime_helpers.class_call_check)
             local_names.class_call_check = try standaloneRuntimeHelperSymbolName(&transformer, "__classCallCheck", options.minify_whitespace);
         if (transformer.runtime_helpers.class_private_method_init)
@@ -4094,6 +4106,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try runtime_aliases.put(allocator, "__classCheckPrivateStaticFieldDescriptor", "__classCheckPrivateStaticFieldDescriptor2");
     try runtime_aliases.put(allocator, "__classStaticPrivateFieldSpecGet", "__classStaticPrivateFieldSpecGet2");
     try runtime_aliases.put(allocator, "__classStaticPrivateFieldSpecSet", "__classStaticPrivateFieldSpecSet2");
+    try runtime_aliases.put(allocator, "__arrayLikeToArray", "__arrayLikeToArray2");
+    try runtime_aliases.put(allocator, "__toConsumableArray", "__toConsumableArray2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
     try helper_scope_map.put(allocator, "__generator2", 1);
@@ -4124,6 +4138,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try helper_scope_map.put(allocator, "__classCheckPrivateStaticFieldDescriptor2", 26);
     try helper_scope_map.put(allocator, "__classStaticPrivateFieldSpecGet2", 27);
     try helper_scope_map.put(allocator, "__classStaticPrivateFieldSpecSet2", 28);
+    try helper_scope_map.put(allocator, "__arrayLikeToArray2", 29);
+    try helper_scope_map.put(allocator, "__toConsumableArray2", 30);
     const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
@@ -4328,6 +4344,20 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .declaration_span = @import("lexer/token.zig").Span.EMPTY,
             .synthetic_name = "__classStaticPrivateFieldSpecSet2",
         },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__arrayLikeToArray2",
+        },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__toConsumableArray2",
+        },
     };
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
@@ -4394,6 +4424,10 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__classStaticPrivateFieldSpecGet2", static_private_get_resolved);
     const static_private_set_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__classStaticPrivateFieldSpecSet", false);
     try std.testing.expectEqualStrings("__classStaticPrivateFieldSpecSet2", static_private_set_resolved);
+    const array_like_to_array_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__arrayLikeToArray", false);
+    try std.testing.expectEqualStrings("__arrayLikeToArray2", array_like_to_array_resolved);
+    const to_consumable_array_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__toConsumableArray", false);
+    try std.testing.expectEqualStrings("__toConsumableArray2", to_consumable_array_resolved);
 
     _ = transformer.helper_scope_map.remove("__extends2");
     try std.testing.expectError(
@@ -4539,6 +4573,16 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__classStaticPrivateFieldSpecSet", false),
+    );
+    _ = transformer.helper_scope_map.remove("__arrayLikeToArray2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__arrayLikeToArray", false),
+    );
+    _ = transformer.helper_scope_map.remove("__toConsumableArray2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__toConsumableArray", false),
     );
 }
 

@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .await_helper = true, .async_generator = true, .yield_star = true, .public_field = true, .wrap_regex = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .class_static_private_field = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true, .using_ctx = true, .metadata = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .await_helper = true, .async_generator = true, .yield_star = true, .public_field = true, .wrap_regex = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .class_static_private_field = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true, .using_ctx = true, .metadata = true, .spread_array = true },
         false,
         false,
         .{
@@ -1543,6 +1543,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .using = "__using2",
             .call_dispose = "__callDispose2",
             .metadata = "__metadata2",
+            .array_like_to_array = "__arrayLikeToArray2",
+            .to_consumable_array = "__toConsumableArray2",
         },
     );
     const extends_index = std.mem.indexOf(u8, combined.items, "var __extends2 = function").?;
@@ -1574,7 +1576,9 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const using_index = std.mem.indexOf(u8, combined.items, "var __using2 = (stack, value, async) =>").?;
     const call_dispose_index = std.mem.indexOf(u8, combined.items, "var __callDispose2 = (stack, error, hasError) =>").?;
     const metadata_index = std.mem.indexOf(u8, combined.items, "var __metadata2 = (key, value) =>").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < await_index and await_index < async_generator_index and async_generator_index < yield_star_index and yield_star_index < public_field_index and public_field_index < wrap_regex_index and wrap_regex_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < static_private_access_index and static_private_access_index < static_private_descriptor_index and static_private_descriptor_index < static_private_get_index and static_private_get_index < static_private_set_index and static_private_set_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index and tagged_index < using_index and using_index < call_dispose_index and call_dispose_index < metadata_index);
+    const array_like_to_array_index = std.mem.indexOf(u8, combined.items, "var __arrayLikeToArray2 = function(arr, len)").?;
+    const to_consumable_array_index = std.mem.indexOf(u8, combined.items, "var __toConsumableArray2 = function(arr)").?;
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < await_index and await_index < async_generator_index and async_generator_index < yield_star_index and yield_star_index < public_field_index and public_field_index < wrap_regex_index and wrap_regex_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < static_private_access_index and static_private_access_index < static_private_descriptor_index and static_private_descriptor_index < static_private_get_index and static_private_get_index < static_private_set_index and static_private_set_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index and tagged_index < using_index and using_index < call_dispose_index and call_dispose_index < metadata_index and metadata_index < array_like_to_array_index and array_like_to_array_index < to_consumable_array_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected keep-names local directly" {
@@ -1813,6 +1817,40 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits every selected static p
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "$sA2(receiver,classConstructor)") != null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "$sD2(descriptor,\"get\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "$sD2(descriptor,\"set\")") != null);
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits selected array-spread helper names and internal reference" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .spread_array = true },
+        false,
+        true,
+        .{ .array_like_to_array = "__arrayLikeToArray2", .to_consumable_array = "__toConsumableArray2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __arrayLikeToArray2 = function(arr, len)"));
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __toConsumableArray2 = function(arr)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "return __arrayLikeToArray2(arr);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __arrayLikeToArray = function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __toConsumableArray = function") == null);
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .spread_array = true },
+        true,
+        false,
+        .{ .array_like_to_array = "$aL2", .to_consumable_array = "$tA2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $aL2=function(arr,len)"));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $tA2=function(arr)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "return $aL2(arr)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aL=function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $tA=function") == null);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {
