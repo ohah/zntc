@@ -1899,6 +1899,58 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constr
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $pR=function") == null);
 }
 
+test "appendRuntimeHelpersWithStandaloneLocalNames emits selected legacy-decorator helper names and internal references" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .legacy_decorator = true },
+        false,
+        true,
+        .{
+            .decorate_class = "__decorateClass2",
+            .decorate_param = "__decorateParam2",
+            .def_prop_2 = "__defProp22",
+            .get_own_prop_desc = "__getOwnPropDesc2",
+        },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __defProp22 = Object.defineProperty;"));
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __getOwnPropDesc2 = Object.getOwnPropertyDescriptor;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __decorateClass2 = (decorators, target, key, kind) => {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __decorateParam2 = (index, decorator) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "kind ? __getOwnPropDesc2(target, key) : target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "__defProp22(target, key, result)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __decorateClass = ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __decorateParam = ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __defProp2 = ") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __getOwnPropDesc = ") == null);
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .legacy_decorator = true },
+        true,
+        false,
+        .{
+            .decorate_class = "$dC2",
+            .decorate_param = "$dK2",
+            .def_prop_2 = "$dp22",
+            .get_own_prop_desc = "$gD2",
+        },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $dp22=Object.defineProperty,$gD2=Object.getOwnPropertyDescriptor,$dC2="));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "kind?$gD2(target,key):target") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "if(kind&&result)$dp22(target,key,result)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "$dK2=(index,decorator)=>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $dC=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $dK=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $dp2=") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $gD=") == null);
+}
+
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {
     var plain: std.ArrayList(u8) = .empty;
     defer plain.deinit(std.testing.allocator);
