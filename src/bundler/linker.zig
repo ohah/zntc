@@ -233,6 +233,7 @@ pub const Linker = struct {
     to_binary_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
     /// ESM factory has the same raw-preamble boundary as the CJS factory.
     esm_factory_runtime_name: ?[]const u8 = null,
+    esm_factory_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
 
     /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
     /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
@@ -1175,7 +1176,7 @@ pub const Linker = struct {
                     break;
                 }
                 const sem = m.semantic orelse continue;
-                if (findToBinaryRuntimeSymbol(&sem)) |inner| {
+                if (findBundlerRuntimeHelperSymbol(&sem, "__toBinary")) |inner| {
                     symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
                     break;
                 }
@@ -1207,7 +1208,7 @@ pub const Linker = struct {
                     break;
                 }
                 const sem = m.semantic orelse continue;
-                if (findToBinaryRuntimeSymbol(&sem)) |inner| {
+                if (findBundlerRuntimeHelperSymbol(&sem, "__toBinary")) |inner| {
                     self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
                     break;
                 }
@@ -1217,7 +1218,7 @@ pub const Linker = struct {
 
         const base = rt_names.helperName("__toBinary", self.minify_whitespace);
         if (self.to_binary_runtime_symbol_id) |symbol_id| {
-            self.to_binary_runtime_name = try self.calculateGraphWideToBinaryRuntimeName(symbol_id, base);
+            self.to_binary_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base);
             return;
         }
         var semantic_modules = self.graph.modulesIterator();
@@ -1227,9 +1228,9 @@ pub const Linker = struct {
         self.to_binary_runtime_name = try self.allocator.dupe(u8, base);
     }
 
-    fn calculateGraphWideToBinaryRuntimeName(self: *Linker, symbol_id: bundler_symbol.SymbolID, base: []const u8) ![]const u8 {
+    fn calculateGraphWideRuntimeHelperName(self: *Linker, symbol_id: bundler_symbol.SymbolID, base: []const u8) ![]const u8 {
         const module_index = @intFromEnum(symbol_id.module);
-        const owner_module = self.getModule(module_index) orelse return error.ToBinaryRuntimeOwnerMissing;
+        const owner_module = self.getModule(module_index) orelse return error.BundlerRuntimeHelperOwnerMissing;
         const previous_name = self.rename_table.get(symbol_id);
         if (previous_name) |name| _ = self.canonical_names_used.fetchRemove(name);
         errdefer if (previous_name) |name| self.canonical_names_used.put(self.allocator, name, {}) catch {};
@@ -1277,7 +1278,7 @@ pub const Linker = struct {
             .symbol_id = symbol_id,
         });
         try self.calculateRenames(&name_to_owners, false);
-        const selected = self.rename_table.get(symbol_id) orelse return error.ToBinaryRuntimeNameMissing;
+        const selected = self.rename_table.get(symbol_id) orelse return error.BundlerRuntimeHelperNameMissing;
         const result = try self.allocator.dupe(u8, selected);
         self.reserved_globals.deinit(self.allocator);
         self.reserved_globals = previous_reserved_globals;
@@ -1305,10 +1306,10 @@ pub const Linker = struct {
         return false;
     }
 
-    fn findToBinaryRuntimeSymbol(sem: *const ModuleSemanticData) ?semantic_symbol.SymbolId {
+    fn findBundlerRuntimeHelperSymbol(sem: *const ModuleSemanticData, name: []const u8) ?semantic_symbol.SymbolId {
         for (sem.symbols.items, 0..) |symbol, index| {
             if (symbol.synthetic_kind != .bundler_runtime_helper or
-                !std.mem.eql(u8, symbol.synthetic_name, "__toBinary")) continue;
+                !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
             return @enumFromInt(index);
         }
         return null;
@@ -1424,28 +1425,92 @@ pub const Linker = struct {
             symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
+    /// Resolve the graph-level ESM factory name from its exact synthetic SID.
+    /// Fully semantic-less graphs retain the historical string fallback.
+    pub fn esmFactoryRuntimeName(self: *const Linker) ![]const u8 {
+        if (!self.hasIncludedEsmRuntime()) {
+            return self.esm_factory_runtime_name orelse if (self.minify_whitespace)
+                rt_names.NAMES.ESM_FACTORY_MIN
+            else
+                "__esm";
+        }
+        var symbol_id = self.esm_factory_runtime_symbol_id;
+        if (symbol_id == null) {
+            var modules = self.graph.modulesIterator();
+            while (modules.next()) |m| {
+                if (m.esm_runtime_factory_symbol) |inner| {
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+                const sem = m.semantic orelse continue;
+                if (findBundlerRuntimeHelperSymbol(&sem, "__esm")) |inner| {
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+            }
+        }
+        if (symbol_id) |id| {
+            if (self.rename_table.get(id)) |name| return name;
+            if (self.esm_factory_runtime_name) |name| return name;
+            return error.EsmRuntimeFactoryNameMissing;
+        }
+        var semantic_it = self.graph.modulesIterator();
+        while (semantic_it.next()) |module| {
+            if (module.semantic != null) return error.EsmRuntimeFactoryIdentityMissing;
+        }
+        if (self.esm_factory_runtime_name) |name| return name;
+        return if (self.minify_whitespace) rt_names.NAMES.ESM_FACTORY_MIN else "__esm";
+    }
+
     /// Select a graph-wide ESM factory name before chunk helper preambles emit.
     pub fn prepareEsmRuntimeName(self: *Linker) !void {
         if (self.esm_factory_runtime_name != null) return;
-        var runtime_it = self.graph.modulesIterator();
-        while (runtime_it.next()) |m| {
-            if (self.tree_shaker_active and !m.is_included) continue;
-            if (m.wrap_kind != .esm) continue;
-            const base = if (self.minify_whitespace) rt_names.NAMES.ESM_FACTORY_MIN else "__esm";
-            self.esm_factory_runtime_name = try self.allocRuntimeFactoryName(base);
+        if (self.esm_factory_runtime_symbol_id == null) {
+            var modules = self.graph.modulesIterator();
+            while (modules.next()) |m| {
+                if (m.esm_runtime_factory_symbol) |inner| {
+                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+                const sem = m.semantic orelse continue;
+                if (findBundlerRuntimeHelperSymbol(&sem, "__esm")) |inner| {
+                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+            }
+        }
+        if (!self.hasIncludedEsmRuntime()) return;
+
+        const base = rt_names.helperName("__esm", self.minify_whitespace);
+        if (self.esm_factory_runtime_symbol_id) |symbol_id| {
+            self.esm_factory_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base);
             return;
         }
+        var runtime_it = self.graph.modulesIterator();
+        while (runtime_it.next()) |m| {
+            if (m.semantic != null) return error.EsmRuntimeFactoryIdentityMissing;
+        }
+        self.esm_factory_runtime_name = try self.allocRuntimeFactoryName(base);
     }
 
     fn reserveEsmRuntimeName(self: *Linker) !void {
         try self.prepareEsmRuntimeName();
         if (self.esm_factory_runtime_name) |name| {
             try self.reserved_globals.put(self.allocator, name, {});
+            if (self.esm_factory_runtime_symbol_id) |symbol_id| {
+                try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
+            }
         }
     }
 
-    pub fn esmFactoryRuntimeName(self: *const Linker) []const u8 {
-        return self.esm_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.ESM_FACTORY_MIN else "__esm";
+    fn hasIncludedEsmRuntime(self: *const Linker) bool {
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (m.wrap_kind != .esm) continue;
+            if (self.tree_shaker_active and !m.is_included) continue;
+            return true;
+        }
+        return false;
     }
 
     fn allocCjsRuntimeName(self: *Linker) ![]const u8 {

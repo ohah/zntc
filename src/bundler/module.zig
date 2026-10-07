@@ -429,6 +429,9 @@ pub const Module = struct {
     /// Synthetic identity for the graph-level binary asset helper preamble.
     /// The semantic-less asset callsite and helper declaration use its linker name.
     to_binary_runtime_symbol: ?SemanticSymbolId = null,
+    /// Synthetic identity for the graph-level `__esm` runtime factory preamble.
+    /// Wrapped ESM callsites and the raw helper declaration share its linker name.
+    esm_runtime_factory_symbol: ?SemanticSymbolId = null,
     /// Exact identities for lexical locals in the raw CJS runtime helper body.
     cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds = null,
 

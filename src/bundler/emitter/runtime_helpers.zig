@@ -77,7 +77,7 @@ pub fn emitBundleRuntimeHelpers(
     }
     if (needs_esm_wrap_runtime) {
         const factory_name = if (linker) |l|
-            l.esmFactoryRuntimeName()
+            try l.esmFactoryRuntimeName()
         else if (options.minify_whitespace)
             rt.NAMES.ESM_FACTORY_MIN
         else
@@ -98,7 +98,7 @@ pub fn emitBundleRuntimeHelpers(
         else
             "__commonJS";
         const esm_factory_name = if (linker) |l|
-            l.esmFactoryRuntimeName()
+            try l.esmFactoryRuntimeName()
         else if (options.minify_whitespace)
             rt.NAMES.ESM_FACTORY_MIN
         else
@@ -445,7 +445,7 @@ pub fn emitChunkRuntimeHelpers(
     }
     if (needs_esm_wrap_runtime) {
         const factory_name = if (linker) |l|
-            l.esmFactoryRuntimeName()
+            try l.esmFactoryRuntimeName()
         else if (options.minify_whitespace)
             rt.NAMES.ESM_FACTORY_MIN
         else
