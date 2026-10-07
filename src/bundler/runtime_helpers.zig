@@ -25,6 +25,8 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     async_generator: ?[]const u8 = null,
     await_helper: ?[]const u8 = null,
     async_values: ?[]const u8 = null,
+    using: ?[]const u8 = null,
+    call_dispose: ?[]const u8 = null,
     tagged_template_literal: ?[]const u8 = null,
     values: ?[]const u8 = null,
     read: ?[]const u8 = null,
@@ -2070,11 +2072,17 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.using_ctx) {
-        if (es5_compat) {
-            try buf.appendSlice(allocator, if (minify) USING_RUNTIME_ES5_MIN else USING_RUNTIME_ES5);
-        } else {
-            try buf.appendSlice(allocator, if (minify) USING_RUNTIME_MIN else USING_RUNTIME);
-        }
+        const using_name = helperName("__using", minify);
+        const call_dispose_name = helperName("__callDispose", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{ .default_name = using_name, .local_name = local_names.using orelse using_name },
+            .{ .default_name = call_dispose_name, .local_name = local_names.call_dispose orelse call_dispose_name },
+        };
+        const template = if (es5_compat)
+            (if (minify) USING_RUNTIME_ES5_MIN else USING_RUNTIME_ES5)
+        else
+            (if (minify) USING_RUNTIME_MIN else USING_RUNTIME);
+        try appendRuntimeTemplateWithLocalNamesAndReferences(buf, allocator, template, &replacements);
     }
     if (helpers.es_decorator) {
         try buf.appendSlice(allocator, if (minify) ES_DECORATOR_RUNTIME_MIN else ES_DECORATOR_RUNTIME);

@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .await_helper = true, .async_generator = true, .yield_star = true, .public_field = true, .wrap_regex = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true, .metadata = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .await_helper = true, .async_generator = true, .yield_star = true, .public_field = true, .wrap_regex = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true, .using_ctx = true, .metadata = true },
         false,
         false,
         .{
@@ -1536,6 +1536,8 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .tdz = "__tdz2",
             .read = "__read2",
             .tagged_template_literal = "__taggedTemplateLiteral2",
+            .using = "__using2",
+            .call_dispose = "__callDispose2",
             .metadata = "__metadata2",
         },
     );
@@ -1561,8 +1563,10 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
+    const using_index = std.mem.indexOf(u8, combined.items, "var __using2 = (stack, value, async) =>").?;
+    const call_dispose_index = std.mem.indexOf(u8, combined.items, "var __callDispose2 = (stack, error, hasError) =>").?;
     const metadata_index = std.mem.indexOf(u8, combined.items, "var __metadata2 = (key, value) =>").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < await_index and await_index < async_generator_index and async_generator_index < yield_star_index and yield_star_index < public_field_index and public_field_index < wrap_regex_index and wrap_regex_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index and tagged_index < metadata_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < await_index and await_index < async_generator_index and async_generator_index < yield_star_index and yield_star_index < public_field_index and public_field_index < wrap_regex_index and wrap_regex_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index and tagged_index < using_index and using_index < call_dispose_index and call_dispose_index < metadata_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected keep-names local directly" {
@@ -1692,6 +1696,66 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected metadata h
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $mD2=(key,value)=>"));
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $mD=(key,value)=>") == null);
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected using helper names in every template" {
+    const Case = struct {
+        minify: bool,
+        es5: bool,
+        using_name: []const u8,
+        call_dispose_name: []const u8,
+        using_declaration: []const u8,
+        call_dispose_declaration: []const u8,
+    };
+    const cases = [_]Case{
+        .{
+            .minify = false,
+            .es5 = false,
+            .using_name = "__using2",
+            .call_dispose_name = "__callDispose2",
+            .using_declaration = "var __using2 = (stack, value, async) =>",
+            .call_dispose_declaration = "var __callDispose2 = (stack, error, hasError) =>",
+        },
+        .{
+            .minify = true,
+            .es5 = false,
+            .using_name = "$us2",
+            .call_dispose_name = "$cD2",
+            .using_declaration = "var $us2=(stack,value,async)=>",
+            .call_dispose_declaration = "var $cD2=(stack,error,hasError)=>",
+        },
+        .{
+            .minify = false,
+            .es5 = true,
+            .using_name = "__using2",
+            .call_dispose_name = "__callDispose2",
+            .using_declaration = "var __using2 = function(stack, value, async)",
+            .call_dispose_declaration = "var __callDispose2 = function(stack, error, hasError)",
+        },
+        .{
+            .minify = true,
+            .es5 = true,
+            .using_name = "$us2",
+            .call_dispose_name = "$cD2",
+            .using_declaration = "var $us2=function(stack,value,async)",
+            .call_dispose_declaration = "var $cD2=function(stack,error,hasError)",
+        },
+    };
+
+    for (cases) |case| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+            &output,
+            std.testing.allocator,
+            .{ .using_ctx = true },
+            case.minify,
+            case.es5,
+            .{ .using = case.using_name, .call_dispose = case.call_dispose_name },
+        );
+        try std.testing.expect(std.mem.startsWith(u8, output.items, case.using_declaration));
+        try std.testing.expect(std.mem.indexOf(u8, output.items, case.call_dispose_declaration) != null);
+    }
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {

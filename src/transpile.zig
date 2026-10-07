@@ -1140,6 +1140,10 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__await", minify));
             const is_direct_yield_star = directly_emitted_names.yield_star != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__yieldStar", minify));
+            const is_direct_using = directly_emitted_names.using != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__using", minify));
+            const is_direct_call_dispose = directly_emitted_names.call_dispose != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__callDispose", minify));
             const is_direct_metadata = directly_emitted_names.metadata != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__metadata", minify));
             const is_direct_tagged_template = directly_emitted_names.tagged_template_literal != null and
@@ -1168,7 +1172,7 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__superGet", minify));
             const is_direct_super_set = directly_emitted_names.super_set != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__superSet", minify));
-            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_async_generator and !is_direct_await and !is_direct_yield_star and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_keep_names and !is_direct_wrap_regex and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_class_private_field_set and !is_direct_call_super and !is_direct_super_get and !is_direct_super_set and !is_direct_metadata and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_async_generator and !is_direct_await and !is_direct_yield_star and !is_direct_using and !is_direct_call_dispose and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_keep_names and !is_direct_wrap_regex and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_class_private_field_set and !is_direct_call_super and !is_direct_super_get and !is_direct_super_set and !is_direct_metadata and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1756,6 +1760,10 @@ fn transpileWithCallbackInternal(
             local_names.async_values = try standaloneRuntimeHelperSymbolName(&transformer, "__asyncValues", options.minify_whitespace);
         if (transformer.runtime_helpers.values)
             local_names.values = try standaloneRuntimeHelperSymbolName(&transformer, "__values", options.minify_whitespace);
+        if (transformer.runtime_helpers.using_ctx) {
+            local_names.using = try standaloneRuntimeHelperSymbolName(&transformer, "__using", options.minify_whitespace);
+            local_names.call_dispose = try standaloneRuntimeHelperSymbolName(&transformer, "__callDispose", options.minify_whitespace);
+        }
         if (transformer.runtime_helpers.read)
             local_names.read = try standaloneRuntimeHelperSymbolName(&transformer, "__read", options.minify_whitespace);
         if (transformer.runtime_helpers.public_field)
@@ -4060,6 +4068,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try runtime_aliases.put(allocator, "__asyncGenerator", "__asyncGenerator2");
     try runtime_aliases.put(allocator, "__yieldStar", "__yieldStar2");
     try runtime_aliases.put(allocator, "__metadata", "__metadata2");
+    try runtime_aliases.put(allocator, "__using", "__using2");
+    try runtime_aliases.put(allocator, "__callDispose", "__callDispose2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
     try helper_scope_map.put(allocator, "__generator2", 1);
@@ -4084,6 +4094,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try helper_scope_map.put(allocator, "__asyncGenerator2", 20);
     try helper_scope_map.put(allocator, "__yieldStar2", 21);
     try helper_scope_map.put(allocator, "__metadata2", 22);
+    try helper_scope_map.put(allocator, "__using2", 23);
+    try helper_scope_map.put(allocator, "__callDispose2", 24);
     const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
@@ -4246,6 +4258,20 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .declaration_span = @import("lexer/token.zig").Span.EMPTY,
             .synthetic_name = "__metadata2",
         },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__using2",
+        },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__callDispose2",
+        },
     };
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
@@ -4300,6 +4326,10 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__yieldStar2", yield_star_resolved);
     const metadata_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__metadata", false);
     try std.testing.expectEqualStrings("__metadata2", metadata_resolved);
+    const using_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__using", false);
+    try std.testing.expectEqualStrings("__using2", using_resolved);
+    const call_dispose_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__callDispose", false);
+    try std.testing.expectEqualStrings("__callDispose2", call_dispose_resolved);
 
     _ = transformer.helper_scope_map.remove("__extends2");
     try std.testing.expectError(
@@ -4415,6 +4445,16 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__metadata", false),
+    );
+    _ = transformer.helper_scope_map.remove("__using2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__using", false),
+    );
+    _ = transformer.helper_scope_map.remove("__callDispose2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__callDispose", false),
     );
 }
 
