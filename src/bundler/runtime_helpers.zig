@@ -2294,7 +2294,7 @@ pub fn appendCommonJsFactoryRuntimeWithNames(
     try appendCjsRuntimeWithNames(buf, allocator, source, default_name, factory_name, internal_names);
 }
 
-const CjsRuntimeIdentifierReplacement = struct {
+const RuntimeIdentifierReplacement = struct {
     from: []const u8,
     to: []const u8,
 };
@@ -2307,15 +2307,25 @@ fn appendCjsRuntimeWithNames(
     factory_name: []const u8,
     internal_names: names_mod.CjsRuntimeInternalNames,
 ) !void {
-    const replacements = [_]CjsRuntimeIdentifierReplacement{
+    const replacements = [_]RuntimeIdentifierReplacement{
         .{ .from = default_factory_name, .to = factory_name },
         .{ .from = "cb", .to = internal_names.callback_parameter },
         .{ .from = "mod", .to = internal_names.module_parameter },
         .{ .from = "e", .to = internal_names.catch_parameter },
         .{ .from = "__require", .to = internal_names.require_function },
     };
+    try appendRuntimeWithIdentifierReplacements(buf, allocator, source, &replacements);
+}
+
+fn appendRuntimeWithIdentifierReplacements(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    replacements: []const RuntimeIdentifierReplacement,
+) !void {
     var cursor: usize = 0;
     var copied_until: usize = 0;
+    var previous_significant_char: u8 = 0;
     while (cursor < source.len) {
         const c = source[cursor];
         if (c == '\'' or c == '"' or c == '`') {
@@ -2332,6 +2342,7 @@ fn appendCjsRuntimeWithNames(
                 }
                 cursor += 1;
             }
+            previous_significant_char = quote;
             continue;
         }
         if (c == '/' and cursor + 1 < source.len) {
@@ -2348,6 +2359,7 @@ fn appendCjsRuntimeWithNames(
             }
         }
         if (!isJsIdentifierStart(c)) {
+            if (!std.ascii.isWhitespace(c)) previous_significant_char = c;
             cursor += 1;
             continue;
         }
@@ -2356,15 +2368,38 @@ fn appendCjsRuntimeWithNames(
         cursor += 1;
         while (cursor < source.len and isJsIdentifierContinue(source[cursor])) : (cursor += 1) {}
         const token = source[start..cursor];
-        for (replacements) |replacement| {
-            if (!std.mem.eql(u8, token, replacement.from)) continue;
-            try buf.appendSlice(allocator, source[copied_until..start]);
-            try buf.appendSlice(allocator, replacement.to);
-            copied_until = cursor;
-            break;
+        // A helper spelling used as a member key (for example `g.__export` in
+        // the HMR bridge) is data, not a reference to the helper binding.
+        if (previous_significant_char != '.') {
+            for (replacements) |replacement| {
+                if (!std.mem.eql(u8, token, replacement.from)) continue;
+                try buf.appendSlice(allocator, source[copied_until..start]);
+                try buf.appendSlice(allocator, replacement.to);
+                copied_until = cursor;
+                break;
+            }
         }
+        previous_significant_char = 'a';
     }
     try buf.appendSlice(allocator, source[copied_until..]);
+}
+
+fn appendRuntimeWithEsmInteropNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    minify: bool,
+    names: names_mod.EsmInteropRuntimeNames,
+) !void {
+    var replacements: [names_mod.ESM_INTEROP_RUNTIME_HELPERS.len]RuntimeIdentifierReplacement = undefined;
+    inline for (names_mod.ESM_INTEROP_RUNTIME_HELPERS, 0..) |helper, index| {
+        const base_name = names_mod.esmInteropRuntimeHelperBaseName(helper);
+        replacements[index] = .{
+            .from = names_mod.helperName(base_name, minify),
+            .to = names.get(helper),
+        };
+    }
+    try appendRuntimeWithIdentifierReplacements(buf, allocator, source, &replacements);
 }
 
 fn isJsIdentifierStart(c: u8) bool {
@@ -2396,22 +2431,78 @@ fn appendRuntimeWithNamedIdentifier(
 /// configurable(의미) 이 우선 — RN 은 그 변종이 이미 function 문법이다. 그 다음이
 /// es5_syntax(문법) (#4630).
 pub fn appendToEsmRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
-    if (configurable) {
-        try buf.appendSlice(allocator, if (minify) TOESM_RUNTIME_CONFIGURABLE_MIN else TOESM_RUNTIME_CONFIGURABLE);
-    } else if (es5_syntax) {
-        try buf.appendSlice(allocator, if (minify) TOESM_RUNTIME_ES5_MIN else TOESM_RUNTIME_ES5);
-    } else {
-        try buf.appendSlice(allocator, if (minify) TOESM_RUNTIME_MIN else TOESM_RUNTIME);
-    }
+    try appendToEsmRuntimeWithNames(buf, allocator, minify, es5_syntax, configurable, names_mod.defaultEsmInteropRuntimeNames(minify));
+}
+
+/// Emit the CJS-to-ESM runtime using the graph-wide names selected for each
+/// raw helper binding.
+pub fn appendToEsmRuntimeWithNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    names: names_mod.EsmInteropRuntimeNames,
+) !void {
+    const source = if (configurable) blk: {
+        break :blk if (minify) TOESM_RUNTIME_CONFIGURABLE_MIN else TOESM_RUNTIME_CONFIGURABLE;
+    } else if (es5_syntax) blk: {
+        break :blk if (minify) TOESM_RUNTIME_ES5_MIN else TOESM_RUNTIME_ES5;
+    } else blk: {
+        break :blk if (minify) TOESM_RUNTIME_MIN else TOESM_RUNTIME;
+    };
+    try appendRuntimeWithEsmInteropNames(buf, allocator, source, minify, names);
 }
 
 /// ESM wrap 런타임을 주입한다 (__esm + __export + __toCommonJS).
-/// WrapKind.esm 모듈이 하나라도 있을 때 호출.
 /// __toCommonJS는 __copyProps/__defProp에 의존하므로 __toESM 런타임 후에 주입해야 함.
 /// `es5_syntax`(문법) 와 `configurable`(의미) 은 별개 축이다 — #4630 참고.
 pub fn appendEsmWrapRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
     const factory_name = if (minify) NAMES.ESM_FACTORY_MIN else "__esm";
-    try appendEsmWrapRuntimeNamed(buf, allocator, minify, es5_syntax, configurable, factory_name);
+    try appendEsmWrapRuntimeWithNames(buf, allocator, minify, es5_syntax, configurable, factory_name, names_mod.defaultEsmInteropRuntimeNames(minify));
+}
+
+/// Emit all ESM runtime bindings with the exact graph-wide names selected by
+/// the linker. `__esm` remains a separate identity from the interop cluster.
+pub fn appendEsmWrapRuntimeWithNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    factory_name: []const u8,
+    names: names_mod.EsmInteropRuntimeNames,
+) !void {
+    // __esm 은 서술자를 만들지 않으므로 문법 축만 본다.
+    const fn_syntax = es5_syntax or configurable;
+    const runtime = if (minify)
+        (if (fn_syntax) ESM_RUNTIME_ES5_MIN else ESM_RUNTIME_MIN)
+    else
+        (if (fn_syntax) ESM_RUNTIME_ES5 else ESM_RUNTIME);
+    const default_factory_name = if (minify) NAMES.ESM_FACTORY_MIN else "__esm";
+    try appendRuntimeWithNamedIdentifier(buf, allocator, runtime, default_factory_name, factory_name);
+
+    const export_runtime = if (configurable)
+        (if (minify) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_CONFIGURABLE)
+    else if (es5_syntax)
+        (if (minify) EXPORT_RUNTIME_ES5_MIN else EXPORT_RUNTIME_ES5)
+    else
+        (if (minify) EXPORT_RUNTIME_MIN else EXPORT_RUNTIME);
+    try appendRuntimeWithEsmInteropNames(buf, allocator, export_runtime, minify, names);
+
+    const to_common_js_runtime = if (configurable)
+        (if (minify) TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN else TOCOMMONJS_RUNTIME_CONFIGURABLE)
+    else if (es5_syntax)
+        (if (minify) TOCOMMONJS_RUNTIME_ES5_MIN else TOCOMMONJS_RUNTIME_ES5)
+    else
+        (if (minify) TOCOMMONJS_RUNTIME_MIN else TOCOMMONJS_RUNTIME);
+    try appendRuntimeWithEsmInteropNames(buf, allocator, to_common_js_runtime, minify, names);
+}
+
+/// Legacy helper API kept for tests and low-level callers that do not have a
+/// linker-selected ESM factory name.
+pub fn appendEsmWrapRuntimeLegacyNamed(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool, factory_name: []const u8) !void {
+    try appendEsmWrapRuntimeWithNames(buf, allocator, minify, es5_syntax, configurable, factory_name, names_mod.defaultEsmInteropRuntimeNames(minify));
 }
 
 /// Emit the ESM wrapper runtime with the exact factory name chosen by the linker.
@@ -2423,25 +2514,7 @@ pub fn appendEsmWrapRuntimeNamed(
     configurable: bool,
     factory_name: []const u8,
 ) !void {
-    // __esm 은 서술자를 만들지 않으므로 문법 축만 본다.
-    const fn_syntax = es5_syntax or configurable;
-    const runtime = if (minify)
-        (if (fn_syntax) ESM_RUNTIME_ES5_MIN else ESM_RUNTIME_MIN)
-    else
-        (if (fn_syntax) ESM_RUNTIME_ES5 else ESM_RUNTIME);
-    const default_name = if (minify) NAMES.ESM_FACTORY_MIN else "__esm";
-    try appendRuntimeWithNamedIdentifier(buf, allocator, runtime, default_name, factory_name);
-
-    if (configurable) {
-        try buf.appendSlice(allocator, if (minify) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_CONFIGURABLE);
-        try buf.appendSlice(allocator, if (minify) TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN else TOCOMMONJS_RUNTIME_CONFIGURABLE);
-    } else if (es5_syntax) {
-        try buf.appendSlice(allocator, if (minify) EXPORT_RUNTIME_ES5_MIN else EXPORT_RUNTIME_ES5);
-        try buf.appendSlice(allocator, if (minify) TOCOMMONJS_RUNTIME_ES5_MIN else TOCOMMONJS_RUNTIME_ES5);
-    } else {
-        try buf.appendSlice(allocator, if (minify) EXPORT_RUNTIME_MIN else EXPORT_RUNTIME);
-        try buf.appendSlice(allocator, if (minify) TOCOMMONJS_RUNTIME_MIN else TOCOMMONJS_RUNTIME);
-    }
+    try appendEsmWrapRuntimeLegacyNamed(buf, allocator, minify, es5_syntax, configurable, factory_name);
 }
 
 /// Decorator 런타임을 주입한다.
@@ -2477,8 +2550,55 @@ pub fn appendHmrRuntimeNamed(
     cjs_factory_name: []const u8,
     esm_factory_name: []const u8,
 ) !void {
+    try appendHmrRuntimeWithNames(
+        buf,
+        allocator,
+        minify,
+        cjs_factory_name,
+        esm_factory_name,
+        names_mod.defaultEsmInteropRuntimeNames(minify),
+    );
+}
+
+/// Emit HMR's references to the same ESM interop helper bindings as the bundle.
+pub fn appendHmrRuntimeWithNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    cjs_factory_name: []const u8,
+    esm_factory_name: []const u8,
+    esm_interop_names: names_mod.EsmInteropRuntimeNames,
+) !void {
     const source = if (minify) HMR_RUNTIME_MIN else HMR_RUNTIME;
-    try appendHmrTemplateNamed(buf, allocator, source, cjs_factory_name, esm_factory_name);
+    var named_template: std.ArrayList(u8) = .empty;
+    defer named_template.deinit(allocator);
+    try appendHmrTemplateNamed(&named_template, allocator, source, cjs_factory_name, esm_factory_name);
+    // appendHmrTemplateNamed adds a statement terminator; preserve that byte
+    // while rewriting the raw helper references in the generated template.
+    const terminated = if (named_template.items.len > 0 and named_template.items[named_template.items.len - 1] == ';')
+        named_template.items[0 .. named_template.items.len - 1]
+    else
+        named_template.items;
+    try appendRuntimeWithEsmInteropNames(buf, allocator, terminated, minify, esm_interop_names);
+    try buf.append(allocator, ';');
+}
+
+test "HMR helper aliasing preserves canonical global property keys" {
+    const allocator = std.testing.allocator;
+    var names = names_mod.defaultEsmInteropRuntimeNames(false);
+    names.set(.export_helper, "__export$1");
+    names.set(.def_prop, "__defProp$1");
+    names.set(.to_esm, "__toESM$1");
+    names.set(.to_common_js, "__toCommonJS$1");
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+    try appendHmrRuntimeWithNames(&output, allocator, false, "__commonJS", "__esm", names);
+
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "g.__export = __export$1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "g.__defProp = __defProp$1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "g.__toESM = __toESM$1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "g.__toCommonJS = __toCommonJS$1;") != null);
 }
 
 /// Dev-split non-entry chunks only register their local factories with HMR.

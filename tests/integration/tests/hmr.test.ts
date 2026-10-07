@@ -52,6 +52,38 @@ describe('HMR 통합 테스트', () => {
     expect(stdout.trim()).toBe('hello');
   });
 
+  test('renamed HMR helpers keep their canonical global property names', async () => {
+    const fixture = await createFixture({
+      'entry.ts': `import { value } from "./mod.js";\nconst __export = "export-source";\nconst __defProp = "define-source";\neval("console.log(__export, __defProp)");\nconsole.log(value);`,
+      'mod.js': `export const value = 42;`,
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, 'out.js');
+    const bundle = await runZntc([
+      '--bundle',
+      join(fixture.dir, 'entry.ts'),
+      '-o',
+      outFile,
+      '--dev',
+    ]);
+    expect(bundle.exitCode).toBe(0);
+
+    const bundleCode = readFileSync(outFile, 'utf-8');
+    expect(bundleCode).toContain('g.__export = __export$1;');
+    expect(bundleCode).toContain('g.__defProp = __defProp$1;');
+
+    const run = spawn({ cmd: ['bun', 'run', outFile], stdout: 'pipe', stderr: 'pipe' });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+      run.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe('');
+    expect(stdout.trim()).toBe('export-source define-source\n42');
+  });
+
   test('--watch-json 첫 rebuild는 graph_changed, 이후는 변경 모듈만 updates', async () => {
     const fixture = await createFixture({
       'App.tsx': `export default function App() { return "v1"; }`,

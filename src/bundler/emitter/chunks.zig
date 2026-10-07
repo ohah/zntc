@@ -429,6 +429,7 @@ pub fn emitChunks(
     if (linker) |l| {
         @constCast(l).use_shared_ns_preamble = true;
         @constCast(l).ns_preamble_chunked = true;
+        try @constCast(l).prepareEsmInteropRuntimeNamesIfNeeded();
         try @constCast(l).prepareCjsRuntimeName();
         try @constCast(l).prepareToBinaryRuntimeName();
         try @constCast(l).prepareEsmRuntimeName();
@@ -701,7 +702,11 @@ pub fn emitChunks(
             else
                 "__esm";
             if (chunk_is_user_entry) {
-                try rt.appendHmrRuntimeNamed(&chunk_output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name);
+                const helper_names = if (linker) |l|
+                    l.currentEsmInteropRuntimeNames()
+                else
+                    rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
+                try rt.appendHmrRuntimeWithNames(&chunk_output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name, helper_names);
             } else {
                 try rt.appendHmrChunkRegisterNamed(&chunk_output, allocator, cjs_factory_name, esm_factory_name);
             }
@@ -2838,7 +2843,10 @@ fn rewriteDynamicImports(
         if (emit_options.preserve_modules) pm_dyn_cjs: {
             const tm = graph.getModule(rec.resolved) orelse break :pm_dyn_cjs;
             if (tm.wrap_kind != .cjs) break :pm_dyn_cjs;
-            const toesm: []const u8 = if (emit_options.minify_whitespace) rt_names.NAMES.TOESM_MIN else "__toESM";
+            const toesm = if (linker) |l|
+                try l.esmInteropRuntimeHelperName(.to_esm)
+            else
+                rt_names.helperName("__toESM", emit_options.minify_whitespace);
             // provider 는 래퍼 **선언만** export 한다(호출 금지 — 순환/조건부 require 보호).
             // 그래서 소비자가 썽크를 호출해 namespace 를 만든다: `__toESM(m.require_X())`.
             const thunk = try tm.allocRequireName(allocator, if (linker) |l| &l.rename_table else null);

@@ -6,6 +6,7 @@ const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
 const WrapKind = types.WrapKind;
 const rt = @import("../runtime_helpers.zig");
+const rt_names = @import("../../runtime_helper_names.zig");
 const Module = @import("../module.zig").Module;
 const ModuleGraph = @import("../graph.zig").ModuleGraph;
 const ast_mod = @import("../../parser/ast.zig");
@@ -187,6 +188,10 @@ pub fn emitEsmWrappedModule(
         rt.NAMES.ESM_FACTORY_MIN
     else
         "__esm";
+    const esm_interop_names = if (linker) |l|
+        try l.esmInteropRuntimeNames()
+    else
+        rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
 
     const init_name = try module.allocInitName(allocator, rename_tbl);
     defer allocator.free(init_name);
@@ -654,8 +659,7 @@ pub fn emitEsmWrappedModule(
         }
 
         if (direct_exports.count() > 0 or star_entries.items.len > 0) {
-            // #1621: minify 시 __export → $x 축약.
-            const export_name: []const u8 = if (options.minify_whitespace) rt.NAMES.EXPORT_MIN else "__export";
+            const export_name = esm_interop_names.get(.export_helper);
             try wrapped.appendSlice(allocator, export_name);
             try wrapped.appendSlice(allocator, "(");
             try wrapped.appendSlice(allocator, exports_name);
@@ -799,7 +803,7 @@ pub fn emitEsmWrappedModule(
                 if (src_idx.isNone()) continue;
                 const src_mod = l.graph.getModule(src_idx) orelse continue;
                 if (src_mod.wrap_kind != .cjs) continue;
-                const copy_props: []const u8 = if (options.minify_whitespace) rt.NAMES.COPY_PROPS_MIN else "__copyProps";
+                const copy_props = esm_interop_names.get(.copy_props);
                 try wrapped.appendSlice(allocator, copy_props);
                 try wrapped.appendSlice(allocator, "(");
                 try wrapped.appendSlice(allocator, exports_name);
@@ -958,9 +962,12 @@ pub fn emitEsmWrappedModule(
                         // 레지스트리로 크로스청크 default re-export 해석(lexical init_X/exports_X 는
                         // 정의자 청크 스코프라 크로스청크 ReferenceError).
                         if (options.useDevModuleRegistry()) {
+                            const to_cjs_name = esm_interop_names.get(.to_common_js);
                             try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
-                            try reexport_buf.appendSlice(allocator, "\"].fn(), __toCommonJS(__zntc_modules[\"");
+                            try reexport_buf.appendSlice(allocator, "\"].fn(), ");
+                            try reexport_buf.appendSlice(allocator, to_cjs_name);
+                            try reexport_buf.appendSlice(allocator, "(__zntc_modules[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].exports))");
                         } else {
@@ -968,8 +975,7 @@ pub fn emitEsmWrappedModule(
                             defer allocator.free(iv);
                             const ev = try source_mod.allocExportsName(allocator, rename_tbl);
                             defer allocator.free(ev);
-                            // #1621: minify 시 __toCommonJS → $tC 축약.
-                            const to_cjs_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
+                            const to_cjs_name = esm_interop_names.get(.to_common_js);
                             try reexport_buf.appendSlice(allocator, iv);
                             try reexport_buf.appendSlice(allocator, "(), ");
                             try reexport_buf.appendSlice(allocator, to_cjs_name);
@@ -993,8 +999,7 @@ pub fn emitEsmWrappedModule(
                             try reexport_buf.appendSlice(allocator, pv);
                         } else {
                             const interop_mode = cjsInteropMode(options, module);
-                            // #1621: minify 시 __toESM → $tE 축약.
-                            const to_esm_name: []const u8 = if (options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
+                            const to_esm_name = esm_interop_names.get(.to_esm);
                             try reexport_buf.appendSlice(allocator, to_esm_name);
                             try reexport_buf.appendSlice(allocator, "(");
                             // direct-buf: dev_split 만 registry, 그 외는 원래 lexical append 경계 유지.
