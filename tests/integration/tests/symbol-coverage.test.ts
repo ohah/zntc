@@ -71,6 +71,13 @@ const STRICT_ZERO_COUNTERS = [
   'orphan_symbols',
   'cyclic_ast_edges',
 ];
+const STRICT_METRIC_FIELDS = ['bound', 'external', 'scope_mismatch', 'marked_synthetic'] as const;
+const STRICT_BOOLEAN_FIELDS = ['consistent', 'symbol_identity_complete'] as const;
+const STRICT_REPORT_FIELDS = [
+  ...STRICT_METRIC_FIELDS,
+  ...STRICT_ZERO_COUNTERS,
+  ...STRICT_BOOLEAN_FIELDS,
+] as const;
 const EXACT_SINGLETON_FIELDS = [
   ['generated_bindings', '\\d+'],
   ['generated_references', '\\d+'],
@@ -111,6 +118,46 @@ function exactSchemaProblems(identity: string): string[] {
     }
     const value = matches[0].match(/=(\d+)/)?.[1] ?? 'missing';
     if (value !== '0') problems.push(counter + '=' + value + ', expected 0');
+  }
+  return problems;
+}
+
+function strictSchemaProblems(report: string): string[] {
+  const payloadStart = report.indexOf(': bound=');
+  if (payloadStart === -1) return ['missing strict report payload'];
+
+  const expectedFields = new Set<string>(STRICT_REPORT_FIELDS);
+  const counts = new Map<string, number>();
+  const values = new Map<string, string>();
+  const problems: string[] = [];
+  const payload = report.slice(payloadStart + 2);
+  for (const token of payload.trim().split(/\s+/)) {
+    const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\d+)$/);
+    if (!match) {
+      problems.push(`malformed strict report field ${token}`);
+      continue;
+    }
+    const [, field, value] = match;
+    counts.set(field, (counts.get(field) ?? 0) + 1);
+    values.set(field, value);
+    if (!expectedFields.has(field)) problems.push(`unexpected strict report field ${field}`);
+  }
+
+  for (const field of STRICT_REPORT_FIELDS) {
+    const occurrences = counts.get(field) ?? 0;
+    if (occurrences !== 1) {
+      problems.push(`${field} occurrences=${occurrences}, expected 1`);
+      continue;
+    }
+    const value = values.get(field);
+    const expected = STRICT_ZERO_COUNTERS.includes(field as (typeof STRICT_ZERO_COUNTERS)[number])
+      ? '0'
+      : STRICT_BOOLEAN_FIELDS.includes(field as (typeof STRICT_BOOLEAN_FIELDS)[number])
+        ? '1'
+        : undefined;
+    if (expected !== undefined && value !== expected) {
+      problems.push(`${field}=${value ?? 'missing'}, expected ${expected}`);
+    }
   }
   return problems;
 }
@@ -318,6 +365,43 @@ describe('symbol identity coverage gate (#4819)', () => {
         complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=12'),
       ),
     ).toContain(`diagnostic_field_count=12, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
+  });
+
+  test('strict report schema rejects missing, duplicate, malformed, and unknown fields', () => {
+    const complete = [
+      ...STRICT_METRIC_FIELDS.map((field) => `${field}=1`),
+      ...STRICT_ZERO_COUNTERS.map((field) => `${field}=0`),
+      ...STRICT_BOOLEAN_FIELDS.map((field) => `${field}=1`),
+    ].join(' ');
+    const report = `zntc: synthetic-coverage fixture.mjs: ${complete}`;
+
+    expect(strictSchemaProblems(report)).toEqual([]);
+    expect(strictSchemaProblems(report.replace(' missing_binding=0', ''))).toContain(
+      'missing_binding occurrences=0, expected 1',
+    );
+    expect(
+      strictSchemaProblems(
+        report.replace(' missing_binding=0', ' missing_binding=0 missing_binding=1'),
+      ),
+    ).toContain('missing_binding occurrences=2, expected 1');
+    expect(
+      strictSchemaProblems(report.replace(' consistent=1', ' consistent=1 consistent=0')),
+    ).toContain('consistent occurrences=2, expected 1');
+    expect(strictSchemaProblems(report.replace(' consistent=1', ' consistent=0'))).toContain(
+      'consistent=0, expected 1',
+    );
+    expect(strictSchemaProblems(report.replace(' symbol_identity_complete=1', ''))).toContain(
+      'symbol_identity_complete occurrences=0, expected 1',
+    );
+    expect(strictSchemaProblems(report + ' future_counter=0')).toContain(
+      'unexpected strict report field future_counter',
+    );
+    expect(strictSchemaProblems(report + ' malformed')).toContain(
+      'malformed strict report field malformed',
+    );
+    expect(strictSchemaProblems('zntc: synthetic-coverage fixture.mjs: no-report')).toContain(
+      'missing strict report payload',
+    );
   });
 
   test('the emitted exact report matches the locked schema', () => {
@@ -7109,6 +7193,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           if (!/(?:^| )symbol_identity_complete=1(?: |$)/.test(strictLines[0])) {
             problems.push(
               `${name} ${target.name}: strict SymbolId identity coverage is incomplete: ${strictLines[0]}`,
+            );
+          }
+          for (const schemaProblem of strictSchemaProblems(strictLines[0])) {
+            problems.push(
+              `${name} ${target.name}: strict report schema ${schemaProblem}: ${strictLines[0]}`,
             );
           }
           const line = lines[0];
