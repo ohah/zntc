@@ -1951,6 +1951,56 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected legacy-decorat
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $gD=") == null);
 }
 
+test "appendRuntimeHelpersWithStandaloneLocalNames emits selected Stage 3 decorator helper names" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .es_decorator = true },
+        false,
+        true,
+        .{
+            .es_decorate = "__esDecorate2",
+            .run_initializers = "__runInitializers2",
+            .set_function_name = "__setFunctionName2",
+            .prop_key = "__propKey2",
+        },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __esDecorate2 = function("));
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __runInitializers2 = function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __setFunctionName2 = function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __propKey2 = function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __esDecorate = function(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __runInitializers = function(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __setFunctionName = function(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __propKey = function(") == null);
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .es_decorator = true },
+        true,
+        false,
+        .{
+            .es_decorate = "$eD2",
+            .run_initializers = "$rI2",
+            .set_function_name = "$sF2",
+            .prop_key = "$pK2",
+        },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $eD2=function("));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $rI2=function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $sF2=function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $pK2=function(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $eD=function(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $rI=function(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $sF=function(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $pK=function(") == null);
+}
+
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {
     var plain: std.ArrayList(u8) = .empty;
     defer plain.deinit(std.testing.allocator);
