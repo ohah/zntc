@@ -285,6 +285,61 @@ test "exact scope audit rejects owner scopes detached from their AST parent scop
     try std.testing.expect(!corrupted.isClean());
 }
 
+test "source scope-owner audit finds a wrong owner kind with a valid parent" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const span = try ast.addString("class");
+    const body = try ast.addListNode(.class_body, span, try ast.addNodeList(&.{}));
+    const none = @intFromEnum(AstNodeIndex.none);
+    const class_extra = try ast.addExtras(&.{ none, none, @intFromEnum(body), none, 0, 0, 0, 0 });
+    const class_expr = try ast.addNode(.{
+        .tag = .class_expression,
+        .span = span,
+        .data = .{ .extra = class_extra },
+    });
+    const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{class_expr}));
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const wrong_kind_scope: ScopeId = @enumFromInt(1);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+    };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(class_expr), @intFromEnum(wrong_kind_scope));
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(report.scope_owner_mismatch > 0);
+    try std.testing.expectEqual(@as(usize, 0), report.scope_owner_parent_mismatch);
+    try std.testing.expectEqualStrings("owner-kind", report.first_scope_owner_mismatch.?.issue);
+    try std.testing.expect(!report.isClean());
+}
+
 test "exact scope audit allows only source-owned scope bridges to generated owners" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

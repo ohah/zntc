@@ -82,6 +82,7 @@ const EXACT_SINGLETON_FIELDS = [
 ] as const;
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 11;
+const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = ['scope_owner_mismatch', 'scope_owner_parent_mismatch'];
 
 function exactSchemaProblems(identity: string): string[] {
   const expectations = [
@@ -112,6 +113,15 @@ function exactSchemaProblems(identity: string): string[] {
     if (value !== '0') problems.push(counter + '=' + value + ', expected 0');
   }
   return problems;
+}
+
+function scopeOwnerAuditProblems(audit: string): string[] {
+  return SOURCE_SCOPE_OWNER_ZERO_COUNTERS.flatMap((counter) => {
+    const matches = audit.match(new RegExp(`(?:^| )${counter}=(\\d+)(?=\\s|$)`, 'g')) ?? [];
+    if (matches.length !== 1) return [`${counter} occurrences=${matches.length}, expected 1`];
+    const value = matches[0].match(/=(\d+)/)?.[1] ?? 'missing';
+    return value === '0' ? [] : [`${counter}=${value}, expected 0`];
+  });
 }
 
 // The exact audit above owns transform-aware binding-scope validation. The
@@ -176,12 +186,12 @@ describe('symbol identity coverage gate (#4819)', () => {
 
   test('report selection ignores marker text embedded in diagnostic paths', () => {
     const lines = [
-      'zntc: symbol-source-scope-owner /tmp/symbol-coverage-worktree/input.mjs: scope_owner_parent_mismatch=0',
+      'zntc: symbol-source-scope-owner /tmp/symbol-coverage-worktree/input.mjs: scope_owner_mismatch=0 scope_owner_parent_mismatch=0',
       'zntc: symbol-coverage /tmp/symbol-coverage-worktree/input.mjs: new_user_idents=0 missing=0 wrong=0',
       'zntc: symbol-identity /tmp/symbol-coverage-worktree/input.mjs: clean=1',
       'zntc: symbol-identity-detail /tmp/zntc: symbol-identity /tmp/input.mjs: clean=1',
       'zntc: synthetic-coverage-detail /tmp/zntc: synthetic-coverage /tmp/input.mjs: symbol_identity_complete=1',
-      'zntc: symbol-source-scope-owner-detail /tmp/zntc: symbol-source-scope-owner /tmp/input.mjs: scope_owner_parent_mismatch=0',
+      'zntc: symbol-source-scope-owner-detail /tmp/zntc: symbol-source-scope-owner /tmp/input.mjs: scope_owner_mismatch=0 scope_owner_parent_mismatch=0',
     ];
     expect(lines.filter((line) => line.startsWith('zntc: symbol-coverage '))).toEqual([lines[1]]);
     expect(lines.filter((line) => line.startsWith('zntc: symbol-identity '))).toEqual([lines[2]]);
@@ -189,6 +199,46 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(lines.filter((line) => line.startsWith('zntc: symbol-source-scope-owner '))).toEqual([
       lines[0],
     ]);
+  });
+
+  test('source scope-owner gate rejects wrong owner kinds with a valid parent', () => {
+    const clean =
+      'zntc: symbol-source-scope-owner input.js: scope_owner_mismatch=0 scope_owner_parent_mismatch=0';
+    expect(scopeOwnerAuditProblems(clean)).toEqual([]);
+    expect(
+      scopeOwnerAuditProblems(clean.replace('scope_owner_mismatch=0', 'scope_owner_mismatch=1')),
+    ).toContain('scope_owner_mismatch=1, expected 0');
+    expect(
+      scopeOwnerAuditProblems(
+        clean.replace('scope_owner_parent_mismatch=0', 'scope_owner_parent_mismatch=1'),
+      ),
+    ).toContain('scope_owner_parent_mismatch=1, expected 0');
+    expect(scopeOwnerAuditProblems(clean.replace('scope_owner_mismatch=0 ', ''))).toContain(
+      'scope_owner_mismatch occurrences=0, expected 1',
+    );
+    expect(
+      scopeOwnerAuditProblems(
+        clean.replace('scope_owner_mismatch=0', 'scope_owner_mismatch=0 scope_owner_mismatch=0'),
+      ),
+    ).toContain('scope_owner_mismatch occurrences=2, expected 1');
+  });
+
+  test('Flow component wrapper owns its synthetic implementation function scope', () => {
+    const file = join(FIXTURE_DIR, '4819-flow-component.flow');
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-flow-component-owner-'));
+    try {
+      for (const target of TARGETS) {
+        const { stderr, exitCode } = runCoverage(file, target, outDir);
+        expect(exitCode, `${target.name}: ${stderr}`).toBe(0);
+        const audits = stderr
+          .split('\n')
+          .filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+        expect(audits, `${target.name}: ${stderr}`).toHaveLength(1);
+        expect(scopeOwnerAuditProblems(audits[0]), `${target.name}: ${stderr}`).toEqual([]);
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
   });
 
   test('지원하지 않는 오라클 fixture 확장자는 조용히 건너뛰지 않는다', () => {
@@ -331,7 +381,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
       expect(sourceScopeOwnerAudits, proc.stderr).toHaveLength(2);
       for (const audit of sourceScopeOwnerAudits) {
-        expect(audit).toMatch(/scope_owner_parent_mismatch=0(?:\s|$)/);
+        expect(scopeOwnerAuditProblems(audit), proc.stderr).toEqual([]);
       }
 
       const reports = (proc.stderr ?? '')
@@ -6984,8 +7034,45 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         for (const target of TARGETS) {
           const { stderr, exitCode } = runCoverage(file, target, outDir);
           if (exitCode !== 0) {
+            // A transform may fail after the exact identity report is emitted
+            // but before the source-only summary is printed. Keep checking the
+            // same owner counters from that authoritative report on this path.
+            const identityLines = stderr
+              .split('\n')
+              .filter((line) => line.startsWith('zntc: symbol-identity '));
+            if (identityLines.length !== 1) {
+              problems.push(
+                `${name} ${target.name}: expected one exact identity audit for failed transform, got ${identityLines.length}`,
+              );
+            } else {
+              for (const scopeOwnerProblem of scopeOwnerAuditProblems(identityLines[0])) {
+                problems.push(
+                  `${name} ${target.name}: exact identity scope-owner audit ${scopeOwnerProblem}: ${identityLines[0]}`,
+                );
+              }
+            }
             problems.push(`${name} ${target.name}: exit=${exitCode} ${stderr.trim()}`);
             continue;
+          }
+          const sourceScopeOwnerLines = stderr
+            .split('\n')
+            .filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+          if (sourceScopeOwnerLines.length !== 1) {
+            problems.push(
+              `${name} ${target.name}: expected one source scope-owner audit, got ${sourceScopeOwnerLines.length}`,
+            );
+          } else {
+            const scopeOwnerDetails = stderr
+              .split('\n')
+              .filter(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-detail ') && line.includes('scope_owner'),
+              );
+            for (const scopeOwnerProblem of scopeOwnerAuditProblems(sourceScopeOwnerLines[0])) {
+              problems.push(
+                `${name} ${target.name}: source scope-owner audit ${scopeOwnerProblem}: ${sourceScopeOwnerLines[0]} ${scopeOwnerDetails.join(' ')}`,
+              );
+            }
           }
           const lines = stderr
             .split('\n')
@@ -7004,20 +7091,6 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               `${name} ${target.name}: expected one identity report, got ${identityLines.length}`,
             );
             continue;
-          }
-          const sourceScopeOwnerLines = stderr
-            .split('\n')
-            .filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
-          if (sourceScopeOwnerLines.length !== 1) {
-            problems.push(
-              `${name} ${target.name}: expected one source scope-owner audit, got ${sourceScopeOwnerLines.length}`,
-            );
-          } else if (
-            !/(?:^| )scope_owner_parent_mismatch=0(?: |$)/.test(sourceScopeOwnerLines[0])
-          ) {
-            problems.push(
-              `${name} ${target.name}: source scope-owner audit failed: ${sourceScopeOwnerLines[0]}`,
-            );
           }
           const strictLines = stderr
             .split('\n')
