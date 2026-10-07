@@ -14,6 +14,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     extends: ?[]const u8 = null,
     generator: ?[]const u8 = null,
     rest: ?[]const u8 = null,
+    async_helper: ?[]const u8 = null,
     tagged_template_literal: ?[]const u8 = null,
 };
 
@@ -1756,11 +1757,18 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.async_helper) {
-        if (es5_compat) {
-            try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_ES5_MIN else ASYNC_RUNTIME_ES5);
-        } else {
-            try buf.appendSlice(allocator, if (minify) ASYNC_RUNTIME_MIN else ASYNC_RUNTIME);
-        }
+        const template = if (es5_compat)
+            (if (minify) ASYNC_RUNTIME_ES5_MIN else ASYNC_RUNTIME_ES5)
+        else
+            (if (minify) ASYNC_RUNTIME_MIN else ASYNC_RUNTIME);
+        const default_name = helperName("__async", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            template,
+            default_name,
+            local_names.async_helper orelse default_name,
+        );
     }
     if (helpers.async_values) {
         try buf.appendSlice(allocator, if (minify) ASYNC_VALUES_RUNTIME_MIN else ASYNC_VALUES_RUNTIME);
