@@ -392,6 +392,56 @@ collect(values(), []);
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}legacy metadata preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$mD' : '__metadata';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+(Reflect as any).metadata = function (_key: string, _value: unknown) {
+  return function (_target: any, _property?: string, descriptor?: PropertyDescriptor) { return descriptor; };
+};
+function decorateClass<T extends Function>(target: T): T { return target; }
+function decorateMethod(_target: any, _property: string, descriptor: PropertyDescriptor): PropertyDescriptor { return descriptor; }
+@decorateClass
+class Service {
+  @decorateMethod
+  method(value: number): string { return String(value); }
+}
+console.log(${sourceName}, new Service().method(7));
+`,
+        'tsconfig.json': JSON.stringify({
+          compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true },
+        }),
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        '--experimental-decorators',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = code.match(
+        minify
+          ? /var (\$mD[a-zA-Z0-9_$]*)=\(key,value\)=>/
+          : /var (__metadata\d*) = \(key, value\) =>/,
+      )?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(`${emittedHelper}(`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 7\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 values preamble uses the collision-free helper SymbolId name`, async () => {
       const fixture = await createFixture({
         'input.ts': `

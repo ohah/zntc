@@ -33,6 +33,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     yield_star: ?[]const u8 = null,
     keep_names: ?[]const u8 = null,
     tdz: ?[]const u8 = null,
+    metadata: ?[]const u8 = null,
 };
 
 // ============================================================
@@ -2082,7 +2083,14 @@ fn appendRuntimeHelpersInternal(
         try buf.appendSlice(allocator, if (minify) DECORATOR_RUNTIME_MIN else DECORATOR_RUNTIME);
     }
     if (helpers.metadata) {
-        try buf.appendSlice(allocator, if (minify) METADATA_RUNTIME_MIN else METADATA_RUNTIME);
+        const default_name = helperName("__metadata", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) METADATA_RUNTIME_MIN else METADATA_RUNTIME,
+            default_name,
+            local_names.metadata orelse default_name,
+        );
     }
     if (helpers.spread_array) {
         try buf.appendSlice(allocator, if (minify) SPREAD_ARRAY_RUNTIME_MIN else SPREAD_ARRAY_RUNTIME);
