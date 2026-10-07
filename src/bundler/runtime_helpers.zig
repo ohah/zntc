@@ -19,6 +19,10 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     assert_this_initialized: ?[]const u8 = null,
     assert_this_uninitialized: ?[]const u8 = null,
     possible_constructor_return: ?[]const u8 = null,
+    es_decorate: ?[]const u8 = null,
+    run_initializers: ?[]const u8 = null,
+    set_function_name: ?[]const u8 = null,
+    prop_key: ?[]const u8 = null,
     get_own_prop_desc: ?[]const u8 = null,
     decorate_class: ?[]const u8 = null,
     decorate_param: ?[]const u8 = null,
@@ -2126,7 +2130,22 @@ fn appendRuntimeHelpersInternal(
         try appendRuntimeTemplateWithLocalNamesAndReferences(buf, allocator, template, &replacements);
     }
     if (helpers.es_decorator) {
-        try buf.appendSlice(allocator, if (minify) ES_DECORATOR_RUNTIME_MIN else ES_DECORATOR_RUNTIME);
+        const es_decorate_name = helperName("__esDecorate", minify);
+        const run_initializers_name = helperName("__runInitializers", minify);
+        const set_function_name_name = helperName("__setFunctionName", minify);
+        const prop_key_name = helperName("__propKey", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{ .default_name = es_decorate_name, .local_name = local_names.es_decorate orelse es_decorate_name },
+            .{ .default_name = run_initializers_name, .local_name = local_names.run_initializers orelse run_initializers_name },
+            .{ .default_name = set_function_name_name, .local_name = local_names.set_function_name orelse set_function_name_name },
+            .{ .default_name = prop_key_name, .local_name = local_names.prop_key orelse prop_key_name },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) ES_DECORATOR_RUNTIME_MIN else ES_DECORATOR_RUNTIME,
+            &replacements,
+        );
     }
     if (helpers.legacy_decorator) {
         const get_own_prop_desc_name = helperName("__getOwnPropDesc", minify);
