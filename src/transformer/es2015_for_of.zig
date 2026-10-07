@@ -100,7 +100,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // 너머**의 참조가 된다. 카운터 temp(`_e`)는 중첩 함수가 자기 temp 로 같은 이름을
             // 다시 선언해 가릴 수 있어서, 모듈 전체에서 고유한 이름을 쓴다.
             const step = try uniqueStepName(self);
-            const catch_param = try es_helpers.makeTempVarSpan(self); // _f
             // Labeled for-of lowering enters here without visitNode(source_idx),
             // so the traversal cursor can still be the enclosing scope.
             const loop_scope = if (self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0)
@@ -114,7 +113,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             else
                 loop_scope;
             if (register_sm_temps) {
-                try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step, catch_param });
+                try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step });
             }
 
             // var _a = true; var _b = false; var _c = void 0;
@@ -205,15 +204,17 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .data = .{ .binary = .{ .left = label_name_idx, .right = for_stmt, .flags = 0 } },
             });
 
-            // catch (_f) { _b = true; _c = _f; }
+            // The generated catch body contains no source statements, so its
+            // parameter can use the stable base spelling even when an outer
+            // scope has `_err`; both generated nodes receive the catch SID.
             const did_catch_write = try makeRefFromSpan(self, did_err);
             const err_catch_write = try makeRefFromSpan(self, err_val);
-            const catch_param_read = try makeRefFromSpan(self, catch_param);
+            const catch_binding = try es_helpers.makeExactSyntheticBinding(self, "_err");
+            const catch_param_read = try es_helpers.makeExactSyntheticRef(self, "_err");
             const catch_body = try makeBlock(self, &.{
                 try es_helpers.makeExprStmt(self, try makeAssign(self, did_catch_write, try es_helpers.makeBoolLiteral(self, true), span), span),
                 try es_helpers.makeExprStmt(self, try makeAssign(self, err_catch_write, catch_param_read, span), span),
             }, span);
-            const catch_binding = try es_helpers.makeSyntheticBinding(self, catch_param);
             const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
                 .left = catch_binding,
                 .right = catch_body,
@@ -232,7 +233,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     // loop/catch. The generic function temp hoister would add
                     // duplicate `var` bindings outside the catch scope, where
                     // they have no matching semantic identity.
-                    for ([_]Span{ norm, did_err, err_val, iter, catch_param }) |temp_span| {
+                    for ([_]Span{ norm, did_err, err_val, iter }) |temp_span| {
                         es_helpers.consumeTempVarSpan(self, temp_span);
                     }
                 }

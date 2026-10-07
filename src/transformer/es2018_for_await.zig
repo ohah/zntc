@@ -112,10 +112,12 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             if (register_sm_temps) {
                 try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ iter, step, ret, errobj });
             }
-            // A catch parameter is not a function-scoped temp. Using
-            // makeTempVarSpan here also makes the hoister emit a second `var`
-            // binding with the same spelling outside the catch scope.
-            const err = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_err"));
+            // A catch parameter is not a function-scoped temp. Its generated
+            // catch body contains no source statements, so the stable base name
+            // is safe even when an outer scope has `_err`; the catch binding's
+            // exact SymbolId distinguishes the two. Using makeTempVarSpan here
+            // also makes the hoister emit a second `var` binding outside catch.
+            const err_binding = try es_helpers.makeExactSyntheticBinding(self, "_err");
             // var _iter = __asyncValues(iterable), _step = void 0, _ret = void 0, _errObj = void 0;
             const values_call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__asyncValues"), &.{right}, span);
             const semantic_scope: ?ScopeId = if (register_semantics) var_scope else null;
@@ -159,7 +161,6 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             });
 
             // catch (_err) { _errObj = { error: _err }; }
-            const err_binding = try es_helpers.makeSyntheticBinding(self, err);
             const err_binding_name = self.ast.getNode(err_binding).data.string_ref;
             const catch_clause = try self.ast.addNode(.{ .tag = .catch_clause, .span = span, .data = .{ .binary = .{
                 .left = err_binding,

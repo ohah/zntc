@@ -666,6 +666,146 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('for-await catch parameter keeps exact identity beside an outer _err', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-for-await-catch-err-identity-'));
+    const file = join(dir, 'entry.mjs');
+    const source = [
+      "const _err = 'outer';",
+      'const iterable = {',
+      "  next() { return Promise.reject(new Error('iterator failed')); },",
+      '  return() { return Promise.resolve({ done: true }); },',
+      '};',
+      'iterable[Symbol.asyncIterator] = function () { return this; };',
+      'async function run() {',
+      '  try {',
+      '    for await (const value of iterable) { void value; }',
+      '  } catch (caught) {',
+      '    console.log(`${_err}:${caught.message}`);',
+      '  }',
+      '}',
+      'run();',
+    ].join('\n');
+    writeFileSync(file, source);
+
+    try {
+      const reference = spawnSync('node', [file], { encoding: 'utf8' });
+      expect(reference.status, reference.stderr).toBe(0);
+      expect(reference.stdout).toBe('outer:iterator failed\n');
+
+      for (const { name, target, minify } of [
+        { name: 'es2017', target: '--target=es2017', minify: false },
+        { name: 'es5-minify', target: '--target=es5', minify: true },
+        { name: 'es2015-minify', target: '--target=es2015', minify: true },
+      ]) {
+        const output = join(dir, `${name}.mjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target, ...(minify ? ['--minify-identifiers'] : []), '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${name}: ${proc.stderr}`).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${name} ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        expect(identity, `${name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+
+        const emitted = readFileSync(output, 'utf8');
+        if (!minify) expect(emitted).toMatch(/catch\s*\(_err\)/);
+        if (minify) {
+          const postMinify = lines.find((line) =>
+            line.startsWith('zntc: symbol-identity-post-minify '),
+          );
+          expect(postMinify, `${name}: ${proc.stderr}`).toMatch(
+            /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          );
+        }
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, name).toBe(reference.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('for-of catch parameter keeps exact identity beside an outer _err', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-catch-err-identity-'));
+    const file = join(dir, 'entry.mjs');
+    const source = [
+      "const _err = 'outer';",
+      'const iterable = {',
+      '  [Symbol.iterator]() {',
+      '    return { next() { throw new Error(\'iterator failed\'); } };',
+      '  },',
+      '};',
+      'try {',
+      '  for (const value of iterable) { void value; }',
+      '} catch (caught) {',
+      '  console.log(`${_err}:${caught.message}`);',
+      '}',
+    ].join('\n');
+    writeFileSync(file, source);
+
+    try {
+      const reference = spawnSync('node', [file], { encoding: 'utf8' });
+      expect(reference.status, reference.stderr).toBe(0);
+      expect(reference.stdout).toBe('outer:iterator failed\n');
+
+      for (const minify of [false, true]) {
+        const name = minify ? 'es5-minify' : 'es5';
+        const output = join(dir, `${name}.mjs`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, '--target=es5', ...(minify ? ['--minify-identifiers'] : []), '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${name}: ${proc.stderr}`).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const identity = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${name} ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        expect(identity, `${name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+
+        const emitted = readFileSync(output, 'utf8');
+        if (!minify) expect(emitted).toMatch(/catch\s*\(_err\)/);
+        if (minify) {
+          const postMinify = lines.find((line) =>
+            line.startsWith('zntc: symbol-identity-post-minify '),
+          );
+          expect(postMinify, `${name}: ${proc.stderr}`).toMatch(
+            /missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          );
+        }
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, name).toBe(reference.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('extracted async function for-await temps keep identity and error state', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-await-extracted-async-symbols-'));
     const fixtures = [
