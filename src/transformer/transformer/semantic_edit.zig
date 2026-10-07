@@ -2476,7 +2476,7 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
 /// 헬퍼 호출은 import 선언보다 먼저 생성된다. 첫 호출에서 helper SymbolId를
 /// 예약하고 즉시 Reference를 붙여, 뒤늦은 import가 이 ID에 연결되게 한다.
 pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {
-    return trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports);
+    _ = try trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports);
 }
 
 /// Reserve a standalone helper declaration that is emitted in the preamble
@@ -2505,12 +2505,12 @@ pub fn ensureStandaloneRuntimeHelperPreambleSymbol(self: *Transformer, name: []c
 
 /// JSX and plugin helper imports are AST imports even in standalone mode,
 /// where downlevel runtime helpers are emitted through an inline preamble.
-pub fn trackRuntimeHelperImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {
+pub fn trackRuntimeHelperImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!?SymbolId {
     return trackRuntimeHelperRefKind(self, node, local_name, true);
 }
 
-fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []const u8, is_import: bool) Transformer.Error!void {
-    if (!self.semantic_edit_enabled) return;
+fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []const u8, is_import: bool) Transformer.Error!?SymbolId {
+    if (!self.semantic_edit_enabled) return null;
     if (self.current_scope.isNone()) std.debug.panic("runtime helper {s} created without scope", .{local_name});
     if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len)
         std.debug.panic("runtime helper reference has an invalid node", .{});
@@ -2527,6 +2527,7 @@ fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []
         !is_import,
     ) catch |err| return editError(err);
     try trackRuntimeHelperRefWithId(self, node, id);
+    return id;
 }
 
 /// Bind a cloned helper reference using its already established helper SID.
@@ -2597,7 +2598,45 @@ pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name:
         @intCast(mapped)
     else
         @intFromEnum(editor.declareHelperImport(local, local_span, declaration_span, self.programScope()) catch |err| return editError(err));
-    const id: SymbolId = @enumFromInt(raw_id);
+    return bindRuntimeHelperImportWithId(self, editor, local, @enumFromInt(raw_id), declaration_span);
+}
+
+/// Bind the generated import node to the exact helper ID reserved by its
+/// callsites. The local spelling is checked as an invariant, never used to
+/// select which helper symbol receives the declaration.
+pub fn bindRuntimeHelperImportById(
+    self: *Transformer,
+    local: NodeIndex,
+    local_name: []const u8,
+    symbol_id: SymbolId,
+    declaration_span: Span,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    const local_node = self.ast.getNode(local);
+    const local_span = switch (local_node.tag) {
+        .identifier_reference, .import_default_specifier => local_node.data.string_ref,
+        else => return editError(error.InvalidNode),
+    };
+    if (!std.mem.eql(u8, self.ast.getText(local_span), local_name))
+        std.debug.panic("runtime helper import local name disagrees with its binding node", .{});
+    const raw_id = @intFromEnum(symbol_id);
+    if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
+    const symbol = editor.symbols.items[raw_id];
+    if (symbol.kind != .import_binding or symbol.scope_id != self.programScope() or
+        !std.mem.eql(u8, symbol.synthetic_name, local_name) or
+        editor.helper_scope_map.get(local_name) != @as(?usize, raw_id)) return editError(error.InvalidSymbol);
+    return bindRuntimeHelperImportWithId(self, editor, local, symbol_id, declaration_span);
+}
+
+fn bindRuntimeHelperImportWithId(
+    self: *Transformer,
+    editor: *SemanticEditor,
+    local: NodeIndex,
+    id: SymbolId,
+    declaration_span: Span,
+) Transformer.Error!void {
+    const raw_id = @intFromEnum(id);
     if (self.runtime_helper_import_bindings.contains(raw_id)) return editError(error.DuplicateBinding);
     const local_raw = @intFromEnum(local);
     const editor_local_id = if (local_raw < editor.symbol_ids.items.len) editor.symbol_ids.items[local_raw] else null;

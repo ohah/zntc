@@ -16,9 +16,10 @@ const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const ImportPhase = @import("../parser/module.zig").ImportPhase;
 const JsxImportInfo = @import("jsx_lowering.zig").JsxImportInfo;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const es_helpers = @import("es_helpers.zig");
 
-const Pair = struct { imported: []const u8, local: []const u8 };
+const Pair = struct { imported: []const u8, local: []const u8, symbol_id: ?SymbolId = null };
 
 /// JSX runtime import statement (들) 를 만들어 `out` 에 append.
 /// `info` 가 어떤 helper 가 사용됐는지 추적. `import_source` 는 옵션의 jsx-import-source
@@ -46,21 +47,21 @@ pub fn appendJsxRuntimeImports(
         var pairs_len: usize = 0;
         if (is_dev) {
             if (info.used_jsxDEV) {
-                pairs_buf[pairs_len] = .{ .imported = "jsxDEV", .local = info.jsxDEV_local };
+                pairs_buf[pairs_len] = .{ .imported = "jsxDEV", .local = info.jsxDEV_local, .symbol_id = info.jsxDEV_symbol_id };
                 pairs_len += 1;
             }
         } else {
             if (info.used_jsx) {
-                pairs_buf[pairs_len] = .{ .imported = "jsx", .local = info.jsx_local };
+                pairs_buf[pairs_len] = .{ .imported = "jsx", .local = info.jsx_local, .symbol_id = info.jsx_symbol_id };
                 pairs_len += 1;
             }
             if (info.used_jsxs) {
-                pairs_buf[pairs_len] = .{ .imported = "jsxs", .local = info.jsxs_local };
+                pairs_buf[pairs_len] = .{ .imported = "jsxs", .local = info.jsxs_local, .symbol_id = info.jsxs_symbol_id };
                 pairs_len += 1;
             }
         }
         if (info.used_fragment) {
-            pairs_buf[pairs_len] = .{ .imported = "Fragment", .local = info.fragment_local };
+            pairs_buf[pairs_len] = .{ .imported = "Fragment", .local = info.fragment_local, .symbol_id = info.fragment_symbol_id };
             pairs_len += 1;
         }
         if (pairs_len > 0) {
@@ -70,7 +71,7 @@ pub fn appendJsxRuntimeImports(
 
     // key-after-spread 폴백: `<source>` 에서 `createElement` 만 import.
     if (info.used_createElement) {
-        const pair = [_]Pair{.{ .imported = "createElement", .local = info.createElement_local }};
+        const pair = [_]Pair{.{ .imported = "createElement", .local = info.createElement_local, .symbol_id = info.createElement_symbol_id }};
         try emitImportDeclaration(self, import_source, &pair, span, out);
     }
 }
@@ -119,7 +120,13 @@ fn emitImportDeclaration(
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
         // Bind the import and any earlier JSX calls to one exact SymbolId.
-        try self.bindRuntimeHelperImport(local_node, p.local, anchor);
+        if (p.symbol_id) |symbol_id| {
+            try self.bindRuntimeHelperImportById(local_node, p.local, symbol_id, anchor);
+        } else if (self.semantic_edit_enabled) {
+            std.debug.panic("JSX runtime import is missing its reserved helper SymbolId", .{});
+        } else {
+            try self.bindRuntimeHelperImport(local_node, p.local, anchor);
+        }
         try self.scratch.append(self.allocator, spec);
     }
 

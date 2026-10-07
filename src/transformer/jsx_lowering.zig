@@ -23,6 +23,7 @@ const Ast = ast_mod.Ast;
 const CallFlags = ast_mod.CallFlags;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const helpers = @import("es_helpers.zig");
 const emotion = @import("transformer/emotion.zig");
 const styled_components_mod = @import("transformer/styled_components.zig");
@@ -43,9 +44,27 @@ pub const JsxImportInfo = struct {
     jsxDEV_local: []const u8 = "_jsxDEV",
     fragment_local: []const u8 = "_Fragment",
     createElement_local: []const u8 = "_createElement",
+    jsx_symbol_id: ?SymbolId = null,
+    jsxs_symbol_id: ?SymbolId = null,
+    jsxDEV_symbol_id: ?SymbolId = null,
+    fragment_symbol_id: ?SymbolId = null,
+    createElement_symbol_id: ?SymbolId = null,
 
     pub fn setLocal(self: *JsxImportInfo, base: []const u8, local: []const u8) void {
         if (std.mem.eql(u8, base, "_jsx")) self.jsx_local = local else if (std.mem.eql(u8, base, "_jsxs")) self.jsxs_local = local else if (std.mem.eql(u8, base, "_jsxDEV")) self.jsxDEV_local = local else if (std.mem.eql(u8, base, "_Fragment")) self.fragment_local = local else if (std.mem.eql(u8, base, "_createElement")) self.createElement_local = local;
+    }
+
+    pub fn setSymbolId(self: *JsxImportInfo, base: []const u8, symbol_id: SymbolId) void {
+        if (std.mem.eql(u8, base, "_jsx")) self.jsx_symbol_id = symbol_id else if (std.mem.eql(u8, base, "_jsxs")) self.jsxs_symbol_id = symbol_id else if (std.mem.eql(u8, base, "_jsxDEV")) self.jsxDEV_symbol_id = symbol_id else if (std.mem.eql(u8, base, "_Fragment")) self.fragment_symbol_id = symbol_id else if (std.mem.eql(u8, base, "_createElement")) self.createElement_symbol_id = symbol_id;
+    }
+
+    pub fn symbolId(self: JsxImportInfo, base: []const u8) ?SymbolId {
+        if (std.mem.eql(u8, base, "_jsx")) return self.jsx_symbol_id;
+        if (std.mem.eql(u8, base, "_jsxs")) return self.jsxs_symbol_id;
+        if (std.mem.eql(u8, base, "_jsxDEV")) return self.jsxDEV_symbol_id;
+        if (std.mem.eql(u8, base, "_Fragment")) return self.fragment_symbol_id;
+        if (std.mem.eql(u8, base, "_createElement")) return self.createElement_symbol_id;
+        return null;
     }
 
     pub fn hasImports(self: JsxImportInfo) bool {
@@ -144,8 +163,13 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const local_span = try self.ast.addString(local);
             const idx = try helpers.makeSyntheticRefAt(self, local_span, node_span);
             try self.markRuntimeHelperRef(idx);
-            // Resolve the call reference before the generated import is resynchronized.
-            try self.trackRuntimeHelperImportRef(idx, local);
+            // Resolve the first call before its import exists, then keep that
+            // exact SymbolId for later callsites and the generated import.
+            if (self.jsx_import_info.symbolId(name)) |symbol_id| {
+                try self.trackRuntimeHelperRefWithId(idx, symbol_id);
+            } else if (try self.trackRuntimeHelperImportRef(idx, local)) |symbol_id| {
+                self.jsx_import_info.setSymbolId(name, symbol_id);
+            }
             return idx;
         }
 
