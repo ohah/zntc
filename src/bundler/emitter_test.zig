@@ -1510,21 +1510,23 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .tagged_template_literal = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .tagged_template_literal = true },
         false,
         false,
         .{
             .extends = "__extends2",
             .generator = "__generator2",
             .rest = "__rest2",
+            .async_helper = "__async2",
             .tagged_template_literal = "__taggedTemplateLiteral2",
         },
     );
     const extends_index = std.mem.indexOf(u8, combined.items, "var __extends2 = function").?;
     const generator_index = std.mem.indexOf(u8, combined.items, "var __generator2 = function").?;
     const rest_index = std.mem.indexOf(u8, combined.items, "var __rest2 = function").?;
+    const async_index = std.mem.indexOf(u8, combined.items, "var __async2 = (fn) =>").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < tagged_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < tagged_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local directly" {
@@ -1581,6 +1583,29 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected tagged tem
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $tt2=function(cooked,raw)"));
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $tt=function(cooked,raw)"));
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected async local in all templates" {
+    const cases = .{
+        .{ .minify = false, .es5_compat = false, .name = "__async2", .prefix = "var __async2 = (fn) =>", .canonical = "var __async = (fn) =>" },
+        .{ .minify = true, .es5_compat = false, .name = "$aS2", .prefix = "var $aS2=(fn)=>", .canonical = "var $aS=(fn)=>" },
+        .{ .minify = false, .es5_compat = true, .name = "__async2", .prefix = "var __async2 = function(fn)", .canonical = "var __async = function(fn)" },
+        .{ .minify = true, .es5_compat = true, .name = "$aS2", .prefix = "var $aS2=function(fn)", .canonical = "var $aS=function(fn)" },
+    };
+    inline for (cases) |case| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+            &output,
+            std.testing.allocator,
+            .{ .async_helper = true },
+            case.minify,
+            case.es5_compat,
+            .{ .async_helper = case.name },
+        );
+        try std.testing.expect(std.mem.startsWith(u8, output.items, case.prefix));
+        try std.testing.expect(!std.mem.startsWith(u8, output.items, case.canonical));
+    }
 }
 
 test "appendRuntimeHelpers: generator only" {

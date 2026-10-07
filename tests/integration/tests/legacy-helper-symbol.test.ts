@@ -260,6 +260,64 @@ console.log($tt, tag\`hello\`);
     expect(runtime.stdout).toBe('40 hello:hello\n');
   });
 
+  for (const variant of [
+    {
+      target: 'es5',
+      minify: false,
+      sourceName: '__async',
+      declaration: /var (__async\d*) = function\(fn\)/,
+    },
+    {
+      target: 'es5',
+      minify: true,
+      sourceName: '$aS',
+      declaration: /var (\$aS[a-zA-Z0-9_$]*)=function\(fn\)/,
+    },
+    {
+      target: 'es2015',
+      minify: false,
+      sourceName: '__async',
+      declaration: /var (__async\d*) = \(fn\) =>/,
+    },
+    {
+      target: 'es2015',
+      minify: true,
+      sourceName: '$aS',
+      declaration: /var (\$aS[a-zA-Z0-9_$]*)=\(fn\)=>/,
+    },
+  ] as const) {
+    test(`standalone ${variant.minify ? 'minified ' : ''}${variant.target} async preamble uses the collision-free helper SymbolId name`, async () => {
+      const fixture = await createFixture({
+        'input.ts': `
+var ${variant.sourceName} = 40;
+async function getValue() { return 7; }
+getValue().then(value => console.log(${variant.sourceName}, value));
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        `--target=${variant.target}`,
+        ...(variant.minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = code.match(variant.declaration)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(variant.sourceName);
+      expect(code).toContain(`${emittedHelper}(`);
+      expect(code).not.toContain(`${variant.sourceName}(`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 7\n');
+    });
+  }
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
