@@ -833,6 +833,7 @@ pub const Transformer = struct {
     pub const addSyntheticRefInScope = @import("transformer/semantic_edit.zig").addSyntheticRefInScope;
     pub const removeSemanticReference = @import("transformer/semantic_edit.zig").removeSemanticReference;
     pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
+    pub const ensureStandaloneRuntimeHelperPreambleSymbol = @import("transformer/semantic_edit.zig").ensureStandaloneRuntimeHelperPreambleSymbol;
     pub const trackRuntimeHelperImportRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperImportRef;
     pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;

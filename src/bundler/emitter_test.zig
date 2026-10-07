@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .await_helper = true, .async_generator = true, .yield_star = true, .public_field = true, .wrap_regex = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true, .using_ctx = true, .metadata = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .await_helper = true, .async_generator = true, .yield_star = true, .public_field = true, .wrap_regex = true, .keep_names = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .class_static_private_field = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true, .using_ctx = true, .metadata = true },
         false,
         false,
         .{
@@ -1528,6 +1528,10 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .keep_names = "__name2",
             .class_private_method_init = "__classPrivateMethodInit2",
             .class_private_method_get = "__classPrivateMethodGet2",
+            .class_static_private_access = "__classCheckPrivateStaticAccess2",
+            .class_static_private_descriptor = "__classCheckPrivateStaticFieldDescriptor2",
+            .class_static_private_get = "__classStaticPrivateFieldSpecGet2",
+            .class_static_private_set = "__classStaticPrivateFieldSpecSet2",
             .class_private_field_set = "__zntcClassPrivateFieldSet2",
             .class_call_check = "__classCallCheck2",
             .call_super = "__callSuper2",
@@ -1555,6 +1559,10 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const keep_names_index = std.mem.indexOf(u8, combined.items, "var __name2 = (function(defineProperty)").?;
     const private_method_init_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodInit2 = function(obj, privateSet)").?;
     const private_method_get_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodGet2 = function(receiver, privateSet, fn)").?;
+    const static_private_access_index = std.mem.indexOf(u8, combined.items, "var __classCheckPrivateStaticAccess2 = function(receiver, classConstructor)").?;
+    const static_private_descriptor_index = std.mem.indexOf(u8, combined.items, "var __classCheckPrivateStaticFieldDescriptor2 = function(descriptor, action)").?;
+    const static_private_get_index = std.mem.indexOf(u8, combined.items, "var __classStaticPrivateFieldSpecGet2 = function(receiver, classConstructor, descriptor)").?;
+    const static_private_set_index = std.mem.indexOf(u8, combined.items, "var __classStaticPrivateFieldSpecSet2 = function(receiver, classConstructor, descriptor, value)").?;
     const private_field_set_index = std.mem.indexOf(u8, combined.items, "var __zntcClassPrivateFieldSet2 = function(wm, obj, value)").?;
     const class_call_check_index = std.mem.indexOf(u8, combined.items, "var __classCallCheck2 = function(instance, Constructor)").?;
     const call_super_index = std.mem.indexOf(u8, combined.items, "var __callSuper2 = function(Parent, args, NewTarget)").?;
@@ -1566,7 +1574,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const using_index = std.mem.indexOf(u8, combined.items, "var __using2 = (stack, value, async) =>").?;
     const call_dispose_index = std.mem.indexOf(u8, combined.items, "var __callDispose2 = (stack, error, hasError) =>").?;
     const metadata_index = std.mem.indexOf(u8, combined.items, "var __metadata2 = (key, value) =>").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < await_index and await_index < async_generator_index and async_generator_index < yield_star_index and yield_star_index < public_field_index and public_field_index < wrap_regex_index and wrap_regex_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index and tagged_index < using_index and using_index < call_dispose_index and call_dispose_index < metadata_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < await_index and await_index < async_generator_index and async_generator_index < yield_star_index and yield_star_index < public_field_index and public_field_index < wrap_regex_index and wrap_regex_index < keep_names_index and keep_names_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < static_private_access_index and static_private_access_index < static_private_descriptor_index and static_private_descriptor_index < static_private_get_index and static_private_get_index < static_private_set_index and static_private_set_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index and tagged_index < using_index and using_index < call_dispose_index and call_dispose_index < metadata_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected keep-names local directly" {
@@ -1756,6 +1764,55 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected using help
         try std.testing.expect(std.mem.startsWith(u8, output.items, case.using_declaration));
         try std.testing.expect(std.mem.indexOf(u8, output.items, case.call_dispose_declaration) != null);
     }
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits every selected static private helper name directly" {
+    const names: @import("runtime_helpers.zig").StandaloneRuntimeHelperLocalNames = .{
+        .class_static_private_access = "__classCheckPrivateStaticAccess2",
+        .class_static_private_descriptor = "__classCheckPrivateStaticFieldDescriptor2",
+        .class_static_private_get = "__classStaticPrivateFieldSpecGet2",
+        .class_static_private_set = "__classStaticPrivateFieldSpecSet2",
+    };
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .class_static_private_field = true },
+        false,
+        false,
+        names,
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __classCheckPrivateStaticAccess2 = function(receiver, classConstructor)"));
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __classCheckPrivateStaticFieldDescriptor2 = function(descriptor, action)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __classStaticPrivateFieldSpecGet2 = function(receiver, classConstructor, descriptor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __classStaticPrivateFieldSpecSet2 = function(receiver, classConstructor, descriptor, value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "__classCheckPrivateStaticAccess2(receiver, classConstructor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "__classCheckPrivateStaticFieldDescriptor2(descriptor, \"get\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "__classCheckPrivateStaticFieldDescriptor2(descriptor, \"set\")") != null);
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .class_static_private_field = true },
+        true,
+        false,
+        .{
+            .class_static_private_access = "$sA2",
+            .class_static_private_descriptor = "$sD2",
+            .class_static_private_get = "$sG2",
+            .class_static_private_set = "$sS2",
+        },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $sA2=function(receiver,classConstructor)"));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $sD2=function(descriptor,action)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $sG2=function(receiver,classConstructor,descriptor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $sS2=function(receiver,classConstructor,descriptor,value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "$sA2(receiver,classConstructor)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "$sD2(descriptor,\"get\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "$sD2(descriptor,\"set\")") != null);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {

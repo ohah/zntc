@@ -16,6 +16,10 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     rest: ?[]const u8 = null,
     class_private_method_init: ?[]const u8 = null,
     class_private_method_get: ?[]const u8 = null,
+    class_static_private_access: ?[]const u8 = null,
+    class_static_private_descriptor: ?[]const u8 = null,
+    class_static_private_get: ?[]const u8 = null,
+    class_static_private_set: ?[]const u8 = null,
     class_private_field_set: ?[]const u8 = null,
     call_super: ?[]const u8 = null,
     super_get: ?[]const u8 = null,
@@ -1998,7 +2002,22 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.class_static_private_field) {
-        try buf.appendSlice(allocator, if (minify) STATIC_PRIVATE_FIELD_RUNTIME_MIN else STATIC_PRIVATE_FIELD_RUNTIME);
+        const access_name = helperName("__classCheckPrivateStaticAccess", minify);
+        const descriptor_name = helperName("__classCheckPrivateStaticFieldDescriptor", minify);
+        const get_name = helperName("__classStaticPrivateFieldSpecGet", minify);
+        const set_name = helperName("__classStaticPrivateFieldSpecSet", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{ .default_name = access_name, .local_name = local_names.class_static_private_access orelse access_name },
+            .{ .default_name = descriptor_name, .local_name = local_names.class_static_private_descriptor orelse descriptor_name },
+            .{ .default_name = get_name, .local_name = local_names.class_static_private_get orelse get_name },
+            .{ .default_name = set_name, .local_name = local_names.class_static_private_set orelse set_name },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) STATIC_PRIVATE_FIELD_RUNTIME_MIN else STATIC_PRIVATE_FIELD_RUNTIME,
+            &replacements,
+        );
     }
     if (helpers.class_private_field_set) {
         const default_name = helperName("__classPrivateFieldSet", minify);
