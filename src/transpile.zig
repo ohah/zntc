@@ -1102,127 +1102,6 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
     return false;
 }
 
-/// Rewrite only identifier tokens in the standalone helper preamble. A byte
-/// replacement would also alter strings, comments, or regular expressions.
-fn rewriteRuntimeHelperPreamble(
-    allocator: std.mem.Allocator,
-    transformer: *Transformer,
-    preamble: []const u8,
-    minify: bool,
-    directly_emitted_names: rt.StandaloneRuntimeHelperLocalNames,
-) TranspileError![]const u8 {
-    var scanner = Scanner.init(allocator, preamble) catch return error.OutOfMemory;
-    defer scanner.deinit();
-
-    var output: std.ArrayList(u8) = .empty;
-    var copied_until: usize = 0;
-    var changed = false;
-    scanner.next() catch return error.OutOfMemory;
-    while (scanner.token.kind != .eof) {
-        const token = scanner.token;
-        if (token.kind == .identifier) {
-            const start: usize = token.span.start;
-            const end: usize = token.span.end;
-            const name = preamble[start..end];
-            const is_direct_extends = directly_emitted_names.extends != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__extends", minify));
-            const is_direct_generator = directly_emitted_names.generator != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__generator", minify));
-            const is_direct_rest = directly_emitted_names.rest != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__rest", minify));
-            const is_direct_async = directly_emitted_names.async_helper != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__async", minify));
-            const is_direct_async_values = directly_emitted_names.async_values != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__asyncValues", minify));
-            const is_direct_async_generator = directly_emitted_names.async_generator != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__asyncGenerator", minify));
-            const is_direct_await = directly_emitted_names.await_helper != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__await", minify));
-            const is_direct_yield_star = directly_emitted_names.yield_star != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__yieldStar", minify));
-            const is_direct_using = directly_emitted_names.using != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__using", minify));
-            const is_direct_call_dispose = directly_emitted_names.call_dispose != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__callDispose", minify));
-            const is_direct_array_like_to_array = directly_emitted_names.array_like_to_array != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__arrayLikeToArray", minify));
-            const is_direct_to_consumable_array = directly_emitted_names.to_consumable_array != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__toConsumableArray", minify));
-            const is_direct_assert_this_initialized = directly_emitted_names.assert_this_initialized != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__assertThisInitialized", minify));
-            const is_direct_assert_this_uninitialized = directly_emitted_names.assert_this_uninitialized != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__assertThisUninitialized", minify));
-            const is_direct_possible_constructor_return = directly_emitted_names.possible_constructor_return != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__possibleConstructorReturn", minify));
-            const is_direct_static_private_access = directly_emitted_names.class_static_private_access != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classCheckPrivateStaticAccess", minify));
-            const is_direct_static_private_descriptor = directly_emitted_names.class_static_private_descriptor != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classCheckPrivateStaticFieldDescriptor", minify));
-            const is_direct_static_private_get = directly_emitted_names.class_static_private_get != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classStaticPrivateFieldSpecGet", minify));
-            const is_direct_static_private_set = directly_emitted_names.class_static_private_set != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classStaticPrivateFieldSpecSet", minify));
-            const is_direct_metadata = directly_emitted_names.metadata != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__metadata", minify));
-            const is_direct_es_decorate = directly_emitted_names.es_decorate != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__esDecorate", minify));
-            const is_direct_run_initializers = directly_emitted_names.run_initializers != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__runInitializers", minify));
-            const is_direct_set_function_name = directly_emitted_names.set_function_name != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__setFunctionName", minify));
-            const is_direct_prop_key = directly_emitted_names.prop_key != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__propKey", minify));
-            const is_direct_get_own_prop_desc = directly_emitted_names.get_own_prop_desc != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__getOwnPropDesc", minify));
-            const is_direct_decorate_class = directly_emitted_names.decorate_class != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__decorateClass", minify));
-            const is_direct_decorate_param = directly_emitted_names.decorate_param != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__decorateParam", minify));
-            const is_direct_def_prop_2 = directly_emitted_names.def_prop_2 != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__defProp2", minify));
-            const is_direct_tagged_template = directly_emitted_names.tagged_template_literal != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__taggedTemplateLiteral", minify));
-            const is_direct_read = directly_emitted_names.read != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__read", minify));
-            const is_direct_public_field = directly_emitted_names.public_field != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__publicField", minify));
-            const is_direct_keep_names = directly_emitted_names.keep_names != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__name", minify));
-            const is_direct_wrap_regex = directly_emitted_names.wrap_regex != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__wrapRegExp", minify));
-            const is_direct_tdz = directly_emitted_names.tdz != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__tdz", minify));
-            const is_direct_class_call_check = directly_emitted_names.class_call_check != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classCallCheck", minify));
-            const is_direct_class_private_method_init = directly_emitted_names.class_private_method_init != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classPrivateMethodInit", minify));
-            const is_direct_class_private_method_get = directly_emitted_names.class_private_method_get != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classPrivateMethodGet", minify));
-            const is_direct_class_private_field_set = directly_emitted_names.class_private_field_set != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__classPrivateFieldSet", minify));
-            const is_direct_call_super = directly_emitted_names.call_super != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__callSuper", minify));
-            const is_direct_super_get = directly_emitted_names.super_get != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__superGet", minify));
-            const is_direct_super_set = directly_emitted_names.super_set != null and
-                std.mem.eql(u8, name, runtime_helper_names.helperName("__superSet", minify));
-            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_async_generator and !is_direct_await and !is_direct_yield_star and !is_direct_using and !is_direct_call_dispose and !is_direct_array_like_to_array and !is_direct_to_consumable_array and !is_direct_assert_this_initialized and !is_direct_assert_this_uninitialized and !is_direct_possible_constructor_return and !is_direct_static_private_access and !is_direct_static_private_descriptor and !is_direct_static_private_get and !is_direct_static_private_set and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_keep_names and !is_direct_wrap_regex and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_class_private_field_set and !is_direct_call_super and !is_direct_super_get and !is_direct_super_set and !is_direct_metadata and !is_direct_es_decorate and !is_direct_run_initializers and !is_direct_set_function_name and !is_direct_prop_key and !is_direct_get_own_prop_desc and !is_direct_decorate_class and !is_direct_decorate_param and !is_direct_def_prop_2 and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
-                const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
-                if (!std.mem.eql(u8, name, resolved)) {
-                    try output.appendSlice(allocator, preamble[copied_until..start]);
-                    try output.appendSlice(allocator, resolved);
-                    copied_until = end;
-                    changed = true;
-                }
-            }
-        }
-        scanner.next() catch return error.OutOfMemory;
-    }
-    if (!changed) return preamble;
-    try output.appendSlice(allocator, preamble[copied_until..]);
-    return output.items;
-}
-
 /// Resolve the standalone helper's output spelling through the exact semantic
 /// helper SymbolId. Name-only fallback remains for low-level transformers
 /// without semantic ownership.
@@ -1527,6 +1406,12 @@ fn transpileWithCallbackInternal(
         }
     }
     const root = transformer.transform() catch return error.TransformError;
+    if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values) {
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__values", options.minify_whitespace));
+    }
+    if (transformer.runtime_helpers.await_helper or transformer.runtime_helpers.async_generator or transformer.runtime_helpers.yield_star) {
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__await", options.minify_whitespace));
+    }
     if (transformer.runtime_helpers.class_static_private_field) {
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classCheckPrivateStaticAccess", options.minify_whitespace));
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classCheckPrivateStaticFieldDescriptor", options.minify_whitespace));
@@ -1824,11 +1709,11 @@ fn transpileWithCallbackInternal(
             local_names.async_helper = try standaloneRuntimeHelperSymbolName(&transformer, "__async", options.minify_whitespace);
         if (transformer.runtime_helpers.async_generator)
             local_names.async_generator = try standaloneRuntimeHelperSymbolName(&transformer, "__asyncGenerator", options.minify_whitespace);
-        if (transformer.runtime_helpers.await_helper)
+        if (transformer.runtime_helpers.await_helper or transformer.runtime_helpers.async_generator or transformer.runtime_helpers.yield_star)
             local_names.await_helper = try standaloneRuntimeHelperSymbolName(&transformer, "__await", options.minify_whitespace);
         if (transformer.runtime_helpers.async_values)
             local_names.async_values = try standaloneRuntimeHelperSymbolName(&transformer, "__asyncValues", options.minify_whitespace);
-        if (transformer.runtime_helpers.values)
+        if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values)
             local_names.values = try standaloneRuntimeHelperSymbolName(&transformer, "__values", options.minify_whitespace);
         if (transformer.runtime_helpers.using_ctx) {
             local_names.using = try standaloneRuntimeHelperSymbolName(&transformer, "__using", options.minify_whitespace);
@@ -1877,13 +1762,8 @@ fn transpileWithCallbackInternal(
             local_names,
         ) catch
             return error.OutOfMemory;
-        break :blk try rewriteRuntimeHelperPreamble(
-            arena_alloc,
-            &transformer,
-            buf.items,
-            options.minify_whitespace,
-            local_names,
-        );
+        // Helper declarations and cross-helper references carry their selected local names.
+        break :blk buf.items;
     } else "";
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .module_format = options.module_format,
