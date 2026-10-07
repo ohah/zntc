@@ -2479,6 +2479,30 @@ pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []
     return trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports);
 }
 
+/// Reserve a standalone helper declaration that is emitted in the preamble
+/// but has no AST callsite of its own (for example, helpers referenced only
+/// from another helper's template). Existing callsite-backed helper IDs are
+/// reused; otherwise the declaration gets its own exact preamble SymbolId.
+pub fn ensureStandaloneRuntimeHelperPreambleSymbol(self: *Transformer, name: []const u8) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.options.emit_runtime_helper_imports) return;
+    if (name.len == 0) std.debug.panic("standalone runtime helper preamble has an empty local name", .{});
+
+    const local_name = es_helpers.resolveRuntimeHelperName(self, name) catch return error.OutOfMemory;
+    const editor = try editorFor(self);
+    if (editor.helper_scope_map.get(local_name)) |raw_id| {
+        if (raw_id >= editor.symbols.items.len) std.debug.panic("standalone runtime helper preamble has an out-of-range SymbolId", .{});
+        const symbol = editor.symbols.items[raw_id];
+        if (symbol.scope_id != self.programScope() or symbol.kind != .import_binding or
+            symbol.synthetic_kind != .runtime_helper_preamble or
+            !std.mem.eql(u8, symbol.synthetic_name, local_name))
+            std.debug.panic("standalone runtime helper preamble disagrees with its exact SymbolId", .{});
+        return;
+    }
+
+    const name_span = try self.ast.addString(local_name);
+    _ = editor.declareRuntimeHelperPreamble(name_span, Span.EMPTY, self.programScope()) catch |err| return editError(err);
+}
+
 /// JSX and plugin helper imports are AST imports even in standalone mode,
 /// where downlevel runtime helpers are emitted through an inline preamble.
 pub fn trackRuntimeHelperImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {

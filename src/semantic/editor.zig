@@ -822,7 +822,7 @@ pub const SemanticEditor = struct {
     pub fn declareRuntimeHelperPreamble(self: *SemanticEditor, name_span: Span, declaration_span: Span, scope: ScopeId) Error!SymbolId {
         if (!self.validScope(scope)) return error.InvalidScope;
         if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
-        const name = try self.ast.getText(name_span);
+        const name = self.ast.getText(name_span);
         if (self.helper_scope_map.contains(name)) return error.DuplicateBinding;
         return self.reserveRuntimeHelperSymbol(name_span, declaration_span, scope, true);
     }

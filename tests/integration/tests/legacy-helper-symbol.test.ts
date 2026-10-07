@@ -874,6 +874,86 @@ console.log(${sourceName}, box.write(7), box.read());
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}static private-field helper family uses collision-free SymbolId names`, async () => {
+      const sourceNames = minify
+        ? ['$sA', '$sD', '$sG', '$sS']
+        : [
+            '__classCheckPrivateStaticAccess',
+            '__classCheckPrivateStaticFieldDescriptor',
+            '__classStaticPrivateFieldSpecGet',
+            '__classStaticPrivateFieldSpecSet',
+          ];
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceNames[0]} = 40;
+var ${sourceNames[1]} = 41;
+var ${sourceNames[2]} = 42;
+var ${sourceNames[3]} = 43;
+class Counter {
+  static #count = 7;
+  static get #countAccessor() { return this.#count; }
+  static set #countAccessor(value: number) { this.#count = value; }
+  static read() { return this.#count; }
+  static write(value: number) { this.#count = value; return this.#count; }
+  static readAccessor() { return this.#countAccessor; }
+  static writeAccessor(value: number) { this.#countAccessor = value; return this.#countAccessor; }
+}
+let wrongReceiver = false;
+class Derived extends Counter {}
+try { Derived.read(); } catch (error) { wrongReceiver = error instanceof TypeError; }
+console.log(${sourceNames.join(', ')}, Counter.read(), Counter.write(9), Counter.readAccessor(), Counter.writeAccessor(11), wrongReceiver);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es2021',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const helperNames = minify
+        ? [
+            code.match(/var (\$sA[a-zA-Z0-9_$]*)=function\(receiver,classConstructor\)/)?.[1],
+            code.match(/var (\$sD[a-zA-Z0-9_$]*)=function\(descriptor,action\)/)?.[1],
+            code.match(
+              /var (\$sG[a-zA-Z0-9_$]*)=function\(receiver,classConstructor,descriptor\)/,
+            )?.[1],
+            code.match(
+              /var (\$sS[a-zA-Z0-9_$]*)=function\(receiver,classConstructor,descriptor,value\)/,
+            )?.[1],
+          ]
+        : [
+            code.match(
+              /var (__classCheckPrivateStaticAccess\d*) = function\(receiver, classConstructor\)/,
+            )?.[1],
+            code.match(
+              /var (__classCheckPrivateStaticFieldDescriptor\d*) = function\(descriptor, action\)/,
+            )?.[1],
+            code.match(
+              /var (__classStaticPrivateFieldSpecGet\d*) = function\(receiver, classConstructor, descriptor\)/,
+            )?.[1],
+            code.match(
+              /var (__classStaticPrivateFieldSpecSet\d*) = function\(receiver, classConstructor, descriptor, value\)/,
+            )?.[1],
+          ];
+      expect(helperNames.every(Boolean)).toBe(true);
+      expect(new Set(helperNames).size).toBe(4);
+      for (const [index, helperName] of helperNames.entries()) {
+        expect(helperName).not.toBe(sourceNames[index]);
+      }
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 41 42 43 7 9 9 11 true\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 keep-names preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$nm' : '__name';
       const fixture = await createFixture({
