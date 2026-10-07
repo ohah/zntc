@@ -1780,13 +1780,118 @@ pub fn appendCommonJsFactoryRuntime(buf: *std.ArrayList(u8), allocator: std.mem.
 
 /// Emit the CJS runtime with the exact factory name selected by the linker.
 pub fn appendCommonJsFactoryRuntimeNamed(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool, factory_name: []const u8) !void {
+    try appendCommonJsFactoryRuntimeWithNames(buf, allocator, minify, es5_syntax, configurable, factory_name, .{});
+}
+
+/// Emit the raw CJS runtime using exact helper-local names selected from the
+/// graph's synthetic SymbolIDs. Default names preserve the existing byte form.
+pub fn appendCommonJsFactoryRuntimeWithNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    factory_name: []const u8,
+    internal_names: names_mod.CjsRuntimeInternalNames,
+) !void {
     const fn_syntax = es5_syntax or configurable;
     const default_name = if (minify) NAMES.CJS_FACTORY_MIN else "__commonJS";
     const source = if (minify)
         (if (fn_syntax) CJS_RUNTIME_ES5_MIN else CJS_RUNTIME_MIN)
     else
         (if (fn_syntax) CJS_RUNTIME_ES5 else CJS_RUNTIME);
-    try appendRuntimeWithNamedIdentifier(buf, allocator, source, default_name, factory_name);
+    const default_internal_names: names_mod.CjsRuntimeInternalNames = .{};
+    if (std.mem.eql(u8, internal_names.callback_parameter, default_internal_names.callback_parameter) and
+        std.mem.eql(u8, internal_names.module_parameter, default_internal_names.module_parameter) and
+        std.mem.eql(u8, internal_names.catch_parameter, default_internal_names.catch_parameter) and
+        std.mem.eql(u8, internal_names.require_function, default_internal_names.require_function))
+    {
+        try appendRuntimeWithNamedIdentifier(buf, allocator, source, default_name, factory_name);
+        return;
+    }
+
+    try appendCjsRuntimeWithNames(buf, allocator, source, default_name, factory_name, internal_names);
+}
+
+const CjsRuntimeIdentifierReplacement = struct {
+    from: []const u8,
+    to: []const u8,
+};
+
+fn appendCjsRuntimeWithNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    default_factory_name: []const u8,
+    factory_name: []const u8,
+    internal_names: names_mod.CjsRuntimeInternalNames,
+) !void {
+    const replacements = [_]CjsRuntimeIdentifierReplacement{
+        .{ .from = default_factory_name, .to = factory_name },
+        .{ .from = "cb", .to = internal_names.callback_parameter },
+        .{ .from = "mod", .to = internal_names.module_parameter },
+        .{ .from = "e", .to = internal_names.catch_parameter },
+        .{ .from = "__require", .to = internal_names.require_function },
+    };
+    var cursor: usize = 0;
+    var copied_until: usize = 0;
+    while (cursor < source.len) {
+        const c = source[cursor];
+        if (c == '\'' or c == '"' or c == '`') {
+            const quote = c;
+            cursor += 1;
+            while (cursor < source.len) {
+                if (source[cursor] == '\\') {
+                    cursor = @min(cursor + 2, source.len);
+                    continue;
+                }
+                if (source[cursor] == quote) {
+                    cursor += 1;
+                    break;
+                }
+                cursor += 1;
+            }
+            continue;
+        }
+        if (c == '/' and cursor + 1 < source.len) {
+            if (source[cursor + 1] == '/') {
+                cursor += 2;
+                while (cursor < source.len and source[cursor] != '\n') : (cursor += 1) {}
+                continue;
+            }
+            if (source[cursor + 1] == '*') {
+                cursor += 2;
+                while (cursor + 1 < source.len and !(source[cursor] == '*' and source[cursor + 1] == '/')) : (cursor += 1) {}
+                cursor = @min(cursor + 2, source.len);
+                continue;
+            }
+        }
+        if (!isJsIdentifierStart(c)) {
+            cursor += 1;
+            continue;
+        }
+
+        const start = cursor;
+        cursor += 1;
+        while (cursor < source.len and isJsIdentifierContinue(source[cursor])) : (cursor += 1) {}
+        const token = source[start..cursor];
+        for (replacements) |replacement| {
+            if (!std.mem.eql(u8, token, replacement.from)) continue;
+            try buf.appendSlice(allocator, source[copied_until..start]);
+            try buf.appendSlice(allocator, replacement.to);
+            copied_until = cursor;
+            break;
+        }
+    }
+    try buf.appendSlice(allocator, source[copied_until..]);
+}
+
+fn isJsIdentifierStart(c: u8) bool {
+    return std.ascii.isAlphabetic(c) or c == '_' or c == '$' or c >= 0x80;
+}
+
+fn isJsIdentifierContinue(c: u8) bool {
+    return isJsIdentifierStart(c) or std.ascii.isDigit(c);
 }
 
 fn appendRuntimeWithNamedIdentifier(

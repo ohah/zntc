@@ -84,6 +84,16 @@ pub const NAMES = struct {
     pub const WRAP_REGEXP_MIN = "$wR"; // __wrapRegExp (named capture downlevel)
 };
 
+/// Identifier spellings used only inside the raw CJS runtime factory template.
+/// Their bindings are represented by graph-level synthetic SymbolIDs; output
+/// code receives these names from the linker's final rename table.
+pub const CjsRuntimeInternalNames = struct {
+    callback_parameter: []const u8 = "cb",
+    module_parameter: []const u8 = "mod",
+    catch_parameter: []const u8 = "e",
+    require_function: []const u8 = "__require",
+};
+
 /// 모든 runtime helper 의 `(base_name, short_name)` 단일 소스 테이블.
 /// 새 helper 추가는 여기에 entry 만 추가 — `helperName` 조회, mangler 예약, 테스트
 /// iteration 이 전부 이 테이블을 consume 하므로 세 곳의 drift 를 구조적으로 방지한다.

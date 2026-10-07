@@ -3,9 +3,12 @@
 const std = @import("std");
 const types = @import("../types.zig");
 const Module = @import("../module.zig").Module;
+const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const CjsRuntimeInternalSymbolIds = @import("../module.zig").CjsRuntimeInternalSymbolIds;
 const semantic_symbol = @import("../../semantic/symbol.zig");
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const Span = @import("../../lexer/token.zig").Span;
+const runtime_helper_names = @import("../../runtime_helper_names.zig");
 const graph_mod = @import("../graph.zig");
 const ModuleGraph = graph_mod.ModuleGraph;
 
@@ -230,6 +233,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         // still represents the same graph identity, so recover it before
         // considering a new CJS owner.
         if (findCjsRuntimeFactorySymbol(m) != null) {
+            registerCjsRuntimeFactorySymbol(m);
             cjs_runtime_identity_registered = true;
             break;
         }
@@ -336,15 +340,83 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
 /// a virtual bundler symbol like the other wrapper symbols. The cached semantic
 /// row remains the graph identity if its original module stops being CJS.
 fn registerCjsRuntimeFactorySymbol(m: *Module) void {
-    if (findCjsRuntimeFactorySymbol(m) != null) return;
     const sem = if (m.semantic) |*value| value else return;
     const arena = if (m.parse_arena) |value| value.allocator() else return;
-    m.cjs_runtime_factory_symbol = semantic_symbol.extendSymbol(
+    if (findCjsRuntimeFactorySymbol(m) == null) {
+        m.cjs_runtime_factory_symbol = semantic_symbol.extendSymbol(
+            arena,
+            &sem.symbols,
+            .variable_var,
+            .cjs_runtime_factory,
+            "__commonJS",
+            Span.EMPTY,
+        ) catch null;
+    }
+    if (m.cjs_runtime_factory_symbol == null) return;
+
+    const names: runtime_helper_names.CjsRuntimeInternalNames = .{};
+    const callback_parameter = ensureCjsRuntimeInternalSymbol(
+        sem,
+        arena,
+        if (m.cjs_runtime_internal_symbols) |ids| ids.callback_parameter else null,
+        names.callback_parameter,
+        .parameter,
+    ) orelse return;
+    const module_parameter = ensureCjsRuntimeInternalSymbol(
+        sem,
+        arena,
+        if (m.cjs_runtime_internal_symbols) |ids| ids.module_parameter else null,
+        names.module_parameter,
+        .parameter,
+    ) orelse return;
+    const catch_parameter = ensureCjsRuntimeInternalSymbol(
+        sem,
+        arena,
+        if (m.cjs_runtime_internal_symbols) |ids| ids.catch_parameter else null,
+        names.catch_parameter,
+        .catch_binding,
+    ) orelse return;
+    const require_function = ensureCjsRuntimeInternalSymbol(
+        sem,
+        arena,
+        if (m.cjs_runtime_internal_symbols) |ids| ids.require_function else null,
+        names.require_function,
+        .function_decl,
+    ) orelse return;
+    m.cjs_runtime_internal_symbols = .{
+        .callback_parameter = callback_parameter,
+        .module_parameter = module_parameter,
+        .catch_parameter = catch_parameter,
+        .require_function = require_function,
+    };
+}
+
+fn ensureCjsRuntimeInternalSymbol(
+    sem: *ModuleSemanticData,
+    arena: std.mem.Allocator,
+    existing: ?semantic_symbol.SymbolId,
+    name: []const u8,
+    kind: semantic_symbol.SymbolKind,
+) ?semantic_symbol.SymbolId {
+    if (existing) |symbol_id| {
+        const raw: usize = @intFromEnum(symbol_id);
+        if (raw < sem.symbols.items.len) {
+            const symbol = sem.symbols.items[raw];
+            if (symbol.synthetic_kind == .cjs_runtime_internal_local and symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name)) {
+                return symbol_id;
+            }
+        }
+    }
+    for (sem.symbols.items, 0..) |symbol, index| {
+        if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
+        return @enumFromInt(index);
+    }
+    return semantic_symbol.extendSymbol(
         arena,
         &sem.symbols,
-        .variable_var,
-        .cjs_runtime_factory,
-        "__commonJS",
+        kind,
+        .cjs_runtime_internal_local,
+        name,
         Span.EMPTY,
     ) catch null;
 }

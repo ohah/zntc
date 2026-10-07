@@ -1543,6 +1543,52 @@ test "CJS runtime: factory 실패 시 빈 module 캐시를 재사용하지 않�
     try expectCjsRuntimeRetriesAfterThrow(rt.CJS_RUNTIME_ES5_MIN, true);
 }
 
+test "CJS runtime: raw helper declarations and references use exact internal names" {
+    const rt = @import("runtime_helpers.zig");
+    const runtime_names = @import("../runtime_helper_names.zig");
+    const internal_names: runtime_names.CjsRuntimeInternalNames = .{
+        .callback_parameter = "callbackRef",
+        .module_parameter = "moduleRef",
+        .catch_parameter = "caughtError",
+        .require_function = "requireRef",
+    };
+    const variants = [_]struct { minify: bool, es5: bool }{
+        .{ .minify = false, .es5 = false },
+        .{ .minify = false, .es5 = true },
+        .{ .minify = true, .es5 = false },
+        .{ .minify = true, .es5 = true },
+    };
+
+    for (variants) |variant| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        try rt.appendCommonJsFactoryRuntimeWithNames(
+            &output,
+            std.testing.allocator,
+            variant.minify,
+            variant.es5,
+            false,
+            "factoryAlias",
+            internal_names,
+        );
+        const text = output.items;
+        try std.testing.expect(std.mem.indexOf(u8, text, "factoryAlias") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "callbackRef") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "moduleRef.exports") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "caughtError") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "Object.keys(callbackRef)") != null or variant.minify);
+        try std.testing.expect(std.mem.indexOf(u8, text, "catch (e)") == null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "catch(e)") == null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "__commonJS") == null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "__require") == null);
+        if (variant.minify) {
+            try std.testing.expect(std.mem.indexOf(u8, text, "requireRef") == null);
+        } else {
+            try std.testing.expect(std.mem.indexOf(u8, text, "function requireRef()") != null);
+        }
+    }
+}
+
 fn expectCjsRuntimeRetriesAfterThrow(runtime: []const u8, minified: bool) !void {
     const factory = if (minified)
         \\$c(function(exports, module) {

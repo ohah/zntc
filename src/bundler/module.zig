@@ -25,6 +25,17 @@ const RnAssetMetadata = @import("graph/assets.zig").RnAssetMetadata;
 const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
 pub const ExportBinding = binding_scanner.ExportBinding;
+
+/// Symbol identities for lexical bindings in the raw CJS runtime helper body.
+/// `callback_parameter`/`module_parameter` are captured by the returned require
+/// function; `catch_parameter` belongs to its catch clause; `require_function`
+/// is the optional named function expression used by non-minified templates.
+pub const CjsRuntimeInternalSymbolIds = struct {
+    callback_parameter: SemanticSymbolId,
+    module_parameter: SemanticSymbolId,
+    catch_parameter: SemanticSymbolId,
+    require_function: SemanticSymbolId,
+};
 const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
@@ -415,6 +426,8 @@ pub const Module = struct {
     /// factory preamble. The linker keeps this ID as the shared output binding
     /// across wrapper callsites, chunks, tree shaking, and cached graph rebuilds.
     cjs_runtime_factory_symbol: ?SemanticSymbolId = null,
+    /// Exact identities for lexical locals in the raw CJS runtime helper body.
+    cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds = null,
 
     /// RFC #3940 L.5a — post-link tree-shake AST mutation 후 semantic resync 시 carry-over 된
     /// rename (SymbolID→name). tree_shaker(const linker)가 resync 전 `rename_table` 에서 캡처해
