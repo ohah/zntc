@@ -1001,6 +1001,143 @@ console.log(${arrayLikeSourceName}, ${spreadSourceName}, values.join(''), iterab
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}derived-constructor helper family uses collision-free SymbolId names`, async () => {
+      const sourceNames = minify
+        ? ['$aT', '$aU', '$pR']
+        : ['__assertThisInitialized', '__assertThisUninitialized', '__possibleConstructorReturn'];
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceNames[0]} = 40;
+var ${sourceNames[1]} = 41;
+var ${sourceNames[2]} = 42;
+class Base {
+  base: number;
+  constructor(value: number) { this.base = value; }
+}
+class Child extends Base {
+  constructor(value: number, twice: boolean, skipSuper: boolean, replacement: any) {
+    if (twice) super(value);
+    if (!skipSuper) super(value);
+    this.child = value + 1;
+    if (replacement) return replacement;
+  }
+}
+var result = new Child(3, false, false, null);
+var replacement = { base: 9, child: 10 };
+var returned = new Child(4, false, false, replacement);
+var initializedError = false;
+try { new Child(1, false, true, null); } catch (error) { initializedError = error instanceof ReferenceError; }
+var doubleSuper = false;
+try { new Child(1, true, false, null); } catch (error) { doubleSuper = error instanceof ReferenceError; }
+var primitiveReturn = false;
+try { new Child(1, false, false, 5); } catch (error) { primitiveReturn = error instanceof TypeError; }
+console.log(${sourceNames.join(', ')}, result.base, result.child, returned === replacement, initializedError, doubleSuper, primitiveReturn);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const helperNames = minify
+        ? [
+            code.match(/var (\$aT[a-zA-Z0-9_$]*)=function\(self\)/)?.[1],
+            code.match(/var (\$aU[a-zA-Z0-9_$]*)=function\(self\)/)?.[1],
+            code.match(/var (\$pR[a-zA-Z0-9_$]*)=function\(call,self\)/)?.[1],
+          ]
+        : [
+            code.match(/var (__assertThisInitialized\d*) = function\(self\)/)?.[1],
+            code.match(/var (__assertThisUninitialized\d*) = function\(self\)/)?.[1],
+            code.match(/var (__possibleConstructorReturn\d*) = function\(call, self\)/)?.[1],
+          ];
+      expect(helperNames.every(Boolean)).toBe(true);
+      expect(new Set(helperNames).size).toBe(3);
+      for (const [index, helperName] of helperNames.entries()) {
+        expect(helperName).not.toBe(sourceNames[index]);
+      }
+      expect(code).toContain(`return ${helperNames[0]}(self)`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 41 42 3 4 true true true true\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
+    for (const helperWithoutCallsite of [
+      '__possibleConstructorReturn',
+      '__assertThisUninitialized',
+    ] as const) {
+      test(`standalone ${minify ? 'minified ' : ''}${helperWithoutCallsite} preamble-only SymbolId survives source collision`, async () => {
+        const sourceNames = minify
+          ? ['$aT', '$aU', '$pR']
+          : ['__assertThisInitialized', '__assertThisUninitialized', '__possibleConstructorReturn'];
+        const returnsWithoutSuper = helperWithoutCallsite === '__assertThisUninitialized';
+        const constructorBody = returnsWithoutSuper
+          ? 'return { base: value, child: value + 2 } as any;'
+          : 'super(value); this.child = value + 1;';
+        const fixture = await createFixture({
+          'input.ts': `
+var ${sourceNames[0]} = 40;
+var ${sourceNames[1]} = 41;
+var ${sourceNames[2]} = 42;
+class Base {
+  base: number;
+  constructor(value: number) { this.base = value; }
+}
+class Child extends Base {
+  constructor(value: number) { ${constructorBody} }
+}
+var child = new Child(7);
+console.log(${sourceNames.join(', ')}, child.base, child.child);
+`,
+        });
+        cleanup = fixture.cleanup;
+        const output = join(fixture.dir, 'out.js');
+        const result = await runZntcInDir(fixture.dir, [
+          'input.ts',
+          '--target=es5',
+          ...(minify ? ['--minify-whitespace'] : []),
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+
+        const code = readFileSync(output, 'utf8');
+        const helperNames = minify
+          ? [
+              code.match(/var (\$aT[a-zA-Z0-9_$]*)=function\(self\)/)?.[1],
+              code.match(/var (\$aU[a-zA-Z0-9_$]*)=function\(self\)/)?.[1],
+              code.match(/var (\$pR[a-zA-Z0-9_$]*)=function\(call,self\)/)?.[1],
+            ]
+          : [
+              code.match(/var (__assertThisInitialized\d*) = function\(self\)/)?.[1],
+              code.match(/var (__assertThisUninitialized\d*) = function\(self\)/)?.[1],
+              code.match(/var (__possibleConstructorReturn\d*) = function\(call, self\)/)?.[1],
+            ];
+        const helperIndex = helperWithoutCallsite === '__assertThisUninitialized' ? 1 : 2;
+        expect(helperNames.every(Boolean)).toBe(true);
+        expect(new Set(helperNames).size).toBe(3);
+        for (const [index, helperName] of helperNames.entries()) {
+          expect(helperName).not.toBe(sourceNames[index]);
+        }
+        expect(code).not.toContain(`${helperNames[helperIndex]}(`);
+
+        const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(runtime.status, runtime.stderr).toBe(0);
+        expect(runtime.stdout).toBe(returnsWithoutSuper ? '40 41 42 7 9\n' : '40 41 42 7 8\n');
+      });
+    }
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 keep-names preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$nm' : '__name';
       const fixture = await createFixture({
