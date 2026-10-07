@@ -1110,6 +1110,7 @@ fn rewriteRuntimeHelperPreamble(
     preamble: []const u8,
     minify: bool,
     extends_emitted_directly: bool,
+    generator_emitted_directly: bool,
 ) TranspileError![]const u8 {
     var scanner = Scanner.init(allocator, preamble) catch return error.OutOfMemory;
     defer scanner.deinit();
@@ -1126,7 +1127,9 @@ fn rewriteRuntimeHelperPreamble(
             const name = preamble[start..end];
             const is_direct_extends = extends_emitted_directly and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__extends", minify));
-            if (!is_direct_extends and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            const is_direct_generator = generator_emitted_directly and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__generator", minify));
+            if (!is_direct_extends and !is_direct_generator and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1687,13 +1690,18 @@ fn transpileWithCallbackInternal(
             try standaloneRuntimeHelperSymbolName(&transformer, "__extends", options.minify_whitespace)
         else
             null;
-        rt.appendRuntimeHelpersWithExtendsLocalName(
+        const generator_local_name = if (transformer.runtime_helpers.generator)
+            try standaloneRuntimeHelperSymbolName(&transformer, "__generator", options.minify_whitespace)
+        else
+            null;
+        rt.appendRuntimeHelpersWithStandaloneLocalNames(
             &buf,
             arena_alloc,
             transformer.runtime_helpers,
             options.minify_whitespace,
             transformer.runtime_es5_compat,
             extends_local_name,
+            generator_local_name,
         ) catch
             return error.OutOfMemory;
         break :blk try rewriteRuntimeHelperPreamble(
@@ -1702,6 +1710,7 @@ fn transpileWithCallbackInternal(
             buf.items,
             options.minify_whitespace,
             transformer.runtime_helpers.extends,
+            transformer.runtime_helpers.generator,
         );
     } else "";
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
@@ -3953,15 +3962,26 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
 
     var runtime_aliases: std.StringHashMapUnmanaged([]const u8) = .empty;
     try runtime_aliases.put(allocator, "__extends", "__extends2");
+    try runtime_aliases.put(allocator, "__generator", "__generator2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
-    const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{.{
-        .name = @import("lexer/token.zig").Span.EMPTY,
-        .scope_id = .none,
-        .kind = .import_binding,
-        .declaration_span = @import("lexer/token.zig").Span.EMPTY,
-        .synthetic_name = "__extends2",
-    }};
+    try helper_scope_map.put(allocator, "__generator2", 1);
+    const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__extends2",
+        },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__generator2",
+        },
+    };
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
     transformer.runtime_helper_aliases = runtime_aliases;
@@ -3971,11 +3991,18 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
 
     const resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__extends", false);
     try std.testing.expectEqualStrings("__extends2", resolved);
+    const generator_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__generator", false);
+    try std.testing.expectEqualStrings("__generator2", generator_resolved);
 
     _ = transformer.helper_scope_map.remove("__extends2");
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__extends", false),
+    );
+    _ = transformer.helper_scope_map.remove("__generator2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__generator", false),
     );
 }
 
