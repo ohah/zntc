@@ -14,7 +14,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import ts from 'typescript';
-import { ZNTC_BIN } from './helpers';
+import { ZNTC_BIN, ZNTC_JS_CLI } from './helpers';
 
 const FIXTURE_DIR = join(import.meta.dir, '../fixtures/downlevel-oracle');
 const TARGETS = [
@@ -7424,6 +7424,91 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       rmSync(outDir, { recursive: true, force: true });
     }
   });
+
+  test('Emotion css prop keeps its exact import identity through bundling and minification', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-symbol-identity-'));
+    const emotionDir = join(dir, 'node_modules', '@emotion', 'react');
+    mkdirSync(emotionDir, { recursive: true });
+    writeFileSync(join(dir, 'zntc.config.json'), JSON.stringify({ compiler: { emotion: true } }));
+    writeFileSync(
+      join(emotionDir, 'package.json'),
+      JSON.stringify({ name: '@emotion/react', version: '0.0.0-test', main: 'index.js' }),
+    );
+    writeFileSync(
+      join(emotionDir, 'index.js'),
+      "exports.css = function(value) { return 'EMOTION:' + value.color; };\n",
+    );
+    writeFileSync(
+      join(dir, 'index.tsx'),
+      [
+        "import { css as cx } from '@emotion/react';",
+        'function h(_tag, props) { return props.css; }',
+        'function render(cx, _emotionCss, _emotionCss2, _emotionCss3) {',
+        "  return <div css={{ color: 'red' }} />;",
+        '}',
+        "console.log(render(() => 'SHADOWED-CX', () => 'SHADOWED-1', () => 'SHADOWED-2', () => 'SHADOWED-3'));",
+        '',
+      ].join('\n'),
+    );
+
+    try {
+      // React Native's automatic JSX runtime does not apply this web Emotion
+      // css-prop transform. Exercise every ES target that runs this producer.
+      const emotionTargets = TARGETS.filter((target) => target.name !== 'hermes');
+      for (const target of emotionTargets) {
+        const output = join(dir, `out-${target.name}.js`);
+        const proc = spawnSync(
+          'bun',
+          [
+            ZNTC_JS_CLI,
+            '--bundle',
+            'index.tsx',
+            target.arg,
+            '--jsx=classic',
+            '--jsx-factory=h',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: {
+              ...process.env,
+              ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+              ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+            },
+            encoding: 'utf8',
+          },
+        );
+        const stderr = proc.stderr ?? '';
+        expect(proc.status, `${target.name}: ${stderr}`).toBe(0);
+
+        const identityReports = stderr
+          .split(/\r?\n/)
+          .filter(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/index.tsx:'),
+          );
+        expect(identityReports, `${target.name}: ${stderr}`).toHaveLength(1);
+        const identity = identityReports[0];
+        expect(exactSchemaProblems(identity), `${target.name}: ${identity}`).toEqual([]);
+        expect(
+          Number(identity.match(/generated_bindings=(\d+)/)?.[1] ?? 0),
+          `${target.name}: ${identity}`,
+        ).toBeGreaterThan(0);
+        expect(
+          Number(identity.match(/generated_references=(\d+)/)?.[1] ?? 0),
+          `${target.name}: ${identity}`,
+        ).toBeGreaterThan(0);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, target.name).toBe('EMOTION:red\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   test('오라클 전체에서 exact 구조 불변식과 심볼 부채가 모두 0', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-symcov-'));
