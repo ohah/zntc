@@ -1714,7 +1714,11 @@ pub fn emitModule(
             rt.NAMES.CJS_FACTORY_MIN
         else
             "__commonJS";
-        return cjs_wrap.emitAssetModuleWithFactoryName(allocator, module, options, factory_name);
+        var to_binary_name = rt_names.helperName("__toBinary", options.minify_whitespace);
+        if (module.loader == .binary) {
+            if (linker) |l| to_binary_name = try l.toBinaryRuntimeName();
+        }
+        return cjs_wrap.emitAssetModuleWithRuntimeNames(allocator, module, options, factory_name, to_binary_name);
     }
 
     const ast = &(module.ast orelse return null);

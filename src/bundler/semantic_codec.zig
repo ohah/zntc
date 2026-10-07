@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v10: CJS runtime factory has a serialized graph-level synthetic SymbolId.
-pub const FORMAT_VERSION: u32 = 10;
+// v11: graph-level bundler runtime helpers have a serialized synthetic SymbolId.
+pub const FORMAT_VERSION: u32 = 11;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로

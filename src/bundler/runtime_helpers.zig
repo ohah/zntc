@@ -1045,6 +1045,27 @@ pub const TO_BINARY_RUNTIME =
 ;
 pub const TO_BINARY_RUNTIME_MIN = "var " ++ NAMES.TO_BINARY_MIN ++ "=function(b64){var str=atob(b64),arr=new Uint8Array(str.length);for(var i=0;i<str.length;i++)arr[i]=str.charCodeAt(i);return arr};";
 
+/// Emit the bundler's binary helper under the exact name selected for its
+/// graph-level SymbolId. The helper has no self-references, so write the name
+/// at the declaration site instead of rewriting a finished template.
+pub fn appendToBinaryRuntimeNamed(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    local_name: []const u8,
+) !void {
+    try buf.appendSlice(allocator, "var ");
+    try buf.appendSlice(allocator, local_name);
+    if (minify) {
+        try buf.appendSlice(allocator, "=function(b64){var str=atob(b64),arr=new Uint8Array(str.length);for(var i=0;i<str.length;i++)arr[i]=str.charCodeAt(i);return arr};");
+    } else {
+        try buf.appendSlice(allocator, " = function(b64) {\n");
+        try buf.appendSlice(allocator, "  var str = atob(b64), arr = new Uint8Array(str.length);\n");
+        try buf.appendSlice(allocator, "  for (var i = 0; i < str.length; i++) arr[i] = str.charCodeAt(i);\n");
+        try buf.appendSlice(allocator, "  return arr;\n};\n");
+    }
+}
+
 /// __name: 함수/클래스의 .name 프로퍼티를 보존 (esbuild --keep-names 호환).
 /// minify로 식별자가 축약되어도 원래 이름을 .name에 설정.
 // The standalone preamble shares a scope with user declarations. Obtain the

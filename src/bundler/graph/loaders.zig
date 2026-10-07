@@ -148,7 +148,7 @@ pub fn parseAssetModule(self: *ModuleGraph, io: std.Io, module: *Module) void {
             // text/base64/binary: 모두 raw bytes → JS 표현식 변환. assetSourceFromBytes
             // 헬퍼가 plugin onLoad 경로와 공유 (#2157).
             const raw = readModuleSourceWithMtime(self, io, module, arena_alloc, 100 * 1024 * 1024, .parse) orelse return;
-            module.source = assetSourceFromBytes(arena_alloc, module.loader, raw, module.diskPath(), self.transform_options_base.minify_whitespace) orelse {
+            module.source = assetSourceFromBytes(arena_alloc, module.loader, raw, module.diskPath()) orelse {
                 module.state = .ready;
                 return;
             };

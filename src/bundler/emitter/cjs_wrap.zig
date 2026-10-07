@@ -9,6 +9,7 @@ const rt = @import("../runtime_helpers.zig");
 const module_mod = @import("../module.zig");
 const Module = module_mod.Module;
 const EmitOptions = @import("../emitter.zig").EmitOptions;
+const rt_names = @import("../../runtime_helper_names.zig");
 
 /// 래퍼 방출이 쓰는 두 문법 축 (#4630). 옵션 전체를 넘기지 않는 이유는 이 파일이
 /// minify 만 받는 자리에서도 불리기 때문 — 필요한 것만 좁혀 전달한다.
@@ -135,8 +136,30 @@ pub fn emitAssetModule(allocator: std.mem.Allocator, module: *const Module, opti
 }
 
 pub fn emitAssetModuleWithFactoryName(allocator: std.mem.Allocator, module: *const Module, options: *const EmitOptions, factory_name: []const u8) !?[]const u8 {
+    return emitAssetModuleWithRuntimeNames(
+        allocator,
+        module,
+        options,
+        factory_name,
+        rt_names.helperName("__toBinary", options.minify_whitespace),
+    );
+}
+
+pub fn emitAssetModuleWithRuntimeNames(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    options: *const EmitOptions,
+    factory_name: []const u8,
+    to_binary_name: []const u8,
+) !?[]const u8 {
     if (module.source.len == 0) return null;
-    return emitCjsWrapperWithFactoryName(allocator, module, module.source, options.minify_whitespace, WrapperSyntax.from(options), factory_name);
+    var binary_source: ?[]const u8 = null;
+    defer if (binary_source) |source| allocator.free(source);
+    const source = if (module.loader == .binary) blk: {
+        binary_source = try std.fmt.allocPrint(allocator, "{s}({s})", .{ to_binary_name, module.source });
+        break :blk binary_source.?;
+    } else module.source;
+    return emitCjsWrapperWithFactoryName(allocator, module, source, options.minify_whitespace, WrapperSyntax.from(options), factory_name);
 }
 
 /// `var require_X = __commonJS({ "filename"(exports, module) { module.exports = <source>; } });`

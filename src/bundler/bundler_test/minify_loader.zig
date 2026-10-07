@@ -2540,6 +2540,32 @@ test "Asset loader: binary — __toBinary runtime helper" {
     try std.testing.expect(result.asset_outputs == null);
 }
 
+test "Asset loader: binary helper output name follows its graph SymbolId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const __toBinary = 'source';\nimport data from './raw.bin';\nconsole.log(__toBinary, data[0]);");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "raw.bin", .data = &.{0xDE} });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }},
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toBinary =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "source") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __toBinary$1 = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toBinary$1(\"3g==\")") != null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, result.output, "__toBinary$1"));
+}
+
 test "Asset loader: empty — undefined export" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

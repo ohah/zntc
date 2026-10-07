@@ -2094,6 +2094,23 @@ describe('에셋 로더 + RN 프리셋', () => {
     expect(result.stdout).toContain('Uint8Array');
   });
 
+  test('loader=binary helper SID avoids a direct-eval source binding collision', async () => {
+    const result = await bundleAndRun(
+      {
+        'entry.ts': `import data from './blob.bin';\nconst __toBinary = 'source';\neval('console.log(__toBinary)');\nconsole.log(data[0]);`,
+        'blob.bin': '\x01',
+      },
+      'entry.ts',
+      ['--loader:.bin=binary'],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('source\n1');
+    expect(result.bundleOutput).toContain('var __toBinary$1 = function');
+    expect(result.bundleOutput).toContain('__toBinary$1("AQ==")');
+  });
+
   test('loader=dataurl 의 MIME — .svg → image/svg+xml', async () => {
     const fixture = await createFixture({
       'entry.ts': `const svg = require('./vec.svg');\nconsole.log(svg);`,

@@ -102,6 +102,40 @@ test "CodeSplitting: dynamic import produces two output files" {
     try std.testing.expect(has_lazy);
 }
 
+test "CodeSplitting: binary helper identity is stable in lazy asset chunk" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "const __toBinary = 'entry';\nconsole.log(import('./lazy'));\n");
+    try writeFile(tmp.dir, "lazy.ts", "import data from './raw.bin';\nexport const byte = data[0];");
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "raw.bin", .data = &.{0xDE} });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .code_splitting = true,
+        .loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }},
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    const outs = result.outputs orelse return error.TestUnexpectedResult;
+    var found_binary_chunk = false;
+    var found_source_binding = false;
+    for (outs) |output| {
+        if (std.mem.indexOf(u8, output.contents, "__toBinary$1(\"3g==\")") != null) {
+            found_binary_chunk = true;
+            try std.testing.expect(std.mem.indexOf(u8, output.contents, "var __toBinary$1 = function") != null);
+        }
+        if (std.mem.indexOf(u8, output.contents, "__toBinary =") != null and
+            std.mem.indexOf(u8, output.contents, "entry") != null) found_source_binding = true;
+    }
+    try std.testing.expect(found_binary_chunk);
+    try std.testing.expect(found_source_binding);
+}
+
 test "CodeSplitting: shared module produces common chunk" {
     // 2개 엔트리가 같은 모듈을 공유 → 공통 청크로 추출.
     var tmp = std.testing.tmpDir(.{});
