@@ -86,6 +86,22 @@ pub const RefreshState = struct {
 pub const EmotionState = struct {
     /// `import { css } from "@emotion/react"` 의 local binding 이름 (alias 포함).
     css_binding: ?[]const u8 = null,
+    /// The exact import-local AST node used to bind generated `css(...)` reads.
+    css_binding_node: ?NodeIndex = null,
+    /// Source import metadata used when a shadowing binding requires a fresh
+    /// module-scope named import for generated css-prop calls.
+    css_import_source_node: ?NodeIndex = null,
+    css_import_phase_flags: u32 = 0,
+    css_import_attrs_start: u32 = 0,
+    css_import_attrs_len: u32 = 0,
+    /// A JSX object/array css prop will create a runtime read after import
+    /// elision, so the source import must be retained.
+    css_prop_import_required: bool = false,
+    /// On collision with a nested source binding, generated css calls use a
+    /// collision-free module alias imported directly from Emotion.
+    css_prop_use_alias: bool = false,
+    css_prop_alias_binding: ?NodeIndex = null,
+    css_prop_alias_import: ?NodeIndex = null,
 
     /// `import styled from "@emotion/styled"` 의 default binding 이름 (alias 포함).
     styled_binding: ?[]const u8 = null,

@@ -324,9 +324,10 @@ pub const Transformer = struct {
         owner: NodeIndex,
         node: NodeIndex,
     }) = .empty,
-    /// Generated wrapper refs are bound by node handle after the final output
-    /// scope walk; names such as `_newTarget` are never used to select an SID.
-    native_parameter_output_ref_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Generated refs whose producer already selected an exact SymbolId are
+    /// bound by node handle after the final output-scope walk; output spelling
+    /// is never used to select their identity.
+    exact_output_ref_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     capture_scope: ScopeId = .none,
     outermost_lowered_arrow_scope: ScopeId = .none,
     /// Exact name Span to the first SymbolId allocated for that transform temp.
@@ -846,6 +847,7 @@ pub const Transformer = struct {
     pub const trackHoistedTempRefInScope = @import("transformer/semantic_edit.zig").trackHoistedTempRefInScope;
     pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
     pub const trackUserReadFromBinding = @import("transformer/semantic_edit.zig").trackUserReadFromBinding;
+    pub const trackExactOutputRead = @import("transformer/semantic_edit.zig").trackExactOutputRead;
     pub const moveBindingToOutputScope = @import("transformer/semantic_edit.zig").moveBindingToOutputScope;
     pub const moveSymbolToOutputScope = @import("transformer/semantic_edit.zig").moveSymbolToOutputScope;
     pub const setGeneratedSymbolId = @import("transformer/semantic_edit.zig").setGeneratedSymbolId;

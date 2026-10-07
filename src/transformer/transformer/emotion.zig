@@ -41,6 +41,7 @@ const import_scanner = @import("../../bundler/import_scanner.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+const es_helpers = @import("../es_helpers.zig");
 const plugin_state = @import("../plugin_state.zig");
 const sourcemap_mod = @import("../../codegen/sourcemap.zig");
 const string_list = @import("../../util/string_list.zig");
@@ -154,6 +155,13 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
                         @field(self.plugins.emotion, spec.field) == null)
                     {
                         @field(self.plugins.emotion, spec.field) = local_name;
+                        if (std.mem.eql(u8, spec.field, "css_binding")) {
+                            self.plugins.emotion.css_binding_node = local_idx;
+                            self.plugins.emotion.css_import_source_node = x.source;
+                            self.plugins.emotion.css_import_phase_flags = @intFromEnum(x.phase);
+                            self.plugins.emotion.css_import_attrs_start = x.attrs_start;
+                            self.plugins.emotion.css_import_attrs_len = x.attrs_len;
+                        }
                         break;
                     }
                 }
@@ -161,6 +169,56 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
             else => {},
         }
     }
+
+    if (self.plugins.emotion.css_binding_node != null and hasGeneratedCssPropCallsite(self)) {
+        self.plugins.emotion.css_prop_import_required = true;
+        const binding_node = self.plugins.emotion.css_binding_node.?;
+        const binding_name = self.ast.getText(self.ast.getNode(binding_node).span);
+        if (hasShadowingBindingName(self, binding_name, binding_node)) {
+            self.plugins.emotion.css_prop_use_alias = true;
+            self.plugins.emotion.css_prop_import_required = false;
+        }
+    }
+}
+
+/// Find JSX props that will be lowered to a generated `css(value)` read.
+/// This runs while visiting the import, before normal import elision. The scan
+/// is deliberately based on the same object/array shapes consumed by
+/// `maybeApplyAutoLabelForJsxAttr`.
+fn hasGeneratedCssPropCallsite(self: *Transformer) bool {
+    if (!self.options.shouldLowerJsx()) return false;
+    const global_binding = self.plugins.emotion.global_binding;
+    const class_names_binding = self.plugins.emotion.class_names_binding;
+    for (self.ast.nodes.items) |node| {
+        if (node.tag != .jsx_element or !self.ast.hasExtra(node.data.extra, 4)) continue;
+        const extra = node.data.extra;
+        const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra]);
+        const attrs_start = self.ast.extra_data.items[extra + 1];
+        const attrs_len = self.ast.extra_data.items[extra + 2];
+        if (attrs_start > self.ast.extra_data.items.len or attrs_len > self.ast.extra_data.items.len - attrs_start) continue;
+        for (self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len]) |raw_attr| {
+            if (raw_attr >= self.ast.nodes.items.len) continue;
+            const attr = self.ast.nodes.items[raw_attr];
+            if (attr.tag != .jsx_attribute) continue;
+            const name_idx = attr.data.binary.left;
+            const value_idx = attr.data.binary.right;
+            if (name_idx.isNone() or value_idx.isNone()) continue;
+            const value_tag = self.ast.getNode(value_idx).tag;
+            if (value_tag != .object_expression and value_tag != .array_expression) continue;
+            const attr_name = self.ast.getText(self.ast.getNode(name_idx).span);
+            if (std.mem.eql(u8, attr_name, "css")) return true;
+            if (std.mem.eql(u8, attr_name, "styles")) {
+                if (global_binding) |binding| {
+                    if (jsxIdentifierEquals(self, tag_idx, binding)) return true;
+                }
+            }
+            // The ClassNames render-prop scope is recognized while visiting
+            // children. Conservatively retain css when such an import and a
+            // candidate inline className object coexist in the source.
+            if (std.mem.eql(u8, attr_name, "className") and class_names_binding != null) return true;
+        }
+    }
+    return false;
 }
 
 /// `visitVariableDeclarator` 의 post-visit hook + JSX inline css attr hook 의 공용 코어.
@@ -299,13 +357,78 @@ pub fn maybeApplyAutoLabelForJsxAttr(
 ///
 /// css binding 이 import 안 됐으면 no-op (auto-inject 는 별도 작업, 사용자가 import 가정).
 /// autoLabel 비활성 (.never / dev_only + production define) 이면 label 인자 생략.
+fn hasShadowingBindingName(self: *Transformer, name: []const u8, owner: NodeIndex) bool {
+    for (self.ast.nodes.items, 0..) |node, raw| {
+        if (raw == @intFromEnum(owner) or node.tag != .binding_identifier) continue;
+        if (std.mem.eql(u8, self.ast.getText(node.data.string_ref), name)) return true;
+    }
+    return false;
+}
+
+fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
+    if (self.plugins.emotion.css_prop_alias_binding) |binding| return binding;
+
+    const name = try es_helpers.resolveSyntheticName(self, "_emotionCss");
+    const name_span = try self.ast.addString(name);
+    const binding = try es_helpers.makeBindingIdentifier(self, name_span);
+    const program_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
+    const program_span = self.ast.getNode(program_idx).span;
+    const anchor: Span = .{ .start = program_span.start, .end = program_span.start };
+    const imported_source = self.plugins.emotion.css_import_source_node orelse
+        @panic("Emotion css alias has no exact source-module node");
+    if (self.semantic_edit_enabled) {
+        const symbol = try self.declareSyntheticInScope(binding, anchor, .import_binding, self.programScope());
+        if (symbol == null) @panic("Emotion css alias has no exact SymbolId");
+    }
+
+    const imported = try es_helpers.makePropertyName(self, "css");
+    const specifier = try self.ast.addNode(.{
+        .tag = .import_specifier,
+        .span = anchor,
+        .data = .{ .binary = .{ .left = imported, .right = binding, .flags = 0 } },
+    });
+    const specs = try self.ast.addNodeList(&.{specifier});
+    const import_extra = try self.ast.addExtras(&.{
+        specs.start,
+        specs.len,
+        @intFromEnum(imported_source),
+        self.plugins.emotion.css_import_phase_flags,
+        self.plugins.emotion.css_import_attrs_start,
+        self.plugins.emotion.css_import_attrs_len,
+    });
+    const declaration = try self.ast.addNode(.{
+        .tag = .import_declaration,
+        .span = anchor,
+        .data = .{ .extra = import_extra },
+    });
+    self.plugins.emotion.css_prop_alias_binding = binding;
+    self.plugins.emotion.css_prop_alias_import = declaration;
+    return binding;
+}
+
 fn wrapCssPropInCssCall(self: *Transformer, value_idx: NodeIndex, label: []const u8) Error!NodeIndex {
-    const css_binding = self.plugins.emotion.css_binding orelse return value_idx;
+    _ = self.plugins.emotion.css_binding orelse return value_idx;
+    const css_binding_node = self.plugins.emotion.css_binding_node orelse
+        @panic("Emotion css binding name has no exact import-local NodeIndex");
     const value_node = self.ast.getNode(value_idx);
 
-    // Callee: `<css_binding>` identifier_reference (alias 도 포함). css_binding 은 모듈 최상위
-    // import 의 지역 이름이라 루트 스코프 바인딩(그 import)의 심볼을 붙인다.
-    const callee = try self.makeRootScopeRef(css_binding);
+    // A same-named nested binding would capture a direct generated call. In
+    // that case, call through one module-scoped alias initialized from the
+    // exact import binding. Otherwise keep the source import's original name.
+    const callee_binding = if (self.plugins.emotion.css_prop_use_alias)
+        try ensureCssPropAlias(self)
+    else
+        css_binding_node;
+    const callee_symbol_id = self.getSymbolIdAt(callee_binding) orelse if (self.semantic_edit_enabled)
+        @panic("Emotion css call target has no exact SymbolId")
+    else
+        0;
+    const callee = try es_helpers.identifierRefNode(
+        self,
+        self.ast.getNode(callee_binding).data.string_ref,
+        value_node.span,
+    );
+    try self.trackExactOutputRead(callee, callee_symbol_id);
 
     // Args: [value, optional label string]
     var args_buf: [2]u32 = undefined;
