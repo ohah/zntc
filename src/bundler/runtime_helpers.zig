@@ -15,6 +15,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     generator: ?[]const u8 = null,
     rest: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
+    async_values: ?[]const u8 = null,
     tagged_template_literal: ?[]const u8 = null,
     values: ?[]const u8 = null,
 };
@@ -1772,7 +1773,14 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.async_values) {
-        try buf.appendSlice(allocator, if (minify) ASYNC_VALUES_RUNTIME_MIN else ASYNC_VALUES_RUNTIME);
+        const default_name = helperName("__asyncValues", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) ASYNC_VALUES_RUNTIME_MIN else ASYNC_VALUES_RUNTIME,
+            default_name,
+            local_names.async_values orelse default_name,
+        );
     }
     // __values 는 yield* / for-of / __asyncValues fallback 모두 사용 — async_values 가 켜져 있으면
     // 그 안에서 typeof __values 체크하므로 함께 emit 필요.

@@ -386,6 +386,50 @@ process().then(total => console.log(__values, total));
     });
   }
 
+  for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 async-values preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$aV' : '__asyncValues';
+      const fixture = await createFixture({
+        'input.ts': `
+var __values = 30;
+var ${sourceName} = 40;
+async function sum() {
+  var total = 0;
+  for (var syncValue of [1]) total += syncValue;
+  for await (var value of [7]) total += value;
+  return total;
+}
+sum().then(total => console.log(${sourceName}, __values, total));
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$aV[a-zA-Z0-9_$]*)=function\(o\)/)?.[1]
+        : code.match(/var (__asyncValues\d*) = function\(o\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(`${emittedHelper}([7])`);
+      expect(code).toMatch(/var __values2\s*=\s*function\(o\)/);
+      expect(code).toMatch(/typeof __values2\s*===\s*["']function["']\s*\?\s*__values2\(o\)/);
+      expect(code).not.toMatch(/typeof __values\s*===\s*["']function["']\s*\?\s*__values\(o\)/);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 30 8\n');
+    });
+  }
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
