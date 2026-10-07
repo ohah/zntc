@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .public_field = true, .class_private_method_init = true, .class_private_method_get = true, .class_call_check = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .public_field = true, .class_private_method_init = true, .class_private_method_get = true, .class_private_field_set = true, .class_call_check = true, .call_super = true, .super_get = true, .super_set = true, .tdz = true, .read = true, .tagged_template_literal = true },
         false,
         false,
         .{
@@ -1523,6 +1523,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .public_field = "__publicField2",
             .class_private_method_init = "__classPrivateMethodInit2",
             .class_private_method_get = "__classPrivateMethodGet2",
+            .class_private_field_set = "__zntcClassPrivateFieldSet2",
             .class_call_check = "__classCallCheck2",
             .call_super = "__callSuper2",
             .super_get = "__superGet2",
@@ -1541,6 +1542,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const public_field_index = std.mem.indexOf(u8, combined.items, "var __publicField2 = function(obj, key, value)").?;
     const private_method_init_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodInit2 = function(obj, privateSet)").?;
     const private_method_get_index = std.mem.indexOf(u8, combined.items, "var __classPrivateMethodGet2 = function(receiver, privateSet, fn)").?;
+    const private_field_set_index = std.mem.indexOf(u8, combined.items, "var __zntcClassPrivateFieldSet2 = function(wm, obj, value)").?;
     const class_call_check_index = std.mem.indexOf(u8, combined.items, "var __classCallCheck2 = function(instance, Constructor)").?;
     const call_super_index = std.mem.indexOf(u8, combined.items, "var __callSuper2 = function(Parent, args, NewTarget)").?;
     const super_get_index = std.mem.indexOf(u8, combined.items, "var __superGet2 = function(parent, prop, receiver)").?;
@@ -1548,7 +1550,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < public_field_index and public_field_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < public_field_index and public_field_index < private_method_init_index and private_method_init_index < private_method_get_index and private_method_get_index < class_call_check_index and class_call_check_index < private_field_set_index and private_field_set_index < call_super_index and call_super_index < super_get_index and super_get_index < super_set_index and super_set_index < tdz_index and tdz_index < read_index and read_index < tagged_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {
@@ -1605,6 +1607,34 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private me
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $pG2=function(receiver,privateSet,fn)"));
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $pG=function(receiver,privateSet,fn)"));
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private field set local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .class_private_field_set = true },
+        false,
+        false,
+        .{ .class_private_field_set = "__zntcClassPrivateFieldSet2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __zntcClassPrivateFieldSet2 = function(wm, obj, value)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __zntcClassPrivateFieldSet = function(wm, obj, value)"));
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .class_private_field_set = true },
+        true,
+        false,
+        .{ .class_private_field_set = "$pF2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $pF2=function(wm,obj,value)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $pF=function(wm,obj,value)"));
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected call super local directly" {
