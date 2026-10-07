@@ -207,6 +207,59 @@ console.log($rs, copy.b);
     expect(runtime.stdout).toBe('40 2\n');
   });
 
+  test('standalone ES5 tagged template preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var __taggedTemplateLiteral = 40;
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(__taggedTemplateLiteral, tag\`hello\`);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/var __taggedTemplateLiteral2 = function\(cooked, raw\)/);
+    expect(code).toMatch(/__taggedTemplateLiteral2\(/);
+    expect(code).not.toMatch(/\b__taggedTemplateLiteral\(/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 hello:hello\n');
+  });
+
+  test('standalone minified ES5 tagged template preamble uses the collision-free helper SymbolId name', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var $tt = 40;
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log($tt, tag\`hello\`);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, [
+      'input.ts',
+      '--target=es5',
+      '--minify-whitespace',
+      '-o',
+      output,
+    ]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    const emittedHelper = code.match(/var (\$tt[a-zA-Z0-9_$]*)=function\(cooked,raw\)/)?.[1];
+    expect(emittedHelper).toBeDefined();
+    expect(emittedHelper).not.toBe('$tt');
+    expect(code).toContain(`${emittedHelper}(`);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 hello:hello\n');
+  });
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
