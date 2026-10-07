@@ -1489,6 +1489,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
         false,
         null,
         "__generator2",
+        null,
     );
     try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __generator2 = function()"));
     try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __generator = function()"));
@@ -1503,6 +1504,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
         false,
         null,
         "$g2",
+        null,
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $g2=function()"));
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $g=function()"));
@@ -1512,15 +1514,49 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true },
+        .{ .extends = true, .generator = true, .rest = true },
         false,
         false,
         "__extends2",
         "__generator2",
+        "__rest2",
     );
     const extends_index = std.mem.indexOf(u8, combined.items, "var __extends2 = function").?;
     const generator_index = std.mem.indexOf(u8, combined.items, "var __generator2 = function").?;
-    try std.testing.expect(extends_index < generator_index);
+    const rest_index = std.mem.indexOf(u8, combined.items, "var __rest2 = function").?;
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index);
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .rest = true },
+        false,
+        false,
+        null,
+        null,
+        "__rest2",
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __rest2 = function(s, e)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __rest = function(s, e)"));
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .rest = true },
+        true,
+        false,
+        null,
+        null,
+        "$rs2",
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $rs2=function(s,e)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $rs=function(s,e)"));
 }
 
 test "appendRuntimeHelpers: generator only" {
