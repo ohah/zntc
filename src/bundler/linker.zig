@@ -224,9 +224,12 @@ pub const Linker = struct {
     reserved_globals: std.StringHashMapUnmanaged(void) = .empty,
 
     /// CJS factory is currently emitted from raw runtime text. Its selected
+    /// semantic identity is owned by one parse-backed module and can survive
+    /// that module leaving CJS or being tree-shaken. Its selected
     /// output name must also avoid unresolved source globals or it captures
     /// those references after bundling.
     cjs_factory_runtime_name: ?[]const u8 = null,
+    cjs_factory_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
     /// ESM factory has the same raw-preamble boundary as the CJS factory.
     esm_factory_runtime_name: ?[]const u8 = null,
 
@@ -933,9 +936,9 @@ pub const Linker = struct {
             try self.reserved_globals.put(self.allocator, name, {});
         }
 
-        // The CJS factory is emitted as raw preamble text, outside every
-        // module's semantic scope map. Reserve its exact output spelling so a
-        // scope-hoisted source binding cannot redeclare the runtime helper.
+        // The CJS factory has a semantic SymbolId but is emitted as raw
+        // preamble text, outside source AST nodes. Reserve its selected output
+        // spelling so a scope-hoisted source binding cannot redeclare it.
         var runtime_it = self.graph.modulesIterator();
         while (runtime_it.next()) |m| {
             if (self.tree_shaker_active and !m.is_included) continue;
@@ -980,18 +983,27 @@ pub const Linker = struct {
     }
 
     /// Code-split chunks emit runtime helpers before their per-chunk rename pass.
-    /// Select one graph-wide name up front so each chunk's preamble and wrappers
-    /// use the same spelling, and so it cannot capture a source global in any
-    /// chunk. The selected name stays stable for this Linker's lifetime.
+    /// Select one graph-wide runtime SymbolId and spelling up front so each
+    /// chunk's preamble and wrappers use the same identity/name pair, and so it
+    /// cannot capture a source global in any chunk. The selection stays stable
+    /// for this Linker's lifetime.
     pub fn prepareCjsRuntimeName(self: *Linker) !void {
         if (self.cjs_factory_runtime_name != null) return;
+        var has_included_cjs_runtime = false;
         var runtime_it = self.graph.modulesIterator();
         while (runtime_it.next()) |m| {
-            if (self.tree_shaker_active and !m.is_included) continue;
+            // Cached identity discovery is graph-wide because the module that
+            // originally owned it can stop being CJS after an incremental
+            // rebuild. It remains usable while any CJS wrapper is emitted.
+            if (self.cjs_factory_runtime_symbol_id == null) if (m.cjs_runtime_factory_symbol) |symbol_id| {
+                self.cjs_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(symbol_id));
+            };
             if (m.wrap_kind != .cjs) continue;
-            self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
-            return;
+            if ((!self.tree_shaker_active or m.is_included) and !has_included_cjs_runtime) {
+                has_included_cjs_runtime = true;
+            }
         }
+        if (has_included_cjs_runtime) self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
     }
 
     /// Reserve the already selected spelling so a scope-hoisted user binding
@@ -1000,10 +1012,16 @@ pub const Linker = struct {
         try self.prepareCjsRuntimeName();
         if (self.cjs_factory_runtime_name) |name| {
             try self.reserved_globals.put(self.allocator, name, {});
+            if (self.cjs_factory_runtime_symbol_id) |symbol_id| {
+                try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
+            }
         }
     }
 
     pub fn cjsFactoryRuntimeName(self: *const Linker) []const u8 {
+        if (self.cjs_factory_runtime_symbol_id) |symbol_id| {
+            if (self.rename_table.get(symbol_id)) |name| return name;
+        }
         return self.cjs_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
     }
 
@@ -1989,9 +2007,13 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => {},
                         }
                         if (sk == .enum_iife_member) continue;
+                        // The graph-wide CJS runtime helper is emitted by the
+                        // preamble; reserveCjsRuntimeName assigns its selected
+                        // output spelling to the canonical helper SymbolId.
+                        if (sk == .cjs_runtime_factory) continue;
                         // CJS callback parameters are registered in module
                         // scope, so the ordinary scope-map pass above already
                         // added each exact SID as a candidate.

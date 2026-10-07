@@ -222,10 +222,28 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (m.wrapper_name_synthetic) |n| _ = used_names.put(self.allocator, n, 1) catch {};
     }
 
+    var cjs_runtime_identity_registered = false;
+    var existing_cjs_it = self.modules.iterator(0);
+    while (existing_cjs_it.next()) |m| {
+        // The module that originally owned this graph-level identity can stop
+        // being wrapped after an incremental rebuild. Its cached semantic row
+        // still represents the same graph identity, so recover it before
+        // considering a new CJS owner.
+        if (findCjsRuntimeFactorySymbol(m) != null) {
+            cjs_runtime_identity_registered = true;
+            break;
+        }
+    }
     var it = self.modules.iterator(0);
     while (it.next()) |m| {
         if (m.wrap_kind == .none) continue;
-        if (m.wrap_kind == .cjs) registerCjsWrapperParameters(m);
+        if (m.wrap_kind == .cjs) {
+            registerCjsWrapperParameters(m);
+            if (!cjs_runtime_identity_registered) {
+                registerCjsRuntimeFactorySymbol(m);
+                cjs_runtime_identity_registered = m.cjs_runtime_factory_symbol != null;
+            }
+        }
         const needs_init = m.init_symbol == null;
         const needs_exports = m.exports_symbol == null;
         const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
@@ -287,6 +305,39 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             ) catch null;
         }
     }
+}
+
+/// Add a semantic identity for the graph-level CJS runtime factory. The helper
+/// body and wrapper callsites are emitted outside source AST nodes, so this is
+/// a virtual bundler symbol like the other wrapper symbols. The cached semantic
+/// row remains the graph identity if its original module stops being CJS.
+fn registerCjsRuntimeFactorySymbol(m: *Module) void {
+    if (findCjsRuntimeFactorySymbol(m) != null) return;
+    const sem = if (m.semantic) |*value| value else return;
+    const arena = if (m.parse_arena) |value| value.allocator() else return;
+    m.cjs_runtime_factory_symbol = semantic_symbol.extendSymbol(
+        arena,
+        &sem.symbols,
+        .variable_var,
+        .cjs_runtime_factory,
+        "__commonJS",
+        Span.EMPTY,
+    ) catch null;
+}
+
+fn findCjsRuntimeFactorySymbol(m: *Module) ?semantic_symbol.SymbolId {
+    const sem = if (m.semantic) |*value| value else return null;
+    if (m.cjs_runtime_factory_symbol) |existing| {
+        const raw: usize = @intFromEnum(existing);
+        if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == .cjs_runtime_factory) return existing;
+        m.cjs_runtime_factory_symbol = null;
+    }
+    for (sem.symbols.items, 0..) |symbol, index| {
+        if (symbol.synthetic_kind != .cjs_runtime_factory) continue;
+        m.cjs_runtime_factory_symbol = @enumFromInt(index);
+        return m.cjs_runtime_factory_symbol;
+    }
+    return null;
 }
 
 /// Register the two implicit bindings supplied to a CommonJS module wrapper.

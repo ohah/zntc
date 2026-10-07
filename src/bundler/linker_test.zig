@@ -6,9 +6,11 @@ const LinkingMetadata = linker_mod.LinkingMetadata;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
+const graph_finalize = @import("graph/finalize.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 const bundler_symbol = @import("symbol.zig");
+const semantic_symbol = @import("../semantic/symbol.zig");
 const PreservedRenames = bundler_symbol.PreservedRenames;
 
 fn dirPath(tmp: *std.testing.TmpDir) ![:0]u8 {
@@ -67,6 +69,105 @@ test "linker: direct import resolves to export" {
     try std.testing.expectEqualStrings("x", binding.?.canonical.export_name);
     // canonical이 b.ts(index 1)를 가리킴
     try std.testing.expectEqual(@as(u32, 1), @intFromEnum(binding.?.canonical.module_index));
+}
+
+test "linker: CJS runtime factory alias keeps one exact SymbolId across cache and chunk changes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "legacy.cjs", "module.exports = 7;");
+    try writeFile(tmp.dir, "second.cjs", "module.exports = 9;");
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import value from './legacy.cjs'; import other from './second.cjs'; " ++
+            "console.log(typeof __commonJS, typeof __commonJS$1, value + other);",
+    );
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const cjs_index = findModuleIdx(r.graph, "legacy.cjs") orelse return error.TestUnexpectedResult;
+    const second_cjs_index = findModuleIdx(r.graph, "second.cjs") orelse return error.TestUnexpectedResult;
+    const cjs_module = r.graph.getModule(cjs_index) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(cjs_module.cjs_runtime_factory_symbol != null);
+    const inner = cjs_module.cjs_runtime_factory_symbol.?;
+    const mutable_owner = @constCast(cjs_module);
+    // The Module field is not serialized. Rebuild finalization must recover
+    // the identity from the cached semantic symbol even if this module is no
+    // longer CJS in the current graph.
+    mutable_owner.cjs_runtime_factory_symbol = null;
+    mutable_owner.wrap_kind = .none;
+    graph_finalize.registerWrapperSymbols(r.graph);
+    try std.testing.expectEqual(inner, mutable_owner.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult);
+    mutable_owner.wrap_kind = .cjs;
+    const sem = cjs_module.semantic orelse return error.TestUnexpectedResult;
+    const symbol = sem.symbols.items[@intFromEnum(inner)];
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_runtime_factory, symbol.synthetic_kind.?);
+    var runtime_symbol_count: usize = 0;
+    var module_it = r.graph.modulesIterator();
+    while (module_it.next()) |module| {
+        if (module.semantic) |module_sem| {
+            for (module_sem.symbols.items) |candidate| {
+                if (candidate.synthetic_kind == .cjs_runtime_factory) runtime_symbol_count += 1;
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), runtime_symbol_count);
+
+    const runtime_id = bundler_symbol.SymbolID.make(cjs_module.index, @intFromEnum(inner));
+    try r.linker.computeRenames();
+    const single_bundle_name = try std.testing.allocator.dupe(u8, r.linker.cjsFactoryRuntimeName());
+    defer std.testing.allocator.free(single_bundle_name);
+    try std.testing.expect(!std.mem.eql(u8, single_bundle_name, "__commonJS"));
+    try std.testing.expect(!std.mem.eql(u8, single_bundle_name, "__commonJS$1"));
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
+
+    // A chunk pass clears the build-scope rename table. Its helper definition
+    // and wrapper references must restore the same graph-wide identity mapping.
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
+    const chunk_modules = [_]ModuleIndex{ entry_index, cjs_index };
+    try r.linker.computeRenamesForModules(&chunk_modules, &.{});
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.cjsFactoryRuntimeName());
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
+
+    // A split chunk may contain another CJS wrapper without the module that
+    // owns the graph-level helper identity. The chunk-local rename reset must
+    // still restore the same exact-ID mapping.
+    const split_cjs_chunk = [_]ModuleIndex{second_cjs_index};
+    try r.linker.computeRenamesForModules(&split_cjs_chunk, &.{});
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.cjsFactoryRuntimeName());
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
+
+    // The selected ID can outlive its module's CJS wrapper classification in
+    // the graph, just as it can outlive chunk membership.
+    mutable_owner.wrap_kind = .none;
+    r.linker.allocator.free(r.linker.cjs_factory_runtime_name.?);
+    r.linker.cjs_factory_runtime_name = null;
+    r.linker.cjs_factory_runtime_symbol_id = null;
+    try r.linker.computeRenamesForModules(&split_cjs_chunk, &.{});
+    try std.testing.expectEqualStrings(
+        r.linker.cjsFactoryRuntimeName(),
+        r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult,
+    );
+    mutable_owner.wrap_kind = .cjs;
+
+    // Tree shaking can exclude the identity's owner while retaining another
+    // CJS module. Start name selection afresh to exercise that path rather than
+    // reusing the alias selected by the full-graph pass above.
+    r.linker.allocator.free(r.linker.cjs_factory_runtime_name.?);
+    r.linker.cjs_factory_runtime_name = null;
+    r.linker.cjs_factory_runtime_symbol_id = null;
+    r.linker.tree_shaker_active = true;
+    @constCast(r.graph.getModule(cjs_index) orelse return error.TestUnexpectedResult).is_included = false;
+    @constCast(r.graph.getModule(second_cjs_index) orelse return error.TestUnexpectedResult).is_included = true;
+    try r.linker.computeRenamesForModules(&split_cjs_chunk, &.{});
+    try std.testing.expect(!std.mem.eql(u8, r.linker.cjsFactoryRuntimeName(), "__commonJS"));
+    try std.testing.expectEqualStrings(
+        r.linker.cjsFactoryRuntimeName(),
+        r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult,
+    );
 }
 
 test "linker: re-export chain resolved" {
