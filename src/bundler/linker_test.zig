@@ -75,7 +75,7 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "legacy.cjs", "module.exports = 7;");
-    try writeFile(tmp.dir, "second.cjs", "module.exports = 9;");
+    try writeFile(tmp.dir, "second.cjs", "module.exports = typeof __commonJS$2;");
     try writeFile(
         tmp.dir,
         "entry.mjs",
@@ -117,17 +117,31 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     try std.testing.expectEqual(@as(usize, 1), runtime_symbol_count);
 
     const runtime_id = bundler_symbol.SymbolID.make(cjs_module.index, @intFromEnum(inner));
+    // Output ownership must not recover this generated identity by its current
+    // spelling; the rename passes below only need the exact SymbolID.
+    if (mutable_owner.semantic) |*mutable_sem| {
+        mutable_sem.symbols.items[@intFromEnum(inner)].synthetic_name = "runtime_factory_identity_without_spelling";
+    }
     try r.linker.computeRenames();
     const single_bundle_name = try std.testing.allocator.dupe(u8, r.linker.cjsFactoryRuntimeName());
     defer std.testing.allocator.free(single_bundle_name);
-    try std.testing.expect(!std.mem.eql(u8, single_bundle_name, "__commonJS"));
-    try std.testing.expect(!std.mem.eql(u8, single_bundle_name, "__commonJS$1"));
+    try std.testing.expectEqualStrings("__commonJS$3", single_bundle_name);
     try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
 
     // A chunk pass clears the build-scope rename table. Its helper definition
     // and wrapper references must restore the same graph-wide identity mapping.
     r.graph.code_splitting = true;
     try r.linker.prepareCjsRuntimeName();
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.cjsFactoryRuntimeName());
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
+
+    // Re-select after a chunk-style reset too; no stale rename-table entry may
+    // be needed for the exact SymbolID to own the graph-wide alias.
+    r.linker.allocator.free(r.linker.cjs_factory_runtime_name.?);
+    r.linker.cjs_factory_runtime_name = null;
+    r.linker.clearCanonicalNames();
+    try r.linker.prepareCjsRuntimeName();
+    try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
     const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
     const chunk_modules = [_]ModuleIndex{ entry_index, cjs_index };
     try r.linker.computeRenamesForModules(&chunk_modules, &.{});
