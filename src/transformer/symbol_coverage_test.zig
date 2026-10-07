@@ -212,6 +212,59 @@ test "exact identity audit rejects declaration rows assigned to a visible descen
     try std.testing.expect(!corrupted.isClean());
 }
 
+test "exact identity audit catches same-name binding IDs swapped across scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "{ let x = 1; { let x = 2; } }");
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var binding_nodes: [2]usize = undefined;
+    var binding_ids: [2]u32 = undefined;
+    var found: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "x")) continue;
+        if (found == binding_nodes.len) return error.TestUnexpectedResult;
+        binding_nodes[found] = raw;
+        binding_ids[found] = analyzer.symbol_ids.items[raw] orelse return error.TestUnexpectedResult;
+        found += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), found);
+    try std.testing.expect(
+        analyzer.symbols.items[binding_ids[0]].scope_id != analyzer.symbols.items[binding_ids[1]].scope_id,
+    );
+
+    // Same spelling keeps name-only checks satisfied. Swapping only the exact
+    // binding IDs must still be detected as two binding-to-scope violations.
+    const swapped_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    swapped_ids[binding_nodes[0]] = binding_ids[1];
+    swapped_ids[binding_nodes[1]] = binding_ids[0];
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        swapped_ids,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 2), report.binding_scope_mismatch);
+    try std.testing.expect(!report.isClean());
+}
+
 test "exact scope audit rejects owner scopes detached from their AST parent scopes" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
