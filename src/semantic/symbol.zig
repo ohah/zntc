@@ -201,7 +201,7 @@ pub const DeclFlags = packed struct(u16) {
 };
 
 /// AST에 일반 선언 노드가 없는 합성 심볼 종류. 번들러가 추가하거나
-/// 변환 출력의 가상 바인딩(namespace IIFE 매개변수, 런타임 helper preamble)을 나타낸다.
+/// 변환 출력의 가상 바인딩(namespace IIFE 매개변수, runtime helper, CJS factory)을 나타낸다.
 /// `re_export_alias`는 값 의미가 없어 semantic 공간에 얹지 않으며 bundler
 /// 전용 `AliasTable`에 남는다 (RFC #1338 결정).
 pub const SyntheticKind = enum(u8) {
@@ -230,6 +230,9 @@ pub const SyntheticKind = enum(u8) {
     /// Parameter of the generated `__commonJS` callback for the CJS `module`
     /// environment binding. Free source references are rebound to this ID.
     cjs_wrapper_module_parameter,
+    /// Graph-wide CJS runtime factory declaration emitted in the output preamble.
+    /// Linker wrapper callsites and the raw helper declaration share this identity.
+    cjs_runtime_factory,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

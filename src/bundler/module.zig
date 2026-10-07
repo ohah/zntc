@@ -411,6 +411,10 @@ pub const Module = struct {
     /// graph finalize가 module scope에 합성 매개변수 SID를 등록한다.
     cjs_wrapper_exports_parameter_symbol: ?SemanticSymbolId = null,
     cjs_wrapper_module_parameter_symbol: ?SemanticSymbolId = null,
+    /// Synthetic identity for the graph-level `__commonJS`/`$cj` runtime
+    /// factory preamble. The linker keeps this ID as the shared output binding
+    /// across wrapper callsites, chunks, tree shaking, and cached graph rebuilds.
+    cjs_runtime_factory_symbol: ?SemanticSymbolId = null,
 
     /// RFC #3940 L.5a — post-link tree-shake AST mutation 후 semantic resync 시 carry-over 된
     /// rename (SymbolID→name). tree_shaker(const linker)가 resync 전 `rename_table` 에서 캡처해
