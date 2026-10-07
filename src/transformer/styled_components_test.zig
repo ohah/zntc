@@ -1846,7 +1846,7 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
     try std.testing.expectEqual(@as(usize, 3), callback_count);
 }
 
-test "#4819 auto-injected styled import and generated reference share one name" {
+test "#4819 auto-injected styled import carries the generated reference SymbolId" {
     const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
     const ast_walk = @import("../parser/ast_walk.zig");
 
@@ -1901,6 +1901,8 @@ test "#4819 auto-injected styled import and generated reference share one name" 
     try std.testing.expectEqualStrings("_styled3", injected_name);
     const ref = generated_ref orelse return error.TestExpectedEqual;
     const symbol_id = transformer.getSymbolIdAt(ref) orelse return error.TestExpectedEqual;
+    const reserved_symbol_id = transformer.plugins.styled_components.css_prop_inject_symbol_id orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(symbol_id, @intFromEnum(reserved_symbol_id));
     try std.testing.expectEqual(@as(usize, 2), generated_ref_count);
     for (reachable) |raw| {
         const node = transformer.ast.nodes.items[raw];
