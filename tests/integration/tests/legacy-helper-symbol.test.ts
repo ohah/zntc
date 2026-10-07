@@ -441,6 +441,69 @@ console.log(${sourceName}, new Service().method(7));
     });
   }
 
+  for (const target of ['es5', 'es2022'] as const) {
+    for (const minify of [false, true]) {
+      test(`standalone ${target} ${minify ? 'minified ' : ''}using helper pair uses collision-free SymbolId names`, async () => {
+        const usingSourceName = minify ? '$us' : '__using';
+        const disposeSourceName = minify ? '$cD' : '__callDispose';
+        const fixture = await createFixture({
+          'input.ts': `
+var ${usingSourceName} = 40;
+var ${disposeSourceName} = 41;
+if (!(Symbol as any).dispose) Object.defineProperty(Symbol, 'dispose', { value: Symbol.for('Symbol.dispose') });
+const events: string[] = [];
+function resource(label: string) { return { [Symbol.dispose]() { events.push(label); } }; }
+{
+  using first = resource('first');
+  using second = resource('second');
+}
+console.log(${usingSourceName}, ${disposeSourceName}, events.join(','));
+`,
+        });
+        cleanup = fixture.cleanup;
+        const output = join(fixture.dir, 'out.js');
+        const result = await runZntcInDir(fixture.dir, [
+          'input.ts',
+          `--target=${target}`,
+          ...(minify ? ['--minify-whitespace'] : []),
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+
+        const code = readFileSync(output, 'utf8');
+        const usingHelper = code.match(
+          target === 'es5'
+            ? minify
+              ? /var (\$us[a-zA-Z0-9_$]*)=function\(stack,value,async\)/
+              : /var (__using\d*) = function\(stack, value, async\)/
+            : minify
+              ? /var (\$us[a-zA-Z0-9_$]*)=\(stack,value,async\)=>/
+              : /var (__using\d*) = \(stack, value, async\) =>/,
+        )?.[1];
+        const callDisposeHelper = code.match(
+          target === 'es5'
+            ? minify
+              ? /var (\$cD[a-zA-Z0-9_$]*)=function\(stack,error,hasError\)/
+              : /var (__callDispose\d*) = function\(stack, error, hasError\)/
+            : minify
+              ? /var (\$cD[a-zA-Z0-9_$]*)=\(stack,error,hasError\)=>/
+              : /var (__callDispose\d*) = \(stack, error, hasError\) =>/,
+        )?.[1];
+        expect(usingHelper).toBeDefined();
+        expect(callDisposeHelper).toBeDefined();
+        expect(usingHelper).not.toBe(usingSourceName);
+        expect(callDisposeHelper).not.toBe(disposeSourceName);
+        expect(code).toContain(`${usingHelper}(`);
+        expect(code).toContain(`${callDisposeHelper}(`);
+
+        const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(runtime.status, runtime.stderr).toBe(0);
+        expect(runtime.stdout).toBe('40 41 second,first\n');
+      });
+    }
+  }
+
   for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 values preamble uses the collision-free helper SymbolId name`, async () => {
       const fixture = await createFixture({
