@@ -11,6 +11,7 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Reference = @import("../semantic/symbol.zig").Reference;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
@@ -1413,15 +1414,17 @@ test "#4819 JSX runtime imports bind exact helper symbols before resync" {
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
 
-    const cases = [_]struct { local: []const u8, user_id: usize }{
-        .{ .local = transformer.jsx_import_info.jsx_local, .user_id = user_jsx_id },
-        .{ .local = transformer.jsx_import_info.jsxs_local, .user_id = user_jsxs_id },
-        .{ .local = transformer.jsx_import_info.fragment_local, .user_id = user_fragment_id },
-        .{ .local = transformer.jsx_import_info.createElement_local, .user_id = user_create_element_id },
+    const cases = [_]struct { local: []const u8, user_id: usize, symbol_id: ?SymbolId }{
+        .{ .local = transformer.jsx_import_info.jsx_local, .user_id = user_jsx_id, .symbol_id = transformer.jsx_import_info.jsx_symbol_id },
+        .{ .local = transformer.jsx_import_info.jsxs_local, .user_id = user_jsxs_id, .symbol_id = transformer.jsx_import_info.jsxs_symbol_id },
+        .{ .local = transformer.jsx_import_info.fragment_local, .user_id = user_fragment_id, .symbol_id = transformer.jsx_import_info.fragment_symbol_id },
+        .{ .local = transformer.jsx_import_info.createElement_local, .user_id = user_create_element_id, .symbol_id = transformer.jsx_import_info.createElement_symbol_id },
     };
     for (cases) |case| {
         try std.testing.expect(case.local.len > 0);
+        const exact_id = case.symbol_id orelse return error.MissingJsxHelperSymbol;
         const helper_id = edited.helper_scope_map.get(case.local) orelse return error.MissingJsxHelperSymbol;
+        try std.testing.expectEqual(@as(usize, @intCast(@intFromEnum(exact_id))), helper_id);
         try std.testing.expect(helper_id != case.user_id);
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
         var declarations: usize = 0;
@@ -1634,6 +1637,8 @@ test "#4819 JSX dev runtime call binds its isolated import symbol" {
 
     const local = transformer.jsx_import_info.jsxDEV_local;
     const helper_id = edited.helper_scope_map.get(local) orelse return error.MissingJsxDevHelperSymbol;
+    const exact_id = transformer.jsx_import_info.jsxDEV_symbol_id orelse return error.MissingJsxDevHelperSymbol;
+    try std.testing.expectEqual(helper_id, @as(usize, @intCast(@intFromEnum(exact_id))));
     try std.testing.expect(helper_id != user_id);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
     var reads: usize = 0;
@@ -1690,6 +1695,8 @@ test "#4819 standalone JSX imports bind exact symbols without bundler helper imp
     const local = transformer.jsx_import_info.jsx_local;
     try std.testing.expectEqualStrings("_jsx2", local);
     const helper_id = edited.helper_scope_map.get(local) orelse return error.MissingStandaloneJsxHelperSymbol;
+    const exact_id = transformer.jsx_import_info.jsx_symbol_id orelse return error.MissingStandaloneJsxHelperSymbol;
+    try std.testing.expectEqual(helper_id, @as(usize, @intCast(@intFromEnum(exact_id))));
     try std.testing.expect(helper_id != user_id);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
     var declarations: usize = 0;
