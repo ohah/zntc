@@ -19,6 +19,10 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     assert_this_initialized: ?[]const u8 = null,
     assert_this_uninitialized: ?[]const u8 = null,
     possible_constructor_return: ?[]const u8 = null,
+    get_own_prop_desc: ?[]const u8 = null,
+    decorate_class: ?[]const u8 = null,
+    decorate_param: ?[]const u8 = null,
+    def_prop_2: ?[]const u8 = null,
     class_private_method_init: ?[]const u8 = null,
     class_private_method_get: ?[]const u8 = null,
     class_static_private_access: ?[]const u8 = null,
@@ -2125,7 +2129,22 @@ fn appendRuntimeHelpersInternal(
         try buf.appendSlice(allocator, if (minify) ES_DECORATOR_RUNTIME_MIN else ES_DECORATOR_RUNTIME);
     }
     if (helpers.legacy_decorator) {
-        try buf.appendSlice(allocator, if (minify) DECORATOR_RUNTIME_MIN else DECORATOR_RUNTIME);
+        const get_own_prop_desc_name = helperName("__getOwnPropDesc", minify);
+        const decorate_class_name = helperName("__decorateClass", minify);
+        const decorate_param_name = helperName("__decorateParam", minify);
+        const def_prop_2_name = helperName("__defProp2", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{ .default_name = def_prop_2_name, .local_name = local_names.def_prop_2 orelse def_prop_2_name },
+            .{ .default_name = get_own_prop_desc_name, .local_name = local_names.get_own_prop_desc orelse get_own_prop_desc_name },
+            .{ .default_name = decorate_class_name, .local_name = local_names.decorate_class orelse decorate_class_name },
+            .{ .default_name = decorate_param_name, .local_name = local_names.decorate_param orelse decorate_param_name },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) DECORATOR_RUNTIME_MIN else DECORATOR_RUNTIME,
+            &replacements,
+        );
     }
     if (helpers.metadata) {
         const default_name = helperName("__metadata", minify);

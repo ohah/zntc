@@ -1138,6 +1138,65 @@ console.log(${sourceNames.join(', ')}, child.base, child.child);
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}legacy-decorator helper family uses collision-free SymbolId names`, async () => {
+      const sourceNames = minify
+        ? ['$dC', '$dK', '$dp2', '$gD']
+        : ['__decorateClass', '__decorateParam', '__defProp2', '__getOwnPropDesc'];
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceNames[0]} = 7, ${sourceNames[1]} = 8, ${sourceNames[2]} = 9, ${sourceNames[3]} = 10;
+var events: string[] = [];
+function classDec(target: any): any { events.push('class'); return target; }
+function methodDec(_target: any, key: string, descriptor: PropertyDescriptor): PropertyDescriptor { events.push('method:' + key); return descriptor; }
+function parameterDec(_target: any, key: string | undefined, index: number): void { events.push('param:' + key + ':' + index); }
+@classDec
+class Example {
+  @methodDec
+  method(@parameterDec value: number): number { return value + 1; }
+}
+console.log(${sourceNames.join(', ')}, new Example().method(4), events.join(','));
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        '--experimental-decorators',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const runtimeNames = minify
+        ? code.match(
+            /var (\$dp2[a-zA-Z0-9_$]*)=Object\.defineProperty,(\$gD[a-zA-Z0-9_$]*)=Object\.getOwnPropertyDescriptor,(\$dC[a-zA-Z0-9_$]*)=/,
+          )
+        : code.match(
+            /var (__defProp2\d*) = Object\.defineProperty;\s*var (__getOwnPropDesc\d*) = Object\.getOwnPropertyDescriptor;\s*var (__decorateClass\d*) = /,
+          );
+      const parameterName = code.match(
+        minify
+          ? /(\$dK[a-zA-Z0-9_$]*)=\(index,decorator\)=>/
+          : /var (__decorateParam\d*) = \(index, decorator\) =>/,
+      )?.[1];
+      const helperNames = [runtimeNames?.[3], parameterName, runtimeNames?.[1], runtimeNames?.[2]];
+      expect(helperNames.every(Boolean)).toBe(true);
+      expect(new Set(helperNames).size).toBe(4);
+      for (const [index, helperName] of helperNames.entries()) {
+        expect(helperName).not.toBe(sourceNames[index]);
+        expect(code).toContain(`${helperName}(`);
+      }
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('7 8 9 10 5 method:method,param:method:0,class\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 keep-names preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$nm' : '__name';
       const fixture = await createFixture({
