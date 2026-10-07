@@ -19,6 +19,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     tagged_template_literal: ?[]const u8 = null,
     values: ?[]const u8 = null,
     read: ?[]const u8 = null,
+    public_field: ?[]const u8 = null,
 };
 
 // ============================================================
@@ -1808,7 +1809,14 @@ fn appendRuntimeHelpersInternal(
         try buf.appendSlice(allocator, if (minify) YIELD_STAR_RUNTIME_MIN else YIELD_STAR_RUNTIME);
     }
     if (helpers.public_field) {
-        try buf.appendSlice(allocator, if (minify) PUBLIC_FIELD_RUNTIME_MIN else PUBLIC_FIELD_RUNTIME);
+        const default_name = helperName("__publicField", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) PUBLIC_FIELD_RUNTIME_MIN else PUBLIC_FIELD_RUNTIME,
+            default_name,
+            local_names.public_field orelse default_name,
+        );
     }
     if (helpers.to_binary) {
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);

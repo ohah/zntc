@@ -1138,7 +1138,9 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__taggedTemplateLiteral", minify));
             const is_direct_read = directly_emitted_names.read != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__read", minify));
-            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_tagged_template and !is_direct_read and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            const is_direct_public_field = directly_emitted_names.public_field != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__publicField", minify));
+            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1710,6 +1712,8 @@ fn transpileWithCallbackInternal(
             local_names.values = try standaloneRuntimeHelperSymbolName(&transformer, "__values", options.minify_whitespace);
         if (transformer.runtime_helpers.read)
             local_names.read = try standaloneRuntimeHelperSymbolName(&transformer, "__read", options.minify_whitespace);
+        if (transformer.runtime_helpers.public_field)
+            local_names.public_field = try standaloneRuntimeHelperSymbolName(&transformer, "__publicField", options.minify_whitespace);
         if (transformer.runtime_helpers.tagged_template_literal)
             local_names.tagged_template_literal = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", options.minify_whitespace);
         rt.appendRuntimeHelpersWithStandaloneLocalNames(
@@ -3984,6 +3988,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try runtime_aliases.put(allocator, "__asyncValues", "__asyncValues2");
     try runtime_aliases.put(allocator, "__values", "__values2");
     try runtime_aliases.put(allocator, "__read", "__read2");
+    try runtime_aliases.put(allocator, "__publicField", "__publicField2");
     try runtime_aliases.put(allocator, "__taggedTemplateLiteral", "__taggedTemplateLiteral2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
@@ -3994,6 +3999,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try helper_scope_map.put(allocator, "__values2", 5);
     try helper_scope_map.put(allocator, "__read2", 6);
     try helper_scope_map.put(allocator, "__taggedTemplateLiteral2", 7);
+    try helper_scope_map.put(allocator, "__publicField2", 8);
     const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
@@ -4051,6 +4057,13 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .declaration_span = @import("lexer/token.zig").Span.EMPTY,
             .synthetic_name = "__taggedTemplateLiteral2",
         },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__publicField2",
+        },
     };
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
@@ -4073,6 +4086,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__values2", values_resolved);
     const read_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__read", false);
     try std.testing.expectEqualStrings("__read2", read_resolved);
+    const public_field_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__publicField", false);
+    try std.testing.expectEqualStrings("__publicField2", public_field_resolved);
     const tagged_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", false);
     try std.testing.expectEqualStrings("__taggedTemplateLiteral2", tagged_resolved);
 
@@ -4110,6 +4125,11 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__read", false),
+    );
+    _ = transformer.helper_scope_map.remove("__publicField2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__publicField", false),
     );
     _ = transformer.helper_scope_map.remove("__taggedTemplateLiteral2");
     try std.testing.expectError(

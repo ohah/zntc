@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .read = true, .tagged_template_literal = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .public_field = true, .read = true, .tagged_template_literal = true },
         false,
         false,
         .{
@@ -1520,6 +1520,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .async_helper = "__async2",
             .async_values = "__asyncValues2",
             .values = "__values2",
+            .public_field = "__publicField2",
             .read = "__read2",
             .tagged_template_literal = "__taggedTemplateLiteral2",
         },
@@ -1530,9 +1531,38 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const async_index = std.mem.indexOf(u8, combined.items, "var __async2 = (fn) =>").?;
     const async_values_index = std.mem.indexOf(u8, combined.items, "var __asyncValues2 = function(o)").?;
     const values_index = std.mem.indexOf(u8, combined.items, "var __values2 = function(o)").?;
+    const public_field_index = std.mem.indexOf(u8, combined.items, "var __publicField2 = function(obj, key, value)").?;
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < read_index and read_index < tagged_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < public_field_index and public_field_index < read_index and read_index < tagged_index);
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected public field local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .public_field = true },
+        false,
+        false,
+        .{ .public_field = "__publicField2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __publicField2 = function(obj, key, value)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __publicField = function(obj, key, value)"));
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .public_field = true },
+        true,
+        false,
+        .{ .public_field = "$pb2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $pb2=function(obj,key,value)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $pb=function(obj,key,value)"));
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local directly" {
