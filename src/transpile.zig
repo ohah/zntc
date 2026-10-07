@@ -1700,6 +1700,8 @@ fn transpileWithCallbackInternal(
             local_names.rest = try standaloneRuntimeHelperSymbolName(&transformer, "__rest", options.minify_whitespace);
         if (transformer.runtime_helpers.async_helper)
             local_names.async_helper = try standaloneRuntimeHelperSymbolName(&transformer, "__async", options.minify_whitespace);
+        if (transformer.runtime_helpers.values)
+            local_names.values = try standaloneRuntimeHelperSymbolName(&transformer, "__values", options.minify_whitespace);
         if (transformer.runtime_helpers.tagged_template_literal)
             local_names.tagged_template_literal = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", options.minify_whitespace);
         rt.appendRuntimeHelpersWithStandaloneLocalNames(
@@ -3971,13 +3973,15 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try runtime_aliases.put(allocator, "__generator", "__generator2");
     try runtime_aliases.put(allocator, "__rest", "__rest2");
     try runtime_aliases.put(allocator, "__async", "__async2");
+    try runtime_aliases.put(allocator, "__values", "__values2");
     try runtime_aliases.put(allocator, "__taggedTemplateLiteral", "__taggedTemplateLiteral2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
     try helper_scope_map.put(allocator, "__generator2", 1);
     try helper_scope_map.put(allocator, "__rest2", 2);
     try helper_scope_map.put(allocator, "__async2", 3);
-    try helper_scope_map.put(allocator, "__taggedTemplateLiteral2", 4);
+    try helper_scope_map.put(allocator, "__values2", 4);
+    try helper_scope_map.put(allocator, "__taggedTemplateLiteral2", 5);
     const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
@@ -4012,6 +4016,13 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .scope_id = .none,
             .kind = .import_binding,
             .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__values2",
+        },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
             .synthetic_name = "__taggedTemplateLiteral2",
         },
     };
@@ -4030,6 +4041,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__rest2", rest_resolved);
     const async_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__async", false);
     try std.testing.expectEqualStrings("__async2", async_resolved);
+    const values_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__values", false);
+    try std.testing.expectEqualStrings("__values2", values_resolved);
     const tagged_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", false);
     try std.testing.expectEqualStrings("__taggedTemplateLiteral2", tagged_resolved);
 
@@ -4052,6 +4065,11 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__async", false),
+    );
+    _ = transformer.helper_scope_map.remove("__values2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__values", false),
     );
     _ = transformer.helper_scope_map.remove("__taggedTemplateLiteral2");
     try std.testing.expectError(
