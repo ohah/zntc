@@ -645,6 +645,49 @@ console.log(${sourceName}, new C().run());
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 private-field-set preamble uses the collision-free helper SymbolId name`, async () => {
+      // Plain output isolates the tslib UMD alias used by this inline helper.
+      const sourceName = minify ? '$pF' : '__zntcClassPrivateFieldSet';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+class Box {
+  #value = 0;
+  write(value) { return this.#value = value; }
+  read() { return this.#value; }
+}
+var box = new Box();
+console.log(${sourceName}, box.write(7), box.read());
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$pF[a-zA-Z0-9_$]*)=function\(wm,obj,value\)/)?.[1]
+        : code.match(/var (__zntcClassPrivateFieldSet\d*) = function\(wm, obj, value\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(
+        minify ? `${emittedHelper}(_value,this,value)` : `${emittedHelper}(_value, this, value)`,
+      );
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 7 7\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 call-super preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$cS' : '__callSuper';
       const fixture = await createFixture({
