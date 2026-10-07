@@ -1005,7 +1005,10 @@ pub const Linker = struct {
     /// select their stable alias through that same pass with a graph-wide set of
     /// source-visible names; graphs without a semantic owner keep the string fallback.
     pub fn prepareCjsRuntimeName(self: *Linker) !void {
-        if (self.cjs_factory_runtime_name != null) return;
+        if (self.cjs_factory_runtime_name != null) {
+            try self.restoreCjsRuntimeInternalNames();
+            return;
+        }
         var has_included_cjs_runtime = false;
         var runtime_it = self.graph.modulesIterator();
         while (runtime_it.next()) |m| {
@@ -1031,6 +1034,7 @@ pub const Linker = struct {
         } else if (self.cjs_factory_runtime_symbol_id == null) {
             self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
         }
+        try self.restoreCjsRuntimeInternalNames();
     }
 
     /// Code-split and preserve-modules emit each chunk in an independent rename
@@ -1145,6 +1149,116 @@ pub const Linker = struct {
             if (self.rename_table.get(symbol_id)) |name| return name;
         }
         return self.cjs_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+    }
+
+    /// Return the final names for lexical bindings in the raw CJS helper body.
+    /// Missing mappings fail closed whenever a semantic owner exists; graphs
+    /// without semantic data retain the standalone fixed-template spellings.
+    pub fn cjsFactoryRuntimeInternalNames(self: *const Linker) !rt_names.CjsRuntimeInternalNames {
+        const factory_id = self.cjs_factory_runtime_symbol_id orelse {
+            var module_it = self.graph.modulesIterator();
+            while (module_it.next()) |module| {
+                if (module.semantic != null) return error.CjsRuntimeFactoryIdentityMissing;
+            }
+            return .{};
+        };
+        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
+        const ids = owner.cjs_runtime_internal_symbols orelse return error.CjsRuntimeInternalSymbolsMissing;
+        return .{
+            .callback_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.callback_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
+            .module_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.module_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
+            .catch_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
+            .require_function = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.require_function))) orelse return error.CjsRuntimeInternalNameMissing,
+        };
+    }
+
+    fn restoreCjsRuntimeInternalNames(self: *Linker) !void {
+        const factory_id = self.cjs_factory_runtime_symbol_id orelse return;
+        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
+        const ids = owner.cjs_runtime_internal_symbols orelse return error.CjsRuntimeInternalSymbolsMissing;
+        const names: rt_names.CjsRuntimeInternalNames = .{};
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.callback_parameter)), names.callback_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.module_parameter)), names.module_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter)), names.catch_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.require_function)), names.require_function);
+    }
+
+    /// Recover helper-local IDs and fixed output names after a cached rename
+    /// reuse, where a fresh Linker may not have run `prepareCjsRuntimeName`.
+    pub fn prepareCjsRuntimeInternalNames(self: *Linker) !void {
+        if (self.cjs_factory_runtime_symbol_id == null) {
+            var module_it = self.graph.modulesIterator();
+            while (module_it.next()) |module| {
+                const sem = module.semantic orelse continue;
+                const cached_symbol_id: ?semantic_symbol.SymbolId = blk: {
+                    if (module.cjs_runtime_factory_symbol) |existing| {
+                        const raw: usize = @intFromEnum(existing);
+                        if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == .cjs_runtime_factory) break :blk existing;
+                    }
+                    break :blk null;
+                };
+                const symbol_id = cached_symbol_id orelse if (module.wrap_kind == .cjs)
+                    (findCjsRuntimeFactorySymbol(&sem) orelse continue)
+                else
+                    continue;
+                self.cjs_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module.index, @intFromEnum(symbol_id));
+                break;
+            }
+        }
+        if (self.cjs_factory_runtime_symbol_id) |factory_id| {
+            const owner = self.moduleAtMut(@intFromEnum(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
+            const sem = if (owner.semantic) |*value| value else return error.CjsRuntimeInternalSymbolsMissing;
+            var internal_ids_valid = false;
+            if (owner.cjs_runtime_internal_symbols) |ids| {
+                const names: rt_names.CjsRuntimeInternalNames = .{};
+                internal_ids_valid = isCjsRuntimeInternalSymbol(sem, ids.callback_parameter, names.callback_parameter, .parameter) and
+                    isCjsRuntimeInternalSymbol(sem, ids.module_parameter, names.module_parameter, .parameter) and
+                    isCjsRuntimeInternalSymbol(sem, ids.catch_parameter, names.catch_parameter, .catch_binding) and
+                    isCjsRuntimeInternalSymbol(sem, ids.require_function, names.require_function, .function_decl);
+            }
+            if (!internal_ids_valid) {
+                const names: rt_names.CjsRuntimeInternalNames = .{};
+                owner.cjs_runtime_internal_symbols = .{
+                    .callback_parameter = findCjsRuntimeInternalSymbol(sem, names.callback_parameter, .parameter) orelse return error.CjsRuntimeInternalSymbolsMissing,
+                    .module_parameter = findCjsRuntimeInternalSymbol(sem, names.module_parameter, .parameter) orelse return error.CjsRuntimeInternalSymbolsMissing,
+                    .catch_parameter = findCjsRuntimeInternalSymbol(sem, names.catch_parameter, .catch_binding) orelse return error.CjsRuntimeInternalSymbolsMissing,
+                    .require_function = findCjsRuntimeInternalSymbol(sem, names.require_function, .function_decl) orelse return error.CjsRuntimeInternalSymbolsMissing,
+                };
+            }
+        }
+        try self.restoreCjsRuntimeInternalNames();
+    }
+
+    fn findCjsRuntimeFactorySymbol(sem: *const ModuleSemanticData) ?semantic_symbol.SymbolId {
+        for (sem.symbols.items, 0..) |symbol, index| {
+            if (symbol.synthetic_kind == .cjs_runtime_factory) return @enumFromInt(index);
+        }
+        return null;
+    }
+
+    fn findCjsRuntimeInternalSymbol(
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        kind: semantic_symbol.SymbolKind,
+    ) ?semantic_symbol.SymbolId {
+        for (sem.symbols.items, 0..) |symbol, index| {
+            if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
+            return @enumFromInt(index);
+        }
+        return null;
+    }
+
+    fn isCjsRuntimeInternalSymbol(
+        sem: *const ModuleSemanticData,
+        symbol_id: semantic_symbol.SymbolId,
+        name: []const u8,
+        kind: semantic_symbol.SymbolKind,
+    ) bool {
+        const raw: usize = @intFromEnum(symbol_id);
+        if (raw >= sem.symbols.items.len) return false;
+        const symbol = sem.symbols.items[raw];
+        return symbol.synthetic_kind == .cjs_runtime_internal_local and
+            symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
     /// Select a graph-wide ESM factory name before chunk helper preambles emit.
@@ -2130,9 +2244,10 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local => {},
                         }
                         if (sk == .enum_iife_member) continue;
+                        if (sk == .cjs_runtime_internal_local) continue;
                         // The graph-wide CJS runtime helper is emitted by the
                         // preamble; reserveCjsRuntimeName assigns its selected
                         // output spelling to the canonical helper SymbolId.
@@ -4251,6 +4366,9 @@ pub const Linker = struct {
         if (opts.compute_renames) {
             try self.computeRenames();
             if (opts.compute_mangling) try self.computeMangling();
+        }
+        if (self.cjs_factory_runtime_symbol_id != null or !opts.compute_renames) {
+            try self.prepareCjsRuntimeInternalNames();
         }
         // `--minify-whitespace` historically shortened CJS callback parameters
         // even when identifier mangling was disabled. Preserve that behavior

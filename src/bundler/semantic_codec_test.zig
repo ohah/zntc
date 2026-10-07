@@ -133,6 +133,24 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
         .synthetic_kind = .cjs_runtime_factory,
         .synthetic_name = "__commonJS",
     });
+    const cjs_runtime_internal_names = [_][]const u8{ "cb", "mod", "e", "__require" };
+    const cjs_runtime_internal_kinds = [_]@import("../semantic/symbol.zig").SymbolKind{
+        .parameter,
+        .parameter,
+        .catch_binding,
+        .function_decl,
+    };
+    for (cjs_runtime_internal_names, cjs_runtime_internal_kinds) |name, kind| {
+        try ana.symbols.append(alloc, .{
+            .name = Span.EMPTY,
+            .scope_id = .none,
+            .kind = kind,
+            .decl_flags = kind.declFlags(),
+            .declaration_span = Span.EMPTY,
+            .synthetic_kind = .cjs_runtime_internal_local,
+            .synthetic_name = name,
+        });
+    }
     const sem = ModuleSemanticData{
         .symbols = ana.symbols,
         .scopes = ana.scopes.items,
@@ -159,6 +177,7 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     var enum_iife_members: usize = 0;
     var runtime_helper_preambles: usize = 0;
     var cjs_runtime_factories: usize = 0;
+    var cjs_runtime_internal_locals: usize = 0;
     for (sem.symbols.items, 0..) |symbol, raw| {
         switch (symbol.synthetic_kind orelse continue) {
             .namespace_iife_parameter => {
@@ -187,6 +206,12 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
                 try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
                 try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
             },
+            .cjs_runtime_internal_local => {
+                cjs_runtime_internal_locals += 1;
+                try testing.expectEqual(symbol.synthetic_kind, decoded.symbols.items[raw].synthetic_kind);
+                try testing.expectEqual(symbol.kind, decoded.symbols.items[raw].kind);
+                try testing.expectEqualStrings(symbol.synthetic_name, decoded.symbols.items[raw].synthetic_name);
+            },
             else => {},
         }
     }
@@ -195,6 +220,7 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     try testing.expectEqual(@as(usize, 1), enum_iife_members);
     try testing.expectEqual(@as(usize, 1), runtime_helper_preambles);
     try testing.expectEqual(@as(usize, 1), cjs_runtime_factories);
+    try testing.expectEqual(@as(usize, 4), cjs_runtime_internal_locals);
     try testing.expectEqual(@as(?usize, helper_symbol_id), decoded.helper_scope_map.get("__inlineRuntimeHelper"));
     try testing.expectEqual(sem.namespace_member_owners.count(), decoded.namespace_member_owners.count());
     var it = sem.namespace_member_owners.iterator();

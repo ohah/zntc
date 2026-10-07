@@ -62,7 +62,11 @@ pub fn emitBundleRuntimeHelpers(
                 rt.NAMES.CJS_FACTORY_MIN
             else
                 "__commonJS";
-            try rt.appendCommonJsFactoryRuntimeNamed(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name);
+            const internal_names: @import("../../runtime_helper_names.zig").CjsRuntimeInternalNames = if (linker) |l|
+                try l.cjsFactoryRuntimeInternalNames()
+            else
+                .{};
+            try rt.appendCommonJsFactoryRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, internal_names);
         }
         // __toCommonJS는 __copyProps/__defProp 에 의존 -> ESM wrap 런타임을 emit 하면
         // 어떤 import site 도 __toESM 을 부르지 않더라도 __toESM 클러스터가 필요.
@@ -413,7 +417,11 @@ pub fn emitChunkRuntimeHelpers(
                 rt.NAMES.CJS_FACTORY_MIN
             else
                 "__commonJS";
-            try rt.appendCommonJsFactoryRuntimeNamed(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name);
+            const internal_names: @import("../../runtime_helper_names.zig").CjsRuntimeInternalNames = if (linker) |l|
+                try l.cjsFactoryRuntimeInternalNames()
+            else
+                .{};
+            try rt.appendCommonJsFactoryRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, internal_names);
         }
         if (needs_to_esm_runtime or needs_esm_wrap_runtime) {
             try rt.appendToEsmRuntime(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports);

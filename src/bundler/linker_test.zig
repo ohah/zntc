@@ -4,6 +4,7 @@ const Linker = linker_mod.Linker;
 const ImportBinding = linker_mod.ImportBinding;
 const LinkingMetadata = linker_mod.LinkingMetadata;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const CjsRuntimeInternalSymbolIds = @import("module.zig").CjsRuntimeInternalSymbolIds;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const graph_finalize = @import("graph/finalize.zig");
@@ -93,14 +94,21 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     const cjs_module = r.graph.getModule(cjs_index) orelse return error.TestUnexpectedResult;
     try std.testing.expect(cjs_module.cjs_runtime_factory_symbol != null);
     const inner = cjs_module.cjs_runtime_factory_symbol.?;
+    const original_internal_ids = cjs_module.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
     const mutable_owner = @constCast(cjs_module);
     // The Module field is not serialized. Rebuild finalization must recover
     // the identity from the cached semantic symbol even if this module is no
     // longer CJS in the current graph.
     mutable_owner.cjs_runtime_factory_symbol = null;
+    mutable_owner.cjs_runtime_internal_symbols = null;
     mutable_owner.wrap_kind = .none;
     graph_finalize.registerWrapperSymbols(r.graph);
     try std.testing.expectEqual(inner, mutable_owner.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult);
+    const recovered_internal_ids = mutable_owner.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(original_internal_ids.callback_parameter, recovered_internal_ids.callback_parameter);
+    try std.testing.expectEqual(original_internal_ids.module_parameter, recovered_internal_ids.module_parameter);
+    try std.testing.expectEqual(original_internal_ids.catch_parameter, recovered_internal_ids.catch_parameter);
+    try std.testing.expectEqual(original_internal_ids.require_function, recovered_internal_ids.require_function);
     mutable_owner.wrap_kind = .cjs;
     const sem = cjs_module.semantic orelse return error.TestUnexpectedResult;
     const symbol = sem.symbols.items[@intFromEnum(inner)];
@@ -123,6 +131,14 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
         mutable_sem.symbols.items[@intFromEnum(inner)].synthetic_name = "runtime_factory_identity_without_spelling";
     }
     try r.linker.computeRenames();
+    try expectCjsRuntimeInternalNames(&r.linker, cjs_index, recovered_internal_ids);
+    mutable_owner.cjs_runtime_internal_symbols = null;
+    try std.testing.expectError(error.CjsRuntimeInternalSymbolsMissing, r.linker.cjsFactoryRuntimeInternalNames());
+    mutable_owner.cjs_runtime_internal_symbols = recovered_internal_ids;
+    const callback_id = bundler_symbol.SymbolID.make(cjs_index, @intFromEnum(recovered_internal_ids.callback_parameter));
+    const removed_callback_name = r.linker.rename_table.map.fetchRemove(callback_id) orelse return error.TestUnexpectedResult;
+    try std.testing.expectError(error.CjsRuntimeInternalNameMissing, r.linker.cjsFactoryRuntimeInternalNames());
+    try r.linker.rename_table.put(r.linker.allocator, callback_id, removed_callback_name.value);
     const single_bundle_name = try std.testing.allocator.dupe(u8, r.linker.cjsFactoryRuntimeName());
     defer std.testing.allocator.free(single_bundle_name);
     try std.testing.expectEqualStrings("__commonJS$3", single_bundle_name);
@@ -132,6 +148,7 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     // and wrapper references must restore the same graph-wide identity mapping.
     r.graph.code_splitting = true;
     try r.linker.prepareCjsRuntimeName();
+    try expectCjsRuntimeInternalNames(&r.linker, cjs_index, recovered_internal_ids);
     try std.testing.expectEqualStrings(single_bundle_name, r.linker.cjsFactoryRuntimeName());
     try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
 
@@ -145,6 +162,7 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
     const chunk_modules = [_]ModuleIndex{ entry_index, cjs_index };
     try r.linker.computeRenamesForModules(&chunk_modules, &.{});
+    try expectCjsRuntimeInternalNames(&r.linker, cjs_index, recovered_internal_ids);
     try std.testing.expectEqualStrings(single_bundle_name, r.linker.cjsFactoryRuntimeName());
     try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
 
@@ -153,6 +171,7 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     // still restore the same exact-ID mapping.
     const split_cjs_chunk = [_]ModuleIndex{second_cjs_index};
     try r.linker.computeRenamesForModules(&split_cjs_chunk, &.{});
+    try expectCjsRuntimeInternalNames(&r.linker, cjs_index, recovered_internal_ids);
     try std.testing.expectEqualStrings(single_bundle_name, r.linker.cjsFactoryRuntimeName());
     try std.testing.expectEqualStrings(single_bundle_name, r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult);
 
@@ -184,6 +203,49 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
         r.linker.cjsFactoryRuntimeName(),
         r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult,
     );
+
+    // Dev rename reuse can skip computeRenames on a fresh Linker. Finalize
+    // must still rediscover the cached helper identity and restore its names.
+    r.linker.clearCanonicalNames();
+    r.linker.cjs_factory_runtime_symbol_id = null;
+    mutable_owner.cjs_runtime_factory_symbol = @enumFromInt(999_999);
+    mutable_owner.cjs_runtime_internal_symbols = .{
+        .callback_parameter = @enumFromInt(999_999),
+        .module_parameter = @enumFromInt(999_999),
+        .catch_parameter = @enumFromInt(999_999),
+        .require_function = @enumFromInt(999_999),
+    };
+    try r.linker.finalize(.{
+        .compute_renames = false,
+        .compute_mangling = false,
+        .populate_namespace_accesses = false,
+        .skip_ref_counts = true,
+    });
+    try expectCjsRuntimeInternalNames(&r.linker, cjs_index, recovered_internal_ids);
+}
+
+fn expectCjsRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids: CjsRuntimeInternalSymbolIds) !void {
+    const names = try linker.cjsFactoryRuntimeInternalNames();
+    try std.testing.expectEqualStrings("cb", names.callback_parameter);
+    try std.testing.expectEqualStrings("mod", names.module_parameter);
+    try std.testing.expectEqualStrings("e", names.catch_parameter);
+    try std.testing.expectEqualStrings("__require", names.require_function);
+    try std.testing.expectEqualStrings(
+        names.callback_parameter,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.callback_parameter))) orelse return error.TestUnexpectedResult,
+    );
+    try std.testing.expectEqualStrings(
+        names.module_parameter,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.module_parameter))) orelse return error.TestUnexpectedResult,
+    );
+    try std.testing.expectEqualStrings(
+        names.catch_parameter,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.catch_parameter))) orelse return error.TestUnexpectedResult,
+    );
+    try std.testing.expectEqualStrings(
+        names.require_function,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.require_function))) orelse return error.TestUnexpectedResult,
+    );
 }
 
 test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the runtime factory" {
@@ -210,6 +272,7 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
         semantic_symbol.SyntheticKind.cjs_runtime_factory,
         entry_sem.symbols.items[@intFromEnum(runtime_inner)].synthetic_kind.?,
     );
+    const internal_ids = entry.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
 
     var has_semantic_less_cjs = false;
     var module_it = r.graph.modulesIterator();
@@ -219,6 +282,11 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
     try std.testing.expect(has_semantic_less_cjs);
 
     try r.linker.computeRenames();
+    try expectCjsRuntimeInternalNames(&r.linker, entry_index, internal_ids);
+    const saved_factory_id = r.linker.cjs_factory_runtime_symbol_id orelse return error.TestUnexpectedResult;
+    r.linker.cjs_factory_runtime_symbol_id = null;
+    try std.testing.expectError(error.CjsRuntimeFactoryIdentityMissing, r.linker.cjsFactoryRuntimeInternalNames());
+    r.linker.cjs_factory_runtime_symbol_id = saved_factory_id;
     const runtime_id = bundler_symbol.SymbolID.make(entry_index, @intFromEnum(runtime_inner));
     const runtime_name = r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("__commonJS", runtime_name);

@@ -233,6 +233,10 @@ pub const SyntheticKind = enum(u8) {
     /// Graph-wide CJS runtime factory declaration emitted in the output preamble.
     /// Linker wrapper callsites and the raw helper declaration share this identity.
     cjs_runtime_factory,
+    /// Lexical locals inside the raw CJS runtime factory template. The graph
+    /// records one exact identity per helper binding and the emitter rewrites
+    /// its declaration/references from the final rename table.
+    cjs_runtime_internal_local,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
