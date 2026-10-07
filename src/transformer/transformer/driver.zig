@@ -169,6 +169,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
         try styled_imports.appendStyledComponentsImport(
             self,
             self.plugins.styled_components.css_prop_inject_name,
+            self.plugins.styled_components.css_prop_inject_symbol_id,
             root_span,
             &imports,
         );

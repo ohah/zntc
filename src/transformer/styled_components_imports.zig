@@ -7,10 +7,12 @@ const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 
 pub fn appendStyledComponentsImport(
     self: anytype,
     local_name: []const u8,
+    symbol_id: ?SymbolId,
     span: Span,
     out: *std.ArrayList(NodeIndex),
 ) !void {
@@ -46,6 +48,12 @@ pub fn appendStyledComponentsImport(
         .data = .{ .extra = extra_start },
     });
 
-    try self.bindRuntimeHelperImport(local, local_name, anchor);
+    if (symbol_id) |id| {
+        try self.bindRuntimeHelperImportById(local, local_name, id, anchor);
+    } else if (self.semantic_edit_enabled) {
+        std.debug.panic("styled-components css-prop import is missing its reserved helper SymbolId", .{});
+    } else {
+        try self.bindRuntimeHelperImport(local, local_name, anchor);
+    }
     try out.append(self.allocator, declaration);
 }

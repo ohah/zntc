@@ -1726,7 +1726,14 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         state.css_prop_inject_name_resolved = true;
         const ref = try es_helpers.makeExactSyntheticRef(self, resolved);
         try self.markRuntimeHelperRef(ref);
-        _ = try self.trackRuntimeHelperImportRef(ref, resolved);
+        if (try self.trackRuntimeHelperImportRef(ref, resolved)) |symbol_id| {
+            if (state.css_prop_inject_symbol_id) |existing| {
+                if (existing != symbol_id)
+                    std.debug.panic("styled-components css-prop helper changed SymbolId within one module", .{});
+            } else {
+                state.css_prop_inject_symbol_id = symbol_id;
+            }
+        }
         break :blk ref;
     };
     // intrinsic: `styled.<tag>` (static_member), custom: `styled(<expr>)` (call_expression)

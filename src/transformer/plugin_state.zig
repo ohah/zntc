@@ -15,6 +15,7 @@ const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const ast_mod = @import("../parser/ast.zig");
 const NodeIndex = ast_mod.NodeIndex;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 
 pub const WorkletState = struct {
     /// auto-workletization 플래그.
@@ -171,6 +172,9 @@ pub const StyledComponentsState = struct {
     /// auto-inject 된 styled binding 의 실제 이름. 모든 cssProp 생성 참조와 import 가 공유한다.
     /// default `"styled"`.
     css_prop_inject_name: []const u8 = "styled",
+
+    /// 생성 reference가 처음 연결된 exact helper identity. 나중의 import 생성도 이 ID를 쓴다.
+    css_prop_inject_symbol_id: ?SymbolId = null,
 
     /// `css_prop_inject_name` 이 heap-owned 인지 (mangling 발생 시 true). deinit 시
     /// pointer 비교 대신 이 flag 보고 free 결정 — Zig 의 string-literal pooling 은
