@@ -1019,8 +1019,8 @@ pub fn makeNsVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8
 /// dev mode: `(__zntc_modules["<dev_id>"].fn(), __toCommonJS(__zntc_modules["<dev_id>"].exports))`
 /// HMR에서 new Function()이 번들 스코프 밖에서 실행되므로 레지스트리 동적 lookup 사용.
 /// require_rewrites(metadata.zig) 및 default re-export(esm_wrap.zig)에서 공유.
-pub fn fmtDevRequireExpr(allocator: std.mem.Allocator, dev_id: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "(__zntc_modules[\"{s}\"].fn(), __toCommonJS(__zntc_modules[\"{s}\"].exports))", .{ dev_id, dev_id });
+pub fn fmtDevRequireExpr(allocator: std.mem.Allocator, dev_id: []const u8, to_common_js_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "(__zntc_modules[\"{s}\"].fn(), {s}(__zntc_modules[\"{s}\"].exports))", .{ dev_id, to_common_js_name, dev_id });
 }
 
 /// dev mode: `__zntc_modules["<dev_id>"].fn` — factory function reference (호출 없음).

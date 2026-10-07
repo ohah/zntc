@@ -84,6 +84,70 @@ pub const NAMES = struct {
     pub const WRAP_REGEXP_MIN = "$wR"; // __wrapRegExp (named capture downlevel)
 };
 
+/// Bindings emitted together by the raw ESM interop preamble. Each helper is
+/// selected as one graph-wide output identity so direct eval and source-level
+/// bindings cannot collide with the injected declarations.
+pub const EsmInteropRuntimeHelper = enum(u4) {
+    create,
+    get_proto_of,
+    def_prop,
+    get_own_prop_names,
+    get_own_prop_desc,
+    has_own,
+    copy_props,
+    to_esm,
+    export_helper,
+    to_common_js,
+};
+
+pub const ESM_INTEROP_RUNTIME_HELPERS = [_]EsmInteropRuntimeHelper{
+    .create,
+    .get_proto_of,
+    .def_prop,
+    .get_own_prop_names,
+    .get_own_prop_desc,
+    .has_own,
+    .copy_props,
+    .to_esm,
+    .export_helper,
+    .to_common_js,
+};
+
+pub fn esmInteropRuntimeHelperBaseName(helper: EsmInteropRuntimeHelper) []const u8 {
+    return switch (helper) {
+        .create => "__create",
+        .get_proto_of => "__getProtoOf",
+        .def_prop => "__defProp",
+        .get_own_prop_names => "__getOwnPropNames",
+        .get_own_prop_desc => "__getOwnPropDesc",
+        .has_own => "__hasOwn",
+        .copy_props => "__copyProps",
+        .to_esm => "__toESM",
+        .export_helper => "__export",
+        .to_common_js => "__toCommonJS",
+    };
+}
+
+pub const EsmInteropRuntimeNames = struct {
+    names: [@typeInfo(EsmInteropRuntimeHelper).@"enum".fields.len][]const u8 = undefined,
+
+    pub fn get(self: EsmInteropRuntimeNames, helper: EsmInteropRuntimeHelper) []const u8 {
+        return self.names[@intFromEnum(helper)];
+    }
+
+    pub fn set(self: *EsmInteropRuntimeNames, helper: EsmInteropRuntimeHelper, name: []const u8) void {
+        self.names[@intFromEnum(helper)] = name;
+    }
+};
+
+pub fn defaultEsmInteropRuntimeNames(minify: bool) EsmInteropRuntimeNames {
+    var result: EsmInteropRuntimeNames = .{};
+    inline for (ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+        result.set(helper, helperName(esmInteropRuntimeHelperBaseName(helper), minify));
+    }
+    return result;
+}
+
 /// Identifier spellings used only inside the raw CJS runtime factory template.
 /// Their bindings are represented by graph-level synthetic SymbolIDs; output
 /// code receives these names from the linker's final rename table.

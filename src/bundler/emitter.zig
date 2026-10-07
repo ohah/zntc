@@ -500,6 +500,11 @@ pub fn emitWithTreeShaking(
     @import("../transformer/minify.zig").resetDeadToplevelAudit();
     defer @import("../transformer/minify.zig").dumpDeadToplevelAudit();
 
+    // ESM interop helper identities are shared by each module's injected
+    // metadata and runtime preamble. Resolve them before the parallel emit
+    // workers start so no worker lazily mutates the graph or linker caches.
+    if (linker) |l| try l.prepareEsmInteropRuntimeNamesIfNeeded();
+
     // 1. JS/JSON 모듈 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
     defer sorted.deinit(allocator);
@@ -2200,7 +2205,7 @@ pub fn emitModule(
                     .esm => {
                         const init_name = tgt.allocInitName(arena_alloc, &l.rename_table) catch continue;
                         const exp_name = tgt.allocExportsName(arena_alloc, &l.rename_table) catch continue;
-                        const to_cjs: []const u8 = if (options.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
+                        const to_cjs = try l.esmInteropRuntimeHelperName(.to_common_js);
                         per[mi] = std.fmt.allocPrint(arena_alloc, "({s}(),{s}({s}))", .{ init_name, to_cjs, exp_name }) catch null;
                     },
                     // .none = wrap 누락(force-wrap 실패 등) → null 로 두면 codegen 이

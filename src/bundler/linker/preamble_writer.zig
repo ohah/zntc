@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("../types.zig");
 const rt = @import("../runtime_helpers.zig");
+const rt_names = @import("../../runtime_helper_names.zig");
 
 /// CJS 모듈을 가져오는 ESM-side import 가 `__toESM` 래핑을 필요로 하는지.
 /// namespace 또는 default import 면 `__toESM(req())` 형태로 emit, 그 외 named
@@ -117,6 +118,10 @@ pub const PreambleWriter = struct {
     /// #1621: minify 시 preamble 내부 runtime helper 호출을 축약 이름으로 emit.
     /// Linker.minify_whitespace 와 동일 값. dev 경로에서는 무관 (별도 writer).
     minify: bool = false,
+    /// Linker-selected graph-wide identity for the raw `__toESM` helper.
+    to_esm_name: ?[]const u8 = null,
+    /// Linker-selected graph-wide identity for the raw `__copyProps` helper.
+    copy_props_name: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) PreambleWriter {
         return .{ .allocator = allocator };
@@ -242,8 +247,7 @@ pub const PreambleWriter = struct {
         try self.write(" = ");
         if (cjsImportNeedsToEsmInterop(is_namespace, imported_name)) {
             // Rolldown Interop: node → __toESM(req(), 1), babel → __toESM(req())
-            // #1621: minify 시 __toESM → $tE 축약.
-            const toesm_name: []const u8 = if (self.minify) rt.NAMES.TOESM_MIN else "__toESM";
+            const toesm_name = self.to_esm_name orelse rt_names.helperName("__toESM", self.minify);
             const toesm_suffix: []const u8 = if (interop == .node) "(), 1)" else "())";
             try self.write(toesm_name);
             try self.write("(");
@@ -286,7 +290,8 @@ pub const PreambleWriter = struct {
         if (!assign_only) try self.write("var ");
         try self.write(local_name);
         try self.write(" = ");
-        if (to_esm) try self.write("__toESM(");
+        if (to_esm) try self.write(self.to_esm_name orelse rt_names.helperName("__toESM", self.minify));
+        if (to_esm) try self.write("(");
         try self.write("__zntc_require(\"");
         try self.write(path);
         try self.write("\")");
@@ -333,7 +338,7 @@ pub const PreambleWriter = struct {
     /// plain CJS(`exports.x=`)는 module.exports 에 `default` 키가 없어 raw require() 복사로
     /// 충분하며 default 누출이 없다(`export *` 는 default 비전파 — spec 일치).
     pub fn writeNamespaceCopyProps(self: *PreambleWriter, ns_name: []const u8, req_var: []const u8) !void {
-        const copy_props_name: []const u8 = if (self.minify) rt.NAMES.COPY_PROPS_MIN else "__copyProps";
+        const copy_props_name = self.copy_props_name orelse rt_names.helperName("__copyProps", self.minify);
         try self.write(copy_props_name);
         try self.write("(");
         try self.write(ns_name);

@@ -454,6 +454,7 @@ pub fn buildMetadataForAst(
     }
 
     const m = m_opt.?.*;
+    try self.prepareEsmInteropRuntimeNamesIfNeeded();
 
     // 래핑 모듈 + semantic 없음: require_rewrites만 구축하고 조기 반환.
     // semantic 있으면 import_bindings 처리 경로로 진행하여
@@ -516,6 +517,8 @@ pub fn buildMetadataForAst(
     // CJS import preamble writer (#1621: minify 시 __toESM → $tE 등 축약)
     var preamble = PreambleWriter.init(self.allocator);
     preamble.minify = self.minify_whitespace;
+    preamble.to_esm_name = self.currentEsmInteropRuntimeNames().get(.to_esm);
+    preamble.copy_props_name = self.currentEsmInteropRuntimeNames().get(.copy_props);
 
     // __esm 모듈의 init_xxx() 호출 중복 방지 (같은 모듈을 여러 binding이 참조할 때)
     var esm_init_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1617,8 +1620,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                 }
                 const exports_name = try m.allocExportsName(self.allocator, &self.rename_table);
                 defer self.allocator.free(exports_name);
-                // #1621: minify 시 __toCommonJS → $tC 축약.
-                const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
+                const to_cjs_name = try self.esmInteropRuntimeHelperName(.to_common_js);
                 const call_expr = try std.fmt.allocPrint(self.allocator, "{s}({s})", .{ to_cjs_name, exports_name });
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else if (m.wrap_kind == .cjs) {
@@ -1647,15 +1649,19 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                 self.allocator.free(old);
             }
             if (self.useDevModuleRegistry()) {
-                const call_expr = try types.fmtDevRequireExpr(self.allocator, target_mod.dev_id);
+                const to_cjs_name = try self.esmInteropRuntimeHelperName(.to_common_js);
+                const call_expr = try std.fmt.allocPrint(
+                    self.allocator,
+                    "(__zntc_modules[\"{s}\"].fn(), {s}(__zntc_modules[\"{s}\"].exports))",
+                    .{ target_mod.dev_id, to_cjs_name, target_mod.dev_id },
+                );
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else {
                 const init_name = try target_mod.allocInitName(self.allocator, &self.rename_table);
                 defer self.allocator.free(init_name);
                 const exports_name = try target_mod.allocExportsName(self.allocator, &self.rename_table);
                 defer self.allocator.free(exports_name);
-                // #1621: minify 시 __toCommonJS → $tC 축약.
-                const to_cjs_name: []const u8 = if (self.minify_whitespace) rt.NAMES.TOCOMMONJS_MIN else "__toCommonJS";
+                const to_cjs_name = try self.esmInteropRuntimeHelperName(.to_common_js);
                 // ⚠️ #4598: 여기엔 `await` 를 넣지 않는다. 이 문자열은 모듈 안 **모든**
                 //    `require(spec)` 지점에 치환되는데, RN `inline_requires` 처럼 중첩
                 //    함수 본문에 있는 require 까지 포함된다 — non-async 함수 안에 await 가
@@ -2034,6 +2040,7 @@ pub fn buildDevMetadataForAst(
     }
 
     const m = m_opt.?.*;
+    try self.prepareEsmInteropRuntimeNamesIfNeeded();
 
     // CJS 래핑 모듈은 dev mode에서도 기존대로 유지
     if (m.wrap_kind == .cjs) {
@@ -2054,6 +2061,8 @@ pub fn buildDevMetadataForAst(
     // 2. __zntc_require preamble 생성
     var dev_preamble = PreambleWriter.init(self.allocator);
     defer dev_preamble.deinit();
+    dev_preamble.minify = self.minify_whitespace;
+    dev_preamble.to_esm_name = self.currentEsmInteropRuntimeNames().get(.to_esm);
 
     // bindings를 import_record_index별로 분류
     const RecordInfo = struct {

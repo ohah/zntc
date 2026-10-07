@@ -234,6 +234,10 @@ pub const Linker = struct {
     /// ESM factory has the same raw-preamble boundary as the CJS factory.
     esm_factory_runtime_name: ?[]const u8 = null,
     esm_factory_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
+    /// Graph-wide names for the raw ESM interop preamble bindings.
+    esm_interop_runtime_names: ?rt_names.EsmInteropRuntimeNames = null,
+    esm_interop_runtime_names_owned: bool = false,
+    esm_interop_runtime_symbol_ids: [rt_names.ESM_INTEROP_RUNTIME_HELPERS.len]?bundler_symbol.SymbolID = @splat(null),
 
     /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
     /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
@@ -525,6 +529,11 @@ pub const Linker = struct {
         if (self.cjs_factory_runtime_name) |name| self.allocator.free(name);
         if (self.to_binary_runtime_name) |name| self.allocator.free(name);
         if (self.esm_factory_runtime_name) |name| self.allocator.free(name);
+        if (self.esm_interop_runtime_names_owned) {
+            if (self.esm_interop_runtime_names) |names| {
+                for (names.names) |name| self.allocator.free(name);
+            }
+        }
         // nested-binding 캐시: inner set 해제(computeRenames 에러 경로 안전망; 정상 경로는 defer 가 이미 clear).
         self.clearNestedBindingCache();
         self.nested_binding_cache.deinit(self.allocator);
@@ -983,6 +992,9 @@ pub const Linker = struct {
             try self.reserveEsmRuntimeName();
             break;
         }
+        if (self.esm_interop_runtime_names != null or self.graphMayNeedEsmInteropRuntime()) {
+            try self.reserveEsmInteropRuntimeNames();
+        }
 
         // (#4530) **생성된 래퍼 심볼 이름도 예약**한다 — CJS `require_X`, ESM-wrap
         // `init_X`/`exports_X`. 이들은 emitter 가 직접 찍는 top-level 선언인데
@@ -1249,8 +1261,12 @@ pub const Linker = struct {
             if (m.semantic) |sem| {
                 var unresolved = sem.unresolved_references.keyIterator();
                 while (unresolved.next()) |name| try self.reserved_globals.put(self.allocator, name.*, {});
-                if (sem.scope_maps.len > 0) {
-                    var scope_names = sem.scope_maps[0].iterator();
+                // Runtime callsites can be injected into nested expressions
+                // (for example dynamic-import rewrites). Avoid every source
+                // binding, not only module-scope declarations, so direct eval
+                // and nested shadowing keep observing the source binding.
+                for (sem.scope_maps) |scope_map| {
+                    var scope_names = scope_map.iterator();
                     while (scope_names.next()) |entry| try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
                 }
             }
@@ -1501,6 +1517,166 @@ pub const Linker = struct {
                 try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
             }
         }
+    }
+
+    /// Resolve all raw ESM interop helper bindings from graph-level synthetic
+    /// SymbolIDs. Fully semantic-less graphs retain the canonical template
+    /// names; a semantic graph must have a parse-backed owner for every helper.
+    pub fn esmInteropRuntimeNames(self: *const Linker) !rt_names.EsmInteropRuntimeNames {
+        const mutable = @constCast(self);
+        try mutable.prepareEsmInteropRuntimeNames();
+        return mutable.esm_interop_runtime_names orelse return error.EsmInteropRuntimeNamesMissing;
+    }
+
+    pub fn esmInteropRuntimeHelperName(self: *const Linker, helper: rt_names.EsmInteropRuntimeHelper) ![]const u8 {
+        const names = try self.esmInteropRuntimeNames();
+        return names.get(helper);
+    }
+
+    pub fn currentEsmInteropRuntimeNames(self: *const Linker) rt_names.EsmInteropRuntimeNames {
+        return self.esm_interop_runtime_names orelse rt_names.defaultEsmInteropRuntimeNames(self.minify_whitespace);
+    }
+
+    pub fn prepareEsmInteropRuntimeNames(self: *Linker) !void {
+        if (self.esm_interop_runtime_names != null) return;
+
+        var has_semantic_module = false;
+        var anchor_index: ?ModuleIndex = null;
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (m.semantic == null) continue;
+            has_semantic_module = true;
+            if (m.parse_arena != null and anchor_index == null) anchor_index = m.index;
+            const sem = m.semantic orelse continue;
+            inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                const index = @intFromEnum(helper);
+                if (self.esm_interop_runtime_symbol_ids[index] == null) {
+                    const base_name = rt_names.esmInteropRuntimeHelperBaseName(helper);
+                    if (findBundlerRuntimeHelperSymbol(&sem, base_name)) |inner| {
+                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    }
+                }
+            }
+        }
+
+        if (has_semantic_module) {
+            if (anchor_index) |owner_index| {
+                var owner = self.moduleAtMut(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeOwnerMissing;
+                const arena = if (owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeOwnerMissing;
+                const sem = if (owner.semantic) |*value| value else return error.EsmInteropRuntimeOwnerMissing;
+                inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                    const index = @intFromEnum(helper);
+                    if (self.esm_interop_runtime_symbol_ids[index] == null) {
+                        const base_name = rt_names.esmInteropRuntimeHelperBaseName(helper);
+                        const inner = try semantic_symbol.extendSymbol(
+                            arena,
+                            &sem.symbols,
+                            .variable_var,
+                            .bundler_runtime_helper,
+                            base_name,
+                            Span.EMPTY,
+                        );
+                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner));
+                    }
+                }
+            } else {
+                inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                    if (self.esm_interop_runtime_symbol_ids[@intFromEnum(helper)] == null) return error.EsmInteropRuntimeIdentityMissing;
+                }
+            }
+
+            var names: rt_names.EsmInteropRuntimeNames = .{};
+            var owned_names: [rt_names.ESM_INTEROP_RUNTIME_HELPERS.len][]const u8 = undefined;
+            var owned_count: usize = 0;
+            errdefer for (owned_names[0..owned_count]) |name| self.allocator.free(name);
+            inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                const index = @intFromEnum(helper);
+                const symbol_id = self.esm_interop_runtime_symbol_ids[index] orelse return error.EsmInteropRuntimeIdentityMissing;
+                const base_name = rt_names.helperName(rt_names.esmInteropRuntimeHelperBaseName(helper), self.minify_whitespace);
+                const selected_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base_name);
+                owned_names[owned_count] = selected_name;
+                owned_count += 1;
+                names.set(helper, selected_name);
+            }
+            self.esm_interop_runtime_names = names;
+            self.esm_interop_runtime_names_owned = true;
+            return;
+        }
+
+        // No semantic module exists at all. Preserve the existing low-level
+        // runtime template names as the explicitly supported fallback.
+        self.esm_interop_runtime_names = rt_names.defaultEsmInteropRuntimeNames(self.minify_whitespace);
+    }
+
+    pub fn prepareEsmInteropRuntimeNamesIfNeeded(self: *const Linker) !void {
+        const mutable = @constCast(self);
+        if (mutable.esm_interop_runtime_names != null or !mutable.graphMayNeedEsmInteropRuntime()) return;
+        try mutable.prepareEsmInteropRuntimeNames();
+    }
+
+    fn reserveEsmInteropRuntimeNames(self: *Linker) !void {
+        const names = try self.esmInteropRuntimeNames();
+        inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+            const selected_name = names.get(helper);
+            try self.reserved_globals.put(self.allocator, selected_name, {});
+            const index = @intFromEnum(helper);
+            if (self.esm_interop_runtime_symbol_ids[index]) |symbol_id| {
+                if (self.rename_table.get(symbol_id)) |existing| {
+                    if (!std.mem.eql(u8, existing, selected_name)) {
+                        try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, selected_name));
+                    }
+                } else {
+                    try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, selected_name));
+                }
+            }
+        }
+    }
+
+    fn moduleMayNeedEsmInteropRuntime(self: *const Linker, module: *const Module) bool {
+        if (module.wrap_kind == .esm) return true;
+
+        for (module.import_bindings) |binding| {
+            if (binding.kind != .namespace and !binding.importsDefault()) continue;
+            if (binding.import_record_index >= module.import_records.len) continue;
+            const record = module.import_records[binding.import_record_index];
+            if (record.resolved.isNone()) continue;
+            const target = self.graph.getModule(record.resolved) orelse continue;
+            if (target.wrap_kind == .esm) return true;
+            if (target.wrap_kind != .cjs) continue;
+            if (binding.kind == .namespace or !module.canUseDirectCjsDefaultImport(target)) return true;
+        }
+
+        for (module.import_records) |record| {
+            if (record.kind == .dynamic_import and !record.resolved.isNone()) {
+                const target = self.graph.getModule(record.resolved) orelse continue;
+                if (target.wrap_kind == .cjs) return true;
+                if (target.wrap_kind == .esm) return true;
+            }
+            if (record.kind != .require_context) continue;
+            var context_modules = self.graph.modulesIterator();
+            while (context_modules.next()) |target| {
+                if (target.is_context_dep and target.wrap_kind != .none) return true;
+            }
+        }
+        return false;
+    }
+
+    fn graphMayNeedEsmInteropRuntime(self: *const Linker) bool {
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |module| {
+            if (self.tree_shaker_active and !module.is_included) continue;
+            if (self.moduleMayNeedEsmInteropRuntime(module)) return true;
+        }
+        return false;
+    }
+
+    fn chunkMayNeedEsmInteropRuntime(self: *const Linker, module_indices: []const ModuleIndex) bool {
+        for (module_indices) |module_index| {
+            const module = self.graph.getModule(module_index) orelse continue;
+            if (self.tree_shaker_active and !module.is_included) continue;
+            if (self.moduleMayNeedEsmInteropRuntime(module)) return true;
+        }
+        return false;
     }
 
     fn hasIncludedEsmRuntime(self: *const Linker) bool {
@@ -4164,7 +4340,8 @@ pub const Linker = struct {
     ) ![]const u8 {
         const req_var = try cjs_mod.allocRequireName(allocator, &self.rename_table);
         defer allocator.free(req_var);
-        const toesm: []const u8 = if (minify) rt_names.NAMES.TOESM_MIN else "__toESM";
+        const toesm = try self.esmInteropRuntimeHelperName(.to_esm);
+        _ = minify;
         // (#4510) namespace: `import * as ns from './x.cjs'` 의 ns 객체 = `__toESM(require_X())`.
         // preamble writer 의 namespace 분기(writeCjsImportInner)와 **같은 식** — provider 가
         // materialize 한 값을 소비자가 그대로 쓰므로 어긋나면 same-chunk/cross-chunk 동작이 갈린다.
@@ -4817,6 +4994,7 @@ pub const Linker = struct {
         if (needs_cjs_runtime) try self.reserveCjsRuntimeName();
         if (needs_esm_runtime) try self.reserveEsmRuntimeName();
         if (needs_to_binary_runtime) try self.reserveToBinaryRuntimeName();
+        if (self.chunkMayNeedEsmInteropRuntime(module_indices)) try self.reserveEsmInteropRuntimeNames();
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
         var name_to_owners: NameToOwnersMap = .empty;

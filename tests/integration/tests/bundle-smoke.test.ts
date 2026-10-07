@@ -2147,6 +2147,99 @@ describe('에셋 로더 + RN 프리셋', () => {
     expect(result.bundleOutput).toContain('$e$1({');
   });
 
+  test('ESM interop runtime helper SIDs preserve direct-eval bindings in plain and minified bundles', async () => {
+    const helperCases = [
+      ['__create', '$cr'],
+      ['__getProtoOf', '$gP'],
+      ['__defProp', '$dp'],
+      ['__getOwnPropNames', '$gN'],
+      ['__getOwnPropDesc', '$gD'],
+      ['__hasOwn', '$hO'],
+      ['__copyProps', '$cp'],
+      ['__toESM', '$tE'],
+      ['__export', '$x'],
+      ['__toCommonJS', '$tC'],
+    ] as const;
+
+    for (const minified of [false, true]) {
+      const helperNames = helperCases.map(([plain, compact]) => (minified ? compact : plain));
+      const declarations = helperNames
+        .map((name, index) => `const ${name} = 'source-${index}';`)
+        .join('\n');
+      const evalArguments = helperNames.join(',');
+      const result = await bundleAndRun(
+        {
+          'package.json': JSON.stringify({ type: 'module' }),
+          'entry.ts': `import lib from './lib.cjs';\n${declarations}\neval('console.log([${evalArguments}].join(","))');\nconst other = require('./mod.js');\nexport const result = lib.value + other.value;\nconsole.log(result);`,
+          'lib.cjs': `module.exports = { value: 7 };`,
+          'mod.js': `export const value = 3;`,
+        },
+        'entry.ts',
+        ['--format=esm', ...(minified ? ['--minify-whitespace'] : [])],
+      );
+      cleanup = result.cleanup;
+
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe(
+        `${helperNames.map((_, index) => `source-${index}`).join(',')}\n10`,
+      );
+      for (const [plain, compact] of helperCases) {
+        const selected = `${minified ? compact : plain}$1`;
+        expect(result.bundleOutput).toContain(selected);
+      }
+      cleanup = undefined;
+      await result.cleanup();
+    }
+  });
+
+  test('nested direct-eval bindings do not shadow dynamic-import interop helpers', async () => {
+    for (const minified of [false, true]) {
+      const helperName = minified ? '$tE' : '__toESM';
+      const result = await bundleAndRun(
+        {
+          'entry.ts': `async function load() {\n  const ${helperName} = 'source';\n  eval('console.log(${helperName})');\n  const mod = await import('./dep.cjs');\n  return mod.default.value;\n}\nconsole.log(await load());`,
+          'dep.cjs': `module.exports = { value: 13 };`,
+        },
+        'entry.ts',
+        ['--format=esm', ...(minified ? ['--minify-whitespace'] : [])],
+      );
+      cleanup = result.cleanup;
+
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('source\n13');
+      expect(result.bundleOutput).toContain(
+        minified ? '$tE$1(require_dep())' : '__toESM$1(require_dep())',
+      );
+      cleanup = undefined;
+      await result.cleanup();
+    }
+  });
+
+  test('CJS re-export namespace preambles use the selected copy-properties helper name', async () => {
+    for (const minified of [false, true]) {
+      const helperName = minified ? '$cp' : '__copyProps';
+      const helperOutputName = minified ? '$cp$1' : '__copyProps$1';
+      const result = await bundleAndRun(
+        {
+          'package.json': JSON.stringify({ type: 'module' }),
+          'entry.ts': `import * as ns from './barrel.ts';\nconst ${helperName} = 'source';\neval('console.log(${helperName})');\nconsole.log(ns.alpha + ns.beta);`,
+          'barrel.ts': `export * from './a.cjs';\nexport * from './b.cjs';`,
+          'a.cjs': `exports.alpha = 5;`,
+          'b.cjs': `exports.beta = 8;`,
+        },
+        'entry.ts',
+        ['--format=esm', ...(minified ? ['--minify-whitespace'] : [])],
+      );
+      cleanup = result.cleanup;
+
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('source\n13');
+      expect(result.bundleOutput).toContain(`${helperOutputName}(`);
+      cleanup = undefined;
+      await result.cleanup();
+    }
+  });
+
   test('loader=dataurl 의 MIME — .svg → image/svg+xml', async () => {
     const fixture = await createFixture({
       'entry.ts': `const svg = require('./vec.svg');\nconsole.log(svg);`,

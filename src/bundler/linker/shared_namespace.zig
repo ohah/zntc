@@ -260,7 +260,7 @@ pub fn registerNamespaceRewrites(
                 if (tm.wrap_kind == .cjs) {
                     const req = try tm.allocRequireName(self.allocator, &self.rename_table);
                     defer self.allocator.free(req);
-                    const toesm: []const u8 = if (self.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
+                    const toesm = self.currentEsmInteropRuntimeNames().get(.to_esm);
                     const expr = try std.fmt.allocPrint(self.allocator, "{s}({s}())", .{ toesm, req });
                     errdefer self.allocator.free(expr);
                     try owned_rewrite_values.append(self.allocator, expr);
@@ -1038,7 +1038,7 @@ pub fn buildInlineObjectStr(
                 if (src_m.wrap_kind == .cjs) {
                     const req = try src_m.allocRequireName(self.allocator, &self.rename_table);
                     defer self.allocator.free(req);
-                    const toesm: []const u8 = if (self.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM";
+                    const toesm = self.currentEsmInteropRuntimeNames().get(.to_esm);
                     try buf.appendSlice(self.allocator, toesm);
                     try buf.appendSlice(self.allocator, "(");
                     try buf.appendSlice(self.allocator, req);
