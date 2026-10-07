@@ -1823,7 +1823,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const NodeIndex = @import("../parser/ast.zig").NodeIndex;
-    const source = "for (const value of source) use(value);";
+    const source = "const _err = 'outer'; for (const value of source) use(value); use(_err);";
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
@@ -1831,6 +1831,13 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     try analyzer.analyze();
+    var source_err_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, id| {
+        if (symbol.kind == .variable_const and std.mem.eql(u8, symbol.nameText(parser.ast.source), "_err")) {
+            source_err_id = @intCast(id);
+        }
+    }
+    const outer_err_id = source_err_id orelse return error.MissingOuterErrSymbol;
     var source_loop: ?NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
         if (node.tag == .for_of_statement) source_loop = @enumFromInt(index);
@@ -1851,6 +1858,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     transformer.state_machine_depth = 1;
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, true);
+    try std.testing.expectEqual(@as(usize, 5), transformer.generator_temp_var_spans.items.len);
 
     const expected_names = [_][]const u8{ "_a", "_b", "_c", "_d", "_step" };
     var found: usize = 0;
@@ -1867,6 +1875,51 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
         try std.testing.expect(symbol_id != null);
     }
     try std.testing.expectEqual(expected_names.len, found);
+
+    var catch_binding: ?NodeIndex = null;
+    var catch_clause_raw: ?u32 = null;
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .catch_clause or node.data.binary.left.isNone()) continue;
+        try std.testing.expect(catch_binding == null);
+        catch_binding = node.data.binary.left;
+        catch_clause_raw = @intCast(raw);
+    }
+    const binding = catch_binding orelse return error.MissingGeneratedForOfCatchBinding;
+    const binding_raw = @intFromEnum(binding);
+    const catch_id = transformer.symbol_ids.items[binding_raw] orelse return error.MissingGeneratedForOfCatchSymbol;
+    const catch_name = transformer.ast.getText(transformer.ast.getNode(binding).data.string_ref);
+    try std.testing.expectEqualStrings("_err", catch_name);
+    try std.testing.expect(catch_id != outer_err_id);
+    for (transformer.generator_temp_var_spans.items) |temp_span| {
+        try std.testing.expect(!std.mem.eql(u8, transformer.ast.getText(temp_span), catch_name));
+    }
+
+    const editor = &transformer.semantic_editor.?;
+    const catch_symbol = editor.symbols.items[catch_id];
+    const catch_scope = catch_symbol.scope_id;
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.catch_binding, catch_symbol.kind);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.catch_clause, editor.scopes.items[catch_scope.toIndex()].kind);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(catch_scope)), editor.scope_owner_map.get(catch_clause_raw.?));
+    try std.testing.expectEqual(@as(?usize, catch_id), editor.scope_maps.items[catch_scope.toIndex()].get(catch_name));
+    var catch_reads: usize = 0;
+    var outer_reads: usize = 0;
+    for (editor.references.items) |reference| {
+        if (reference.flags.declare or !reference.flags.read) continue;
+        const symbol_id = @intFromEnum(reference.symbol_id);
+        const reference_raw = @intFromEnum(reference.node_index);
+        if (symbol_id == catch_id) {
+            catch_reads += 1;
+            try std.testing.expectEqual(catch_scope, reference.scope_id);
+            try std.testing.expectEqual(@as(?u32, catch_id), transformer.symbol_ids.items[reference_raw]);
+        }
+        if (symbol_id == outer_err_id) {
+            outer_reads += 1;
+            try std.testing.expectEqual(@as(?u32, outer_err_id), transformer.symbol_ids.items[reference_raw]);
+            try std.testing.expect(reference.scope_id != catch_scope);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), catch_reads);
+    try std.testing.expectEqual(@as(usize, 1), outer_reads);
 }
 
 test "#4819 optional catch binding gets a symbol in its catch scope" {
@@ -1917,6 +1970,104 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
         if (maybe_id != null and maybe_id.? >= original_symbols and transformer.ast.nodes.items[i].tag == .binding_identifier) bindings += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), bindings);
+}
+
+test "#4819 for-await error catch binds its generated reference by exact symbol and scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\const _err = "outer";
+        \\async function run(iterable) {
+        \\  try { for await (const value of iterable) { void value; } }
+        \\  catch (caught) { console.log(`${_err}:${caught.message}`); }
+        \\}
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const original_symbols = analyzer.symbols.items.len;
+    var outer_id: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, id| {
+        if (symbol.kind == .variable_const and std.mem.eql(u8, symbol.nameText(parser.ast.source), "_err")) {
+            outer_id = @intCast(id);
+        }
+    }
+    const source_outer_id = outer_id orelse return error.MissingOuterErrSymbol;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2017),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var generated_catch_id: ?u32 = null;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
+        if (symbol.kind != .catch_binding or !std.mem.eql(u8, transformer.ast.getText(symbol.name), "_err")) continue;
+        try std.testing.expect(generated_catch_id == null);
+        generated_catch_id = @intCast(id);
+    }
+    const catch_id = generated_catch_id orelse return error.MissingGeneratedErrSymbol;
+    try std.testing.expect(catch_id != source_outer_id);
+
+    const catch_symbol = edited.symbols.items[catch_id];
+    const catch_scope = catch_symbol.scope_id;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.catch_clause, edited.scopes[catch_scope.toIndex()].kind);
+    try std.testing.expectEqual(@as(u32, 1), catch_symbol.reference_count);
+    try std.testing.expectEqual(@as(?usize, @intCast(catch_id)), edited.scope_maps[catch_scope.toIndex()].get("_err"));
+
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+    var catch_bindings: usize = 0;
+    var catch_clauses: usize = 0;
+    for (reachable) |raw| {
+        if (edited.symbol_ids[raw] != catch_id) continue;
+        if (transformer.ast.nodes.items[raw].tag == .binding_identifier) catch_bindings += 1;
+    }
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .catch_clause or node.data.binary.left.isNone()) continue;
+        const binding_raw = @intFromEnum(node.data.binary.left);
+        if (edited.symbol_ids[binding_raw] != catch_id) continue;
+        catch_clauses += 1;
+        try std.testing.expectEqual(@as(?u32, @intFromEnum(catch_scope)), edited.scope_owner_map.get(raw));
+    }
+    try std.testing.expectEqual(@as(usize, 1), catch_bindings);
+    try std.testing.expectEqual(@as(usize, 1), catch_clauses);
+
+    var generated_reads: usize = 0;
+    var source_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (reference.flags.declare or !reference.flags.read) continue;
+        const symbol_id = @intFromEnum(reference.symbol_id);
+        const reference_raw = @intFromEnum(reference.node_index);
+        if (symbol_id == catch_id) {
+            generated_reads += 1;
+            try std.testing.expectEqual(@as(?u32, catch_id), edited.symbol_ids[reference_raw]);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, transformer.ast.nodes.items[reference_raw].tag);
+            try std.testing.expectEqualStrings("_err", transformer.ast.getText(transformer.ast.nodes.items[reference_raw].data.string_ref));
+            try std.testing.expect(scopeHasAncestor(edited.scopes, reference.scope_id, catch_scope));
+        }
+        if (symbol_id == source_outer_id) {
+            source_reads += 1;
+            try std.testing.expectEqual(@as(?u32, source_outer_id), edited.symbol_ids[reference_raw]);
+            try std.testing.expectEqualStrings("_err", transformer.ast.getText(transformer.ast.nodes.items[reference_raw].data.string_ref));
+            try std.testing.expect(reference.scope_id != catch_scope);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), generated_reads);
+    try std.testing.expectEqual(@as(usize, 1), source_reads);
 }
 
 test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
