@@ -319,6 +319,79 @@ getValue().then(value => console.log(${variant.sourceName}, value));
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES2017 async-generator helper family uses collision-free SymbolId names`, async () => {
+      const awaitSourceName = '__await';
+      const asyncGeneratorSourceName = '__asyncGenerator';
+      const yieldStarSourceName = minify ? '$yS' : '__yieldStar';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${awaitSourceName} = 101;
+var ${asyncGeneratorSourceName} = 102;
+var ${yieldStarSourceName} = 103;
+async function* delegated() { yield 4; yield 5; }
+async function* values() {
+  yield await Promise.resolve(3);
+  yield* delegated();
+}
+function collect(iterator: AsyncGenerator<number>, result: number[]): Promise<void> {
+  return iterator.next().then(function (step) {
+    if (step.done) {
+      console.log(result.join(','), ${awaitSourceName}, ${asyncGeneratorSourceName}, ${yieldStarSourceName});
+      return;
+    }
+    result.push(step.value);
+    return collect(iterator, result);
+  });
+}
+collect(values(), []);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es2017',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const awaitHelper = code.match(
+        minify
+          ? /var (__await[a-zA-Z0-9_$]*)=function\(v,s\)/
+          : /var (__await\w*) = function\(v, s\)/,
+      )?.[1];
+      const asyncGeneratorHelper = code.match(
+        minify
+          ? /var (__asyncGenerator[a-zA-Z0-9_$]*)=function\(thisArg,_arguments,generator\)/
+          : /var (__asyncGenerator\w*) = function\(thisArg, _arguments, generator\)/,
+      )?.[1];
+      const yieldStarHelper = code.match(
+        minify
+          ? /var (\$yS[a-zA-Z0-9_$]*)=function\(value\)/
+          : /var (__yieldStar\w*) = function\(value\)/,
+      )?.[1];
+      expect(awaitHelper).toBeDefined();
+      expect(asyncGeneratorHelper).toBeDefined();
+      expect(yieldStarHelper).toBeDefined();
+      expect(awaitHelper).not.toBe(awaitSourceName);
+      expect(asyncGeneratorHelper).not.toBe(asyncGeneratorSourceName);
+      expect(yieldStarHelper).not.toBe(yieldStarSourceName);
+      expect(code).toContain(`this instanceof ${awaitHelper}`);
+      expect(code).toContain(`r.value instanceof ${awaitHelper}`);
+      expect(code).toContain(`${awaitHelper}(new Promise`);
+      expect(code).toContain(`${asyncGeneratorHelper}(this`);
+      expect(code).toContain(`${yieldStarHelper}(delegated())`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('3,4,5 101 102 103\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 values preamble uses the collision-free helper SymbolId name`, async () => {
       const fixture = await createFixture({
         'input.ts': `
