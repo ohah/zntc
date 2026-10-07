@@ -27,6 +27,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     values: ?[]const u8 = null,
     read: ?[]const u8 = null,
     public_field: ?[]const u8 = null,
+    wrap_regex: ?[]const u8 = null,
     keep_names: ?[]const u8 = null,
     tdz: ?[]const u8 = null,
 };
@@ -1726,6 +1727,28 @@ fn appendRuntimeTemplateWithLocalName(
     try buf.appendSlice(allocator, template[name_start + default_name.len ..]);
 }
 
+/// Emit a runtime helper whose own template refers back to its top-level local.
+/// The wrap-regexp template uses its name in executable code only, so replace
+/// every self-reference together with the declaration from the selected SID.
+fn appendRuntimeTemplateWithLocalNameAndReferences(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    template: []const u8,
+    default_name: []const u8,
+    local_name: []const u8,
+) !void {
+    if (std.mem.eql(u8, local_name, default_name)) return buf.appendSlice(allocator, template);
+
+    var offset: usize = 0;
+    while (std.mem.indexOf(u8, template[offset..], default_name)) |relative_index| {
+        const index = offset + relative_index;
+        try buf.appendSlice(allocator, template[offset..index]);
+        try buf.appendSlice(allocator, local_name);
+        offset = index + default_name.len;
+    }
+    try buf.appendSlice(allocator, template[offset..]);
+}
+
 // ============================================================
 // Append Helper
 // ============================================================
@@ -1831,7 +1854,14 @@ fn appendRuntimeHelpersInternal(
         try buf.appendSlice(allocator, if (minify) TO_BINARY_RUNTIME_MIN else TO_BINARY_RUNTIME);
     }
     if (helpers.wrap_regex) {
-        try buf.appendSlice(allocator, if (minify) WRAP_REGEXP_RUNTIME_MIN else WRAP_REGEXP_RUNTIME);
+        const default_name = helperName("__wrapRegExp", minify);
+        try appendRuntimeTemplateWithLocalNameAndReferences(
+            buf,
+            allocator,
+            if (minify) WRAP_REGEXP_RUNTIME_MIN else WRAP_REGEXP_RUNTIME,
+            default_name,
+            local_names.wrap_regex orelse default_name,
+        );
     }
     if (helpers.keep_names) {
         const default_name = helperName("__name", minify);

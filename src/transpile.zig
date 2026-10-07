@@ -1142,6 +1142,8 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__publicField", minify));
             const is_direct_keep_names = directly_emitted_names.keep_names != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__name", minify));
+            const is_direct_wrap_regex = directly_emitted_names.wrap_regex != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__wrapRegExp", minify));
             const is_direct_tdz = directly_emitted_names.tdz != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__tdz", minify));
             const is_direct_class_call_check = directly_emitted_names.class_call_check != null and
@@ -1158,7 +1160,7 @@ fn rewriteRuntimeHelperPreamble(
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__superGet", minify));
             const is_direct_super_set = directly_emitted_names.super_set != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__superSet", minify));
-            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_keep_names and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_class_private_field_set and !is_direct_call_super and !is_direct_super_get and !is_direct_super_set and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_async and !is_direct_async_values and !is_direct_tagged_template and !is_direct_read and !is_direct_public_field and !is_direct_keep_names and !is_direct_wrap_regex and !is_direct_tdz and !is_direct_class_call_check and !is_direct_class_private_method_init and !is_direct_class_private_method_get and !is_direct_class_private_field_set and !is_direct_call_super and !is_direct_super_get and !is_direct_super_set and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1746,6 +1748,8 @@ fn transpileWithCallbackInternal(
             local_names.read = try standaloneRuntimeHelperSymbolName(&transformer, "__read", options.minify_whitespace);
         if (transformer.runtime_helpers.public_field)
             local_names.public_field = try standaloneRuntimeHelperSymbolName(&transformer, "__publicField", options.minify_whitespace);
+        if (transformer.runtime_helpers.wrap_regex)
+            local_names.wrap_regex = try standaloneRuntimeHelperSymbolName(&transformer, "__wrapRegExp", options.minify_whitespace);
         if (transformer.runtime_helpers.keep_names)
             local_names.keep_names = try standaloneRuntimeHelperSymbolName(&transformer, "__name", options.minify_whitespace);
         if (transformer.runtime_helpers.tdz)
@@ -4035,6 +4039,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try runtime_aliases.put(allocator, "__superSet", "__superSet2");
     try runtime_aliases.put(allocator, "__taggedTemplateLiteral", "__taggedTemplateLiteral2");
     try runtime_aliases.put(allocator, "__name", "__name2");
+    try runtime_aliases.put(allocator, "__wrapRegExp", "__wrapRegExp2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
     try helper_scope_map.put(allocator, "__generator2", 1);
@@ -4054,6 +4059,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try helper_scope_map.put(allocator, "__superSet2", 15);
     try helper_scope_map.put(allocator, "__zntcClassPrivateFieldSet2", 16);
     try helper_scope_map.put(allocator, "__name2", 17);
+    try helper_scope_map.put(allocator, "__wrapRegExp2", 18);
     const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
@@ -4181,6 +4187,13 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .declaration_span = @import("lexer/token.zig").Span.EMPTY,
             .synthetic_name = "__name2",
         },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__wrapRegExp2",
+        },
     };
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
@@ -4225,6 +4238,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__taggedTemplateLiteral2", tagged_resolved);
     const keep_names_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__name", false);
     try std.testing.expectEqualStrings("__name2", keep_names_resolved);
+    const wrap_regex_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__wrapRegExp", false);
+    try std.testing.expectEqualStrings("__wrapRegExp2", wrap_regex_resolved);
 
     _ = transformer.helper_scope_map.remove("__extends2");
     try std.testing.expectError(
@@ -4315,6 +4330,11 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__name", false),
+    );
+    _ = transformer.helper_scope_map.remove("__wrapRegExp2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__wrapRegExp", false),
     );
 }
 
