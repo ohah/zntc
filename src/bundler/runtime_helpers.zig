@@ -18,6 +18,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     async_values: ?[]const u8 = null,
     tagged_template_literal: ?[]const u8 = null,
     values: ?[]const u8 = null,
+    read: ?[]const u8 = null,
 };
 
 // ============================================================
@@ -1849,7 +1850,14 @@ fn appendRuntimeHelpersInternal(
         try buf.appendSlice(allocator, if (minify) TDZ_RUNTIME_MIN else TDZ_RUNTIME);
     }
     if (helpers.read) {
-        try buf.appendSlice(allocator, if (minify) READ_RUNTIME_MIN else READ_RUNTIME);
+        const default_name = helperName("__read", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) READ_RUNTIME_MIN else READ_RUNTIME,
+            default_name,
+            local_names.read orelse default_name,
+        );
     }
     if (helpers.tagged_template_literal) {
         try appendTaggedTemplateRuntimeWithLocalName(

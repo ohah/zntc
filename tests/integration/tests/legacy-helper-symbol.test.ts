@@ -430,6 +430,41 @@ sum().then(total => console.log(${sourceName}, __values, total));
     });
   }
 
+  for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 read preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$rd' : '__read';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+const [first, second] = [7, 8];
+console.log(${sourceName}, first, second);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$rd[a-zA-Z0-9_$]*)=function\(o,n\)/)?.[1]
+        : code.match(/var (__read\d*) = function\(o, n\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(`${emittedHelper}(`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 7 8\n');
+    });
+  }
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
