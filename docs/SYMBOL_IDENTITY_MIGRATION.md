@@ -143,6 +143,7 @@
 ## 검증과 완료 보고
 
 - 구조 검사는 AST, SID, reference, scope owner/map의 일관성을 검사한다. `clean=1`만으로 원본 프로그램과 같은 의미라고 판정하지 않는다.
+- source AST scope-owner gate는 owner kind mismatch와 owner-parent mismatch를 모두 0으로 요구한다. TypeScript namespace body block은 namespace function scope에, Flow component의 합성 구현 함수 선언은 `flow_component_wrapper` function scope에 내용을 방문하므로 각각 별도 scope owner가 없는 구문 wrapper다.
 - 실행 검사는 원본을 실행 가능한 엔진에서 실행한 결과와 변환 출력을 비교한다. shadowing, closure, 평가 순서·횟수, 읽기/쓰기, direct `eval` 및 외부 이름 충돌을 포함한다.
 - 적용된 변경에 따라 standalone/bundle, native/downlevel target, 기본 출력/identifier-minify/전체 minify를 비교한다. code splitting, JSX, helper, plugin/cache 경계는 해당 생성자를 이관할 때 포함한다.
 - mutation은 생성 시 등록·reference 연결·scope 관계·검사 호출을 끊었을 때 실패하는지 확인한다. `retained`/`reanalyzed` 선택만 틀리게 만드는 mutation은 경계 정책 검사이며 런타임 의미 보존 증거와 구분한다.

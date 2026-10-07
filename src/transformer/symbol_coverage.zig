@@ -994,9 +994,32 @@ fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
         .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => kind == .function,
         // Namespace and enum lowering attach their generated IIFE scope to
         // the surviving declaration node instead of a generated function node.
-        .ts_module_declaration, .ts_enum_declaration => kind == .function,
+        .ts_module_declaration, .ts_enum_declaration, .flow_component_wrapper => kind == .function,
         else => false,
     };
+}
+
+fn isNamespaceBodyBlock(
+    ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    block_raw: u32,
+) bool {
+    const parent_raw = parent_by_node.get(block_raw) orelse return false;
+    if (parent_raw >= ast.nodes.items.len) return false;
+    const parent = ast.nodes.items[parent_raw];
+    return parent.tag == .ts_module_declaration and @intFromEnum(parent.data.binary.right) == block_raw;
+}
+
+fn isFlowComponentImplementationFunction(
+    ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    function_raw: u32,
+) bool {
+    const parent_raw = parent_by_node.get(function_raw) orelse return false;
+    if (parent_raw >= ast.nodes.items.len) return false;
+    const parent = ast.nodes.items[parent_raw];
+    if (parent.tag != .flow_component_wrapper or parent.data.extra >= ast.extra_data.items.len) return false;
+    return ast.extra_data.items[parent.data.extra] == function_raw;
 }
 
 fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
@@ -2220,11 +2243,15 @@ fn checkExactImpl(
             // same owner node; the latter may be the recorded owner.
             .catch_clause => null,
             .class_declaration, .class_expression => .class_body,
-            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => .function,
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .flow_component_wrapper => .function,
             else => continue,
         };
         if (tag == .block_statement) {
             const parent_raw = parent_by_node.get(raw);
+            // Namespace analysis enters the namespace's function scope, then
+            // visits this block's statement list directly. The block is a
+            // syntax container, not a second lexical ScopeId owner.
+            if (isNamespaceBodyBlock(ast, &parent_by_node, raw)) continue;
             const is_function_body = if (parent_raw) |parent| blk: {
                 const parent_node = ast.nodes.items[parent];
                 break :blk ast.functionBodyBlock(parent_node) != null and
@@ -2238,6 +2265,11 @@ fn checkExactImpl(
             } else false;
             if (is_function_body or is_aliased_catch_body) continue;
         }
+        // Flow component analysis enters the function scope on the wrapper,
+        // then visits the synthetic implementation declaration's body in
+        // that scope. The inner declaration does not own a second scope.
+        if (tag == .function_declaration and
+            isFlowComponentImplementationFunction(ast, &parent_by_node, raw)) continue;
         const raw_scope = scope_owner_map.get(raw) orelse {
             // Rebuilt Programs and generated blocks/loops may be structural
             // wrappers with no fresh semantic scope. Class, switch, catch, and
@@ -3020,10 +3052,10 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
 /// can move lexical owners into wrappers that preserve their source ScopeIds.
 pub fn printSourceScopeOwnerAudit(file_path: []const u8, report: ExactReport) void {
     std.debug.print(
-        "zntc: symbol-source-scope-owner {s}: scope_owner_parent_mismatch={d}\n",
-        .{ file_path, report.scope_owner_parent_mismatch },
+        "zntc: symbol-source-scope-owner {s}: scope_owner_mismatch={d} scope_owner_parent_mismatch={d}\n",
+        .{ file_path, report.scope_owner_mismatch, report.scope_owner_parent_mismatch },
     );
-    if (report.first_scope_owner_parent_mismatch) |finding| printScopeOwnerMismatch(file_path, finding);
+    if (report.first_scope_owner_mismatch) |finding| printScopeOwnerMismatch(file_path, finding);
 }
 
 fn printExactFinding(file_path: []const u8, issue: []const u8, finding: ExactFinding) void {
