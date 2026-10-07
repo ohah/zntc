@@ -223,11 +223,9 @@ pub const Linker = struct {
     /// scope hoisting 시 모듈 top-level 변수가 이 이름을 shadowing하면 리네임.
     reserved_globals: std.StringHashMapUnmanaged(void) = .empty,
 
-    /// CJS factory is currently emitted from raw runtime text. Its selected
-    /// semantic identity is owned by one parse-backed module and can survive
-    /// that module leaving CJS or being tree-shaken. Its selected
-    /// output name must also avoid unresolved source globals or it captures
-    /// those references after bundling.
+    /// CJS factory is currently emitted from raw runtime text. The single-bundle
+    /// identity name comes from the normal rename pass; this cached spelling is
+    /// retained for semantic-less wrappers and stable graph-wide split aliases.
     cjs_factory_runtime_name: ?[]const u8 = null,
     cjs_factory_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
     /// ESM factory has the same raw-preamble boundary as the CJS factory.
@@ -643,6 +641,9 @@ pub const Linker = struct {
         /// calculateRenames sort tie-break. exec_index 동률 시 path 사전순 (cross-chunk
         /// marker 는 ""), worker race 비결정성 방지.
         path: []const u8,
+        /// Output-owned bindings such as the CJS runtime factory already have
+        /// an exact identity even when no source scope map owns their name.
+        symbol_id: ?bundler_symbol.SymbolID = null,
     };
 
     /// name_to_owners HashMap의 타입 별칭.
@@ -886,7 +887,11 @@ pub const Linker = struct {
                     // 후보 이름도 예약어/다른 top-level/nested scope와 충돌할 수 있으므로 검증.
                     var suffix: u32 = 1;
                     const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
-                    try self.putCanonicalName(owner.module_index, name, candidate);
+                    try self.putCanonicalNameForOwner(owner, name, candidate);
+                } else if (owners[0].symbol_id != null) {
+                    // Output-owned symbols need an explicit final name mapping
+                    // even when their preferred spelling stays unchanged.
+                    try self.putCanonicalNameForOwner(owners[0], name, try self.allocator.dupe(u8, name));
                 }
                 continue;
             }
@@ -895,6 +900,13 @@ pub const Linker = struct {
             // 같은 entry barrel) 시 path 사전순 — worker race 비결정 차단.
             std.mem.sort(NameOwner, entry.value_ptr.items, {}, struct {
                 fn lessThan(_: void, a: NameOwner, b: NameOwner) bool {
+                    // Cross-chunk import markers must keep their occupied name,
+                    // then output-owned symbols keep the preferred binding name
+                    // ahead of source declarations that can be renamed.
+                    const a_is_marker = a.module_index == std.math.maxInt(u32);
+                    const b_is_marker = b.module_index == std.math.maxInt(u32);
+                    if (a_is_marker != b_is_marker) return a_is_marker;
+                    if ((a.symbol_id != null) != (b.symbol_id != null)) return a.symbol_id != null;
                     if (a.exec_index != b.exec_index) return a.exec_index < b.exec_index;
                     return types.stringLessThan({}, a.path, b.path);
                 }
@@ -913,8 +925,14 @@ pub const Linker = struct {
                 // 충돌 없는 후보 이름 검색
                 const candidate = try self.findAvailableCandidate(name, owner.module_index, &suffix, name_to_owners);
 
-                try self.putCanonicalName(owner.module_index, name, candidate);
+                try self.putCanonicalNameForOwner(owner, name, candidate);
                 suffix += 1;
+            }
+            if (!name_is_reserved and owners[0].symbol_id != null) {
+                // The runtime identity sorts ahead of source declarations for
+                // the same spelling and keeps the preferred name. Persist that
+                // unchanged spelling and reserve it for subsequent mangle.
+                try self.putCanonicalNameForOwner(owners[0], name, try self.allocator.dupe(u8, name));
             }
         }
     }
@@ -982,11 +1000,9 @@ pub const Linker = struct {
         if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
     }
 
-    /// Code-split chunks emit runtime helpers before their per-chunk rename pass.
-    /// Select one graph-wide runtime SymbolId and spelling up front so each
-    /// chunk's preamble and wrappers use the same identity/name pair, and so it
-    /// cannot capture a source global in any chunk. The selection stays stable
-    /// for this Linker's lifetime.
+    /// Discover the graph-level runtime identity before emitted chunks are
+    /// prepared. Single-bundle naming happens in computeRenames; code-split and
+    /// semantic-less paths keep the stable string alias used by their preambles.
     pub fn prepareCjsRuntimeName(self: *Linker) !void {
         if (self.cjs_factory_runtime_name != null) return;
         var has_included_cjs_runtime = false;
@@ -1003,7 +1019,12 @@ pub const Linker = struct {
                 has_included_cjs_runtime = true;
             }
         }
-        if (has_included_cjs_runtime) self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
+        const graph_wide_alias = self.graph.code_splitting or self.graph.preserve_modules;
+        if (has_included_cjs_runtime and
+            (graph_wide_alias or self.cjs_factory_runtime_symbol_id == null))
+        {
+            self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
+        }
     }
 
     /// Reserve the already selected spelling so a scope-hoisted user binding
@@ -1016,6 +1037,31 @@ pub const Linker = struct {
                 try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
             }
         }
+    }
+
+    fn hasIncludedCjsRuntime(self: *const Linker) bool {
+        var runtime_it = self.graph.modulesIterator();
+        while (runtime_it.next()) |m| {
+            if (m.wrap_kind != .cjs) continue;
+            if (self.tree_shaker_active and !m.is_included) continue;
+            return true;
+        }
+        return false;
+    }
+
+    fn addCjsRuntimeNameOwner(self: *Linker, name_to_owners: *NameToOwnersMap) !void {
+        try self.prepareCjsRuntimeName();
+        if (self.cjs_factory_runtime_name != null or !self.hasIncludedCjsRuntime()) return;
+        const symbol_id = self.cjs_factory_runtime_symbol_id orelse return;
+        const module_index = @intFromEnum(symbol_id.module);
+        const owner_module = self.getModule(module_index) orelse return;
+        const base = if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+        try self.addNameOwner(name_to_owners, base, .{
+            .module_index = module_index,
+            .exec_index = 0,
+            .path = owner_module.path,
+            .symbol_id = symbol_id,
+        });
     }
 
     pub fn cjsFactoryRuntimeName(self: *const Linker) []const u8 {
@@ -1167,6 +1213,7 @@ pub const Linker = struct {
             const m = self.getModule(@intCast(i)) orelse continue;
             try self.collectModuleNames(m.*, @intCast(i), &name_to_owners);
         }
+        try self.addCjsRuntimeNameOwner(&name_to_owners);
 
         // 1.5. nested-binding 캐시 빌드 — 이후 calculateRenames/resolveNestedShadowConflicts 의
         // hasNestedBinding O(scopes) 재스캔을 O(1) 로. owner 모듈만(질의 대상). 빌드 실패(OOM)는
@@ -2382,6 +2429,15 @@ pub const Linker = struct {
         };
         const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), idx);
         try self.assignSymbolCanonical(id, value);
+    }
+
+    fn putCanonicalNameForOwner(self: *Linker, owner: NameOwner, name: []const u8, value: []const u8) !void {
+        if (owner.symbol_id) |symbol_id| {
+            try self.assignSymbolCanonical(symbol_id, value);
+            try self.reserved_globals.put(self.allocator, value, {});
+            return;
+        }
+        try self.putCanonicalName(owner.module_index, name, value);
     }
 
     /// SymbolID 에 최종 이름(canonical)을 할당하는 단일 write sink. value 소유권을
@@ -4360,6 +4416,7 @@ pub const Linker = struct {
             const m = self.graph.getModule(mod_idx) orelse continue;
             try self.collectModuleNames(m.*, mod_idx.toU32(), &name_to_owners);
         }
+        try self.addCjsRuntimeNameOwner(&name_to_owners);
 
         // (#4563) nested-binding 캐시 — calculateRenames/resolveNestedShadowConflicts/
         // resolveWrapperConsumerShadows 3 소비처 공용(글로벌 computeRenames 와 동일 위치). hasNestedBinding
