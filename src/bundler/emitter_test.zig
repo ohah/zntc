@@ -1853,6 +1853,52 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits selected array-spread h
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $tA=function") == null);
 }
 
+test "appendRuntimeHelpersWithStandaloneLocalNames emits selected derived-constructor helper names and internal reference" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .derived_constructor = true },
+        false,
+        true,
+        .{
+            .assert_this_initialized = "__assertThisInitialized2",
+            .assert_this_uninitialized = "__assertThisUninitialized2",
+            .possible_constructor_return = "__possibleConstructorReturn2",
+        },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __assertThisInitialized2 = function(self)"));
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __assertThisUninitialized2 = function(self)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __possibleConstructorReturn2 = function(call, self)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "return __assertThisInitialized2(self);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __assertThisInitialized = function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __assertThisUninitialized = function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __possibleConstructorReturn = function") == null);
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .derived_constructor = true },
+        true,
+        false,
+        .{
+            .assert_this_initialized = "$aT2",
+            .assert_this_uninitialized = "$aU2",
+            .possible_constructor_return = "$pR2",
+        },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $aT2=function(self)"));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aU2=function(self)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $pR2=function(call,self)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "return $aT2(self)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aT=function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $aU=function") == null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $pR=function") == null);
+}
+
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected private method init local directly" {
     var plain: std.ArrayList(u8) = .empty;
     defer plain.deinit(std.testing.allocator);

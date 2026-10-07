@@ -16,6 +16,9 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     rest: ?[]const u8 = null,
     array_like_to_array: ?[]const u8 = null,
     to_consumable_array: ?[]const u8 = null,
+    assert_this_initialized: ?[]const u8 = null,
+    assert_this_uninitialized: ?[]const u8 = null,
+    possible_constructor_return: ?[]const u8 = null,
     class_private_method_init: ?[]const u8 = null,
     class_private_method_get: ?[]const u8 = null,
     class_static_private_access: ?[]const u8 = null,
@@ -2062,7 +2065,20 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.derived_constructor) {
-        try buf.appendSlice(allocator, if (minify) DERIVED_CONSTRUCTOR_RUNTIME_MIN else DERIVED_CONSTRUCTOR_RUNTIME);
+        const initialized_name = helperName("__assertThisInitialized", minify);
+        const uninitialized_name = helperName("__assertThisUninitialized", minify);
+        const constructor_return_name = helperName("__possibleConstructorReturn", minify);
+        const replacements = [_]RuntimeTemplateNameReplacement{
+            .{ .default_name = initialized_name, .local_name = local_names.assert_this_initialized orelse initialized_name },
+            .{ .default_name = uninitialized_name, .local_name = local_names.assert_this_uninitialized orelse uninitialized_name },
+            .{ .default_name = constructor_return_name, .local_name = local_names.possible_constructor_return orelse constructor_return_name },
+        };
+        try appendRuntimeTemplateWithLocalNamesAndReferences(
+            buf,
+            allocator,
+            if (minify) DERIVED_CONSTRUCTOR_RUNTIME_MIN else DERIVED_CONSTRUCTOR_RUNTIME,
+            &replacements,
+        );
     }
     if (helpers.tdz) {
         const default_name = helperName("__tdz", minify);
