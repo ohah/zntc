@@ -1359,6 +1359,29 @@ test "emotion (object css): css alias `import { css as cx }` 도 wrap" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "cx({") != null);
 }
 
+test "emotion (object css): nested import-name shadow uses a unique module alias after directives" {
+    var r = try e2eFull(
+        std.testing.allocator,
+        \\"use strict";
+        \\import { css as cx } from "@emotion/react";
+        \\function render(cx, _emotionCss, _emotionCss2) { return <div css={{ color: 'red' }} />; }
+    ,
+        .{ .emotion = true, .jsx_transform = true, .jsx_runtime = .automatic, .jsx_filename = "test.tsx" },
+        default_cg,
+        ".tsx",
+    );
+    defer r.deinit();
+    const directive = std.mem.indexOf(u8, r.output, "\"use strict\";") orelse return error.MissingStrictDirective;
+    const alias = std.mem.indexOf(u8, r.output, "import { css as _emotionCss3 } from \"@emotion/react\";") orelse
+        return error.MissingUniqueEmotionAliasImport;
+    const call = std.mem.indexOf(u8, r.output, "_emotionCss3({") orelse return error.MissingEmotionAliasCall;
+    const render = std.mem.indexOf(u8, r.output, "function render") orelse return error.MissingRenderFunction;
+    try std.testing.expect(directive < alias);
+    try std.testing.expect(alias < render);
+    try std.testing.expect(alias < call);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "cx({") == null);
+}
+
 test "emotion (object css): css import 없으면 no-op" {
     // css binding 이 import 안 됐으니 wrap 안 함 — 사용자 코드 그대로.
     var r = try e2eFull(

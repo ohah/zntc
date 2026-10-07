@@ -1761,6 +1761,121 @@ test "#4819 classic JSX custom factory binds through the current scope" {
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[factory_symbol].reference_count);
 }
 
+test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { css as cx } from '@emotion/react'; " ++
+        "function render(cx) { return <div css={{ color: 'red' }} />; }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var import_local: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .import_specifier) continue;
+        const imported: @import("../parser/ast.zig").NodeIndex = node.data.binary.left;
+        const local: @import("../parser/ast.zig").NodeIndex = node.data.binary.right;
+        if (std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(imported).span), "css") and
+            std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(local).span), "cx"))
+        {
+            import_local = local;
+            break;
+        }
+    }
+    const import_node = import_local orelse return error.MissingEmotionCssImportLocal;
+    const import_symbol = analyzer.symbol_ids.items[@intFromEnum(import_node)] orelse
+        return error.MissingEmotionCssImportSymbol;
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, analyzer.symbols.items[import_symbol].kind);
+
+    var shadow_symbol: ?u32 = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .parameter and std.mem.eql(u8, symbol.nameText(parser.ast.source), "cx")) {
+            shadow_symbol = @intCast(raw);
+        }
+    }
+    const shadow_id = shadow_symbol orelse return error.MissingShadowingCssParameter;
+    try std.testing.expect(import_symbol != shadow_id);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .emotion = true,
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const output_root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const stored_import_node = transformer.plugins.emotion.css_binding_node orelse
+        return error.MissingEmotionCssImportNodeHandle;
+    try std.testing.expectEqual(import_node, stored_import_node);
+    const alias_binding = transformer.plugins.emotion.css_prop_alias_binding orelse
+        return error.MissingEmotionCssAliasBinding;
+    const alias_symbol = transformer.getSymbolIdAt(alias_binding) orelse
+        return error.MissingEmotionCssAliasSymbol;
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[alias_symbol].kind);
+    try std.testing.expect(transformer.plugins.emotion.css_prop_use_alias);
+    try std.testing.expect(!transformer.plugins.emotion.css_prop_import_required);
+    const alias_import = transformer.plugins.emotion.css_prop_alias_import orelse
+        return error.MissingEmotionCssAliasImport;
+    const output_program = transformer.ast.getNode(output_root);
+    try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.program, output_program.tag);
+    var retained_import = false;
+    var retained_alias_import = false;
+    for (transformer.ast.extra_data.items[output_program.data.list.start .. output_program.data.list.start + output_program.data.list.len]) |raw| {
+        const child: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw);
+        if (transformer.ast.getNode(child).tag == .import_declaration) retained_import = true;
+        if (child == alias_import) retained_alias_import = true;
+    }
+    try std.testing.expect(retained_import);
+    try std.testing.expect(retained_alias_import);
+
+    const ExpectedReference = struct {
+        symbol: u32,
+        scope: @TypeOf(analyzer.symbols.items[import_symbol].scope_id),
+    };
+    var alias_reads: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (raw < transformer.parser_node_count or node.tag != .identifier_reference) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        const expected: ExpectedReference = if (std.mem.eql(u8, name, transformer.ast.getText(transformer.ast.getNode(alias_binding).span))) .{
+            .symbol = alias_symbol,
+            .scope = analyzer.symbols.items[shadow_id].scope_id,
+        } else continue;
+        try std.testing.expectEqual(@as(?u32, expected.symbol), edited.symbol_ids[raw]);
+        var node_references: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.node_index) != raw) continue;
+            try std.testing.expectEqual(expected.symbol, @intFromEnum(reference.symbol_id));
+            try std.testing.expectEqual(expected.scope, reference.scope_id);
+            try std.testing.expect(reference.flags.read);
+            try std.testing.expect(!reference.flags.write and !reference.flags.declare);
+            node_references += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), node_references);
+        alias_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), alias_reads);
+    try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[import_symbol].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[alias_symbol].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[shadow_id].reference_count);
+}
+
 test "#4819 Flow component classic JSX reads are recorded in the transform graph" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

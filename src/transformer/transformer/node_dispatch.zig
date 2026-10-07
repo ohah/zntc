@@ -90,12 +90,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 }
                 break :blk try self.visitListNode(idx);
             };
+            var output = result;
             // styled-components cssProp transform 으로 추출된 module-level decl 들을
             // program body 끝에 hoist. trailing_nodes 가 nearest list (declarator list 등)
             // 에 들어가는 케이스 회피.
             const pending = &self.plugins.styled_components.css_prop_pending_decls;
             if (pending.items.len > 0) {
-                const result_node = self.ast.getNode(result);
+                const result_node = self.ast.getNode(output);
                 const old_list = result_node.data.list;
                 const top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(top);
@@ -107,13 +108,41 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 }
                 const new_list = try self.ast.addNodeList(self.scratch.items[top..]);
                 pending.clearRetainingCapacity();
-                return self.ast.addNode(.{
+                output = try self.ast.addNode(.{
                     .tag = .program,
                     .span = result_node.span,
                     .data = .{ .list = new_list },
                 });
             }
-            return result;
+
+            // Emotion's collision-safe import is added after the directive
+            // prologue and before any source statements can execute.
+            if (self.plugins.emotion.css_prop_alias_import) |alias_import| {
+                const result_node = self.ast.getNode(output);
+                if (result_node.tag != .program) std.debug.panic("Emotion css alias was attached to a non-program root", .{});
+                const old_list = result_node.data.list;
+                const top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(top);
+                var prefix_len: usize = 0;
+                while (prefix_len < old_list.len) : (prefix_len += 1) {
+                    const raw = self.ast.extra_data.items[old_list.start + @as(u32, @intCast(prefix_len))];
+                    const child: NodeIndex = @enumFromInt(raw);
+                    const child_tag = self.ast.getNode(child).tag;
+                    if (child_tag != .directive and child_tag != .hashbang) break;
+                    try self.scratch.append(self.allocator, child);
+                }
+                try self.scratch.append(self.allocator, alias_import);
+                for (self.ast.extra_data.items[old_list.start + @as(u32, @intCast(prefix_len)) .. old_list.start + old_list.len]) |raw| {
+                    try self.scratch.append(self.allocator, @enumFromInt(raw));
+                }
+                const new_list = try self.ast.addNodeList(self.scratch.items[top..]);
+                output = try self.ast.addNode(.{
+                    .tag = .program,
+                    .span = result_node.span,
+                    .data = .{ .list = new_list },
+                });
+            }
+            return output;
         },
         .block_statement,
         .sequence_expression,

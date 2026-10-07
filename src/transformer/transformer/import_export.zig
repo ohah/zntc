@@ -324,6 +324,13 @@ fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: N
             return false;
     }
 
+    // Emotion wraps object/array JSX css props after this import visitor has
+    // decided whether the local is unused. Keep that exact import binding for
+    // the later generated callsite.
+    if (self.plugins.emotion.css_prop_import_required and
+        self.plugins.emotion.css_binding_node == local_idx)
+        return false;
+
     if (self.binding_lite) |binding_lite| {
         if (binding_lite.namedImportValueUse(local_name)) |used_as_value| return !used_as_value;
         return false;

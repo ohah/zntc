@@ -607,9 +607,9 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                     std.debug.panic("runtime helper reference has no exact output scope", .{});
                 editor.moveReference(work.node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
                 self.tracked_runtime_helper_refs.items[tracked_index].scope = scope;
-            } else if (self.native_parameter_output_ref_symbol_ids.get(raw)) |exact_id| {
+            } else if (self.exact_output_ref_symbol_ids.get(raw)) |exact_id| {
                 if (scope.isNone() or exact_id >= editor.symbols.items.len)
-                    std.debug.panic("native parameter capture reference has no exact output owner", .{});
+                    std.debug.panic("generated reference has no exact output owner", .{});
                 try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = exact_id, .exact = true });
             } else {
                 var raw_id = outputSymbolIdAt(self, editor, work.node);
@@ -762,9 +762,9 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         if (reference.raw_id >= editor.symbols.items.len) continue;
         if (reference.exact) {
             if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[reference.raw_id].scope_id, reference.scope))
-                std.debug.panic("native parameter capture SymbolId is not visible from its exact output scope", .{});
+                std.debug.panic("exact generated SymbolId is not visible from its output scope", .{});
             try addSyntheticRefInScope(self, reference.node, @enumFromInt(reference.raw_id), reference.scope, .{ .read = true });
-            _ = self.native_parameter_output_ref_symbol_ids.remove(@intFromEnum(reference.node));
+            _ = self.exact_output_ref_symbol_ids.remove(@intFromEnum(reference.node));
             continue;
         }
         var only_group: ?OutputBindingGroup = null;
@@ -852,10 +852,10 @@ pub fn bindNativeParameterArrowRefs(self: *Transformer, owner: NodeIndex, symbol
             continue;
         }
         const raw = @intFromEnum(pending.node);
-        if (self.native_parameter_output_ref_symbol_ids.get(raw)) |existing| {
+        if (self.exact_output_ref_symbol_ids.get(raw)) |existing| {
             if (existing != @intFromEnum(id)) std.debug.panic("native parameter reference was assigned to two wrapper symbols", .{});
         } else {
-            try self.native_parameter_output_ref_symbol_ids.put(self.allocator, raw, @intFromEnum(id));
+            try self.exact_output_ref_symbol_ids.put(self.allocator, raw, @intFromEnum(id));
         }
         _ = self.native_parameter_arrow_refs.swapRemove(index);
     }
@@ -2931,6 +2931,28 @@ pub fn trackUserReadFromBinding(self: *Transformer, target: NodeIndex, binding: 
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);
+}
+
+/// Defer attaching a generated read until the final AST walk supplies its
+/// actual output ScopeId. The producer has already selected the exact binding,
+/// so lexical name lookup must not replace that SymbolId later.
+pub fn trackExactOutputRead(self: *Transformer, target: NodeIndex, symbol_id: u32) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (target.isNone() or @intFromEnum(target) >= self.ast.nodes.items.len)
+        std.debug.panic("exact generated reference has an invalid AST node", .{});
+    const node = self.ast.getNode(target);
+    if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier and node.tag != .jsx_identifier)
+        std.debug.panic("exact generated reference has a non-reference AST node", .{});
+    const editor = try editorFor(self);
+    if (symbol_id >= editor.symbols.items.len)
+        std.debug.panic("exact generated reference has an out-of-range SymbolId", .{});
+    const raw = @intFromEnum(target);
+    if (self.exact_output_ref_symbol_ids.get(raw)) |existing| {
+        if (existing != symbol_id)
+            std.debug.panic("generated reference was assigned multiple exact SymbolIds", .{});
+        return;
+    }
+    try self.exact_output_ref_symbol_ids.put(self.allocator, raw, symbol_id);
 }
 
 /// A named class expression's self binding becomes the implementation
