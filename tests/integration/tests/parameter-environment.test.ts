@@ -454,9 +454,6 @@ const cases = [
   },
   {
     name: 'class heritage reads renamed body constructor for declarations and expressions',
-    // These two derived constructors already retain helper source scopes in
-    // the baseline. Exact SymbolId coverage is clean; freeze that existing debt.
-    legacyScopeMismatches: 2,
     source: `var x = 3;
       function f(value = x) {
         var x = function Base() {};
