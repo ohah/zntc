@@ -1450,6 +1450,34 @@ test "appendRuntimeHelpers: extends only" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "__generator") == null);
 }
 
+test "appendRuntimeHelpersWithExtendsLocalName emits the selected local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithExtendsLocalName(
+        &plain,
+        std.testing.allocator,
+        .{ .extends = true },
+        false,
+        false,
+        "__extends2",
+    );
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __extends2 = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __extends = function") == null);
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithExtendsLocalName(
+        &minified,
+        std.testing.allocator,
+        .{ .extends = true },
+        true,
+        false,
+        "$eX2",
+    );
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $eX2=function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $eX=function") == null);
+}
+
 test "appendRuntimeHelpers: generator only" {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);

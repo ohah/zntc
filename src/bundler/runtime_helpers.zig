@@ -1619,6 +1619,49 @@ pub const SPREAD_ARRAY_RUNTIME_MIN =
     "if(arr&&typeof arr.length===\"number\")return " ++ NAMES.ARRAY_LIKE_TO_ARRAY_MIN ++ "(arr);" ++
     "throw new TypeError(\"Invalid attempt to spread non-iterable instance.\")};";
 
+/// Emit standalone inline helpers with the exact local spelling selected for
+/// the `__extends` helper SymbolId. Other helper templates still use their
+/// canonical spellings and may be resolved by the standalone preamble path.
+pub fn appendRuntimeHelpersWithExtendsLocalName(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    helpers: RuntimeHelpers,
+    minify: bool,
+    es5_compat: bool,
+    extends_local_name: ?[]const u8,
+) !void {
+    if (!helpers.extends) return appendRuntimeHelpers(buf, allocator, helpers, minify, es5_compat);
+
+    const default_name = helperName("__extends", minify);
+    const local_name = extends_local_name orelse default_name;
+    if (std.mem.eql(u8, local_name, default_name)) {
+        return appendRuntimeHelpers(buf, allocator, helpers, minify, es5_compat);
+    }
+
+    try appendExtendsRuntimeWithLocalName(buf, allocator, local_name, minify);
+    var remaining = helpers;
+    remaining.extends = false;
+    try appendRuntimeHelpers(buf, allocator, remaining, minify, es5_compat);
+}
+
+fn appendExtendsRuntimeWithLocalName(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    local_name: []const u8,
+    minify: bool,
+) !void {
+    if (minify) {
+        try buf.appendSlice(allocator, "var ");
+        try buf.appendSlice(allocator, local_name);
+        try buf.appendSlice(allocator, "=function(d,b){Object.setPrototypeOf(d,b);function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};");
+        return;
+    }
+
+    try buf.appendSlice(allocator, "var ");
+    try buf.appendSlice(allocator, local_name);
+    try buf.appendSlice(allocator, " = function(d, b) {\n  Object.setPrototypeOf(d, b);\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n");
+}
+
 // ============================================================
 // Append Helper
 // ============================================================
