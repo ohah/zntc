@@ -126,6 +126,8 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
 
     // A chunk pass clears the build-scope rename table. Its helper definition
     // and wrapper references must restore the same graph-wide identity mapping.
+    r.graph.code_splitting = true;
+    try r.linker.prepareCjsRuntimeName();
     const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
     const chunk_modules = [_]ModuleIndex{ entry_index, cjs_index };
     try r.linker.computeRenamesForModules(&chunk_modules, &.{});
