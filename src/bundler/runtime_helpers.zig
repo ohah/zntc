@@ -15,6 +15,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     generator: ?[]const u8 = null,
     rest: ?[]const u8 = null,
     class_private_method_init: ?[]const u8 = null,
+    class_private_method_get: ?[]const u8 = null,
     class_call_check: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     async_values: ?[]const u8 = null,
@@ -1841,7 +1842,14 @@ fn appendRuntimeHelpersInternal(
         );
     }
     if (helpers.class_private_method_get) {
-        try buf.appendSlice(allocator, if (minify) PRIVATE_METHOD_GET_RUNTIME_MIN else PRIVATE_METHOD_GET_RUNTIME);
+        const default_name = helperName("__classPrivateMethodGet", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) PRIVATE_METHOD_GET_RUNTIME_MIN else PRIVATE_METHOD_GET_RUNTIME,
+            default_name,
+            local_names.class_private_method_get orelse default_name,
+        );
     }
     if (helpers.class_call_check) {
         const default_name = helperName("__classCallCheck", minify);

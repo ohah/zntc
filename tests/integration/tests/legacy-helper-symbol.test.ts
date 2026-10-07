@@ -605,6 +605,45 @@ console.log(${sourceName}, new C().run());
     });
   }
 
+  for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 private-method-get preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$pG' : '__classPrivateMethodGet';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+class C { #m() { return 7; } run() { return this.#m(); } }
+console.log(${sourceName}, new C().run());
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$pG[a-zA-Z0-9_$]*)=function\(receiver,privateSet,fn\)/)?.[1]
+        : code.match(
+            /var (__classPrivateMethodGet\d*) = function\(receiver, privateSet, fn\)/,
+          )?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(
+        minify ? `${emittedHelper}(this,_m,_m_fn)` : `${emittedHelper}(this, _m, _m_fn)`,
+      );
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 7\n');
+    });
+  }
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {
