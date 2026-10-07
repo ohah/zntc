@@ -688,6 +688,43 @@ console.log(${sourceName}, box.write(7), box.read());
   }
 
   for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 keep-names preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$nm' : '__name';
+      const fixture = await createFixture({
+        'input.ts': `
+var x = 3, ${sourceName} = 40;
+function f(value = x) { var x = function() {}; return [value, x.name]; }
+console.log(JSON.stringify([f(7), ${sourceName}]));
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$nm[a-zA-Z0-9_$]*)=\(function\(d\)/)?.[1]
+        : code.match(/var (__name\d*) = \(function\(defineProperty\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(
+        minify ? `${emittedHelper}(function(){},"x")` : `${emittedHelper}(function()`,
+      );
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('[[7,"x"],40]\n');
+    });
+  }
+
+  for (const minify of [false, true]) {
     test(`standalone ${minify ? 'minified ' : ''}ES5 call-super preamble uses the collision-free helper SymbolId name`, async () => {
       const sourceName = minify ? '$cS' : '__callSuper';
       const fixture = await createFixture({
