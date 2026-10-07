@@ -196,6 +196,10 @@ pub const Transformer = struct {
     /// Import binding nodes attached to helper symbols during finalization.
     /// Generated call references already own their SymbolId before this point.
     runtime_helper_import_bindings: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+    /// Callsite-reserved helper IDs keyed by canonical helper export name.
+    /// Aggregated helper imports consume these exact handles even when local
+    /// aliases are minified.
+    runtime_helper_symbol_ids: std.StringHashMapUnmanaged(SymbolId) = .empty,
     /// Generated this/arguments capture declarations needed by parameter
     /// defaults. Pass 2 inserts default initializers after these statements.
     parameter_capture_statements: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -836,6 +840,7 @@ pub const Transformer = struct {
     pub const ensureStandaloneRuntimeHelperPreambleSymbol = @import("transformer/semantic_edit.zig").ensureStandaloneRuntimeHelperPreambleSymbol;
     pub const trackRuntimeHelperImportRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperImportRef;
     pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
+    pub const declareRuntimeHelperImportId = @import("transformer/semantic_edit.zig").declareRuntimeHelperImportId;
     pub const bindRuntimeHelperImportById = @import("transformer/semantic_edit.zig").bindRuntimeHelperImportById;
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
     pub const trackHoistedTempRefInScope = @import("transformer/semantic_edit.zig").trackHoistedTempRefInScope;

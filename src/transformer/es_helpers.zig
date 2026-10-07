@@ -716,7 +716,16 @@ pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     // helper_scope_map 으로 격리해 binding. user 가 동일 이름 local 을 선언해도 helper
     // 호출이 user binding 으로 잘못 resolve 되지 않는다.
     try self.markRuntimeHelperRef(idx);
-    try self.trackRuntimeHelperRef(idx, resolved);
+    if (try self.trackRuntimeHelperRef(idx, resolved)) |symbol_id| {
+        if (self.runtime_helper_symbol_ids.get(base_name)) |existing| {
+            if (existing != symbol_id)
+                std.debug.panic("runtime helper {s} changed SymbolId within one transform", .{base_name});
+        } else {
+            if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+            const stable_base = try self.name_arena.?.allocator().dupe(u8, base_name);
+            try self.runtime_helper_symbol_ids.put(self.allocator, stable_base, symbol_id);
+        }
+    }
     return idx;
 }
 

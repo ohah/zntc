@@ -1339,7 +1339,7 @@ test "#4819 runtime helper reference owns its SymbolId before its import exists"
         .data = .{ .string_ref = helper_name },
     });
     try transformer.markRuntimeHelperRef(helper_ref);
-    try transformer.trackRuntimeHelperRef(helper_ref, "__extends");
+    _ = try transformer.trackRuntimeHelperRef(helper_ref, "__extends");
 
     const helper_id = transformer.getSymbolIdAt(helper_ref) orelse return error.MissingRuntimeHelperIdAtCreation;
     try std.testing.expect(@as(usize, helper_id) != user_id);
@@ -1372,6 +1372,57 @@ test "#4819 runtime helper reference owns its SymbolId before its import exists"
     try std.testing.expectEqual(@as(?u32, helper_id), transformer.getSymbolIdAt(local));
     try std.testing.expectEqual(@as(?usize, user_id), editor.scope_maps.items[0].get("__extends"));
     try std.testing.expectEqual(@as(?u32, @intCast(@intFromEnum(local))), transformer.runtime_helper_import_bindings.get(helper_id));
+}
+
+test "#4819 bundler runtime helper import consumes its callsite SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const $eX = 'user'; class Base {} export class Derived extends Base {}";
+    var scanner = try Scanner.init(allocator, source);
+    scanner.is_module = true;
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const user_id = analyzer.scope_maps.items[0].get("$eX") orelse return error.MissingRuntimeHelperCollisionBinding;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+        .minify_whitespace = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+
+    const helper_id = transformer.runtime_helper_symbol_ids.get("__extends") orelse return error.MissingCallsiteRuntimeHelperSymbolId;
+    const raw_helper_id: u32 = @intFromEnum(helper_id);
+    const helper_local_node = transformer.runtime_helper_import_bindings.get(raw_helper_id) orelse return error.MissingRuntimeHelperImportBinding;
+    try std.testing.expectEqualStrings("$eX", transformer.ast.identifierNameText(transformer.ast.getNode(@enumFromInt(helper_local_node))));
+    try std.testing.expectEqual(@as(?u32, raw_helper_id), transformer.getSymbolIdAt(@enumFromInt(helper_local_node)));
+    try std.testing.expect(raw_helper_id != user_id);
+    try std.testing.expectEqual(@as(?usize, raw_helper_id), transformer.semantic_editor.?.helper_scope_map.get("$eX"));
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[raw_helper_id].kind);
+    var reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != raw_helper_id or reference.flags.declare) continue;
+        try std.testing.expect(reference.flags.read);
+        reads += 1;
+    }
+    try std.testing.expect(reads >= 1);
+    try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[raw_helper_id].reference_count);
 }
 
 test "#4819 JSX runtime imports bind exact helper symbols before resync" {

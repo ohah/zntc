@@ -2475,8 +2475,8 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
 
 /// 헬퍼 호출은 import 선언보다 먼저 생성된다. 첫 호출에서 helper SymbolId를
 /// 예약하고 즉시 Reference를 붙여, 뒤늦은 import가 이 ID에 연결되게 한다.
-pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!void {
-    _ = try trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports);
+pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!?SymbolId {
+    return trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports);
 }
 
 /// Reserve a standalone helper declaration that is emitted in the preamble
@@ -2599,6 +2599,29 @@ pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name:
     else
         @intFromEnum(editor.declareHelperImport(local, local_span, declaration_span, self.programScope()) catch |err| return editError(err));
     return bindRuntimeHelperImportWithId(self, editor, local, @enumFromInt(raw_id), declaration_span);
+}
+
+/// Create and attach an import-only helper symbol when the import has no
+/// callsite-backed SymbolId (for example, a sibling export in a helper module).
+/// This deliberately fails on an already-reserved helper name so a missing
+/// callsite handle cannot be silently replaced by a second declaration.
+pub fn declareRuntimeHelperImportId(
+    self: *Transformer,
+    local: NodeIndex,
+    local_name: []const u8,
+    declaration_span: Span,
+) Transformer.Error!SymbolId {
+    if (!self.semantic_edit_enabled)
+        std.debug.panic("cannot declare a semantic runtime helper import without semantic editing", .{});
+    const editor = try editorFor(self);
+    const local_node = self.ast.getNode(local);
+    const local_span = switch (local_node.tag) {
+        .identifier_reference, .import_default_specifier => local_node.data.string_ref,
+        else => return editError(error.InvalidNode),
+    };
+    if (!std.mem.eql(u8, self.ast.getText(local_span), local_name))
+        std.debug.panic("runtime helper import local name disagrees with its binding node", .{});
+    return editor.declareHelperImport(local, local_span, declaration_span, self.programScope()) catch |err| return editError(err);
 }
 
 /// Bind the generated import node to the exact helper ID reserved by its
