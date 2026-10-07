@@ -8,6 +8,7 @@ const ModuleGraph = @import("../graph.zig").ModuleGraph;
 const Chunk = @import("../chunk.zig").Chunk;
 const linker_mod = @import("../linker.zig");
 const Linker = linker_mod.Linker;
+const rt_names = @import("../../runtime_helper_names.zig");
 const RuntimeHelpers = @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 const parent = @import("../emitter.zig");
 const chunks = @import("chunks.zig");
@@ -123,7 +124,7 @@ pub fn emitBundleRuntimeHelpers(
     // silent_console_error_patterns: 패턴 비어있으면 emit X — vanilla RN 등 trigger 없는
     // 환경에서 dead code 0. consumer 가 환경 (e.g. expo) 감지 후 패턴 주입.
     try rt.emitConsoleErrorInterceptInto(output, allocator, options.silent_console_error_patterns, options.minify_whitespace);
-    try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
+    try emitOptionPathHelpers(output, allocator, needs_to_binary, options, linker);
 }
 
 /// 한 모듈이 어떤 식으로든 CJS 모듈의 default/namespace 를 가져오면 __toESM 래핑이 필요.
@@ -325,9 +326,14 @@ fn emitOptionPathHelpers(
     allocator: std.mem.Allocator,
     needs_to_binary: bool,
     options: *const EmitOptions,
+    linker: ?*const Linker,
 ) !void {
     if (needs_to_binary) {
-        try output.appendSlice(allocator, if (options.minify_whitespace) rt.TO_BINARY_RUNTIME_MIN else rt.TO_BINARY_RUNTIME);
+        const helper_name = if (linker) |l|
+            try l.toBinaryRuntimeName()
+        else
+            rt_names.helperName("__toBinary", options.minify_whitespace);
+        try rt.appendToBinaryRuntimeNamed(output, allocator, options.minify_whitespace, helper_name);
     }
     if (options.keep_names) {
         try output.appendSlice(allocator, if (options.minify_whitespace) rt.KEEP_NAMES_RUNTIME_MIN else rt.KEEP_NAMES_RUNTIME);
@@ -451,7 +457,7 @@ pub fn emitChunkRuntimeHelpers(
     // 등) 는 transformer 가 graph parse 단계에서 named import 으로 emit -> graph 가 chunk
     // 분배. chunk-level prepend 는 중복 정의를 만들기 때문에 제거.
     _ = collected_helpers;
-    try emitOptionPathHelpers(output, allocator, needs_to_binary, options);
+    try emitOptionPathHelpers(output, allocator, needs_to_binary, options, linker);
 }
 
 /// `kind=.require and is_external` import_record 가 어느 모듈에든 존재하는지 — node ESM

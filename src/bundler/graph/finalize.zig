@@ -226,6 +226,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     }
 
     var cjs_runtime_identity_registered = false;
+    var to_binary_runtime_identity_registered = false;
     var existing_cjs_it = self.modules.iterator(0);
     while (existing_cjs_it.next()) |m| {
         // The module that originally owned this graph-level identity can stop
@@ -235,8 +236,12 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (findCjsRuntimeFactorySymbol(m) != null) {
             registerCjsRuntimeFactorySymbol(m);
             cjs_runtime_identity_registered = true;
-            break;
         }
+        if (!to_binary_runtime_identity_registered and findToBinaryRuntimeSymbol(m) != null) {
+            registerToBinaryRuntimeSymbol(m);
+            to_binary_runtime_identity_registered = m.to_binary_runtime_symbol != null;
+        }
+        if (cjs_runtime_identity_registered and to_binary_runtime_identity_registered) break;
     }
     var it = self.modules.iterator(0);
     while (it.next()) |m| {
@@ -333,6 +338,65 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             }
         }
     }
+
+    // Binary loader modules are semantic-less and their call expression is
+    // generated from asset bytes. Anchor the shared preamble/call identity to
+    // a parsed module so the linker can use its normal SymbolId rename path.
+    // Keep a fixed-name fallback only for graphs with no semantic module.
+    if (!to_binary_runtime_identity_registered) {
+        var has_binary_asset = false;
+        var binary_it = self.modules.iterator(0);
+        while (binary_it.next()) |m| {
+            if (m.loader == .binary and m.source.len > 0) {
+                has_binary_asset = true;
+                break;
+            }
+        }
+        if (has_binary_asset) {
+            var semantic_it = self.modules.iterator(0);
+            while (semantic_it.next()) |m| {
+                if (m.semantic == null or m.parse_arena == null) continue;
+                registerToBinaryRuntimeSymbol(m);
+                if (m.to_binary_runtime_symbol != null) break;
+            }
+        }
+    }
+}
+
+fn registerToBinaryRuntimeSymbol(m: *Module) void {
+    const sem = if (m.semantic) |*value| value else return;
+    const arena = if (m.parse_arena) |value| value.allocator() else return;
+    if (findToBinaryRuntimeSymbol(m) == null) {
+        m.to_binary_runtime_symbol = semantic_symbol.extendSymbol(
+            arena,
+            &sem.symbols,
+            .variable_var,
+            .bundler_runtime_helper,
+            "__toBinary",
+            Span.EMPTY,
+        ) catch null;
+    }
+    _ = findToBinaryRuntimeSymbol(m);
+}
+
+fn findToBinaryRuntimeSymbol(m: *Module) ?semantic_symbol.SymbolId {
+    const sem = if (m.semantic) |*value| value else return null;
+    if (m.to_binary_runtime_symbol) |existing| {
+        const raw: usize = @intFromEnum(existing);
+        if (raw < sem.symbols.items.len) {
+            const symbol = sem.symbols.items[raw];
+            if (symbol.synthetic_kind == .bundler_runtime_helper and
+                std.mem.eql(u8, symbol.synthetic_name, "__toBinary")) return existing;
+        }
+        m.to_binary_runtime_symbol = null;
+    }
+    for (sem.symbols.items, 0..) |symbol, index| {
+        if (symbol.synthetic_kind != .bundler_runtime_helper or
+            !std.mem.eql(u8, symbol.synthetic_name, "__toBinary")) continue;
+        m.to_binary_runtime_symbol = @enumFromInt(index);
+        return m.to_binary_runtime_symbol;
+    }
+    return null;
 }
 
 /// Add a semantic identity for the graph-level CJS runtime factory. The helper

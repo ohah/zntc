@@ -430,6 +430,7 @@ pub fn emitChunks(
         @constCast(l).use_shared_ns_preamble = true;
         @constCast(l).ns_preamble_chunked = true;
         try @constCast(l).prepareCjsRuntimeName();
+        try @constCast(l).prepareToBinaryRuntimeName();
         try @constCast(l).prepareEsmRuntimeName();
     }
 

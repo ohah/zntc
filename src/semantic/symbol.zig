@@ -237,6 +237,9 @@ pub const SyntheticKind = enum(u8) {
     /// records one exact identity per helper binding and the emitter rewrites
     /// its declaration/references from the final rename table.
     cjs_runtime_internal_local,
+    /// Graph-level runtime helper declaration emitted outside module ASTs.
+    /// Asset callsites and the raw preamble share this output-owned binding.
+    bundler_runtime_helper,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

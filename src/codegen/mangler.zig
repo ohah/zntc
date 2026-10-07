@@ -498,6 +498,7 @@ fn hasFixedOutputName(sym: Symbol) bool {
         .enum_iife_parameter,
         .runtime_helper_preamble,
         .cjs_runtime_internal_local,
+        .bundler_runtime_helper,
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.

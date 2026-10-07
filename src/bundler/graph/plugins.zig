@@ -155,7 +155,7 @@ pub fn runLoadForModule(self: anytype, module: *Module, runner: ?plugin_mod.Plug
             module.loader = loader_override;
             module.module_type = plugin_result.module_type orelse
                 moduleTypeForLoader(ModuleType.fromExtension(std.fs.path.extension(module.path)), loader_override);
-            if (assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path, self.transform_options_base.minify_whitespace)) |expr| {
+            if (assetSourceFromBytes(arena_alloc, loader_override, plugin_result.contents, module.path)) |expr| {
                 module.source = expr;
                 module.module_type = .js;
                 module.exports_kind = .commonjs;

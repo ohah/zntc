@@ -5,7 +5,6 @@ const wyhash = @import("../../util/wyhash.zig");
 const fs = @import("../fs.zig");
 const Module = @import("../module.zig").Module;
 const types = @import("../types.zig");
-const runtime_helpers = @import("../runtime_helpers.zig");
 const mime = @import("../../server/mime.zig");
 const asset_meta = @import("../asset_meta.zig");
 
@@ -100,7 +99,6 @@ pub fn sourceFromBytes(
     loader: types.Loader,
     raw: []const u8,
     module_path: []const u8,
-    minify_whitespace: bool,
 ) ?[]const u8 {
     return switch (loader) {
         .text => blk: {
@@ -111,14 +109,9 @@ pub fn sourceFromBytes(
             const url = dataUrlFromBytes(alloc, raw, module_path) orelse break :blk null;
             break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{url}) catch null;
         },
-        .base64 => blk: {
+        .base64, .binary => blk: {
             const encoded = base64Encode(alloc, raw) catch break :blk null;
             break :blk std.fmt.allocPrint(alloc, "\"{s}\"", .{encoded}) catch null;
-        },
-        .binary => blk: {
-            const encoded = base64Encode(alloc, raw) catch break :blk null;
-            const to_bin_name = runtime_helpers.helperName("__toBinary", minify_whitespace);
-            break :blk std.fmt.allocPrint(alloc, "{s}(\"{s}\")", .{ to_bin_name, encoded }) catch null;
         },
         .empty => "undefined",
         .file, .copy, .javascript, .json, .css, .none => null,

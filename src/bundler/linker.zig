@@ -228,6 +228,9 @@ pub const Linker = struct {
     /// retained when the graph has no semantic owner and for stable split aliases.
     cjs_factory_runtime_name: ?[]const u8 = null,
     cjs_factory_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
+    /// Shared output identity/name for the raw binary asset runtime helper.
+    to_binary_runtime_name: ?[]const u8 = null,
+    to_binary_runtime_symbol_id: ?bundler_symbol.SymbolID = null,
     /// ESM factory has the same raw-preamble boundary as the CJS factory.
     esm_factory_runtime_name: ?[]const u8 = null,
 
@@ -519,6 +522,7 @@ pub const Linker = struct {
         self.rename_table.deinit(self.allocator);
         self.reserved_globals.deinit(self.allocator);
         if (self.cjs_factory_runtime_name) |name| self.allocator.free(name);
+        if (self.to_binary_runtime_name) |name| self.allocator.free(name);
         if (self.esm_factory_runtime_name) |name| self.allocator.free(name);
         // nested-binding 캐시: inner set 해제(computeRenames 에러 경로 안전망; 정상 경로는 defer 가 이미 clear).
         self.clearNestedBindingCache();
@@ -964,6 +968,13 @@ pub const Linker = struct {
             try self.reserveCjsRuntimeName();
             break;
         }
+        var binary_runtime_it = self.graph.modulesIterator();
+        while (binary_runtime_it.next()) |m| {
+            if (self.tree_shaker_active and !m.is_included) continue;
+            if (m.loader != .binary or m.source.len == 0) continue;
+            try self.reserveToBinaryRuntimeName();
+            break;
+        }
         var esm_runtime_it = self.graph.modulesIterator();
         while (esm_runtime_it.next()) |m| {
             if (self.tree_shaker_active and !m.is_included) continue;
@@ -1149,6 +1160,158 @@ pub const Linker = struct {
             if (self.rename_table.get(symbol_id)) |name| return name;
         }
         return self.cjs_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+    }
+
+    /// Resolve the graph-level binary helper name from its exact synthetic SID.
+    /// A semantic graph missing the identity or its rename entry is an invariant
+    /// failure; only fully semantic-less asset graphs use the fixed-name fallback.
+    pub fn toBinaryRuntimeName(self: *const Linker) ![]const u8 {
+        var symbol_id = self.to_binary_runtime_symbol_id;
+        if (symbol_id == null) {
+            var modules = self.graph.modulesIterator();
+            while (modules.next()) |m| {
+                if (m.to_binary_runtime_symbol) |inner| {
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+                const sem = m.semantic orelse continue;
+                if (findToBinaryRuntimeSymbol(&sem)) |inner| {
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+            }
+        }
+        if (symbol_id) |id| {
+            if (self.rename_table.get(id)) |name| return name;
+            if (self.to_binary_runtime_name) |name| return name;
+            return error.ToBinaryRuntimeNameMissing;
+        }
+        var semantic_it = self.graph.modulesIterator();
+        while (semantic_it.next()) |module| {
+            if (module.semantic != null) return error.ToBinaryRuntimeIdentityMissing;
+        }
+        if (self.to_binary_runtime_name) |name| return name;
+        return rt_names.helperName("__toBinary", self.minify_whitespace);
+    }
+
+    /// Select one graph-wide spelling before split/preserve-modules chunks run
+    /// independent rename passes. Single-bundle builds leave the SID in the
+    /// normal NameToOwnersMap pass.
+    pub fn prepareToBinaryRuntimeName(self: *Linker) !void {
+        if (self.to_binary_runtime_name != null) return;
+        if (self.to_binary_runtime_symbol_id == null) {
+            var modules = self.graph.modulesIterator();
+            while (modules.next()) |m| {
+                if (m.to_binary_runtime_symbol) |inner| {
+                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+                const sem = m.semantic orelse continue;
+                if (findToBinaryRuntimeSymbol(&sem)) |inner| {
+                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    break;
+                }
+            }
+        }
+        if (!self.hasIncludedToBinaryRuntime()) return;
+
+        const base = rt_names.helperName("__toBinary", self.minify_whitespace);
+        if (self.to_binary_runtime_symbol_id) |symbol_id| {
+            self.to_binary_runtime_name = try self.calculateGraphWideToBinaryRuntimeName(symbol_id, base);
+            return;
+        }
+        var semantic_modules = self.graph.modulesIterator();
+        while (semantic_modules.next()) |m| {
+            if (m.semantic != null) return error.ToBinaryRuntimeIdentityMissing;
+        }
+        self.to_binary_runtime_name = try self.allocator.dupe(u8, base);
+    }
+
+    fn calculateGraphWideToBinaryRuntimeName(self: *Linker, symbol_id: bundler_symbol.SymbolID, base: []const u8) ![]const u8 {
+        const module_index = @intFromEnum(symbol_id.module);
+        const owner_module = self.getModule(module_index) orelse return error.ToBinaryRuntimeOwnerMissing;
+        const previous_name = self.rename_table.get(symbol_id);
+        if (previous_name) |name| _ = self.canonical_names_used.fetchRemove(name);
+        errdefer if (previous_name) |name| self.canonical_names_used.put(self.allocator, name, {}) catch {};
+
+        const previous_reserved_globals = self.reserved_globals;
+        self.reserved_globals = .empty;
+        var restore_reserved_globals = true;
+        defer if (restore_reserved_globals) {
+            self.reserved_globals.deinit(self.allocator);
+            self.reserved_globals = previous_reserved_globals;
+        };
+
+        for (self.global_identifiers) |name| try self.reserved_globals.put(self.allocator, name, {});
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (m.semantic) |sem| {
+                var unresolved = sem.unresolved_references.keyIterator();
+                while (unresolved.next()) |name| try self.reserved_globals.put(self.allocator, name.*, {});
+                if (sem.scope_maps.len > 0) {
+                    var scope_names = sem.scope_maps[0].iterator();
+                    while (scope_names.next()) |entry| try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
+                }
+            }
+            const wrapper_names = [_]?[]const u8{
+                m.getInitName(null),
+                m.getExportsName(null),
+                m.getRequireName(null),
+                m.wrapper_name_synthetic,
+            };
+            for (wrapper_names) |name| {
+                if (name) |value| try self.reserved_globals.put(self.allocator, value, {});
+            }
+        }
+
+        var name_to_owners: NameToOwnersMap = .empty;
+        defer {
+            var owners_it = name_to_owners.valueIterator();
+            while (owners_it.next()) |owners| owners.deinit(self.allocator);
+            name_to_owners.deinit(self.allocator);
+        }
+        try self.addNameOwner(&name_to_owners, base, .{
+            .module_index = module_index,
+            .exec_index = owner_module.exec_index,
+            .path = owner_module.path,
+            .symbol_id = symbol_id,
+        });
+        try self.calculateRenames(&name_to_owners, false);
+        const selected = self.rename_table.get(symbol_id) orelse return error.ToBinaryRuntimeNameMissing;
+        const result = try self.allocator.dupe(u8, selected);
+        self.reserved_globals.deinit(self.allocator);
+        self.reserved_globals = previous_reserved_globals;
+        restore_reserved_globals = false;
+        return result;
+    }
+
+    fn reserveToBinaryRuntimeName(self: *Linker) !void {
+        try self.prepareToBinaryRuntimeName();
+        if (self.to_binary_runtime_name) |name| {
+            try self.reserved_globals.put(self.allocator, name, {});
+            if (self.to_binary_runtime_symbol_id) |symbol_id| {
+                try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
+            }
+        }
+    }
+
+    fn hasIncludedToBinaryRuntime(self: *const Linker) bool {
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (m.loader != .binary or m.source.len == 0) continue;
+            if (self.tree_shaker_active and !m.is_included) continue;
+            return true;
+        }
+        return false;
+    }
+
+    fn findToBinaryRuntimeSymbol(sem: *const ModuleSemanticData) ?semantic_symbol.SymbolId {
+        for (sem.symbols.items, 0..) |symbol, index| {
+            if (symbol.synthetic_kind != .bundler_runtime_helper or
+                !std.mem.eql(u8, symbol.synthetic_name, "__toBinary")) continue;
+            return @enumFromInt(index);
+        }
+        return null;
     }
 
     /// Return the final names for lexical bindings in the raw CJS helper body.
@@ -2244,7 +2407,7 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;
@@ -2252,6 +2415,9 @@ pub const Linker = struct {
                         // preamble; reserveCjsRuntimeName assigns its selected
                         // output spelling to the canonical helper SymbolId.
                         if (sk == .cjs_runtime_factory) continue;
+                        // The graph-level binary helper is assigned explicitly
+                        // by reserveToBinaryRuntimeName, not a source scope map.
+                        if (sk == .bundler_runtime_helper) continue;
                         // CJS callback parameters are registered in module
                         // scope, so the ordinary scope-map pass above already
                         // added each exact SID as a candidate.
@@ -4545,12 +4711,15 @@ pub const Linker = struct {
         self.reserved_globals.clearRetainingCapacity();
         var needs_cjs_runtime = false;
         var needs_esm_runtime = false;
+        var needs_to_binary_runtime = false;
         for (module_indices) |mod_idx| {
             const m = self.graph.getModule(mod_idx) orelse continue;
             if ((!self.tree_shaker_active or m.is_included) and m.wrap_kind == .cjs)
                 needs_cjs_runtime = true;
             if ((!self.tree_shaker_active or m.is_included) and m.wrap_kind == .esm)
                 needs_esm_runtime = true;
+            if ((!self.tree_shaker_active or m.is_included) and m.loader == .binary and m.source.len > 0)
+                needs_to_binary_runtime = true;
             const sem = m.semantic orelse continue;
             var urit = sem.unresolved_references.iterator();
             while (urit.next()) |entry| {
@@ -4582,6 +4751,7 @@ pub const Linker = struct {
         }
         if (needs_cjs_runtime) try self.reserveCjsRuntimeName();
         if (needs_esm_runtime) try self.reserveEsmRuntimeName();
+        if (needs_to_binary_runtime) try self.reserveToBinaryRuntimeName();
 
         // 1. 지정된 모듈의 top-level 심볼 이름 수집
         var name_to_owners: NameToOwnersMap = .empty;

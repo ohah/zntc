@@ -426,6 +426,9 @@ pub const Module = struct {
     /// factory preamble. The linker keeps this ID as the shared output binding
     /// across wrapper callsites, chunks, tree shaking, and cached graph rebuilds.
     cjs_runtime_factory_symbol: ?SemanticSymbolId = null,
+    /// Synthetic identity for the graph-level binary asset helper preamble.
+    /// The semantic-less asset callsite and helper declaration use its linker name.
+    to_binary_runtime_symbol: ?SemanticSymbolId = null,
     /// Exact identities for lexical locals in the raw CJS runtime helper body.
     cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds = null,
 
