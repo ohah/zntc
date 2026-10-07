@@ -8,6 +8,15 @@
 const std = @import("std");
 const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 
+/// Final semantic local spellings for standalone inline helpers emitted from
+/// declaration templates. Null leaves the template's canonical local intact.
+pub const StandaloneRuntimeHelperLocalNames = struct {
+    extends: ?[]const u8 = null,
+    generator: ?[]const u8 = null,
+    rest: ?[]const u8 = null,
+    tagged_template_literal: ?[]const u8 = null,
+};
+
 // ============================================================
 // External runtime package specifiers
 // ============================================================
@@ -1636,9 +1645,7 @@ pub fn appendRuntimeHelpersWithExtendsLocalName(
         helpers,
         minify,
         es5_compat,
-        extends_local_name,
-        null,
-        null,
+        .{ .extends = extends_local_name },
     );
 }
 
@@ -1650,46 +1657,9 @@ pub fn appendRuntimeHelpersWithStandaloneLocalNames(
     helpers: RuntimeHelpers,
     minify: bool,
     es5_compat: bool,
-    extends_local_name: ?[]const u8,
-    generator_local_name: ?[]const u8,
-    rest_local_name: ?[]const u8,
+    local_names: StandaloneRuntimeHelperLocalNames,
 ) !void {
-    var remaining = helpers;
-
-    if (helpers.extends) {
-        const default_name = helperName("__extends", minify);
-        const local_name = extends_local_name orelse default_name;
-        if (!std.mem.eql(u8, local_name, default_name)) {
-            try appendExtendsRuntimeWithLocalName(buf, allocator, local_name, minify);
-        } else {
-            try buf.appendSlice(allocator, if (minify) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
-        }
-        remaining.extends = false;
-    }
-
-    if (helpers.generator) {
-        const default_name = helperName("__generator", minify);
-        const local_name = generator_local_name orelse default_name;
-        if (!std.mem.eql(u8, local_name, default_name)) {
-            try appendGeneratorRuntimeWithLocalName(buf, allocator, local_name, minify);
-        } else {
-            try buf.appendSlice(allocator, if (minify) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME);
-        }
-        remaining.generator = false;
-    }
-
-    if (helpers.rest) {
-        const default_name = helperName("__rest", minify);
-        const local_name = rest_local_name orelse default_name;
-        if (!std.mem.eql(u8, local_name, default_name)) {
-            try appendRestRuntimeWithLocalName(buf, allocator, local_name, minify);
-        } else {
-            try buf.appendSlice(allocator, if (minify) REST_RUNTIME_MIN else REST_RUNTIME);
-        }
-        remaining.rest = false;
-    }
-
-    try appendRuntimeHelpers(buf, allocator, remaining, minify, es5_compat);
+    return appendRuntimeHelpersInternal(buf, allocator, helpers, minify, es5_compat, local_names);
 }
 
 fn appendGeneratorRuntimeWithLocalName(
@@ -1700,12 +1670,7 @@ fn appendGeneratorRuntimeWithLocalName(
 ) !void {
     const template = if (minify) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME;
     const default_name = helperName("__generator", minify);
-    const name_start = "var ".len;
-    std.debug.assert(std.mem.startsWith(u8, template[name_start..], default_name));
-
-    try buf.appendSlice(allocator, template[0..name_start]);
-    try buf.appendSlice(allocator, local_name);
-    try buf.appendSlice(allocator, template[name_start + default_name.len ..]);
+    try appendRuntimeTemplateWithLocalName(buf, allocator, template, default_name, local_name);
 }
 
 fn appendRestRuntimeWithLocalName(
@@ -1716,30 +1681,35 @@ fn appendRestRuntimeWithLocalName(
 ) !void {
     const template = if (minify) REST_RUNTIME_MIN else REST_RUNTIME;
     const default_name = helperName("__rest", minify);
+    try appendRuntimeTemplateWithLocalName(buf, allocator, template, default_name, local_name);
+}
+
+fn appendTaggedTemplateRuntimeWithLocalName(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    local_name: []const u8,
+    minify: bool,
+) !void {
+    const template = if (minify) TAGGED_TEMPLATE_RUNTIME_MIN else TAGGED_TEMPLATE_RUNTIME;
+    const default_name = helperName("__taggedTemplateLiteral", minify);
+    try appendRuntimeTemplateWithLocalName(buf, allocator, template, default_name, local_name);
+}
+
+fn appendRuntimeTemplateWithLocalName(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    template: []const u8,
+    default_name: []const u8,
+    local_name: []const u8,
+) !void {
+    if (std.mem.eql(u8, local_name, default_name)) return buf.appendSlice(allocator, template);
+
     const name_start = "var ".len;
     std.debug.assert(std.mem.startsWith(u8, template[name_start..], default_name));
 
     try buf.appendSlice(allocator, template[0..name_start]);
     try buf.appendSlice(allocator, local_name);
     try buf.appendSlice(allocator, template[name_start + default_name.len ..]);
-}
-
-fn appendExtendsRuntimeWithLocalName(
-    buf: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    local_name: []const u8,
-    minify: bool,
-) !void {
-    if (minify) {
-        try buf.appendSlice(allocator, "var ");
-        try buf.appendSlice(allocator, local_name);
-        try buf.appendSlice(allocator, "=function(d,b){Object.setPrototypeOf(d,b);function __(){this.constructor=d}d.prototype=b===null?Object.create(b):(__.prototype=b.prototype,new __())};");
-        return;
-    }
-
-    try buf.appendSlice(allocator, "var ");
-    try buf.appendSlice(allocator, local_name);
-    try buf.appendSlice(allocator, " = function(d, b) {\n  Object.setPrototypeOf(d, b);\n  function __() { this.constructor = d; }\n  d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());\n};\n");
 }
 
 // ============================================================
@@ -1749,14 +1719,41 @@ fn appendExtendsRuntimeWithLocalName(
 /// 런타임 헬퍼 문자열을 ArrayList에 주입한다.
 /// standalone 트랜스파일(main.zig)에서도 사용할 수 있도록 pub으로 노출.
 pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, helpers: RuntimeHelpers, minify: bool, es5_compat: bool) !void {
+    return appendRuntimeHelpersInternal(buf, allocator, helpers, minify, es5_compat, .{});
+}
+
+fn appendRuntimeHelpersInternal(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    helpers: RuntimeHelpers,
+    minify: bool,
+    es5_compat: bool,
+    local_names: StandaloneRuntimeHelperLocalNames,
+) !void {
     if (helpers.extends) {
-        try buf.appendSlice(allocator, if (minify) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) EXTENDS_RUNTIME_MIN else EXTENDS_RUNTIME,
+            helperName("__extends", minify),
+            local_names.extends orelse helperName("__extends", minify),
+        );
     }
     if (helpers.generator) {
-        try buf.appendSlice(allocator, if (minify) GENERATOR_RUNTIME_MIN else GENERATOR_RUNTIME);
+        try appendGeneratorRuntimeWithLocalName(
+            buf,
+            allocator,
+            local_names.generator orelse helperName("__generator", minify),
+            minify,
+        );
     }
     if (helpers.rest) {
-        try buf.appendSlice(allocator, if (minify) REST_RUNTIME_MIN else REST_RUNTIME);
+        try appendRestRuntimeWithLocalName(
+            buf,
+            allocator,
+            local_names.rest orelse helperName("__rest", minify),
+            minify,
+        );
     }
     if (helpers.async_helper) {
         if (es5_compat) {
@@ -1831,7 +1828,12 @@ pub fn appendRuntimeHelpers(buf: *std.ArrayList(u8), allocator: std.mem.Allocato
         try buf.appendSlice(allocator, if (minify) READ_RUNTIME_MIN else READ_RUNTIME);
     }
     if (helpers.tagged_template_literal) {
-        try buf.appendSlice(allocator, if (minify) TAGGED_TEMPLATE_RUNTIME_MIN else TAGGED_TEMPLATE_RUNTIME);
+        try appendTaggedTemplateRuntimeWithLocalName(
+            buf,
+            allocator,
+            local_names.tagged_template_literal orelse helperName("__taggedTemplateLiteral", minify),
+            minify,
+        );
     }
     if (helpers.using_ctx) {
         if (es5_compat) {

@@ -1109,9 +1109,7 @@ fn rewriteRuntimeHelperPreamble(
     transformer: *Transformer,
     preamble: []const u8,
     minify: bool,
-    extends_emitted_directly: bool,
-    generator_emitted_directly: bool,
-    rest_emitted_directly: bool,
+    directly_emitted_names: rt.StandaloneRuntimeHelperLocalNames,
 ) TranspileError![]const u8 {
     var scanner = Scanner.init(allocator, preamble) catch return error.OutOfMemory;
     defer scanner.deinit();
@@ -1126,13 +1124,15 @@ fn rewriteRuntimeHelperPreamble(
             const start: usize = token.span.start;
             const end: usize = token.span.end;
             const name = preamble[start..end];
-            const is_direct_extends = extends_emitted_directly and
+            const is_direct_extends = directly_emitted_names.extends != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__extends", minify));
-            const is_direct_generator = generator_emitted_directly and
+            const is_direct_generator = directly_emitted_names.generator != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__generator", minify));
-            const is_direct_rest = rest_emitted_directly and
+            const is_direct_rest = directly_emitted_names.rest != null and
                 std.mem.eql(u8, name, runtime_helper_names.helperName("__rest", minify));
-            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
+            const is_direct_tagged_template = directly_emitted_names.tagged_template_literal != null and
+                std.mem.eql(u8, name, runtime_helper_names.helperName("__taggedTemplateLiteral", minify));
+            if (!is_direct_extends and !is_direct_generator and !is_direct_rest and !is_direct_tagged_template and runtime_helper_names.isRuntimeHelperLocalName(name, minify)) {
                 const resolved = es_helpers.resolveRuntimeHelperName(transformer, name) catch return error.OutOfMemory;
                 if (!std.mem.eql(u8, name, resolved)) {
                     try output.appendSlice(allocator, preamble[copied_until..start]);
@@ -1689,27 +1689,22 @@ fn transpileWithCallbackInternal(
     const has_helpers = transformer.runtime_helpers.hasAny();
     const helper_preamble = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
-        const extends_local_name = if (transformer.runtime_helpers.extends)
-            try standaloneRuntimeHelperSymbolName(&transformer, "__extends", options.minify_whitespace)
-        else
-            null;
-        const generator_local_name = if (transformer.runtime_helpers.generator)
-            try standaloneRuntimeHelperSymbolName(&transformer, "__generator", options.minify_whitespace)
-        else
-            null;
-        const rest_local_name = if (transformer.runtime_helpers.rest)
-            try standaloneRuntimeHelperSymbolName(&transformer, "__rest", options.minify_whitespace)
-        else
-            null;
+        var local_names: rt.StandaloneRuntimeHelperLocalNames = .{};
+        if (transformer.runtime_helpers.extends)
+            local_names.extends = try standaloneRuntimeHelperSymbolName(&transformer, "__extends", options.minify_whitespace);
+        if (transformer.runtime_helpers.generator)
+            local_names.generator = try standaloneRuntimeHelperSymbolName(&transformer, "__generator", options.minify_whitespace);
+        if (transformer.runtime_helpers.rest)
+            local_names.rest = try standaloneRuntimeHelperSymbolName(&transformer, "__rest", options.minify_whitespace);
+        if (transformer.runtime_helpers.tagged_template_literal)
+            local_names.tagged_template_literal = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", options.minify_whitespace);
         rt.appendRuntimeHelpersWithStandaloneLocalNames(
             &buf,
             arena_alloc,
             transformer.runtime_helpers,
             options.minify_whitespace,
             transformer.runtime_es5_compat,
-            extends_local_name,
-            generator_local_name,
-            rest_local_name,
+            local_names,
         ) catch
             return error.OutOfMemory;
         break :blk try rewriteRuntimeHelperPreamble(
@@ -1717,9 +1712,7 @@ fn transpileWithCallbackInternal(
             &transformer,
             buf.items,
             options.minify_whitespace,
-            transformer.runtime_helpers.extends,
-            transformer.runtime_helpers.generator,
-            transformer.runtime_helpers.rest,
+            local_names,
         );
     } else "";
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
@@ -3973,10 +3966,12 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try runtime_aliases.put(allocator, "__extends", "__extends2");
     try runtime_aliases.put(allocator, "__generator", "__generator2");
     try runtime_aliases.put(allocator, "__rest", "__rest2");
+    try runtime_aliases.put(allocator, "__taggedTemplateLiteral", "__taggedTemplateLiteral2");
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try helper_scope_map.put(allocator, "__extends2", 0);
     try helper_scope_map.put(allocator, "__generator2", 1);
     try helper_scope_map.put(allocator, "__rest2", 2);
+    try helper_scope_map.put(allocator, "__taggedTemplateLiteral2", 3);
     const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
@@ -3999,6 +3994,13 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .declaration_span = @import("lexer/token.zig").Span.EMPTY,
             .synthetic_name = "__rest2",
         },
+        .{
+            .name = @import("lexer/token.zig").Span.EMPTY,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = @import("lexer/token.zig").Span.EMPTY,
+            .synthetic_name = "__taggedTemplateLiteral2",
+        },
     };
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
@@ -4013,6 +4015,8 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__generator2", generator_resolved);
     const rest_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__rest", false);
     try std.testing.expectEqualStrings("__rest2", rest_resolved);
+    const tagged_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", false);
+    try std.testing.expectEqualStrings("__taggedTemplateLiteral2", tagged_resolved);
 
     _ = transformer.helper_scope_map.remove("__extends2");
     try std.testing.expectError(
@@ -4028,6 +4032,11 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__rest", false),
+    );
+    _ = transformer.helper_scope_map.remove("__taggedTemplateLiteral2");
+    try std.testing.expectError(
+        error.TransformError,
+        standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", false),
     );
 }
 

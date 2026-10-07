@@ -1487,9 +1487,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
         .{ .generator = true },
         false,
         false,
-        null,
-        "__generator2",
-        null,
+        .{ .generator = "__generator2" },
     );
     try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __generator2 = function()"));
     try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __generator = function()"));
@@ -1502,9 +1500,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
         .{ .generator = true },
         true,
         false,
-        null,
-        "$g2",
-        null,
+        .{ .generator = "$g2" },
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $g2=function()"));
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $g=function()"));
@@ -1514,17 +1510,21 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true },
+        .{ .extends = true, .generator = true, .rest = true, .tagged_template_literal = true },
         false,
         false,
-        "__extends2",
-        "__generator2",
-        "__rest2",
+        .{
+            .extends = "__extends2",
+            .generator = "__generator2",
+            .rest = "__rest2",
+            .tagged_template_literal = "__taggedTemplateLiteral2",
+        },
     );
     const extends_index = std.mem.indexOf(u8, combined.items, "var __extends2 = function").?;
     const generator_index = std.mem.indexOf(u8, combined.items, "var __generator2 = function").?;
     const rest_index = std.mem.indexOf(u8, combined.items, "var __rest2 = function").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index);
+    const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < tagged_index);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local directly" {
@@ -1536,9 +1536,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local
         .{ .rest = true },
         false,
         false,
-        null,
-        null,
-        "__rest2",
+        .{ .rest = "__rest2" },
     );
     try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __rest2 = function(s, e)"));
     try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __rest = function(s, e)"));
@@ -1551,12 +1549,38 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected rest local
         .{ .rest = true },
         true,
         false,
-        null,
-        null,
-        "$rs2",
+        .{ .rest = "$rs2" },
     );
     try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $rs2=function(s,e)"));
     try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $rs=function(s,e)"));
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected tagged template local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .tagged_template_literal = true },
+        false,
+        false,
+        .{ .tagged_template_literal = "__taggedTemplateLiteral2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __taggedTemplateLiteral2 = function(cooked, raw)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __taggedTemplateLiteral = function(cooked, raw)"));
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .tagged_template_literal = true },
+        true,
+        false,
+        .{ .tagged_template_literal = "$tt2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $tt2=function(cooked,raw)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $tt=function(cooked,raw)"));
 }
 
 test "appendRuntimeHelpers: generator only" {
