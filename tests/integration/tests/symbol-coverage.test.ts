@@ -97,6 +97,7 @@ const EXACT_SCHEMA_FIELDS = new Set<string>([
   ...EXACT_ZERO_COUNTERS,
 ]);
 const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = ['scope_owner_mismatch', 'scope_owner_parent_mismatch'];
+const SOURCE_SCOPE_OWNER_SCHEMA_FIELDS = new Set<string>(SOURCE_SCOPE_OWNER_ZERO_COUNTERS);
 
 function expectCjsWrapperModuleParamMatchesBody(bundle: string, moduleId: string) {
   const escapedModuleId = moduleId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -222,13 +223,48 @@ function strictSchemaProblems(report: string): string[] {
   return problems;
 }
 
-function scopeOwnerAuditProblems(audit: string): string[] {
+function scopeOwnerCounterProblems(audit: string): string[] {
   return SOURCE_SCOPE_OWNER_ZERO_COUNTERS.flatMap((counter) => {
     const matches = audit.match(new RegExp(`(?:^| )${counter}=(\\d+)(?=\\s|$)`, 'g')) ?? [];
     if (matches.length !== 1) return [`${counter} occurrences=${matches.length}, expected 1`];
     const value = matches[0].match(/=(\d+)/)?.[1] ?? 'missing';
     return value === '0' ? [] : [`${counter}=${value}, expected 0`];
   });
+}
+
+function scopeOwnerAuditProblems(audit: string): string[] {
+  const isReportLine = audit.startsWith('zntc: symbol-source-scope-owner ');
+  const payloadMarkers = [': scope_owner_mismatch=', ': scope_owner_parent_mismatch='];
+  const payloadMarkerIndex = isReportLine
+    ? Math.max(...payloadMarkers.map((marker) => audit.lastIndexOf(marker)))
+    : -1;
+  if (isReportLine && payloadMarkerIndex === -1) {
+    return ['missing source scope-owner audit payload'];
+  }
+  const payload = payloadMarkerIndex === -1 ? audit : audit.slice(payloadMarkerIndex + 2);
+  const problems = scopeOwnerCounterProblems(payload);
+  const counts = new Map<string, number>();
+  for (const token of payload.trim().split(/\s+/)) {
+    const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\S+)$/);
+    if (!match) {
+      problems.push('malformed source scope-owner field ' + token);
+      continue;
+    }
+    const [, field, value] = match;
+    counts.set(field, (counts.get(field) ?? 0) + 1);
+    if (!SOURCE_SCOPE_OWNER_SCHEMA_FIELDS.has(field)) {
+      problems.push('unexpected source scope-owner field ' + field);
+    } else if (!/^\d+$/.test(value)) {
+      problems.push('malformed source scope-owner value ' + field + '=' + value);
+    }
+  }
+  for (const field of SOURCE_SCOPE_OWNER_SCHEMA_FIELDS) {
+    const occurrences = counts.get(field) ?? 0;
+    if (occurrences !== 1) {
+      problems.push(field + ' occurrences=' + occurrences + ', expected 1');
+    }
+  }
+  return problems;
 }
 
 // The exact audit above owns transform-aware binding-scope validation. The
@@ -328,6 +364,21 @@ describe('symbol identity coverage gate (#4819)', () => {
         clean.replace('scope_owner_mismatch=0', 'scope_owner_mismatch=0 scope_owner_mismatch=0'),
       ),
     ).toContain('scope_owner_mismatch occurrences=2, expected 1');
+    expect(scopeOwnerAuditProblems(clean + ' future_scope_owner=0')).toContain(
+      'unexpected source scope-owner field future_scope_owner',
+    );
+    expect(scopeOwnerAuditProblems(clean + ' malformed')).toContain(
+      'malformed source scope-owner field malformed',
+    );
+    expect(
+      scopeOwnerAuditProblems(clean.replace('scope_owner_mismatch=0', 'scope_owner_mismatch=bad')),
+    ).toContain('malformed source scope-owner value scope_owner_mismatch=bad');
+    const pathWithCounterText =
+      'zntc: symbol-source-scope-owner /tmp/input: scope_owner_mismatch=3.js: scope_owner_mismatch=0 scope_owner_parent_mismatch=0';
+    expect(scopeOwnerAuditProblems(pathWithCounterText)).toEqual([]);
+    expect(
+      scopeOwnerAuditProblems('zntc: symbol-source-scope-owner input.js: missing=0'),
+    ).toContain('missing source scope-owner audit payload');
   });
 
   test('Flow component wrapper owns its synthetic implementation function scope', () => {
