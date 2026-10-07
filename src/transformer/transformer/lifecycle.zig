@@ -151,6 +151,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.tracked_runtime_helper_refs.deinit(self.allocator);
     self.tracked_runtime_helper_ref_index.deinit(self.allocator);
     self.runtime_helper_import_bindings.deinit(self.allocator);
+    self.runtime_helper_symbol_ids.deinit(self.allocator);
     self.parameter_capture_statements.deinit(self.allocator);
     self.parameter_body_var_copies.deinit(self.allocator);
     self.destructuring_temp_bindings.deinit(self.allocator);

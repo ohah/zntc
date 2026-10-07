@@ -218,7 +218,13 @@ fn emitOne(
             .span = anchor,
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
-        try self.bindRuntimeHelperImport(local_node, local, anchor);
+        if (self.semantic_edit_enabled) {
+            const symbol_id = self.runtime_helper_symbol_ids.get(base) orelse
+                try self.declareRuntimeHelperImportId(local_node, local, anchor);
+            try self.bindRuntimeHelperImportById(local_node, local, symbol_id, anchor);
+        } else {
+            try self.bindRuntimeHelperImport(local_node, local, anchor);
+        }
         try self.scratch.append(self.allocator, spec);
     }
 
