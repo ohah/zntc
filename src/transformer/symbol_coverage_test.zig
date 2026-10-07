@@ -1818,6 +1818,7 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
     const output_root = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
 
@@ -1826,6 +1827,8 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     try std.testing.expectEqual(import_node, stored_import_node);
     const alias_binding = transformer.plugins.emotion.css_prop_alias_binding orelse
         return error.MissingEmotionCssAliasBinding;
+    const synthetic_idents = if (transformer.synthetic_idents) |*set| set else return error.MissingSyntheticIdentifierSet;
+    try std.testing.expect(synthetic_idents.contains(@intFromEnum(alias_binding)));
     const alias_symbol = transformer.getSymbolIdAt(alias_binding) orelse
         return error.MissingEmotionCssAliasSymbol;
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[alias_symbol].kind);

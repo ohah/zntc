@@ -369,8 +369,7 @@ fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
     if (self.plugins.emotion.css_prop_alias_binding) |binding| return binding;
 
     const name = try es_helpers.resolveSyntheticName(self, "_emotionCss");
-    const name_span = try self.ast.addString(name);
-    const binding = try es_helpers.makeBindingIdentifier(self, name_span);
+    const binding = try es_helpers.makeExactSyntheticBinding(self, name);
     const program_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
     const program_span = self.ast.getNode(program_idx).span;
     const anchor: Span = .{ .start = program_span.start, .end = program_span.start };
