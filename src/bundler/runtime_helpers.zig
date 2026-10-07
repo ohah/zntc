@@ -14,6 +14,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     extends: ?[]const u8 = null,
     generator: ?[]const u8 = null,
     rest: ?[]const u8 = null,
+    class_call_check: ?[]const u8 = null,
     async_helper: ?[]const u8 = null,
     async_values: ?[]const u8 = null,
     tagged_template_literal: ?[]const u8 = null,
@@ -1835,7 +1836,14 @@ fn appendRuntimeHelpersInternal(
         try buf.appendSlice(allocator, if (minify) PRIVATE_METHOD_GET_RUNTIME_MIN else PRIVATE_METHOD_GET_RUNTIME);
     }
     if (helpers.class_call_check) {
-        try buf.appendSlice(allocator, if (minify) CLASS_CALL_CHECK_RUNTIME_MIN else CLASS_CALL_CHECK_RUNTIME);
+        const default_name = helperName("__classCallCheck", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) CLASS_CALL_CHECK_RUNTIME_MIN else CLASS_CALL_CHECK_RUNTIME,
+            default_name,
+            local_names.class_call_check orelse default_name,
+        );
     }
     if (helpers.class_static_private_field) {
         try buf.appendSlice(allocator, if (minify) STATIC_PRIVATE_FIELD_RUNTIME_MIN else STATIC_PRIVATE_FIELD_RUNTIME);

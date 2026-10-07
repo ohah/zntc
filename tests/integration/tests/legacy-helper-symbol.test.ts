@@ -535,6 +535,41 @@ try { f(); } catch (error) { console.log(${sourceName}, error instanceof Referen
     });
   }
 
+  for (const minify of [false, true]) {
+    test(`standalone ${minify ? 'minified ' : ''}ES5 class-call-check preamble uses the collision-free helper SymbolId name`, async () => {
+      const sourceName = minify ? '$cC' : '__classCallCheck';
+      const fixture = await createFixture({
+        'input.ts': `
+var ${sourceName} = 40;
+class C {}
+console.log(${sourceName}, new C() instanceof C);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.js');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.ts',
+        '--target=es5',
+        ...(minify ? ['--minify-whitespace'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      const emittedHelper = minify
+        ? code.match(/var (\$cC[a-zA-Z0-9_$]*)=function\(instance,Constructor\)/)?.[1]
+        : code.match(/var (__classCallCheck\d*) = function\(instance, Constructor\)/)?.[1];
+      expect(emittedHelper).toBeDefined();
+      expect(emittedHelper).not.toBe(sourceName);
+      expect(code).toContain(minify ? `${emittedHelper}(this,C)` : `${emittedHelper}(this, C)`);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('40 true\n');
+    });
+  }
+
   for (const target of ['es5', 'es2020'] as const) {
     for (const metadata of [false, true]) {
       for (const mode of ['single', 'bundle', 'split'] as const) {

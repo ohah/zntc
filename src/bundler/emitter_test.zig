@@ -1510,7 +1510,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
         &combined,
         std.testing.allocator,
-        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .public_field = true, .tdz = true, .read = true, .tagged_template_literal = true },
+        .{ .extends = true, .generator = true, .rest = true, .async_helper = true, .async_values = true, .values = true, .public_field = true, .class_call_check = true, .tdz = true, .read = true, .tagged_template_literal = true },
         false,
         false,
         .{
@@ -1521,6 +1521,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
             .async_values = "__asyncValues2",
             .values = "__values2",
             .public_field = "__publicField2",
+            .class_call_check = "__classCallCheck2",
             .tdz = "__tdz2",
             .read = "__read2",
             .tagged_template_literal = "__taggedTemplateLiteral2",
@@ -1533,10 +1534,39 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const async_values_index = std.mem.indexOf(u8, combined.items, "var __asyncValues2 = function(o)").?;
     const values_index = std.mem.indexOf(u8, combined.items, "var __values2 = function(o)").?;
     const public_field_index = std.mem.indexOf(u8, combined.items, "var __publicField2 = function(obj, key, value)").?;
+    const class_call_check_index = std.mem.indexOf(u8, combined.items, "var __classCallCheck2 = function(instance, Constructor)").?;
     const tdz_index = std.mem.indexOf(u8, combined.items, "var __tdz2 = function(name)").?;
     const read_index = std.mem.indexOf(u8, combined.items, "var __read2 = function(o, n)").?;
     const tagged_index = std.mem.indexOf(u8, combined.items, "var __taggedTemplateLiteral2 = function").?;
-    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < public_field_index and public_field_index < tdz_index and tdz_index < read_index and read_index < tagged_index);
+    try std.testing.expect(extends_index < generator_index and generator_index < rest_index and rest_index < async_index and async_index < async_values_index and async_values_index < values_index and values_index < public_field_index and public_field_index < class_call_check_index and class_call_check_index < tdz_index and tdz_index < read_index and read_index < tagged_index);
+}
+
+test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected class call check local directly" {
+    var plain: std.ArrayList(u8) = .empty;
+    defer plain.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &plain,
+        std.testing.allocator,
+        .{ .class_call_check = true },
+        false,
+        false,
+        .{ .class_call_check = "__classCallCheck2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __classCallCheck2 = function(instance, Constructor)"));
+    try std.testing.expect(!std.mem.startsWith(u8, plain.items, "var __classCallCheck = function(instance, Constructor)"));
+
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .class_call_check = true },
+        true,
+        false,
+        .{ .class_call_check = "$cC2" },
+    );
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $cC2=function(instance,Constructor)"));
+    try std.testing.expect(!std.mem.startsWith(u8, minified.items, "var $cC=function(instance,Constructor)"));
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected tdz local directly" {
