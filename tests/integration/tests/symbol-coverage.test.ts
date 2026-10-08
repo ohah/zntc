@@ -42,6 +42,7 @@ const EXACT_ZERO_COUNTERS = [
   'invalid_scope',
   'reference_scope_mismatch',
   'reference_statement_mismatch',
+  'reference_scope_statement_alias',
   'declaration_scope_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
@@ -90,7 +91,7 @@ const EXACT_SINGLETON_FIELDS = [
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 13;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 14;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
   'invariant_counter_count',
   'observation_field_count',
