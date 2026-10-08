@@ -837,7 +837,7 @@ fn isSimpleVarDeclaration(self: anytype, decl_idx: NodeIndex) bool {
 fn emitNamespaceVarDirectAssign(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
     const ns_name = try self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
-    const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
+    const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl), decl_idx);
     const e = decl.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
     const list_start = extras[1];
@@ -881,7 +881,7 @@ fn emitNamespaceVarDirectAssign(self: anytype, ns_prefix: NamespacePrefix, decl_
 fn emitNamespaceVarMixed(self: anytype, ns_prefix: NamespacePrefix, decl_idx: NodeIndex) !void {
     const ns_name = try self.namespacePrefixName(ns_prefix);
     const decl = self.ast.getNode(decl_idx);
-    const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl));
+    const keyword = bindings.declarationKeyword(self, self.ast.variableDeclarationKind(decl), decl_idx);
     const e = decl.data.extra;
     const list_start = self.ast.extra_data.items[e + 1];
     const list_len = self.ast.extra_data.items[e + 2];

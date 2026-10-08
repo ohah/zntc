@@ -52,7 +52,9 @@ comptime {
     // #4598 `tla_lowered`: **직렬화 불필요**. 이 플래그는 "이 Ast 를 이미 TLA lowering 했다"
     // 는 **한 빌드 안의 멱등성** 표식이다. 디스크 캐시에서 복원되는 Ast 는 lowering 이 끝난
     // 산물이 아니라 parse 결과이므로 false 로 복원되는 것이 맞다.
-    if (@typeInfo(Ast).@"struct".fields.len != 25)
+    // `preserve_const_declaration_indices`: **직렬화 불필요**. 합성 class-self alias 가 만든
+    // minifier 예외 목록이며 parse-cache Ast 에는 비어 있어야 한다.
+    if (@typeInfo(Ast).@"struct".fields.len != 26)
         @compileError("Ast 필드 수가 바뀜 — 새 필드의 직렬화 필요 여부를 판정해 ast_codec 갱신 후 이 수를 갱신할 것.");
 }
 

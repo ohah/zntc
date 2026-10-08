@@ -2121,7 +2121,10 @@ pub fn emitModule(
     // 재할당 의미 변경 (TypeError → silent) 은 minify-only 모드라 정상 — terser/esbuild/
     // rolldown/rspack 동일.
     if (options.minify_syntax) {
-        @import("../transformer/minify.zig").convertConstToLet(transformer.ast);
+        @import("../transformer/minify.zig").convertConstToLetPreserving(
+            transformer.ast,
+            transformer.ast.preserve_const_declaration_indices.items,
+        );
     }
 
     // Private field name mangle (#1632 Phase 1) — `#commit_callbacks` 같은 긴 이름을

@@ -106,6 +106,15 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         defer self.current_class_name_node = saved_class_name_node;
         defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
+        // Static private descriptor expressions are emitted after the class,
+        // inside the class-expression wrapper. Reserve that real output scope
+        // before building their exact class-self references.
+        if (self.semantic_edit_enabled and node.tag == .class_expression and prepared_wrapper_scope.isNone() and
+            classBodyHasLowerableMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre, false))
+        {
+            prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+        }
+
         const saved_super_class = self.current_super_class;
         const saved_super_class_old_idx = self.current_super_class_old_idx;
         // #3680-F5/F6: inner class 가 extends 없으면 outer 의 current_super_class 를 명시적으로 null 로

@@ -146,8 +146,24 @@ pub fn PrivateFields(comptime Transformer: type) type {
         /// private_methods 리스트를 순회하며 WeakSet 선언 + standalone function 을 scratch 에 append.
         /// 같은 name 의 getter/setter 는 WeakSet 을 공유하므로 weakset_name 기준 첫 등장에만 선언.
         /// private_field_init 도 동일한 dedup 으로 instance_fields 에 append (#1523).
-        pub fn emitPrivateMethodArtifacts(self: *Transformer, pms: []const Transformer.PrivateMethodMapping, fields_out: ?*std.ArrayList(NodeIndex), span: Span, class_name_span: Span) Transformer.Error!void {
+        pub fn emitPrivateMethodArtifacts(self: *Transformer, pms: []const Transformer.PrivateMethodMapping, fields_out: ?*std.ArrayList(NodeIndex), post_class_out: ?*std.ArrayList(NodeIndex), span: Span, class_name_span: Span) Transformer.Error!void {
             _ = class_name_span;
+            const function_values = try self.allocator.alloc(NodeIndex, pms.len);
+            defer self.allocator.free(function_values);
+            const emit_standalone = try self.allocator.alloc(bool, pms.len);
+            defer self.allocator.free(emit_standalone);
+
+            for (pms, 0..) |pm, i| {
+                const function_node = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span);
+                if (try es_helpers.capturePrivateClassSelf(self, pm, function_node, span)) |factory_call| {
+                    function_values[i] = factory_call;
+                    emit_standalone[i] = false;
+                    continue;
+                }
+                function_values[i] = function_node;
+                emit_standalone[i] = true;
+            }
+
             for (pms, 0..) |pm, i| {
                 const first_occurrence = blk: {
                     for (pms[0..i]) |prev| {
@@ -157,15 +173,19 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 };
                 if (first_occurrence) {
                     if (pm.class_name != null) {
-                        var method_fn: ?[]const u8 = null;
-                        var getter_fn: ?[]const u8 = null;
-                        var setter_fn: ?[]const u8 = null;
-                        for (pms) |part| {
+                        var method_fn: ?NodeIndex = null;
+                        var getter_fn: ?NodeIndex = null;
+                        var setter_fn: ?NodeIndex = null;
+                        for (pms, 0..) |part, part_index| {
                             if (!std.mem.eql(u8, part.weakset_name, pm.weakset_name)) continue;
+                            const value = if (emit_standalone[part_index])
+                                try es_helpers.makeSyntheticRef(self, part.func_name)
+                            else
+                                function_values[part_index];
                             switch (part.kind) {
-                                .method => method_fn = part.func_name,
-                                .getter => getter_fn = part.func_name,
-                                .setter => setter_fn = part.func_name,
+                                .method => method_fn = value,
+                                .getter => getter_fn = value,
+                                .setter => setter_fn = value,
                             }
                         }
                         try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateMethodDescriptor(self, pm.weakset_name, method_fn, getter_fn, setter_fn, span));
@@ -177,7 +197,15 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         }
                     }
                 }
-                try self.scratch.append(self.allocator, try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span));
+                if (emit_standalone[i]) {
+                    try self.scratch.append(self.allocator, function_values[i]);
+                } else if (pm.class_name == null) {
+                    const post_class = post_class_out orelse
+                        std.debug.panic("captured instance private method has no post-class emission list", .{});
+                    const assignment = try es_helpers.buildCapturedFunctionAssignment(self, pm.func_name, function_values[i], span);
+                    try self.scratch.append(self.allocator, assignment.declaration);
+                    try post_class.append(self.allocator, assignment.assignment);
+                }
             }
         }
 
@@ -186,24 +214,30 @@ pub fn PrivateFields(comptime Transformer: type) type {
         /// scope is known, bind the exact generated names across that live tree.
         pub fn trackPrivateMethodSymbols(self: *Transformer, root: NodeIndex, pms: []const Transformer.PrivateMethodMapping, pfs: []const Transformer.PrivateFieldMapping, root_scope: ScopeId) Transformer.Error!void {
             if (!self.semantic_edit_enabled or (pms.len == 0 and pfs.len == 0)) return;
-            const PrivateName = struct { kind: SymbolKind, binding: NodeIndex = .none };
+            const PrivateName = struct { kind: SymbolKind };
+            const Binding = struct { name: []const u8, node: NodeIndex, kind: SymbolKind, scope: ScopeId, raw_id: u32 };
             const Ref = struct { node: NodeIndex, scope: ScopeId };
             var names: std.StringHashMapUnmanaged(PrivateName) = .empty;
             defer names.deinit(self.allocator);
+            var function_names: std.StringHashMapUnmanaged(void) = .empty;
+            defer function_names.deinit(self.allocator);
             for (pms) |pm| {
                 const ws = try names.getOrPut(self.allocator, pm.weakset_name);
                 if (!ws.found_existing) ws.value_ptr.* = .{ .kind = .variable_var };
                 const fn_entry = try names.getOrPut(self.allocator, pm.func_name);
                 if (!fn_entry.found_existing) fn_entry.value_ptr.* = .{ .kind = .function_decl };
+                try function_names.put(self.allocator, pm.func_name, {});
             }
             for (pfs) |pf| {
                 const field_entry = try names.getOrPut(self.allocator, pf.var_name);
                 if (!field_entry.found_existing) field_entry.value_ptr.* = .{ .kind = .variable_var };
             }
 
+            var bindings: std.ArrayList(Binding) = .empty;
+            defer bindings.deinit(self.allocator);
             var refs: std.ArrayList(Ref) = .empty;
             defer refs.deinit(self.allocator);
-            const Work = struct { node: NodeIndex, scope: ScopeId };
+            const Work = struct { node: NodeIndex, scope: ScopeId, parent: NodeIndex = .none };
             var stack: std.ArrayList(Work) = .empty;
             defer stack.deinit(self.allocator);
             try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
@@ -221,7 +255,16 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     const name_idx = self.readNodeIdx(node.data.extra, ast_mod.FunctionExtra.name);
                     if (!name_idx.isNone()) {
                         const name = self.ast.getText(self.ast.getNode(name_idx).data.string_ref);
-                        if (names.getPtr(name)) |entry| entry.kind = functionSymbolKind(self, node);
+                        if (names.getPtr(name)) |entry| {
+                            try bindings.append(self.allocator, .{
+                                .name = name,
+                                .node = name_idx,
+                                .kind = functionSymbolKind(self, node),
+                                .scope = work.scope,
+                                .raw_id = 0,
+                            });
+                            entry.kind = functionSymbolKind(self, node);
+                        }
                     }
                 }
 
@@ -229,8 +272,21 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     .binding_identifier => {
                         const name = self.ast.getText(node.data.string_ref);
                         if (names.getPtr(name)) |entry| {
-                            if (!entry.binding.isNone()) std.debug.panic("duplicate private helper binding {s}", .{name});
-                            entry.binding = work.node;
+                            const is_function_name = if (!work.parent.isNone()) blk: {
+                                const parent = self.ast.getNode(work.parent);
+                                if (parent.tag != .function_declaration) break :blk false;
+                                break :blk self.readNodeIdx(parent.data.extra, ast_mod.FunctionExtra.name) == work.node;
+                            } else false;
+                            if (!is_function_name) {
+                                const parent_is_declarator = !work.parent.isNone() and self.ast.getNode(work.parent).tag == .variable_declarator;
+                                try bindings.append(self.allocator, .{
+                                    .name = name,
+                                    .node = work.node,
+                                    .kind = if (parent_is_declarator and function_names.contains(name)) .variable_var else entry.kind,
+                                    .scope = work.scope,
+                                    .raw_id = 0,
+                                });
+                            }
                         }
                     },
                     .identifier_reference, .assignment_target_identifier => {
@@ -241,25 +297,53 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 }
 
                 var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
-                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
+                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope, .parent = work.node });
             }
 
             var entries = names.iterator();
             while (entries.next()) |entry| {
                 const name = entry.key_ptr.*;
-                const binding = entry.value_ptr.binding;
-                if (binding.isNone()) std.debug.panic("private helper {s} has no emitted binding", .{name});
-                const binding_node = self.ast.getNode(binding);
-                const id = try self.declareSyntheticInScope(binding, binding_node.span, entry.value_ptr.kind, root_scope);
-                for (refs.items) |ref| {
-                    if (!std.mem.eql(u8, self.ast.getText(self.ast.getNode(ref.node).data.string_ref), name)) continue;
-                    const flags: ReferenceFlags = if (self.ast.getNode(ref.node).tag == .assignment_target_identifier)
-                        .{ .write = true }
-                    else
-                        .{ .read = true };
-                    try self.addSyntheticRefInScope(ref.node, id, ref.scope, flags);
+                var found = false;
+                for (bindings.items) |*binding| {
+                    if (!std.mem.eql(u8, binding.name, name)) continue;
+                    found = true;
+                    const binding_node = self.ast.getNode(binding.node);
+                    const id = try self.declareSyntheticInScope(binding.node, binding_node.span, binding.kind, binding.scope) orelse
+                        std.debug.panic("private helper {s} has no direct SymbolId", .{name});
+                    binding.raw_id = @intFromEnum(id);
                 }
+                if (!found) std.debug.panic("private helper {s} has no emitted binding", .{name});
             }
+
+            for (refs.items) |ref| {
+                const name = self.ast.getText(self.ast.getNode(ref.node).data.string_ref);
+                var selected: ?*const Binding = null;
+                var selected_distance: usize = std.math.maxInt(usize);
+                for (bindings.items) |*binding| {
+                    if (!std.mem.eql(u8, binding.name, name)) continue;
+                    const distance = privateBindingDistance(self, ref.scope, binding.scope) orelse continue;
+                    if (distance < selected_distance) {
+                        selected = binding;
+                        selected_distance = distance;
+                    }
+                }
+                const binding = selected orelse std.debug.panic("private helper reference {s} has no visible emitted binding", .{name});
+                const flags: ReferenceFlags = if (self.ast.getNode(ref.node).tag == .assignment_target_identifier)
+                    .{ .write = true }
+                else
+                    .{ .read = true };
+                try self.addSyntheticRefInScope(ref.node, @enumFromInt(binding.raw_id), ref.scope, flags);
+            }
+        }
+
+        fn privateBindingDistance(self: *Transformer, start: ScopeId, target: ScopeId) ?usize {
+            var scope = start;
+            var distance: usize = 0;
+            while (!scope.isNone()) : (distance += 1) {
+                if (scope == target) return distance;
+                scope = self.outputScopeParent(scope);
+            }
+            return null;
         }
 
         fn functionSymbolKind(self: *Transformer, node: Node) SymbolKind {

@@ -84,7 +84,7 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
             try self.writeByte(';');
         },
         .expression_statement => try statement_emit.emitExpressionStatement(self, node),
-        .variable_declaration => try binding_emit.emitVariableDeclaration(self, node),
+        .variable_declaration => try binding_emit.emitVariableDeclaration(self, idx),
         .variable_declarator => try binding_emit.emitVariableDeclarator(self, node),
         .return_statement => try statement_emit.emitReturn(self, node),
         .throw_statement => try statement_emit.emitThrow(self, node),

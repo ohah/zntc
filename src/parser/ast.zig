@@ -1054,6 +1054,11 @@ pub const Ast = struct {
     /// 노드 배열 (24바이트 × N)
     nodes: std.ArrayList(Node),
 
+    /// Generated const declarations whose write behavior must survive the
+    /// optional const-to-let syntax minifier. These indices travel with the AST
+    /// into the bundler emitter.
+    preserve_const_declaration_indices: std.ArrayListUnmanaged(u32) = .empty,
+
     /// 추가 데이터 (NodeIndex 배열, 가변 길이 리스트 등)
     extra_data: std.ArrayList(u32),
 
@@ -1214,6 +1219,7 @@ pub const Ast = struct {
         self.dumpStringInternStatsIfEnabled();
         self.nodes.deinit(self.allocator);
         self.extra_data.deinit(self.allocator);
+        self.preserve_const_declaration_indices.deinit(self.allocator);
         self.string_table.deinit(self.allocator);
         self.type_only_binding_names.deinit(self.allocator);
         self.deinitStringInterns();

@@ -82,7 +82,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
 
 /// A static private method is read-only; an accessor has independent get/set slots.
 /// Both accessor halves share one descriptor, regardless of declaration order.
-pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, method_fn: ?[]const u8, getter_fn: ?[]const u8, setter_fn: ?[]const u8, span: Span) !NodeIndex {
+pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, method_fn: ?NodeIndex, getter_fn: ?NodeIndex, setter_fn: ?NodeIndex, span: Span) !NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -94,9 +94,8 @@ pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, m
         .data = .{ .binary = .{ .left = kind_key, .right = kind_value, .flags = 0 } },
     }));
 
-    if (method_fn) |name| {
+    if (method_fn) |value| {
         const key = try makePropertyName(self, "value");
-        const value = try makeSyntheticRef(self, name);
         try self.scratch.append(self.allocator, try self.ast.addNode(.{
             .tag = .object_property,
             .span = span,
@@ -118,14 +117,14 @@ pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, m
         // Both slots are own properties even for one-sided accessors. An
         // inherited getter/setter must never change the descriptor's shape.
         const get_key = try makePropertyName(self, "get");
-        const get_value = if (getter_fn) |name| try makeSyntheticRef(self, name) else try makeVoidZero(self, span);
+        const get_value = if (getter_fn) |value| value else try makeVoidZero(self, span);
         try self.scratch.append(self.allocator, try self.ast.addNode(.{
             .tag = .object_property,
             .span = span,
             .data = .{ .binary = .{ .left = get_key, .right = get_value, .flags = 0 } },
         }));
         const set_key = try makePropertyName(self, "set");
-        const set_value = if (setter_fn) |name| try makeSyntheticRef(self, name) else try makeVoidZero(self, span);
+        const set_value = if (setter_fn) |value| value else try makeVoidZero(self, span);
         try self.scratch.append(self.allocator, try self.ast.addNode(.{
             .tag = .object_property,
             .span = span,
@@ -137,6 +136,112 @@ pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, m
     const binding = try makeSyntheticBinding(self, try self.ast.addString(var_name));
     const declarator = try makeDeclarator(self, binding, obj, span);
     return makeVarDeclaration(self, &.{declarator}, .@"var", span);
+}
+
+/// Extracted static private functions execute outside the class body. Capture
+/// the class-self value at descriptor creation, then bind its original name as
+/// an immutable lexical alias for the moved method. This preserves class
+/// identity after outer reassignment and the class binding's read-only rules.
+pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIndex, span: Span) !?NodeIndex {
+    if (!self.semantic_edit_enabled) return null;
+    const class_name_node = if (!pm.class_name_node.isNone()) pm.class_name_node else self.current_class_name_node;
+    if (class_name_node.isNone()) return null;
+    const class_self_id = self.current_class_self_symbol_id orelse self.getSymbolIdAt(class_name_node) orelse return null;
+    const function_scope = self.outputOwnedScope(function_node) orelse
+        std.debug.panic("static private method has no output function scope", .{});
+
+    var references: std.ArrayList(NodeIndex) = .empty;
+    defer references.deinit(self.allocator);
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    var has_direct_eval = false;
+    try stack.append(self.allocator, function_node);
+    while (stack.pop()) |current| {
+        if (current.isNone() or @intFromEnum(current) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(current);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        const node = self.ast.getNode(current);
+        if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
+            self.getSymbolIdAt(current) == class_self_id)
+        {
+            try references.append(self.allocator, current);
+        }
+        if (node.tag == .call_expression) {
+            const callee_idx = self.readNodeIdx(node.data.extra, 0);
+            if (!callee_idx.isNone()) {
+                const callee = self.ast.getNode(callee_idx);
+                if (callee.tag == .identifier_reference and std.mem.eql(u8, self.ast.getText(callee.data.string_ref), "eval"))
+                    has_direct_eval = true;
+            }
+        }
+        var children = @import("../parser/ast_walk.zig").children(self.ast, node);
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+    // Direct eval can name the class binding through a string, so no AST
+    // identifier reference exists to reveal that capture requirement.
+    if (references.items.len == 0 and !has_direct_eval) return null;
+
+    const class_name_span = self.ast.getNode(class_name_node).data.string_ref;
+    const class_name = pm.class_name orelse self.ast.getText(class_name_span);
+    if (!std.mem.eql(u8, self.ast.getText(class_name_span), class_name))
+        std.debug.panic("static private method class name lost its source binding", .{});
+    const output_scope = self.outputScopeParent(function_scope);
+    if (output_scope.isNone()) std.debug.panic("static private method has no emitted parent scope", .{});
+    const factory_scope = try self.reserveGeneratedFunctionScope(output_scope);
+
+    var private_names = try PrivateNameAllocator.init(self.allocator, self.ast);
+    defer private_names.deinit();
+    const capture_name = try private_names.makeUniqueName("__zntc_class_self_value");
+    defer self.allocator.free(capture_name);
+    const capture_name_span = try self.ast.addString(capture_name);
+    const capture_binding = try makeExactSyntheticBindingFromSpan(self, capture_name_span);
+    const capture_symbol = try self.declareSyntheticInScope(capture_binding, span, .parameter, factory_scope) orelse
+        std.debug.panic("static private method capture parameter has no SymbolId", .{});
+
+    const class_alias_name_span = try self.ast.addString(self.ast.getText(class_name_span));
+    const class_alias_binding = try makeBindingIdentifier(self, class_alias_name_span);
+    const class_alias_symbol = try self.declareSyntheticInScope(class_alias_binding, span, .variable_const, factory_scope) orelse
+        std.debug.panic("static private method class alias has no SymbolId", .{});
+    const capture_ref = try makeExactSyntheticRefFromSpan(self, capture_name_span);
+    try self.addSyntheticRefInScope(capture_ref, capture_symbol, factory_scope, .{ .read = true });
+    const class_alias_decl = try makeVarDeclaration(
+        self,
+        &.{try makeDeclarator(self, class_alias_binding, capture_ref, span)},
+        .@"const",
+        span,
+    );
+    try self.ast.preserve_const_declaration_indices.append(self.allocator, @intFromEnum(class_alias_decl));
+
+    try self.reparentGeneratedScope(function_scope, factory_scope);
+    for (references.items) |reference| try self.rebindOutputReference(reference, @intFromEnum(class_alias_symbol));
+
+    const function_ref = try makeExactSyntheticRef(self, pm.func_name);
+    const return_stmt = try self.ast.addNode(.{
+        .tag = .return_statement,
+        .span = span,
+        .data = .{ .unary = .{ .operand = function_ref, .flags = 0 } },
+    });
+    const factory_body_list = try self.ast.addNodeList(&.{ class_alias_decl, function_node, return_stmt });
+    const factory_body = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = span,
+        .data = .{ .list = factory_body_list },
+    });
+    const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{capture_binding}), span);
+    const none = @intFromEnum(NodeIndex.none);
+    const factory_extra = try self.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(factory_body), 0, none });
+    const factory = try self.ast.addNode(.{
+        .tag = .function_expression,
+        .span = span,
+        .data = .{ .extra = factory_extra },
+    });
+    try self.bindReservedFunctionOwner(factory_scope, factory);
+
+    const class_ref = try self.makeUserRefNamedAtScope(class_name, class_name_node, output_scope);
+    return try makeCallExpr(self, factory, &.{class_ref}, span);
 }
 
 /// class member의 key가 non-computed `constructor` 이름인지 판별.
@@ -555,6 +660,28 @@ pub fn makeExactSyntheticBinding(self: anytype, name: []const u8) !NodeIndex {
 /// references without running name collision resolution again.
 pub fn makeExactSyntheticBindingFromSpan(self: anytype, name_span: Span) !NodeIndex {
     return markSynthetic(self, try makeBindingIdentifier(self, name_span));
+}
+
+pub const CapturedFunctionAssignment = struct { declaration: NodeIndex, assignment: NodeIndex };
+
+/// Declare a captured extracted function before its class and assign the
+/// closure after the class binding has a value.
+pub fn buildCapturedFunctionAssignment(self: anytype, name: []const u8, value: NodeIndex, span: Span) !CapturedFunctionAssignment {
+    const name_span = try self.ast.addString(name);
+    const binding = try makeExactSyntheticBindingFromSpan(self, name_span);
+    const declaration = try makeVarDeclaration(self, &.{try makeDeclarator(self, binding, .none, span)}, .@"var", span);
+    const target_span = try self.ast.addString(name);
+    const target = try self.ast.addNode(.{
+        .tag = .assignment_target_identifier,
+        .span = target_span,
+        .data = .{ .string_ref = target_span },
+    });
+    const assignment = try self.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = span,
+        .data = .{ .binary = .{ .left = target, .right = value, .flags = 0 } },
+    });
+    return .{ .declaration = declaration, .assignment = try makeExprStmt(self, assignment, span) };
 }
 
 /// 파일 전체에서 고유한 합성 함수 이름. 사용자 이름과 이전 생성 이름을 모두 피한다.

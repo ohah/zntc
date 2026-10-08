@@ -342,7 +342,7 @@ pub fn ES2022(comptime Transformer: type) type {
                             .source_member_idx = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx),
                             .kind = pm_kind,
                             .class_name = if (is_static) class_name_text else null,
-                            .class_name_node = if (is_static) class_name_node else .none,
+                            .class_name_node = class_name_node,
                         });
                     } else if (lower_fields and member.tag == .property_definition) {
                         const pe = member.data.extra;
@@ -408,6 +408,21 @@ pub fn ES2022(comptime Transformer: type) type {
                     try pre_stmts.append(self.allocator, wm_decl);
                 }
             }
+            const method_function_values = try self.allocator.alloc(NodeIndex, method_mappings.items.len);
+            defer self.allocator.free(method_function_values);
+            const emit_method_standalone = try self.allocator.alloc(bool, method_mappings.items.len);
+            defer self.allocator.free(emit_method_standalone);
+            for (method_mappings.items, 0..) |m, i| {
+                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, m.source_member_idx, m.member_span);
+                if (try es_helpers.capturePrivateClassSelf(self, m, fn_decl, span)) |factory_call| {
+                    method_function_values[i] = factory_call;
+                    emit_method_standalone[i] = false;
+                    continue;
+                }
+                method_function_values[i] = fn_decl;
+                emit_method_standalone[i] = true;
+            }
+
             for (method_mappings.items, 0..) |m, i| {
                 if (m.class_name != null) {
                     var already_emitted = false;
@@ -418,15 +433,19 @@ pub fn ES2022(comptime Transformer: type) type {
                         }
                     }
                     if (!already_emitted) {
-                        var method_fn: ?[]const u8 = null;
-                        var getter_fn: ?[]const u8 = null;
-                        var setter_fn: ?[]const u8 = null;
-                        for (method_mappings.items) |part| {
+                        var method_fn: ?NodeIndex = null;
+                        var getter_fn: ?NodeIndex = null;
+                        var setter_fn: ?NodeIndex = null;
+                        for (method_mappings.items, 0..) |part, part_index| {
                             if (!std.mem.eql(u8, part.weakset_name, m.weakset_name)) continue;
+                            const value = if (emit_method_standalone[part_index])
+                                try es_helpers.makeSyntheticRef(self, part.func_name)
+                            else
+                                method_function_values[part_index];
                             switch (part.kind) {
-                                .method => method_fn = part.func_name,
-                                .getter => getter_fn = part.func_name,
-                                .setter => setter_fn = part.func_name,
+                                .method => method_fn = value,
+                                .getter => getter_fn = value,
+                                .setter => setter_fn = value,
                             }
                         }
                         const desc = try es_helpers.buildStaticPrivateMethodDescriptor(self, m.weakset_name, method_fn, getter_fn, setter_fn, span);
@@ -437,8 +456,13 @@ pub fn ES2022(comptime Transformer: type) type {
                     const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);
                     try pre_stmts.append(self.allocator, ws_decl);
                 }
-                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, m.source_member_idx, span);
-                try pre_stmts.append(self.allocator, fn_decl);
+                if (emit_method_standalone[i]) {
+                    try pre_stmts.append(self.allocator, method_function_values[i]);
+                } else if (m.class_name == null) {
+                    const assignment = try es_helpers.buildCapturedFunctionAssignment(self, m.func_name, method_function_values[i], span);
+                    try pre_stmts.append(self.allocator, assignment.declaration);
+                    try desc_target.append(self.allocator, assignment.assignment);
+                }
             }
 
             var body_nodes: std.ArrayList(NodeIndex) = .empty;
