@@ -225,6 +225,7 @@ pub const ExactReport = struct {
     binding_scope_unknown: usize = 0,
     invalid_scope: usize = 0,
     reference_scope_mismatch: usize = 0,
+    reference_statement_mismatch: usize = 0,
     declaration_scope_mismatch: usize = 0,
     scope_map_mismatch: usize = 0,
     scope_owner_mismatch: usize = 0,
@@ -252,6 +253,7 @@ pub const ExactReport = struct {
     first_invalid_ast_root: ?u32 = null,
     first_invalid_ast_edge: ?AstEdgeFinding = null,
     first_invalid_ast_layout: ?AstLayoutFinding = null,
+    first_reference_statement_mismatch: ?ReferenceStatementFinding = null,
     first_shadowed_external_reference: ?ExactFinding = null,
 
     fn isObservationField(comptime name: []const u8) bool {
@@ -276,6 +278,7 @@ pub const ExactReport = struct {
             std.mem.eql(u8, name, "first_invalid_ast_root") or
             std.mem.eql(u8, name, "first_invalid_ast_edge") or
             std.mem.eql(u8, name, "first_invalid_ast_layout") or
+            std.mem.eql(u8, name, "first_reference_statement_mismatch") or
             std.mem.eql(u8, name, "first_shadowed_external_reference");
     }
 
@@ -351,6 +354,14 @@ pub const AstParentFinding = struct {
     node_index: u32,
     first_parent: ?u32,
     additional_parent: u32,
+};
+
+pub const ReferenceStatementFinding = struct {
+    node_index: u32,
+    reference_stmt_idx: ?u32,
+    expected_stmt_idx: ?u32,
+    first_parent: ?u32 = null,
+    additional_parent: ?u32 = null,
 };
 
 pub const AstEdgeFinding = struct {
@@ -992,6 +1003,52 @@ fn expectedReferenceScope(
     else
         null;
     return expectedReferenceScopeFromParent(ast, root, parent_by_node, scope_owner_map, node, parent);
+}
+
+fn topLevelStatementIndex(
+    ast: *const Ast,
+    root: NodeIndex,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    node: u32,
+    initial_parent: ?u32,
+) ?u32 {
+    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len or
+        ast.nodes.items[@intFromEnum(root)].tag != .program) return null;
+    const root_raw = @intFromEnum(root);
+    const child_parent = initial_parent orelse parent_by_node.get(node) orelse return null;
+    var child = node;
+    var parent = child_parent;
+    var hops: usize = 0;
+    while (parent != root_raw) : (hops += 1) {
+        if (hops > ast.nodes.items.len) return null;
+        child = parent;
+        parent = parent_by_node.get(child) orelse return null;
+    }
+    const list = ast.nodes.items[root_raw].data.list;
+    const extra = ast.extra_data.items;
+    if (list.start > extra.len or list.len > extra.len - list.start) return null;
+    for (extra[list.start .. list.start + list.len], 0..) |child_raw, index| {
+        if (child_raw == child) return @intCast(index);
+    }
+    return null;
+}
+
+fn recordReferenceStatementMismatch(
+    report: *ExactReport,
+    node_index: u32,
+    reference_stmt_idx: ?u32,
+    expected_stmt_idx: ?u32,
+    first_parent: ?u32,
+    additional_parent: ?u32,
+) void {
+    report.reference_statement_mismatch += 1;
+    if (report.first_reference_statement_mismatch == null) report.first_reference_statement_mismatch = .{
+        .node_index = node_index,
+        .reference_stmt_idx = reference_stmt_idx,
+        .expected_stmt_idx = expected_stmt_idx,
+        .first_parent = first_parent,
+        .additional_parent = additional_parent,
+    };
 }
 
 fn scopeOwnerNode(scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32), scope: u32) ?u32 {
@@ -1874,12 +1931,20 @@ fn checkExactImpl(
         node_index: NodeIndex,
         exit: bool = false,
     };
+    const AliasedStatementParents = struct {
+        first_parent: u32,
+        additional_parent: u32,
+        first_stmt_idx: u32,
+        additional_stmt_idx: u32,
+    };
 
     var report: ExactReport = .{};
     var reachable_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer reachable_nodes.deinit(allocator);
     var parent_by_node: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer parent_by_node.deinit(allocator);
+    var aliased_statement_parents: std.AutoHashMapUnmanaged(u32, AliasedStatementParents) = .empty;
+    defer aliased_statement_parents.deinit(allocator);
     var visit_states: std.AutoHashMapUnmanaged(u32, VisitState) = .empty;
     defer visit_states.deinit(allocator);
     var reachable_stack: std.ArrayList(VisitFrame) = .empty;
@@ -1936,6 +2001,36 @@ fn checkExactImpl(
             } else {
                 const parent_gop = try parent_by_node.getOrPut(allocator, child_raw);
                 if (parent_gop.found_existing) {
+                    if (parent_gop.value_ptr.* != raw) {
+                        const first_stmt_idx = topLevelStatementIndex(
+                            ast,
+                            root,
+                            &parent_by_node,
+                            child_raw,
+                            parent_gop.value_ptr.*,
+                        );
+                        const additional_stmt_idx = topLevelStatementIndex(
+                            ast,
+                            root,
+                            &parent_by_node,
+                            child_raw,
+                            raw,
+                        );
+                        if (first_stmt_idx) |first_index| {
+                            if (additional_stmt_idx) |additional_index| {
+                                if (first_index != additional_index and
+                                    !aliased_statement_parents.contains(child_raw))
+                                {
+                                    try aliased_statement_parents.put(allocator, child_raw, .{
+                                        .first_parent = parent_gop.value_ptr.*,
+                                        .additional_parent = raw,
+                                        .first_stmt_idx = first_index,
+                                        .additional_stmt_idx = additional_index,
+                                    });
+                                }
+                            }
+                        }
+                    }
                     if (parent_gop.value_ptr.* != raw) {
                         const first_scope = expectedReferenceScopeFromParent(
                             ast,
@@ -2599,6 +2694,21 @@ fn checkExactImpl(
                 continue;
             },
         }
+        if (ast.nodes.items[@intFromEnum(root)].tag == .program and
+            reference.stmt_idx != Reference.NO_STMT)
+        {
+            const expected_stmt_idx = topLevelStatementIndex(ast, root, &parent_by_node, key, null);
+            if (expected_stmt_idx == null or expected_stmt_idx.? != reference.stmt_idx) {
+                recordReferenceStatementMismatch(
+                    &report,
+                    key,
+                    reference.stmt_idx,
+                    expected_stmt_idx,
+                    parent_by_node.get(key),
+                    null,
+                );
+            }
+        }
         if (references_by_node.getPtr(key)) |existing| {
             existing.count += 1;
             if (existing.symbol_id != sid) report.identity_mismatch += 1;
@@ -2607,6 +2717,22 @@ fn checkExactImpl(
                 .symbol_id = sid,
                 .scope_id = reference.scope_id,
             });
+        }
+    }
+    if (ast.nodes.items[@intFromEnum(root)].tag == .program) {
+        var aliased_nodes = aliased_statement_parents.iterator();
+        while (aliased_nodes.next()) |entry| {
+            const node = entry.key_ptr.*;
+            if (!references_by_node.contains(node)) continue;
+            const parents = entry.value_ptr.*;
+            recordReferenceStatementMismatch(
+                &report,
+                node,
+                null,
+                parents.first_stmt_idx,
+                parents.first_parent,
+                parents.additional_parent,
+            );
         }
     }
     for (symbols, 0..) |symbol, sid| {
@@ -3026,7 +3152,7 @@ pub fn printExactPrepass(file_path: []const u8, report: ExactReport, retained_gr
 
 fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport) void {
     const schema = ExactReport.schemaCounts();
-    var ast_structure_buffer: [256]u8 = undefined;
+    var ast_structure_buffer: [320]u8 = undefined;
     const ast_structure_counts = std.fmt.bufPrint(
         &ast_structure_buffer,
         "ambiguous_ast_parent={d} cyclic_ast_edges={d} invalid_ast_root={d} invalid_ast_edge={d} invalid_ast_layout={d} invariant_counter_count={d} observation_field_count={d} diagnostic_field_count={d}",
@@ -3044,7 +3170,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
     var secondary_counts_buffer: [512]u8 = undefined;
     const secondary_counts = std.fmt.bufPrint(
         &secondary_counts_buffer,
-        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} declaration_scope_mismatch={d} reference_count_mismatch={d} write_count_mismatch={d}",
+        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_statement_mismatch={d} declaration_scope_mismatch={d} reference_count_mismatch={d} write_count_mismatch={d}",
         .{
             report.namespace_iife_params,
             report.namespace_iife_param_mismatch,
@@ -3054,6 +3180,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.scope_resolution_mismatch,
             report.invisible_reference,
             report.unclassified_reference,
+            report.reference_statement_mismatch,
             report.declaration_scope_mismatch,
             report.reference_count_mismatch,
             report.write_count_mismatch,
@@ -3159,6 +3286,23 @@ fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
     }
     if (report.first_scope_owner_mismatch) |finding| {
         printScopeOwnerMismatch(file_path, finding);
+    }
+    if (report.first_reference_statement_mismatch) |finding| {
+        var actual_buffer: [16]u8 = undefined;
+        var expected_buffer: [16]u8 = undefined;
+        var first_parent_buffer: [16]u8 = undefined;
+        var additional_parent_buffer: [16]u8 = undefined;
+        std.debug.print(
+            "zntc: symbol-identity-detail {s}: reference_statement_mismatch node={d} stmt_idx={s} expected_stmt_idx={s} first_parent={s} additional_parent={s}\n",
+            .{
+                file_path,
+                finding.node_index,
+                optionalIndexText(&actual_buffer, finding.reference_stmt_idx),
+                optionalIndexText(&expected_buffer, finding.expected_stmt_idx),
+                optionalIndexText(&first_parent_buffer, finding.first_parent),
+                optionalIndexText(&additional_parent_buffer, finding.additional_parent),
+            },
+        );
     }
     if (report.first_duplicate_scope_owner) |finding| {
         printDuplicateScopeOwner(file_path, finding);
@@ -4474,7 +4618,7 @@ test "exact identity audit rejects an identifier node shared by different lexica
     try std.testing.expect(!report.isClean());
 }
 
-test "exact identity audit allows a shared identifier node within one lexical scope" {
+test "exact identity audit rejects a shared reference node across top-level statements" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -4484,6 +4628,7 @@ test "exact identity audit allows a shared identifier node within one lexical sc
     const name = try ast.addString("x");
     const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
     const shared_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const unshared_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
     const left_parent = try ast.addNode(.{
         .tag = .expression_statement,
         .span = name,
@@ -4494,35 +4639,65 @@ test "exact identity audit allows a shared identifier node within one lexical sc
         .span = name,
         .data = .{ .unary = .{ .operand = shared_ref, .flags = 0 } },
     });
-    const root = try ast.addNode(.{
-        .tag = .block_statement,
+    const unshared_parent = try ast.addNode(.{
+        .tag = .expression_statement,
         .span = name,
-        .data = .{ .list = try ast.addNodeList(&.{ binding, left_parent, right_parent }) },
+        .data = .{ .unary = .{ .operand = unshared_ref, .flags = 0 } },
+    });
+    const root = try ast.addNode(.{
+        .tag = .program,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ binding, left_parent, right_parent, unshared_parent }) },
     });
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
     };
     var local_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer local_names.deinit(allocator);
     try local_names.put(allocator, "x", 0);
-    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, local_names };
-    const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){local_names};
+    var symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name, .reference_count = 2 },
     };
-    const symbol_ids = [_]?u32{ 0, 0, null, null, null };
-    const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = shared_ref, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    const symbol_ids = [_]?u32{ 0, 0, 0, null, null, null, null };
+    var references = [_]Reference{
+        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = shared_ref, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = unshared_ref, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true }, .stmt_idx = 3 },
+        .{ .node_index = unshared_ref, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true }, .stmt_idx = 99 },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
 
     const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        references[0..3],
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.ambiguous_ast_parent);
+    try std.testing.expectEqual(@as(usize, 1), report.reference_statement_mismatch);
+    try std.testing.expect(!report.isClean());
+
+    // The second metadata row for one node is checked too; validation must
+    // not stop after the first row keyed by that NodeIndex.
+    symbols[0].reference_count = 3;
+    const duplicate_stmt = try checkExact(
         allocator,
         &ast,
         root,
@@ -4539,8 +4714,28 @@ test "exact identity audit allows a shared identifier node within one lexical sc
         &explicit_globals,
         &origins,
     );
-    try std.testing.expectEqual(@as(usize, 0), report.ambiguous_ast_parent);
-    try std.testing.expect(report.isClean());
+    try std.testing.expectEqual(@as(usize, 2), duplicate_stmt.reference_statement_mismatch);
+
+    // A single reference row with a wrong statement index is also rejected.
+    references[1].stmt_idx = 99;
+    const wrong_stmt = try checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(wrong_stmt.reference_statement_mismatch > 0);
 }
 
 test "exact identity audit rejects a copied external reference shadowed in its output scope" {
