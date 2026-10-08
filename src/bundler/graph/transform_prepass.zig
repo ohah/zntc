@@ -1002,9 +1002,41 @@ fn isSafeConstructorLocalUpdate(
     return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
 }
 
-/// A classic `for` with one initialized `let` binding can keep its source
-/// graph when every expression is already represented by bound source nodes
-/// and the body has no generated lexical bindings or nested function capture.
+/// A classic `for` with initialized identifier `let` bindings can keep its source
+/// graph when every expression is represented by bound source nodes, no
+/// initializer reads a same-or-later header binding, and the body has no
+/// generated lexical bindings or nested function capture.
+fn hasSelfOrForwardReferenceToLexicalForHeadBinding(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    initializer: ast_mod.NodeIndex,
+    declarators: []const u32,
+    current_declarator_index: usize,
+) bool {
+    const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, initializer) catch return true;
+    defer ast.allocator.free(descendants);
+
+    for (descendants) |raw_reference| {
+        if (raw_reference >= ast.nodes.items.len or
+            ast.nodes.items[raw_reference].tag != .identifier_reference) continue;
+        if (raw_reference >= semantic.symbol_ids.len) return true;
+        const reference_symbol = semantic.symbol_ids[raw_reference] orelse return true;
+
+        for (declarators[current_declarator_index..]) |raw_declarator| {
+            if (raw_declarator >= ast.nodes.items.len) return true;
+            const declarator = ast.nodes.items[raw_declarator];
+            if (declarator.tag != .variable_declarator) return true;
+            const extra = declarator.data.extra;
+            if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 1) return true;
+            const binding: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+            if (binding.isNone() or @intFromEnum(binding) >= semantic.symbol_ids.len) return true;
+            const binding_symbol = semantic.symbol_ids[@intFromEnum(binding)] orelse return true;
+            if (reference_symbol == binding_symbol) return true;
+        }
+    }
+    return false;
+}
+
 fn isSafeRetainedLexicalForHead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1017,21 +1049,32 @@ fn isSafeRetainedLexicalForHead(
     if (extra > extras.len or extras.len - extra < 3) return false;
     const declarators_start = extras[extra + 1];
     const declarators_len = extras[extra + 2];
-    if (declarators_len != 1 or declarators_start >= extras.len or
+    if (declarators_len == 0 or declarators_start > extras.len or
         declarators_len > extras.len - declarators_start) return false;
-    const raw_declarator = extras[declarators_start];
-    if (raw_declarator >= ast.nodes.items.len) return false;
-    const declarator = ast.nodes.items[raw_declarator];
-    if (declarator.tag != .variable_declarator) return false;
-    const declarator_extra = declarator.data.extra;
-    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-    const binding: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
-    const type_annotation: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
-    const initializer: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
-    return type_annotation.isNone() and
-        isBoundSourceIdentifierBinding(ast, semantic, binding) and
-        !initializer.isNone() and
-        isSafeConstructorValue(ast, semantic, initializer);
+
+    const declarators = extras[declarators_start .. declarators_start + declarators_len];
+    for (declarators, 0..) |raw_declarator, declarator_index| {
+        if (raw_declarator >= ast.nodes.items.len) return false;
+        const declarator = ast.nodes.items[raw_declarator];
+        if (declarator.tag != .variable_declarator) return false;
+        const declarator_extra = declarator.data.extra;
+        if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+        const binding: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
+        const type_annotation: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
+        const initializer: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+        if (!type_annotation.isNone() or
+            !isBoundSourceIdentifierBinding(ast, semantic, binding) or
+            initializer.isNone() or
+            !isSafeConstructorValue(ast, semantic, initializer) or
+            hasSelfOrForwardReferenceToLexicalForHeadBinding(
+                ast,
+                semantic,
+                initializer,
+                declarators,
+                declarator_index,
+            )) return false;
+    }
+    return true;
 }
 
 fn isSafeConstructorExpression(
