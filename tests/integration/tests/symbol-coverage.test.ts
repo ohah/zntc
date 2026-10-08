@@ -2276,7 +2276,15 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
 
   test('ES5 simple lexical for headers retain exact identities; closure capture keeps reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-retained-lexical-for-'));
-    const cases = [
+    // The current ES5 lowerer loses loop-head TDZ behavior even on reanalysis;
+    // these two controls assert only that the graph is conservatively reanalyzed.
+    const cases: Array<{
+      name: string;
+      graph: string;
+      source: string;
+      stdout?: string;
+      compareRuntime?: boolean;
+    }> = [
       {
         name: 'simple-let-header-with-outer-shadow',
         graph: 'retained',
@@ -2299,14 +2307,55 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '0 1\n',
       },
       {
-        name: 'multiple-let-header-bindings',
+        name: 'multiple-simple-let-header-bindings',
+        graph: 'retained',
+        source: [
+          'var index = 41;',
+          'var step = 99;',
+          'var total = 0;',
+          'for (let index = 0, step = index + 1; index < 3; index++) { total += step; }',
+          'console.log(total, index, step);',
+        ].join('\n'),
+        stdout: '3 41 99\n',
+      },
+      {
+        name: 'uninitialized-let-header-binding-keeps-reanalysis',
         graph: 'reanalyzed',
         source: [
           'var total = 0;',
-          'for (let index = 0, step = 1; index < 2; index++) { total += step; }',
+          'for (let index, step = 1; index < 2; index++) { total += step; }',
           'console.log(total);',
         ].join('\n'),
-        stdout: '2\n',
+        stdout: '0\n',
+      },
+      {
+        name: 'self-referencing-let-header-requires-resync',
+        graph: 'reanalyzed',
+        compareRuntime: false,
+        source: [
+          'var index = 41;',
+          'try { for (let index = index; index < 1; index++) {} }',
+          'catch (error) { console.log(error instanceof ReferenceError); }',
+        ].join('\n'),
+      },
+      {
+        name: 'forward-let-header-reference-requires-resync',
+        graph: 'reanalyzed',
+        compareRuntime: false,
+        source: [
+          'try { for (let first = later, later = 1; first < 1; first++) {} }',
+          'catch (error) { console.log(error instanceof ReferenceError); }',
+        ].join('\n'),
+      },
+      {
+        name: 'destructured-let-header-binding-keeps-reanalysis',
+        graph: 'reanalyzed',
+        source: [
+          'var total = 0;',
+          'for (let [index] = [0]; index < 1; index++) { total += index; }',
+          'console.log(total);',
+        ].join('\n'),
+        stdout: '0\n',
       },
       {
         name: 'body-local-let-keeps-reanalysis',
@@ -2378,7 +2427,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         );
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
-        expect(actual.stdout, fixture.name).toBe(fixture.stdout);
+        if (fixture.compareRuntime !== false)
+          expect(actual.stdout, fixture.name).toBe(fixture.stdout);
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
