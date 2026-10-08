@@ -1553,7 +1553,7 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected generator 
     const async_index = std.mem.indexOf(u8, combined.items, "var __async2 = (fn) =>").?;
     const async_values_index = std.mem.indexOf(u8, combined.items, "var __asyncValues2 = function(o)").?;
     const values_index = std.mem.indexOf(u8, combined.items, "var __values2 = function(o)").?;
-    const await_index = std.mem.indexOf(u8, combined.items, "var __await2 = function(v, s)").?;
+    const await_index = std.mem.indexOf(u8, combined.items, "var __await2 = function __awaitCtor(v, s)").?;
     const async_generator_index = std.mem.indexOf(u8, combined.items, "var __asyncGenerator2 = function(thisArg, _arguments, generator)").?;
     const yield_star_index = std.mem.indexOf(u8, combined.items, "var __yieldStar2 = function(value)").?;
     const public_field_index = std.mem.indexOf(u8, combined.items, "var __publicField2 = function(obj, key, value)").?;
@@ -1652,9 +1652,9 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits async-generator helper 
         false,
         .{ .async_generator = "__asyncGenerator2", .await_helper = "__await2", .yield_star = "__yieldStar2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __await2 = function(v, s)"));
-    try std.testing.expect(std.mem.indexOf(u8, plain.items, "this instanceof __await2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, plain.items, "new __await2(v, s)") != null);
+    try std.testing.expect(std.mem.startsWith(u8, plain.items, "var __await2 = function __awaitCtor(v, s)"));
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "this instanceof __awaitCtor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, plain.items, "new __awaitCtor(v, s)") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __asyncGenerator2 = function(thisArg, _arguments, generator)") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "r.value instanceof __await2") != null);
     try std.testing.expect(std.mem.indexOf(u8, plain.items, "var __yieldStar2 = function(value)") != null);
@@ -1670,9 +1670,9 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits async-generator helper 
         false,
         .{ .async_generator = "$ag2", .await_helper = "$aw2", .yield_star = "$ys2" },
     );
-    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $aw2=function(v,s)"));
-    try std.testing.expect(std.mem.indexOf(u8, minified.items, "this instanceof $aw2") != null);
-    try std.testing.expect(std.mem.indexOf(u8, minified.items, "new $aw2(v,s)") != null);
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var $aw2=function __awaitCtor(v,s)"));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "this instanceof __awaitCtor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "new __awaitCtor(v,s)") != null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $ag2=function(thisArg,_arguments,generator)") != null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "r.value instanceof $aw2") != null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $ys2=function(value)") != null);
@@ -1680,6 +1680,24 @@ test "appendRuntimeHelpersWithStandaloneLocalNames emits async-generator helper 
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var __await=function") == null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var __asyncGenerator=function") == null);
     try std.testing.expect(std.mem.indexOf(u8, minified.items, "var $yS=function") == null);
+}
+
+test "await helper minified outer name may match a parameter without shadowing its constructor" {
+    var minified: std.ArrayList(u8) = .empty;
+    defer minified.deinit(std.testing.allocator);
+    try @import("runtime_helpers.zig").appendRuntimeHelpersWithStandaloneLocalNames(
+        &minified,
+        std.testing.allocator,
+        .{ .async_generator = true, .await_helper = true },
+        true,
+        false,
+        .{ .async_generator = "$ag", .await_helper = "s" },
+    );
+
+    try std.testing.expect(std.mem.startsWith(u8, minified.items, "var s=function __awaitCtor(v,s)"));
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "this instanceof __awaitCtor") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "new __awaitCtor(v,s)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, minified.items, "r.value instanceof s") != null);
 }
 
 test "appendRuntimeHelpersWithStandaloneLocalNames emits the selected metadata helper local directly" {
