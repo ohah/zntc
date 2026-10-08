@@ -1907,13 +1907,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('native for-of and for-in do not retain graphs when companion syntax needs lowering', () => {
+  test('native for-of and for-in retain graphs only with audited companion syntax', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-resync-boundaries-'));
     const cases = [
       {
         name: 'optional-chain',
         target: '--target=es2015',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'const values: Array<number | undefined> = [1, undefined];',
           'for (const value of values) console.log(value?.toFixed(0));',
@@ -2801,10 +2801,53 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional member call',
+        graph: 'retained',
+        source: [
+          'var calls = 0; function argument() { calls++; return 5; }',
+          'function read(value) { return value?.method(argument()); }',
+          'var receiver = { n: 37, method: function (value) { return this.n + value; } };',
+          'console.log(read(null), read(receiver), calls);',
+        ].join('\n'),
+        output: 'undefined 42 1\n',
+      },
+      {
+        name: 'computed optional member call',
+        graph: 'retained',
+        source: [
+          'var keys = 0; var calls = 0;',
+          'function key() { keys++; return "method"; }',
+          'function argument() { calls++; return 5; }',
+          'function read(value) { return value?.[key()](argument()); }',
+          'var receiver = { n: 37, method: function (value) { return this.n + value; } };',
+          'console.log(read(null), read(receiver), keys, calls);',
+        ].join('\n'),
+        output: 'undefined 42 1 1\n',
+      },
+      {
+        name: 'optional call on member',
         graph: 'reanalyzed',
         source: [
-          'function read(value) { return value?.method(); }',
-          'console.log(read(null), read({ method: function () { return 42; } }));',
+          'function read(value) { return value.method?.(); }',
+          'console.log(read({ method: null }), read({ method: function () { return 42; } }));',
+        ].join('\n'),
+        output: 'undefined 42\n',
+      },
+      {
+        name: 'optional call with optional receiver',
+        graph: 'reanalyzed',
+        source: [
+          'function read(value) { return value?.method?.(); }',
+          'console.log(read(null), read({ method: null }), read({ method: function () { return 42; } }));',
+        ].join('\n'),
+        output: 'undefined undefined 42\n',
+      },
+      {
+        name: 'chained optional member call',
+        graph: 'reanalyzed',
+        source: [
+          'function read(value) { return value?.child.method(); }',
+          'var child = { answer: 42, method: function () { return this.answer; } };',
+          'console.log(read(null), read({ child: child }));',
         ].join('\n'),
         output: 'undefined 42\n',
       },

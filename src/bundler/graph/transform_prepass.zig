@@ -588,6 +588,21 @@ fn isRetainableSimpleOptionalMemberAccess(
     return isBoundSourceIdentifierReference(ast, semantic, object);
 }
 
+fn isRetainableSimpleOptionalMemberCall(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    const call = ast.getNode(node_idx);
+    if (call.tag != .call_expression) return false;
+    const extra = call.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
+    if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    return isRetainableSimpleOptionalMemberAccess(ast, semantic, callee);
+}
+
 /// Compound/logical assignment lowering already records member receiver/key
 /// temps in the edited graph. Admit ordinary member targets when they contain
 /// no super/private access that takes a separate lowering path.
@@ -1895,7 +1910,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .array_expression, .call_expression, .new_expression => {
                 if (options.unsupported.optional_chaining and
-                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx))) return false;
+                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
+                {
+                    if (node.tag != .call_expression or
+                        !isRetainableSimpleOptionalMemberCall(ast, semantic, @enumFromInt(raw_idx))) return false;
+                    found_lowered_optional_chaining = true;
+                }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
                     if (!hasOnlyArrayLiteralSpreadOperands(ast, node)) return false;
                     found_lowered_array_spread = true;
