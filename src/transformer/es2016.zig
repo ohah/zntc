@@ -27,6 +27,12 @@ pub fn ES2016(comptime Transformer: type) type {
         pub fn lowerExponentiationAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
             try es_helpers.trackAssignmentTargetTemps(self, target, true, false);
+            const target_node = self.ast.getNode(target.read);
+            if (target_node.tag == .identifier_reference or target_node.tag == .assignment_target_identifier) {
+                const value_read = &self.ast.nodes.items[@intFromEnum(target.value)];
+                if (value_read.tag == .assignment_target_identifier) value_read.tag = .identifier_reference;
+                try self.splitCompoundAssignmentIdentifierReference(target.read, target.value);
+            }
             const new_right = try self.visitNode(node.data.binary.right);
             const pow_call = try es_helpers.makeMathPowCall(self, target.value, new_right, node.span);
             return es_helpers.makeAssignExpr(self, target.read, pow_call, node.span, @intFromEnum(token_mod.Kind.eq));

@@ -1619,7 +1619,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .assignment_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
-                if (options.unsupported.exponentiation and operator == .star2_eq) return false;
+                if (options.unsupported.exponentiation and operator == .star2_eq) {
+                    // A simple source binding keeps the same identity for the
+                    // generated read and write. Member targets still need the
+                    // full reanalysis path because lowering may add temps.
+                    if (source_binds_math or !isBoundSourceIdentifierAssignmentTarget(
+                        ast,
+                        semantic,
+                        node.data.binary.left,
+                    )) return false;
+                    found_lowered_exponentiation = true;
+                }
                 if (options.unsupported.logical_assignment and
                     (operator == .question2_eq or operator == .pipe2_eq or operator == .amp2_eq)) return false;
             },
