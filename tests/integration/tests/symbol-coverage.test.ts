@@ -2274,6 +2274,117 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 simple lexical for headers retain exact identities; closure capture keeps reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-retained-lexical-for-'));
+    const cases = [
+      {
+        name: 'simple-let-header-with-outer-shadow',
+        graph: 'retained',
+        source: [
+          'var index = 41;',
+          'var total = 0;',
+          'for (let index = 0; index < 3; index++) { total += index; }',
+          'console.log(total, index);',
+        ].join('\n'),
+        stdout: '3 41\n',
+      },
+      {
+        name: 'closure-captures-let-header',
+        graph: 'reanalyzed',
+        source: [
+          'var readers = [];',
+          'for (let index = 0; index < 2; index++) { readers.push(function () { return index; }); }',
+          'console.log(readers[0](), readers[1]());',
+        ].join('\n'),
+        stdout: '0 1\n',
+      },
+      {
+        name: 'multiple-let-header-bindings',
+        graph: 'reanalyzed',
+        source: [
+          'var total = 0;',
+          'for (let index = 0, step = 1; index < 2; index++) { total += step; }',
+          'console.log(total);',
+        ].join('\n'),
+        stdout: '2\n',
+      },
+      {
+        name: 'body-local-let-keeps-reanalysis',
+        graph: 'reanalyzed',
+        source: [
+          'var total = 0;',
+          'for (let index = 0; index < 2; index++) { let local = index; total += local; }',
+          'console.log(total);',
+        ].join('\n'),
+        stdout: '1\n',
+      },
+      {
+        name: 'const-header-remains-outside-this-slice',
+        graph: 'reanalyzed',
+        source: [
+          'var total = 0;',
+          'for (const index = 0; index < 1;) { total += index; break; }',
+          'console.log(total);',
+        ].join('\n'),
+        stdout: '0\n',
+      },
+    ];
+    try {
+      for (const fixture of cases) {
+        const entry = join(dir, `${fixture.name}.ts`);
+        const output = join(dir, `${fixture.name}.cjs`);
+        writeFileSync(entry, fixture.source);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const report = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') &&
+            line.includes(`${fixture.name}.ts`),
+        );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${fixture.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+            line.includes(`${fixture.name}.ts`),
+        );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 optional catch binding retains exact graphs only for audited bodies', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-optional-catch-retained-'));
     const cases = [
@@ -9686,10 +9797,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4\n',
       },
       {
-        name: 'constructor lexical for head stays on reanalysis',
+        name: 'constructor simple lexical for head retains its graph',
         source:
           'class LexicalForHead { constructor() { for (let index = 0; index < 1; index++) this.value = index; } } console.log(new LexicalForHead().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '0\n',
       },
       {
