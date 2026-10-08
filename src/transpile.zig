@@ -1630,6 +1630,7 @@ fn transpileWithCallbackInternal(
         var post_minify_analyzer = SemanticAnalyzer.init(arena_alloc, transformer.ast);
         post_minify_analyzer.is_strict_mode = parser.is_strict_mode;
         post_minify_analyzer.is_module = parser.is_module;
+        post_minify_analyzer.collect_unresolved_reference_nodes = true;
         post_minify_analyzer.analyze() catch return error.SemanticError;
         const post_minify_report = try post_minify_coverage.checkPostMinify(
             arena_alloc,
@@ -1642,6 +1643,7 @@ fn transpileWithCallbackInternal(
             source_analyzer.references.items,
             transformer.helper_ref_nodes.items,
             &source_analyzer.helper_scope_map,
+            &post_minify_analyzer.unresolved_reference_nodes,
             &transformer.explicit_global_reference_nodes,
             &transformer.class_self_symbol_map,
             &post_minify_analyzer.class_self_symbol_map,

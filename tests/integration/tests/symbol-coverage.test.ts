@@ -124,6 +124,8 @@ const POST_MINIFY_ZERO_COUNTERS = [
   'missing_reference_id',
   'dangling_reference_id',
   'wrong_reference_target',
+  'shadowed_external_reference',
+  'unproven_external_reference',
 ] as const;
 const POST_MINIFY_SCHEMA_FIELDS = new Set<string>([
   ...POST_MINIFY_OBSERVATION_FIELDS,
@@ -1315,7 +1317,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         line.startsWith('zntc: symbol-identity-post-minify '),
       );
       expect(postMinify, proc.stderr).toMatch(
-        /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+        /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
       );
 
       const reference = spawnSync('node', [file], { encoding: 'utf8' });
@@ -1355,7 +1357,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           line.startsWith('zntc: symbol-identity-post-minify '),
         );
         expect(postMinify, `${target}: ${proc.stderr}`).toMatch(
-          /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
         );
 
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1427,7 +1429,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             line.startsWith('zntc: symbol-identity-post-minify '),
           );
           expect(postMinify, `${name}: ${proc.stderr}`).toMatch(
-            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
           );
         }
 
@@ -1528,7 +1530,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             line.startsWith('zntc: symbol-identity-post-minify '),
           );
           expect(postMinify, `${name}: ${proc.stderr}`).toMatch(
-            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
           );
         }
 
@@ -1577,7 +1579,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             line.startsWith('zntc: symbol-identity-post-minify '),
           );
           expect(postMinify, `${fixture} ${target}: ${proc.stderr}`).toMatch(
-            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
           );
 
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1630,7 +1632,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             line.startsWith('zntc: symbol-identity-post-minify '),
           );
           expect(postMinify, `${fixture} ${target.name}: ${proc.stderr}`).toMatch(
-            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
           );
 
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1678,7 +1680,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             line.startsWith('zntc: symbol-identity-post-minify '),
           );
           expect(postMinify, `${fixture} ${target.name}: ${proc.stderr}`).toMatch(
-            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
           );
 
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1733,7 +1735,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           line.startsWith('zntc: symbol-identity-post-minify '),
         );
         expect(postMinify, `${target.name}: ${proc.stderr}`).toMatch(
-          /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
         );
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
@@ -1771,7 +1773,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           .split(/\r?\n/)
           .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
         expect(postMinify, `${target.name}: ${proc.stderr}`).toMatch(
-          /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
         );
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
@@ -1827,7 +1829,7 @@ describe('symbol identity coverage gate (#4819)', () => {
             line.startsWith('zntc: symbol-identity-post-minify '),
           );
           expect(postMinify, `${target.name}: ${proc.stderr}`).toMatch(
-            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
           );
         }
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -1898,7 +1900,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             line.startsWith('zntc: symbol-identity-post-minify '),
           );
           expect(postMinify, `${target.name}: ${proc.stderr}`).toMatch(
-            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+            /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
           );
         }
         const actual = runAndReadClasses(output);
@@ -8721,7 +8723,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               line.startsWith('zntc: symbol-identity-post-minify '),
             );
             expect(postMinify, `${fixture} ${target.name}: ${proc.stderr}`).toMatch(
-              /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+              /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
             );
           }
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -8776,7 +8778,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               line.startsWith('zntc: symbol-identity-post-minify '),
             );
             expect(postMinify, `${fixture} ${target.name}: ${proc.stderr}`).toMatch(
-              /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+              /invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
             );
           }
           const actual = spawnSync('node', [output], { encoding: 'utf8' });
@@ -9235,7 +9237,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       );
       expect(proc.status, proc.stderr).toBe(0);
       expect(proc.stderr).toMatch(
-        /symbol-identity-post-minify .* invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+        /symbol-identity-post-minify .* invalid_binding_id=0 invalid_reference_id=0 missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
       );
       expect(readFileSync(output, 'utf8')).toContain('function');
     } finally {
