@@ -1150,8 +1150,6 @@ fn canRetainGraphForAuditedSyntaxSubset(
     semantic: *const ModuleSemanticData,
     options: TransformOptions,
 ) bool {
-    if (ast.has_jsx) return false;
-
     // Cover-grammar parsing may leave speculative nodes in the arena that are
     // not part of the program. Only reachable syntax can affect this lowering.
     if (ast.nodes.items.len == 0) return false;
@@ -1820,6 +1818,40 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .function_body,
             .sequence_expression,
             => {},
+            // JSX lowering rewrites each tag to a call while preserving
+            // source tag references through exact SymbolIds. The lowerer also
+            // registers classic factory reads and automatic runtime imports
+            // in the edited graph, so these source-only JSX nodes add no
+            // untracked scope or binding edges when JSX is actually lowered.
+            .jsx_element,
+            .jsx_opening_element,
+            .jsx_closing_element,
+            .jsx_fragment,
+            .jsx_opening_fragment,
+            .jsx_closing_fragment,
+            .jsx_attribute,
+            .jsx_expression_container,
+            .jsx_empty_expression,
+            .jsx_text,
+            .jsx_namespaced_name,
+            .jsx_member_expression,
+            .jsx_identifier,
+            => {
+                if (!options.jsx_transform) return false;
+            },
+            .jsx_spread_attribute => {
+                // JSX lowering materializes an object spread after this
+                // source-graph preflight. Until that generated Object edge is
+                // included in the retained-graph preflight, keep downlevel
+                // spread attributes on semantic reanalysis.
+                if (!options.jsx_transform or options.unsupported.object_spread) return false;
+            },
+            .jsx_spread_child => {
+                // The JSX child becomes a generated spread_element. Its
+                // downlevel helper and emitted array/call shape are not part
+                // of this source-node allowlist.
+                if (!options.jsx_transform or options.unsupported.spread) return false;
+            },
             else => return false,
         }
         if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
