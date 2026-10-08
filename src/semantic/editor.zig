@@ -200,9 +200,10 @@ pub const SemanticEditor = struct {
         for (self.references.items) |*reference| {
             if (reference.symbol_id != id or !reference.flags.declare) continue;
             reference.scope_id = target;
+            reference.declaration_node_index = output_binding;
             has_declaration = true;
         }
-        if (!has_declaration) try self.ensureDeclaration(id, target);
+        if (!has_declaration) try self.ensureDeclarationAtNode(id, target, output_binding);
         self.symbol_ids.items[slot] = @intFromEnum(id);
     }
 
@@ -276,7 +277,8 @@ pub const SemanticEditor = struct {
         try map.put(self.allocator, stable_name, @intFromEnum(id));
         if (old_id == @intFromEnum(id)) _ = map.remove(old_name);
         symbol.synthetic_name = stable_name;
-        try self.ensureDeclaration(id, symbol.scope_id);
+        const declaration_node = self.bindingNodeForSymbol(id) orelse .none;
+        try self.ensureDeclarationAtNode(id, symbol.scope_id, declaration_node);
     }
 
     pub fn attachExistingBinding(self: *SemanticEditor, node: NodeIndex, id: SymbolId) Error!void {
@@ -284,10 +286,11 @@ pub const SemanticEditor = struct {
         const slot = try self.ensureNodeSlot(node);
         if (self.ast.getNode(node).tag != .binding_identifier) return error.InvalidNode;
         if (self.symbol_ids.items[slot]) |existing| {
-            if (existing == @intFromEnum(id)) return;
-            return error.AlreadyBound;
+            if (existing != @intFromEnum(id)) return error.AlreadyBound;
+        } else {
+            self.symbol_ids.items[slot] = @intFromEnum(id);
         }
-        self.symbol_ids.items[slot] = @intFromEnum(id);
+        self.reanchorDeclaration(id, node);
     }
 
     /// Change the exact identity of an output binding after a lowering splits
@@ -301,6 +304,14 @@ pub const SemanticEditor = struct {
         const expected_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
         if (!std.mem.eql(u8, self.ast.getText(binding.data.string_ref), expected_name)) return error.InvalidSymbol;
         self.symbol_ids.items[slot] = @intFromEnum(id);
+        self.reanchorDeclaration(id, node);
+    }
+
+    fn reanchorDeclaration(self: *SemanticEditor, id: SymbolId, binding: NodeIndex) void {
+        for (self.references.items) |*reference| {
+            if (reference.symbol_id == id and reference.flags.declare)
+                reference.declaration_node_index = binding;
+        }
     }
 
     /// Give one emitted storage binding a fresh SymbolId while retaining the
@@ -715,6 +726,7 @@ pub const SemanticEditor = struct {
         try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @intFromEnum(id));
         try self.references.append(self.allocator, .{
             .node_index = .none,
+            .declaration_node_index = binding,
             .scope_id = target,
             .symbol_id = id,
             .stmt_idx = stmt_idx,
@@ -812,9 +824,19 @@ pub const SemanticEditor = struct {
         if (!std.mem.eql(u8, symbol.synthetic_name, local_name) or
             self.helper_scope_map.get(local_name) != @as(?usize, @intFromEnum(id)))
             return error.InvalidSymbol;
+        var declaration_reference: ?*Reference = null;
+        for (self.references.items) |*reference| {
+            if (reference.symbol_id != id or !reference.flags.declare) continue;
+            if (!reference.declaration_node_index.isNone() and reference.declaration_node_index != local)
+                return error.InvalidSymbol;
+            declaration_reference = reference;
+            break;
+        }
+        const declaration = declaration_reference orelse return error.ReferenceNotFound;
         self.symbol_ids.items[slot] = @intFromEnum(id);
         symbol.name = self.ast.getNode(local).data.string_ref;
         symbol.declaration_span = declaration_span;
+        declaration.declaration_node_index = local;
     }
 
     /// 단일 파일 출력의 AST 밖 런타임 helper 선언을 helper 심볼로 등록한다.
@@ -925,16 +947,38 @@ pub const SemanticEditor = struct {
 
     /// Preserve declaration evidence when a transform materializes an AST
     /// binding for a symbol that already exists (for example an export facade).
-    /// Declaration rows are node-less by design; the binding node carries the
-    /// SymbolId separately.
+    /// The legacy declaration row stays node-less for stmt-info consumers, and
+    /// the optional exact anchor records the AST binding separately.
     pub fn ensureDeclaration(self: *SemanticEditor, symbol: SymbolId, scope: ScopeId) Error!void {
+        return self.ensureDeclarationAtNode(symbol, scope, self.bindingNodeForSymbol(symbol) orelse .none);
+    }
+
+    fn bindingNodeForSymbol(self: *const SemanticEditor, symbol: SymbolId) ?NodeIndex {
+        for (self.symbol_ids.items, 0..) |maybe_id, raw| {
+            if (maybe_id != @intFromEnum(symbol) or raw >= self.ast.nodes.items.len) continue;
+            if (self.ast.nodes.items[raw].tag == .binding_identifier) return @enumFromInt(raw);
+        }
+        return null;
+    }
+
+    pub fn ensureDeclarationAtNode(
+        self: *SemanticEditor,
+        symbol: SymbolId,
+        scope: ScopeId,
+        declaration_node_index: NodeIndex,
+    ) Error!void {
         if (!self.validSymbol(symbol) or !self.validScope(scope)) return error.InvalidScope;
         if (self.symbols.items[@intFromEnum(symbol)].scope_id != scope) return error.InvalidScope;
-        for (self.references.items) |reference| {
-            if (reference.symbol_id == symbol and reference.flags.declare) return;
+        for (self.references.items) |*reference| {
+            if (reference.symbol_id == symbol and reference.flags.declare) {
+                if (reference.declaration_node_index.isNone() and !declaration_node_index.isNone())
+                    reference.declaration_node_index = declaration_node_index;
+                return;
+            }
         }
         try self.references.append(self.allocator, .{
             .node_index = .none,
+            .declaration_node_index = declaration_node_index,
             .scope_id = scope,
             .symbol_id = symbol,
             .stmt_idx = Reference.NO_STMT,

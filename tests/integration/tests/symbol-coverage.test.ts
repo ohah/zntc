@@ -55,6 +55,7 @@ const EXACT_ZERO_COUNTERS = [
   'reference_scope_statement_alias',
   'reference_node_use_alias',
   'declaration_scope_mismatch',
+  'declaration_identity_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
   'scope_owner_parent_mismatch',
@@ -747,6 +748,11 @@ describe('symbol identity coverage gate (#4819)', () => {
         complete.replace(' declaration_scope_mismatch=0', ' declaration_scope_mismatch=1'),
       ),
     ).toContain('declaration_scope_mismatch=1, expected 0');
+    expect(
+      exactSchemaProblems(
+        complete.replace(' declaration_identity_mismatch=0', ' declaration_identity_mismatch=1'),
+      ),
+    ).toContain('declaration_identity_mismatch=1, expected 0');
     expect(exactSchemaProblems(complete.replace(' namespace_iife_params=4', ''))).toContain(
       'namespace_iife_params occurrences=0, expected 1',
     );
