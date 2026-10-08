@@ -62,6 +62,18 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
     return struct {
         const Self = @This();
 
+        pub const LoopClosureResult = struct {
+            loop_fn: NodeIndex,
+            loop_function: NodeIndex,
+            call_and_check: NodeIndex,
+            ret_temp_span: ?Span = null,
+        };
+
+        const ControlFlowCheck = struct {
+            node: NodeIndex,
+            ret_temp_span: ?Span = null,
+        };
+
         /// for 루프의 init에서 let/const 변수 이름을 수집한다.
         /// 반환: 수집된 변수 이름 목록. 비어 있으면 클로저 캡처 분석 불필요.
         pub fn collectLexicalVarNames(
@@ -657,7 +669,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             call_scope: @import("../semantic/scope.zig").ScopeId,
             /// 추출된 generator 함수의 실제 삽입 부모. 비-generator 호출은 `.none`.
             generator_parent_scope: @import("../semantic/scope.zig").ScopeId,
-        ) Transformer.Error!struct { loop_fn: NodeIndex, loop_function: NodeIndex, call_and_check: NodeIndex } {
+        ) Transformer.Error!LoopClosureResult {
             std.debug.assert(lexical_bindings.len == lexical_names.len);
             std.debug.assert(hoist_bindings.len == hoist_vars.len);
             // --- _loop 함수명 생성 ---
@@ -835,8 +847,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // --- 제어 흐름 후처리: var _ret = await _loop(i); if (...) ... ---
             var final_stmt: NodeIndex = undefined;
+            var ret_temp_span: ?Span = null;
             if (needs_ret_var) {
-                final_stmt = try buildControlFlowCheck(self, call_expr, flow, local_label, call_scope, span);
+                const control_flow_check = try buildControlFlowCheck(self, call_expr, flow, local_label, call_scope, span);
+                final_stmt = control_flow_check.node;
+                ret_temp_span = control_flow_check.ret_temp_span;
             } else {
                 final_stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
@@ -853,7 +868,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .data = .{ .list = call_block_list },
             });
 
-            return .{ .loop_fn = loop_var, .loop_function = func_expr, .call_and_check = call_block };
+            return .{
+                .loop_fn = loop_var,
+                .loop_function = func_expr,
+                .call_and_check = call_block,
+                .ret_temp_span = ret_temp_span,
+            };
         }
 
         /// body AST를 반복적(iterative)으로 스캔하여 break/continue/return 사용을 분석한다.
@@ -1345,7 +1365,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             local_label: ?[]const u8,
             call_scope: @import("../semantic/scope.zig").ScopeId,
             span: Span,
-        ) Transformer.Error!NodeIndex {
+        ) Transformer.Error!ControlFlowCheck {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -1474,7 +1494,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = block_list },
             });
-            return block;
+            return .{ .node = block, .ret_temp_span = ret_name_span };
         }
     };
 }

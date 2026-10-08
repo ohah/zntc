@@ -587,6 +587,58 @@ test "#4819 extracted generator loop has exact header and catch symbols" {
     try std.testing.expect(saw_e_reference);
 }
 
+test "#4819 extracted generator control-flow temps reuse their exact ret names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function* g() {
+        \\  const _ret = 99;
+        \\  for (let i = 0; i < 2; i++) {
+        \\    if (i === 0) return 1;
+        \\    yield () => i;
+        \\  }
+        \\  for (let j = 0; j < 2; j++) {
+        \\    if (j === 0) return 2;
+        \\    yield () => j;
+        \\  }
+        \\  yield _ret;
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var generated_ret_temps: usize = 0;
+    for (edited.symbols.items[original_symbol_count..]) |symbol| {
+        if (symbol.kind != .variable_var or !std.mem.startsWith(u8, symbol.synthetic_name, "_ret")) continue;
+        generated_ret_temps += 1;
+        try std.testing.expect(symbol.reference_count > 0);
+    }
+    try std.testing.expectEqual(@as(usize, 2), generated_ret_temps);
+}
+
 test "#4819 async generator inner function owns its ES5 state callback" {
     try checkStateScopes(
         "export async function* stream() { yield await Promise.resolve(1); }",
