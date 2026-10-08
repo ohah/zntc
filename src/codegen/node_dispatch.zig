@@ -239,19 +239,15 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                     }
                 }
             }
-            // Enum self references inside the generated IIFE can resolve to a
-            // virtual parameter whose chosen spelling differs from the source
-            // enum name (for example `_Self1` when the enum has a `Self` member).
-            // Emit that identity's spelling even when no linker rename exists.
-            if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
-                sym_id != null and sym_id.? < self.options.semantic_symbols.len)
-            {
-                const symbol = self.options.semantic_symbols[sym_id.?];
-                if (symbol.synthetic_kind == .enum_iife_parameter) {
+            // The selected spelling belongs to the SymbolId. This also covers
+            // transformed references whose copied AST text still has the
+            // source spelling, plus virtual enum/namespace/helper bindings.
+            if (sym_id) |sid| {
+                if (self.finalSymbolName(sid)) |output_name| {
                     const original = self.ast.getText(node.data.string_ref);
-                    if (!std.mem.eql(u8, original, symbol.synthetic_name)) {
+                    if (!std.mem.eql(u8, original, output_name)) {
                         try self.addSourceMappingWithName(node.span, original);
-                        try self.write(symbol.synthetic_name);
+                        try self.writeIdentifierText(output_name);
                         return;
                     }
                 }

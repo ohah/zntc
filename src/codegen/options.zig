@@ -111,6 +111,11 @@ pub const CodegenOptions = struct {
     /// Semantic rows and generated IIFE owner scopes used to resolve virtual
     /// TypeScript namespace/enum parameters by SymbolId.
     semantic_symbols: []const @import("../semantic/symbol.zig").Symbol = &.{},
+    /// Transformer-selected output spellings keyed by the same SymbolId as
+    /// `semantic_symbol_ids`. LinkingMetadata renames take precedence when
+    /// present; this carries non-minified transforms such as ES5 block names
+    /// through codegen without relying on each copied AST node's text.
+    semantic_symbol_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
     semantic_scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     generated_iife_scope_owner_map: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// Fail closed when runtime TypeScript IIFEs are emitted without their

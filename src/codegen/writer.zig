@@ -195,9 +195,14 @@ pub fn writeNodeSpan(self: anytype, node: ast_mod.Node) !void {
 /// 다운레벨. 그 외엔 writeSpan 과 동일(ascii_only 등 동작 보존). identifier
 /// 위치는 모두 이 함수로 funnel → 소스/합성/디스트럭처링/클래스필드 일괄 처리.
 pub fn writeIdentifierSpan(self: anytype, span: Span) !void {
+    return writeIdentifierText(self, self.ast.getText(span));
+}
+
+/// Emit an already-resolved identifier name through the same target escaping
+/// rules as a source-backed identifier span.
+pub fn writeIdentifierText(self: anytype, text: []const u8) !void {
     if (self.options.lower_unicode_brace) {
         const unicode_escape_lower = @import("../transformer/unicode_escape_lower.zig");
-        const text = self.ast.getText(span);
         if (unicode_escape_lower.containsBraceEscape(text)) {
             // `\u{...}` brace escape(ES2015) → raw UTF-8 codepoint. identifier 는
             // string 과 달리 surrogate-pair escape(`𠀀`)가 es5 에서도
@@ -241,7 +246,11 @@ pub fn writeIdentifierSpan(self: anytype, span: Span) !void {
             return;
         }
     }
-    try self.writeSpan(span);
+    if (self.options.ascii_only) {
+        try self.writeAsciiOnly(text);
+    } else {
+        try self.write(text);
+    }
 }
 
 pub fn writeStringLiteral(self: anytype, span: Span) !void {

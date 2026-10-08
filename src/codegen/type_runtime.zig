@@ -437,10 +437,7 @@ pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !
 
 fn generatedIifeParamNameFromSymbolId(self: anytype, raw_id: u32) []const u8 {
     const symbol = self.options.semantic_symbols[@intCast(raw_id)];
-    if (self.options.linking_metadata) |metadata| {
-        if (metadata.renames.get(raw_id)) |renamed| return renamed;
-    }
-    return symbol.synthetic_name;
+    return self.finalSymbolName(raw_id) orelse symbol.synthetic_name;
 }
 
 fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?u32 {
@@ -1044,21 +1041,19 @@ fn isDirectNamespaceNameInBody(self: anytype, body_idx: NodeIndex, name_idx: Nod
 }
 
 fn namespaceLocalName(self: anytype, name_idx: NodeIndex, source_name: []const u8) Error![]const u8 {
-    if (self.options.linking_metadata) |metadata| {
-        if (self.options.generated_iife_scope_owner_map != null) {
-            const sid = self.sourceSymbolId(name_idx) orelse return error.MissingNamespaceDeclarationSymbol;
-            if (sid >= self.options.semantic_symbols.len) return error.InvalidNamespaceDeclarationSymbol;
-            const symbol = self.options.semantic_symbols[sid];
-            if (symbol.synthetic_kind != null or symbol.name.start > symbol.name.end or symbol.name.end > self.ast.source.len or
-                !std.mem.eql(u8, symbol.nameText(self.ast.source), source_name))
-            {
-                return error.InvalidNamespaceDeclarationSymbol;
-            }
-            if (metadata.renames.get(sid)) |renamed| return renamed;
-            return source_name;
-        } else if (self.sourceSymbolId(name_idx)) |sid| {
-            if (metadata.renames.get(sid)) |renamed| return renamed;
+    const sid = self.sourceSymbolId(name_idx);
+    if (self.options.linking_metadata != null and self.options.generated_iife_scope_owner_map != null) {
+        const declaration_sid = sid orelse return error.MissingNamespaceDeclarationSymbol;
+        if (declaration_sid >= self.options.semantic_symbols.len) return error.InvalidNamespaceDeclarationSymbol;
+        const symbol = self.options.semantic_symbols[declaration_sid];
+        if (symbol.synthetic_kind != null or symbol.name.start > symbol.name.end or symbol.name.end > self.ast.source.len or
+            !std.mem.eql(u8, self.ast.getText(symbol.name), source_name))
+        {
+            return error.InvalidNamespaceDeclarationSymbol;
         }
+    }
+    if (sid) |declaration_sid| {
+        if (self.finalSymbolName(declaration_sid)) |name| return name;
     }
     return source_name;
 }

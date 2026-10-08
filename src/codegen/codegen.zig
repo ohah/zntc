@@ -387,6 +387,7 @@ pub const Codegen = struct {
     pub const writeAsciiOnly = writer_emit.writeAsciiOnly;
     pub const writeNodeSpan = writer_emit.writeNodeSpan;
     pub const writeIdentifierSpan = writer_emit.writeIdentifierSpan;
+    pub const writeIdentifierText = writer_emit.writeIdentifierText;
     pub const writeStringLiteral = writer_emit.writeStringLiteral;
 
     // ================================================================
@@ -423,18 +424,37 @@ pub const Codegen = struct {
         return null;
     }
 
+    /// Resolve the selected output spelling for a semantic identity. Linker
+    /// mangling is the final authority; otherwise use an explicit transform
+    /// override, then a stable semantic name for generated/relocated symbols.
+    /// Source-backed identifiers keep their own span spelling for byte-stable
+    /// output when no rename was selected.
+    pub fn finalSymbolName(self: *Codegen, sid: u32) ?[]const u8 {
+        if (self.options.linking_metadata) |metadata| {
+            if (metadata.renames.get(sid)) |renamed| return renamed;
+        }
+        if (self.options.semantic_symbol_name_overrides) |names| {
+            if (names.get(sid)) |name| return name;
+        }
+        if (sid < self.options.semantic_symbols.len) {
+            const symbol = self.options.semantic_symbols[sid];
+            if (symbol.synthetic_kind != .enum_iife_member and symbol.synthetic_name.len > 0)
+                return symbol.synthetic_name;
+        }
+        return null;
+    }
+
     /// Resolve a namespace IIFE prefix from its parameter SymbolId at the point
     /// of emission. Text fallback is only valid when no semantic handle exists.
     pub fn namespacePrefixName(self: *Codegen, prefix: NamespacePrefix) Error![]const u8 {
         if (prefix.symbol_id) |sid| {
             if (sid >= self.options.semantic_symbols.len) return error.InvalidNamespacePrefixSymbol;
             const symbol = self.options.semantic_symbols[sid];
-            if (symbol.synthetic_kind != .namespace_iife_parameter or symbol.synthetic_name.len == 0)
+            if (symbol.synthetic_kind != .namespace_iife_parameter)
                 return error.InvalidNamespacePrefixSymbol;
-            if (self.options.linking_metadata) |metadata| {
-                if (metadata.renames.get(sid)) |renamed| return renamed;
-            }
-            return symbol.synthetic_name;
+            const output_name = self.finalSymbolName(sid) orelse return error.InvalidNamespacePrefixSymbol;
+            if (output_name.len == 0) return error.InvalidNamespacePrefixSymbol;
+            return output_name;
         }
         return prefix.fallback_name;
     }
@@ -450,10 +470,10 @@ pub const Codegen = struct {
                 // 별도 ns var(`X_ns`)에 object literal이 저장된다. 따라서 self-ref 아님 —
                 // `export default X`는 반드시 `X$N = X_ns` 할당이 필요.
                 if (md.ns_inline_objects.get(sid) != null) return false;
-                if (md.renames.get(sid)) |renamed| {
-                    return std.mem.eql(u8, renamed, def_name);
-                }
+                if (self.finalSymbolName(sid)) |name| return std.mem.eql(u8, name, def_name);
             }
+        } else if (self.sourceSymbolId(inner)) |sid| {
+            if (self.finalSymbolName(sid)) |name| return std.mem.eql(u8, name, def_name);
         }
         const ref_text = self.ast.getText(inner_node.span);
         return std.mem.eql(u8, ref_text, def_name);
