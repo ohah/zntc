@@ -1002,6 +1002,38 @@ fn isSafeConstructorLocalUpdate(
     return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
 }
 
+/// A classic `for` with one initialized `let` binding can keep its source
+/// graph when every expression is already represented by bound source nodes
+/// and the body has no generated lexical bindings or nested function capture.
+fn isSafeRetainedLexicalForHead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration: ast_mod.Node,
+) bool {
+    if (declaration.tag != .variable_declaration or
+        ast.variableDeclarationKind(declaration) != .let) return false;
+    const extras = ast.extra_data.items;
+    const extra = declaration.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const declarators_start = extras[extra + 1];
+    const declarators_len = extras[extra + 2];
+    if (declarators_len != 1 or declarators_start >= extras.len or
+        declarators_len > extras.len - declarators_start) return false;
+    const raw_declarator = extras[declarators_start];
+    if (raw_declarator >= ast.nodes.items.len) return false;
+    const declarator = ast.nodes.items[raw_declarator];
+    if (declarator.tag != .variable_declarator) return false;
+    const declarator_extra = declarator.data.extra;
+    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+    const binding: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
+    const type_annotation: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
+    const initializer: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+    return type_annotation.isNone() and
+        isBoundSourceIdentifierBinding(ast, semantic, binding) and
+        !initializer.isNone() and
+        isSafeConstructorValue(ast, semantic, initializer);
+}
+
 fn isSafeConstructorExpression(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1060,6 +1092,27 @@ fn isSafeConstructorSwitchCase(
             !isSafeConstructorBodyStatement(ast, semantic, @enumFromInt(raw_statement_idx))) return false;
     }
     return true;
+}
+
+fn isSafeRetainedLexicalForStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement: ast_mod.Node,
+) bool {
+    if (statement.tag != .for_statement) return false;
+    const extras = ast.extra_data.items;
+    const extra = statement.data.extra;
+    if (extra > extras.len or extras.len - extra < 4) return false;
+    const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+    const update_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 2]);
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 3]);
+    if (initializer_idx.isNone() or @intFromEnum(initializer_idx) >= ast.nodes.items.len or
+        ast.getNode(initializer_idx).tag != .variable_declaration or
+        !isSafeRetainedLexicalForHead(ast, semantic, ast.getNode(initializer_idx))) return false;
+    return (test_idx.isNone() or isSafeConstructorValue(ast, semantic, test_idx)) and
+        (update_idx.isNone() or isSafeConstructorExpression(ast, semantic, update_idx)) and
+        isSafeConstructorBodyStatement(ast, semantic, body_idx);
 }
 
 fn isSafeConstructorCatchClause(
@@ -1164,6 +1217,12 @@ fn isSafeConstructorBodyStatement(
             const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
             const update_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 2]);
             const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 3]);
+            if (!initializer_idx.isNone() and @intFromEnum(initializer_idx) < ast.nodes.items.len and
+                ast.getNode(initializer_idx).tag == .variable_declaration and
+                ast.variableDeclarationKind(ast.getNode(initializer_idx)).isLexical())
+            {
+                return isSafeRetainedLexicalForStatement(ast, semantic, statement);
+            }
             const safe_initializer = initializer_idx.isNone() or
                 (if (@intFromEnum(initializer_idx) < ast.nodes.items.len and
                     ast.getNode(initializer_idx).tag == .variable_declaration)
@@ -1552,9 +1611,23 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer lowered_for_in_heads.deinit(ast.allocator);
     var lowered_for_of_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_for_of_heads.deinit(ast.allocator);
+    var lowered_classic_for_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_classic_for_heads.deinit(ast.allocator);
     if (options.unsupported.block_scoping) {
         for (reachable_nodes) |raw_idx| {
             const node = ast.nodes.items[raw_idx];
+            if (node.tag == .for_statement) {
+                const extra = node.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4) return false;
+                const initializer: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+                if (!initializer.isNone() and @intFromEnum(initializer) < ast.nodes.items.len and
+                    ast.nodes.items[@intFromEnum(initializer)].tag == .variable_declaration and
+                    ast.variableDeclarationKind(ast.nodes.items[@intFromEnum(initializer)]).isLexical())
+                {
+                    if (!isSafeRetainedLexicalForStatement(ast, semantic, node)) return false;
+                    lowered_classic_for_heads.put(ast.allocator, @intFromEnum(initializer), {}) catch return false;
+                }
+            }
             if (node.tag != .for_in_statement and
                 !(node.tag == .for_of_statement and options.unsupported.for_of)) continue;
             const head = node.data.ternary.a;
@@ -1821,6 +1894,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_tagged_template = false;
     var found_native_for_in = false;
     var found_lowered_for_in = false;
+    var found_lowered_classic_for = false;
     var found_native_for_of = false;
     var found_lowered_for_of = false;
     var found_native_for_await = false;
@@ -1871,7 +1945,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.using and kind.isUsing()) return false;
                 if (options.unsupported.block_scoping and kind != .@"var" and
                     !lowered_for_in_heads.contains(raw_idx) and
-                    !lowered_for_of_heads.contains(raw_idx)) return false;
+                    !lowered_for_of_heads.contains(raw_idx) and
+                    !lowered_classic_for_heads.contains(raw_idx)) return false;
             },
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
@@ -2151,6 +2226,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_native_for_in = true;
                 }
             },
+            .for_statement => {
+                const extra = node.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4) return false;
+                const initializer: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+                if (!initializer.isNone() and lowered_classic_for_heads.contains(@intFromEnum(initializer)))
+                    found_lowered_classic_for = true;
+            },
             .for_await_of_statement => {
                 if (options.unsupported.needsForAwaitOfDownlevel()) {
                     // The ES2017 path lowers only the loop. Keep async/await
@@ -2261,7 +2343,6 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .switch_case,
             .while_statement,
             .do_while_statement,
-            .for_statement,
             .break_statement,
             .continue_statement,
             .return_statement,
@@ -2326,7 +2407,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
-        found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
+        found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
+        found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_named_class or
         found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
