@@ -963,6 +963,7 @@ pub const AssignmentTargetRef = struct {
     value: NodeIndex,
     write: NodeIndex,
     temps: [2]?AssignmentTempRefs = .{ null, null },
+    references: [2]?AssignmentReferenceCopies = .{ null, null },
 };
 
 const AssignmentTempRefs = struct {
@@ -972,14 +973,25 @@ const AssignmentTempRefs = struct {
     write_read: NodeIndex,
 };
 
-/// prepareAssignmentTargetRef가 미리 만든 후보 중 실제 출력에 사용된 참조만 등록한다.
+const AssignmentReferenceCopies = struct {
+    source: NodeIndex,
+    value_read: NodeIndex,
+    write_read: NodeIndex,
+};
+
+/// prepareAssignmentTargetRef가 만든 후보 중 실제 출력에 사용된 임시 변수와 원본 참조만 등록한다.
 /// read는 모든 호출자가 쓰고, value/write는 lowering별로 다르다.
-pub fn trackAssignmentTargetTemps(self: anytype, target: AssignmentTargetRef, use_value: bool, use_write: bool) !void {
+pub fn trackAssignmentTargetRefs(self: anytype, target: AssignmentTargetRef, use_value: bool, use_write: bool) !void {
     for (target.temps) |maybe_temp| {
         const temp = maybe_temp orelse continue;
         try self.trackHoistedTempRef(temp.span, temp.first_write, .{ .write = true });
         if (use_value) try self.trackHoistedTempRef(temp.span, temp.value_read, .{ .read = true });
         if (use_write) try self.trackHoistedTempRef(temp.span, temp.write_read, .{ .read = true });
+    }
+    for (target.references) |maybe_reference| {
+        const reference = maybe_reference orelse continue;
+        if (use_value) try self.duplicateUserReference(reference.source, reference.value_read);
+        if (use_write) try self.duplicateUserReference(reference.source, reference.write_read);
     }
 }
 
@@ -1022,6 +1034,7 @@ pub fn prepareAssignmentTargetRef(
         .value = try makeMemberWithFlags(self, left.tag, obj.value, prop.value, flags, left.span),
         .write = try makeMemberWithFlags(self, left.tag, obj.write, prop.write, flags, left.span),
         .temps = .{ obj.temp, prop.temp },
+        .references = .{ obj.references, prop.references },
     };
 }
 
@@ -1030,6 +1043,7 @@ const SingleEvalExpr = struct {
     value: NodeIndex,
     write: NodeIndex,
     temp: ?AssignmentTempRefs = null,
+    references: ?AssignmentReferenceCopies = null,
 };
 
 fn makeSingleEvalExpr(
@@ -1050,10 +1064,13 @@ fn makeSingleEvalExpr(
 
     if (simple_identifier_is_reusable and old.tag == .identifier_reference) {
         const visited = try self.visitNode(old_idx);
+        const value_read = try cloneNode(self, visited);
+        const write_read = try cloneNode(self, visited);
         return .{
             .read = visited,
-            .value = try cloneNode(self, visited),
-            .write = try cloneNode(self, visited),
+            .value = value_read,
+            .write = write_read,
+            .references = .{ .source = visited, .value_read = value_read, .write_read = write_read },
         };
     }
 

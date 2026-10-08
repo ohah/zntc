@@ -777,15 +777,15 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'assignment-computed-target',
         source: [
           'function square(input) {',
-          '  let keyEvaluations = 0;',
-          '  const box = { value: input };',
+          '  var keyEvaluations = 0;',
+          '  var box = { value: input };',
           "  function getKey() { keyEvaluations++; return 'value'; }",
-          '  const result = (() => (box[getKey()] **= 2))();',
+          '  var result = (() => (box[getKey()] **= 2))();',
           '  globalThis.targetEvaluations = keyEvaluations;',
           '  return result;',
           '}',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '36 1 3 undefined\n',
       },
       {
@@ -796,7 +796,7 @@ describe('symbol identity coverage gate (#4819)', () => {
           '  return (() => (box.value **= 2))();',
           '}',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '36 undefined 3 undefined\n',
       },
     ];
@@ -2740,12 +2740,36 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'logical assignment member target',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function choose(value) { var box = { value: value }; return (() => (box.value ||= 7))(); }',
           'console.log(choose(0));',
         ].join('\n'),
         output: '7\n',
+      },
+      {
+        name: 'logical assignment computed member target',
+        graph: 'retained',
+        source: [
+          'var calls = 0; var box = { value: 0 };',
+          'function getBox() { calls++; return box; }',
+          'function getKey() { calls++; return "value"; }',
+          'function choose() { return (() => (getBox()[getKey()] ||= 7))(); }',
+          'console.log(choose(), calls, box.value);',
+        ].join('\n'),
+        output: '7 2 7\n',
+      },
+      {
+        name: 'nullish assignment computed member target',
+        graph: 'retained',
+        source: [
+          'var calls = 0; var box = { value: null };',
+          'function getBox() { calls++; return box; }',
+          'function getKey() { calls++; return "value"; }',
+          'function choose() { return (() => (getBox()[getKey()] ??= 9))(); }',
+          'console.log(choose(), calls, box.value);',
+        ].join('\n'),
+        output: '9 2 9\n',
       },
       {
         name: 'destructuring assignment',
