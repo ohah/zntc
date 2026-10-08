@@ -24,6 +24,18 @@ pub fn ES2021(comptime Transformer: type) type {
         /// private get/set이 함수 호출이라 여기서 만드는 `(a = b)` 패턴의 assignment target이 될 수 없음.
         pub fn lowerNullishAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
+            const target_node = self.ast.getNode(target.read);
+            if (target_node.tag == .identifier_reference or target_node.tag == .assignment_target_identifier) {
+                const read_target = &self.ast.nodes.items[@intFromEnum(target.read)];
+                if (read_target.tag == .assignment_target_identifier) read_target.tag = .identifier_reference;
+                var value_read: ?NodeIndex = null;
+                if (self.options.unsupported.nullish_coalescing) {
+                    const value_node = &self.ast.nodes.items[@intFromEnum(target.value)];
+                    if (value_node.tag == .assignment_target_identifier) value_node.tag = .identifier_reference;
+                    value_read = target.value;
+                }
+                try self.splitLogicalAssignmentIdentifierReferences(target.read, value_read, target.write);
+            }
             const new_right = try self.visitNode(node.data.binary.right);
             const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
 
@@ -74,6 +86,12 @@ pub fn ES2021(comptime Transformer: type) type {
         /// 주의: private field 좌변은 caller(transformer.zig)에서 es2015_class로 먼저 라우팅됨.
         pub fn lowerLogicalAssignment(self: *Transformer, node: Node, logical_op: token_mod.Kind) Transformer.Error!NodeIndex {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
+            const target_node = self.ast.getNode(target.read);
+            if (target_node.tag == .identifier_reference or target_node.tag == .assignment_target_identifier) {
+                const read_target = &self.ast.nodes.items[@intFromEnum(target.read)];
+                if (read_target.tag == .assignment_target_identifier) read_target.tag = .identifier_reference;
+                try self.splitLogicalAssignmentIdentifierReferences(target.read, null, target.write);
+            }
             try es_helpers.trackAssignmentTargetTemps(self, target, false, true);
             const new_right = try self.visitNode(node.data.binary.right);
             const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
