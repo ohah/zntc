@@ -726,7 +726,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         name: 'binary',
         source: 'function square(value) { return (() => value ** 2)(); }',
         graph: 'retained',
-        output: '36 3 undefined\n',
+        output: '36 undefined 3 undefined\n',
       },
       {
         name: 'binary-shadow',
@@ -736,13 +736,13 @@ describe('symbol identity coverage gate (#4819)', () => {
           'function square(value) { return (() => value ** 2)(); }',
         ].join('\n'),
         graph: 'reanalyzed',
-        output: '36 3 3\n',
+        output: '36 undefined 3 3\n',
       },
       {
         name: 'assignment',
         source: 'function square(input) { var value = input; return (() => (value **= 2))(); }',
-        graph: 'reanalyzed',
-        output: '36 3 undefined\n',
+        graph: 'retained',
+        output: '36 undefined 3 undefined\n',
       },
       {
         name: 'assignment-shadow',
@@ -752,7 +752,43 @@ describe('symbol identity coverage gate (#4819)', () => {
           'function square(input) { var value = input; return (() => (value **= 2))(); }',
         ].join('\n'),
         graph: 'reanalyzed',
-        output: '36 3 3\n',
+        output: '36 undefined 3 3\n',
+      },
+      {
+        name: 'assignment-var-math-shadow',
+        source: [
+          'var Math = { pow(left, right) { return left + right; } };',
+          'globalThis.shadowMath = Math;',
+          'function square(input) { var value = input; return (() => (value **= 2))(); }',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '36 undefined 3 3\n',
+      },
+      {
+        name: 'assignment-computed-target',
+        source: [
+          'function square(input) {',
+          '  let keyEvaluations = 0;',
+          '  const box = { value: input };',
+          "  function getKey() { keyEvaluations++; return 'value'; }",
+          '  const result = (() => (box[getKey()] **= 2))();',
+          '  globalThis.targetEvaluations = keyEvaluations;',
+          '  return result;',
+          '}',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '36 1 3 undefined\n',
+      },
+      {
+        name: 'assignment-member-target',
+        source: [
+          'function square(input) {',
+          '  var box = { value: input };',
+          '  return (() => (box.value **= 2))();',
+          '}',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '36 undefined 3 undefined\n',
       },
     ];
     writeFileSync(
@@ -760,7 +796,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       [
         "import './power.mjs';",
         "import { Math as mathValue } from './user-math.mjs';",
-        'console.log(globalThis.squareResult, mathValue.pow(1, 2), globalThis.shadowMath && globalThis.shadowMath.pow(1, 2));',
+        'console.log(globalThis.squareResult, globalThis.targetEvaluations, mathValue.pow(1, 2), globalThis.shadowMath && globalThis.shadowMath.pow(1, 2));',
       ].join('\n'),
     );
     writeFileSync(
@@ -2463,6 +2499,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'exponentiation assignment',
+        graph: 'retained',
         source: [
           'function square(value) { var result = value; return (() => (result **= 2))(); }',
           'console.log(square(6));',

@@ -2837,6 +2837,36 @@ pub fn duplicateUserReference(self: *Transformer, source: NodeIndex, clone: Node
     editor.cloneReferenceAtSameLocation(source, clone) catch |err| return editError(err);
 }
 
+/// Split a compound assignment's read/write identifier reference after lowering
+/// it to a plain assignment. The original target remains a write; the generated
+/// value read gets its own exact reference to the same SymbolId and source scope.
+pub fn splitCompoundAssignmentIdentifierReference(
+    self: *Transformer,
+    write_target: NodeIndex,
+    value_read: NodeIndex,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const raw_id = self.getSymbolIdAt(write_target) orelse return;
+    if (self.getSymbolIdAt(value_read) != raw_id) return editError(error.InvalidSymbol);
+
+    const editor = try editorFor(self);
+    const source_reference = (editor.referenceForNode(write_target) catch |err| return editError(err)) orelse
+        return editError(error.ReferenceNotFound);
+    if (source_reference.flags.declare or !source_reference.flags.read or !source_reference.flags.write)
+        return editError(error.InvalidNode);
+
+    const symbol: SymbolId = @enumFromInt(raw_id);
+    editor.addCopiedReference(
+        value_read,
+        symbol,
+        source_reference.scope_id,
+        .{ .read = true },
+        source_reference.stmt_idx,
+        source_reference.scope_stmt_idx,
+    ) catch |err| return editError(err);
+    editor.updateReferenceFlags(write_target, .{ .write = true }) catch |err| return editError(err);
+}
+
 /// Isolate a worklet factory copy of a class-self reference from its source
 /// AST node and bind it to the reconstructed class identity in the output
 /// scope. The parser reference remains owned by the original class body.

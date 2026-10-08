@@ -908,6 +908,21 @@ pub const SemanticEditor = struct {
         self.addCounts(symbol, flags);
     }
 
+    /// Update one node's access mode without changing its symbol or location.
+    /// Compound-assignment lowering uses this to turn its original target into
+    /// a write and add a separate read reference for the generated value use.
+    pub fn updateReferenceFlags(self: *SemanticEditor, node: NodeIndex, flags: ReferenceFlags) Error!void {
+        if (flags.declare) return error.InvalidNode;
+        try self.ensureReferenceIndex();
+        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const current = self.references.items[i];
+        if (current.flags.declare) return error.InvalidNode;
+        if (!self.validSymbol(current.symbol_id) or !self.validScope(current.scope_id)) return error.InvalidSymbol;
+        self.removeCounts(current.symbol_id, current.flags);
+        self.references.items[i].flags = flags;
+        self.addCounts(current.symbol_id, flags);
+    }
+
     /// Preserve declaration evidence when a transform materializes an AST
     /// binding for a symbol that already exists (for example an export facade).
     /// Declaration rows are node-less by design; the binding node carries the
@@ -1700,6 +1715,36 @@ test "cloned reference keeps target and write flags without stealing the source"
     try std.testing.expectEqual(@as(?u32, @intFromEnum(symbol)), result.symbol_ids[@intFromEnum(clone)]);
     try std.testing.expectEqual(@as(u32, 4), result.references[result.references.len - 1].stmt_idx);
     try std.testing.expectEqual(@as(u32, 5), result.references[result.references.len - 1].scope_stmt_idx);
+}
+
+test "compound assignment split keeps one write and adds one exact read" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+    const root = try editor.addScope(.none, .none, .global, false);
+    const name = try ast.addString("value");
+    const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
+    const target = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
+    const value_read = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
+    const symbol = try editor.declare(binding, name, Span.EMPTY, root, .variable_var, 0, 0);
+    try editor.addReference(target, symbol, root, .{ .read = true, .write = true }, 1, 2);
+
+    try editor.addCopiedReference(value_read, symbol, root, .{ .read = true }, 1, 2);
+    try editor.updateReferenceFlags(target, .{ .write = true });
+
+    const target_ref = (try editor.referenceForNode(target)).?;
+    const value_ref = (try editor.referenceForNode(value_read)).?;
+    try std.testing.expect(!target_ref.flags.read and target_ref.flags.write);
+    try std.testing.expect(value_ref.flags.read and !value_ref.flags.write);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    try std.testing.expectError(error.InvalidNode, editor.updateReferenceFlags(target, .{ .declare = true }));
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
 }
 
 test "invalid identities and type-only references cannot corrupt liveness" {
