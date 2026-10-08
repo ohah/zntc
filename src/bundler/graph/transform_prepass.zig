@@ -1436,13 +1436,16 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// safe `var` or existing-identifier heads, safe values, and safe bodies.
 /// Labeled/unlabeled loop control, safe label statements, supported assignments/updates,
 /// returns with no value or an exact-safe value, and throws with an exact-safe
-/// value. A named class expression is admitted only as a direct initializer of
-/// a top-level `var` declarator; other expression positions stay on reanalysis.
+/// value. Named or anonymous class expressions are admitted only as direct
+/// initializers of a top-level `var` declarator; other expression positions
+/// stay on reanalysis. Anonymous expressions are safe here because lowering
+/// registers the generated constructor self binding and call-check reference
+/// in the exact output function scope.
 /// Conditions and values are recursively limited to literals, exact
 /// source references, and ES5-native operators; loop clauses and bodies must
 /// pass their corresponding safe checks. Accessors must be terminal because lowering emits
 /// methods before accessors; computed/escaped keys and `super` stay excluded.
-fn isSimpleNamedClass(
+fn isSimpleClass(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
@@ -1456,8 +1459,9 @@ fn isSimpleNamedClass(
     const name: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.name]);
     const super: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.super]);
     const body: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.body]);
-    if (name.isNone() or @intFromEnum(name) >= ast.nodes.items.len or
-        ast.getNode(name).tag != .binding_identifier or !super.isNone() or
+    if ((!name.isNone() and (@intFromEnum(name) >= ast.nodes.items.len or
+        ast.getNode(name).tag != .binding_identifier)) or
+        (name.isNone() and node.tag != .class_expression) or !super.isNone() or
         body.isNone() or @intFromEnum(body) >= ast.nodes.items.len) return false;
     const body_node = ast.getNode(body);
     if (body_node.tag != .class_body) return false;
@@ -1568,7 +1572,7 @@ fn isDirectTopLevelVarClassExpression(ast: *const ast_mod.Ast, target_raw: u32) 
     return false;
 }
 
-fn isTopLevelSimpleNamedClass(
+fn isTopLevelSimpleClass(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
@@ -1581,7 +1585,7 @@ fn isTopLevelSimpleNamedClass(
         .class_expression => isDirectTopLevelVarClassExpression(ast, @intCast(raw_node)),
         else => false,
     };
-    return is_top_level and isSimpleNamedClass(ast, semantic, node, source_binds_object);
+    return is_top_level and isSimpleClass(ast, semantic, node, source_binds_object);
 }
 
 fn collectSimpleConstructorDefaultParameterNodes(
@@ -1905,15 +1909,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
     // those nodes only when their owning top-level class already passes the
     // complete retained-graph preflight. Cache the class decisions so the
     // node walk below does not repeat the full class-body check.
-    var retained_simple_named_class_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer retained_simple_named_class_nodes.deinit(ast.allocator);
+    var retained_simple_class_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_simple_class_nodes.deinit(ast.allocator);
     var lowered_simple_constructor_default_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_simple_constructor_default_nodes.deinit(ast.allocator);
     if (options.unsupported.class) {
         for (reachable_nodes) |raw_idx| {
             const class_node = ast.nodes.items[raw_idx];
             if (class_node.tag != .class_declaration and class_node.tag != .class_expression) continue;
-            if (!isTopLevelSimpleNamedClass(
+            if (!isTopLevelSimpleClass(
                 ast,
                 semantic,
                 class_node,
@@ -1921,7 +1925,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 &top_level_statements,
                 source_binds_object,
             )) continue;
-            retained_simple_named_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
+            retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
             if (options.unsupported.default_params and
                 !collectSimpleConstructorDefaultParameterNodes(
                     ast,
@@ -1943,7 +1947,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_for_await = false;
     var found_lowered_for_await = false;
     var found_native_class = false;
-    var found_lowered_simple_named_class = false;
+    var found_lowered_simple_class = false;
     var found_native_destructuring = false;
     var found_lowered_var_destructuring = false;
     var found_lowered_destructuring_assignment = false;
@@ -2291,8 +2295,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) {
-                    if (!retained_simple_named_class_nodes.contains(raw_idx)) return false;
-                    found_lowered_simple_named_class = true;
+                    if (!retained_simple_class_nodes.contains(raw_idx)) return false;
+                    found_lowered_simple_class = true;
                 } else {
                     found_native_class = true;
                 }
@@ -2452,7 +2456,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
         found_native_for_of or found_lowered_for_of or
-        found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_named_class or
+        found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_class or
         found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_lowered_optional_chaining or found_object_shorthand or found_lowered_object_method or
@@ -2582,12 +2586,13 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .class_declaration, .class_expression => {
-                // The audited subset validates direct declarations and direct
-                // top-level `var` initializers for named class expressions.
+                // The audited subset validates direct class declarations and
+                // direct top-level `var` initializers for named or anonymous
+                // class expressions.
                 const is_simple_downlevel_class = safe_graph_subset;
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
-                // forms are empty named declarations, plain methods, an empty
+                // forms are empty declarations/expressions, plain methods, an empty
                 // explicit constructor with plain methods, or those same safe
                 // bounded methods/constructors followed by an accessor group; their
                 // helper, class reference, and scopes are tracked.

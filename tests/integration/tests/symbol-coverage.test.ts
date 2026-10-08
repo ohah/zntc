@@ -10278,8 +10278,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'anonymous class expression',
+        name: 'anonymous class expression in a top-level var initializer retains its generated constructor identity',
         source: 'var Holder = class {};\nconsole.log(new Holder() instanceof Holder);\n',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'anonymous class expression method keeps an exact outer binding reference',
+        source:
+          'var Holder = class { read() { return Holder; } }; console.log(new Holder().read() === Holder);',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'anonymous class expression assigned outside a var initializer stays on reanalysis',
+        source: 'var Holder; Holder = class {}; console.log(new Holder() instanceof Holder);',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'anonymous class expression in a let initializer stays on reanalysis',
+        source: 'let Holder = class {}; console.log(new Holder() instanceof Holder);',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'anonymous class expression with a base class stays on reanalysis',
+        source:
+          'function Base() {} var Derived = class extends Base {}; console.log(new Derived() instanceof Base);',
         graph: 'reanalyzed',
         output: 'true\n',
       },
