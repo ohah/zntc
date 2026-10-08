@@ -572,6 +572,22 @@ fn isBoundSourceIdentifierAssignmentTarget(
     return hasValidSourceSymbol(ast, semantic, node_idx, .assignment_target_identifier);
 }
 
+fn isRetainableSimpleOptionalMemberAccess(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    if (ast.has_jsx) return false;
+    const node = ast.getNode(node_idx);
+    if (node.tag != .static_member_expression) return false;
+    const extra = node.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
+    if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0) return false;
+    const object: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    return isBoundSourceIdentifierReference(ast, semantic, object);
+}
+
 /// Compound/logical assignment lowering already records member receiver/key
 /// temps in the edited graph. Admit ordinary member targets when they contain
 /// no super/private access that takes a separate lowering path.
@@ -1652,6 +1668,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_object_spread = false;
     var found_lowered_optional_catch_binding = false;
     var found_safe_template_literal = false;
+    var found_lowered_optional_chaining = false;
     var found_computed_object_data_key = false;
     var found_computed_object_method_key = false;
     var found_computed_object_accessor_key = false;
@@ -1868,6 +1885,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (node.tag == .logical_expression and options.unsupported.nullish_coalescing and
                     operator == .question2)
                 {
+                    // Keep composed optional/nullish lowering on the existing
+                    // resync path until both operators share one exact gate.
+                    if (ast_mod.spineHasOptionalChain(ast, node.data.binary.left)) return false;
                     // Nullish lowering either duplicates an exact identifier
                     // read or registers its generated temp references.
                     found_lowered_nullish_coalescing = true;
@@ -1883,7 +1903,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .static_member_expression, .computed_member_expression => {
                 if (options.unsupported.optional_chaining and
-                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx))) return false;
+                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
+                {
+                    // A direct optional read of a bound identifier duplicates
+                    // only that exact source reference; calls, computed keys,
+                    // and chained receivers retain their resync boundary.
+                    if (!isRetainableSimpleOptionalMemberAccess(ast, semantic, @enumFromInt(raw_idx)))
+                        return false;
+                    found_lowered_optional_chaining = true;
+                }
             },
             .object_expression => {
                 if (hasDirectSpreadElement(ast, node)) {
@@ -2126,7 +2154,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_named_class or
         found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
-        found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
+        found_safe_template_literal or found_lowered_optional_chaining or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or

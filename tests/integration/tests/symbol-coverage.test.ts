@@ -2772,6 +2772,43 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: '9 2 9\n',
       },
       {
+        name: 'simple optional member access',
+        graph: 'retained',
+        source: [
+          'function read(value) { return value?.field; }',
+          'console.log(read(null), read({ field: 42 }));',
+        ].join('\n'),
+        output: 'undefined 42\n',
+      },
+      {
+        name: 'simple optional member access in a downleveled arrow',
+        graph: 'retained',
+        source: [
+          'var read = value => value?.field;',
+          'console.log(read(null), read({ field: 42 }));',
+        ].join('\n'),
+        output: 'undefined 42\n',
+      },
+      {
+        name: 'computed optional member access',
+        graph: 'reanalyzed',
+        source: [
+          'var calls = 0; function key() { calls++; return "field"; }',
+          'function read(value) { return value?.[key()]; }',
+          'console.log(read(null), read({ field: 42 }), calls);',
+        ].join('\n'),
+        output: 'undefined 42 1\n',
+      },
+      {
+        name: 'optional member call',
+        graph: 'reanalyzed',
+        source: [
+          'function read(value) { return value?.method(); }',
+          'console.log(read(null), read({ method: function () { return 42; } }));',
+        ].join('\n'),
+        output: 'undefined 42\n',
+      },
+      {
         name: 'destructuring assignment',
         graph: 'retained',
         source: [
