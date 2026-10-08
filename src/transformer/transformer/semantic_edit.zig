@@ -140,7 +140,15 @@ pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
     // enclosing state-machine callback exists. Its complete function/parameter
     // migration will establish the true parent. No other missing owner may be
     // silently treated as a generated loop.
-    if (self.deferred_generator_loop_owners.contains(raw)) return .none;
+    if (self.deferred_generator_loop_owners.get(raw)) |deferred_owner| {
+        const function_scope = deferred_owner.function_scope orelse
+            std.debug.panic("deferred generator loop owner has no exact function ScopeId", .{});
+        const migration = self.deferred_generator_loop_migrations.get(@intFromEnum(function_scope)) orelse
+            std.debug.panic("deferred generator loop owner has no exact migration", .{});
+        if (migration.loop_function != owner)
+            std.debug.panic("deferred generator loop owner and migration disagree", .{});
+        return .none;
+    }
     std.debug.panic("missing source function scope for state machine", .{});
 }
 
@@ -275,6 +283,11 @@ fn migrateDeferredGeneratorLoopBodies(self: *Transformer, source_scope: ScopeId)
 fn discardCompletedGeneratorLoopMigration(self: *Transformer, function_scope_raw: u32) Transformer.Error!void {
     const migration = self.deferred_generator_loop_migrations.get(function_scope_raw) orelse return;
     if (!migration.function_reparented or !migration.body_migrated) return;
+    const owner = self.deferred_generator_loop_owners.getPtr(@intFromEnum(migration.loop_function)) orelse
+        std.debug.panic("completed generator loop migration has no deferred owner", .{});
+    if (owner.function_scope == null or @intFromEnum(owner.function_scope.?) != function_scope_raw or owner.migration_complete)
+        std.debug.panic("completed generator loop migration changed exact owner", .{});
+    owner.migration_complete = true;
     const removed = self.deferred_generator_loop_migrations.fetchRemove(function_scope_raw) orelse return;
     self.allocator.free(removed.value.header_symbol_ids);
     self.allocator.free(removed.value.parameter_symbol_ids);
@@ -3258,6 +3271,22 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
         _ = try editorFor(self);
     }
     const editor = if (self.semantic_editor) |*e| e else return null;
+    if (self.deferred_generator_loop_migrations.count() != 0)
+        std.debug.panic("semantic edit finished with unresolved generator loop migrations", .{});
+    var deferred_loop_owners = self.deferred_generator_loop_owners.iterator();
+    while (deferred_loop_owners.next()) |entry| {
+        const function_scope = entry.value_ptr.function_scope orelse
+            std.debug.panic("deferred generator loop owner has no exact function ScopeId", .{});
+        if (!entry.value_ptr.migration_complete)
+            std.debug.panic("semantic edit finished with an incomplete generator loop owner", .{});
+        if (self.transformed_scope_owner_map.get(entry.key_ptr.*) orelse
+            self.scope_owner_map.get(entry.key_ptr.*) orelse
+            editor.scope_owner_map.get(entry.key_ptr.*)) |owner_scope_raw|
+        {
+            if (owner_scope_raw != @intFromEnum(function_scope))
+                std.debug.panic("deferred generator loop owner changed its exact ScopeId", .{});
+        }
+    }
     if (self.tracked_runtime_helper_refs.items.len > 0) {
         for (self.tracked_runtime_helper_refs.items) |reference| {
             if (reference.symbol_id >= editor.symbols.items.len)

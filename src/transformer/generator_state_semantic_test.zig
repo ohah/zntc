@@ -220,11 +220,14 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
     try std.testing.expectEqual(expected_states, found);
     try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_refs.items.len);
     try std.testing.expectEqual(expected_deferred_loops, transformer.deferred_generator_loop_owners.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.deferred_generator_loop_migrations.count());
     var deferred = transformer.deferred_generator_loop_owners.iterator();
     while (deferred.next()) |entry| {
         try std.testing.expect(entry.key_ptr.* >= transformer.parser_node_count);
         try std.testing.expectEqual(ast_mod.Node.Tag.function_expression, transformer.ast.nodes.items[entry.key_ptr.*].tag);
         try std.testing.expect(!reachable.contains(entry.key_ptr.*));
+        try std.testing.expect(entry.value_ptr.function_scope != null);
+        try std.testing.expect(entry.value_ptr.migration_complete);
     }
 }
 

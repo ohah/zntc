@@ -53,6 +53,7 @@ pub const RuntimeHelpers = runtime_helper_bits.RuntimeHelpers;
 pub const TransformOptions = options_mod.TransformOptions;
 pub const LexicalCaptureKind = enum { this_value, arguments_value, new_target_value };
 pub const DeferredGeneratorLoopMigration = struct {
+    loop_function: NodeIndex,
     body: NodeIndex,
     enclosing_function_scope: ScopeId,
     call_scope: ScopeId,
@@ -62,6 +63,11 @@ pub const DeferredGeneratorLoopMigration = struct {
     state_callback_scope: ScopeId = .none,
     function_reparented: bool = false,
     body_migrated: bool = false,
+};
+
+pub const DeferredGeneratorLoopOwner = struct {
+    function_scope: ?ScopeId = null,
+    migration_complete: bool = false,
 };
 
 pub const DeferredGeneratedStateSymbols = struct {
@@ -539,7 +545,7 @@ pub const Transformer = struct {
     synthetic_function_node: NodeIndex = .none,
     /// Exact synthetic generator `_loop` owners whose callback parent cannot
     /// be finalized until the generator loop body/parameter migration.
-    deferred_generator_loop_owners: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    deferred_generator_loop_owners: std.AutoHashMapUnmanaged(u32, DeferredGeneratorLoopOwner) = .empty,
     /// Exact source-to-generated parameter identities for extracted generator
     /// loops, keyed by their generated function ScopeId until state binding.
     deferred_generator_loop_migrations: std.AutoHashMapUnmanaged(u32, DeferredGeneratorLoopMigration) = .empty,
