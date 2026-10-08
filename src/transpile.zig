@@ -1105,21 +1105,34 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
 /// Resolve the standalone helper's output spelling through the exact semantic
 /// helper SymbolId. Name-only fallback remains for low-level transformers
 /// without semantic ownership.
+const StandaloneRuntimeHelperNameResolver = struct {
+    transformer: *Transformer,
+    final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
+
+    fn resolve(self: StandaloneRuntimeHelperNameResolver, base_name: []const u8, minify: bool) TranspileError![]const u8 {
+        const transformer = self.transformer;
+        const canonical_name = runtime_helper_names.helperName(base_name, minify);
+        const local_name = es_helpers.resolveRuntimeHelperName(transformer, canonical_name) catch return error.OutOfMemory;
+        if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports) return local_name;
+
+        const raw_id = transformer.helper_scope_map.get(local_name) orelse return error.TransformError;
+        if (raw_id >= transformer.symbols.len) return error.TransformError;
+        const symbol = transformer.symbols[raw_id];
+        if (symbol.kind != .import_binding or !std.mem.eql(u8, symbol.synthetic_name, local_name))
+            return error.TransformError;
+        if (self.final_renames) |renames| {
+            if (renames.get(@intCast(raw_id))) |renamed| return renamed;
+        }
+        return symbol.synthetic_name;
+    }
+};
+
 fn standaloneRuntimeHelperSymbolName(
     transformer: *Transformer,
     base_name: []const u8,
     minify: bool,
 ) TranspileError![]const u8 {
-    const canonical_name = runtime_helper_names.helperName(base_name, minify);
-    const local_name = es_helpers.resolveRuntimeHelperName(transformer, canonical_name) catch return error.OutOfMemory;
-    if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports) return local_name;
-
-    const raw_id = transformer.helper_scope_map.get(local_name) orelse return error.TransformError;
-    if (raw_id >= transformer.symbols.len) return error.TransformError;
-    const symbol = transformer.symbols[raw_id];
-    if (symbol.kind != .import_binding or !std.mem.eql(u8, symbol.synthetic_name, local_name))
-        return error.TransformError;
-    return symbol.synthetic_name;
+    return (StandaloneRuntimeHelperNameResolver{ .transformer = transformer }).resolve(base_name, minify);
 }
 
 /// 소스 문자열을 트랜스파일한다. I/O 없음, 순수 함수.
@@ -1673,86 +1686,94 @@ fn transpileWithCallbackInternal(
         break :blk transformer.symbol_ids.items;
     } else transformer.symbol_ids.items;
     const has_helpers = transformer.runtime_helpers.hasAny();
+    var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
+    if (mangle_uses_transform_semantic) {
+        if (mangle_result) |*mr| helper_final_renames = &mr.renames;
+    }
+    const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
+        .transformer = &transformer,
+        .final_renames = helper_final_renames,
+    };
     const helper_preamble = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         var local_names: rt.StandaloneRuntimeHelperLocalNames = .{};
         if (transformer.runtime_helpers.extends)
-            local_names.extends = try standaloneRuntimeHelperSymbolName(&transformer, "__extends", options.minify_whitespace);
+            local_names.extends = try helper_name_resolver.resolve("__extends", options.minify_whitespace);
         if (transformer.runtime_helpers.generator)
-            local_names.generator = try standaloneRuntimeHelperSymbolName(&transformer, "__generator", options.minify_whitespace);
+            local_names.generator = try helper_name_resolver.resolve("__generator", options.minify_whitespace);
         if (transformer.runtime_helpers.rest)
-            local_names.rest = try standaloneRuntimeHelperSymbolName(&transformer, "__rest", options.minify_whitespace);
+            local_names.rest = try helper_name_resolver.resolve("__rest", options.minify_whitespace);
         if (transformer.runtime_helpers.spread_array) {
-            local_names.array_like_to_array = try standaloneRuntimeHelperSymbolName(&transformer, "__arrayLikeToArray", options.minify_whitespace);
-            local_names.to_consumable_array = try standaloneRuntimeHelperSymbolName(&transformer, "__toConsumableArray", options.minify_whitespace);
+            local_names.array_like_to_array = try helper_name_resolver.resolve("__arrayLikeToArray", options.minify_whitespace);
+            local_names.to_consumable_array = try helper_name_resolver.resolve("__toConsumableArray", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.derived_constructor) {
-            local_names.assert_this_initialized = try standaloneRuntimeHelperSymbolName(&transformer, "__assertThisInitialized", options.minify_whitespace);
-            local_names.assert_this_uninitialized = try standaloneRuntimeHelperSymbolName(&transformer, "__assertThisUninitialized", options.minify_whitespace);
-            local_names.possible_constructor_return = try standaloneRuntimeHelperSymbolName(&transformer, "__possibleConstructorReturn", options.minify_whitespace);
+            local_names.assert_this_initialized = try helper_name_resolver.resolve("__assertThisInitialized", options.minify_whitespace);
+            local_names.assert_this_uninitialized = try helper_name_resolver.resolve("__assertThisUninitialized", options.minify_whitespace);
+            local_names.possible_constructor_return = try helper_name_resolver.resolve("__possibleConstructorReturn", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.class_call_check)
-            local_names.class_call_check = try standaloneRuntimeHelperSymbolName(&transformer, "__classCallCheck", options.minify_whitespace);
+            local_names.class_call_check = try helper_name_resolver.resolve("__classCallCheck", options.minify_whitespace);
         if (transformer.runtime_helpers.class_private_method_init)
-            local_names.class_private_method_init = try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodInit", options.minify_whitespace);
+            local_names.class_private_method_init = try helper_name_resolver.resolve("__classPrivateMethodInit", options.minify_whitespace);
         if (transformer.runtime_helpers.class_private_method_get)
-            local_names.class_private_method_get = try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodGet", options.minify_whitespace);
+            local_names.class_private_method_get = try helper_name_resolver.resolve("__classPrivateMethodGet", options.minify_whitespace);
         if (transformer.runtime_helpers.class_private_field_set)
-            local_names.class_private_field_set = try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateFieldSet", options.minify_whitespace);
+            local_names.class_private_field_set = try helper_name_resolver.resolve("__classPrivateFieldSet", options.minify_whitespace);
         if (transformer.runtime_helpers.call_super)
-            local_names.call_super = try standaloneRuntimeHelperSymbolName(&transformer, "__callSuper", options.minify_whitespace);
+            local_names.call_super = try helper_name_resolver.resolve("__callSuper", options.minify_whitespace);
         if (transformer.runtime_helpers.super_get)
-            local_names.super_get = try standaloneRuntimeHelperSymbolName(&transformer, "__superGet", options.minify_whitespace);
+            local_names.super_get = try helper_name_resolver.resolve("__superGet", options.minify_whitespace);
         if (transformer.runtime_helpers.super_set)
-            local_names.super_set = try standaloneRuntimeHelperSymbolName(&transformer, "__superSet", options.minify_whitespace);
+            local_names.super_set = try helper_name_resolver.resolve("__superSet", options.minify_whitespace);
         if (transformer.runtime_helpers.async_helper)
-            local_names.async_helper = try standaloneRuntimeHelperSymbolName(&transformer, "__async", options.minify_whitespace);
+            local_names.async_helper = try helper_name_resolver.resolve("__async", options.minify_whitespace);
         if (transformer.runtime_helpers.async_generator)
-            local_names.async_generator = try standaloneRuntimeHelperSymbolName(&transformer, "__asyncGenerator", options.minify_whitespace);
+            local_names.async_generator = try helper_name_resolver.resolve("__asyncGenerator", options.minify_whitespace);
         if (transformer.runtime_helpers.await_helper or transformer.runtime_helpers.async_generator or transformer.runtime_helpers.yield_star)
-            local_names.await_helper = try standaloneRuntimeHelperSymbolName(&transformer, "__await", options.minify_whitespace);
+            local_names.await_helper = try helper_name_resolver.resolve("__await", options.minify_whitespace);
         if (transformer.runtime_helpers.async_values)
-            local_names.async_values = try standaloneRuntimeHelperSymbolName(&transformer, "__asyncValues", options.minify_whitespace);
+            local_names.async_values = try helper_name_resolver.resolve("__asyncValues", options.minify_whitespace);
         if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values)
-            local_names.values = try standaloneRuntimeHelperSymbolName(&transformer, "__values", options.minify_whitespace);
+            local_names.values = try helper_name_resolver.resolve("__values", options.minify_whitespace);
         if (transformer.runtime_helpers.using_ctx) {
-            local_names.using = try standaloneRuntimeHelperSymbolName(&transformer, "__using", options.minify_whitespace);
-            local_names.call_dispose = try standaloneRuntimeHelperSymbolName(&transformer, "__callDispose", options.minify_whitespace);
+            local_names.using = try helper_name_resolver.resolve("__using", options.minify_whitespace);
+            local_names.call_dispose = try helper_name_resolver.resolve("__callDispose", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.class_static_private_field) {
-            local_names.class_static_private_access = try standaloneRuntimeHelperSymbolName(&transformer, "__classCheckPrivateStaticAccess", options.minify_whitespace);
-            local_names.class_static_private_descriptor = try standaloneRuntimeHelperSymbolName(&transformer, "__classCheckPrivateStaticFieldDescriptor", options.minify_whitespace);
-            local_names.class_static_private_get = try standaloneRuntimeHelperSymbolName(&transformer, "__classStaticPrivateFieldSpecGet", options.minify_whitespace);
-            local_names.class_static_private_set = try standaloneRuntimeHelperSymbolName(&transformer, "__classStaticPrivateFieldSpecSet", options.minify_whitespace);
+            local_names.class_static_private_access = try helper_name_resolver.resolve("__classCheckPrivateStaticAccess", options.minify_whitespace);
+            local_names.class_static_private_descriptor = try helper_name_resolver.resolve("__classCheckPrivateStaticFieldDescriptor", options.minify_whitespace);
+            local_names.class_static_private_get = try helper_name_resolver.resolve("__classStaticPrivateFieldSpecGet", options.minify_whitespace);
+            local_names.class_static_private_set = try helper_name_resolver.resolve("__classStaticPrivateFieldSpecSet", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.read)
-            local_names.read = try standaloneRuntimeHelperSymbolName(&transformer, "__read", options.minify_whitespace);
+            local_names.read = try helper_name_resolver.resolve("__read", options.minify_whitespace);
         if (transformer.runtime_helpers.public_field)
-            local_names.public_field = try standaloneRuntimeHelperSymbolName(&transformer, "__publicField", options.minify_whitespace);
+            local_names.public_field = try helper_name_resolver.resolve("__publicField", options.minify_whitespace);
         if (transformer.runtime_helpers.wrap_regex)
-            local_names.wrap_regex = try standaloneRuntimeHelperSymbolName(&transformer, "__wrapRegExp", options.minify_whitespace);
+            local_names.wrap_regex = try helper_name_resolver.resolve("__wrapRegExp", options.minify_whitespace);
         if (transformer.runtime_helpers.yield_star)
-            local_names.yield_star = try standaloneRuntimeHelperSymbolName(&transformer, "__yieldStar", options.minify_whitespace);
+            local_names.yield_star = try helper_name_resolver.resolve("__yieldStar", options.minify_whitespace);
         if (transformer.runtime_helpers.keep_names)
-            local_names.keep_names = try standaloneRuntimeHelperSymbolName(&transformer, "__name", options.minify_whitespace);
+            local_names.keep_names = try helper_name_resolver.resolve("__name", options.minify_whitespace);
         if (transformer.runtime_helpers.tdz)
-            local_names.tdz = try standaloneRuntimeHelperSymbolName(&transformer, "__tdz", options.minify_whitespace);
+            local_names.tdz = try helper_name_resolver.resolve("__tdz", options.minify_whitespace);
         if (transformer.runtime_helpers.metadata)
-            local_names.metadata = try standaloneRuntimeHelperSymbolName(&transformer, "__metadata", options.minify_whitespace);
+            local_names.metadata = try helper_name_resolver.resolve("__metadata", options.minify_whitespace);
         if (transformer.runtime_helpers.legacy_decorator) {
-            local_names.decorate_class = try standaloneRuntimeHelperSymbolName(&transformer, "__decorateClass", options.minify_whitespace);
-            local_names.decorate_param = try standaloneRuntimeHelperSymbolName(&transformer, "__decorateParam", options.minify_whitespace);
-            local_names.def_prop_2 = try standaloneRuntimeHelperSymbolName(&transformer, "__defProp2", options.minify_whitespace);
-            local_names.get_own_prop_desc = try standaloneRuntimeHelperSymbolName(&transformer, "__getOwnPropDesc", options.minify_whitespace);
+            local_names.decorate_class = try helper_name_resolver.resolve("__decorateClass", options.minify_whitespace);
+            local_names.decorate_param = try helper_name_resolver.resolve("__decorateParam", options.minify_whitespace);
+            local_names.def_prop_2 = try helper_name_resolver.resolve("__defProp2", options.minify_whitespace);
+            local_names.get_own_prop_desc = try helper_name_resolver.resolve("__getOwnPropDesc", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.es_decorator) {
-            local_names.es_decorate = try standaloneRuntimeHelperSymbolName(&transformer, "__esDecorate", options.minify_whitespace);
-            local_names.run_initializers = try standaloneRuntimeHelperSymbolName(&transformer, "__runInitializers", options.minify_whitespace);
-            local_names.set_function_name = try standaloneRuntimeHelperSymbolName(&transformer, "__setFunctionName", options.minify_whitespace);
-            local_names.prop_key = try standaloneRuntimeHelperSymbolName(&transformer, "__propKey", options.minify_whitespace);
+            local_names.es_decorate = try helper_name_resolver.resolve("__esDecorate", options.minify_whitespace);
+            local_names.run_initializers = try helper_name_resolver.resolve("__runInitializers", options.minify_whitespace);
+            local_names.set_function_name = try helper_name_resolver.resolve("__setFunctionName", options.minify_whitespace);
+            local_names.prop_key = try helper_name_resolver.resolve("__propKey", options.minify_whitespace);
         }
         if (transformer.runtime_helpers.tagged_template_literal)
-            local_names.tagged_template_literal = try standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", options.minify_whitespace);
+            local_names.tagged_template_literal = try helper_name_resolver.resolve("__taggedTemplateLiteral", options.minify_whitespace);
         rt.appendRuntimeHelpersWithStandaloneLocalNames(
             &buf,
             arena_alloc,
@@ -2219,8 +2240,8 @@ test "#4819 native and downlevel using reuse the transform graph" {
         downlevel,
     );
     defer downlevel_result.deinit(allocator);
-    try std.testing.expect(std.mem.indexOf(u8, downlevel_result.code, "__using") != null);
-    try std.testing.expect(std.mem.indexOf(u8, downlevel_result.code, "__callDispose") != null);
+    try std.testing.expect(std.mem.indexOf(u8, downlevel_result.code, "__using") == null);
+    try std.testing.expect(std.mem.indexOf(u8, downlevel_result.code, "__callDispose") == null);
     var output_scanner = try Scanner.init(allocator, downlevel_result.code);
     var output_parser = Parser.init(allocator, &output_scanner);
     output_parser.configureFromExtension(".mjs");
