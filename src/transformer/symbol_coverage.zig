@@ -2775,6 +2775,8 @@ pub fn checkPostMinify(
 ) !PostMinifyReport {
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, ast, root);
     defer allocator.free(reachable);
+    const reference_nodes = try reference_walk.collectIdentifierReferences(allocator, ast, root);
+    defer allocator.free(reference_nodes);
     var reachable_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer reachable_set.deinit(allocator);
     for (reachable) |raw| try reachable_set.put(allocator, raw, {});
@@ -2885,12 +2887,14 @@ pub fn checkPostMinify(
         }
     }
 
-    for (reachable) |raw| {
+    // Reachable identifier-shaped nodes are not all runtime references: after
+    // ES5 shorthand lowering, the copied static property key still carries
+    // source SymbolId lineage, but fresh semantic analysis correctly ignores
+    // that key position. Use the shared edge-aware reference walk so the audit
+    // compares only actual references.
+    for (reference_nodes) |reference_node| {
+        const raw = @intFromEnum(reference_node);
         if (raw >= ast.nodes.items.len) continue;
-        switch (ast.nodes.items[raw].tag) {
-            .identifier_reference, .assignment_target_identifier => {},
-            else => continue,
-        }
         if (ast.nodes.items[raw].tag == .binding_identifier or declaration_nodes.contains(raw)) continue;
         report.references_checked += 1;
         const actual = if (raw < actual_symbol_ids.len) actual_symbol_ids[raw] else null;
@@ -5470,6 +5474,100 @@ test "post-minify audit accepts an alias read rebound to a surviving binding" {
     try std.testing.expect(report.isClean());
     try std.testing.expectEqual(@as(usize, 1), report.bindings_checked);
     try std.testing.expectEqual(@as(usize, 1), report.references_checked);
+}
+
+test "post-minify audit ignores symbol-bearing static keys but checks property values" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("value");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const key = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const value = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const property = try ast.addNode(.{
+        .tag = .object_property,
+        .span = name,
+        .data = .{ .binary = .{ .left = key, .right = value, .flags = 0 } },
+    });
+    const properties = try ast.addNodeList(&.{property});
+    const object = try ast.addNode(.{
+        .tag = .object_expression,
+        .span = name,
+        .data = .{ .list = properties },
+    });
+    const statements = try ast.addNodeList(&.{ binding, object });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = statements },
+    });
+
+    var actual = [_]?u32{ 7, 7, 7, null, null, null };
+    var resolved = [_]?u32{ 2, null, 2, null, null, null };
+    const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        &empty_helper_scope_map,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expect(report.isClean());
+    try std.testing.expectEqual(@as(usize, 1), report.references_checked);
+
+    actual[@intFromEnum(value)] = null;
+    report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        &empty_helper_scope_map,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.missing_reference_id);
+    try std.testing.expect(!report.isClean());
+
+    // A bad value identity must still fail; skipping the static key must not
+    // make the real property-value reference invisible to the gate.
+    actual[@intFromEnum(value)] = 7;
+    resolved[@intFromEnum(value)] = 3;
+    report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        &empty_helper_scope_map,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.wrong_reference_target);
+    try std.testing.expect(!report.isClean());
 }
 
 test "post-minify audit rejects a reference to an erased alias symbol" {
