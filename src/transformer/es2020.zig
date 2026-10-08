@@ -252,6 +252,7 @@ pub fn ES2020(comptime Transformer: type) type {
             if (obj_simple) {
                 member_obj = visited_obj;
                 receiver = try helpers.cloneNode(self, visited_obj);
+                try self.duplicateUserReference(visited_obj, receiver);
             } else {
                 const obj_cap = try captureTrackedTemp(self, visited_obj, root.span);
                 member_obj = obj_cap.paren_assign;
@@ -301,6 +302,8 @@ pub fn ES2020(comptime Transformer: type) type {
                 receiver_check = visited_obj;
                 member_obj = try helpers.cloneNode(self, visited_obj);
                 receiver = try helpers.cloneNode(self, visited_obj);
+                try self.duplicateUserReference(visited_obj, member_obj);
+                try self.duplicateUserReference(visited_obj, receiver);
             } else {
                 const cap = try captureTrackedTemp(self, visited_obj, root.span);
                 receiver_check = cap.paren_assign;

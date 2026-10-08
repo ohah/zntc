@@ -598,9 +598,19 @@ fn isRetainableSimpleOptionalMemberCall(
     if (call.tag != .call_expression) return false;
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
-    if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    const optional_call = (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
     const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    return isRetainableSimpleOptionalMemberAccess(ast, semantic, callee);
+    if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len) return false;
+    const member = ast.getNode(callee);
+    if (member.tag != .static_member_expression and member.tag != .computed_member_expression) return false;
+    const member_extra = member.data.extra;
+    if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra <= 2) return false;
+    if ((ast.extra_data.items[member_extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) {
+        return isRetainableSimpleOptionalMemberAccess(ast, semantic, callee);
+    }
+    if (!optional_call or ast.has_jsx) return false;
+    const object: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
+    return isBoundSourceIdentifierReference(ast, semantic, object);
 }
 
 /// Compound/logical assignment lowering already records member receiver/key
