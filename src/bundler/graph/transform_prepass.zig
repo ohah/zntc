@@ -698,7 +698,7 @@ fn isRetainableOptionalChainMemberAccess(
     return isRetainableOptionalStaticMemberChainTail(ast, semantic, receiver);
 }
 
-fn isRetainableOptionalMemberCall(
+fn isRetainableOptionalCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
@@ -712,6 +712,9 @@ fn isRetainableOptionalMemberCall(
     const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
     if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len) return false;
     const member = ast.getNode(callee);
+    if (member.tag == .identifier_reference) {
+        return optional_call and isBoundSourceIdentifierReference(ast, semantic, callee);
+    }
     if (member.tag != .static_member_expression and member.tag != .computed_member_expression) return false;
     const member_extra = member.data.extra;
     if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra <= 2) return false;
@@ -2033,7 +2036,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
                 {
                     if (node.tag != .call_expression or
-                        !isRetainableOptionalMemberCall(ast, semantic, @enumFromInt(raw_idx))) return false;
+                        !isRetainableOptionalCall(ast, semantic, @enumFromInt(raw_idx))) return false;
                     found_lowered_optional_chaining = true;
                 }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
