@@ -866,6 +866,105 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 nullish coalescing retains exact graphs and evaluates left expressions once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-nullish-graph-'));
+    const cases = [
+      {
+        name: 'identifier-left',
+        graph: 'retained',
+        source: [
+          'function choose(value) { return (() => (value ?? 7))(); }',
+          'globalThis.result = choose(0);',
+        ].join('\n'),
+        output: '0 0\n',
+      },
+      {
+        name: 'call-left',
+        graph: 'retained',
+        source: [
+          'globalThis.calls = 0;',
+          'function getValue() { globalThis.calls = globalThis.calls + 1; return null; }',
+          'function choose() { return getValue() ?? 7; }',
+          'globalThis.result = choose();',
+        ].join('\n'),
+        output: '7 1\n',
+      },
+      {
+        name: 'optional-chain-left',
+        graph: 'reanalyzed',
+        source: [
+          'function choose(box) { return box?.value ?? 7; }',
+          'globalThis.result = choose(null);',
+        ].join('\n'),
+        output: '7 0\n',
+      },
+    ];
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      ["import './power.mjs';", 'console.log(globalThis.result, globalThis.calls || 0);'].join(
+        '\n',
+      ),
+    );
+    try {
+      for (const fixture of cases) {
+        writeFileSync(join(dir, 'power.mjs'), fixture.source);
+        for (const minifyIdentifiers of [false, true]) {
+          const output = join(
+            dir,
+            `out.${fixture.name}.${minifyIdentifiers ? 'min' : 'plain'}.cjs`,
+          );
+          const args = ['--bundle', 'entry.mjs', '--target=es5', '--platform=node', '--format=cjs'];
+          if (minifyIdentifiers) args.push('--minify-identifiers');
+          args.push('-o', output);
+          const proc = spawnSync(ZNTC_BIN, args, {
+            cwd: dir,
+            env: minifyIdentifiers
+              ? { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }
+              : process.env,
+            encoding: 'utf8',
+          });
+          expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+          if (minifyIdentifiers) {
+            const report = (proc.stderr ?? '')
+              .split(/\r?\n/)
+              .find(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-prepass ') && line.includes('power.mjs'),
+              );
+            expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+            if (fixture.graph === 'retained') {
+              for (const counter of EXACT_ZERO_COUNTERS) {
+                expect(
+                  Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+                  `${fixture.name}: ${report}`,
+                ).toBe(0);
+              }
+              expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+            }
+
+            const graphMode = (proc.stderr ?? '')
+              .split(/\r?\n/)
+              .find(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+                  line.includes('power.mjs'),
+              );
+            expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+              `semantic_graph=${fixture.graph}`,
+            );
+          }
+
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, fixture.name).toBe(fixture.output);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native and ES5 for-of lowering retain exact loop and helper scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-catch-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-of-iterator-close.mjs');
@@ -2493,6 +2592,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'nullish coalescing',
+        graph: 'retained',
         source:
           'function choose(value) { return (() => value ?? 7)(); }\nconsole.log(choose(null));',
         output: '7\n',

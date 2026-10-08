@@ -1437,6 +1437,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_parameter_destructuring = false;
     var found_lowered_array_spread = false;
     var found_lowered_exponentiation = false;
+    var found_lowered_nullish_coalescing = false;
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
     var found_safe_template_literal = false;
@@ -1645,7 +1646,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_lowered_exponentiation = true;
                 }
                 if (node.tag == .logical_expression and options.unsupported.nullish_coalescing and
-                    operator == .question2) return false;
+                    operator == .question2)
+                {
+                    // Nullish lowering either duplicates an exact identifier
+                    // read or registers its generated temp references.
+                    found_lowered_nullish_coalescing = true;
+                }
             },
             .array_expression, .call_expression, .new_expression => {
                 if (options.unsupported.optional_chaining and
@@ -1902,7 +1908,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
-        found_lowered_array_spread or found_lowered_exponentiation or found_lowered_object_rest or found_lowered_object_spread;
+        found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
+        found_lowered_object_rest or found_lowered_object_spread;
 }
 
 /// A retained prepass graph may absorb only the `__values`/`__asyncValues`
