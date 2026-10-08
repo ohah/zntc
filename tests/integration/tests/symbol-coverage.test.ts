@@ -43,6 +43,7 @@ const EXACT_ZERO_COUNTERS = [
   'reference_scope_mismatch',
   'reference_statement_mismatch',
   'reference_scope_statement_alias',
+  'reference_node_use_alias',
   'declaration_scope_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
@@ -91,7 +92,7 @@ const EXACT_SINGLETON_FIELDS = [
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 14;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 15;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
   'invariant_counter_count',
   'observation_field_count',
@@ -3714,6 +3715,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           ].join('\n'),
           expected: '4 7\n',
         },
+        {
+          name: 'computed destructuring key stays captured through nested default reads',
+          source: [
+            "var selected = 'first';",
+            'var source = {',
+            "  get first() { selected = 'second'; return { value: 5 }; },",
+            '  second: { value: 9 },',
+            '};',
+            'var { [selected]: { value = 3 } = {}, ...rest } = source;',
+            'console.log(value, selected, rest.second.value);',
+          ].join('\n'),
+          expected: '5 second 9\n',
+          nativeOracle: true,
+        },
       ];
 
       for (const fixture of retainedCases) {
@@ -3738,6 +3753,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(report).toMatch(/generated_bindings=[1-9]\d*/);
         expect(report).toMatch(/generated_references=[1-9]\d*/);
         expect(report).toMatch(/clean=1(?:\s|$)/);
+        if ('nativeOracle' in fixture) {
+          const native = spawnSync('node', ['-e', fixture.source], { encoding: 'utf8' });
+          expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+          expect(native.stdout).toBe(fixture.expected);
+        }
         assertOutput(fixture.expected);
       }
 
@@ -3851,6 +3871,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           ].join('\n'),
           expected: '42 9\n',
         },
+        {
+          name: 'computed assignment key stays captured through nested default reads',
+          source: [
+            "var selected = 'first'; var value = 0; var rest = {};",
+            'var source = {',
+            "  get first() { selected = 'second'; return { value: 5 }; },",
+            '  second: { value: 9 },',
+            '};',
+            '({ [selected]: { value = 3 } = {}, ...rest } = source);',
+            'console.log(value, selected, rest.second.value);',
+          ].join('\n'),
+          expected: '5 second 9\n',
+          nativeOracle: true,
+        },
       ];
 
       for (const fixture of retainedCases) {
@@ -3875,6 +3909,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(report).toMatch(/generated_bindings=[1-9]\d*/);
         expect(report).toMatch(/generated_references=[1-9]\d*/);
         expect(report).toMatch(/clean=1(?:\s|$)/);
+        if ('nativeOracle' in fixture) {
+          const native = spawnSync('node', ['-e', fixture.source], { encoding: 'utf8' });
+          expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+          expect(native.stdout).toBe(fixture.expected);
+        }
         assertOutput(fixture.expected);
       }
 
