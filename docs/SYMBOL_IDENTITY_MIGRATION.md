@@ -186,3 +186,4 @@
 - 이 문서 작성이나 일부 생성자의 이관만으로 #4819를 닫지 않는다. 최종 이름 결정과 재분석 제거를 포함한 에픽 종료 조건은 계속 유효하다.
 
 - ES5 bundler prepass는 constructor 기본값에서 앞선 단순 identifier parameter를 exact `SymbolId`로 읽는 literal/operator 식을 기존 graph에 유지한다. 매개변수 평가 순서, 기본값 체인, 본문 `var`가 같은 철자 parameter와 분리되는 동작을 identifier-minified Node 실행 및 exact graph report로 확인하고, 자기/후속/외부 참조는 재분석에 남긴다. exact ID 가드를 완화하는 hostile mutation이 이 negative controls에 걸리는지 확인한다. 이 경계는 안전한 expression grammar만 확장하며 constructor 재분석 전체 제거를 뜻하지 않는다.
+- 단일 파일 identifier minify에서 TS enum IIFE parameter를 fixed-name 제외 목록에서 빼고, 그 `SymbolId` rename을 enum 헤더·본문 및 virtual member reference 출력이 공유하게 한다. 같은 `_Self` spelling을 가진 바깥 binding과 enum `Self`를 Node에서 비교하고, enum binding slot 할당이나 rename-map 기록을 끊는 hostile mutation은 각각 SymbolId·출력 회귀를 실패시킨다. 이는 minify 경로의 enum parameter 한 종류만 이관하며 비-minify 최종 allocator, 다른 semantic-less 생성자, 재분석 제거는 남아 있다.

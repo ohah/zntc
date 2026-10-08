@@ -75,10 +75,7 @@ test "#4819 namespace IIFE parameters receive final names by SymbolId" {
     try std.testing.expectEqualStrings("_N", outer_name);
     try std.testing.expect(!std.mem.eql(u8, parameter_name, outer_name));
 
-    const fixed_kinds = [_]SyntheticKind{
-        .enum_iife_parameter,
-        .runtime_helper_preamble,
-    };
+    const fixed_kinds = [_]SyntheticKind{.runtime_helper_preamble};
     for (fixed_kinds) |kind| {
         symbols[1].synthetic_kind = kind;
         var result = try mangler.mangle(allocator, .{
@@ -95,6 +92,53 @@ test "#4819 namespace IIFE parameters receive final names by SymbolId" {
         const fixed_outer_name = result.renames.get(0) orelse return error.MissingRename;
         try std.testing.expect(!std.mem.eql(u8, fixed_outer_name, "_N"));
     }
+}
+
+test "#4819 enum IIFE parameters receive final names by SymbolId" {
+    const allocator = std.testing.allocator;
+    const Span = @import("../lexer/token.zig").Span;
+
+    var root_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer root_map.deinit(allocator);
+    try root_map.put(allocator, "outer", 0);
+    var enum_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer enum_map.deinit(allocator);
+    try enum_map.put(allocator, "_Self", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, enum_map };
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = true, .symbol_count = 1 },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true, .symbol_count = 1 },
+    };
+    const symbols = [_]Symbol{
+        .{
+            .name = .{ .start = 0, .end = 5 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .variable_const,
+            .declaration_span = Span{ .start = 0, .end = 5 },
+        },
+        .{
+            .name = .{ .start = 0, .end = 0 },
+            .scope_id = @enumFromInt(1),
+            .origin_scope = @enumFromInt(1),
+            .kind = .parameter,
+            .declaration_span = Span{ .start = 0, .end = 0 },
+            .synthetic_kind = .enum_iife_parameter,
+            .synthetic_name = "_Self",
+        },
+    };
+    var result = try mangler.mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &.{},
+        .source = "outer",
+    });
+    defer result.deinit();
+
+    const renamed = result.renames.get(1) orelse return error.MissingEnumParameterRename;
+    try std.testing.expect(!std.mem.eql(u8, renamed, "_Self"));
+    try std.testing.expect(!std.mem.eql(u8, renamed, result.renames.get(0).?));
 }
 
 test "mangle reserves preserved short module names before skipping Phase A symbols" {
