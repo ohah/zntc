@@ -229,6 +229,7 @@ pub const ExactReport = struct {
     scope_map_mismatch: usize = 0,
     scope_owner_mismatch: usize = 0,
     scope_owner_parent_mismatch: usize = 0,
+    duplicate_scope_owner: usize = 0,
     namespace_iife_params: usize = 0,
     namespace_iife_param_mismatch: usize = 0,
     enum_iife_params: usize = 0,
@@ -245,6 +246,7 @@ pub const ExactReport = struct {
     first_unclassified_reference: ?ExactFinding = null,
     first_scope_owner_mismatch: ?ScopeOwnerFinding = null,
     first_scope_owner_parent_mismatch: ?ScopeOwnerFinding = null,
+    first_duplicate_scope_owner: ?ScopeOwnerFinding = null,
     first_scope_map_mismatch: ?ScopeMapFinding = null,
     first_ambiguous_ast_parent: ?AstParentFinding = null,
     first_invalid_ast_root: ?u32 = null,
@@ -268,6 +270,7 @@ pub const ExactReport = struct {
             std.mem.eql(u8, name, "first_unclassified_reference") or
             std.mem.eql(u8, name, "first_scope_owner_mismatch") or
             std.mem.eql(u8, name, "first_scope_owner_parent_mismatch") or
+            std.mem.eql(u8, name, "first_duplicate_scope_owner") or
             std.mem.eql(u8, name, "first_scope_map_mismatch") or
             std.mem.eql(u8, name, "first_ambiguous_ast_parent") or
             std.mem.eql(u8, name, "first_invalid_ast_root") or
@@ -334,6 +337,7 @@ pub const ScopeOwnerFinding = struct {
     actual_kind: ?ScopeKind = null,
     expected_parent_scope_id: ?u32 = null,
     actual_parent_scope_id: ?u32 = null,
+    first_owner_node_index: ?u32 = null,
 };
 
 pub const ScopeMapFinding = struct {
@@ -465,6 +469,23 @@ fn recordScopeOwnerParentMismatch(
         .scope_id = scope_id,
         .expected_parent_scope_id = expected_parent_scope_id,
         .actual_parent_scope_id = actual_parent_scope_id,
+    };
+}
+
+fn recordDuplicateScopeOwner(
+    report: *ExactReport,
+    node_index: u32,
+    tag: Node.Tag,
+    scope_id: u32,
+    first_owner_node_index: u32,
+) void {
+    report.duplicate_scope_owner += 1;
+    if (report.first_duplicate_scope_owner == null) report.first_duplicate_scope_owner = .{
+        .node_index = node_index,
+        .tag = tag,
+        .issue = "duplicate-reachable-scope-owner",
+        .scope_id = scope_id,
+        .first_owner_node_index = first_owner_node_index,
     };
 }
 
@@ -1863,6 +1884,8 @@ fn checkExactImpl(
     defer visit_states.deinit(allocator);
     var reachable_stack: std.ArrayList(VisitFrame) = .empty;
     defer reachable_stack.deinit(allocator);
+    var reachable_node_order: std.ArrayList(u32) = .empty;
+    defer reachable_node_order.deinit(allocator);
     if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) {
         report.invalid_ast_root += 1;
         report.first_invalid_ast_root = @intFromEnum(root);
@@ -1883,6 +1906,7 @@ fn checkExactImpl(
         }
         try visit_states.put(allocator, raw, .visiting);
         try reachable_nodes.put(allocator, raw, {});
+        try reachable_node_order.append(allocator, raw);
         try reachable_stack.append(allocator, .{ .node_index = node_idx, .exit = true });
         if (invalidExactAstLayout(ast, raw)) |finding| {
             report.invalid_ast_layout += 1;
@@ -1947,6 +1971,25 @@ fn checkExactImpl(
                 } else parent_gop.value_ptr.* = raw;
             }
             try reachable_stack.append(allocator, .{ .node_index = child });
+        }
+    }
+    // A ScopeId represents one lexical boundary. Check the reverse mapping
+    // for reachable, kind-compatible owners: stale owners left behind by
+    // lowering are allowed, but two live owners cannot share that identity.
+    var first_owner_by_scope: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer first_owner_by_scope.deinit(allocator);
+    for (reachable_node_order.items) |raw| {
+        const scope_id = scope_owner_map.get(raw) orelse continue;
+        if (scope_id >= scopes.len) continue;
+        const tag = ast.nodes.items[raw].tag;
+        if (!scopeOwnerKindMatches(tag, scopes[scope_id].kind)) continue;
+        const first_owner = try first_owner_by_scope.getOrPut(allocator, scope_id);
+        if (first_owner.found_existing) {
+            if (first_owner.value_ptr.* != raw) {
+                recordDuplicateScopeOwner(&report, raw, tag, scope_id, first_owner.value_ptr.*);
+            }
+        } else {
+            first_owner.value_ptr.* = raw;
         }
     }
     // Rebuild namespace IIFE-scope ownership from the transformed reachable
@@ -3017,7 +3060,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
         },
     ) catch unreachable;
     std.debug.print(
-        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} {s} clean={d} legacy_debt_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x}\n",
         .{
             name,
             file_path,
@@ -3040,6 +3083,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.scope_map_mismatch,
             report.scope_owner_mismatch,
             report.scope_owner_parent_mismatch,
+            report.duplicate_scope_owner,
             secondary_counts,
             @intFromBool(report.isClean()),
             report.legacy_debt_fingerprint,
@@ -3056,10 +3100,11 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
 /// can move lexical owners into wrappers that preserve their source ScopeIds.
 pub fn printSourceScopeOwnerAudit(file_path: []const u8, report: ExactReport) void {
     std.debug.print(
-        "zntc: symbol-source-scope-owner {s}: scope_owner_mismatch={d} scope_owner_parent_mismatch={d}\n",
-        .{ file_path, report.scope_owner_mismatch, report.scope_owner_parent_mismatch },
+        "zntc: symbol-source-scope-owner {s}: scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d}\n",
+        .{ file_path, report.scope_owner_mismatch, report.scope_owner_parent_mismatch, report.duplicate_scope_owner },
     );
     if (report.first_scope_owner_mismatch) |finding| printScopeOwnerMismatch(file_path, finding);
+    if (report.first_duplicate_scope_owner) |finding| printDuplicateScopeOwner(file_path, finding);
 }
 
 fn printExactFinding(file_path: []const u8, issue: []const u8, finding: ExactFinding) void {
@@ -3115,6 +3160,9 @@ fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
     if (report.first_scope_owner_mismatch) |finding| {
         printScopeOwnerMismatch(file_path, finding);
     }
+    if (report.first_duplicate_scope_owner) |finding| {
+        printDuplicateScopeOwner(file_path, finding);
+    }
     if (report.first_scope_map_mismatch) |finding| {
         var scope_buffer: [16]u8 = undefined;
         var symbol_buffer: [16]u8 = undefined;
@@ -3129,6 +3177,21 @@ fn printExactDiagnostics(file_path: []const u8, report: ExactReport) void {
             },
         );
     }
+}
+
+fn printDuplicateScopeOwner(file_path: []const u8, finding: ScopeOwnerFinding) void {
+    var scope_buffer: [16]u8 = undefined;
+    var first_owner_buffer: [16]u8 = undefined;
+    std.debug.print(
+        "zntc: symbol-identity-detail {s}: duplicate_scope_owner node={d}:{s} scope={s} first_owner={s}\n",
+        .{
+            file_path,
+            finding.node_index,
+            @tagName(finding.tag),
+            optionalIndexText(&scope_buffer, finding.scope_id),
+            optionalIndexText(&first_owner_buffer, finding.first_owner_node_index),
+        },
+    );
 }
 
 fn printScopeOwnerMismatch(file_path: []const u8, finding: ScopeOwnerFinding) void {
@@ -3802,6 +3865,7 @@ test "exact coverage diagnostic findings cannot disagree with a clean report" {
         .{ .first_missing_reference = finding },
         .{ .first_unclassified_reference = finding },
         .{ .first_scope_owner_mismatch = .{ .node_index = 1, .tag = .block_statement, .issue = "test" } },
+        .{ .first_duplicate_scope_owner = .{ .node_index = 2, .tag = .block_statement, .issue = "test", .first_owner_node_index = 1 } },
         .{ .first_scope_map_mismatch = .{ .issue = "test" } },
         .{ .first_ambiguous_ast_parent = .{ .node_index = 1, .first_parent = 2, .additional_parent = 3 } },
         .{ .first_invalid_ast_root = 9 },

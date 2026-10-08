@@ -113,6 +113,104 @@ test "exact coverage rejects invalid root, child indices, and truncated child la
     try std.testing.expect(!invalid_extra_slot.isClean());
 }
 
+test "exact scope audit rejects distinct live owners sharing one ScopeId" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const span = try ast.addString("{}");
+    const first_block = try ast.addListNode(.block_statement, span, try ast.addNodeList(&.{}));
+    const second_block = try ast.addListNode(.block_statement, span, try ast.addNodeList(&.{}));
+    const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{ first_block, second_block }));
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const first_scope: ScopeId = @enumFromInt(1);
+    const second_scope: ScopeId = @enumFromInt(2);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+    };
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty, .empty };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(first_block), @intFromEnum(first_scope));
+    try scope_owner_map.put(allocator, @intFromEnum(second_block), @intFromEnum(second_scope));
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const valid = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(valid.isClean());
+
+    // Stale owner entries are expected after lowering. A duplicate scope is
+    // rejected only when both owners are reachable from the emitted root.
+    const stale_block = try ast.addListNode(.block_statement, span, try ast.addNodeList(&.{}));
+    try scope_owner_map.put(allocator, @intFromEnum(stale_block), @intFromEnum(first_scope));
+    const stale_owner = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(stale_owner.isClean());
+
+    // Reusing the first block's valid ScopeId leaves all IDs, parents, owner
+    // kinds, and empty scope maps individually valid. The exact gate must still
+    // reject two distinct reachable lexical boundaries with one identity.
+    try scope_owner_map.put(allocator, @intFromEnum(second_block), @intFromEnum(first_scope));
+    const shared_owner = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        &.{},
+        &.{},
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &.{},
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), shared_owner.duplicate_scope_owner);
+    try std.testing.expectEqualStrings("duplicate-reachable-scope-owner", shared_owner.first_duplicate_scope_owner.?.issue);
+    try std.testing.expect(shared_owner.first_duplicate_scope_owner.?.first_owner_node_index.? != shared_owner.first_duplicate_scope_owner.?.node_index);
+    try std.testing.expect(!shared_owner.isClean());
+}
+
 test "exact identity audit rejects declaration rows assigned to a visible descendant scope" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");

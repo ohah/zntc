@@ -45,6 +45,7 @@ const EXACT_ZERO_COUNTERS = [
   'scope_map_mismatch',
   'scope_owner_mismatch',
   'scope_owner_parent_mismatch',
+  'duplicate_scope_owner',
   'namespace_iife_param_mismatch',
   'enum_iife_param_mismatch',
   'helper_symbol_mismatch',
@@ -88,7 +89,7 @@ const EXACT_SINGLETON_FIELDS = [
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 11;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 12;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
   'invariant_counter_count',
   'observation_field_count',
@@ -96,7 +97,11 @@ const EXACT_SCHEMA_FIELDS = new Set<string>([
   ...EXACT_SINGLETON_FIELDS.map(([field]) => field),
   ...EXACT_ZERO_COUNTERS,
 ]);
-const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = ['scope_owner_mismatch', 'scope_owner_parent_mismatch'];
+const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = [
+  'scope_owner_mismatch',
+  'scope_owner_parent_mismatch',
+  'duplicate_scope_owner',
+];
 const SOURCE_SCOPE_OWNER_SCHEMA_FIELDS = new Set<string>(SOURCE_SCOPE_OWNER_ZERO_COUNTERS);
 
 function expectCjsWrapperModuleParamMatchesBody(bundle: string, moduleId: string) {
@@ -234,7 +239,11 @@ function scopeOwnerCounterProblems(audit: string): string[] {
 
 function scopeOwnerAuditProblems(audit: string): string[] {
   const isReportLine = audit.startsWith('zntc: symbol-source-scope-owner ');
-  const payloadMarkers = [': scope_owner_mismatch=', ': scope_owner_parent_mismatch='];
+  const payloadMarkers = [
+    ': scope_owner_mismatch=',
+    ': scope_owner_parent_mismatch=',
+    ': duplicate_scope_owner=',
+  ];
   const payloadMarkerIndex = isReportLine
     ? Math.max(...payloadMarkers.map((marker) => audit.lastIndexOf(marker)))
     : -1;
@@ -329,12 +338,12 @@ describe('symbol identity coverage gate (#4819)', () => {
 
   test('report selection ignores marker text embedded in diagnostic paths', () => {
     const lines = [
-      'zntc: symbol-source-scope-owner /tmp/symbol-coverage-worktree/input.mjs: scope_owner_mismatch=0 scope_owner_parent_mismatch=0',
+      'zntc: symbol-source-scope-owner /tmp/symbol-coverage-worktree/input.mjs: scope_owner_mismatch=0 scope_owner_parent_mismatch=0 duplicate_scope_owner=0',
       'zntc: symbol-coverage /tmp/symbol-coverage-worktree/input.mjs: new_user_idents=0 missing=0 wrong=0',
       'zntc: symbol-identity /tmp/symbol-coverage-worktree/input.mjs: clean=1',
       'zntc: symbol-identity-detail /tmp/zntc: symbol-identity /tmp/input.mjs: clean=1',
       'zntc: synthetic-coverage-detail /tmp/zntc: synthetic-coverage /tmp/input.mjs: symbol_identity_complete=1',
-      'zntc: symbol-source-scope-owner-detail /tmp/zntc: symbol-source-scope-owner /tmp/input.mjs: scope_owner_mismatch=0 scope_owner_parent_mismatch=0',
+      'zntc: symbol-source-scope-owner-detail /tmp/zntc: symbol-source-scope-owner /tmp/input.mjs: scope_owner_mismatch=0 scope_owner_parent_mismatch=0 duplicate_scope_owner=0',
     ];
     expect(lines.filter((line) => line.startsWith('zntc: symbol-coverage '))).toEqual([lines[1]]);
     expect(lines.filter((line) => line.startsWith('zntc: symbol-identity '))).toEqual([lines[2]]);
@@ -346,7 +355,7 @@ describe('symbol identity coverage gate (#4819)', () => {
 
   test('source scope-owner gate rejects wrong owner kinds with a valid parent', () => {
     const clean =
-      'zntc: symbol-source-scope-owner input.js: scope_owner_mismatch=0 scope_owner_parent_mismatch=0';
+      'zntc: symbol-source-scope-owner input.js: scope_owner_mismatch=0 scope_owner_parent_mismatch=0 duplicate_scope_owner=0';
     expect(scopeOwnerAuditProblems(clean)).toEqual([]);
     expect(
       scopeOwnerAuditProblems(clean.replace('scope_owner_mismatch=0', 'scope_owner_mismatch=1')),
@@ -356,6 +365,22 @@ describe('symbol identity coverage gate (#4819)', () => {
         clean.replace('scope_owner_parent_mismatch=0', 'scope_owner_parent_mismatch=1'),
       ),
     ).toContain('scope_owner_parent_mismatch=1, expected 0');
+    expect(
+      scopeOwnerAuditProblems(clean.replace('duplicate_scope_owner=0', 'duplicate_scope_owner=1')),
+    ).toContain('duplicate_scope_owner=1, expected 0');
+    expect(scopeOwnerAuditProblems(clean.replace(' duplicate_scope_owner=0', ''))).toContain(
+      'duplicate_scope_owner occurrences=0, expected 1',
+    );
+    expect(
+      scopeOwnerAuditProblems(
+        clean.replace('duplicate_scope_owner=0', 'duplicate_scope_owner=0 duplicate_scope_owner=0'),
+      ),
+    ).toContain('duplicate_scope_owner occurrences=2, expected 1');
+    expect(
+      scopeOwnerAuditProblems(
+        clean.replace('duplicate_scope_owner=0', 'duplicate_scope_owner=bad'),
+      ),
+    ).toContain('malformed source scope-owner value duplicate_scope_owner=bad');
     expect(scopeOwnerAuditProblems(clean.replace('scope_owner_mismatch=0 ', ''))).toContain(
       'scope_owner_mismatch occurrences=0, expected 1',
     );
@@ -374,7 +399,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       scopeOwnerAuditProblems(clean.replace('scope_owner_mismatch=0', 'scope_owner_mismatch=bad')),
     ).toContain('malformed source scope-owner value scope_owner_mismatch=bad');
     const pathWithCounterText =
-      'zntc: symbol-source-scope-owner /tmp/input: scope_owner_mismatch=3.js: scope_owner_mismatch=0 scope_owner_parent_mismatch=0';
+      'zntc: symbol-source-scope-owner /tmp/input: scope_owner_mismatch=3.js: scope_owner_mismatch=0 scope_owner_parent_mismatch=0 duplicate_scope_owner=0';
     expect(scopeOwnerAuditProblems(pathWithCounterText)).toEqual([]);
     expect(
       scopeOwnerAuditProblems('zntc: symbol-source-scope-owner input.js: missing=0'),
@@ -552,9 +577,9 @@ describe('symbol identity coverage gate (#4819)', () => {
     ).toContain(`observation_field_count=7, expected ${EXACT_OBSERVATION_FIELD_COUNT}`);
     expect(
       exactSchemaProblems(
-        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=12'),
+        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=13'),
       ),
-    ).toContain(`diagnostic_field_count=12, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
+    ).toContain(`diagnostic_field_count=13, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
   });
 
   test('strict report schema rejects missing, duplicate, malformed, and unknown fields', () => {
