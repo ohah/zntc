@@ -1049,6 +1049,28 @@ test "Codegen #3098: minify_syntax 시 const → let" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "const") == null);
 }
 
+test "Codegen #4819: minify_syntax keeps generated immutable class aliases const" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const x = 1;");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    const root = try transformer.transform();
+
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .variable_declaration) {
+            try transformer.ast.preserve_const_declaration_indices.append(allocator, @intCast(raw));
+        }
+    }
+
+    var cg = Codegen.initWithOptions(allocator, transformer.ast, .{ .minify_whitespace = true, .minify_syntax = true });
+    const result = try cg.generate(root);
+    const trimmed = std.mem.trimEnd(u8, result, "\n");
+    try std.testing.expectEqualStrings("const x=1;", trimmed);
+}
+
 test "Codegen #3098: minify_syntax off → const 유지 (anti-regression)" {
     var r = try e2eWithOptions(std.testing.allocator, "{ const x = 1; }", .{});
     defer r.deinit();

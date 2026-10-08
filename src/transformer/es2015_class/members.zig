@@ -329,7 +329,7 @@ pub fn Members(comptime Transformer: type) type {
                                 .member_idx = @enumFromInt(raw_idx),
                                 .source_member_idx = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx),
                                 .class_name = if (is_static) try self.stableName(self.ast.getText(class_name_span)) else null,
-                                .class_name_node = if (is_static) self.current_class_name_node else .none,
+                                .class_name_node = self.current_class_name_node,
                                 .original_name = orig_name,
                                 .weakset_name = names.ws_name,
                                 .func_name = names.fn_name,

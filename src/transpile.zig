@@ -1545,7 +1545,10 @@ fn transpileWithCallbackInternal(
         };
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
         // S4b: 단일 파일 모드에서도 const → let 변환 후 mergeDecls — esbuild parity.
-        if (options.minify_syntax) minify_mod.convertConstToLet(transformer.ast);
+        if (options.minify_syntax) minify_mod.convertConstToLetPreserving(
+            transformer.ast,
+            transformer.ast.preserve_const_declaration_indices.items,
+        );
         minify_mod.mergeDecls(transformer.ast, root, null, arena_alloc);
     }
 

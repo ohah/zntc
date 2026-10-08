@@ -100,7 +100,7 @@ pub fn emitRest(self: anytype, node: Node) !void {
 
 /// 선언 종류 키워드. 선언을 여러 조각으로 나눠 내는 경로(pm CJS storage·namespace export)도
 /// 같은 규칙을 써야 해서 한 곳에 둔다.
-pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind) []const u8 {
+pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind, declaration_idx: NodeIndex) []const u8 {
     // #2198: cycle 모듈의 top-level let/const 는 var 로 강등 — 정의 전 참조 시
     // TDZ throw 대신 var 호이스팅 의미 (`undefined`) 로 fallback. for-init / nested
     // scope 는 영향 없음 (이 패스가 indent_level==0 의 ESM-flat 출력에서만 작용).
@@ -109,6 +109,11 @@ pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind) 
         !self.in_for_init and
         (kind == .@"const" or kind == .let);
     if (demote_to_var) return "var ";
+    if (kind == .@"const" and self.options.minify_syntax) {
+        for (self.ast.preserve_const_declaration_indices.items) |preserved| {
+            if (preserved == @intFromEnum(declaration_idx)) return "const ";
+        }
+    }
     return switch (kind) {
         .@"var" => "var ",
         .let => "let ",
@@ -121,7 +126,8 @@ pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind) 
     };
 }
 
-pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
+pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void {
+    const node = self.ast.getNode(declaration_idx);
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
@@ -135,7 +141,7 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
     // 흔한 경로엔 renames 조회 비용이 안 간다.
     if (self.options.pm_cjs_storage and self.indent_level == 0 and !self.in_for_init) {
         if (self.options.linking_metadata != null) {
-            if (try emitPmCjsStorageDeclaration(self, list_start, list_len, kind)) return;
+            if (try emitPmCjsStorageDeclaration(self, list_start, list_len, kind, declaration_idx)) return;
         }
     }
 
@@ -169,7 +175,7 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
         return;
     }
 
-    try self.write(declarationKeyword(self, kind));
+    try self.write(declarationKeyword(self, kind, declaration_idx));
     try self.emitNodeList(list_start, list_len, ",");
     // for문 init 위치에서는 세미콜론을 emitFor가 직접 출력하므로 생략
     if (!self.in_for_init) {
@@ -185,7 +191,7 @@ pub fn emitVariableDeclaration(self: anytype, node: Node) !void {
 /// 로 emit 하고 `true` 를 반환한다. storage 가 없으면 아무것도 안 쓰고 `false`(현행 경로).
 /// destructuring declarator 는 storage 후보가 아니다(provider 술어 exportBindingIsCjsStorage 가
 /// pattern 을 제외 → 그 안 식별자에 `exports.` rename 이 안 붙음) — 항상 비-storage 로 emit.
-fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, kind: anytype) !bool {
+fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, kind: anytype, declaration_idx: NodeIndex) !bool {
     const md = self.options.linking_metadata.?;
     const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
 
@@ -218,7 +224,7 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
 
     // 비-storage declarator 용 keyword — 현행 경로와 같은 규칙. 이 함수는 top-level·for-init 밖
     // 에서만 불리므로 `declarationKeyword` 의 강등 조건과 결과가 같다.
-    const keyword = declarationKeyword(self, kind);
+    const keyword = declarationKeyword(self, kind, declaration_idx);
 
     // 2nd pass: 소스 순서대로 emit (isStorage 는 캐시된 storage_flags 재사용).
     var has_output = false;

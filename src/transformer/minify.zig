@@ -1245,11 +1245,25 @@ pub fn downgradeToVar(ast: *Ast) void {
 /// *섞인 시퀀스* 는 *3 declaration* 으로 남는다. const → let 통일 후 `let a=1,b=2,c=3;`
 /// 로 합쳐져 *2 declaration + 2 byte* 절감.
 pub fn convertConstToLet(ast: *Ast) void {
-    for (ast.nodes.items) |stmt| {
+    return convertConstToLetPreserving(ast, &.{});
+}
+
+/// Convert source const declarations for minified output while keeping
+/// compiler-generated bindings whose const behavior carries class identity.
+pub fn convertConstToLetPreserving(ast: *Ast, preserved_declarations: []const u32) void {
+    for (ast.nodes.items, 0..) |stmt, raw| {
         if (stmt.tag != .variable_declaration) continue;
         const e = stmt.data.extra;
         if (e >= ast.extra_data.items.len) continue;
         if (ast.extra_data.items[e] == @intFromEnum(VariableDeclarationKind.@"const")) {
+            var preserve = false;
+            for (preserved_declarations) |preserved| {
+                if (preserved == raw) {
+                    preserve = true;
+                    break;
+                }
+            }
+            if (preserve) continue;
             ast.setVariableDeclarationKind(stmt, .let);
         }
     }

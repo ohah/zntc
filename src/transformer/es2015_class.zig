@@ -346,6 +346,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            var post_private_method_initializers: std.ArrayList(NodeIndex) = .empty;
+            defer post_private_method_initializers.deinit(self.allocator);
 
             // computed accessor key memoization — var _acc_key_N = <expr>; 를 먼저 emit 해야 WeakMap/WeakSet
             // 선언 및 후속 Object.defineProperty 호출 시 참조 가능 (#1511).
@@ -380,7 +382,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try moveInstanceInitScopes(self, &cm, source_class_scope, ctor_scope);
                 try emitInstanceInits(self, &cm, span);
                 self.current_scope = saved_scope;
-                try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, span, name_span);
+                try emitPrivateMethodArtifacts(self, cm.private_methods.items, &cm.instance_fields, &post_private_method_initializers, span, name_span);
                 self.current_scope = ctor_scope;
 
                 func_node = if (cm.constructor_idx) |ctor_idx|
@@ -428,6 +430,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (source_ctor) |original| try self.remapCopiedScopeOwner(original, func_node);
             if (has_self_alias) try self.addSyntheticRefInScope(alias_check_ref, alias_id, ctor_scope, .{ .read = true });
             try self.scratch.append(self.allocator, func_node);
+            try self.scratch.appendSlice(self.allocator, post_private_method_initializers.items);
             if (write_binding) |binding|
                 try self.scratch.append(self.allocator, try emitClassSelfWriteTarget(self, binding, fresh_name, iife_scope, span));
             if (has_self_alias) {
@@ -842,6 +845,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 런타임 크래시했다 (#4279). 재빌드 제거로 비대칭을 구조적으로 차단.
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            var post_private_method_initializers: std.ArrayList(NodeIndex) = .empty;
+            defer post_private_method_initializers.deinit(self.allocator);
 
             if (try @import("parameter_environment.zig").takeClassNameStatement(self, source_idx, func_name, func_node, iife_scope)) |name_statement|
                 try self.scratch.append(self.allocator, name_statement);
@@ -857,9 +862,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
                 self.runtime_helpers.class_static_private_field = true;
             }
-            try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, span, name_span);
+            try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, &post_private_method_initializers, span, name_span);
 
             try self.scratch.append(self.allocator, func_node);
+            try self.scratch.appendSlice(self.allocator, post_private_method_initializers.items);
             if (write_binding) |binding|
                 try self.scratch.append(self.allocator, try emitClassSelfWriteTarget(self, binding, func_name, iife_scope, span));
             if (iife_self_alias) {
