@@ -484,12 +484,13 @@ fn hasOnlyArrayLiteralSpreadOperands(ast: *const ast_mod.Ast, node: ast_mod.Node
     return true;
 }
 
-fn hasReachableObjectLiteralSpread(ast: *const ast_mod.Ast) ?bool {
+fn hasReachableObjectSpread(ast: *const ast_mod.Ast) ?bool {
     const reachable_nodes = ast_walk.collectReachableNodeIndices(ast.allocator, ast) catch return null;
     defer ast.allocator.free(reachable_nodes);
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
-        if (node.tag == .object_expression and hasDirectSpreadElement(ast, node)) return true;
+        if (node.tag == .jsx_spread_attribute or
+            (node.tag == .object_expression and hasDirectSpreadElement(ast, node))) return true;
     }
     return false;
 }
@@ -1840,11 +1841,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (!options.jsx_transform) return false;
             },
             .jsx_spread_attribute => {
-                // JSX lowering materializes an object spread after this
-                // source-graph preflight. Until that generated Object edge is
-                // included in the retained-graph preflight, keep downlevel
-                // spread attributes on semantic reanalysis.
-                if (!options.jsx_transform or options.unsupported.object_spread) return false;
+                if (!options.jsx_transform) return false;
+                if (options.unsupported.object_spread) {
+                    // JSX lowering materializes Object.assign after this
+                    // source-graph preflight. Keep the same Object-shadowing
+                    // guard as source object spreads, and record this lowered
+                    // global edge in the retained-graph scan.
+                    if (source_binds_object) return false;
+                    found_lowered_object_spread = true;
+                }
             },
             .jsx_spread_child => {
                 // The JSX child becomes a generated spread_element. Its
@@ -2148,7 +2153,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     opts.emit_runtime_helper_imports = true;
 
     const object_spread_scan =
-        if (opts.unsupported.object_spread) hasReachableObjectLiteralSpread(ast_ptr) else @as(?bool, false);
+        if (opts.unsupported.object_spread) hasReachableObjectSpread(ast_ptr) else @as(?bool, false);
     const can_keep_semantic_graph = object_spread_scan != null and
         canKeepPrepassSemanticGraph(self, module, opts, merged_plugins);
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
