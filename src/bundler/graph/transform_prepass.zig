@@ -572,23 +572,41 @@ fn isBoundSourceIdentifierAssignmentTarget(
     return hasValidSourceSymbol(ast, semantic, node_idx, .assignment_target_identifier);
 }
 
-fn isRetainableSimpleOptionalMemberAccess(
+/// A direct source call is evaluated once into a tracked temp by optional
+/// lowering; other computed receiver shapes stay outside this audited subset.
+fn isRetainableOptionalMemberReceiver(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    receiver_idx: ast_mod.NodeIndex,
+) bool {
+    if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or ast.has_jsx) return false;
+    const receiver = ast.getNode(receiver_idx);
+    if (receiver.tag == .identifier_reference)
+        return isBoundSourceIdentifierReference(ast, semantic, receiver_idx);
+    if (receiver.tag != .call_expression) return false;
+    const extra = receiver.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
+    if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    return isBoundSourceIdentifierReference(ast, semantic, callee);
+}
+
+fn isRetainableOptionalMemberAccess(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
 ) bool {
     if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
-    if (ast.has_jsx) return false;
     const node = ast.getNode(node_idx);
     if (node.tag != .static_member_expression and node.tag != .computed_member_expression) return false;
     const extra = node.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
     if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0) return false;
-    const object: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    return isBoundSourceIdentifierReference(ast, semantic, object);
+    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
 }
 
-fn isRetainableSimpleOptionalMemberCall(
+fn isRetainableOptionalMemberCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
@@ -606,11 +624,11 @@ fn isRetainableSimpleOptionalMemberCall(
     const member_extra = member.data.extra;
     if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra <= 2) return false;
     if ((ast.extra_data.items[member_extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) {
-        return isRetainableSimpleOptionalMemberAccess(ast, semantic, callee);
+        return isRetainableOptionalMemberAccess(ast, semantic, callee);
     }
-    if (!optional_call or ast.has_jsx) return false;
-    const object: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
-    return isBoundSourceIdentifierReference(ast, semantic, object);
+    if (!optional_call) return false;
+    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
+    return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
 }
 
 /// Compound/logical assignment lowering already records member receiver/key
@@ -1923,7 +1941,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
                 {
                     if (node.tag != .call_expression or
-                        !isRetainableSimpleOptionalMemberCall(ast, semantic, @enumFromInt(raw_idx))) return false;
+                        !isRetainableOptionalMemberCall(ast, semantic, @enumFromInt(raw_idx))) return false;
                     found_lowered_optional_chaining = true;
                 }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
@@ -1935,11 +1953,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.optional_chaining and
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
                 {
-                    // A direct optional member read duplicates only its bound
-                    // receiver; the property expression is visited once in the
-                    // null-checked branch. Optional calls and chained receivers
-                    // retain their resync boundary.
-                    if (!isRetainableSimpleOptionalMemberAccess(ast, semantic, @enumFromInt(raw_idx)))
+                    // Optional member lowering evaluates this property once
+                    // inside the null-checked branch. Receiver expressions
+                    // are restricted to exact identifiers or tracked calls;
+                    // chained receivers retain their resync boundary.
+                    if (!isRetainableOptionalMemberAccess(ast, semantic, @enumFromInt(raw_idx)))
                         return false;
                     found_lowered_optional_chaining = true;
                 }
