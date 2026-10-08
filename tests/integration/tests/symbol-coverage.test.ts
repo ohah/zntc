@@ -11,7 +11,16 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import ts from 'typescript';
@@ -390,22 +399,20 @@ function runCoverage(
   file: string,
   target: (typeof TARGETS)[number],
   outDir: string,
+  minifyIdentifiers = false,
 ): { stderr: string; exitCode: number } {
   const stderrPath = join(outDir, 'stderr.log');
   const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
+  const stderrFd = openSync(stderrPath, 'w');
   const proc = spawnSync(
-    '/bin/sh',
+    ZNTC_BIN,
     [
-      '-c',
-      isFlow ? 'exec "$1" "$2" "$3" "$4" "$5" "$6" 2>"$7"' : 'exec "$1" "$2" "$3" "$4" "$5" 2>"$6"',
-      'zntc-symbol-coverage',
-      ZNTC_BIN,
       file,
       target.arg,
       ...(isFlow ? ['--flow'] : []),
+      ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
       '-o',
       join(outDir, 'out.js'),
-      stderrPath,
     ],
     {
       env: {
@@ -413,9 +420,10 @@ function runCoverage(
         ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
         ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
       },
-      stdio: ['ignore', 'ignore', 'pipe'],
+      stdio: ['ignore', 'ignore', stderrFd],
     },
   );
+  closeSync(stderrFd);
   return {
     stderr: readFileSync(stderrPath, 'utf8'),
     exitCode: proc.status ?? -1,
@@ -593,6 +601,52 @@ describe('symbol identity coverage gate (#4819)', () => {
           const runtime = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
           expect(runtime.status, `${fixture} ${target.name}: ${runtime.stderr}`).toBe(0);
           expect(runtime.stdout, `${fixture} ${target.name}`).toBe(expected);
+        }
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('downleveled static class self references keep exact identities after identifier minification', () => {
+    const fixtures = [
+      '4790-object-rest-decl-contexts.mjs',
+      '4801-static-block-this-boundaries.mjs',
+      '4801-static-field-arrow-this.mjs',
+      '4801-static-field-super.mjs',
+      '4801-static-private-this.mjs',
+      '4819-static-private-accessor-logical.mjs',
+      '4819-static-private-accessor-one-sided.mjs',
+      '4819-static-private-accessor-pair.mjs',
+      '4819-static-private-accessor-update.mjs',
+      '4819-static-private-call-receiver.mjs',
+    ];
+    const targets = [TARGETS[1], TARGETS[2]];
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-static-class-minify-'));
+    try {
+      for (const fixture of fixtures) {
+        const file = join(FIXTURE_DIR, fixture);
+        const baseline = spawnSync('node', [file], { encoding: 'utf8' });
+        expect(baseline.status, `${fixture}: ${baseline.stderr}`).toBe(0);
+        for (const target of targets) {
+          const { stderr, exitCode } = runCoverage(file, target, outDir, true);
+          expect(exitCode, `${fixture} ${target.name}: ${stderr}`).toBe(0);
+
+          const exact = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(exact, `${fixture} ${target.name}: ${stderr}`).toBeDefined();
+          expect(exactSchemaProblems(exact ?? ''), `${fixture} ${target.name}: ${exact}`).toEqual(
+            [],
+          );
+          expect(exact, `${fixture} ${target.name}`).toMatch(/clean=1(?:\s|$)/);
+          expect(postMinifyAuditProblems(stderr), `${fixture} ${target.name}: ${stderr}`).toEqual(
+            [],
+          );
+
+          const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+          expect(actual.status, `${fixture} ${target.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, `${fixture} ${target.name}`).toBe(baseline.stdout);
         }
       }
     } finally {

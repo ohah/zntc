@@ -2075,6 +2075,41 @@ pub fn outputScopeParent(self: *Transformer, source: ScopeId) ScopeId {
     return scopes[source.toIndex()].parent;
 }
 
+/// Static field initializers are emitted after their class. Move the lexical
+/// scope roots inside a visited initializer out of the source class scope so
+/// generated class-self reads resolve through the emitted class binding.
+pub fn reparentMovedStaticInitializerScopes(
+    self: *Transformer,
+    root: NodeIndex,
+    source_class_scope: ScopeId,
+    output_scope: ScopeId,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (root.isNone() or source_class_scope.isNone() or output_scope.isNone())
+        std.debug.panic("moved static initializer has incomplete output scope evidence", .{});
+    const editor = try editorFor(self);
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(self.allocator);
+    try stack.append(self.allocator, root);
+    while (stack.pop()) |node| {
+        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
+        const raw = @intFromEnum(node);
+        if (seen.contains(raw)) continue;
+        try seen.put(self.allocator, raw, {});
+        if (self.outputOwnedScope(node)) |scope| {
+            if (scope != source_class_scope and scope.toIndex() < editor.scopes.items.len and
+                editor.scopes.items[scope.toIndex()].parent == source_class_scope)
+            {
+                try self.reparentGeneratedScope(scope, output_scope);
+            }
+        }
+        var children = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
+        while (children.next()) |child| try stack.append(self.allocator, child);
+    }
+}
+
 /// Generated class expressions can lack an analyzer-owned class scope. Return
 /// the exact owner only when the input node establishes that boundary.
 pub fn outputOwnedScope(self: *Transformer, owner: NodeIndex) ?ScopeId {

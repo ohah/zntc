@@ -30,6 +30,11 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, init_idx: NodeIndex, span: Span, class_name_span: ?Span) !NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
+    const source_class_scope = self.current_scope;
+    const output_scope = if (self.semantic_edit_enabled)
+        self.outputScopeParent(source_class_scope)
+    else
+        source_class_scope;
 
     // Every emitted descriptor owns its shape tag. The runtime must not read
     // Object.prototype to distinguish data members from accessors.
@@ -60,6 +65,8 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
 
     const value_key = try makePropertyName(self, "value");
     const value_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try makeVoidZero(self, span);
+    if (self.semantic_edit_enabled and !init_idx.isNone())
+        try self.reparentMovedStaticInitializerScopes(value_init, source_class_scope, output_scope);
     try self.scratch.append(self.allocator, try self.ast.addNode(.{
         .tag = .object_property,
         .span = span,
@@ -2102,6 +2109,18 @@ pub fn recordParameterCapturesWithPresence(self: anytype, captures: []NodeIndex,
     @memcpy(captures[parameter_len..], body[0..body_len]);
 }
 
+fn reparentExtractedFunctionScope(self: anytype, owner: NodeIndex) !void {
+    if (!self.semantic_edit_enabled) return;
+    const function_scope = self.outputOwnedScope(owner) orelse
+        std.debug.panic("extracted function has no exact output ScopeId", .{});
+    const class_scope = self.outputScopeParent(function_scope);
+    if (class_scope.isNone()) std.debug.panic("extracted class method has no class scope", .{});
+    const output_scope = self.outputScopeParent(class_scope);
+    if (output_scope.isNone()) std.debug.panic("extracted class method has no emitted parent scope", .{});
+    if (self.outputScopeParent(function_scope) != output_scope)
+        try self.reparentGeneratedScope(function_scope, output_scope);
+}
+
 /// method_definition → standalone function declaration으로 추출.
 /// private generator method (`*#name`) / async method 를 `_name_fn` 으로 꺼낼 때
 /// method flags(is_async, is_generator)를 function flags로 옮겨 호이스팅한다.
@@ -2180,6 +2199,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         }
         const lowered = try self.visitNode(synth);
         try self.remapCopiedScopeOwner(source_owner, lowered);
+        try reparentExtractedFunctionScope(self, lowered);
         return lowered;
     }
 
@@ -2222,6 +2242,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
         .data = .{ .extra = func_extra },
     });
     try self.remapCopiedScopeOwner(source_owner, result);
+    try reparentExtractedFunctionScope(self, result);
     return result;
 }
 
