@@ -2867,6 +2867,50 @@ pub fn splitCompoundAssignmentIdentifierReference(
     editor.updateReferenceFlags(write_target, .{ .write = true }) catch |err| return editError(err);
 }
 
+/// Split a logical assignment's source reference into the emitted read(s) and write.
+/// `??=` needs a second exact read when its ES5 form materializes a ternary.
+pub fn splitLogicalAssignmentIdentifierReferences(
+    self: *Transformer,
+    read_target: NodeIndex,
+    value_read: ?NodeIndex,
+    write_target: NodeIndex,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const raw_id = self.getSymbolIdAt(read_target) orelse return;
+    if (self.getSymbolIdAt(write_target) != raw_id) return editError(error.InvalidSymbol);
+    if (value_read) |read| {
+        if (self.getSymbolIdAt(read) != raw_id or read == read_target or read == write_target)
+            return editError(error.InvalidSymbol);
+    }
+
+    const editor = try editorFor(self);
+    const source_reference = (editor.referenceForNode(read_target) catch |err| return editError(err)) orelse
+        return editError(error.ReferenceNotFound);
+    if (source_reference.flags.declare or !source_reference.flags.read or !source_reference.flags.write)
+        return editError(error.InvalidNode);
+
+    const symbol: SymbolId = @enumFromInt(raw_id);
+    if (value_read) |read| {
+        editor.addCopiedReference(
+            read,
+            symbol,
+            source_reference.scope_id,
+            .{ .read = true },
+            source_reference.stmt_idx,
+            source_reference.scope_stmt_idx,
+        ) catch |err| return editError(err);
+    }
+    editor.addCopiedReference(
+        write_target,
+        symbol,
+        source_reference.scope_id,
+        .{ .write = true },
+        source_reference.stmt_idx,
+        source_reference.scope_stmt_idx,
+    ) catch |err| return editError(err);
+    editor.updateReferenceFlags(read_target, .{ .read = true }) catch |err| return editError(err);
+}
+
 /// Isolate a worklet factory copy of a class-self reference from its source
 /// AST node and bind it to the reconstructed class identity in the output
 /// scope. The parser reference remains owned by the original class body.

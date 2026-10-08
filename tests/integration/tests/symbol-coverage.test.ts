@@ -2618,24 +2618,36 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'nullish assignment',
+        graph: 'retained',
         source: [
           'function choose(value) { var result = value; return (() => (result ??= 7))(); }',
-          'console.log(choose(null));',
+          'console.log(choose(null), choose(2));',
         ].join('\n'),
-        output: '7\n',
+        output: '7 2\n',
       },
       {
         name: 'logical AND assignment',
+        graph: 'retained',
         source: [
           'function choose(value) { var result = value; return (() => (result &&= 7))(); }',
-          'console.log(choose(0));',
+          'console.log(choose(0), choose(2));',
         ].join('\n'),
-        output: '0\n',
+        output: '0 7\n',
       },
       {
         name: 'logical OR assignment',
+        graph: 'retained',
         source: [
           'function choose(value) { var result = value; return (() => (result ||= 7))(); }',
+          'console.log(choose(0), choose(2));',
+        ].join('\n'),
+        output: '7 2\n',
+      },
+      {
+        name: 'logical assignment member target',
+        graph: 'reanalyzed',
+        source: [
+          'function choose(value) { var box = { value: value }; return (() => (box.value ||= 7))(); }',
           'console.log(choose(0));',
         ].join('\n'),
         output: '7\n',

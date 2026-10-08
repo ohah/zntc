@@ -863,6 +863,7 @@ pub const Transformer = struct {
     pub const replaceUserReferenceWithCopy = @import("transformer/semantic_edit.zig").replaceUserReferenceWithCopy;
     pub const duplicateUserReference = @import("transformer/semantic_edit.zig").duplicateUserReference;
     pub const splitCompoundAssignmentIdentifierReference = @import("transformer/semantic_edit.zig").splitCompoundAssignmentIdentifierReference;
+    pub const splitLogicalAssignmentIdentifierReferences = @import("transformer/semantic_edit.zig").splitLogicalAssignmentIdentifierReferences;
     pub const trackUserArgumentFromBinding = @import("transformer/semantic_edit.zig").trackUserArgumentFromBinding;
     pub const trackUserWriteFromBinding = @import("transformer/semantic_edit.zig").trackUserWriteFromBinding;
     pub const declareSyntheticCatch = @import("transformer/semantic_edit.zig").declareSyntheticCatch;

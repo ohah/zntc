@@ -1438,6 +1438,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_array_spread = false;
     var found_lowered_exponentiation = false;
     var found_lowered_nullish_coalescing = false;
+    var found_lowered_logical_assignment = false;
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
     var found_safe_template_literal = false;
@@ -1632,7 +1633,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_lowered_exponentiation = true;
                 }
                 if (options.unsupported.logical_assignment and
-                    (operator == .question2_eq or operator == .pipe2_eq or operator == .amp2_eq)) return false;
+                    (operator == .question2_eq or operator == .pipe2_eq or operator == .amp2_eq))
+                {
+                    // Simple source identifiers retain an exact read/write split.
+                    // Member targets still use reanalysis until their emitted edges are admitted.
+                    if (!isBoundSourceIdentifierAssignmentTarget(ast, semantic, node.data.binary.left))
+                        return false;
+                    found_lowered_logical_assignment = true;
+                }
             },
             .binary_expression, .logical_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
@@ -1909,7 +1917,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
-        found_lowered_object_rest or found_lowered_object_spread;
+        found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread;
 }
 
 /// A retained prepass graph may absorb only the `__values`/`__asyncValues`
