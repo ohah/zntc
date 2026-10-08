@@ -2165,6 +2165,19 @@ pub const Scanner = struct {
         return decode_buf[0..out];
     }
 
+    /// Compare an identifier's source spelling with an ASCII StringValue.
+    /// Generated aliases such as `$e` are ASCII, but source identifiers may
+    /// spell those same names with Unicode escapes. `decode_buf` must be at
+    /// least as long as `expected`; a shorter decoded name still compares
+    /// normally, while an identifier that cannot fit cannot equal `expected`.
+    pub fn identifierTextEqualsAscii(raw: []const u8, expected: []const u8, decode_buf: []u8) bool {
+        for (expected) |byte| {
+            if (byte >= 0x80) return false;
+        }
+        const resolved = decodeIdentifierEscapesInto(raw, decode_buf) orelse return false;
+        return std.mem.eql(u8, resolved, expected);
+    }
+
     // ====================================================================
     // 문자 분류
     // ====================================================================

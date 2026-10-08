@@ -1580,3 +1580,12 @@ test "computeLineOffsets: scanner line_offsets 와 byte-identical (#4438)" {
         try std.testing.expectEqualSlices(u32, expected, actual);
     }
 }
+
+test "Scanner: ASCII identifier StringValue comparison resolves Unicode escapes" {
+    var scratch: [8]u8 = undefined;
+    try std.testing.expect(Scanner.identifierTextEqualsAscii("\\u0024e", "$e", &scratch));
+    try std.testing.expect(Scanner.identifierTextEqualsAscii("\\u{24}m", "$m", &scratch));
+    try std.testing.expect(Scanner.identifierTextEqualsAscii("$e", "$e", &scratch));
+    try std.testing.expect(!Scanner.identifierTextEqualsAscii("\\u0024e", "$e2", &scratch));
+    try std.testing.expect(!Scanner.identifierTextEqualsAscii("\\u{1F600}", "😀", &scratch));
+}

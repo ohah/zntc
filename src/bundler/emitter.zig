@@ -20,6 +20,7 @@ const ModuleIndex = types.ModuleIndex;
 const ModuleType = types.ModuleType;
 const WrapKind = types.WrapKind;
 const rt = @import("runtime_helpers.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 
 const chunk_mod = @import("chunk.zig");
 const ChunkGraph = chunk_mod.ChunkGraph;
@@ -65,14 +66,17 @@ const CjsWrapperParamNames = struct {
 /// scope or an unresolved source reference. Include linker-assigned names too:
 /// a source symbol can have a different spelling by the time codegen runs.
 fn cjsWrapperParamNameIsUsed(
+    allocator: std.mem.Allocator,
     module: *const Module,
     ast: *const Ast,
     rename_table: ?*const RenameTable,
     candidate: []const u8,
-) bool {
+) !bool {
     const sem = module.semantic orelse return true;
+    const decode_scratch = try allocator.alloc(u8, candidate.len);
+    defer allocator.free(decode_scratch);
     for (sem.symbols.items, 0..) |symbol, index| {
-        if (std.mem.eql(u8, symbol.nameText(module.source), candidate)) return true;
+        if (Scanner.identifierTextEqualsAscii(symbol.nameText(module.source), candidate, decode_scratch)) return true;
         if (rename_table) |renames| {
             if (renames.get(SymbolID.make(module.index, index))) |renamed| {
                 if (std.mem.eql(u8, renamed, candidate)) return true;
@@ -89,11 +93,11 @@ fn cjsWrapperParamNameIsUsed(
     // semantic SymbolId. The AST is append-only, so checking orphan nodes can
     // only choose a longer safe alias; it cannot miss a live generated name.
     for (ast.nodes.items) |node| {
-        const name = switch (node.tag) {
+        const raw_name = switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => ast.getText(node.data.string_ref),
             else => continue,
         };
-        if (std.mem.eql(u8, name, candidate)) return true;
+        if (Scanner.identifierTextEqualsAscii(raw_name, candidate, decode_scratch)) return true;
     }
 
     // Keep fallback spellings away from runtime helpers. The two preferred
@@ -115,7 +119,7 @@ fn allocCjsWrapperParamName(
     preferred: []const u8,
     other_param: ?[]const u8,
 ) ![]const u8 {
-    if (!cjsWrapperParamNameIsUsed(module, ast, rename_table, preferred) and
+    if (!(try cjsWrapperParamNameIsUsed(allocator, module, ast, rename_table, preferred)) and
         (other_param == null or !std.mem.eql(u8, preferred, other_param.?)))
     {
         return preferred;
@@ -124,7 +128,7 @@ fn allocCjsWrapperParamName(
     var suffix: usize = 2;
     while (true) : (suffix += 1) {
         const candidate = try std.fmt.allocPrint(allocator, "{s}{d}", .{ preferred, suffix });
-        if (!cjsWrapperParamNameIsUsed(module, ast, rename_table, candidate) and
+        if (!(try cjsWrapperParamNameIsUsed(allocator, module, ast, rename_table, candidate)) and
             (other_param == null or !std.mem.eql(u8, candidate, other_param.?)))
         {
             return candidate;
