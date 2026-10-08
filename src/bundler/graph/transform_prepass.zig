@@ -629,6 +629,58 @@ fn isRetainableOptionalMemberAccess(
     return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
 }
 
+/// An ordinary static member/call tail can follow one audited optional member
+/// access. Computed tails and optional calls stay on the resync path.
+fn isRetainableOptionalStaticMemberChainTail(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    var current = node_idx;
+    while (true) {
+        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        const node = ast.getNode(current);
+        switch (node.tag) {
+            .static_member_expression, .computed_member_expression => {
+                const extra = node.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2)
+                    return false;
+                const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+                const optional = (ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0;
+                if (optional) return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
+                if (node.tag != .static_member_expression) return false;
+                current = receiver;
+            },
+            .call_expression => {
+                const extra = node.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3)
+                    return false;
+                if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
+                    return false;
+                current = @enumFromInt(ast.extra_data.items[extra]);
+            },
+            else => return false,
+        }
+    }
+}
+
+fn isRetainableOptionalChainMemberAccess(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(node_idx);
+    if (node.tag != .static_member_expression and node.tag != .computed_member_expression) return false;
+    const extra = node.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
+    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0)
+        return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
+    if (node.tag != .static_member_expression) return false;
+    return isRetainableOptionalStaticMemberChainTail(ast, semantic, receiver);
+}
+
 fn isRetainableOptionalMemberCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -649,8 +701,8 @@ fn isRetainableOptionalMemberCall(
     if ((ast.extra_data.items[member_extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) {
         return isRetainableOptionalMemberAccess(ast, semantic, callee);
     }
-    if (!optional_call) return false;
     const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
+    if (!optional_call) return isRetainableOptionalStaticMemberChainTail(ast, semantic, callee);
     return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
 }
 
@@ -1977,10 +2029,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
                 {
                     // Optional member lowering evaluates this property once
-                    // inside the null-checked branch. Receiver expressions
-                    // are restricted to exact identifiers or tracked calls;
-                    // chained receivers retain their resync boundary.
-                    if (!isRetainableOptionalMemberAccess(ast, semantic, @enumFromInt(raw_idx)))
+                    // inside the null-checked branch. One audited static
+                    // member/call tail can follow; computed tails and chained
+                    // optional receivers retain their resync boundary.
+                    if (!isRetainableOptionalChainMemberAccess(ast, semantic, @enumFromInt(raw_idx)))
                         return false;
                     found_lowered_optional_chaining = true;
                 }
