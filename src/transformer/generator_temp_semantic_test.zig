@@ -8,6 +8,7 @@ const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const output_scope = @import("output_scope_test_utils.zig");
+const es_helpers = @import("es_helpers.zig");
 
 fn checkGeneratedTemps(source: []const u8, target: TransformOptions.compat.ESTarget, expected: usize, has_state: bool) !void {
     return checkGeneratedTempsWithBlock(source, target, expected, has_state, false);
@@ -228,6 +229,81 @@ test "#4819 native generator async preserves live source block under inner funct
 test "#4819 nested state callbacks keep distinct private temps beside user collision" {
     const source = "class Box { static #method() { return 1; } static receiver() { return this; } static async outer() { const _a = 5; const before = this.receiver().#method(); async function inner() { return Box.receiver().#method(); } await 0; return _a + before + await inner(); } }";
     try checkGeneratedTemps(source, .es5, 2, true);
+}
+
+test "#4819 deferred generated temp owner follows exact allocation SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    const source_scope = transformer.programScope();
+    const name_span = try transformer.ast.addString("_deferredTemp");
+    const source_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const source_id = (try transformer.declareSyntheticTempInScope(source_binding, .EMPTY, source_scope)) orelse
+        return error.TestUnexpectedResult;
+    try transformer.bindHoistedTemp(source_binding, name_span, .EMPTY, source_scope);
+
+    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const hoisted_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const declarator = try es_helpers.makeDeclarator(&transformer, hoisted_binding, .none, .EMPTY);
+    const declaration = try es_helpers.makeVarDeclaration(&transformer, &.{declarator}, .@"var", .EMPTY);
+    const body_list = try transformer.ast.addNodeList(&.{declaration});
+    const body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = body_list },
+    });
+    const params_list = try transformer.ast.addNodeList(&.{});
+    const params = try transformer.ast.addFormalParameters(params_list, .EMPTY);
+    const function_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(body), 0, none });
+    const owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = function_extra },
+    });
+    const function_scope = try transformer.addGeneratedFunctionScope(source_scope, owner);
+
+    const decoy_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const decoy_owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(body), 0, none });
+    const decoy_owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = decoy_owner_extra },
+    });
+    const decoy_scope = try transformer.addGeneratedFunctionScope(source_scope, decoy_owner);
+    const decoy_id = (try transformer.declareSyntheticInScope(decoy_binding, .EMPTY, .variable_var, decoy_scope)) orelse
+        return error.TestUnexpectedResult;
+
+    const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
+    const temp = @import("transformer.zig").GeneratedTempBinding{
+        .binding = hoisted_binding,
+        .name_span = name_span,
+    };
+    try transformer.bindGeneratedFunctionTemps(source_scope, function_scope, body, &.{temp}, .EMPTY);
+
+    try std.testing.expectEqual(function_scope, editor.symbols.items[@intFromEnum(source_id)].scope_id);
+    try std.testing.expectEqual(decoy_scope, editor.symbols.items[@intFromEnum(decoy_id)].scope_id);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(source_id)), transformer.symbol_ids.items[@intFromEnum(hoisted_binding)]);
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(decoy_id)), transformer.symbol_ids.items[@intFromEnum(decoy_binding)]);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(source_id)), editor.scope_maps.items[function_scope.toIndex()].get(transformer.ast.getText(name_span)));
+    try std.testing.expect(editor.scope_maps.items[source_scope.toIndex()].get(transformer.ast.getText(name_span)) == null);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(decoy_id)), editor.scope_maps.items[decoy_scope.toIndex()].get(transformer.ast.getText(name_span)));
 }
 
 fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.compat.ESTarget, disable_top_level_await: bool) !void {
