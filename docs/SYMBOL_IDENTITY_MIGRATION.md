@@ -160,7 +160,7 @@
 - exact scope audit는 서로 다른 reachable lexical owner가 같은 `ScopeId`를 공유하면 `duplicate_scope_owner`로 실패한다. unreachable stale owner map entry는 lowering 뒤 남을 수 있어 허용한다. 두 sibling block의 ID를 하나로 바꾸는 Zig 재현 케이스는 실패하고, 같은 ID를 가진 unreachable stale block은 허용됨을 확인한다.
 - source scope-owner audit는 owner mismatch, parent-mismatch, duplicate owner 세 counter를 각각 한 번만 허용하며 0이 아닌 값, 누락·중복, unknown field, malformed token/value를 거부한다. marker 텍스트가 경로에 있어도 실제 report payload만 읽는다.
 - 구조 검사는 AST, SID, reference, scope owner/map의 일관성을 검사한다. `clean=1`만으로 원본 프로그램과 같은 의미라고 판정하지 않는다.
-- exact audit는 program top-level `Reference.stmt_idx`가 현재 AST 문장 위치와 맞는지 검사하고, 같은 reference `NodeIndex`를 서로 다른 top-level 문장에서 공유하면 실패한다. 한 reference node는 하나의 statement-use record만 가질 수 있으므로, 변환이 문장 간 복사본을 만들면 별도 node와 `Reference`를 등록해야 한다.
+- exact audit는 program top-level `Reference.stmt_idx`가 현재 AST 문장 위치와 맞는지 검사한다. 같은 reference `NodeIndex`가 서로 다른 중첩 statement-list 위치에서 공유되면 실패한다. `scope_stmt_idx`는 분석기가 방문하는 문맥에 따라 바깥 statement-list 번호를 유지할 수 있어 변환 후 AST의 가장 가까운 block 위치와 직접 비교하지 않는다. 한 reference node는 하나의 statement-use record만 가질 수 있으므로, 변환이 문장 간 복사본을 만들면 별도 node와 `Reference`를 등록해야 한다.
 - exact identity 보고서와 synthetic coverage 보고서는 알려진 필드의 단일 출현을 잠근다. exact parser는 clean=1과 등록된 필드만 허용하며, 누락·중복·잘못된 토큰/값·미등록 필드나 counter가 있으면 fixture × target gate가 실패해야 한다. 보고 경로에 marker 문자열이 있어도 실제 payload만 해석한다.
 - source AST scope-owner gate는 owner kind mismatch, owner-parent mismatch, reachable owner 중복을 모두 0으로 요구한다. TypeScript namespace body block은 namespace function scope에, Flow component의 합성 구현 함수 선언은 `flow_component_wrapper` function scope에 내용을 방문하므로 각각 별도 scope owner가 없는 구문 wrapper다.
 - 실행 검사는 원본을 실행 가능한 엔진에서 실행한 결과와 변환 출력을 비교한다. shadowing, closure, 평가 순서·횟수, 읽기/쓰기, direct `eval` 및 외부 이름 충돌을 포함한다.
