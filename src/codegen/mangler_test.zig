@@ -4,7 +4,7 @@ const base54 = mangler.base54;
 const isReservedOrGlobal = mangler.isReservedOrGlobal;
 const Scope = @import("../semantic/scope.zig").Scope;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
-const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 
 test "base54: basic encoding" {
     var buf: [8]u8 = undefined;
@@ -74,24 +74,6 @@ test "#4819 namespace IIFE parameters receive final names by SymbolId" {
     const parameter_name = namespace_result.renames.get(1) orelse return error.MissingRename;
     try std.testing.expectEqualStrings("_N", outer_name);
     try std.testing.expect(!std.mem.eql(u8, parameter_name, outer_name));
-
-    const fixed_kinds = [_]SyntheticKind{.runtime_helper_preamble};
-    for (fixed_kinds) |kind| {
-        symbols[1].synthetic_kind = kind;
-        var result = try mangler.mangle(allocator, .{
-            .scopes = &scopes,
-            .symbols = &symbols,
-            .scope_maps = &scope_maps,
-            .references = &.{},
-            .source = "outer",
-            .starting_name_counter = counter,
-        });
-        defer result.deinit();
-
-        try std.testing.expectEqual(@as(usize, 1), result.stats.slot_count);
-        const fixed_outer_name = result.renames.get(0) orelse return error.MissingRename;
-        try std.testing.expect(!std.mem.eql(u8, fixed_outer_name, "_N"));
-    }
 }
 
 test "#4819 enum IIFE parameters receive final names by SymbolId" {
@@ -138,6 +120,53 @@ test "#4819 enum IIFE parameters receive final names by SymbolId" {
 
     const renamed = result.renames.get(1) orelse return error.MissingEnumParameterRename;
     try std.testing.expect(!std.mem.eql(u8, renamed, "_Self"));
+    try std.testing.expect(!std.mem.eql(u8, renamed, result.renames.get(0).?));
+}
+
+test "#4819 standalone runtime helper preamble receives final name by SymbolId" {
+    const allocator = std.testing.allocator;
+    const Span = @import("../lexer/token.zig").Span;
+
+    var root_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer root_map.deinit(allocator);
+    try root_map.put(allocator, "outerLong", 0);
+    try root_map.put(allocator, "__extends", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){root_map};
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = true, .symbol_count = 2 },
+    };
+    const symbols = [_]Symbol{
+        .{
+            .name = .{ .start = 0, .end = 9 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .variable_const,
+            .declaration_span = Span{ .start = 0, .end = 9 },
+            .reference_count = 1,
+        },
+        .{
+            .name = .{ .start = 0, .end = 0 },
+            .scope_id = @enumFromInt(0),
+            .origin_scope = @enumFromInt(0),
+            .kind = .import_binding,
+            .decl_flags = SymbolKind.import_binding.declFlags(),
+            .declaration_span = Span{ .start = 0, .end = 0 },
+            .reference_count = 4,
+            .synthetic_kind = .runtime_helper_preamble,
+            .synthetic_name = "__extends",
+        },
+    };
+    var result = try mangler.mangle(allocator, .{
+        .scopes = &scopes,
+        .symbols = &symbols,
+        .scope_maps = &scope_maps,
+        .references = &.{},
+        .source = "outerLong",
+    });
+    defer result.deinit();
+
+    const renamed = result.renames.get(1) orelse return error.MissingRuntimeHelperRename;
+    try std.testing.expect(!std.mem.eql(u8, renamed, "__extends"));
     try std.testing.expect(!std.mem.eql(u8, renamed, result.renames.get(0).?));
 }
 

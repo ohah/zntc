@@ -215,11 +215,12 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         const slot_id = maybe_slot orelse continue;
         const new_name = slot_names[slot_id] orelse continue;
         const sym = symbols[sym_idx];
-        // Bundler 합성 심볼(#1338)은 source AST에 식별자 참조가 없고 span이 (0,0).
-        // namespace/enum IIFE parameter는 codegen이 SymbolId로 직접 소비하므로 rename한다.
+        // AST 밖 preamble 선언과 generated IIFE parameters는 codegen이 SymbolId로
+        // 직접 소비하므로 rename map으로 출력 이름을 공유한다.
         if (sym.isSynthetic() and
             sym.synthetic_kind != .namespace_iife_parameter and
-            sym.synthetic_kind != .enum_iife_parameter) continue;
+            sym.synthetic_kind != .enum_iife_parameter and
+            sym.synthetic_kind != .runtime_helper_preamble) continue;
         const orig_name = if (input.ast) |ast| (if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name)) else sym.nameText(source);
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
@@ -476,7 +477,7 @@ const SlotSortEntry = struct {
 /// 지울 수 있어(TS `export =` → `module.exports =`) 변환 전 심볼로 이 판정을 다시 한다.
 pub fn preservesName(sym: Symbol) bool {
     if (sym.isExported()) return true;
-    if (sym.decl_flags.is_import) return true;
+    if (sym.decl_flags.is_import and sym.synthetic_kind != .runtime_helper_preamble) return true;
     // `const Foo = class Bar {}` 의 inner `Bar` (#2197). mangle 시 `.name` 프로퍼티도
     // 함께 바뀌므로 spec 준수를 위해 원본 이름 보존.
     if (sym.decl_flags.preserve_class_name) return true;
@@ -497,13 +498,12 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
 fn hasFixedOutputName(sym: Symbol) bool {
     const kind = sym.synthetic_kind orelse return false;
     return switch (kind) {
-        .runtime_helper_preamble,
         .cjs_runtime_internal_local,
         .bundler_runtime_helper,
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.
-        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
+        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
     };
 }
 

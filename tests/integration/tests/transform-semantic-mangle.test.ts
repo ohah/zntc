@@ -1232,6 +1232,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         alias: '__extends3',
         options: [] as string[],
         userValues: 'user-long reserved-long',
+        minifiedHelper: false,
       },
       {
         helper: '$eX',
@@ -1239,6 +1240,15 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         alias: '$eX3',
         options: ['--minify-whitespace'],
         userValues: 'user-short reserved-short',
+        minifiedHelper: false,
+      },
+      {
+        helper: '__extends',
+        reserved: '__extends2',
+        alias: '__extends3',
+        options: ['--minify-identifiers'],
+        userValues: 'user-short reserved-short',
+        minifiedHelper: true,
       },
     ];
     const files: Record<string, string> = {};
@@ -1263,8 +1273,16 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       });
       expect(result.exitCode, result.stderr).toBe(0);
       const emitted = readFileSync(output, 'utf8');
-      expect(emitted).toContain(`var ${item.alias}`);
-      expect(emitted).toContain(`${item.alias}(Child`);
+      if (item.minifiedHelper) {
+        const helperName = emitted.match(/\bvar\s+([\w$]+)\s*=\s*function\s*\(d,\s*b\)/)?.[1];
+        expect(helperName).toBeDefined();
+        expect(helperName).not.toBe(item.alias);
+        expect(helperName!.length).toBe(1);
+        expect(emitted).toMatch(new RegExp(`\\b${helperName}\\(`));
+      } else {
+        expect(emitted).toContain(`var ${item.alias}`);
+        expect(emitted).toContain(`${item.alias}(Child`);
+      }
       // The source literal that mentions both colliding spellings is not rewritten.
       expect(emitted).toContain(`${item.helper} ${item.reserved}`);
       const transformed = await runNode(output);
