@@ -188,6 +188,80 @@ test "Codegen: enum with initializer" {
     );
 }
 
+fn e2eWithSemanticSymbolNameOverride(
+    backing_allocator: std.mem.Allocator,
+    source: []const u8,
+    original: []const u8,
+    output_name: []const u8,
+    ascii_only: bool,
+) !TestResult {
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    errdefer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    const root = try transformer.transform();
+
+    var binding_sid: ?u32 = null;
+    for (transformer.ast.nodes.items, 0..) |node, raw_idx| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), original)) continue;
+        if (raw_idx >= transformer.symbol_ids.items.len) continue;
+        binding_sid = transformer.symbol_ids.items[raw_idx] orelse continue;
+        break;
+    }
+    const sid = binding_sid orelse return error.MissingBindingSymbol;
+    var names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    try names.put(allocator, sid, output_name);
+
+    var cg = Codegen.initWithOptions(allocator, transformer.ast, .{
+        .minify_whitespace = true,
+        .ascii_only = ascii_only,
+        .semantic_symbol_ids = transformer.symbol_ids.items,
+        .semantic_symbols = analyzer.symbols.items,
+        .semantic_symbol_name_overrides = &names,
+    });
+    const output = try cg.generate(root);
+    return .{ .output = output, .arena = arena };
+}
+
+test "Codegen: SymbolId output name override reaches bindings and references" {
+    var r = try e2eWithSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "let original=1;original++;",
+        "original",
+        "chosen",
+        false,
+    );
+    defer r.deinit();
+    try std.testing.expectEqualStrings("let chosen=1;chosen++;", r.output);
+}
+
+test "Codegen: SymbolId output name override follows identifier escaping options" {
+    var r = try e2eWithSemanticSymbolNameOverride(
+        std.testing.allocator,
+        "let original=1;original++;",
+        "original",
+        "chosené",
+        true,
+    );
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "chosen\\u00e9") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "é") == null);
+}
+
 fn e2eEnumWithRename(backing_allocator: std.mem.Allocator, source: []const u8, renamed: []const u8) !TestResult {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
@@ -350,6 +424,10 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
         .allocator = allocator,
     };
     defer metadata.deinit();
+    var names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    defer names.deinit(allocator);
+    try names.put(allocator, 0, "transformNamespace");
+    try names.put(allocator, 1, "mappedNamespace");
 
     const symbols = [_]Symbol{
         .{
@@ -368,7 +446,7 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
             .kind = .parameter,
             .declaration_span = .{ .start = 0, .end = 0 },
             .synthetic_kind = .namespace_iife_parameter,
-            .synthetic_name = "_PlainNamespace",
+            .synthetic_name = "",
         },
         .{
             .name = .{ .start = 0, .end = 0 },
@@ -384,11 +462,12 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
     var cg = Codegen.initWithOptions(allocator, &ast, .{
         .linking_metadata = &metadata,
         .semantic_symbols = &symbols,
+        .semantic_symbol_name_overrides = &names,
     });
     defer cg.deinit();
     try std.testing.expectEqualStrings("shortNamespace", try cg.namespacePrefixName(.{ .symbol_id = 0, .fallback_name = "stalePrefix" }));
     try std.testing.expectEqualStrings(
-        "_PlainNamespace",
+        "mappedNamespace",
         try cg.namespacePrefixName(.{ .symbol_id = 1, .fallback_name = "stalePrefix" }),
     );
     try std.testing.expectError(

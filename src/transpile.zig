@@ -1694,6 +1694,14 @@ fn transpileWithCallbackInternal(
         .transformer = &transformer,
         .final_renames = helper_final_renames,
     };
+    // The block-scoping map is keyed by transform-graph SymbolIds. A
+    // post-transform reanalysis builds unrelated IDs, so only expose these
+    // overrides when codegen uses the transform graph (or no mangle graph).
+    const codegen_symbol_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) =
+        if (mangle_metadata == null or mangle_uses_transform_semantic)
+            if (transformer.block_rename_map) |*names| names else null
+        else
+            null;
     const helper_preamble = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         var local_names: rt.StandaloneRuntimeHelperLocalNames = .{};
@@ -1798,6 +1806,7 @@ fn transpileWithCallbackInternal(
         .linking_metadata = if (mangle_metadata) |*mm| mm else null,
         .semantic_symbol_ids = codegen_symbol_ids,
         .semantic_symbols = if (mangle_metadata != null) mangle_analyzer.?.symbols.items else if (analyzer_storage) |*analyzer| analyzer.symbols.items else &.{},
+        .semantic_symbol_name_overrides = codegen_symbol_name_overrides,
         .semantic_scope_maps = if (mangle_metadata != null) mangle_analyzer.?.scope_maps.items else if (analyzer_storage) |*analyzer| analyzer.scope_maps.items else &.{},
         .generated_iife_scope_owner_map = if (mangle_metadata != null) &mangle_analyzer.?.scope_owner_map else if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
         .require_generated_iife_symbols = true,
