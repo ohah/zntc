@@ -3135,6 +3135,28 @@ test "TS auto type-only export: declaration merging preserves value binding" {
     );
 }
 
+test "#4819 minified enum IIFE parameter uses its SymbolId rename" {
+    const source =
+        \\const _Self = 23;
+        \\enum Self { Self = 1, Next = Self.Self + 2 }
+        \\console.log(_Self, Self.Next);
+    ;
+    var result = try transpile(std.testing.allocator, source, "input.ts", .{ .minify_identifiers = true });
+    defer result.deinit(std.testing.allocator);
+
+    // Both the generated IIFE parameter and its virtual enum-member references
+    // must use the final name selected for that exact SymbolId.
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_Self") == null);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var scanner = try Scanner.init(arena.allocator(), result.code);
+    var parser = Parser.init(arena.allocator(), &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
 test "TS auto type-only export: named alias of default interface is elided" {
     try expectTranspileOutput(
         \\export default interface _Shape { value: number }

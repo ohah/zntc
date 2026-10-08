@@ -216,8 +216,10 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         const new_name = slot_names[slot_id] orelse continue;
         const sym = symbols[sym_idx];
         // Bundler 합성 심볼(#1338)은 source AST에 식별자 참조가 없고 span이 (0,0).
-        // namespace IIFE parameter는 codegen이 SymbolId로 직접 소비하므로 예외로 rename한다.
-        if (sym.isSynthetic() and sym.synthetic_kind != .namespace_iife_parameter) continue;
+        // namespace/enum IIFE parameter는 codegen이 SymbolId로 직접 소비하므로 rename한다.
+        if (sym.isSynthetic() and
+            sym.synthetic_kind != .namespace_iife_parameter and
+            sym.synthetic_kind != .enum_iife_parameter) continue;
         const orig_name = if (input.ast) |ast| (if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name)) else sym.nameText(source);
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
@@ -495,14 +497,13 @@ fn shouldSkip(sym: Symbol, name: []const u8) bool {
 fn hasFixedOutputName(sym: Symbol) bool {
     const kind = sym.synthetic_kind orelse return false;
     return switch (kind) {
-        .enum_iife_parameter,
         .runtime_helper_preamble,
         .cjs_runtime_internal_local,
         .bundler_runtime_helper,
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.
-        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
+        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
     };
 }
 

@@ -99,6 +99,38 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(native.stdout);
   }
 
+  test('single-file minifier renames enum IIFE parameters by SymbolId', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+        const _Self = 23;
+        enum Self { Self = 1, Next = Self.Self + 2 }
+        console.log(JSON.stringify([Self.Next, Self.Self, _Self]));
+      `,
+      'reference.mjs': `
+        const _Self = 23;
+        const Self = { Self: 1, Next: 3 };
+        console.log(JSON.stringify([Self.Next, Self.Self, _Self]));
+      `,
+    });
+    cleanup = fixture.cleanup;
+
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc([
+      join(fixture.dir, 'input.ts'),
+      '-o',
+      output,
+      '--minify-identifiers',
+    ]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(readFileSync(output, 'utf8')).not.toContain('_Self');
+
+    const reference = await runNode(join(fixture.dir, 'reference.mjs'));
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout).toBe(reference.stdout);
+    expect(transformed.stdout.trim()).toBe('[3,1,23]');
+  });
+
   test('ESM imports, named exports, and default exports keep one semantic graph', async () => {
     const fixture = await createFixture({
       'dependency.mjs': 'export const value = 8;',
