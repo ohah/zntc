@@ -184,6 +184,7 @@
 - mutation은 생성 시 등록·reference 연결·scope 관계·검사 호출을 끊었을 때 실패하는지 확인한다. `retained`/`reanalyzed` 선택만 틀리게 만드는 mutation은 경계 정책 검사이며 런타임 의미 보존 증거와 구분한다.
 - 테스트 함수 수, assertion 수, fixture × target 실행 수와 남은 구현 경계 수를 서로 환산하지 않는다. 각 작업은 실제로 삭제한 보정 경로와 아직 남은 범위로 보고한다.
 - 이 문서 작성이나 일부 생성자의 이관만으로 #4819를 닫지 않는다. 최종 이름 결정과 재분석 제거를 포함한 에픽 종료 조건은 계속 유효하다.
+- synthetic exact report의 raw `scope_mismatch`는 binding trace와 reference trace를 같은 성공 예외로 취급하지 않는다. 바인딩 trace의 mismatch는 transform-aware ExactReport의 binding ScopeId 불변식이 별도로 검사하지만, reference mismatch는 strict identity completeness를 실패시킨다. 적대적 mutation으로 reference-scope 거부를 제거하면 Zig 회귀 테스트가 실패한다. 현재 oracle 1,782 조합에서 raw mismatch 49건은 모두 binding이고, exact scope counter와 reference mismatch는 0이다.
 
 - ES5 bundler prepass는 constructor 기본값에서 앞선 단순 identifier parameter를 exact `SymbolId`로 읽는 literal/operator 식을 기존 graph에 유지한다. 매개변수 평가 순서, 기본값 체인, 본문 `var`가 같은 철자 parameter와 분리되는 동작을 identifier-minified Node 실행 및 exact graph report로 확인하고, 자기/후속/외부 참조는 재분석에 남긴다. exact ID 가드를 완화하는 hostile mutation이 이 negative controls에 걸리는지 확인한다. 이 경계는 안전한 expression grammar만 확장하며 constructor 재분석 전체 제거를 뜻하지 않는다.
 - 단일 파일 identifier minify에서 TS enum IIFE parameter를 fixed-name 제외 목록에서 빼고, 그 `SymbolId` rename을 enum 헤더·본문 및 virtual member reference 출력이 공유하게 한다. 같은 `_Self` spelling을 가진 바깥 binding과 enum `Self`를 Node에서 비교하고, enum binding slot 할당이나 rename-map 기록을 끊는 hostile mutation은 각각 SymbolId·출력 회귀를 실패시킨다. 이는 minify 경로의 enum parameter 한 종류만 이관하며 비-minify 최종 allocator, 다른 semantic-less 생성자, 재분석 제거는 남아 있다.

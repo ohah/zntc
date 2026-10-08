@@ -3099,7 +3099,7 @@ test "strict exact coverage rejects counter and finding drift" {
     try std.testing.expect(!marked_count_drift.hasCompleteExactCoverage());
 }
 
-test "strict symbol identity fails closed except bound external and delegated scope traces" {
+test "strict symbol identity delegates only binding scope traces" {
     const allocator = std.testing.allocator;
     inline for (std.meta.tags(coverage.StrictStatus)) |status| {
         var report: coverage.StrictReport = .{};
@@ -3108,7 +3108,7 @@ test "strict symbol identity fails closed except bound external and delegated sc
         try report.findings.append(allocator, .{
             .node = 1,
             .name = "x",
-            .tag = .identifier_reference,
+            .tag = if (status == .scope_mismatch) .binding_identifier else .identifier_reference,
             .status = status,
             .marked_synthetic = false,
         });
@@ -3116,7 +3116,22 @@ test "strict symbol identity fails closed except bound external and delegated sc
         try std.testing.expect(report.isConsistent());
         const expected_complete = status == .bound or status == .external or status == .scope_mismatch;
         try std.testing.expectEqual(expected_complete, report.hasCompleteSymbolIdentity());
+        try std.testing.expectEqual(status == .bound or status == .external, report.hasCompleteExactCoverage());
     }
+
+    var bad_reference_scope: coverage.StrictReport = .{};
+    defer bad_reference_scope.deinit(allocator);
+    bad_reference_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)] = 1;
+    try bad_reference_scope.findings.append(allocator, .{
+        .node = 2,
+        .name = "x",
+        .tag = .identifier_reference,
+        .status = .scope_mismatch,
+        .marked_synthetic = false,
+    });
+    try std.testing.expect(bad_reference_scope.isConsistent());
+    try std.testing.expect(!bad_reference_scope.hasCompleteSymbolIdentity());
+    try std.testing.expect(!bad_reference_scope.hasCompleteExactCoverage());
 }
 
 test "strict exact external references require matching NodeIndex provenance" {
@@ -3334,6 +3349,8 @@ test "strict inventory checks generated identity and exact lexical scope" {
     var wrong_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &wrong_scope_references, &synthetic, &unresolved);
     defer wrong_scope.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 1), wrong_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    try std.testing.expect(!wrong_scope.hasCompleteSymbolIdentity());
+    try std.testing.expect(!wrong_scope.hasCompleteExactCoverage());
 
     // A SymbolId copied onto a read without the matching Reference record is incomplete.
     var missing_reference = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
