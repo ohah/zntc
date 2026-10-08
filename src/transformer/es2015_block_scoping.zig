@@ -65,6 +65,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         pub const LoopClosureResult = struct {
             loop_fn: NodeIndex,
             loop_function: NodeIndex,
+            generator_function_scope: ?ScopeId = null,
             call_and_check: NodeIndex,
             ret_temp_span: ?Span = null,
         };
@@ -753,10 +754,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .data = .{ .extra = func_extra },
             });
 
+            var generator_function_scope: ?ScopeId = null;
             if (is_generator and self.semantic_edit_enabled) {
                 if (generator_parent_scope.isNone() or call_scope.isNone())
                     std.debug.panic("extracted generator loop has no exact insertion scope", .{});
                 const function_scope = try self.addGeneratedFunctionScope(generator_parent_scope, func_expr);
+                generator_function_scope = function_scope;
                 var header_symbol_ids: std.ArrayList(u32) = .empty;
                 defer header_symbol_ids.deinit(self.allocator);
                 var parameter_symbol_ids: std.ArrayList(u32) = .empty;
@@ -771,6 +774,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     try parameter_symbol_ids.append(self.allocator, parameter_id);
                 }
                 try self.deferred_generator_loop_migrations.put(self.allocator, @intFromEnum(function_scope), .{
+                    .loop_function = func_expr,
                     .body = visited_body,
                     .enclosing_function_scope = self.current_scope,
                     .call_scope = call_scope,
@@ -871,6 +875,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             return .{
                 .loop_fn = loop_var,
                 .loop_function = func_expr,
+                .generator_function_scope = generator_function_scope,
                 .call_and_check = call_block,
                 .ret_temp_span = ret_temp_span,
             };

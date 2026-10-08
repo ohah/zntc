@@ -841,7 +841,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // missing owner must still fail instead of using current_scope.
             // This also marks the synthetic boundary as transparent to source
             // lexical arrow captures during its later generator visit.
-            try self.deferred_generator_loop_owners.put(self.allocator, @intFromEnum(result.loop_function), {});
+            try self.deferred_generator_loop_owners.put(self.allocator, @intFromEnum(result.loop_function), .{
+                .function_scope = result.generator_function_scope,
+            });
 
             // `var _loopN = function* (x) {…}` 은 대입문으로 접히므로, 이름을 **바깥 함수**
             // 의 var 리스트에 등록해야 한다. 상태 기계가 만들어진 뒤에 생긴 이름이라
