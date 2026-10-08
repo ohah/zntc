@@ -645,7 +645,7 @@ pub fn emitChunks(
                 // 비-entry 청크·iife 는 wrapper 없음(기존). externals 는 split
                 // 에서 wrapper 시그니처에 미연결(빈 리스트, 문서화 한계).
                 if (options.format == .umd or options.format == .amd)
-                    try format_wrapper.emitFormatPrologue(&chunk_output, allocator, options.format, options.global_name, "", &.{}, &.{});
+                    try format_wrapper.emitFormatPrologue(&chunk_output, allocator, options.format, options.global_name, "", &.{}, &.{}, &.{});
                 // public_path 는 동적 청크 <script> src 접두사(런타임). 결정적
                 // JSON 문자열(따옴표/역슬래시/개행 이스케이프).
                 try chunk_output.appendSlice(allocator, "globalThis.__zntc_public_path=");

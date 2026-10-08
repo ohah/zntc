@@ -553,9 +553,15 @@ pub fn emitWithTreeShaking(
     //     매핑 없는 external 은 linker 가 fatal_diagnostics 로 에러 발행 (#1791).
     //   - UMD/AMD: 모든 external 수록. 매핑 우선, 없으면 specifier 의 PascalCase 자동 추정
     //     (`react` → `React`) — rollup/rolldown 관행과 일치. wrapper / factory param /
-    //     body reference 가 동일 이름 사용해 일관 유지.
+    //     body reference 가 외부 매개변수명을 공유한다. 서로 다른 external 의 매개변수
+    //     이름이 겹치면 linker 가 factory-local 별칭을 배정하고 wrapper 인자와 분리한다.
     var ext_specifiers: std.ArrayList([]const u8) = .empty;
     defer ext_specifiers.deinit(allocator);
+    var ext_global_names_buf: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (ext_global_names_buf.items) |n| allocator.free(n);
+        ext_global_names_buf.deinit(allocator);
+    }
     var ext_param_names_buf: std.ArrayList([]const u8) = .empty;
     defer {
         for (ext_param_names_buf.items) |n| allocator.free(n);
@@ -580,18 +586,53 @@ pub fn emitWithTreeShaking(
                 // `--globals` 를 같이 쓴 사용자가 매칭에 실패해 external 이 통째로 빠진다.
                 const mapped = types.GlobalEntry.lookup(options.globals, rec.specifier);
                 if (requires_globals_mapping and mapped == null) continue;
-                const param = if (mapped) |gname|
-                    try allocator.dupe(u8, gname)
-                else
-                    try types.specifierToParamName(allocator, ext_name);
-                errdefer allocator.free(param);
+                var global_name: []const u8 = undefined;
+                var parameter_name: []const u8 = undefined;
+                var global_name_pending = false;
+                var parameter_name_pending = false;
+                defer {
+                    if (global_name_pending) allocator.free(global_name);
+                    if (parameter_name_pending) allocator.free(parameter_name);
+                }
+                if (linker) |l| {
+                    if (l.externalParamNamesFor(ext_name)) |names| {
+                        global_name = try allocator.dupe(u8, names.global_name);
+                        global_name_pending = true;
+                        parameter_name = try allocator.dupe(u8, names.parameter_name);
+                        parameter_name_pending = true;
+                    } else {
+                        const fallback_global = if (mapped) |gname|
+                            gname
+                        else
+                            try types.specifierToParamName(allocator, ext_name);
+                        defer if (mapped == null) allocator.free(fallback_global);
+                        global_name = try allocator.dupe(u8, fallback_global);
+                        global_name_pending = true;
+                        parameter_name = try allocator.dupe(u8, fallback_global);
+                        parameter_name_pending = true;
+                    }
+                } else {
+                    const fallback_global = if (mapped) |gname|
+                        gname
+                    else
+                        try types.specifierToParamName(allocator, ext_name);
+                    defer if (mapped == null) allocator.free(fallback_global);
+                    global_name = try allocator.dupe(u8, fallback_global);
+                    global_name_pending = true;
+                    parameter_name = try allocator.dupe(u8, fallback_global);
+                    parameter_name_pending = true;
+                }
                 try seen.put(allocator, ext_name, {});
                 try ext_specifiers.append(allocator, ext_name);
-                try ext_param_names_buf.append(allocator, param);
+                try ext_global_names_buf.append(allocator, global_name);
+                global_name_pending = false;
+                try ext_param_names_buf.append(allocator, parameter_name);
+                parameter_name_pending = false;
             }
         }
     }
 
+    const ext_global_names: []const []const u8 = ext_global_names_buf.items;
     const ext_param_names: []const []const u8 = ext_param_names_buf.items;
 
     // IIFE + externals 가 있으면 factory_fn 을 param 포함 형태로 조립 (#1824).
@@ -644,7 +685,7 @@ pub fn emitWithTreeShaking(
     var prelude_scope = profile.begin(.emit_prelude);
 
     // 포맷별 prologue
-    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_param_names);
+    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_global_names, ext_param_names);
 
     if (options.intro_js) |intro| {
         try output.appendSlice(allocator, intro);
@@ -1238,7 +1279,7 @@ pub fn emitWithTreeShaking(
         if (outro.len > 0 and outro[outro.len - 1] != '\n') try output.append(allocator, '\n');
     }
 
-    try emitFormatEpilogue(&output, allocator, options.format, ext_param_names_buf.items);
+    try emitFormatEpilogue(&output, allocator, options.format, ext_global_names_buf.items);
 
     // legal comments (eof 모드): 모든 모듈의 legal comment를 파일 끝에 모아서 출력
     const lc_mode = resolveDefaultLegalComments(options.legal_comments, options.minify_whitespace);
