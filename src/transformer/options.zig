@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const token_mod = @import("../lexer/token.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const profile = @import("../profile.zig");
@@ -347,6 +348,17 @@ pub const TransformOptions = struct {
                     if (u.using and ast.variableDeclarationKind(node).isUsing()) return true;
                 },
                 .await_expression => if (u.top_level_await) return true,
+                // Exponentiation lowering emits a free `Math.pow` reference.
+                // Discover it before linking even though it adds no helper
+                // import, so the linker can reserve the generated global.
+                .binary_expression => {
+                    if (u.exponentiation and
+                        node.data.binary.flags == @intFromEnum(token_mod.Kind.star2)) return true;
+                },
+                .assignment_expression => {
+                    if (u.exponentiation and
+                        node.data.binary.flags == @intFromEnum(token_mod.Kind.star2_eq)) return true;
+                },
                 // regex 다운레벨 (named capture, dotall, sticky, unicode brace escape).
                 // named capture 는 wrap 변환에 helper module import 필요 — prepass 거쳐야
                 // graph 가 helper module 을 등록.
@@ -449,7 +461,7 @@ fn jsxHeadIdent(spec: []const u8) []const u8 {
     return std.mem.sliceTo(spec, '.');
 }
 
-test "lowered default parameters discover helpers before linking" {
+test "lowered syntax discovers helpers and generated globals before linking" {
     const Scanner = @import("../lexer/scanner.zig").Scanner;
     const Parser = @import("../parser/parser.zig").Parser;
     const fixtures = [_]struct { source: []const u8, es5_prepass: bool }{
@@ -457,6 +469,8 @@ test "lowered default parameters discover helpers before linking" {
         .{ .source = "function f(x: number = 1) { return x; }", .es5_prepass = true },
         .{ .source = "function f(x: number) { return x; }", .es5_prepass = false },
         .{ .source = "var {x = 3} = input;", .es5_prepass = true },
+        .{ .source = "function square(value) { return value ** 2; }", .es5_prepass = true },
+        .{ .source = "function square(value) { value **= 2; }", .es5_prepass = true },
     };
     for (fixtures) |fixture| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

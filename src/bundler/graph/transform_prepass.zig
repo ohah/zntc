@@ -84,9 +84,9 @@ fn refreshTlaPromiseReference(module: *Module) void {
 
 /// 보수적 graph pre-pass 게이트.
 ///
-/// graph 단계 pre-pass 는 helper/runtime import 를 link 전에 발견해야 하는 모듈에만
-/// 필요하다. 단순 ESM/TS-strip 모듈은 parser scan + semantic 결과를 그대로 쓰고,
-/// emit 단계의 legacy transformer/codegen 경로가 최종 출력 변환을 수행한다.
+/// graph 단계 pre-pass 는 helper import 또는 최종 이름 결정 전에 등록해야 하는
+/// graph-visible 전역을 만드는 모듈에 필요하다. 단순 ESM/TS-strip 모듈은 parser
+/// metadata와 emit 단계의 legacy transformer/codegen 경로를 그대로 쓴다.
 pub fn shouldRun(
     self: anytype,
     module: *const Module,
@@ -491,6 +491,20 @@ fn hasReachableObjectSpread(ast: *const ast_mod.Ast) ?bool {
         const node = ast.nodes.items[raw_idx];
         if (node.tag == .jsx_spread_attribute or
             (node.tag == .object_expression and hasDirectSpreadElement(ast, node))) return true;
+    }
+    return false;
+}
+
+fn hasReachableExponentiation(ast: *const ast_mod.Ast) ?bool {
+    const reachable_nodes = ast_walk.collectReachableNodeIndices(ast.allocator, ast) catch return null;
+    defer ast.allocator.free(reachable_nodes);
+    for (reachable_nodes) |raw_idx| {
+        const node = ast.nodes.items[raw_idx];
+        const is_binary_exponentiation = node.tag == .binary_expression and
+            node.data.binary.flags == @intFromEnum(token_mod.Kind.star2);
+        const is_exponentiation_assignment = node.tag == .assignment_expression and
+            node.data.binary.flags == @intFromEnum(token_mod.Kind.star2_eq);
+        if (is_binary_exponentiation or is_exponentiation_assignment) return true;
     }
     return false;
 }
@@ -1393,14 +1407,16 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
 
-    // Object-super and class-method lowering emit references to global
-    // `Object`. If a source binding shadows it, keep the module on reanalysis.
+    // Object-super/class-method lowering and exponentiation lowering emit
+    // references to global `Object`/`Math`. If the matching source binding
+    // shadows one, keep the module on reanalysis.
     var source_binds_object = false;
+    var source_binds_math = false;
     for (semantic.symbols.items) |symbol| {
-        if (std.mem.eql(u8, ast.getText(symbol.name), "Object")) {
-            source_binds_object = true;
-            break;
-        }
+        const name = ast.getText(symbol.name);
+        if (std.mem.eql(u8, name, "Object")) source_binds_object = true;
+        if (std.mem.eql(u8, name, "Math")) source_binds_math = true;
+        if (source_binds_object and source_binds_math) break;
     }
 
     var found_arrow = false;
@@ -1420,6 +1436,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_destructuring_assignment = false;
     var found_lowered_parameter_destructuring = false;
     var found_lowered_array_spread = false;
+    var found_lowered_exponentiation = false;
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
     var found_safe_template_literal = false;
@@ -1609,7 +1626,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .binary_expression, .logical_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                 if (node.tag == .binary_expression and options.unsupported.exponentiation and
-                    operator == .star2) return false;
+                    operator == .star2)
+                {
+                    // ES2016 lowering emits a global Math.pow call. The
+                    // retained graph can represent that external edge only
+                    // when no source binding with the same spelling exists.
+                    if (source_binds_math) return false;
+                    found_lowered_exponentiation = true;
+                }
                 if (node.tag == .logical_expression and options.unsupported.nullish_coalescing and
                     operator == .question2) return false;
             },
@@ -1868,7 +1892,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
-        found_lowered_array_spread or found_lowered_object_rest or found_lowered_object_spread;
+        found_lowered_array_spread or found_lowered_exponentiation or found_lowered_object_rest or found_lowered_object_spread;
 }
 
 /// A retained prepass graph may absorb only the `__values`/`__asyncValues`
@@ -2154,19 +2178,25 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     const object_spread_scan =
         if (opts.unsupported.object_spread) hasReachableObjectSpread(ast_ptr) else @as(?bool, false);
-    const can_keep_semantic_graph = object_spread_scan != null and
+    const exponentiation_scan = if (opts.unsupported.exponentiation)
+        hasReachableExponentiation(ast_ptr)
+    else
+        @as(?bool, false);
+    const can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         canKeepPrepassSemanticGraph(self, module, opts, merged_plugins);
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
     // If reachability allocation fails, reanalysis is already forced above.
     // Still record any generated Object reference conservatively in that path.
     const has_lowered_object_spread = object_spread_scan orelse opts.unsupported.object_spread;
     const lowered_object_spread_global = can_keep_semantic_graph and has_lowered_object_spread;
+    const has_lowered_exponentiation = exponentiation_scan orelse false;
+    const lowered_exponentiation_global = can_keep_semantic_graph and has_lowered_exponentiation;
     const debug_symbol_coverage = symbol_coverage_env.enabled();
     const pre_transform_scope_count = if (module.semantic) |*sem| sem.scopes.len else 0;
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     transformer.record_explicit_global_references =
-        flow_match_generated_globals.has_match or has_lowered_object_spread;
+        flow_match_generated_globals.has_match or has_lowered_object_spread or has_lowered_exponentiation;
 
     if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
@@ -2339,10 +2369,13 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         addFlowMatchGeneratedGlobals(arena_alloc, &module.semantic.?, flow_match_generated_globals) catch {};
         if (lowered_object_spread_global)
             addGeneratedGlobal(arena_alloc, &module.semantic.?, "Object") catch {};
+        if (lowered_exponentiation_global)
+            addGeneratedGlobal(arena_alloc, &module.semantic.?, "Math") catch {};
         const generated_globals_recorded =
             (!flow_match_generated_globals.array or module.semantic.?.unresolved_references.contains("Array")) and
             (!flow_match_generated_globals.object or module.semantic.?.unresolved_references.contains("Object")) and
-            (!lowered_object_spread_global or module.semantic.?.unresolved_references.contains("Object"));
+            (!lowered_object_spread_global or module.semantic.?.unresolved_references.contains("Object")) and
+            (!lowered_exponentiation_global or module.semantic.?.unresolved_references.contains("Math"));
         if (!generated_globals_recorded) {
             resyncAfterAstMutation(self, module, arena_alloc, null) catch {
                 self.addDiag(
