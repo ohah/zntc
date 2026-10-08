@@ -580,7 +580,7 @@ fn isRetainableSimpleOptionalMemberAccess(
     if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
     if (ast.has_jsx) return false;
     const node = ast.getNode(node_idx);
-    if (node.tag != .static_member_expression) return false;
+    if (node.tag != .static_member_expression and node.tag != .computed_member_expression) return false;
     const extra = node.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
     if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0) return false;
@@ -1905,9 +1905,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.optional_chaining and
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
                 {
-                    // A direct optional read of a bound identifier duplicates
-                    // only that exact source reference; calls, computed keys,
-                    // and chained receivers retain their resync boundary.
+                    // A direct optional member read duplicates only its bound
+                    // receiver; the property expression is visited once in the
+                    // null-checked branch. Optional calls and chained receivers
+                    // retain their resync boundary.
                     if (!isRetainableSimpleOptionalMemberAccess(ast, semantic, @enumFromInt(raw_idx)))
                         return false;
                     found_lowered_optional_chaining = true;

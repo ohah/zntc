@@ -2791,7 +2791,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'computed optional member access',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var calls = 0; function key() { calls++; return "field"; }',
           'function read(value) { return value?.[key()]; }',
