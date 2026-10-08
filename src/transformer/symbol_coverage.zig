@@ -3680,12 +3680,17 @@ pub const StrictReport = struct {
     }
 
     /// Identity completeness is gated separately from raw emitted-scope traces.
-    /// Lowering may retain a source lexical scope for a binding emitted as
-    /// `var`; ExactReport owns the transform-aware ScopeId invariants for those
-    /// cases. Unknown/new statuses still fail closed.
+    /// Lowering can make a binding's raw AST trace disagree with its semantic
+    /// scope; ExactReport owns those transform-aware binding ScopeId
+    /// invariants. A reference scope mismatch has no such exception: it means
+    /// the reference was recorded under a different output owner and fails
+    /// closed. Unknown/new statuses still fail closed.
     pub fn hasCompleteSymbolIdentity(self: *const StrictReport) bool {
         if (!self.isConsistent()) return false;
         if (self.orphan_symbols != 0) return false;
+        for (self.findings.items) |finding| {
+            if (finding.status == .scope_mismatch and finding.tag != .binding_identifier) return false;
+        }
         for (self.counts, 0..) |count, status| {
             if (status != @intFromEnum(StrictStatus.bound) and
                 status != @intFromEnum(StrictStatus.external) and
