@@ -602,16 +602,33 @@ fn isRetainableOptionalMemberReceiver(
     semantic: *const ModuleSemanticData,
     receiver_idx: ast_mod.NodeIndex,
 ) bool {
-    if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or ast.has_jsx) return false;
-    const receiver = ast.getNode(receiver_idx);
-    if (receiver.tag == .identifier_reference)
-        return isBoundSourceIdentifierReference(ast, semantic, receiver_idx);
-    if (receiver.tag != .call_expression) return false;
-    const extra = receiver.data.extra;
-    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
-    if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
-    const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    return isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
+    if (ast.has_jsx) return false;
+    var current = receiver_idx;
+    while (true) {
+        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        const receiver = ast.getNode(current);
+        switch (receiver.tag) {
+            .identifier_reference => return isBoundSourceIdentifierReference(ast, semantic, current),
+            .static_member_expression => {
+                const extra = receiver.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2)
+                    return false;
+                if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0)
+                    return false;
+                current = @enumFromInt(ast.extra_data.items[extra]);
+            },
+            .call_expression => {
+                const extra = receiver.data.extra;
+                if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3)
+                    return false;
+                if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
+                    return false;
+                const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+                return isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
+            },
+            else => return false,
+        }
+    }
 }
 
 fn isRetainableOptionalMemberAccess(
