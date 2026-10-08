@@ -1594,7 +1594,35 @@ fn hasDeferredWrapperTemp(self: *Transformer, name_span: Span) bool {
 fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, binding_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void), traces: *const std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace)) Transformer.Error!void {
     const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
     const editor = try editorFor(self);
-    const id: SymbolId = if (temp.symbol_id) |raw_id| blk: {
+    const binding_id = self.getSymbolIdAt(temp.binding);
+    const source_bound_id = if (source_scope.isNone()) null else self.bound_temp_symbols.get(
+        syntheticTempSymbolKey(temp.name_span, variableScope(self, source_scope)),
+    );
+    const target_bound_id = if (binding_scope.isNone()) null else self.bound_temp_symbols.get(
+        syntheticTempSymbolKey(temp.name_span, variableScope(self, binding_scope)),
+    );
+    if (source_bound_id != null and target_bound_id != null and source_bound_id.? != target_bound_id.?)
+        std.debug.panic("state temp source and target registries disagree on SymbolId", .{});
+    const registered_id = source_bound_id orelse target_bound_id;
+    if (temp.symbol_id != null and binding_id != null and temp.symbol_id.? != binding_id.?)
+        std.debug.panic("state temp producer and binding node disagree on SymbolId", .{});
+    if (temp.symbol_id != null and registered_id != null and temp.symbol_id.? != registered_id.?)
+        std.debug.panic("state temp producer and exact allocation registry disagree on SymbolId", .{});
+    if (binding_id != null and registered_id != null and binding_id.? != registered_id.?)
+        std.debug.panic("state temp binding and exact allocation registry disagree on SymbolId", .{});
+    const exact_id = temp.symbol_id orelse binding_id orelse registered_id;
+    if (registered_id) |raw_id| {
+        if (raw_id >= editor.symbols.items.len) std.debug.panic("state temp allocation SymbolId is out of range", .{});
+        const symbol = editor.symbols.items[raw_id];
+        const source_var_scope = if (source_scope.isNone()) binding_scope else variableScope(self, source_scope);
+        const target_var_scope = if (binding_scope.isNone()) source_var_scope else variableScope(self, binding_scope);
+        if ((symbol.scope_id != source_var_scope and symbol.scope_id != target_var_scope) or
+            symbol.kind != .variable_var or symbol.name.start != temp.name_span.start or
+            symbol.name.end != temp.name_span.end or
+            !std.mem.eql(u8, symbol.synthetic_name, self.ast.getText(temp.name_span)))
+            std.debug.panic("state temp allocation registry points to an unrelated symbol", .{});
+    }
+    const id: SymbolId = if (exact_id) |raw_id| blk: {
         const existing: SymbolId = @enumFromInt(raw_id);
         editor.relocateSymbolAs(existing, binding_scope, temp.binding) catch |err| return editError(err);
         break :blk existing;
@@ -1963,27 +1991,9 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     var live_scopes = try liveScopeOwners(self, &live);
     defer live_scopes.deinit(self.allocator);
     try reparentLiveSourceScopes(self, source_scope, function_scope, &live_scopes);
-    for (temps) |temp| try moveExistingGeneratedTempToFunction(self, source_scope, function_scope, temp.name_span);
     var traces = try collectGeneratedNodeTraces(self, body, function_scope);
     defer traces.deinit(self.allocator);
     for (temps) |temp| try bindStateCallbackTemp(self, temp, span, source_scope, function_scope, function_scope, &live, &live_scopes, &traces);
-}
-
-fn moveExistingGeneratedTempToFunction(self: *Transformer, source_scope: ScopeId, function_scope: ScopeId, name_span: Span) Transformer.Error!void {
-    if (source_scope.isNone() or function_scope.isNone() or source_scope == function_scope) return;
-    const editor = try editorFor(self);
-    if (source_scope.toIndex() >= editor.scope_maps.items.len or function_scope.toIndex() >= editor.scope_maps.items.len) return;
-    const name = self.ast.getText(name_span);
-    const raw_id = editor.scope_maps.items[source_scope.toIndex()].get(name) orelse return;
-    if (raw_id >= editor.symbols.items.len) std.debug.panic("source generated temp symbol is out of range", .{});
-    const symbol = editor.symbols.items[raw_id];
-    if (symbol.scope_id != source_scope or symbol.kind != .variable_var or symbol.synthetic_name.len == 0 or
-        symbol.name.start != name_span.start or symbol.name.end != name_span.end or
-        !std.mem.eql(u8, symbol.synthetic_name, name)) return;
-    if (editor.scope_maps.items[function_scope.toIndex()].get(name)) |existing| {
-        if (existing != raw_id) return;
-    }
-    editor.moveSymbolToScope(@enumFromInt(raw_id), function_scope) catch |err| return editError(err);
 }
 
 /// AST 생성 시점의 current_scope와 실제 삽입 위치가 다를 때 명시한 스코프에 등록한다.
