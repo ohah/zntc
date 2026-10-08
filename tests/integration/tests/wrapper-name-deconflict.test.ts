@@ -728,6 +728,64 @@ describe('#4819: CJS wrapper parameter identity', () => {
     }
   });
 
+  test('whitespace-only callback aliases compare escaped source identifiers by StringValue', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.cjs':
+        'const \\u0024e = 1, \\u{24}m = 2;\n' +
+        'exports.answer = 40;\n' +
+        'module.exports = exports;\n' +
+        'console.log(\\u0024e + \\u{24}m + module.exports.answer);',
+    });
+    try {
+      const out = join(dir, 'bundle.cjs');
+      const result = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cjs'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--minify-whitespace',
+      ]);
+      expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+      const bundle = readFileSync(out, 'utf8');
+      expect(bundle).toMatch(/\(\$e2,\$m2\)=>/);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout).toBe('43');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('low-level wrapper name fallback also avoids escaped identifier StringValues', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.cts':
+        "import type { Exports as exports } from './types';\n" +
+        'const \\u0024e = 1;\n' +
+        'console.log(\\u0024e);',
+      'types.ts': 'export type Exports = {};',
+    });
+    try {
+      const out = join(dir, 'bundle.cjs');
+      const result = await runZntc([
+        '--bundle',
+        join(dir, 'entry.cts'),
+        '-o',
+        out,
+        '--format=cjs',
+        '--minify-whitespace',
+      ]);
+      expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+      const bundle = readFileSync(out, 'utf8');
+      expect(bundle).toMatch(/\(\$e2,\$m\)=>/);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout).toBe('1');
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('nested var exports remains a separate function binding', async () => {
     const { dir, cleanup } = await createFixture({
       'entry.cjs':

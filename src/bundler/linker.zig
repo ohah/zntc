@@ -28,6 +28,7 @@ const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 pub const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
@@ -4990,7 +4991,7 @@ pub const Linker = struct {
         preferred: []const u8,
         other_param: ?[]const u8,
     ) ![]const u8 {
-        if (!self.cjsWrapperParamAliasIsUsed(module, symbol_id, preferred) and
+        if (!(try self.cjsWrapperParamAliasIsUsed(module, symbol_id, preferred)) and
             (other_param == null or !std.mem.eql(u8, preferred, other_param.?)))
         {
             return try self.allocator.dupe(u8, preferred);
@@ -4999,7 +5000,7 @@ pub const Linker = struct {
         var suffix: usize = 2;
         while (true) : (suffix += 1) {
             const candidate = try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ preferred, suffix });
-            if (!self.cjsWrapperParamAliasIsUsed(module, symbol_id, candidate) and
+            if (!(try self.cjsWrapperParamAliasIsUsed(module, symbol_id, candidate)) and
                 (other_param == null or !std.mem.eql(u8, candidate, other_param.?)))
             {
                 return candidate;
@@ -5013,10 +5014,12 @@ pub const Linker = struct {
         module: *const Module,
         ignored_id: bundler_symbol.SymbolID,
         candidate: []const u8,
-    ) bool {
+    ) !bool {
         const sem = module.semantic orelse return true;
+        const decode_scratch = try self.allocator.alloc(u8, candidate.len);
+        defer self.allocator.free(decode_scratch);
         for (sem.symbols.items, 0..) |symbol, index| {
-            if (std.mem.eql(u8, symbol.nameText(module.source), candidate)) return true;
+            if (Scanner.identifierTextEqualsAscii(symbol.nameText(module.source), candidate, decode_scratch)) return true;
             const id = bundler_symbol.SymbolID.make(module.index, @as(u32, @intCast(index)));
             if (id != ignored_id) {
                 if (self.rename_table.get(id)) |renamed| {
@@ -5032,11 +5035,11 @@ pub const Linker = struct {
 
         if (module.ast) |ast| {
             for (ast.nodes.items) |node| {
-                const name = switch (node.tag) {
+                const raw_name = switch (node.tag) {
                     .binding_identifier, .identifier_reference, .assignment_target_identifier => ast.getText(node.data.string_ref),
                     else => continue,
                 };
-                if (std.mem.eql(u8, name, candidate)) return true;
+                if (Scanner.identifierTextEqualsAscii(raw_name, candidate, decode_scratch)) return true;
             }
         }
 

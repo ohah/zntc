@@ -143,6 +143,7 @@
 - ES5 bundler prepass는 안전한 arrow 하향 변환과 classic/automatic/automatic-dev JSX lowering을 함께 할 때도 기존 semantic graph를 유지한다. factory shadowing이 있는 classic 호출과 automatic runtime helper import를 identifier-minify 후 실행하고, exact audit가 clean인지 확인한다. plain JSX spread attribute는 생성되는 `Object.assign` 글로벌을 preflight에 등록하고, source scope 어디든 `Object` binding이 있으면 재분석을 유지한다. optional chaining과 spread child는 계속 이 allowlist 밖이다. factory lexical lookup을 끊는 hostile mutation은 `shadowed_external_reference=2`, spread의 `Object` graph registration을 끊으면 retained 검사가, Object-shadow guard를 제거하면 fallback 검사가 실패했다. 복구 후 retained/fallback 7개 경우가 실행 결과와 함께 통과했다. 이 경계는 JSX + audited arrow 조합만 확장하며 plugin, decorator, 다른 비허용 구문이나 전체 재분석 제거를 뜻하지 않는다.
 
 - identifier minify CJS bundle의 일반 object-method wrapper는 본문 reference가 rename된 `module` parameter 이름을 쓰는데도 헤더는 고정 문자열 `exports, module`을 출력했다. 헤더도 같은 `cjs_ex_name`/`cjs_mod_name` 최종 이름을 사용하도록 바꾸고, import-equals·export-equals·Flow enum wrapper에서 헤더 parameter와 `.exports` 소비자가 일치하는지 구조 검사 및 Node 실행으로 확인한다. exact graph가 `clean=1`이어도 최종 emitter의 문자열 경계에서 실행 오류가 날 수 있어 graph audit와 실행 회귀를 함께 둔다.
+- CJS whitespace-minified wrapper의 `$e`/`$m` 충돌 검사는 source spelling이 아닌 ASCII identifier StringValue를 비교한다. `\u0024e`와 `\u{24}m`이 생성 parameter alias와 충돌하는 linker 경로 및 semantic fallback 경로를 Node 실행으로 검사하고, 공용 escape 비교를 원문 비교로 바꾼 hostile mutation은 두 경로의 회귀를 각각 실패시킨다. raw preamble 내부 매개변수와 최종 이름 결정 통합은 계속 남아 있다.
 
 ### 매개변수 수정 후 남은 경계
 
