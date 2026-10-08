@@ -1644,8 +1644,6 @@ const ExactCtx = struct {
                         raw,
                     );
                     const resolved = resolveInScopes(ctx.scopes, ctx.scope_maps, symbol_name, @enumFromInt(expected));
-                    const relocated = symbol.synthetic_name.len > 0 or symbol.kind == .variable_var or
-                        outputBindingIsVar(ctx, raw);
                     const owner_binding = if (expected < ctx.scope_maps.len)
                         ctx.scope_maps[expected].get(symbol_name)
                     else
@@ -1666,7 +1664,7 @@ const ExactCtx = struct {
                         (resolved == null or resolved.? == raw_id);
                     if (shadowed_lexical_owner or shadowed_storage_owner or
                         (symbol.scope_id.toIndex() != expected and
-                            (!relocated and !symbol_keeps_lexical_scope) and
+                            !symbol_keeps_lexical_scope and
                             !retained_source_scope and !isRetainedCatchBinding(ctx, raw, raw_id, symbol.scope_id)))
                     {
                         ctx.report.binding_scope_mismatch += 1;
