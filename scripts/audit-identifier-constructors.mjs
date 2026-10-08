@@ -7,8 +7,8 @@
 // 생성 함수로만 만든다:
 //   - 사용자 변수: makeIdentifierRefWithSymbol(At) · makeUserRefNamed · makeCurrentClassRef ·
 //                  makeRootScopeRef · makeUserBinding  (심볼 전달)
-//   - 합성 이름:   makeSyntheticRef(FromSpan/At) · makeSyntheticBinding · makeTempVarRef ·
-//                  makeRuntimeHelperRef
+//   - 합성 이름:   makeSyntheticRef(FromSpan/At) · makeSyntheticBinding · makeExactSyntheticBinding(FromSpan) ·
+//                  makeTempVarRef · makeRuntimeHelperRef
 //   - 전역:        makeGlobalRef(FromSpan/At)
 //   - 속성 이름:   makePropertyName(FromSpan/At)
 //
@@ -40,6 +40,8 @@ const ALLOWLIST = {
   'src/transformer/es_helpers.zig::makeSyntheticBinding': '합성 바인딩 생성 함수',
   'src/transformer/es_helpers.zig::makeExactSyntheticBinding':
     '고유 이름을 확정한 합성 바인딩 생성 함수',
+  'src/transformer/es_helpers.zig::makeExactSyntheticBindingFromSpan':
+    '이미 확정된 이름 Span을 재해석하지 않는 합성 바인딩 생성 함수',
   'src/transformer/es_helpers.zig::retagAssignmentTargetAsReference':
     '기존 assignment target 노드를 읽기 reference로 재사용',
   'src/transformer/transformer/node_helpers.zig::makeUserBinding':
