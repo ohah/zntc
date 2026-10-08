@@ -737,9 +737,12 @@ fn isRetainableOptionalCall(
     }
     if (member.tag == .call_expression) {
         if (optional_call) {
-            // `factory()?.()` lowers the ordinary source call once, captures
-            // its result in a tracked temp, then guards the optional invocation.
-            return isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
+            // A later optional call may consume the result of an already
+            // audited optional call, as in `factory()?.()?.()`. Keep the
+            // source-root check at every optional segment; untracked roots
+            // still fail both paths below.
+            return isRetainableOptionalReceiverCallCallee(ast, semantic, callee) or
+                isRetainableOptionalCallResultTail(ast, semantic, callee);
         }
         // `method?.()()` keeps the optional short-circuit around the complete
         // ordinary call tail and retains the source callee identity.
