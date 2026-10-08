@@ -861,7 +861,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try self.generator_temp_var_spans.append(self.allocator, loop_name_span);
             // break/continue/return 신호를 받는 `_ret` 도 같은 이유로 등록한다.
             if (flow.needsRetVar()) {
-                try self.generator_temp_var_spans.append(self.allocator, try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_ret")));
+                const ret_temp_span = result.ret_temp_span orelse
+                    std.debug.panic("extracted generator control-flow check lost its exact return-temp span", .{});
+                try self.generator_temp_var_spans.append(self.allocator, ret_temp_span);
             }
 
             // body 만 교체한 새 루프 노드.
