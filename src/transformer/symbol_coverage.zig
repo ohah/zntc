@@ -3097,6 +3097,8 @@ pub const PostMinifyReport = struct {
     external_references: usize = 0,
     helper_references: usize = 0,
     preserved_transform_references: usize = 0,
+    invalid_binding_id: usize = 0,
+    invalid_reference_id: usize = 0,
     missing_binding_id: usize = 0,
     missing_reference_id: usize = 0,
     dangling_reference_id: usize = 0,
@@ -3175,6 +3177,10 @@ pub fn checkPostMinify(
             report.missing_binding_id += 1;
             continue;
         }
+        if (actual.? >= actual_symbols.len or resolved.? >= resolved_symbols.len) {
+            report.invalid_binding_id += 1;
+            continue;
+        }
         try bound_actual_ids.put(allocator, actual.?, {});
         try binding_pairs.put(allocator, (@as(u64, actual.?) << 32) | resolved.?, {});
     }
@@ -3202,16 +3208,35 @@ pub fn checkPostMinify(
             break;
         }
         const resolved = resolved_class_self_symbols.get(owner);
+        if ((actual != null and actual.? >= actual_symbols.len) or
+            (resolved != null and resolved.? >= resolved_symbols.len))
+        {
+            report.invalid_binding_id += 1;
+            continue;
+        }
         if (actual == null or resolved == null) {
             // Named classes have an inner immutable self-binding even though
             // the class name AST node represents the declaration binding.
             // Without both owner maps, the generic span/name matcher below
             // can pair that inner binding with the outer declaration and hide
             // a reference that resolves to the wrong one.
-            if (has_name or actual != null or resolved != null) report.missing_binding_id += 1;
+            // Some transforms deliberately move the class-self identity to a
+            // concrete wrapper binding and make the emitted class anonymous.
+            // Accept that only when the AST binding pass above already proved
+            // an exact actual-to-resolved pair; span/name fallback is not proof.
+            const relocated_to_output_binding = if (actual) |actual_id|
+                bound_actual_ids.contains(actual_id)
+            else
+                false;
+            if (!relocated_to_output_binding and (has_name or actual != null or resolved != null))
+                report.missing_binding_id += 1;
             continue;
         }
         const actual_id = actual.?;
+        if (actual_id >= actual_symbols.len or resolved.? >= resolved_symbols.len) {
+            report.invalid_binding_id += 1;
+            continue;
+        }
         report.bindings_checked += 1;
         try bound_actual_ids.put(allocator, actual_id, {});
         try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved.?, {});
@@ -3277,7 +3302,17 @@ pub fn checkPostMinify(
         const actual = if (raw < actual_symbol_ids.len) actual_symbol_ids[raw] else null;
         const resolved = if (raw < resolved_symbol_ids.len) resolved_symbol_ids[raw] else null;
         const name = ast.getText(ast.nodes.items[raw].data.string_ref);
+        if ((actual != null and actual.? >= actual_symbols.len) or
+            (resolved != null and resolved.? >= resolved_symbols.len))
+        {
+            report.invalid_reference_id += 1;
+            continue;
+        }
         const expected_helper = helper_scope_map.get(name);
+        if (expected_helper != null and expected_helper.? >= actual_symbols.len) {
+            report.invalid_reference_id += 1;
+            continue;
+        }
         const mapped_helper = actual != null and expected_helper != null and
             actual.? == @as(u32, @intCast(expected_helper.?));
         if (helper_nodes.contains(raw) or mapped_helper) {
@@ -3345,7 +3380,7 @@ pub fn checkPostMinify(
 
 pub fn printPostMinify(file_path: []const u8, report: PostMinifyReport) void {
     std.debug.print(
-        "zntc: symbol-identity-post-minify {s}: bindings={d} references={d} external={d} helpers={d} preserved_transform_refs={d} missing_binding_id={d} missing_reference_id={d} dangling_reference_id={d} wrong_reference_target={d} clean={d}\n",
+        "zntc: symbol-identity-post-minify {s}: bindings={d} references={d} external={d} helpers={d} preserved_transform_refs={d} invalid_binding_id={d} invalid_reference_id={d} missing_binding_id={d} missing_reference_id={d} dangling_reference_id={d} wrong_reference_target={d} clean={d}\n",
         .{
             file_path,
             report.bindings_checked,
@@ -3353,6 +3388,8 @@ pub fn printPostMinify(file_path: []const u8, report: PostMinifyReport) void {
             report.external_references,
             report.helper_references,
             report.preserved_transform_references,
+            report.invalid_binding_id,
+            report.invalid_reference_id,
             report.missing_binding_id,
             report.missing_reference_id,
             report.dangling_reference_id,
@@ -4457,6 +4494,16 @@ test "exact helper coverage rejects an ancestor scope on a nested helper referen
 /// must use the classified symbol-aware constructors.
 fn makeTestIdentifierNode(ast: *Ast, tag: Node.Tag, span: Span) !NodeIndex {
     return ast.addNode(.{ .tag = tag, .span = span, .data = .{ .string_ref = span } });
+}
+
+fn makePostMinifyTestSymbolTable(comptime count: usize, span: Span) [count]Symbol {
+    const filler: Symbol = .{
+        .name = span,
+        .scope_id = @enumFromInt(0),
+        .kind = .variable_const,
+        .declaration_span = span,
+    };
+    return [_]Symbol{filler} ** count;
 }
 
 test "exact identity audit catches a same-name reference bound to the wrong scope" {
@@ -6127,6 +6174,115 @@ test "exact identity audit requires node provenance for external references and 
     try std.testing.expect(!report.isClean());
 }
 
+test "post-minify audit rejects IDs outside their symbol tables" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("value");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ binding, reference }) },
+    });
+    const actual = [_]?u32{ 7, 7, null };
+    const resolved = [_]?u32{ 2, 2, null };
+    const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.invalid_binding_id);
+    try std.testing.expectEqual(@as(usize, 1), report.invalid_reference_id);
+    try std.testing.expect(!report.isClean());
+}
+
+test "post-minify audit rejects out-of-range class-self and helper IDs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("value");
+    const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const body = try ast.addNode(.{
+        .tag = .class_body,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{}) },
+    });
+    const class_extra = try ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(body),
+        @intFromEnum(NodeIndex.none),
+        0,
+        0,
+        0,
+        0,
+    });
+    const class = try ast.addNode(.{
+        .tag = .class_expression,
+        .span = name,
+        .data = .{ .extra = class_extra },
+    });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ reference, class }) },
+    });
+
+    const actual = [_]?u32{ null, null, null, null };
+    const resolved = actual;
+    var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer helper_scope_map.deinit(allocator);
+    try helper_scope_map.put(allocator, "value", 7);
+    var actual_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer actual_class_self.deinit(allocator);
+    try actual_class_self.put(allocator, @intFromEnum(class), 7);
+    var resolved_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer resolved_class_self.deinit(allocator);
+    try resolved_class_self.put(allocator, @intFromEnum(class), 2);
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+
+    const report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &.{},
+        &.{},
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &empty_markers,
+        &actual_class_self,
+        &resolved_class_self,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.invalid_binding_id);
+    try std.testing.expectEqual(@as(usize, 1), report.invalid_reference_id);
+    try std.testing.expect(!report.isClean());
+}
+
 test "post-minify audit accepts an alias read rebound to a surviving binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -6146,10 +6302,12 @@ test "post-minify audit accepts an alias read rebound to a surviving binding" {
     resolved[@intFromEnum(binding)] = 2;
     resolved[@intFromEnum(reference)] = 2;
 
+    const actual_symbols = makePostMinifyTestSymbolTable(8, try ast.addString("__actual_filler"));
+    const resolved_symbols = makePostMinifyTestSymbolTable(3, try ast.addString("__resolved_filler"));
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expect(report.isClean());
     try std.testing.expectEqual(@as(usize, 1), report.bindings_checked);
     try std.testing.expectEqual(@as(usize, 1), report.references_checked);
@@ -6184,6 +6342,8 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
         .data = .{ .list = statements },
     });
 
+    const actual_symbols = makePostMinifyTestSymbolTable(8, try ast.addString("__actual_filler"));
+    const resolved_symbols = makePostMinifyTestSymbolTable(4, try ast.addString("__resolved_filler"));
     var actual = [_]?u32{ 7, 7, 7, null, null, null };
     var resolved = [_]?u32{ 2, null, 2, null, null, null };
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
@@ -6195,8 +6355,8 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
         root,
         &actual,
         &resolved,
-        &.{},
-        &.{},
+        &actual_symbols,
+        &resolved_symbols,
         &.{},
         &.{},
         &empty_helper_scope_map,
@@ -6214,8 +6374,8 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
         root,
         &actual,
         &resolved,
-        &.{},
-        &.{},
+        &actual_symbols,
+        &resolved_symbols,
         &.{},
         &.{},
         &empty_helper_scope_map,
@@ -6236,8 +6396,8 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
         root,
         &actual,
         &resolved,
-        &.{},
-        &.{},
+        &actual_symbols,
+        &resolved_symbols,
         &.{},
         &.{},
         &empty_helper_scope_map,
@@ -6268,10 +6428,12 @@ test "post-minify audit rejects a reference to an erased alias symbol" {
     resolved[@intFromEnum(binding)] = 2;
     resolved[@intFromEnum(reference)] = 2;
 
+    const actual_symbols = makePostMinifyTestSymbolTable(10, try ast.addString("__actual_filler"));
+    const resolved_symbols = makePostMinifyTestSymbolTable(3, try ast.addString("__resolved_filler"));
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expectEqual(@as(usize, 1), report.dangling_reference_id);
     try std.testing.expect(!report.isClean());
 }
@@ -6298,10 +6460,12 @@ test "post-minify audit rejects a reference mapped to the wrong shadowed binding
     resolved[@intFromEnum(inner)] = 11;
     resolved[@intFromEnum(reference)] = 11;
 
+    const actual_symbols = makePostMinifyTestSymbolTable(5, try ast.addString("__actual_filler"));
+    const resolved_symbols = makePostMinifyTestSymbolTable(12, try ast.addString("__resolved_filler"));
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expectEqual(@as(usize, 1), report.wrong_reference_target);
     try std.testing.expect(!report.isClean());
 }
@@ -6489,6 +6653,95 @@ test "post-minify audit requires exact class self mapping before fallback" {
     try std.testing.expect(!report.isClean());
 }
 
+test "post-minify audit accepts class self relocated to an exact wrapper binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("C");
+    const wrapper_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const self_reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const body = try ast.addNode(.{
+        .tag = .class_body,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{self_reference}) },
+    });
+    const class_extra = try ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(body),
+        @intFromEnum(NodeIndex.none),
+        0,
+        0,
+        0,
+        0,
+    });
+    const class = try ast.addNode(.{
+        .tag = .class_expression,
+        .span = name,
+        .data = .{ .extra = class_extra },
+    });
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ wrapper_binding, class }) },
+    });
+
+    const actual = [_]?u32{ 1, 1, null, null, null };
+    const resolved = [_]?u32{ 10, 10, null, null, null };
+    const actual_symbols = makePostMinifyTestSymbolTable(2, name);
+    const resolved_symbols = makePostMinifyTestSymbolTable(11, name);
+    var actual_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer actual_class_self.deinit(allocator);
+    try actual_class_self.put(allocator, @intFromEnum(class), 1);
+    const missing_resolved_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+
+    const report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &actual_symbols,
+        &resolved_symbols,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &empty_markers,
+        &actual_class_self,
+        &missing_resolved_class_self,
+    );
+    try std.testing.expect(report.isClean());
+
+    // Without the direct wrapper binding, the same missing owner map must
+    // remain an error; the span/name fallback is insufficient evidence.
+    var missing_wrapper_binding = actual;
+    missing_wrapper_binding[@intFromEnum(wrapper_binding)] = null;
+    var missing_wrapper_resolution = resolved;
+    missing_wrapper_resolution[@intFromEnum(wrapper_binding)] = null;
+    const unproven_report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &missing_wrapper_binding,
+        &missing_wrapper_resolution,
+        &actual_symbols,
+        &resolved_symbols,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &empty_markers,
+        &actual_class_self,
+        &missing_resolved_class_self,
+    );
+    try std.testing.expect(unproven_report.missing_binding_id > 0);
+    try std.testing.expect(!unproven_report.isClean());
+}
+
 test "post-minify audit distinguishes lexical reads from explicit globals" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -6511,6 +6764,8 @@ test "post-minify audit distinguishes lexical reads from explicit globals" {
     defer explicit_globals.deinit(allocator);
     try explicit_globals.put(allocator, @intFromEnum(reference), {});
 
+    const actual_symbols = makePostMinifyTestSymbolTable(8, try ast.addString("__actual_filler"));
+    const resolved_symbols = makePostMinifyTestSymbolTable(3, try ast.addString("__resolved_filler"));
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     var report = try checkPostMinify(
@@ -6519,8 +6774,8 @@ test "post-minify audit distinguishes lexical reads from explicit globals" {
         root,
         &actual,
         &resolved,
-        &.{},
-        &.{},
+        &actual_symbols,
+        &resolved_symbols,
         &.{},
         &.{},
         &empty_helper_scope_map,
@@ -6541,8 +6796,8 @@ test "post-minify audit distinguishes lexical reads from explicit globals" {
         root,
         &actual,
         &resolved,
-        &.{},
-        &.{},
+        &actual_symbols,
+        &resolved_symbols,
         &.{},
         &.{},
         &empty_helper_scope_map,
