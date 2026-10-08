@@ -2942,10 +2942,23 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional call with nested receiver',
+        graph: 'retained',
+        source: [
+          'var factories = 0; var invocations = 0; var receiver = { n: 37, method: null };',
+          'function factory() { factories++; return function () { invocations++; return receiver; }; }',
+          'function read() { return factory()().method?.(); }',
+          'console.log(read(), factories, invocations);',
+          'receiver.method = function () { return this.n + 5; };',
+          'console.log(read(), factories, invocations);',
+        ].join('\n'),
+        output: 'undefined 1 1\n42 2 2\n',
+      },
+      {
+        name: 'optional call with nested optional receiver',
         graph: 'reanalyzed',
         source: [
           'function factory() { return function () { return { method: function () { return 42; } }; }; }',
-          'function read() { return factory()().method?.(); }',
+          'function read() { return factory()?.().method?.(); }',
           'console.log(read());',
         ].join('\n'),
         output: '42\n',

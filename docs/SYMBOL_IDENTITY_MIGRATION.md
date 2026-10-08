@@ -151,6 +151,8 @@
 - ES5 bundler prepass는 audited syntax subset 안의 optional catch binding도 기존 semantic graph에 유지한다. 단순 optional catch와 안전한 named-class constructor의 optional catch는 기존 catch scope에 unused `catch_binding` SymbolId를 추가하며, exact graph와 native Node 대비 bundle 출력을 확인한다. catch body의 optional chaining은 계속 재분석한다. optional-catch 허용 신호를 제거한 hostile mutation은 retained graph 기대에서 실패하고, catch 심볼 종류를 바꾸면 기존 exact unit test가 `DuplicateBinding`으로 실패했다. 변이를 복구한 뒤 새 케이스와 기존 constructor graph 회귀가 통과했다. 이 확장은 audited body에 한정되며 모든 catch/class 경계를 옮기거나 A안을 완료하지 않는다.
 - ES5 object destructuring의 computed key가 중첩 default fallback에서 원본 `NodeIndex`로 다시 방문되어 pattern과 생성 식이 같은 reference node를 공유하고 키를 재평가하던 경로를 고쳤다. 한 번 캡처한 key temp의 exact read를 fallback member access에 전달하고, 생성 선언·할당 두 경로에서 getter가 선택 변수를 바꾸는 입력으로 원본 결과와 일치하는지 실행한다. 새 `reference_node_use_alias` exact counter는 같은 statement의 두 operand가 reference `NodeIndex` 하나를 공유하는 경우도 잡으며, 카운터를 끄는 적대적 mutation은 unit test에서 실패했다. shorthand import/export의 local 이름과 외부 이름이 같은 노드를 쓰는 허용된 표기는 한 lexical use로 분류한다.
 
+- ES5 bundler prepass는 bound source identifier에서 시작하는 일반 중첩 call chain을 optional member call receiver로 사용할 때도 graph를 유지한다. `factory()().method?.()`에서 call chain의 마지막 callee가 exact source binding인지 확인하고 모든 nested call이 일반 call인지 확인하며, optional call 및 다른 callee shape는 재분석한다. 호출 횟수, null/non-null method 경로, method `this`, exact graph를 검사한다. 이 제한된 receiver 확장은 optional chaining 전체의 재분석 제거를 뜻하지 않는다.
+
 ### 매개변수 수정 후 남은 경계
 
 - 본문 lexical 선언 자체의 ES5 TDZ 보존은 남아 있다. 예를 들어 `let x = 4`보다 앞에서 본문의 `x`를 읽으면 원본은 `ReferenceError`지만 현재 출력은 `undefined`를 읽을 수 있다. 매개변수가 외부 `x`를 읽도록 고친 것과 본문 TDZ 구현 완료를 구분한다.

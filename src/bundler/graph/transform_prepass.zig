@@ -572,8 +572,31 @@ fn isBoundSourceIdentifierAssignmentTarget(
     return hasValidSourceSymbol(ast, semantic, node_idx, .assignment_target_identifier);
 }
 
-/// A direct source call is evaluated once into a tracked temp by optional
-/// lowering; other computed receiver shapes stay outside this audited subset.
+/// A nested ordinary call receiver is captured into an exact tracked temp by
+/// optional-chain lowering. Keep this limited to call chains rooted at a bound
+/// source identifier; optional calls and other callee shapes retain resync.
+fn isRetainableOptionalReceiverCallCallee(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    callee_idx: ast_mod.NodeIndex,
+) bool {
+    var current = callee_idx;
+    while (true) {
+        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        const callee = ast.getNode(current);
+        if (callee.tag == .identifier_reference)
+            return isBoundSourceIdentifierReference(ast, semantic, current);
+        if (callee.tag != .call_expression) return false;
+        const extra = callee.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
+        if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+        current = @enumFromInt(ast.extra_data.items[extra]);
+    }
+}
+
+/// A direct or nested ordinary source call is evaluated once into a tracked
+/// temp by optional lowering. Other computed receiver shapes stay outside this
+/// audited subset.
 fn isRetainableOptionalMemberReceiver(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -588,7 +611,7 @@ fn isRetainableOptionalMemberReceiver(
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
     if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
     const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    return isBoundSourceIdentifierReference(ast, semantic, callee);
+    return isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
 }
 
 fn isRetainableOptionalMemberAccess(
