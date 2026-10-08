@@ -202,7 +202,7 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         std.debug.panic("static private method capture parameter has no SymbolId", .{});
 
     const class_alias_name_span = try self.ast.addString(self.ast.getText(class_name_span));
-    const class_alias_binding = try makeBindingIdentifier(self, class_alias_name_span);
+    const class_alias_binding = try makeExactSyntheticBindingFromSpan(self, class_alias_name_span);
     const class_alias_symbol = try self.declareSyntheticInScope(class_alias_binding, span, .variable_const, factory_scope) orelse
         std.debug.panic("static private method class alias has no SymbolId", .{});
     const capture_ref = try makeExactSyntheticRefFromSpan(self, capture_name_span);
