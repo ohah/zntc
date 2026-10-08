@@ -2790,6 +2790,17 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: 'undefined 42\n',
       },
       {
+        name: 'optional member access with captured receiver',
+        graph: 'retained',
+        source: [
+          'var calls = 0; var receiver = null;',
+          'function getReceiver() { calls++; return receiver; }',
+          'function read() { return getReceiver()?.field; }',
+          'console.log(read()); receiver = { field: 42 }; console.log(read(), calls);',
+        ].join('\n'),
+        output: 'undefined\n42 2\n',
+      },
+      {
         name: 'computed optional member access',
         graph: 'retained',
         source: [
@@ -2809,6 +2820,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'console.log(read(null), read(receiver), calls);',
         ].join('\n'),
         output: 'undefined 42 1\n',
+      },
+      {
+        name: 'optional member call with captured receiver',
+        graph: 'retained',
+        source: [
+          'var gets = 0; var calls = 0; var receiver = null;',
+          'function getReceiver() { gets++; return receiver; }',
+          'function argument() { calls++; return 5; }',
+          'function read() { return getReceiver()?.method(argument()); }',
+          'console.log(read());',
+          'receiver = { n: 37, method: function (value) { return this.n + value; } };',
+          'console.log(read(), gets, calls);',
+        ].join('\n'),
+        output: 'undefined\n42 2 1\n',
       },
       {
         name: 'computed optional member call',
@@ -2860,6 +2885,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: 'undefined 42 2 1\n',
       },
       {
+        name: 'optional call with captured receiver',
+        graph: 'retained',
+        source: [
+          'var gets = 0; var calls = 0; var receiver = null;',
+          'function getReceiver() { gets++; return receiver; }',
+          'function argument() { calls++; return 5; }',
+          'function read() { return getReceiver().method?.(argument()); }',
+          'receiver = { n: 37, method: null };',
+          'console.log(read());',
+          'receiver.method = function (value) { return this.n + value; };',
+          'console.log(read(), gets, calls);',
+        ].join('\n'),
+        output: 'undefined\n42 2 1\n',
+      },
+      {
         name: 'optional call on standalone function',
         graph: 'reanalyzed',
         source: [
@@ -2877,6 +2917,16 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'console.log(read(null), read({ child: child }));',
         ].join('\n'),
         output: 'undefined 42\n',
+      },
+      {
+        name: 'optional call with nested receiver',
+        graph: 'reanalyzed',
+        source: [
+          'function factory() { return function () { return { method: function () { return 42; } }; }; }',
+          'function read() { return factory()().method?.(); }',
+          'console.log(read());',
+        ].join('\n'),
+        output: '42\n',
       },
       {
         name: 'destructuring assignment',
