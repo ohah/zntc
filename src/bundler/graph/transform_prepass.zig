@@ -595,8 +595,8 @@ fn isRetainableOptionalReceiverCallCallee(
 }
 
 /// A direct or nested ordinary source call is evaluated once into a tracked
-/// temp by optional lowering. Other computed receiver shapes stay outside this
-/// audited subset.
+/// temp by optional lowering. Computed optional member segments are traversed
+/// only as part of this chain; computed non-optional tails remain outside it.
 fn isRetainableOptionalMemberReceiver(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -609,7 +609,7 @@ fn isRetainableOptionalMemberReceiver(
         const receiver = ast.getNode(current);
         switch (receiver.tag) {
             .identifier_reference => return isBoundSourceIdentifierReference(ast, semantic, current),
-            .static_member_expression => {
+            .static_member_expression, .computed_member_expression => {
                 const extra = receiver.data.extra;
                 if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2)
                     return false;
