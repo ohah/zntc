@@ -3,7 +3,11 @@
 /** @jsxFrag React.Fragment */
 function render(React) {
   function nested(React) {
-    return <><span /></>;
+    return (
+      <>
+        <span />
+      </>
+    );
   }
   return <div>{nested(React)}</div>;
 }
