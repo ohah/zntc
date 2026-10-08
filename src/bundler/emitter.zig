@@ -2153,6 +2153,7 @@ pub fn emitModule(
             transformer.ast,
             root,
             module,
+            transformer.symbol_ids.items,
             if (metadata) |*m| @as(?*const LinkingMetadata, m) else null,
             linker,
             options,

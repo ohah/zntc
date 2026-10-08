@@ -386,7 +386,10 @@ const NamespaceIifeParameter = struct {
 /// must resolve to its exact generated parameter symbol. The null-map path is
 /// retained for low-level callers that intentionally skip semantic analysis.
 fn namespaceIifeParameter(self: anytype, namespace_idx: NodeIndex) !?NamespaceIifeParameter {
-    if (self.options.generated_iife_scope_owner_map == null) return null;
+    if (self.options.generated_iife_scope_owner_map == null) {
+        if (self.options.require_generated_iife_symbols) return error.MissingNamespaceIifeParameterSymbol;
+        return null;
+    }
     const symbol_id = generatedIifeParamSymbolId(self, namespace_idx, .namespace_iife_parameter) orelse
         return error.MissingNamespaceIifeParameterSymbol;
     return .{
@@ -396,7 +399,10 @@ fn namespaceIifeParameter(self: anytype, namespace_idx: NodeIndex) !?NamespaceIi
 }
 
 fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) !?[]const u8 {
-    if (self.options.generated_iife_scope_owner_map == null) return null;
+    if (self.options.generated_iife_scope_owner_map == null) {
+        if (self.options.require_generated_iife_symbols) return error.MissingEnumIifeParameterSymbol;
+        return null;
+    }
     const symbol_id = generatedIifeParamSymbolId(self, enum_idx, .enum_iife_parameter) orelse
         return error.MissingEnumIifeParameterSymbol;
     return generatedIifeParamNameFromSymbolId(self, symbol_id);

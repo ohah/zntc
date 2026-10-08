@@ -52,6 +52,28 @@ describe('ESM enum hoisting in scope hoisting (__esm wrap)', () => {
     }
   });
 
+  test('TS namespace IIFE keeps its generated parameter symbol in the __esm wrapper', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': 'import "./space";',
+        'space.ts': `
+        namespace Space {
+          export const value = 3;
+          export function read() { return value; }
+        }
+        console.log(Space.value + "," + Space.read());
+        export {};
+      `,
+      },
+      'index.ts',
+      ['--dev', '--minify-identifiers'],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode, result.runStderr).toBe(0);
+    expect(result.runOutput).toBe('3,3');
+  });
+
   test("enum value is accessible from other modules' hoisted functions", async () => {
     const result = await bundleAndRun(
       {

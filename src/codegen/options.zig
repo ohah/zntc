@@ -113,6 +113,10 @@ pub const CodegenOptions = struct {
     semantic_symbols: []const @import("../semantic/symbol.zig").Symbol = &.{},
     semantic_scope_maps: []const std.StringHashMapUnmanaged(usize) = &.{},
     generated_iife_scope_owner_map: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
+    /// Fail closed when runtime TypeScript IIFEs are emitted without their
+    /// generated parameter identities. Low-level codegen callers may retain
+    /// the legacy text fallback by leaving this false.
+    require_generated_iife_symbols: bool = false,
     /// Source nested namespace binding SID -> canonical shared member SID.
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// Exact generated destructuring temp bindings that remain IIFE locals.
