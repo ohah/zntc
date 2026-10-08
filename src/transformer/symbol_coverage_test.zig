@@ -310,6 +310,127 @@ test "exact identity audit rejects declaration rows assigned to a visible descen
     try std.testing.expect(!corrupted.isClean());
 }
 
+test "exact scope audit does not treat a synthetic name as relocation evidence" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("_generated");
+    const binding = try ast.addNode(.{
+        .tag = .binding_identifier,
+        .span = name,
+        .data = .{ .string_ref = name },
+    });
+    const block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{}));
+    const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{ binding, block }));
+
+    const global_scope: ScopeId = @enumFromInt(0);
+    const block_scope: ScopeId = @enumFromInt(1);
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = global_scope, .kind = .block, .is_strict = false },
+    };
+    var scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
+    defer {
+        for (&scope_maps) |*scope_map| scope_map.deinit(allocator);
+    }
+    try scope_maps[0].put(allocator, ast.getText(name), 0);
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    const symbols = [_]Symbol{.{
+        .name = name,
+        .scope_id = global_scope,
+        .origin_scope = global_scope,
+        .kind = .variable_let,
+        .declaration_span = name,
+        .synthetic_name = ast.getText(name),
+    }};
+    const symbol_ids = [_]?u32{ 0, null, null };
+    const declarations = [_]Reference{.{
+        .node_index = .none,
+        .scope_id = global_scope,
+        .symbol_id = @enumFromInt(0),
+        .flags = .{ .declare = true },
+    }};
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const correct = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &declarations,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expect(correct.isClean());
+
+    // The marker only says this symbol was generated. Moving a lexical
+    // binding into a reachable sibling scope must still fail exact ownership.
+    var moved_symbols = symbols;
+    moved_symbols[0].scope_id = block_scope;
+    _ = scope_maps[0].remove(ast.getText(name));
+    try scope_maps[1].put(allocator, ast.getText(name), 0);
+    const corrupted = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &moved_symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &declarations,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), corrupted.binding_scope_mismatch);
+    try std.testing.expect(!corrupted.isClean());
+
+    // `var` kind has an AST-derived nearest-var scope of its own; the kind
+    // alone must not permit storage in a nearer block scope.
+    var moved_var_symbols = symbols;
+    moved_var_symbols[0].kind = .variable_var;
+    moved_var_symbols[0].synthetic_name = "";
+    moved_var_symbols[0].scope_id = block_scope;
+    const corrupted_var = try coverage.checkExact(
+        allocator,
+        &ast,
+        root,
+        0,
+        &symbol_ids,
+        &moved_var_symbols,
+        &scopes,
+        &scope_maps,
+        &owners,
+        &declarations,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), corrupted_var.binding_scope_mismatch);
+    try std.testing.expect(!corrupted_var.isClean());
+}
+
 test "exact identity audit catches same-name binding IDs swapped across scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
