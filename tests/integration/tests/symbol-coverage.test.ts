@@ -101,6 +101,24 @@ const EXACT_SCHEMA_FIELDS = new Set<string>([
   ...EXACT_SINGLETON_FIELDS.map(([field]) => field),
   ...EXACT_ZERO_COUNTERS,
 ]);
+const POST_MINIFY_OBSERVATION_FIELDS = [
+  'bindings',
+  'references',
+  'external',
+  'helpers',
+  'preserved_transform_refs',
+] as const;
+const POST_MINIFY_ZERO_COUNTERS = [
+  'missing_binding_id',
+  'missing_reference_id',
+  'dangling_reference_id',
+  'wrong_reference_target',
+] as const;
+const POST_MINIFY_SCHEMA_FIELDS = new Set<string>([
+  ...POST_MINIFY_OBSERVATION_FIELDS,
+  ...POST_MINIFY_ZERO_COUNTERS,
+  'clean',
+]);
 const SOURCE_SCOPE_OWNER_ZERO_COUNTERS = [
   'scope_owner_mismatch',
   'scope_owner_parent_mismatch',
@@ -190,6 +208,61 @@ function exactSchemaProblems(identity: string): string[] {
     }
   }
   return problems;
+}
+
+function postMinifySchemaProblems(report: string): string[] {
+  const isReportLine = report.startsWith('zntc: symbol-identity-post-minify ');
+  const payloadMarker = ': bindings=';
+  const payloadMarkerIndex = isReportLine ? report.lastIndexOf(payloadMarker) : -1;
+  if (isReportLine && payloadMarkerIndex === -1) {
+    return ['missing post-minify report payload'];
+  }
+  if (!isReportLine) return ['missing post-minify report'];
+
+  const payload = report.slice(payloadMarkerIndex + 2);
+  const counts = new Map<string, number>();
+  const values = new Map<string, string>();
+  const problems: string[] = [];
+  for (const token of payload.trim().split(/\s+/)) {
+    const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\S+)$/);
+    if (!match) {
+      problems.push('malformed post-minify report field ' + token);
+      continue;
+    }
+    const [, field, value] = match;
+    counts.set(field, (counts.get(field) ?? 0) + 1);
+    values.set(field, value);
+    if (!POST_MINIFY_SCHEMA_FIELDS.has(field)) {
+      problems.push('unexpected post-minify report field ' + field);
+    } else if (!/^\d+$/.test(value)) {
+      problems.push('malformed post-minify report value ' + field + '=' + value);
+    }
+  }
+
+  for (const field of POST_MINIFY_SCHEMA_FIELDS) {
+    const occurrences = counts.get(field) ?? 0;
+    if (occurrences !== 1) {
+      problems.push(field + ' occurrences=' + occurrences + ', expected 1');
+      continue;
+    }
+    if (POST_MINIFY_ZERO_COUNTERS.includes(field as (typeof POST_MINIFY_ZERO_COUNTERS)[number])) {
+      if (values.get(field) !== '0')
+        problems.push(field + '=' + values.get(field) + ', expected 0');
+    } else if (field === 'clean' && values.get(field) !== '1') {
+      problems.push('clean=' + values.get(field) + ', expected 1');
+    }
+  }
+  return problems;
+}
+
+function postMinifyAuditProblems(stderr: string): string[] {
+  const audits = stderr
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('zntc: symbol-identity-post-minify '));
+  if (audits.length !== 1) {
+    return [`post-minify reports=${audits.length}, expected 1`];
+  }
+  return postMinifySchemaProblems(audits[0]);
 }
 
 function strictSchemaProblems(report: string): string[] {
@@ -681,6 +754,59 @@ describe('symbol identity coverage gate (#4819)', () => {
     );
     expect(strictSchemaProblems('zntc: synthetic-coverage fixture.mjs: no-report')).toContain(
       'missing strict report payload',
+    );
+  });
+
+  test('post-minify report schema rejects missing, duplicate, malformed, and unknown fields', () => {
+    const complete = [
+      ...POST_MINIFY_OBSERVATION_FIELDS.map((field) => `${field}=1`),
+      ...POST_MINIFY_ZERO_COUNTERS.map((field) => `${field}=0`),
+      'clean=1',
+    ].join(' ');
+    const report = `zntc: symbol-identity-post-minify fixture.mjs: ${complete}`;
+
+    expect(postMinifySchemaProblems(report)).toEqual([]);
+    expect(postMinifySchemaProblems(report.replace(' references=1', ''))).toContain(
+      'references occurrences=0, expected 1',
+    );
+    expect(
+      postMinifySchemaProblems(
+        report.replace(
+          ' wrong_reference_target=0',
+          ' wrong_reference_target=0 wrong_reference_target=1',
+        ),
+      ),
+    ).toContain('wrong_reference_target occurrences=2, expected 1');
+    expect(
+      postMinifySchemaProblems(
+        report.replace(' dangling_reference_id=0', ' dangling_reference_id=1'),
+      ),
+    ).toContain('dangling_reference_id=1, expected 0');
+    expect(postMinifySchemaProblems(report.replace(' clean=1', ' clean=0'))).toContain(
+      'clean=0, expected 1',
+    );
+    expect(postMinifySchemaProblems(report.replace(' clean=1', ' clean=10'))).toContain(
+      'clean=10, expected 1',
+    );
+    expect(postMinifySchemaProblems(report.replace(' helpers=1', ' helpers=bad'))).toContain(
+      'malformed post-minify report value helpers=bad',
+    );
+    expect(postMinifySchemaProblems(report + ' future_counter=0')).toContain(
+      'unexpected post-minify report field future_counter',
+    );
+    expect(postMinifySchemaProblems(report + ' malformed')).toContain(
+      'malformed post-minify report field malformed',
+    );
+    expect(
+      postMinifySchemaProblems('zntc: symbol-identity-post-minify fixture.mjs: no-report'),
+    ).toContain('missing post-minify report payload');
+    const reportWithMarkerInPath =
+      'zntc: symbol-identity-post-minify /tmp/input: bindings=42.js: ' + complete;
+    expect(postMinifySchemaProblems(reportWithMarkerInPath)).toEqual([]);
+    expect(postMinifyAuditProblems(report)).toEqual([]);
+    expect(postMinifyAuditProblems('')).toContain('post-minify reports=0, expected 1');
+    expect(postMinifyAuditProblems(report + '\n' + report)).toContain(
+      'post-minify reports=2, expected 1',
     );
   });
 
@@ -10057,12 +10183,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               },
             );
             const stderr = proc.stderr ?? '';
-            const audit = stderr
-              .split('\n')
-              .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
-            if (proc.status !== 0 || !audit || !audit.includes('clean=1')) {
+            if (proc.status !== 0) {
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${stderr}`,
+              );
+            }
+            for (const auditProblem of postMinifyAuditProblems(stderr)) {
+              problems.push(
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${auditProblem}: ${stderr}`,
               );
             }
             runs += 1;
