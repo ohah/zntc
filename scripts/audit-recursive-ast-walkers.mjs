@@ -68,6 +68,7 @@ const ALLOWLIST = {
   "src/transformer/transformer/semantic_edit.zig::bindDeferredGeneratedStateSymbols": { class: "iterative_safe", note: "per-callback NodeIndex stack + visited set; pending reference membership only selects symbols to attach" },
   "src/transformer/transformer/semantic_edit.zig::trackGeneratedLocalSymbols": { class: "iterative_safe", note: "scoped Work stack + seen set; collected binding/reference loops use bounded scope-ancestry lookups" },
   "src/transformer/transformer/semantic_edit.zig::reparentGeneratedBodyScopes": { class: "iterative_safe", note: "NodeIndex stack + live set; liveScopeOwners and reparentLiveSourceScopes iterate maps and bounded scope chains" },
+  "src/transformer/transformer/semantic_edit.zig::reparentMovedStaticInitializerScopes": { class: "iterative_safe", note: "NodeIndex stack + seen set visits each initializer node once; scope-parent checks and reparenting do not recurse" },
   "src/transformer/transformer/semantic_edit.zig::moveGeneratedFunctionBodyBindings": { class: "iterative_safe", note: "work_stack + seen set records exact source binding nodes for later scope relocation" },
   "src/transformer/transformer/semantic_edit.zig::bindGeneratedFunctionTemps": { class: "iterative_safe", note: "explicit node stack for generated function temps" },
 
