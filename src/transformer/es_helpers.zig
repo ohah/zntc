@@ -754,7 +754,7 @@ pub fn resolveSyntheticName(self: anytype, name: []const u8) ![]const u8 {
     // `name` 은 string_table 조각일 수 있다 — 다음 addString 전에 고정한다.
     const key = try arena.dupe(u8, name);
     var resolved: []const u8 = key;
-    if (try syntheticNameInUse(self, key)) {
+    if (try syntheticNameInUse(self, key) or self.synthetic_taken.contains(key)) {
         var n: u32 = 2;
         while (true) : (n += 1) {
             const cand = try std.fmt.allocPrint(arena, "{s}{d}", .{ key, n });
@@ -1492,6 +1492,12 @@ pub fn makeSyntheticRefAt(self: anytype, name_span: Span, node_span: Span) !Node
     return markSynthetic(self, try identifierRefNode(self, try resolveSyntheticSpan(self, name_span), node_span));
 }
 
+/// Create a reference at a source location using a spelling that was already
+/// resolved and reserved by the synthetic-name allocator.
+pub fn makeExactSyntheticRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
+    return markSynthetic(self, try identifierRefNode(self, name_span, node_span));
+}
+
 pub fn makeGlobalRefAt(self: anytype, name_span: Span, node_span: Span) !NodeIndex {
     const node = try identifierRefNode(self, name_span, node_span);
     try self.markExplicitGlobalReference(node);
@@ -2188,8 +2194,7 @@ pub fn buildNewTargetCapture(self: anytype, span: Span) !NodeIndex {
             .span = initializer_span,
             .data = .{ .none = 1 },
         });
-    const name = try resolveSyntheticName(self, "_newTarget");
-    const declaration = try self.buildVarDecl(name, new_target, span);
+    const declaration = try self.buildVarDecl("_newTarget", new_target, span);
     try self.bindLexicalCapture(declaration, .new_target_value);
     return declaration;
 }

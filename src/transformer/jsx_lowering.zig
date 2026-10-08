@@ -161,7 +161,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const local = try helpers.resolveSyntheticName(self, name);
             self.jsx_import_info.setLocal(name, local);
             const local_span = try self.ast.addString(local);
-            const idx = try helpers.makeSyntheticRefAt(self, local_span, node_span);
+            const idx = try helpers.makeExactSyntheticRefAt(self, local_span, node_span);
             try self.markRuntimeHelperRef(idx);
             // Resolve the first call before its import exists, then keep that
             // exact SymbolId for later callsites and the generated import.

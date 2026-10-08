@@ -206,7 +206,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 self.ast.getNode(new_name).data.string_ref
             else blk: {
                 const synthetic = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
-                new_name = try es_helpers.makeSyntheticBinding(self, synthetic);
+                new_name = try es_helpers.makeExactSyntheticBindingFromSpan(self, synthetic);
                 break :blk synthetic;
             };
             // The outer declaration may need an alias, but class-self uses
@@ -259,7 +259,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.active_class_super_parameter = saved_class_super_parameter;
             self.active_class_super_parameter = null;
             const super_param_binding = if (super_span) |param_span|
-                try es_helpers.makeSyntheticBinding(self, param_span)
+                try es_helpers.makeExactSyntheticBindingFromSpan(self, param_span)
             else
                 NodeIndex.none;
             if (!super_param_binding.isNone()) {
@@ -571,7 +571,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const name_node = if (!new_name.isNone())
                 new_name
             else
-                try es_helpers.makeSyntheticBinding(self, name_span);
+                try es_helpers.makeExactSyntheticBindingFromSpan(self, name_span);
             const saved_class_name_node = self.current_class_name_node;
             const saved_class_self_symbol_id = self.current_class_self_symbol_id;
             self.current_class_name_node = name_node;
@@ -676,7 +676,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
             var expr_super_param_binding: NodeIndex = .none;
             if (super_span) |param_span| {
-                expr_super_param_binding = try es_helpers.makeSyntheticBinding(self, param_span);
+                expr_super_param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, param_span);
                 const exact_name_span = self.ast.getNode(expr_super_param_binding).data.string_ref;
                 super_span = exact_name_span;
                 self.current_super_class = exact_name_span;

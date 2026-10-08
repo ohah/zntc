@@ -410,7 +410,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const binding = if (origin) |source|
                     try self.makeUserBinding(temp_span, source)
                 else
-                    try es_helpers.makeSyntheticBinding(self, temp_span);
+                    try es_helpers.makeExactSyntheticBindingFromSpan(self, temp_span);
                 if (origin == null) try self.generated_temp_spans.append(self.allocator, temp_span);
                 const symbol_id: ?u32 = if (origin) |source|
                     self.getSymbolIdAt(source)

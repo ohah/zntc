@@ -320,7 +320,7 @@ fn buildFactoryBody(
 
     // var funcName = <original function>;
     const name_span = try t.ast.addString(local_name);
-    const binding = try es_helpers.makeSyntheticBinding(t, name_span);
+    const binding = try es_helpers.makeExactSyntheticBindingFromSpan(t, name_span);
     const binding_symbol = if (t.semantic_edit_enabled)
         try t.declareSyntheticInScope(binding, zero_span, .variable_var, scope)
     else
@@ -351,7 +351,7 @@ fn buildFactoryBody(
     }
 
     // return funcName;
-    const return_ref = try es_helpers.makeSyntheticRefFromSpan(t, name_span);
+    const return_ref = try es_helpers.makeExactSyntheticRefFromSpan(t, name_span);
     try t.addSyntheticRefInScope(return_ref, binding_symbol, scope, .{ .read = true });
     const return_stmt = try t.ast.addNode(.{
         .tag = .return_statement,
@@ -439,7 +439,7 @@ fn chooseFactoryLocalName(
             }
         }
     }
-    if (!needs_unique) return func_name;
+    if (!needs_unique) return es_helpers.resolveSyntheticName(api.transformer, func_name) catch return error.OutOfMemory;
     var counter: u32 = 0;
     return es_helpers.uniqueSyntheticName(api.transformer, func_name, &counter) catch return error.OutOfMemory;
 }

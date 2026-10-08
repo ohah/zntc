@@ -785,7 +785,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // --- var _loop = function(...) { ... } ---
             const loop_name_span = try self.ast.addString(loop_name);
-            const loop_binding = try es_helpers.makeSyntheticBinding(self, loop_name_span);
+            const loop_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, loop_name_span);
             const loop_symbol = try self.declareSyntheticVar(loop_binding, span);
             const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
             var decls: std.ArrayList(NodeIndex) = .empty;
@@ -800,7 +800,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- _loop(i, j, ...) 호출 ---
             const scratch_top2 = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top2);
-            const loop_ref = try es_helpers.makeSyntheticRef(self, loop_name);
+            const loop_ref = try es_helpers.makeExactSyntheticRef(self, loop_name);
             var loop_ref_scope = call_scope;
             if (loop_symbol) |symbol| {
                 const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
