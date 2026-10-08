@@ -156,6 +156,7 @@
 - ES5 bundler prepass는 exact identifier 또는 tracked-call receiver에서 시작하는 optional member access 뒤의 일반 static-member/call tail도 기존 graph에 유지한다. `getReceiver()?.child.method()`에서 receiver는 한 번 평가되고 최종 method의 `this`도 보존한다. 일반 computed-member tail, optional call, chained optional receiver는 재분석한다. 실행 횟수와 exact graph를 확인하고 computed key가 short-circuit되는 fallback 음성 대조를 둔다. 이 범위는 optional chaining 전체 재분석 제거를 뜻하지 않는다.
 - 후속 범위는 위 optional member access에서 이어지는 중첩 optional static-member receiver다. `getReceiver()?.child?.method?.()`는 첫 receiver와 메서드를 각각 한 번 평가하고 메서드의 `this`를 보존하며, 어느 optional 단계에서든 `null`이면 안전하게 short-circuit한다. computed optional receiver는 계속 재분석한다. 런타임 출력, exact graph, computed-key 횟수 음성 대조로 확인하며 모든 optional chain을 이관한 것은 아니다.
 - 그 다음 범위는 같은 exact receiver chain 안의 computed optional member다. `getReceiver()?.[key()]?.method?.()`의 key는 receiver가 null이 아닐 때 한 번만 평가되고 method의 `this`가 보존된다. computed key를 받는 매개변수의 identity와 null 경로에서 key 평가가 생략되는 동작도 검사한다. 일반 computed tail, optional call receiver의 다른 모양은 계속 fallback에 둔다.
+- standalone optional call도 exact source-bound identifier에 한해 유지한다. `method?.(argument())`에서 callee parameter identity를 보존하고 null일 때 argument를 건너뛴다. global `eval?.()`은 indirect-eval 의미를 보존하도록 재분석에 남기며, nested optional call 형태도 이 범위에 포함하지 않는다.
 
 ### 매개변수 수정 후 남은 경계
 

@@ -2935,12 +2935,25 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'optional call on standalone function',
+        graph: 'retained',
+        source: [
+          'var args = 0; var calls = 0;',
+          'function argument() { args++; return 5; }',
+          'function answer(value) { calls++; return value + 37; }',
+          'function read(method) { return method?.(argument()); }',
+          'console.log(read(null), args, calls);',
+          'console.log(read(answer), args, calls);',
+        ].join('\n'),
+        output: 'undefined 0 0\n42 1 1\n',
+      },
+      {
+        name: 'optional indirect eval remains on reanalysis path',
         graph: 'reanalyzed',
         source: [
-          'function read(method) { return method?.(); }',
-          'console.log(read(null), read(function () { return 42; }));',
+          'function read() { var localOnly = 42; return eval?.("typeof localOnly"); }',
+          'console.log(read());',
         ].join('\n'),
-        output: 'undefined 42\n',
+        output: 'undefined\n',
       },
       {
         name: 'chained optional member call',
