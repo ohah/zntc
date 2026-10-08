@@ -520,6 +520,9 @@ pub const Transformer = struct {
     /// Each state machine records its starting offset, so nested lowering cannot
     /// consume an enclosing machine's references.
     generator_state_refs: std.ArrayList(NodeIndex) = .empty,
+    /// Resolved `_state` spelling shared by one state machine's refs and callback
+    /// parameter. Nested state machines save and restore the enclosing handle.
+    generator_state_name_span: ?token_mod.Span = null,
     /// Exact callback, parameter, and reference nodes whose output owner scope
     /// was not available when the state machine was built.
     deferred_generated_state_symbols: std.ArrayListUnmanaged(DeferredGeneratedStateSymbols) = .empty,

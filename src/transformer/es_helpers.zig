@@ -544,6 +544,12 @@ pub fn makeExactSyntheticBinding(self: anytype, name: []const u8) !NodeIndex {
     return markSynthetic(self, try makeBindingIdentifier(self, try self.ast.addString(name)));
 }
 
+/// Create a synthetic binding from the exact spelling already carried by its
+/// references without running name collision resolution again.
+pub fn makeExactSyntheticBindingFromSpan(self: anytype, name_span: Span) !NodeIndex {
+    return markSynthetic(self, try makeBindingIdentifier(self, name_span));
+}
+
 /// 파일 전체에서 고유한 합성 함수 이름. 사용자 이름과 이전 생성 이름을 모두 피한다.
 pub fn uniqueSyntheticName(self: anytype, prefix: []const u8, counter: *u32) ![]const u8 {
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);

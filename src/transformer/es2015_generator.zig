@@ -40,6 +40,8 @@ const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const Scanner = @import("../lexer/scanner.zig").Scanner;
+const Parser = @import("../parser/parser.zig").Parser;
 const es_helpers = @import("es_helpers.zig");
 const es2015_destructuring = @import("es2015_destructuring.zig");
 const es2015_scan = @import("es2015_generator/scan.zig");
@@ -228,6 +230,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             saved_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex),
             saved_temp_symbols: std.AutoHashMapUnmanaged(u32, u32),
             saved_state_bindings: std.ArrayListUnmanaged(HoistedStateTemp),
+            saved_state_name_span: ?Span,
             state_ref_start: usize,
             callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
         };
@@ -243,12 +246,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var saved_state_bindings: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             try saved_state_bindings.appendSlice(self.allocator, self.generator_state_bindings.items);
             self.generator_state_bindings.clearRetainingCapacity();
+            const saved_state_name_span = self.generator_state_name_span;
+            self.generator_state_name_span = null;
             self.state_machine_depth += 1;
             return .{
                 .saved_temp_spans = saved,
                 .saved_var_origins = saved_origins,
                 .saved_temp_symbols = saved_temp_symbols,
                 .saved_state_bindings = saved_state_bindings,
+                .saved_state_name_span = saved_state_name_span,
                 .state_ref_start = self.generator_state_refs.items.len,
             };
         }
@@ -257,6 +263,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             std.debug.assert(self.state_machine_depth > 0);
             self.state_machine_depth -= 1;
             self.generator_state_refs.shrinkRetainingCapacity(frame.state_ref_start);
+            self.generator_state_name_span = frame.saved_state_name_span;
             self.generator_temp_var_spans.clearRetainingCapacity();
             self.generator_temp_var_spans.appendSlice(self.allocator, frame.saved_temp_spans.items) catch {};
             self.generator_state_temp_symbols.deinit(self.allocator);
@@ -1601,7 +1608,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// _state.trys.push([try_label, catch_label, finally_label, end_label]) expression_statement 생성.
         /// finally_label이 null이면 void 0을 출력하여 런타임의 _.label < t[2] 체크를 skip시킨다.
         fn buildTrysPush(self: *Transformer, try_label: u32, catch_label: ?u32, finally_label: ?u32, end_label: u32, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try makePendingStateRef(self);
+            const state_ref = try makeGeneratorStateRef(self);
 
             // _state.trys
             const trys_prop = try es_helpers.makePropertyName(self, "trys");
@@ -2516,7 +2523,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             }
 
             // switch(_state.label) { cases... }
-            const state_ref = try makePendingStateRef(self);
+            const state_ref = try makeGeneratorStateRef(self);
             const label_prop = try es_helpers.makePropertyName(self, "label");
             const discriminant = try es_helpers.makeStaticMember(self, state_ref, label_prop, span);
 
@@ -2750,7 +2757,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state.sent() 호출 생성.
         fn buildSentCall(self: *Transformer, span: Span) Transformer.Error!NodeIndex {
-            const state_ref = try makePendingStateRef(self);
+            const state_ref = try makeGeneratorStateRef(self);
             const sent_prop = try es_helpers.makePropertyName(self, "sent");
             const sent_member = try es_helpers.makeStaticMember(self, state_ref, sent_prop, span);
             return es_helpers.makeCallExpr(self, sent_member, &.{}, span);
@@ -2771,13 +2778,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         /// _state identifier reference 생성.
         fn buildStateRef(self: *Transformer, _: Span) Transformer.Error!NodeIndex {
-            return makePendingStateRef(self);
+            return makeGeneratorStateRef(self);
         }
 
-        fn makePendingStateRef(self: *Transformer) Transformer.Error!NodeIndex {
-            const ref = try es_helpers.makeSyntheticRef(self, "_state");
+        fn makeGeneratorStateRef(self: *Transformer) Transformer.Error!NodeIndex {
+            const name_span = try generatorStateNameSpan(self);
+            const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
             try self.generator_state_refs.append(self.allocator, ref);
             return ref;
+        }
+
+        fn generatorStateNameSpan(self: *Transformer) Transformer.Error!Span {
+            if (self.generator_state_name_span) |span| return span;
+            const name = try es_helpers.resolveSyntheticName(self, "_state");
+            const span = try self.ast.addString(name);
+            self.generator_state_name_span = span;
+            return span;
+        }
+
+        fn makeGeneratorStateBinding(self: *Transformer) Transformer.Error!NodeIndex {
+            return es_helpers.makeExactSyntheticBindingFromSpan(self, try generatorStateNameSpan(self));
         }
 
         pub const GeneratorCall = struct {
@@ -2812,8 +2832,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.runtime_helpers.generator = true;
 
             // _state 파라미터
-            const state_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_state"));
-            const state_param = try es_helpers.makeSyntheticBinding(self, state_span);
+            const state_param = try makeGeneratorStateBinding(self);
 
             // function body: switch_body를 block으로 감싸기
             const body_list = try self.ast.addNodeList(&.{switch_body});
@@ -2903,4 +2922,74 @@ test "generator state binding records preserve exact and deferred owners" {
     try std.testing.expectEqual(@as(usize, 2), mock.generator_state_bindings.items.len);
     try std.testing.expect(mock.generator_state_bindings.items[1].symbol_id == null);
     try std.testing.expect(mock.generator_state_bindings.items[1].deferred_wrapper_owner);
+}
+
+test "generator state name handoff survives nested cache invalidation" {
+    const Mock = struct {
+        pub const Error = std.mem.Allocator.Error;
+        allocator: std.mem.Allocator,
+        ast: *ast_mod.Ast,
+        symbols: []const @import("../semantic/symbol.zig").Symbol = &.{},
+        unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
+        user_symbol_names: ?std.StringHashMapUnmanaged(void) = null,
+        synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
+        synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
+        name_arena: ?std.heap.ArenaAllocator = null,
+        synthetic_idents: ?std.AutoHashMapUnmanaged(u32, void) = null,
+        generator_state_name_span: ?Span = null,
+        generator_temp_var_spans: std.ArrayList(Span) = .empty,
+        generator_var_origins: std.AutoHashMapUnmanaged(u64, NodeIndex) = .empty,
+        generator_state_temp_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+        generator_state_bindings: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
+        generator_state_refs: std.ArrayList(NodeIndex) = .empty,
+        state_machine_depth: u32 = 0,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "_state;");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+
+    var mock = Mock{ .allocator = allocator, .ast = &parser.ast };
+    const Generator = ES2015Generator(Mock);
+
+    var outer_frame = try Generator.enterStateMachineTemps(&mock);
+    var outer_active = true;
+    defer {
+        if (outer_active) Generator.leaveStateMachineTemps(&mock, &outer_frame);
+    }
+    const outer_ref = try Generator.makeGeneratorStateRef(&mock);
+    const outer_ref_span = mock.ast.getNode(outer_ref).data.string_ref;
+    try std.testing.expectEqualStrings("_state2", mock.ast.getText(outer_ref_span));
+
+    // Force a later name lookup to choose a different spelling. The outer
+    // machine must keep the exact span already attached to its references.
+    try std.testing.expect(mock.synthetic_names.remove("_state"));
+
+    var inner_frame = try Generator.enterStateMachineTemps(&mock);
+    var inner_active = true;
+    defer {
+        if (inner_active) Generator.leaveStateMachineTemps(&mock, &inner_frame);
+    }
+    const inner_ref = try Generator.makeGeneratorStateRef(&mock);
+    const inner_ref_span = mock.ast.getNode(inner_ref).data.string_ref;
+    const inner_binding = try Generator.makeGeneratorStateBinding(&mock);
+    const inner_binding_span = mock.ast.getNode(inner_binding).data.string_ref;
+    try std.testing.expectEqualStrings("_state3", mock.ast.getText(inner_ref_span));
+    try std.testing.expectEqualStrings(mock.ast.getText(inner_ref_span), mock.ast.getText(inner_binding_span));
+
+    Generator.leaveStateMachineTemps(&mock, &inner_frame);
+    inner_active = false;
+
+    const outer_binding = try Generator.makeGeneratorStateBinding(&mock);
+    const outer_binding_span = mock.ast.getNode(outer_binding).data.string_ref;
+    try std.testing.expectEqualStrings("_state2", mock.ast.getText(outer_binding_span));
+    try std.testing.expectEqualStrings(mock.ast.getText(outer_ref_span), mock.ast.getText(outer_binding_span));
+
+    Generator.leaveStateMachineTemps(&mock, &outer_frame);
+    outer_active = false;
+    try std.testing.expectEqual(@as(usize, 0), mock.generator_state_refs.items.len);
+    try std.testing.expectEqual(@as(u32, 0), mock.state_machine_depth);
 }
