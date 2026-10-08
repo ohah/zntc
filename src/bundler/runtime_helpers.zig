@@ -892,12 +892,12 @@ pub const WRAP_REGEXP_RUNTIME_MIN = "var " ++ NAMES.WRAP_REGEXP_MIN ++ "=functio
 /// `await x` 는 async generator body 안에서 `yield __await(x)` 로 변환되며,
 /// `__asyncGenerator` 의 step() 가 `r.value instanceof __await` 으로 인식해 Promise resolve.
 pub const AWAIT_RUNTIME =
-    \\var __await = function(v, s) {
-    \\  return this instanceof __await ? (this.v = v, this.s = s, this) : new __await(v, s);
+    \\var __await = function __awaitCtor(v, s) {
+    \\  return this instanceof __awaitCtor ? (this.v = v, this.s = s, this) : new __awaitCtor(v, s);
     \\};
     \\
 ;
-pub const AWAIT_RUNTIME_MIN = "var __await=function(v,s){return this instanceof __await?(this.v=v,this.s=s,this):new __await(v,s)};";
+pub const AWAIT_RUNTIME_MIN = "var __await=function __awaitCtor(v,s){return this instanceof __awaitCtor?(this.v=v,this.s=s,this):new __awaitCtor(v,s)};";
 
 /// __asyncGenerator: async generator (`async function*`) → Symbol.asyncIterator 객체 반환.
 /// tslib 호환. (#1911) `yield value` 는 그대로 yield, `await x` 는 `yield __await(x)` 로
