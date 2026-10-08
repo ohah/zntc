@@ -3103,6 +3103,8 @@ pub const PostMinifyReport = struct {
     missing_reference_id: usize = 0,
     dangling_reference_id: usize = 0,
     wrong_reference_target: usize = 0,
+    shadowed_external_reference: usize = 0,
+    unproven_external_reference: usize = 0,
 
     fn isObservationField(comptime name: []const u8) bool {
         return std.mem.eql(u8, name, "bindings_checked") or
@@ -3136,6 +3138,7 @@ pub fn checkPostMinify(
     pre_minify_references: []const Reference,
     helper_ref_nodes: []const u32,
     helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
     actual_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
     resolved_class_self_symbols: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -3338,11 +3341,22 @@ pub fn checkPostMinify(
             }
             continue;
         }
-        if (explicit_global_reference_nodes.contains(raw) and actual == null) {
+        if (explicit_global_reference_nodes.contains(raw)) {
+            if (actual != null or resolved != null) {
+                report.shadowed_external_reference += 1;
+                continue;
+            }
             report.external_references += 1;
             continue;
         }
-        if (actual == null and resolved == null) continue; // unresolved external/global
+        if (actual == null and resolved == null) {
+            if (unresolved_reference_nodes.contains(raw)) {
+                report.external_references += 1;
+            } else {
+                report.unproven_external_reference += 1;
+            }
+            continue;
+        }
         if (actual == null or resolved == null) {
             if (actual) |actual_id| {
                 if (resolved == null and pre_reference_ids.get(raw) == actual_id and actual_id < actual_symbols.len) {
@@ -3380,7 +3394,7 @@ pub fn checkPostMinify(
 
 pub fn printPostMinify(file_path: []const u8, report: PostMinifyReport) void {
     std.debug.print(
-        "zntc: symbol-identity-post-minify {s}: bindings={d} references={d} external={d} helpers={d} preserved_transform_refs={d} invalid_binding_id={d} invalid_reference_id={d} missing_binding_id={d} missing_reference_id={d} dangling_reference_id={d} wrong_reference_target={d} clean={d}\n",
+        "zntc: symbol-identity-post-minify {s}: bindings={d} references={d} external={d} helpers={d} preserved_transform_refs={d} invalid_binding_id={d} invalid_reference_id={d} missing_binding_id={d} missing_reference_id={d} dangling_reference_id={d} wrong_reference_target={d} shadowed_external_reference={d} unproven_external_reference={d} clean={d}\n",
         .{
             file_path,
             report.bindings_checked,
@@ -3394,6 +3408,8 @@ pub fn printPostMinify(file_path: []const u8, report: PostMinifyReport) void {
             report.missing_reference_id,
             report.dangling_reference_id,
             report.wrong_reference_target,
+            report.shadowed_external_reference,
+            report.unproven_external_reference,
             @intFromBool(report.isClean()),
         },
     );
@@ -6207,6 +6223,7 @@ test "post-minify audit rejects IDs outside their symbol tables" {
         &.{},
         &helper_scope_map,
         &empty_markers,
+        &empty_markers,
         &empty_class_symbols,
         &empty_class_symbols,
     );
@@ -6275,6 +6292,7 @@ test "post-minify audit rejects out-of-range class-self and helper IDs" {
         &.{},
         &helper_scope_map,
         &empty_markers,
+        &empty_markers,
         &actual_class_self,
         &resolved_class_self,
     );
@@ -6307,7 +6325,7 @@ test "post-minify audit accepts an alias read rebound to a surviving binding" {
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expect(report.isClean());
     try std.testing.expectEqual(@as(usize, 1), report.bindings_checked);
     try std.testing.expectEqual(@as(usize, 1), report.references_checked);
@@ -6361,6 +6379,7 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
         &.{},
         &empty_helper_scope_map,
         &empty_markers,
+        &empty_markers,
         &empty_class_symbols,
         &empty_class_symbols,
     );
@@ -6379,6 +6398,7 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
         &.{},
         &.{},
         &empty_helper_scope_map,
+        &empty_markers,
         &empty_markers,
         &empty_class_symbols,
         &empty_class_symbols,
@@ -6401,6 +6421,7 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
         &.{},
         &.{},
         &empty_helper_scope_map,
+        &empty_markers,
         &empty_markers,
         &empty_class_symbols,
         &empty_class_symbols,
@@ -6433,7 +6454,7 @@ test "post-minify audit rejects a reference to an erased alias symbol" {
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expectEqual(@as(usize, 1), report.dangling_reference_id);
     try std.testing.expect(!report.isClean());
 }
@@ -6465,7 +6486,7 @@ test "post-minify audit rejects a reference mapped to the wrong shadowed binding
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
+    const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &actual_symbols, &resolved_symbols, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expectEqual(@as(usize, 1), report.wrong_reference_target);
     try std.testing.expect(!report.isClean());
 }
@@ -6515,6 +6536,7 @@ test "post-minify audit rejects a helper reference shadowed by a source binding"
         &helper_nodes,
         &helper_scope_map,
         &empty_markers,
+        &empty_markers,
         &empty_class_symbols,
         &empty_class_symbols,
     );
@@ -6534,6 +6556,7 @@ test "post-minify audit rejects a helper reference shadowed by a source binding"
         &.{},
         &.{},
         &helper_scope_map,
+        &empty_markers,
         &empty_markers,
         &empty_class_symbols,
         &empty_class_symbols,
@@ -6624,6 +6647,7 @@ test "post-minify audit requires exact class self mapping before fallback" {
         &.{},
         &helper_scope_map,
         &empty_markers,
+        &empty_markers,
         &actual_class_self,
         &resolved_class_self,
     );
@@ -6645,6 +6669,7 @@ test "post-minify audit requires exact class self mapping before fallback" {
         &.{},
         &.{},
         &helper_scope_map,
+        &empty_markers,
         &empty_markers,
         &actual_class_self,
         &missing_resolved_class_self,
@@ -6712,6 +6737,7 @@ test "post-minify audit accepts class self relocated to an exact wrapper binding
         &.{},
         &helper_scope_map,
         &empty_markers,
+        &empty_markers,
         &actual_class_self,
         &missing_resolved_class_self,
     );
@@ -6735,6 +6761,7 @@ test "post-minify audit accepts class self relocated to an exact wrapper binding
         &.{},
         &helper_scope_map,
         &empty_markers,
+        &empty_markers,
         &actual_class_self,
         &missing_resolved_class_self,
     );
@@ -6742,7 +6769,7 @@ test "post-minify audit accepts class self relocated to an exact wrapper binding
     try std.testing.expect(!unproven_report.isClean());
 }
 
-test "post-minify audit distinguishes lexical reads from explicit globals" {
+test "post-minify audit rejects shadowed globals and requires external provenance" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -6760,14 +6787,14 @@ test "post-minify audit distinguishes lexical reads from explicit globals" {
     actual[@intFromEnum(reference)] = 7;
     resolved[@intFromEnum(binding)] = 2;
     resolved[@intFromEnum(reference)] = 2;
-    var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer explicit_globals.deinit(allocator);
-    try explicit_globals.put(allocator, @intFromEnum(reference), {});
-
     const actual_symbols = makePostMinifyTestSymbolTable(8, try ast.addString("__actual_filler"));
     const resolved_symbols = makePostMinifyTestSymbolTable(3, try ast.addString("__resolved_filler"));
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var unresolved_references: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer unresolved_references.deinit(allocator);
+    var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer explicit_globals.deinit(allocator);
     var report = try checkPostMinify(
         allocator,
         &ast,
@@ -6779,6 +6806,7 @@ test "post-minify audit distinguishes lexical reads from explicit globals" {
         &.{},
         &.{},
         &empty_helper_scope_map,
+        &unresolved_references,
         &explicit_globals,
         &empty_class_symbols,
         &empty_class_symbols,
@@ -6786,9 +6814,10 @@ test "post-minify audit distinguishes lexical reads from explicit globals" {
     try std.testing.expect(report.isClean());
     try std.testing.expectEqual(@as(usize, 0), report.external_references);
 
-    // The same provenance marker can describe a true generated global when no
-    // SymbolId was attached; it must remain external even if analysis finds a
-    // same-named source binding before the mangler renames that binding away.
+    // A global marker cannot override fresh lexical resolution. If the final
+    // spelling resolves to the same-named local binding, emitted code would
+    // read that local instead of the intended global.
+    try explicit_globals.put(allocator, @intFromEnum(reference), {});
     actual[@intFromEnum(reference)] = null;
     report = try checkPostMinify(
         allocator,
@@ -6801,10 +6830,60 @@ test "post-minify audit distinguishes lexical reads from explicit globals" {
         &.{},
         &.{},
         &empty_helper_scope_map,
+        &unresolved_references,
+        &explicit_globals,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.shadowed_external_reference);
+    try std.testing.expect(!report.isClean());
+
+    // After the emitted local is renamed away, the same identifier is truly
+    // unresolved. The fresh analyzer's exact unresolved-node set proves that
+    // it is an external reference.
+    const global_name = try ast.addString("GlobalName");
+    ast.nodes.items[@intFromEnum(reference)].data.string_ref = global_name;
+    resolved[@intFromEnum(reference)] = null;
+    try unresolved_references.put(allocator, @intFromEnum(reference), {});
+    report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &actual_symbols,
+        &resolved_symbols,
+        &.{},
+        &.{},
+        &empty_helper_scope_map,
+        &unresolved_references,
         &explicit_globals,
         &empty_class_symbols,
         &empty_class_symbols,
     );
     try std.testing.expect(report.isClean());
     try std.testing.expectEqual(@as(usize, 1), report.external_references);
+
+    // If both forms of external evidence disappear, null IDs cannot silently
+    // turn an unclassified identifier into a proven global.
+    _ = explicit_globals.remove(@intFromEnum(reference));
+    _ = unresolved_references.remove(@intFromEnum(reference));
+    report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &actual_symbols,
+        &resolved_symbols,
+        &.{},
+        &.{},
+        &empty_helper_scope_map,
+        &unresolved_references,
+        &explicit_globals,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.unproven_external_reference);
+    try std.testing.expect(!report.isClean());
 }
