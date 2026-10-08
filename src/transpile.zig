@@ -1779,6 +1779,7 @@ fn transpileWithCallbackInternal(
         .semantic_symbols = if (mangle_metadata != null) mangle_analyzer.?.symbols.items else if (analyzer_storage) |*analyzer| analyzer.symbols.items else &.{},
         .semantic_scope_maps = if (mangle_metadata != null) mangle_analyzer.?.scope_maps.items else if (analyzer_storage) |*analyzer| analyzer.scope_maps.items else &.{},
         .generated_iife_scope_owner_map = if (mangle_metadata != null) &mangle_analyzer.?.scope_owner_map else if (analyzer_storage) |*analyzer| &analyzer.scope_owner_map else null,
+        .require_generated_iife_symbols = true,
         .namespace_declaration_owners = if (mangle_metadata != null) &mangle_analyzer.?.namespace_declaration_owners else if (analyzer_storage) |*analyzer| &analyzer.namespace_declaration_owners else null,
         .destructuring_temp_bindings = &transformer.destructuring_temp_bindings,
         .platform = options.platform,
