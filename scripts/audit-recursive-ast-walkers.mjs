@@ -75,6 +75,7 @@ const ALLOWLIST = {
   "src/bundler/runtime_polyfills.zig::markSkippedIdentifiers": { class: "one_level", note: "import/export specifiers only, flat outer loop" },
   "src/bundler/constant_facts.zig::markMinifySensitiveIdentifierRefs": { class: "one_level", note: "one level, flat outer for" },
   "src/bundler/graph/transform_prepass.zig::hasDirectSpreadElement": { class: "one_level", note: "only checks direct child tags for spread_element; caller loops over an iteratively collected reachable-node list" },
+  "src/bundler/graph/transform_prepass.zig::isRetainableAssignmentTarget": { class: "iterative_safe", note: "NodeIndex worklist + visited set checks every descendant without recursion" },
 
   // --- recursive_tracked: 없음 ---
   // #4123 PR-2c 에서 마지막 6개 재귀 walker(walkFunctionVarBindingPatterns / scanChildrenForUnsupportedBindingLiteShadow /
