@@ -399,6 +399,51 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('classic JSX pragma factory and fragment preserve nested lexical identities', () => {
+    const fixtures = [
+      '4819-classic-jsx-shadowed-factory.tsx',
+      '4819-classic-jsx-member-factory.tsx',
+    ];
+    const expected =
+      '{"tag":"div","children":[{"tag":"Fragment","children":[{"tag":"span","children":[]}]}]}\n';
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-classic-jsx-symbols-'));
+    try {
+      for (const fixture of fixtures) {
+        for (const target of TARGETS) {
+          const { stderr, exitCode } = runCoverage(join(FIXTURE_DIR, fixture), target, outDir);
+          expect(exitCode, `${fixture} ${target.name}: ${stderr}`).toBe(0);
+          const exact = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: symbol-identity '));
+          expect(exact, `${fixture} ${target.name}: ${stderr}`).toBeDefined();
+          expect(
+            exactSchemaProblems(exact ?? ''),
+            `${fixture} ${target.name}: ${stderr}`,
+          ).toEqual([]);
+          expect(exact, `${fixture} ${target.name}: ${stderr}`).toMatch(/clean=1(?:\s|$)/);
+
+          const synthetic = stderr
+            .split(/\r?\n/)
+            .find((line) => line.startsWith('zntc: synthetic-coverage '));
+          expect(synthetic, `${fixture} ${target.name}: ${stderr}`).toBeDefined();
+          expect(
+            strictSchemaProblems(synthetic ?? ''),
+            `${fixture} ${target.name}: ${stderr}`,
+          ).toEqual([]);
+          expect(synthetic, `${fixture} ${target.name}: ${stderr}`).toMatch(
+            /consistent=1(?:\s|$).*symbol_identity_complete=1(?:\s|$)/,
+          );
+
+          const runtime = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+          expect(runtime.status, `${fixture} ${target.name}: ${runtime.stderr}`).toBe(0);
+          expect(runtime.stdout, `${fixture} ${target.name}`).toBe(expected);
+        }
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('지원하지 않는 오라클 fixture 확장자는 조용히 건너뛰지 않는다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-symcov-unknown-extension-'));
     try {
