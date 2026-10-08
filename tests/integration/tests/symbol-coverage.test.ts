@@ -301,6 +301,18 @@ function collectFixtures(directory: string): string[] {
     .sort();
 }
 
+function fixtureContentFingerprint(files: string[], directory: string): string {
+  const fingerprint = createHash('sha256');
+  for (const file of files) {
+    fingerprint
+      .update(relative(directory, file).replaceAll('\\', '/'))
+      .update('\0')
+      .update(readFileSync(file))
+      .update('\0');
+  }
+  return fingerprint.digest('hex');
+}
+
 function runCoverage(
   file: string,
   target: (typeof TARGETS)[number],
@@ -351,6 +363,9 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(fixtureInventory).toBe(
       '913add7b812a4e75b3557e7b52f4d7fde694be9336d2f908276de685efd63f76',
     );
+    expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
+      'e791b797d6eb2ef753d78fee270586352cf2796d31c92d205f3f0c4f9e04b311',
+    );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
       { name: 'es2015', arg: '--target=es2015' },
@@ -359,6 +374,25 @@ describe('symbol identity coverage gate (#4819)', () => {
       { name: 'esnext', arg: '--target=esnext' },
       { name: 'hermes', arg: '--platform=react-native' },
     ]);
+  });
+
+  test('oracle fixture fingerprint changes when a case body is removed', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'zntc-symcov-content-fingerprint-'));
+    const fixture = join(directory, 'case.mjs');
+    try {
+      writeFileSync(fixture, 'const sourceBinding = 1; console.log(sourceBinding);\n');
+      const namesBefore = collectFixtures(directory).map((file) => relative(directory, file));
+      const fingerprintBefore = fixtureContentFingerprint(collectFixtures(directory), directory);
+
+      writeFileSync(fixture, 'console.log(1);\n');
+      const namesAfter = collectFixtures(directory).map((file) => relative(directory, file));
+      const fingerprintAfter = fixtureContentFingerprint(collectFixtures(directory), directory);
+
+      expect(namesAfter).toEqual(namesBefore);
+      expect(fingerprintAfter).not.toBe(fingerprintBefore);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test('report selection ignores marker text embedded in diagnostic paths', () => {
