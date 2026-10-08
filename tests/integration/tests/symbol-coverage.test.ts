@@ -41,6 +41,7 @@ const EXACT_ZERO_COUNTERS = [
   'binding_scope_unknown',
   'invalid_scope',
   'reference_scope_mismatch',
+  'reference_statement_mismatch',
   'declaration_scope_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
@@ -89,7 +90,7 @@ const EXACT_SINGLETON_FIELDS = [
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 12;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 13;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
   'invariant_counter_count',
   'observation_field_count',
@@ -575,11 +576,17 @@ describe('symbol identity coverage gate (#4819)', () => {
         complete.replace(/observation_field_count=\d+/, 'observation_field_count=7'),
       ),
     ).toContain(`observation_field_count=7, expected ${EXACT_OBSERVATION_FIELD_COUNT}`);
+    const invalidDiagnosticFieldCount = EXACT_DIAGNOSTIC_FIELD_COUNT + 1;
     expect(
       exactSchemaProblems(
-        complete.replace(/diagnostic_field_count=\d+/, 'diagnostic_field_count=13'),
+        complete.replace(
+          /diagnostic_field_count=\d+/,
+          `diagnostic_field_count=${invalidDiagnosticFieldCount}`,
+        ),
       ),
-    ).toContain(`diagnostic_field_count=13, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`);
+    ).toContain(
+      `diagnostic_field_count=${invalidDiagnosticFieldCount}, expected ${EXACT_DIAGNOSTIC_FIELD_COUNT}`,
+    );
   });
 
   test('strict report schema rejects missing, duplicate, malformed, and unknown fields', () => {
