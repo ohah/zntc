@@ -2920,7 +2920,14 @@ pub fn replaceUserReference(self: *Transformer, source: NodeIndex, replacement: 
 /// A synthesized read whose source is a binding has no Reference to clone.
 pub fn trackUserReadFromBinding(self: *Transformer, target: NodeIndex, binding: NodeIndex, scope: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
-    const raw_id = self.getSymbolIdAt(binding) orelse return;
+    const raw_id = self.getSymbolIdAt(binding) orelse {
+        // A lowering can clone a generated temp read before the state-machine
+        // callback has declared that temp. Preserve the exact allocator span
+        // so bindGeneratedState can attach this new node to the callback-local
+        // SymbolId; name-based lookup would be ambiguous across callbacks.
+        _ = try es_helpers.trackKnownHoistedTempRef(self, target, scope, .{ .read = true });
+        return;
+    };
     if (self.getSymbolIdAt(target) != raw_id) std.debug.panic("generated read lost source binding symbol", .{});
     const editor = try editorFor(self);
     editor.addCopiedReference(
