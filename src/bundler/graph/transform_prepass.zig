@@ -572,6 +572,42 @@ fn isBoundSourceIdentifierAssignmentTarget(
     return hasValidSourceSymbol(ast, semantic, node_idx, .assignment_target_identifier);
 }
 
+/// Compound/logical assignment lowering already records member receiver/key
+/// temps in the edited graph. Admit ordinary member targets when they contain
+/// no super/private access that takes a separate lowering path.
+fn isRetainableAssignmentTarget(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    const target = ast.getNode(node_idx);
+    if (target.tag == .assignment_target_identifier)
+        return isBoundSourceIdentifierAssignmentTarget(ast, semantic, node_idx);
+    if (target.tag != .static_member_expression and target.tag != .computed_member_expression) return false;
+    if (ast_mod.spineHasOptionalChain(ast, node_idx)) return false;
+
+    var pending: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    defer pending.deinit(ast.allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(ast.allocator);
+    pending.append(ast.allocator, node_idx) catch return false;
+    while (pending.pop()) |current| {
+        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        const raw = @intFromEnum(current);
+        if (visited.contains(raw)) continue;
+        visited.put(ast.allocator, raw, {}) catch return false;
+        const node = ast.nodes.items[raw];
+        switch (node.tag) {
+            .super_expression, .private_field_expression, .private_identifier => return false,
+            else => {},
+        }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| pending.append(ast.allocator, child) catch return false;
+    }
+    return true;
+}
+
 fn isSafeConstructorBinaryOperator(operator: token_mod.Kind) bool {
     return switch (operator) {
         .l_angle,
@@ -1802,22 +1838,18 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .assignment_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                 if (options.unsupported.exponentiation and operator == .star2_eq) {
-                    // A simple source binding keeps the same identity for the
-                    // generated read and write. Member targets still need the
-                    // full reanalysis path because lowering may add temps.
-                    if (source_binds_math or !isBoundSourceIdentifierAssignmentTarget(
-                        ast,
-                        semantic,
-                        node.data.binary.left,
-                    )) return false;
+                    // The transform editor tracks both source identifiers and
+                    // generated member receiver/key temps by exact identity.
+                    if (source_binds_math or !isRetainableAssignmentTarget(ast, semantic, node.data.binary.left))
+                        return false;
                     found_lowered_exponentiation = true;
                 }
                 if (options.unsupported.logical_assignment and
                     (operator == .question2_eq or operator == .pipe2_eq or operator == .amp2_eq))
                 {
-                    // Simple source identifiers retain an exact read/write split.
-                    // Member targets still use reanalysis until their emitted edges are admitted.
-                    if (!isBoundSourceIdentifierAssignmentTarget(ast, semantic, node.data.binary.left))
+                    // Member receiver/key temps and the value capture for ??=
+                    // are registered by the same transform semantic editor.
+                    if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left))
                         return false;
                     found_lowered_logical_assignment = true;
                 }

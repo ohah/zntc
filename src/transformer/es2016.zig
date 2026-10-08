@@ -26,7 +26,7 @@ pub fn ES2016(comptime Transformer: type) type {
         /// `a **= b` → `a = Math.pow(a, b)`
         pub fn lowerExponentiationAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
-            try es_helpers.trackAssignmentTargetTemps(self, target, true, false);
+            try es_helpers.trackAssignmentTargetRefs(self, target, true, false);
             const target_node = self.ast.getNode(target.read);
             if (target_node.tag == .identifier_reference or target_node.tag == .assignment_target_identifier) {
                 es_helpers.retagAssignmentTargetAsReference(self, target.value);
