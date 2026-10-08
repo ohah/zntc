@@ -4977,10 +4977,22 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expectedOutput: '["span",42]\n',
       },
       {
-        mode: 'classic-spread-attribute-fallback',
+        mode: 'classic-spread-attribute-retained',
+        graph: 'retained',
+        args: ['--jsx=classic', '--jsx-factory=h'],
+        source: [
+          'function h(tag, props) { return [tag, props]; }',
+          'var props = { value: 42 };',
+          'console.log(JSON.stringify(<div id="first" {...props} tail={7} />));',
+        ].join('\n'),
+        expectedOutput: '["div",{"id":"first","value":42,"tail":7}]\n',
+      },
+      {
+        mode: 'classic-spread-attribute-object-shadow-fallback',
         graph: 'reanalyzed',
         args: ['--jsx=classic', '--jsx-factory=h'],
         source: [
+          'function unrelated(Object) { return Object; }',
           'function h(tag, props) { return [tag, props]; }',
           'var props = { value: 42 };',
           'console.log(JSON.stringify(<div {...props} />));',
