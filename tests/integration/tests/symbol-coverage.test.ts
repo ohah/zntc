@@ -2035,6 +2035,92 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 optional catch binding retains exact graphs only for audited bodies', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-optional-catch-retained-'));
+    const cases = [
+      {
+        name: 'optional-catch-only',
+        graph: 'retained',
+        source: [
+          'var _a = 41;',
+          'try { throw 7; } catch { console.log("caught"); }',
+          'console.log(_a);',
+        ].join('\n'),
+        stdout: 'caught\n41\n',
+      },
+      {
+        name: 'optional-chain-fallback',
+        graph: 'reanalyzed',
+        source: [
+          'var value = { nested: { leaf: 9 } };',
+          'try { throw 1; } catch { console.log(value?.nested.leaf); }',
+        ].join('\n'),
+        stdout: '9\n',
+      },
+    ];
+    try {
+      for (const fixture of cases) {
+        const entry = join(dir, `${fixture.name}.js`);
+        const output = join(dir, `${fixture.name}.cjs`);
+        writeFileSync(entry, fixture.source);
+        const native = spawnSync('node', ['-e', fixture.source], { encoding: 'utf8' });
+        expect(native.status, `${fixture.name}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, fixture.name).toBe(fixture.stdout);
+
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            entry,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') &&
+              line.includes(`${fixture.name}.js`),
+          );
+        expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.name}: ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${fixture.name}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+              line.includes(`${fixture.name}.js`),
+          );
+        expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 arrow-only bundler lowering retains exact output scopes and lexical captures', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-retained-'));
     const output = join(dir, 'out.cjs');
@@ -8702,10 +8788,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '7 true 1 true\n',
       },
       {
-        name: 'constructor optional catch binding stays on reanalysis',
+        name: 'constructor optional catch binding retains its exact graph',
         source:
           'class ConstructorOptionalCatch { constructor() { try { throw 2; } catch { this.caught = true; } } } console.log(new ConstructorOptionalCatch().caught);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {

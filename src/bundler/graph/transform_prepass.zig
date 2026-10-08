@@ -848,7 +848,7 @@ fn isSafeConstructorCatchClause(
     const catch_clause = ast.getNode(catch_idx);
     if (catch_clause.tag != .catch_clause) return false;
     const parameter_idx = catch_clause.data.binary.left;
-    if (parameter_idx.isNone() or !isBoundSourceIdentifierBinding(ast, semantic, parameter_idx)) return false;
+    if (!parameter_idx.isNone() and !isBoundSourceIdentifierBinding(ast, semantic, parameter_idx)) return false;
     const body_idx = catch_clause.data.binary.right;
     return !body_idx.isNone() and @intFromEnum(body_idx) < ast.nodes.items.len and
         ast.getNode(body_idx).tag == .block_statement and
@@ -1441,6 +1441,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_logical_assignment = false;
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
+    var found_lowered_optional_catch_binding = false;
     var found_safe_template_literal = false;
     var found_computed_object_data_key = false;
     var found_computed_object_method_key = false;
@@ -1907,7 +1908,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             else => return false,
         }
-        if (node.tag == .catch_clause and node.data.binary.left.isNone()) return false;
+        if (node.tag == .catch_clause and node.data.binary.left.isNone() and
+            options.unsupported.optional_catch_binding)
+        {
+            // ES2019 lowering inserts one unused catch binding in the existing
+            // catch scope and registers its exact synthetic SymbolId. No source
+            // references or additional scope edges are introduced.
+            found_lowered_optional_catch_binding = true;
+        }
     }
     return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
         found_native_for_in or found_lowered_for_in or found_native_for_of or found_lowered_for_of or
@@ -1917,7 +1925,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_safe_template_literal or found_object_shorthand or found_lowered_object_method or
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
-        found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread;
+        found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
+        found_lowered_optional_catch_binding;
 }
 
 /// A retained prepass graph may absorb only the `__values`/`__asyncValues`
