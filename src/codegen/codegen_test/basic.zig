@@ -522,6 +522,12 @@ test "#4819 Codegen refuses to recover a missing namespace IIFE parameter from t
     });
     defer cg.deinit();
     try std.testing.expectError(error.MissingNamespaceIifeParameterSymbol, cg.generate(root));
+
+    var no_owner_cg = Codegen.initWithOptions(allocator, transformer.ast, .{
+        .require_generated_iife_symbols = true,
+    });
+    defer no_owner_cg.deinit();
+    try std.testing.expectError(error.MissingNamespaceIifeParameterSymbol, no_owner_cg.generate(root));
 }
 
 test "#4819 Codegen keeps namespace text fallback when semantic owners are absent" {
@@ -601,6 +607,12 @@ test "#4819 Codegen refuses to recover a missing enum IIFE parameter from text" 
     var missing_owner_cg = Codegen.initWithOptions(allocator, transformer.ast, missing_owner_options);
     defer missing_owner_cg.deinit();
     try std.testing.expectError(error.MissingEnumIifeParameterSymbol, missing_owner_cg.generate(root));
+
+    var no_owner_cg = Codegen.initWithOptions(allocator, transformer.ast, .{
+        .require_generated_iife_symbols = true,
+    });
+    defer no_owner_cg.deinit();
+    try std.testing.expectError(error.MissingEnumIifeParameterSymbol, no_owner_cg.generate(root));
 }
 
 test "#4819 Codegen keeps collision-safe enum fallback without semantic owners" {
