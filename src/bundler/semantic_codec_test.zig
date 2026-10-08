@@ -23,6 +23,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
     _ = try parser.parse();
     var ana = SemanticAnalyzer.init(alloc, &parser.ast);
     defer ana.deinit();
+    ana.enable_stmt_info = true;
     try ana.analyze();
 
     try testing.expect(ana.symbols.items.len > 0); // 비어있으면 검증 무의미
@@ -30,6 +31,14 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
     try testing.expect(ana.scope_maps.items.len > 0); // 맵 round-trip 검증 의미 보장
     try testing.expect(ana.scope_owner_map.count() > 0);
     try testing.expect(ana.class_self_symbol_map.count() > 0);
+    var anchored_declaration = false;
+    for (ana.references.items) |reference| {
+        if (reference.flags.declare and !reference.declaration_node_index.isNone()) {
+            anchored_declaration = true;
+            break;
+        }
+    }
+    try testing.expect(anchored_declaration);
 
     const sem = ModuleSemanticData{
         .symbols = ana.symbols,
@@ -404,6 +413,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             const refs = try a.alloc(Reference, 1);
             @memset(std.mem.asBytes(&refs[0]), poison);
             refs[0].node_index = @enumFromInt(3);
+            refs[0].declaration_node_index = .none;
             refs[0].scope_id = @enumFromInt(0);
             refs[0].symbol_id = @enumFromInt(0);
             refs[0].stmt_idx = 0;

@@ -269,7 +269,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                                     if (std.mem.eql(u8, default_name, "_default")) {
                                         const raw_id = self.getSymbolIdAt(stmt) orelse std.debug.panic("default export facade has no SymbolId", .{});
                                         try self.setGeneratedSymbolId(binding, raw_id);
-                                        try self.ensureSymbolDeclaration(raw_id, self.programScope());
+                                        try self.ensureSymbolDeclarationAtNode(raw_id, self.programScope(), binding);
                                         break :blk @enumFromInt(raw_id);
                                     }
                                     break :blk try self.declareSyntheticInScope(binding, node.span, .variable_var, self.programScope());

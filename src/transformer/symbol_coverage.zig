@@ -229,6 +229,7 @@ pub const ExactReport = struct {
     reference_scope_statement_alias: usize = 0,
     reference_node_use_alias: usize = 0,
     declaration_scope_mismatch: usize = 0,
+    declaration_identity_mismatch: usize = 0,
     scope_map_mismatch: usize = 0,
     scope_owner_mismatch: usize = 0,
     scope_owner_parent_mismatch: usize = 0,
@@ -706,7 +707,7 @@ fn collectBindingPatternNodes(
     }
 }
 
-fn collectDeclarationNodes(
+pub fn collectDeclarationNodes(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     reachable: *const std.AutoHashMapUnmanaged(u32, void),
@@ -740,6 +741,22 @@ fn collectDeclarationNodes(
                     const name: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
                     if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
                 }
+            },
+            .ts_enum_declaration, .flow_enum_declaration => {
+                if (ast.hasExtra(node.data.extra, 0)) {
+                    const name: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+                    if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
+                }
+            },
+            .ts_module_declaration => {
+                const name = node.data.binary.left;
+                if (!name.isNone() and @intFromEnum(name) < ast.nodes.items.len and
+                    ast.getNode(name).tag != .string_literal)
+                    try bindings.put(allocator, @intFromEnum(name), {});
+            },
+            .ts_import_equals_declaration => {
+                const name = node.data.binary.left;
+                if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
             },
             .catch_clause => try collectBindingPatternNodes(allocator, ast, node.data.binary.left, &bindings),
             .variable_declarator => {
@@ -2363,13 +2380,24 @@ fn checkExactImpl(
     }
     var declaration_counts = try allocator.alloc(usize, symbols.len);
     defer allocator.free(declaration_counts);
+    var ast_declaration_counts = try allocator.alloc(usize, symbols.len);
+    defer allocator.free(ast_declaration_counts);
     var value_counts = try allocator.alloc(usize, symbols.len);
     defer allocator.free(value_counts);
     var write_counts = try allocator.alloc(usize, symbols.len);
     defer allocator.free(write_counts);
     @memset(declaration_counts, 0);
+    @memset(ast_declaration_counts, 0);
     @memset(value_counts, 0);
     @memset(write_counts, 0);
+
+    var ast_declarations = declaration_nodes.iterator();
+    while (ast_declarations.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        if (raw >= symbol_ids.len) continue;
+        const sid = symbol_ids[raw] orelse continue;
+        if (sid < symbols.len) ast_declaration_counts[sid] += 1;
+    }
 
     if (scope_maps.len != scopes.len) recordScopeMapMismatch(&report, "scope-map-count", null, null, null);
     for (scopes, 0..) |scope, scope_i| {
@@ -2826,6 +2854,20 @@ fn checkExactImpl(
         }
         if (reference.flags.declare) {
             declaration_counts[sid] += 1;
+            if (reference.declaration_node_index.isNone()) {
+                if (ast_declaration_counts[sid] > 0) {
+                    report.declaration_identity_mismatch += 1;
+                }
+            } else {
+                const declaration_raw = @intFromEnum(reference.declaration_node_index);
+                if (declaration_raw >= ast.nodes.items.len or
+                    !reachable_nodes.contains(declaration_raw) or
+                    !declaration_nodes.contains(declaration_raw) or
+                    declaration_raw >= symbol_ids.len or symbol_ids[declaration_raw] != sid)
+                {
+                    report.declaration_identity_mismatch += 1;
+                }
+            }
             // A declaration row records the target storage scope, unlike a
             // value reference which records the scope where the read/write
             // occurs. Visibility from a descendant scope is not enough to
@@ -3443,7 +3485,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
     var secondary_counts_buffer: [512]u8 = undefined;
     const secondary_counts = std.fmt.bufPrint(
         &secondary_counts_buffer,
-        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_statement_mismatch={d} reference_scope_statement_alias={d} reference_node_use_alias={d} declaration_scope_mismatch={d} reference_count_mismatch={d} write_count_mismatch={d}",
+        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_statement_mismatch={d} reference_scope_statement_alias={d} reference_node_use_alias={d} declaration_scope_mismatch={d} declaration_identity_mismatch={d} reference_count_mismatch={d} write_count_mismatch={d}",
         .{
             report.namespace_iife_params,
             report.namespace_iife_param_mismatch,
@@ -3457,6 +3499,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.reference_scope_statement_alias,
             report.reference_node_use_alias,
             report.declaration_scope_mismatch,
+            report.declaration_identity_mismatch,
             report.reference_count_mismatch,
             report.write_count_mismatch,
         },

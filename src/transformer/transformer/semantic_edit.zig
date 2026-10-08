@@ -19,6 +19,7 @@ const SemanticEditor = @import("../../semantic/editor.zig").SemanticEditor;
 const EditorError = @import("../../semantic/editor.zig").Error;
 const LexicalCaptureKind = @import("../transformer.zig").LexicalCaptureKind;
 const es_helpers = @import("../es_helpers.zig");
+const symbol_coverage = @import("../symbol_coverage.zig");
 
 pub const SyntheticBinding = struct {
     node: NodeIndex,
@@ -56,6 +57,13 @@ fn setSymbolId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Er
     if (self.symbol_ids.items.len <= index)
         try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
     if (self.symbol_ids.items[index] != null) std.debug.panic("generated identifier already has a symbol", .{});
+    if (self.semantic_editor) |*editor| {
+        if (self.ast.getNode(node).tag == .binding_identifier) {
+            editor.attachExistingBinding(node, id) catch |err| return editError(err);
+            self.symbol_ids.items[index] = @intFromEnum(id);
+            return;
+        }
+    }
     self.symbol_ids.items[index] = @intFromEnum(id);
 }
 
@@ -3113,12 +3121,17 @@ pub fn setGeneratedSymbolId(self: *Transformer, node: NodeIndex, raw_id: u32) Tr
     const index = @intFromEnum(node);
     if (self.symbol_ids.items.len <= index)
         try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
-    self.symbol_ids.items[index] = raw_id;
     if (self.semantic_editor) |*editor| {
         if (editor.symbol_ids.items.len <= index)
             try editor.symbol_ids.appendNTimes(self.allocator, null, index + 1 - editor.symbol_ids.items.len);
-        editor.symbol_ids.items[index] = raw_id;
+        if (self.ast.getNode(node).tag == .binding_identifier) {
+            if (raw_id >= editor.symbols.items.len) std.debug.panic("generated binding SymbolId is out of range", .{});
+            editor.rebindBinding(node, @enumFromInt(raw_id)) catch |err| return editError(err);
+        } else {
+            editor.symbol_ids.items[index] = raw_id;
+        }
     }
+    self.symbol_ids.items[index] = raw_id;
 }
 
 pub fn rebindOutputBinding(self: *Transformer, node: NodeIndex, raw_id: u32) Transformer.Error!void {
@@ -3270,6 +3283,12 @@ pub fn ensureSymbolDeclaration(self: *Transformer, raw_id: u32, scope: ScopeId) 
     editor.ensureDeclaration(@enumFromInt(raw_id), scope) catch |err| return editError(err);
 }
 
+pub fn ensureSymbolDeclarationAtNode(self: *Transformer, raw_id: u32, scope: ScopeId, binding: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    editor.ensureDeclarationAtNode(@enumFromInt(raw_id), scope, binding) catch |err| return editError(err);
+}
+
 /// State-machine collection can flatten an empty generated block while keeping
 /// its child lexical scopes. Once dead references are removed, drop only those
 /// unreachable generated block owners that carry no bindings or references.
@@ -3290,6 +3309,65 @@ fn elideUnreachableEmptyGeneratedScopes(
     }
     for (candidates.items) |owner| {
         _ = editor.elideEmptyGeneratedScopeOwner(owner) catch |err| return editError(err);
+    }
+}
+
+/// Keep a declaration reference anchored to an emitted binding when a lowering
+/// copied that binding, materialized a deferred helper declaration, or discarded
+/// its source node. Replacements come only from reachable binding nodes carrying
+/// that exact SymbolId; stale anchors must still agree with the declaration row.
+fn reanchorDetachedDeclarations(
+    self: *Transformer,
+    editor: *SemanticEditor,
+    reachable: *const std.AutoHashMapUnmanaged(u32, void),
+) Transformer.Error!void {
+    const EmittedDeclaration = struct { node: u32, count: u32 = 1 };
+    var emitted_bindings: std.AutoHashMapUnmanaged(u32, EmittedDeclaration) = .empty;
+    defer emitted_bindings.deinit(self.allocator);
+    var declarations = try symbol_coverage.collectDeclarationNodes(self.allocator, self.ast, reachable);
+    defer declarations.deinit(self.allocator);
+    var nodes = declarations.iterator();
+    while (nodes.next()) |entry| {
+        const raw = entry.key_ptr.*;
+        if (raw >= self.ast.nodes.items.len or raw >= editor.symbol_ids.items.len) continue;
+        const sid = editor.symbol_ids.items[raw] orelse continue;
+        if (sid >= editor.symbols.items.len) continue;
+        if (emitted_bindings.getPtr(sid)) |existing| {
+            existing.count += 1;
+        } else {
+            try emitted_bindings.put(self.allocator, sid, .{ .node = raw });
+        }
+    }
+    for (editor.references.items) |*reference| {
+        if (!reference.flags.declare) continue;
+        const sid = @intFromEnum(reference.symbol_id);
+        const candidate = emitted_bindings.get(sid) orelse {
+            if (!reference.declaration_node_index.isNone()) {
+                const old_raw = @intFromEnum(reference.declaration_node_index);
+                if (!reachable.contains(old_raw) and old_raw < editor.symbol_ids.items.len and
+                    editor.symbol_ids.items[old_raw] == sid)
+                {
+                    // Type erasure and import elision can remove the declaration
+                    // itself. Retire only a stale anchor that still proves it
+                    // belonged to this SymbolId; an unclassified live node stays
+                    // visible to the exact audit as a mismatch.
+                    reference.declaration_node_index = .none;
+                }
+            }
+            continue;
+        };
+        // A symbol may have multiple declaration nodes (for example repeated
+        // var declarations). Without a preserved row-to-node mapping, choosing
+        // one would invent an exact identity, so leave the mismatch visible.
+        if (candidate.count != 1) continue;
+        if (reference.declaration_node_index.isNone()) {
+            reference.declaration_node_index = @enumFromInt(candidate.node);
+            continue;
+        }
+        const old_raw = @intFromEnum(reference.declaration_node_index);
+        if (reachable.contains(old_raw) or old_raw >= editor.symbol_ids.items.len or
+            editor.symbol_ids.items[old_raw] != sid) continue;
+        reference.declaration_node_index = @enumFromInt(candidate.node);
     }
 }
 
@@ -3357,6 +3435,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
             var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer live.deinit(self.allocator);
             for (reachable) |raw| try live.put(self.allocator, raw, {});
+            try reanchorDetachedDeclarations(self, editor, &live);
             var i = editor.references.items.len;
             while (i > 0) {
                 i -= 1;

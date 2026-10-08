@@ -431,6 +431,110 @@ test "exact scope audit does not treat a synthetic name as relocation evidence" 
     try std.testing.expect(!corrupted_var.isClean());
 }
 
+test "exact identity audit rejects declaration rows swapped within one statement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "let alpha = 1, beta = 2;");
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+
+    var binding_ids: [2]u32 = undefined;
+    var found_bindings: usize = 0;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier) continue;
+        const name = parser.ast.getText(node.data.string_ref);
+        const index = if (std.mem.eql(u8, name, "alpha")) @as(usize, 0) else if (std.mem.eql(u8, name, "beta")) @as(usize, 1) else continue;
+        binding_ids[index] = analyzer.symbol_ids.items[raw] orelse return error.TestUnexpectedResult;
+        found_bindings += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), found_bindings);
+
+    var declaration_rows: [2]?usize = .{ null, null };
+    for (analyzer.references.items, 0..) |reference, index| {
+        if (!reference.flags.declare) continue;
+        const id = @intFromEnum(reference.symbol_id);
+        if (id == binding_ids[0]) declaration_rows[0] = index;
+        if (id == binding_ids[1]) declaration_rows[1] = index;
+    }
+    try std.testing.expect(declaration_rows[0] != null);
+    try std.testing.expect(declaration_rows[1] != null);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const correct = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(correct.isClean());
+
+    // Both declaration rows share the same ScopeId and statement index. Only
+    // their SymbolIds are swapped; name, scope, counts, and AST bindings stay
+    // valid. Exact declaration evidence must still reject this corruption.
+    const swapped_references = try allocator.dupe(Reference, analyzer.references.items);
+    std.mem.swap(
+        SymbolId,
+        &swapped_references[declaration_rows[0].?].symbol_id,
+        &swapped_references[declaration_rows[1].?].symbol_id,
+    );
+    const report = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        swapped_references,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 2), report.declaration_identity_mismatch);
+    try std.testing.expect(!report.isClean());
+
+    const missing_anchor_references = try allocator.dupe(Reference, analyzer.references.items);
+    missing_anchor_references[declaration_rows[0].?].declaration_node_index = .none;
+    const missing_anchor = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        missing_anchor_references,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), missing_anchor.declaration_identity_mismatch);
+    try std.testing.expect(!missing_anchor.isClean());
+}
+
 test "exact identity audit catches same-name binding IDs swapped across scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

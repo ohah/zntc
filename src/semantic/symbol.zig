@@ -375,8 +375,11 @@ pub fn extendSymbol(
 /// 식별자가 어떤 심볼을 참조하는지, read/write인지 기록한다.
 /// 번들러의 tree-shaking과 미니파이어의 dead store 분석에 사용.
 pub const Reference = struct {
-    /// 참조하는 AST 노드의 인덱스
+    /// 값/쓰기 참조의 AST 노드 인덱스. 선언 행은 기존 consumer 호환성을 위해 none이다.
     node_index: NodeIndex,
+    /// 선언 행이 대응하는 정확한 AST binding 노드. 선언 행만 사용하며,
+    /// statement bucket 분배에 쓰는 node_index와 분리해 보존한다.
+    declaration_node_index: NodeIndex = .none,
     /// 참조가 발생한 스코프
     scope_id: ScopeId,
     /// 참조 대상 심볼의 인덱스
@@ -413,7 +416,7 @@ pub const Reference = struct {
 ///   - `{ .write = true }`              — `x = 1` (pure assign)
 ///   - `{ .read = true, .write = true }` — `x += 1`, `x++`, `--x` 등 compound/update
 ///   - `{ .declare = true }`            — 선언 위치 (#1669 부터 모든 scope). node_index 는 NodeIndex.none
-///     (선언 span 을 Reference 에 싣지 않음 — buildFromSemantic 은 scope_id==0 + stmt_idx 로 bucket 분배)
+///     (기존 stmt_info bucket 분배를 유지); declaration_node_index 는 exact identity gate 용 binding 노드다.
 ///
 /// #1791 type-context flag:
 ///   - `{ .read = true, .type_context = true }` — `x: T`, `interface I extends T` 등 type 문맥 내 참조

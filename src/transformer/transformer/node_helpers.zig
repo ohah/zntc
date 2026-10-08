@@ -11,6 +11,15 @@ const NodeIndex = ast_mod.NodeIndex;
 const Span = token_mod.Span;
 const Error = std.mem.Allocator.Error;
 
+fn reanchorCopiedBinding(self: anytype, node: NodeIndex, raw_symbol_id: u32) Error!void {
+    if (self.semantic_editor) |*editor| {
+        editor.attachExistingBinding(node, @enumFromInt(raw_symbol_id)) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            std.debug.panic("copied binding lost exact declaration identity: {s}", .{@errorName(err)});
+        };
+    }
+}
+
 /// 리프/불변 노드를 identity 로 반환한다 - 새 NodeIndex 를 할당하지 않음.
 /// 통합 AST 에서는 parser/transformer 가 같은 배열을 공유하므로 old_idx 그대로
 /// 유효하며, Symbol 의 NodeIndex 필드(`single_read_node` 등)가 stale 되지 않는다.
@@ -236,6 +245,9 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
             self.symbol_ids.items[new_i] = self.symbol_ids.items[old_i];
         }
     }
+    if (self.ast.getNode(new_idx).tag == .binding_identifier) {
+        if (self.symbol_ids.items[new_i]) |sid| try reanchorCopiedBinding(self, new_idx, sid);
+    }
     try recordReferenceOrigin(self, old_idx, new_idx);
 }
 
@@ -254,6 +266,8 @@ pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error
     if (src_i < self.symbol_ids.items.len) {
         if (self.symbol_ids.items[src_i]) |sid| {
             self.symbol_ids.items[dst_i] = sid;
+            if (self.ast.getNode(dst_idx).tag == .binding_identifier)
+                try reanchorCopiedBinding(self, dst_idx, sid);
         }
     }
     try recordReferenceOrigin(self, src_idx, dst_idx);

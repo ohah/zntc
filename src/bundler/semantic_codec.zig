@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v11: graph-level bundler runtime helpers have a serialized synthetic SymbolId.
-pub const FORMAT_VERSION: u32 = 11;
+// v12: declaration references carry their exact AST binding NodeIndex separately.
+pub const FORMAT_VERSION: u32 = 12;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -76,7 +76,7 @@ comptime {
         "subtree_has_direct_eval:bool;subtree_has_with:bool;symbol_count:u16;";
     if (!std.mem.eql(u8, fieldSig(Scope), scope_sig))
         @compileError("Scope 필드 시그니처가 바뀜 — putScope/readScope 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Scope));
-    const reference_sig = "node_index:parser.ast.NodeIndex;scope_id:semantic.scope.ScopeId;symbol_id:semantic.symbol.SymbolId;" ++
+    const reference_sig = "node_index:parser.ast.NodeIndex;declaration_node_index:parser.ast.NodeIndex;scope_id:semantic.scope.ScopeId;symbol_id:semantic.symbol.SymbolId;" ++
         "stmt_idx:u32;scope_stmt_idx:u32;flags:semantic.symbol.ReferenceFlags;";
     if (!std.mem.eql(u8, fieldSig(Reference), reference_sig))
         @compileError("Reference 필드 시그니처가 바뀜 — putReference/readReference 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Reference));
@@ -141,6 +141,7 @@ fn putScope(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Scope) !void {
 }
 fn putReference(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, ref: Reference) !void {
     try putU32(buf, alloc, @intFromEnum(ref.node_index));
+    try putU32(buf, alloc, @intFromEnum(ref.declaration_node_index));
     try putU32(buf, alloc, @intFromEnum(ref.scope_id));
     try putU32(buf, alloc, @intFromEnum(ref.symbol_id));
     try putU32(buf, alloc, ref.stmt_idx);
@@ -394,6 +395,7 @@ fn readScope(r: *Reader) Error!Scope {
 fn readReference(r: *Reader) Error!Reference {
     var ref = std.mem.zeroes(Reference);
     ref.node_index = @enumFromInt(try r.u32v());
+    ref.declaration_node_index = @enumFromInt(try r.u32v());
     ref.scope_id = @enumFromInt(try r.u32v());
     ref.symbol_id = @enumFromInt(try r.u32v());
     ref.stmt_idx = try r.u32v();
