@@ -3183,12 +3183,14 @@ pub fn checkPostMinify(
     // the class body. It is attached to the class owner, not an AST binding node.
     for (reachable) |owner| {
         if (owner >= ast.nodes.items.len) continue;
-        switch (ast.nodes.items[owner].tag) {
+        const owner_node = ast.nodes.items[owner];
+        switch (owner_node.tag) {
             .class_declaration, .class_expression => {},
             else => continue,
         }
-        const resolved = resolved_class_self_symbols.get(owner) orelse continue;
-        const owner_key = spanKey(ast.nodes.items[owner].span);
+        const has_name = ast.hasExtra(owner_node.data.extra, ast_mod.ClassExtra.name) and
+            !(@as(NodeIndex, @enumFromInt(ast.extra_data.items[owner_node.data.extra + ast_mod.ClassExtra.name]))).isNone();
+        const owner_key = spanKey(owner_node.span);
         var actual: ?u32 = null;
         var actual_it = actual_class_self_symbols.iterator();
         while (actual_it.next()) |entry| {
@@ -3199,10 +3201,20 @@ pub fn checkPostMinify(
             actual = entry.value_ptr.*;
             break;
         }
-        const actual_id = actual orelse continue;
+        const resolved = resolved_class_self_symbols.get(owner);
+        if (actual == null or resolved == null) {
+            // Named classes have an inner immutable self-binding even though
+            // the class name AST node represents the declaration binding.
+            // Without both owner maps, the generic span/name matcher below
+            // can pair that inner binding with the outer declaration and hide
+            // a reference that resolves to the wrong one.
+            if (has_name or actual != null or resolved != null) report.missing_binding_id += 1;
+            continue;
+        }
+        const actual_id = actual.?;
         report.bindings_checked += 1;
         try bound_actual_ids.put(allocator, actual_id, {});
-        try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved, {});
+        try binding_pairs.put(allocator, (@as(u64, actual_id) << 32) | resolved.?, {});
     }
 
     // Namespace and enum emitters synthesize an IIFE parameter in codegen;
@@ -6364,6 +6376,117 @@ test "post-minify audit rejects a helper reference shadowed by a source binding"
     );
     try std.testing.expectEqual(@as(usize, 1), inferred_helper_report.wrong_reference_target);
     try std.testing.expect(!inferred_helper_report.isClean());
+}
+
+test "post-minify audit requires exact class self mapping before fallback" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("C");
+    const outer_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const self_reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const body = try ast.addNode(.{
+        .tag = .class_body,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{self_reference}) },
+    });
+    const class_extra = try ast.addExtras(&.{
+        @intFromEnum(outer_binding),
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(body),
+        @intFromEnum(NodeIndex.none),
+        0,
+        0,
+        0,
+        0,
+    });
+    const class = try ast.addNode(.{
+        .tag = .class_declaration,
+        .span = name,
+        .data = .{ .extra = class_extra },
+    });
+    const root = try ast.addNode(.{
+        .tag = .program,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{class}) },
+    });
+
+    const outer_symbol: Symbol = .{
+        .name = name,
+        .scope_id = @enumFromInt(0),
+        .kind = .class_decl,
+        .declaration_span = name,
+    };
+    const inner_symbol = outer_symbol;
+    const actual_symbols = [_]Symbol{ outer_symbol, inner_symbol };
+    var resolved_symbols: [12]Symbol = undefined;
+    const filler: Symbol = .{
+        .name = name,
+        .scope_id = @enumFromInt(0),
+        .kind = .variable_const,
+        .declaration_span = name,
+    };
+    for (&resolved_symbols) |*symbol| symbol.* = filler;
+    resolved_symbols[10] = outer_symbol;
+    resolved_symbols[11] = inner_symbol;
+
+    // The class self map is missing from the freshly resolved graph. Generic
+    // declaration matching sees identical class name/span/kind for the outer
+    // declaration and inner self-binding, so it must not make either mapping
+    // ambiguous and accept a self reference resolved to the outer binding.
+    const actual = [_]?u32{ 0, 1, null, null, null };
+    const resolved = [_]?u32{ 10, 10, null, null, null };
+    var actual_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer actual_class_self.deinit(allocator);
+    try actual_class_self.put(allocator, @intFromEnum(class), 1);
+    var resolved_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer resolved_class_self.deinit(allocator);
+    try resolved_class_self.put(allocator, @intFromEnum(class), 11);
+    const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+
+    const wrong_target_report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &actual_symbols,
+        &resolved_symbols,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &empty_markers,
+        &actual_class_self,
+        &resolved_class_self,
+    );
+    try std.testing.expectEqual(@as(usize, 1), wrong_target_report.wrong_reference_target);
+    try std.testing.expect(!wrong_target_report.isClean());
+
+    // If the inner self owner mapping itself is absent, the generic
+    // declaration matcher must not infer it from the duplicate outer-class
+    // spelling/span and allow the wrong target above to pass.
+    const missing_resolved_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &actual_symbols,
+        &resolved_symbols,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &empty_markers,
+        &actual_class_self,
+        &missing_resolved_class_self,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.missing_binding_id);
+    try std.testing.expect(!report.isClean());
 }
 
 test "post-minify audit distinguishes lexical reads from explicit globals" {
