@@ -2997,6 +2997,37 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: 'undefined 1 0 0\n42 2 1 1\n',
       },
       {
+        name: 'nested optional calls on an ordinary source call result',
+        graph: 'retained',
+        source: [
+          'var gets = 0; var firstCalls = 0; var finalCalls = 0; var args = 0; var callable = false;',
+          'function argument() { args++; return 5; }',
+          'function getTarget(enabled) {',
+          '  gets++;',
+          '  return enabled ? function () {',
+          '    firstCalls++;',
+          '    return callable ? function (value) { finalCalls++; return value + 37; } : null;',
+          '  } : null;',
+          '}',
+          'function read(enabled) { return getTarget(enabled)?.()?.(argument()); }',
+          'console.log(read(false), gets, firstCalls, finalCalls, args);',
+          'console.log(read(true), gets, firstCalls, finalCalls, args);',
+          'callable = true;',
+          'console.log(read(true), gets, firstCalls, finalCalls, args);',
+        ].join('\n'),
+        output: 'undefined 1 0 0 0\nundefined 2 1 0 0\n42 3 2 1 1\n',
+      },
+      {
+        name: 'nested optional calls on an untracked global call result',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.getTarget = function () { return function () { return function () { return 42; }; }; };',
+          'function read() { return globalThis.getTarget()?.()?.(); }',
+          'console.log(read());',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
         name: 'optional call on an untracked global call result',
         graph: 'reanalyzed',
         source: [
