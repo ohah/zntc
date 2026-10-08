@@ -967,6 +967,30 @@ fn isSafeConstructorBodyStatement(
     }
 }
 
+fn isSimpleConstructorParameterGraphSafe(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    parameter_idx: ast_mod.NodeIndex,
+) bool {
+    if (parameter_idx.isNone() or @intFromEnum(parameter_idx) >= ast.nodes.items.len) return false;
+    const parameter = ast.getNode(parameter_idx);
+    if (parameter.tag == .binding_identifier)
+        return isBoundSourceIdentifierBinding(ast, semantic, parameter_idx);
+    if (parameter.tag != .assignment_pattern) return false;
+
+    // Only literal defaults are safe to move into the constructor body here.
+    // A parameter reference may need TDZ rewriting, which changes the source
+    // reference node and therefore requires graph reanalysis.
+    const binding_idx = parameter.data.binary.left;
+    const default_idx = parameter.data.binary.right;
+    if (!isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
+        default_idx.isNone() or @intFromEnum(default_idx) >= ast.nodes.items.len) return false;
+    return switch (ast.getNode(default_idx).tag) {
+        .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
+        else => false,
+    };
+}
+
 fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -981,8 +1005,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (params.tag != .formal_parameters or params.data.list.start > extras.len or
         params.data.list.len > extras.len - params.data.list.start) return false;
     for (extras[params.data.list.start .. params.data.list.start + params.data.list.len]) |raw_parameter_idx| {
-        if (raw_parameter_idx >= ast.nodes.items.len or
-            ast.nodes.items[raw_parameter_idx].tag != .binding_identifier) return false;
+        if (!isSimpleConstructorParameterGraphSafe(ast, semantic, @enumFromInt(raw_parameter_idx))) return false;
     }
 
     const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.body]);
@@ -1001,7 +1024,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// An ES5 class without a base preserves its graph when empty, when all members
 /// are plain methods, or when plain methods are followed by one accessor or a
 /// compatible getter/setter pair. One explicit constructor with only simple
-/// identifier parameters may accompany plain methods and a terminal accessor
+/// identifier parameters or identifier parameters with literal defaults may
+/// accompany plain methods and a terminal accessor
 /// group when its body contains only simple `var` declarations, safe nested
 /// blocks/`if` branches, switches with safe discriminants/case tests, simple
 /// try/catch/finally clauses, classic loops, and `for-in`/`for-of` loops with
@@ -1154,6 +1178,45 @@ fn isTopLevelSimpleNamedClass(
         else => false,
     };
     return is_top_level and isSimpleNamedClass(ast, semantic, node, source_binds_object);
+}
+
+fn collectSimpleConstructorDefaultParameterNodes(
+    ast: *const ast_mod.Ast,
+    class_node: ast_mod.Node,
+    defaults: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    const extras = ast.extra_data.items;
+    const class_extra = class_node.data.extra;
+    if (class_extra > extras.len or extras.len - class_extra <= ast_mod.ClassExtra.body) return false;
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[class_extra + ast_mod.ClassExtra.body]);
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len or
+        ast.getNode(body_idx).tag != .class_body) return false;
+    const members = ast.getNode(body_idx).data.list;
+    if (members.start > extras.len or members.len > extras.len - members.start) return false;
+    for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
+        if (raw_member_idx >= ast.nodes.items.len) return false;
+        const member = ast.nodes.items[raw_member_idx];
+        if (member.tag != .method_definition) continue;
+        const method_extra = member.data.extra;
+        if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
+        const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+        const key = ast.getNode(key_idx);
+        if (key.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(key.span), "constructor")) continue;
+        if (extras[method_extra + ast_mod.MethodExtra.flags] != 0 or
+            extras.len - method_extra <= ast_mod.MethodExtra.params) return false;
+        const params_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.params]);
+        if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len or
+            ast.getNode(params_idx).tag != .formal_parameters) return false;
+        const params = ast.getNode(params_idx).data.list;
+        if (params.start > extras.len or params.len > extras.len - params.start) return false;
+        for (extras[params.start .. params.start + params.len]) |raw_parameter_idx| {
+            if (raw_parameter_idx >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[raw_parameter_idx].tag == .assignment_pattern)
+                defaults.put(ast.allocator, raw_parameter_idx, {}) catch return false;
+        }
+    }
+    return true;
 }
 
 /// Arrow lowering edits the existing graph and creates only output function
@@ -1419,6 +1482,37 @@ fn canRetainGraphForAuditedSyntaxSubset(
         if (source_binds_object and source_binds_math) break;
     }
 
+    // Default-parameter lowering replaces only these literal assignment
+    // patterns with exact reads/writes of the same parameter SymbolId. Admit
+    // those nodes only when their owning top-level class already passes the
+    // complete retained-graph preflight. Cache the class decisions so the
+    // node walk below does not repeat the full class-body check.
+    var retained_simple_named_class_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_simple_named_class_nodes.deinit(ast.allocator);
+    var lowered_simple_constructor_default_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer lowered_simple_constructor_default_nodes.deinit(ast.allocator);
+    if (options.unsupported.class) {
+        for (reachable_nodes) |raw_idx| {
+            const class_node = ast.nodes.items[raw_idx];
+            if (class_node.tag != .class_declaration and class_node.tag != .class_expression) continue;
+            if (!isTopLevelSimpleNamedClass(
+                ast,
+                semantic,
+                class_node,
+                raw_idx,
+                &top_level_statements,
+                source_binds_object,
+            )) continue;
+            retained_simple_named_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
+            if (options.unsupported.default_params and
+                !collectSimpleConstructorDefaultParameterNodes(
+                    ast,
+                    class_node,
+                    &lowered_simple_constructor_default_nodes,
+                )) return false;
+        }
+    }
+
     var found_arrow = false;
     var found_native_await = false;
     var found_native_generator = false;
@@ -1549,11 +1643,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .assignment_pattern => {
-                // Parameter defaults lower independently from destructuring;
-                // nested binding defaults also need destructuring preserved.
+                // Literal defaults in an admitted simple class constructor
+                // lower to exact references to the existing parameter SID.
+                // Other parameter defaults and nested binding defaults stay
+                // on their independently gated paths.
                 if (options.unsupported.default_params or options.unsupported.destructuring) {
-                    if (!lowered_var_destructuring_nodes.contains(raw_idx)) return false;
-                    found_lowered_var_destructuring = true;
+                    if (lowered_simple_constructor_default_nodes.contains(raw_idx)) {
+                        // The owning retained class already passed its body,
+                        // parameter, and scope preflight above.
+                    } else if (lowered_var_destructuring_nodes.contains(raw_idx)) {
+                        found_lowered_var_destructuring = true;
+                    } else return false;
                 } else {
                     found_native_destructuring = true;
                 }
@@ -1751,14 +1851,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .class_declaration, .class_expression => {
                 if (options.unsupported.class) {
-                    if (!isTopLevelSimpleNamedClass(
-                        ast,
-                        semantic,
-                        node,
-                        raw_idx,
-                        &top_level_statements,
-                        source_binds_object,
-                    )) return false;
+                    if (!retained_simple_named_class_nodes.contains(raw_idx)) return false;
                     found_lowered_simple_named_class = true;
                 } else {
                     found_native_class = true;
