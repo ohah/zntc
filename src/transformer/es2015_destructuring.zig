@@ -337,10 +337,18 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
-                const member_access = if (split.rest_operand != null)
-                    try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .assign, span, .@"var")
-                else
-                    try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
+                const access_result = try emitObjectMemberAccessForRest(
+                    self,
+                    ref,
+                    key_node,
+                    key_idx,
+                    &exclude_keys,
+                    split.rest_operand != null,
+                    .assign,
+                    span,
+                    .@"var",
+                );
+                const member_access = access_result.member;
 
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
                     // shorthand: { x } → x = _ref.x
@@ -357,7 +365,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         const inner_target = value_node.data.binary.left;
                         const inner_target_node = self.ast.getNode(inner_target);
                         const default_val = try self.visitNode(value_node.data.binary.right);
-                        const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
+                        const defaulted = try buildDefaulted(
+                            self,
+                            member_access,
+                            default_val,
+                            ref_span,
+                            key_idx,
+                            key_node.tag,
+                            access_result.computed_key_temp_span,
+                            span,
+                        );
                         if (try emitNestedPatternAssignment(self, inner_target_node, defaulted, span)) continue;
                         const target_ref = if (inner_target_node.tag == .binding_identifier)
                             try makeTrackedBindingWriteRef(self, inner_target, inner_target_node.data.string_ref)
@@ -540,7 +557,18 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                 const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
-                const access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .assign, span, .@"var");
+                const access_result = try emitObjectMemberAccessForRest(
+                    self,
+                    ref,
+                    key_node,
+                    key_idx,
+                    &exclude_keys,
+                    split.rest_operand != null,
+                    .assign,
+                    span,
+                    .@"var",
+                );
+                const access = access_result.member;
 
                 if (prop.tag == .assignment_target_property_identifier) {
                     // 새로 만든 노드는 symbol_ids 밖이라 심볼을 안 물려주면 mangler rename 이
@@ -557,7 +585,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const is_shorthand_default = (prop.data.binary.flags & 0x01) != 0;
                     const rhs = if (is_shorthand_default and !prop.data.binary.right.isNone()) blk: {
                         const default_val = try self.visitNode(prop.data.binary.right);
-                        break :blk try buildDefaulted(self, access, default_val, ref_span, key_idx, key_node.tag, span);
+                        break :blk try buildDefaulted(
+                            self,
+                            access,
+                            default_val,
+                            ref_span,
+                            key_idx,
+                            key_node.tag,
+                            access_result.computed_key_temp_span,
+                            span,
+                        );
                     } else access;
 
                     const assign = try self.ast.addNode(.{
@@ -573,7 +610,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
                     if (right_node.tag == .assignment_target_with_default) {
                         const default_val = try self.visitNode(right_node.data.binary.right);
-                        const rhs = try buildDefaulted(self, access, default_val, ref_span, key_idx, key_node.tag, span);
+                        const rhs = try buildDefaulted(
+                            self,
+                            access,
+                            default_val,
+                            ref_span,
+                            key_idx,
+                            key_node.tag,
+                            access_result.computed_key_temp_span,
+                            span,
+                        );
                         try emitTargetAssignOrRecurse(self, right_node.data.binary.left, rhs, span);
                     } else {
                         try emitTargetAssignOrRecurse(self, right_idx, access, span);
@@ -720,7 +766,18 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
                 const key_node = self.ast.getNode(key_idx);
 
-                const member_access = try emitObjectMemberAccessForRest(self, ref, key_node, key_idx, &exclude_keys, .decl, span, decl_kind);
+                const access_result = try emitObjectMemberAccessForRest(
+                    self,
+                    ref,
+                    key_node,
+                    key_idx,
+                    &exclude_keys,
+                    split.rest_operand != null,
+                    .decl,
+                    span,
+                    decl_kind,
+                );
+                const member_access = access_result.member;
 
                 // value 처리: shorthand vs long-form, default value
                 if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
@@ -747,7 +804,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             // defaulted 값을 임시변수에 담아 재귀(non-default 중첩 분기와 동일 lowering).
                             const default_val = try self.visitNode(value_node.data.binary.right);
                             try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
-                            const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
+                            const defaulted = try buildDefaulted(
+                                self,
+                                member_access,
+                                default_val,
+                                ref_span,
+                                key_idx,
+                                key_node.tag,
+                                access_result.computed_key_temp_span,
+                                span,
+                            );
                             const nested_span = try es_helpers.makeTempVarSpan(self);
                             const nested_binding = try makeDestructuringTempBinding(self, nested_span);
                             const nested_init = if (left_node.tag == .array_pattern)
@@ -763,7 +829,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             const binding = try self.visitNode(value_node.data.binary.left);
                             const default_val = try self.visitNode(value_node.data.binary.right);
                             try rewritePatternDefaultTDZ(self, default_val, pattern, i_loop);
-                            const defaulted = try buildDefaulted(self, member_access, default_val, ref_span, key_idx, key_node.tag, span);
+                            const defaulted = try buildDefaulted(
+                                self,
+                                member_access,
+                                default_val,
+                                ref_span,
+                                key_idx,
+                                key_node.tag,
+                                access_result.computed_key_temp_span,
+                                span,
+                            );
                             const decl = try es_helpers.makeDeclarator(self, binding, defaulted, span);
                             try self.scratch.append(self.allocator, decl);
                         }
@@ -905,7 +980,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         /// _ref.key === void 0 ? default : _ref.key (또는 _ref["key"])
-        fn buildDefaulted(self: *Transformer, access: NodeIndex, default_val: NodeIndex, ref_span: Span, key_idx: NodeIndex, key_tag: Node.Tag, span: Span) Transformer.Error!NodeIndex {
+        fn buildDefaulted(
+            self: *Transformer,
+            access: NodeIndex,
+            default_val: NodeIndex,
+            ref_span: Span,
+            key_idx: NodeIndex,
+            key_tag: Node.Tag,
+            computed_key_temp_span: ?Span,
+            span: Span,
+        ) Transformer.Error!NodeIndex {
             const void_zero = try es_helpers.makeVoidZero(self, span);
             const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
@@ -921,9 +1005,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // emitted member property has no lexical SymbolId, so give it an
             // independent node instead of aliasing that binding into another
             // generated scope.
-            const new_key = if (key_tag == .computed_property_key)
-                try self.visitNode(key_idx)
-            else switch (key_node.tag) {
+            const new_key = if (key_tag == .computed_property_key) blk: {
+                const key_span = computed_key_temp_span orelse
+                    @panic("computed destructuring default lost its captured property key");
+                break :blk try makeDestructuringTempRead(self, key_span, span);
+            } else switch (key_node.tag) {
                 .identifier_reference, .binding_identifier, .assignment_target_identifier => try es_helpers.makePropertyNameFromSpan(self, key_node.data.string_ref),
                 else => try self.copyNodeDirect(key_idx),
             };
@@ -998,26 +1084,31 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         const ComputedKeyMode = enum { decl, assign };
+        const ObjectMemberAccessResult = struct {
+            member: NodeIndex,
+            computed_key_temp_span: ?Span = null,
+        };
 
         /// object pattern 의 한 property 에 대해 `_ref[key]` member access 를 만들고, rest 가 있으면
         /// exclude key 도 같은 capture 결과로 모아둔다.
         ///
-        /// computed key (`{[k()]: a}`) 는 평가 순서 보존을 위해 한 번 임시 변수로 캡쳐 — destructuring
-        /// declarator 컨텍스트에서는 `_key=expr` declarator, assignment-target 컨텍스트에서는
-        /// `(_key=expr)` assignment_expression 형태로 `self.scratch` 에 push 한다.
+        /// computed key (`{[k()]: a}`) 는 member 접근과 nested default의 fallback이 같은 값/identity를
+        /// 사용하도록 한 번 임시 변수로 캡처한다 — declarator 컨텍스트에서는 `_key=expr` declarator,
+        /// assignment-target 컨텍스트에서는 `(_key=expr)` assignment_expression 형태로 `self.scratch` 에 push 한다.
         ///
-        /// non-computed key (identifier/string/number) 는 캡쳐 없이 곧장 member access 를 만들고,
-        /// rest exclude 는 raw key 를 따옴표로 감싼 string literal 로 등록한다.
+        /// non-computed key (identifier/string/number) 는 캡처 없이 곧장 member access 를 만들고,
+        /// rest exclude가 필요한 경우에만 raw key를 문자열 이름으로 등록한다.
         fn emitObjectMemberAccessForRest(
             self: *Transformer,
             ref: NodeIndex,
             key_node: Node,
             key_idx: NodeIndex,
             exclude_keys: *std.ArrayList(NodeIndex),
+            include_exclude_key: bool,
             mode: ComputedKeyMode,
             span: Span,
             decl_kind: ast_mod.VariableDeclarationKind,
-        ) Transformer.Error!NodeIndex {
+        ) Transformer.Error!ObjectMemberAccessResult {
             if (key_node.tag == .computed_property_key) {
                 const key_span = try es_helpers.makeTempVarSpan(self);
                 var direct_binding: NodeIndex = .none;
@@ -1039,15 +1130,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     }),
                 };
                 try self.scratch.append(self.allocator, capture);
-                const exclude_ref = try makeDestructuringTempRead(self, key_span, span);
+                if (include_exclude_key) {
+                    try exclude_keys.append(self.allocator, try makeDestructuringTempRead(self, key_span, span));
+                }
                 const member_ref = try makeDestructuringTempRead(self, key_span, span);
-                try exclude_keys.append(self.allocator, exclude_ref);
                 const member = try es_helpers.makeComputedMember(self, ref, member_ref, span);
                 if (!direct_binding.isNone()) try bindPatternTemp(self, direct_binding, key_span, span, decl_kind);
-                return member;
+                return .{ .member = member, .computed_key_temp_span = key_span };
             }
-            try exclude_keys.append(self.allocator, try makeRestExcludeKey(self, key_node));
-            return es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span);
+            if (include_exclude_key) try exclude_keys.append(self.allocator, try makeRestExcludeKey(self, key_node));
+            return .{ .member = try es_helpers.makeMemberFromKeyIdx(self, ref, key_idx, span) };
         }
 
         fn makeRestExcludeKey(self: *Transformer, key_node: Node) Transformer.Error!NodeIndex {
