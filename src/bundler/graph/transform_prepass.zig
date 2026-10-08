@@ -967,10 +967,86 @@ fn isSafeConstructorBodyStatement(
     }
 }
 
+fn isEarlierConstructorParameterReference(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    reference_idx: ast_mod.NodeIndex,
+    params: ast_mod.NodeList,
+    parameter_index: u32,
+) bool {
+    if (!hasValidSourceSymbol(ast, semantic, reference_idx, .identifier_reference) or
+        parameter_index > params.len or params.start > ast.extra_data.items.len or
+        params.len > ast.extra_data.items.len - params.start) return false;
+    const reference_symbol = semantic.symbol_ids[@intFromEnum(reference_idx)] orelse return false;
+    for (ast.extra_data.items[params.start .. params.start + parameter_index]) |raw_parameter_idx| {
+        if (raw_parameter_idx >= ast.nodes.items.len) return false;
+        const parameter_idx: ast_mod.NodeIndex = @enumFromInt(raw_parameter_idx);
+        const parameter = ast.getNode(parameter_idx);
+        const binding_idx = switch (parameter.tag) {
+            .binding_identifier => parameter_idx,
+            .assignment_pattern => parameter.data.binary.left,
+            else => return false,
+        };
+        if (!hasValidSourceSymbol(ast, semantic, binding_idx, .binding_identifier)) return false;
+        if (semantic.symbol_ids[@intFromEnum(binding_idx)] == reference_symbol) return true;
+    }
+    return false;
+}
+
+fn isSafeConstructorParameterDefaultValue(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    value_idx: ast_mod.NodeIndex,
+    params: ast_mod.NodeList,
+    parameter_index: u32,
+) bool {
+    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(value_idx);
+    if (value.tag == .binary_expression) {
+        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        return isSafeConstructorBinaryOperator(operator) and
+            isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.left, params, parameter_index) and
+            isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.right, params, parameter_index);
+    }
+    if (value.tag == .unary_expression) {
+        const extras = ast.extra_data.items;
+        const extra = value.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        return isSafeConstructorUnaryOperator(operator) and
+            isSafeConstructorParameterDefaultValue(ast, semantic, operand_idx, params, parameter_index);
+    }
+    if (value.tag == .logical_expression) {
+        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        return isSafeConstructorLogicalOperator(operator) and
+            isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.left, params, parameter_index) and
+            isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.right, params, parameter_index);
+    }
+    if (value.tag == .conditional_expression) {
+        return isSafeConstructorParameterDefaultValue(ast, semantic, value.data.ternary.a, params, parameter_index) and
+            isSafeConstructorParameterDefaultValue(ast, semantic, value.data.ternary.b, params, parameter_index) and
+            isSafeConstructorParameterDefaultValue(ast, semantic, value.data.ternary.c, params, parameter_index);
+    }
+    return switch (value.tag) {
+        .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
+        .identifier_reference => isEarlierConstructorParameterReference(
+            ast,
+            semantic,
+            value_idx,
+            params,
+            parameter_index,
+        ),
+        else => false,
+    };
+}
+
 fn isSimpleConstructorParameterGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     parameter_idx: ast_mod.NodeIndex,
+    params: ast_mod.NodeList,
+    parameter_index: u32,
 ) bool {
     if (parameter_idx.isNone() or @intFromEnum(parameter_idx) >= ast.nodes.items.len) return false;
     const parameter = ast.getNode(parameter_idx);
@@ -978,17 +1054,14 @@ fn isSimpleConstructorParameterGraphSafe(
         return isBoundSourceIdentifierBinding(ast, semantic, parameter_idx);
     if (parameter.tag != .assignment_pattern) return false;
 
-    // Only literal defaults are safe to move into the constructor body here.
-    // A parameter reference may need TDZ rewriting, which changes the source
-    // reference node and therefore requires graph reanalysis.
+    // Defaults can read an earlier simple parameter because lowering evaluates
+    // them in order and TDZ rewriting only targets this and later parameters.
+    // Admit those references by exact SymbolId; spelling alone is insufficient.
     const binding_idx = parameter.data.binary.left;
     const default_idx = parameter.data.binary.right;
     if (!isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
         default_idx.isNone() or @intFromEnum(default_idx) >= ast.nodes.items.len) return false;
-    return switch (ast.getNode(default_idx).tag) {
-        .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
-        else => false,
-    };
+    return isSafeConstructorParameterDefaultValue(ast, semantic, default_idx, params, parameter_index);
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
@@ -1004,8 +1077,14 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     const params = ast.getNode(params_idx);
     if (params.tag != .formal_parameters or params.data.list.start > extras.len or
         params.data.list.len > extras.len - params.data.list.start) return false;
-    for (extras[params.data.list.start .. params.data.list.start + params.data.list.len]) |raw_parameter_idx| {
-        if (!isSimpleConstructorParameterGraphSafe(ast, semantic, @enumFromInt(raw_parameter_idx))) return false;
+    for (extras[params.data.list.start .. params.data.list.start + params.data.list.len], 0..) |raw_parameter_idx, parameter_offset| {
+        if (!isSimpleConstructorParameterGraphSafe(
+            ast,
+            semantic,
+            @enumFromInt(raw_parameter_idx),
+            params.data.list,
+            @intCast(parameter_offset),
+        )) return false;
     }
 
     const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.body]);

@@ -8627,11 +8627,39 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 8 true false true ready custom\n',
       },
       {
+        name: 'constructor defaults read earlier parameters with exact identity across a body var shadow',
+        source:
+          'class EarlierDefault { constructor(first = 2, second = first + 1) { var first = 100; this.defaulted = second; this.bodyVar = first; } } var omitted = new EarlierDefault(); var supplied = new EarlierDefault(5); console.log(omitted.defaulted, omitted.bodyVar, supplied.defaulted, supplied.bodyVar);',
+        graph: 'retained',
+        output: '3 100 6 100\n',
+      },
+      {
+        name: 'constructor chained defaults read the preceding parameter values',
+        source:
+          'class ChainedDefaults { constructor(first = 2, second = first * 3, third = second + 1) { this.first = first; this.second = second; this.third = third; } } var defaults = new ChainedDefaults(); var supplied = new ChainedDefaults(4, undefined, 20); console.log(defaults.first, defaults.second, defaults.third, supplied.first, supplied.second, supplied.third);',
+        graph: 'retained',
+        output: '2 6 7 4 12 20\n',
+      },
+      {
         name: 'constructor parameter TDZ default stays on reanalysis',
         source:
-          'class TdzDefaulted { constructor(value = later, later = 4) { this.value = value; } } try { new TdzDefaulted(); } catch (error) { console.log(error instanceof ReferenceError); }',
+          'class TdzDefaulted { constructor(first, value = later, later = 4) { this.value = value; } } try { new TdzDefaulted(); } catch (error) { console.log(error instanceof ReferenceError); }',
         graph: 'reanalyzed',
         output: 'true\n',
+      },
+      {
+        name: 'constructor self-referencing parameter default stays on reanalysis',
+        source:
+          'class SelfTdzDefaulted { constructor(first, value = value + 1) { this.value = value; } } try { new SelfTdzDefaulted(); } catch (error) { console.log(error instanceof ReferenceError); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor default bound outside the parameter list stays on reanalysis',
+        source:
+          'var outside = 4; class OutsideDefault { constructor(first, value = outside) { this.value = value; } } console.log(new OutsideDefault().value);',
+        graph: 'reanalyzed',
+        output: '4\n',
       },
       {
         name: 'constructor call default stays on reanalysis',
