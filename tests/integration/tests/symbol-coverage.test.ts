@@ -2950,6 +2950,29 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: 'undefined 0 0\n42 1 1\n',
       },
       {
+        name: 'optional call on an ordinary source call result',
+        graph: 'retained',
+        source: [
+          'var gets = 0; var args = 0; var calls = 0;',
+          'function argument() { args++; return 5; }',
+          'function getTarget(enabled) { gets++; return enabled ? function (value) { calls++; return value + 37; } : null; }',
+          'function read(enabled) { return getTarget(enabled)?.(argument()); }',
+          'console.log(read(false), gets, args, calls);',
+          'console.log(read(true), gets, args, calls);',
+        ].join('\n'),
+        output: 'undefined 1 0 0\n42 2 1 1\n',
+      },
+      {
+        name: 'optional call on an untracked global call result',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.getTarget = function () { return function () { return 42; }; };',
+          'function read() { return globalThis.getTarget()?.(); }',
+          'console.log(read());',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
         name: 'optional indirect eval remains on reanalysis path',
         graph: 'reanalyzed',
         source: [

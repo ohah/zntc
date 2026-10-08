@@ -572,9 +572,9 @@ fn isBoundSourceIdentifierAssignmentTarget(
     return hasValidSourceSymbol(ast, semantic, node_idx, .assignment_target_identifier);
 }
 
-/// A nested ordinary call receiver is captured into an exact tracked temp by
-/// optional-chain lowering. Keep this limited to call chains rooted at a bound
-/// source identifier; optional calls and other callee shapes retain resync.
+/// A nested ordinary source-call chain is captured into an exact tracked temp
+/// by optional-chain lowering. Keep it rooted at a bound source identifier and
+/// exclude optional calls and other callee shapes from this chain.
 fn isRetainableOptionalReceiverCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -712,6 +712,11 @@ fn isRetainableOptionalCall(
     const member = ast.getNode(callee);
     if (member.tag == .identifier_reference) {
         return optional_call and isBoundSourceIdentifierReference(ast, semantic, callee);
+    }
+    if (member.tag == .call_expression) {
+        // `factory()?.()` lowers the ordinary source call once, captures its
+        // result in a tracked temp, then guards the optional invocation.
+        return optional_call and isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
     }
     if (member.tag != .static_member_expression and member.tag != .computed_member_expression) return false;
     const member_extra = member.data.extra;
