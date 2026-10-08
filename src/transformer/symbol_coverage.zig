@@ -3272,8 +3272,22 @@ pub fn checkPostMinify(
             report.helper_references += 1;
             if (actual == null or expected_helper == null) {
                 report.missing_reference_id += 1;
-            } else if (actual.? != @as(u32, @intCast(expected_helper.?))) {
-                report.wrong_reference_target += 1;
+            } else {
+                const helper_id: u32 = @intCast(expected_helper.?);
+                if (actual.? != helper_id) report.wrong_reference_target += 1;
+
+                // A generated helper reference can share its final spelling
+                // with a source binding. The helper marker proves the
+                // transform-side target, but only the fresh resolution tells
+                // us which binding the emitted identifier actually reaches.
+                // When output resolution found a lexical binding, require the
+                // exact helper-to-output binding pair just like other refs;
+                // otherwise a shadowing source local could make this gate
+                // report clean while runtime resolves the wrong symbol.
+                if (resolved) |resolved_id| {
+                    const pair = (@as(u64, helper_id) << 32) | resolved_id;
+                    if (!binding_pairs.contains(pair)) report.wrong_reference_target += 1;
+                }
             }
             continue;
         }
@@ -6278,6 +6292,78 @@ test "post-minify audit rejects a reference mapped to the wrong shadowed binding
     const report = try checkPostMinify(allocator, &ast, root, &actual, &resolved, &.{}, &.{}, &.{}, &.{}, &empty_helper_scope_map, &empty_markers, &empty_class_symbols, &empty_class_symbols);
     try std.testing.expectEqual(@as(usize, 1), report.wrong_reference_target);
     try std.testing.expect(!report.isClean());
+}
+
+test "post-minify audit rejects a helper reference shadowed by a source binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+
+    const name = try ast.addString("helper");
+    const local_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const helper_reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const root = try ast.addNode(.{
+        .tag = .block_statement,
+        .span = name,
+        .data = .{ .list = try ast.addNodeList(&.{ local_binding, helper_reference }) },
+    });
+
+    // The transform graph says this reference targets the injected helper
+    // (SID 0), while a fresh resolution of the emitted spelling targets the
+    // same-name source binding (SID 1). The helper fast path must not hide the
+    // changed lexical target.
+    const actual = [_]?u32{ 1, 0, null };
+    const resolved = [_]?u32{ 1, 1, null };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .import_binding, .declaration_span = name },
+        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name },
+    };
+    var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer helper_scope_map.deinit(allocator);
+    try helper_scope_map.put(allocator, "helper", 0);
+    const helper_nodes = [_]u32{@intFromEnum(helper_reference)};
+    const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &symbols,
+        &symbols,
+        &.{},
+        &helper_nodes,
+        &helper_scope_map,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.wrong_reference_target);
+    try std.testing.expect(!report.isClean());
+
+    // The name-to-SID helper mapping also classifies an unmarked reference as
+    // a helper. It must receive the same output-resolution check.
+    const inferred_helper_report = try checkPostMinify(
+        allocator,
+        &ast,
+        root,
+        &actual,
+        &resolved,
+        &symbols,
+        &symbols,
+        &.{},
+        &.{},
+        &helper_scope_map,
+        &empty_markers,
+        &empty_class_symbols,
+        &empty_class_symbols,
+    );
+    try std.testing.expectEqual(@as(usize, 1), inferred_helper_report.wrong_reference_target);
+    try std.testing.expect(!inferred_helper_report.isClean());
 }
 
 test "post-minify audit distinguishes lexical reads from explicit globals" {
