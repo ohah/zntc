@@ -101,6 +101,76 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     try std.testing.expect(report.hasCompleteExactCoverage());
 }
 
+test "Worklet init code uses the exact semantic enum IIFE parameter" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function workletFn() {
+        \\  "worklet";
+        \\  const _Shade = 7;
+        \\  enum Shade { Shade = 1, Next = Shade.Shade + 1 }
+        \\  return Shade.Next + _Shade;
+        \\}
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    parser.is_module = true;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var transformer = try transformer_mod.Transformer.init(allocator, &parser.ast, .{
+        .plugins = &plugins,
+        .jsx_filename = "test.ts",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.namespace_declaration_owners = &analyzer.namespace_declaration_owners;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+
+    const root = try transformer.transform();
+    try std.testing.expect(!root.isNone());
+
+    var expected_parameter_name: ?[]const u8 = null;
+    for (analyzer.symbols.items) |symbol| {
+        if (symbol.synthetic_kind == .enum_iife_parameter) {
+            expected_parameter_name = symbol.synthetic_name;
+            break;
+        }
+    }
+    try std.testing.expect(expected_parameter_name != null);
+    try std.testing.expect(std.mem.eql(u8, expected_parameter_name.?, "_Shade1"));
+
+    var init_data_code: ?[]const u8 = null;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .string_literal) continue;
+        const text = transformer.ast.getText(node.span);
+        if (std.mem.indexOf(u8, text, "function workletFn") != null) {
+            init_data_code = text;
+            break;
+        }
+    }
+    try std.testing.expect(init_data_code != null);
+    try std.testing.expect(std.mem.indexOf(u8, init_data_code.?, expected_parameter_name.?) != null);
+    const exact_member_read = try std.fmt.allocPrint(allocator, "{s}.Shade", .{expected_parameter_name.?});
+    try std.testing.expect(std.mem.indexOf(u8, init_data_code.?, exact_member_read) != null);
+    try std.testing.expect(std.mem.indexOf(u8, init_data_code.?, "Shade.Shade") == null);
+}
+
 fn checkWorkletClassFactoryExactCoverage(
     unsupported: compat.UnsupportedFeatures,
     target_name: []const u8,

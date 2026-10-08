@@ -922,6 +922,15 @@ pub fn generateInitCode(
     const codegen_mod = @import("../../codegen/codegen.zig");
     var codegen = codegen_mod.Codegen.initWithOptions(self.allocator, self.ast, .{
         .minify_whitespace = true,
+        // The init-data body is the pre-transform source AST. Reuse its exact
+        // semantic graph so runtime TS enum/namespace IIFEs use their analyzed
+        // parameter SymbolId instead of reconstructing a name from text.
+        .semantic_symbol_ids = self.symbol_ids.items,
+        .semantic_symbols = self.symbols,
+        .semantic_scope_maps = self.scope_maps,
+        .generated_iife_scope_owner_map = &self.scope_owner_map,
+        .require_generated_iife_symbols = true,
+        .namespace_declaration_owners = self.namespace_declaration_owners,
     });
     const code = codegen.generate(program) catch return error.OutOfMemory;
     // codegen의 buf는 codegen이 소유 → 복제 필요
