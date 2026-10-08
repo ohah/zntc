@@ -205,16 +205,22 @@ pub fn ES2022(comptime Transformer: type) type {
             const pe = member.data.extra;
             const key: NodeIndex = key_override orelse self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
             const init: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
+            const class_scope = self.current_scope;
+            const output_scope = if (self.semantic_edit_enabled) self.outputScopeParent(class_scope) else class_scope;
 
             const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
             defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
-            const class_ref = try self.makeCurrentClassRef(class_name_span);
+            const class_ref = try self.makeCurrentClassRefAtScope(class_name_span, output_scope);
             const member_ref = try es_helpers.makeMemberFromKeyIdx(self, class_ref, key, member.span);
             const value = if (init.isNone())
                 try es_helpers.makeVoidZero(self, member.span)
-            else
-                try self.visitNode(init);
+            else blk: {
+                const visited = try self.visitNode(init);
+                if (self.semantic_edit_enabled)
+                    try self.reparentMovedStaticInitializerScopes(visited, class_scope, output_scope);
+                break :blk visited;
+            };
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = member.span,
@@ -832,6 +838,18 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .extra = arrow_extra },
             });
+
+            // The static block body is emitted inside this generated function,
+            // outside the source class body. Place its function scope at the
+            // emitted parent and move the block scope under it so class-self
+            // reads resolve against the emitted outer class binding.
+            if (self.semantic_edit_enabled) {
+                if (self.current_scope.isNone())
+                    std.debug.panic("static-block IIFE has no output parent scope", .{});
+                const arrow_scope = try self.addGeneratedFunctionScope(self.outputScopeParent(self.current_scope), arrow);
+                if (self.outputOwnedScope(new_body)) |body_scope|
+                    try self.reparentGeneratedScope(body_scope, arrow_scope);
+            }
 
             // call_expression: extra = [callee, args_start, args_len, flags]
             // arrow 는 call-target(.postfix) 위치에서 codegen 이 자동 wrap 한다.

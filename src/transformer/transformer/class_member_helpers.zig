@@ -71,7 +71,12 @@ fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment, r
 fn visitStaticFieldInit(self: anytype, init_idx: NodeIndex, class_name_span: Span) Error!NodeIndex {
     const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
     defer es_helpers.leaveStaticInitContext(self, static_ctx);
-    return self.visitNode(init_idx);
+    const class_scope = self.current_scope;
+    const output_scope = if (self.semantic_edit_enabled) self.outputScopeParent(class_scope) else class_scope;
+    const init = try self.visitNode(init_idx);
+    if (self.semantic_edit_enabled)
+        try self.reparentMovedStaticInitializerScopes(init, class_scope, output_scope);
+    return init;
 }
 
 /// 단일 클래스 멤버를 분류하여 적절한 목록에 추가한다.

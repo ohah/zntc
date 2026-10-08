@@ -816,6 +816,7 @@ pub const Transformer = struct {
     pub const bindReservedFunctionOwner = @import("transformer/semantic_edit.zig").bindReservedFunctionOwner;
     pub const reparentGeneratedScope = @import("transformer/semantic_edit.zig").reparentGeneratedScope;
     pub const outputScopeParent = @import("transformer/semantic_edit.zig").outputScopeParent;
+    pub const reparentMovedStaticInitializerScopes = @import("transformer/semantic_edit.zig").reparentMovedStaticInitializerScopes;
     pub const outputOwnedScope = @import("transformer/semantic_edit.zig").outputOwnedScope;
     pub const remapCopiedScopeOwner = @import("transformer/semantic_edit.zig").remapCopiedScopeOwner;
     pub const removeInPlaceScopeOwner = @import("transformer/semantic_edit.zig").removeInPlaceScopeOwner;
