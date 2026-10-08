@@ -11,6 +11,7 @@ pub fn emitFormatPrologue(
     global_name: ?[]const u8,
     factory_fn: []const u8,
     external_specifiers: []const []const u8,
+    external_global_names: []const []const u8,
     ext_param_names: []const []const u8,
 ) !void {
     switch (format) {
@@ -46,7 +47,7 @@ pub fn emitFormatPrologue(
             } else {
                 try output.appendSlice(allocator, "  else factory(");
             }
-            try writeGlobalsList(output, allocator, ext_param_names);
+            try writeGlobalsList(output, allocator, external_global_names);
             try output.appendSlice(allocator, ");\n");
             try output.appendSlice(allocator, "})(typeof self !== \"undefined\" ? self : this, function(");
             try writeParamList(output, allocator, ext_param_names);

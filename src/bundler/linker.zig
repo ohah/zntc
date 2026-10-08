@@ -181,6 +181,14 @@ const ExportKeyContext = struct {
     }
 };
 
+/// Generated factory parameter and its host global name for one UMD/AMD/IIFE
+/// external. `global_name` is used by the wrapper caller; `parameter_name` is
+/// the local binding consumed by rewritten imports.
+pub const ExternalParamNames = struct {
+    global_name: []const u8,
+    parameter_name: []const u8,
+};
+
 pub const Linker = struct {
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
@@ -222,6 +230,12 @@ pub const Linker = struct {
     /// 자동 수집된 예약 글로벌 이름. 모든 모듈의 unresolved references를 합친 것.
     /// scope hoisting 시 모듈 top-level 변수가 이 이름을 shadowing하면 리네임.
     reserved_globals: std.StringHashMapUnmanaged(void) = .empty,
+
+    /// External factory parameters are generated wrapper bindings, not AST
+    /// symbols. Keep one planned local name per emitted external and reserve it
+    /// so source bindings cannot shadow the parameter.
+    external_param_names: std.StringHashMapUnmanaged(ExternalParamNames) = .empty,
+    external_param_strings: std.ArrayList([]u8) = .empty,
 
     /// CJS factory is currently emitted from raw runtime text. The single-bundle
     /// identity name comes from the normal rename pass; this cached spelling is
@@ -526,6 +540,9 @@ pub const Linker = struct {
         self.canonical_names_used.deinit(self.allocator);
         self.rename_table.deinit(self.allocator);
         self.reserved_globals.deinit(self.allocator);
+        self.external_param_names.deinit(self.allocator);
+        for (self.external_param_strings.items) |s| self.allocator.free(s);
+        self.external_param_strings.deinit(self.allocator);
         if (self.cjs_factory_runtime_name) |name| self.allocator.free(name);
         if (self.to_binary_runtime_name) |name| self.allocator.free(name);
         if (self.esm_factory_runtime_name) |name| self.allocator.free(name);
@@ -955,6 +972,7 @@ pub const Linker = struct {
     /// Rolldown 방식: 하드코딩 목록 대신 실제 사용된 글로벌만 예약.
     pub fn collectReservedGlobals(self: *Linker) !void {
         self.reserved_globals.clearRetainingCapacity();
+        self.clearExternalParamNames();
         var mit = self.graph.modulesIterator();
         while (mit.next()) |m| {
             const sem = m.semantic orelse continue;
@@ -1011,6 +1029,11 @@ pub const Linker = struct {
         // size/warm-rebuild 안정성도 낫다(`computeRenames` 는 매 빌드 실행 → watch 도 커버).
         var wit = self.graph.modulesIterator();
         while (wit.next()) |m| try self.reserveWrapperNames(m);
+
+        // UMD/AMD/IIFE wrapper parameters share the factory scope with these
+        // generated bindings. Plan them after runtime and module wrapper names
+        // are known, before source renames and metadata generation.
+        try self.collectExternalParamNames();
     }
 
     /// 한 모듈의 래퍼 심볼 이름(`require_X`/`init_X`/`exports_X` + asset `wrapper_name_synthetic`)을
@@ -1141,6 +1164,123 @@ pub const Linker = struct {
                 try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
             }
         }
+    }
+
+    fn clearExternalParamNames(self: *Linker) void {
+        self.external_param_names.clearRetainingCapacity();
+        for (self.external_param_strings.items) |s| self.allocator.free(s);
+        self.external_param_strings.clearRetainingCapacity();
+    }
+
+    fn ownExternalParamString(self: *Linker, value: []const u8) ![]const u8 {
+        const owned = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(owned);
+        try self.external_param_strings.append(self.allocator, owned);
+        return owned;
+    }
+
+    fn collectExternalParamNames(self: *Linker) !void {
+        if (self.code_splitting) return;
+
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (self.tree_shaker_active and !m.is_included) continue;
+            for (m.import_records) |rec| {
+                if (!rec.is_external or rec.kind == .worker or rec.kind == .css_url) continue;
+                const external_name = rec.externalName();
+                if (self.external_param_names.contains(external_name)) continue;
+
+                const mapped = types.GlobalEntry.lookup(self.iife_globals, rec.specifier);
+                const global_name = switch (self.format) {
+                    .umd, .amd => mapped orelse try types.specifierToParamName(self.allocator, external_name),
+                    .iife => mapped orelse continue,
+                    else => continue,
+                };
+                defer if (mapped == null and (self.format == .umd or self.format == .amd)) self.allocator.free(global_name);
+
+                var parameter_name = global_name;
+                var parameter_name_temporary: ?[]u8 = null;
+                defer if (parameter_name_temporary) |temporary| self.allocator.free(temporary);
+                var suffix: u32 = 1;
+                while (self.externalParamNameIsUsed(parameter_name) or self.generatedLocalNameIsUsed(parameter_name)) {
+                    const candidate = try std.fmt.allocPrint(self.allocator, "{s}${d}", .{ global_name, suffix });
+                    suffix += 1;
+                    if (self.reserved_globals.contains(candidate)) {
+                        self.allocator.free(candidate);
+                        continue;
+                    }
+                    if (self.externalParamNameIsUsed(candidate)) {
+                        self.allocator.free(candidate);
+                        continue;
+                    }
+                    parameter_name = candidate;
+                    parameter_name_temporary = candidate;
+                    break;
+                }
+
+                const owned_global = try self.ownExternalParamString(global_name);
+                const owned_parameter = if (std.mem.eql(u8, parameter_name, global_name))
+                    owned_global
+                else
+                    try self.ownExternalParamString(parameter_name);
+                if (parameter_name_temporary) |temporary| {
+                    self.allocator.free(temporary);
+                    parameter_name_temporary = null;
+                }
+                try self.external_param_names.put(self.allocator, external_name, .{
+                    .global_name = owned_global,
+                    .parameter_name = owned_parameter,
+                });
+                try self.reserved_globals.put(self.allocator, owned_parameter, {});
+            }
+        }
+    }
+
+    fn externalParamNameIsUsed(self: *const Linker, name: []const u8) bool {
+        var it = self.external_param_names.valueIterator();
+        while (it.next()) |entry| {
+            if (std.mem.eql(u8, entry.parameter_name, name)) return true;
+        }
+        return false;
+    }
+
+    fn generatedLocalNameIsUsed(self: *const Linker, name: []const u8) bool {
+        const runtime_names = [_]?[]const u8{
+            self.cjs_factory_runtime_name,
+            self.to_binary_runtime_name,
+            self.esm_factory_runtime_name,
+        };
+        for (runtime_names) |runtime_name| {
+            if (runtime_name) |value| {
+                if (std.mem.eql(u8, value, name)) return true;
+            }
+        }
+        if (self.esm_interop_runtime_names) |interop_names| {
+            inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
+                if (std.mem.eql(u8, interop_names.get(helper), name)) return true;
+            }
+        }
+
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            if (self.tree_shaker_active and !m.is_included) continue;
+            const wrapper_names = [_]?[]const u8{
+                m.getInitName(null),
+                m.getExportsName(null),
+                m.getRequireName(null),
+                m.wrapper_name_synthetic,
+            };
+            for (wrapper_names) |wrapper_name| {
+                if (wrapper_name) |value| {
+                    if (std.mem.eql(u8, value, name)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    pub fn externalParamNamesFor(self: *const Linker, external_name: []const u8) ?ExternalParamNames {
+        return self.external_param_names.get(external_name);
     }
 
     fn hasIncludedCjsRuntime(self: *const Linker) bool {

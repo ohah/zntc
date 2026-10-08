@@ -102,14 +102,17 @@ fn getOrCreateCjsRequireRef(
 ///     emitter 가 동일 정책으로 wrapper 의 factory param 을 만들기 때문에 일관 유지.
 /// 반환 slice 는 allocator 소유 — 호출자가 free.
 inline fn mappedExternalParam(
+    self: *const Linker,
     format: types.Format,
-    globals: []const types.GlobalEntry,
     rec: types.ImportRecord,
     allocator: std.mem.Allocator,
 ) std.mem.Allocator.Error!?[]const u8 {
     if (!rec.is_external) return null;
+    if (self.externalParamNamesFor(rec.externalName())) |names| {
+        return try allocator.dupe(u8, names.parameter_name);
+    }
     // `--globals` 는 원문 지정자 기준 (rolldown 실측) — #4616 방출 이름과 축이 다르다.
-    const mapped = types.GlobalEntry.lookup(globals, rec.specifier);
+    const mapped = types.GlobalEntry.lookup(self.iife_globals, rec.specifier);
     switch (format) {
         .iife => {
             const gname = mapped orelse return null;
@@ -668,7 +671,7 @@ pub fn buildMetadataForAst(
                     const is_helper_esm = ib.is_helper and m.wrap_kind == .esm;
                     const Mapped = struct { name: []const u8, remote: bool };
                     const mapped: ?Mapped = blk: {
-                        if (try mappedExternalParam(format, self.iife_globals, rec, self.allocator)) |mp|
+                        if (try mappedExternalParam(self, format, rec, self.allocator)) |mp|
                             break :blk .{ .name = mp, .remote = false };
                         // PR-1/PR-2 (#3459): 정적 `import X from "remote/x"`
                         // 의 unresolved external 을 per-spec seam 글로벌
@@ -1591,7 +1594,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
         if (rec.resolved.isNone()) {
             // UMD/AMD/IIFE+globals: external require → factory 매개변수 참조.
             // require("react") → React (factory params에서 주입, #1824 IIFE 확장).
-            if (try mappedExternalParam(format, self.iife_globals, rec, self.allocator)) |param| {
+            if (try mappedExternalParam(self, format, rec, self.allocator)) |param| {
                 defer self.allocator.free(param);
                 if (!require_rewrites.contains(rec.specifier)) {
                     // "(React)" 형태로 저장 — emitRewriteValue가 '('로 시작하면 ()를 붙이지 않음
