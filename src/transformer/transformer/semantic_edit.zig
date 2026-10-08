@@ -2494,15 +2494,12 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
         const origin = self.reference_origin_map.get(raw) orelse raw;
         const index = self.capture_ref_by_origin.get(origin) orelse continue;
         const pending = self.capture_refs.items[index];
-        var id = self.capture_binding_ids.get(captureKey(pending.frame, pending.kind)) orelse
+        const id = self.capture_binding_ids.get(captureKey(pending.frame, pending.kind)) orelse
             std.debug.panic("live lexical capture has no declaration", .{});
         const ref_node: NodeIndex = @enumFromInt(raw);
         const trace = traces.get(raw) orelse std.debug.panic("live lexical capture has no output scope trace: node={d}", .{raw});
         if (trace.ambiguous_scope) std.debug.panic("live lexical capture has ambiguous output scope: node={d}", .{raw});
         const output_scope = trace.scope;
-        if (pending.kind != .new_target_value) if (outputReferenceName(self.ast, ref_node)) |name| {
-            if (nearestOutputSymbolAtScope(editor, name, output_scope)) |lexical_id| id = lexical_id;
-        };
         if (self.getSymbolIdAt(ref_node)) |existing| {
             if (existing != id) {
                 const maybe_reference = editor.referenceForNode(ref_node) catch |err| return editError(err);

@@ -90,6 +90,14 @@ fn checkCaptureSymbolsWithUnsupported(
         for (edited.references) |ref| {
             if (@intFromEnum(ref.symbol_id) != index or ref.node_index.isNone()) continue;
             try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
+            const reference_node = transformer.ast.getNode(ref.node_index);
+            try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, reference_node.tag);
+            // Balanced reference counts can hide a `this`/`arguments` ID swap
+            // if the checker follows spelling. Lock the name to this exact SID.
+            try std.testing.expectEqualStrings(
+                symbol.nameText(transformer.ast.source),
+                transformer.ast.getText(reference_node.data.string_ref),
+            );
             var use_scope = ref.scope_id;
             var resolves_capture = false;
             while (!use_scope.isNone()) {
