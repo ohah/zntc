@@ -8464,6 +8464,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 1 9 true\n',
       },
       {
+        name: 'named class expression literal constructor defaults retain exact inner identity',
+        source:
+          'var ExpressionHolder = class ExpressionInner { constructor(value = "expr") { this.value = value; } self() { return ExpressionInner; } }; var expressionDefault = new ExpressionHolder(); var expressionProvided = new ExpressionHolder("passed"); console.log(expressionDefault.value, expressionProvided.value, expressionDefault.self() === ExpressionHolder);',
+        graph: 'retained',
+        output: 'expr passed true\n',
+      },
+      {
         name: 'one plain instance method',
         source:
           'class WithMethod { value(n) { return this.base + n; } }\nvar instance = new WithMethod(); instance.base = 2; console.log(instance.value(7));\n',
@@ -8613,11 +8620,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true true true\n',
       },
       {
-        name: 'constructor with a default parameter stays on reanalysis',
+        name: 'constructor primitive literal defaults retain their graph',
         source:
-          'class Defaulted { constructor(value = 3) { this.value = value; } } console.log(new Defaulted().value);',
+          'class LiteralDefaults { constructor(number = 3, enabled = true, empty = null, label = "ready") { this.number = number; this.enabled = enabled; this.empty = empty; this.label = label; } } var defaults = new LiteralDefaults(); var provided = new LiteralDefaults(8, false, null, "custom"); console.log(defaults.number, provided.number, defaults.enabled, provided.enabled, defaults.empty === null, defaults.label, provided.label);',
+        graph: 'retained',
+        output: '3 8 true false true ready custom\n',
+      },
+      {
+        name: 'constructor parameter TDZ default stays on reanalysis',
+        source:
+          'class TdzDefaulted { constructor(value = later, later = 4) { this.value = value; } } try { new TdzDefaulted(); } catch (error) { console.log(error instanceof ReferenceError); }',
         graph: 'reanalyzed',
-        output: '3\n',
+        output: 'true\n',
+      },
+      {
+        name: 'constructor call default stays on reanalysis',
+        source:
+          'function getDefault() { return 4; } class CalledDefault { constructor(value = getDefault()) { this.value = value; } } console.log(new CalledDefault().value);',
+        graph: 'reanalyzed',
+        output: '4\n',
+      },
+      {
+        name: 'constructor destructured literal default stays on reanalysis',
+        source:
+          'class DestructuredDefaulted { constructor({ value } = { value: 4 }) { this.value = value; } } console.log(new DestructuredDefaulted().value);',
+        graph: 'reanalyzed',
+        output: '4\n',
       },
       {
         name: 'constructor with a simple literal assignment retains its graph',
