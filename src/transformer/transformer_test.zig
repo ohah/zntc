@@ -10,6 +10,48 @@ const Ast = ast_mod.Ast;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const es_helpers = @import("es_helpers.zig");
+
+test "#4819 distinct synthetic bases do not reuse a reserved fallback name" {
+    var ast = Ast.init(std.testing.allocator, "var _loop;");
+    defer ast.deinit();
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+
+    const first_span = try transformer.ast.addString("_loop");
+    try std.testing.expectEqualStrings("_loop", transformer.ast.getText(first_span));
+    const first = try es_helpers.makeSyntheticBinding(&transformer, first_span);
+    try std.testing.expectEqualStrings("_loop2", transformer.ast.getText(transformer.ast.getNode(first).data.string_ref));
+
+    const second_span = try transformer.ast.addString("_loop2");
+    const second = try es_helpers.makeSyntheticBinding(&transformer, second_span);
+    try std.testing.expectEqualStrings("_loop22", transformer.ast.getText(transformer.ast.getNode(second).data.string_ref));
+
+    const first_again = try es_helpers.makeSyntheticBinding(&transformer, first_span);
+    try std.testing.expectEqualStrings("_loop2", transformer.ast.getText(transformer.ast.getNode(first_again).data.string_ref));
+
+    const exact_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, transformer.ast.getNode(first).data.string_ref);
+    try std.testing.expectEqualStrings("_loop2", transformer.ast.getText(transformer.ast.getNode(exact_ref).data.string_ref));
+}
+
+test "#4819 numbered synthetic names are reserved and carried exactly" {
+    var ast = Ast.init(std.testing.allocator, "function f() {}");
+    defer ast.deinit();
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+
+    var counter: u32 = 0;
+    const first_name = try transformer.buildUniqueName("_loop", &counter);
+    const second_name = try transformer.buildUniqueName("_loop", &counter);
+    try std.testing.expectEqualStrings("_loop", first_name);
+    try std.testing.expectEqualStrings("_loop2", second_name);
+    try std.testing.expectEqualStrings("_loop22", try es_helpers.resolveSyntheticName(&transformer, second_name));
+
+    const binding = try es_helpers.makeExactSyntheticBinding(&transformer, second_name);
+    const reference = try es_helpers.makeExactSyntheticRef(&transformer, second_name);
+    try std.testing.expectEqualStrings(second_name, transformer.ast.getText(transformer.ast.getNode(binding).data.string_ref));
+    try std.testing.expectEqualStrings(second_name, transformer.ast.getText(transformer.ast.getNode(reference).data.string_ref));
+}
 
 test "Transformer: empty program" {
     const std_lib = @import("std");

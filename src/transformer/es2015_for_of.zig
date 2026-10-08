@@ -164,7 +164,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             else
                 try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
             if (register_sm_temps) try self.recordGeneratorStateTempSymbol(iter, iter_symbol);
-            const step_binding = try es_helpers.makeSyntheticBinding(self, step);
+            const step_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, step);
             const step_symbol = if (register_sm_temps)
                 try self.declareSyntheticTempInScope(step_binding, span, generated_temp_scope)
             else if (self.pending_loop_extraction_depth != 0)
@@ -471,11 +471,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         /// `getSourceText(node.span)` 이 원본 텍스트를 읽어 매칭 실패 → mangler 의
         /// cross-module rename 이 declaration 에만 적용되는 비대칭이 발생한다.
         fn makeRefFromSpan(self: *Transformer, name_span: Span) Transformer.Error!NodeIndex {
-            return es_helpers.makeSyntheticRefFromSpan(self, name_span);
+            return es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
         }
 
         fn makeTrackedRefFromSpan(self: *Transformer, name_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags, scope: @import("../semantic/scope.zig").ScopeId, track: bool) Transformer.Error!NodeIndex {
-            const ref = try es_helpers.makeSyntheticRefFromSpan(self, name_span);
+            const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
             if (track) try self.trackHoistedTempRefInScope(name_span, ref, scope, flags);
             return ref;
         }

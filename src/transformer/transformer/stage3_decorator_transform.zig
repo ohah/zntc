@@ -36,24 +36,23 @@ fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex
 fn uniqueMemberDecoratorName(self: *Transformer, member_infos: []const Stage3MemberInfo, base_name: []const u8) Error![]const u8 {
     var ordinal: usize = 0;
     while (true) : (ordinal += 1) {
-        const resolved = if (ordinal == 0)
-            try es_helpers.resolveSyntheticName(self, base_name)
+        const candidate = if (ordinal == 0)
+            try self.allocator.dupe(u8, base_name)
         else blk: {
-            const candidate = try std.fmt.allocPrint(self.allocator, "{s}_{d}", .{ base_name, ordinal });
-            defer self.allocator.free(candidate);
-            break :blk try es_helpers.resolveSyntheticName(self, candidate);
+            break :blk try std.fmt.allocPrint(self.allocator, "{s}_{d}", .{ base_name, ordinal });
         };
 
         var already_used = false;
         for (member_infos) |info| {
             if (info.deco_var_name) |name| {
-                if (std.mem.eql(u8, name, resolved)) {
+                if (std.mem.eql(u8, name, candidate)) {
                     already_used = true;
                     break;
                 }
             }
         }
-        if (!already_used) return self.allocator.dupe(u8, resolved);
+        if (!already_used) return candidate;
+        self.allocator.free(candidate);
     }
 }
 
@@ -573,7 +572,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
     // static { _classThis = this; }
     {
-        const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+        const classThis_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
         try class_this_initialization_refs.append(self.allocator, classThis_ref);
         const this_node = try self.ast.addNode(.{
             .tag = .this_expression,
@@ -918,7 +917,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
     // return Foo = _classThis;
     const return_name = try self.makeIdentifierRefWithSymbol(inner_name_span, inner_binding);
-    const classThis_ref2 = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    const classThis_ref2 = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
     try class_this_return_refs.append(self.allocator, classThis_ref2);
     const return_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,

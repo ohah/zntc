@@ -160,10 +160,14 @@ pub fn buildUniqueName(self: *Transformer, prefix_in: []const u8, counter: *u32)
     // 번호는 그 뒤에 붙여 서로 다른 합성 변수가 같은 이름을 받지 않게 한다.
     // 돌려주는 이름은 transformer 수명의 `name_arena` 소유라 호출자가 해제하지 않는다.
     const prefix = try es_helpers.resolveSyntheticName(self, prefix_in);
-    counter.* += 1;
-    if (counter.* == 1) return prefix;
-    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
-    return std.fmt.allocPrint(self.name_arena.?.allocator(), "{s}{d}", .{ prefix, counter.* }) catch return Error.OutOfMemory;
+    if (counter.* == 0) {
+        counter.* = 1;
+        return prefix;
+    }
+
+    // Suffixes are independent generated spellings, so reserve them through
+    // the final unique-name allocator instead of returning an unchecked string.
+    return es_helpers.uniqueSyntheticName(self, prefix, counter) catch return Error.OutOfMemory;
 }
 
 pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {

@@ -110,7 +110,7 @@ fn emitImportDeclaration(
     for (pairs) |p| {
         // imported(`jsx`)는 모듈이 내보낸 이름, local(`_jsx`)은 변환기가 만든 지역 이름.
         const imported_node = try es_helpers.makePropertyName(self, p.imported);
-        const local_node = try es_helpers.makeSyntheticRef(self, p.local);
+        const local_node = try es_helpers.makeExactSyntheticRef(self, p.local);
         try self.markRuntimeHelperRef(local_node);
         if (local_node != imported_node) try self.markRuntimeHelperRef(imported_node);
 

@@ -251,7 +251,7 @@ pub fn buildClassEsDecorateCall(
     const arg1 = try es_helpers.makeNullLiteral(self);
 
     // arg2: _classDescriptor = { value: _classThis }
-    const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    const classThis_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
     try class_this_read_refs.append(self.allocator, classThis_ref);
     const value_key = try es_helpers.makePropertyName(self, "value");
     const value_prop = try makeObjProp(self, value_key, classThis_ref);
@@ -278,7 +278,7 @@ pub fn buildClassEsDecorateCall(
 
     const name_key = try es_helpers.makePropertyName(self, "name");
     // _classThis.name
-    const classThis_ref2 = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    const classThis_ref2 = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
     try class_this_read_refs.append(self.allocator, classThis_ref2);
     const name_prop_key = try es_helpers.makePropertyName(self, "name");
     const classThis_name = try self.addExtraNode(.static_member_expression, zero_span, &.{
@@ -597,7 +597,7 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
 
     // const _metadata = ...;
     const metadata_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_metadata"));
-    const metadata_binding = try es_helpers.makeSyntheticBinding(self, metadata_span);
+    const metadata_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, metadata_span);
     const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(metadata_binding), none, @intFromEnum(ternary),
     });
@@ -628,7 +628,7 @@ pub fn buildClassReassign(
     });
 
     // _classThis = _classDescriptor.value
-    const classThis_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    const classThis_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
     try class_this_write_refs.append(self.allocator, classThis_ref);
     const inner_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
@@ -859,7 +859,7 @@ pub fn buildMetadataDefineProperty(
     const obj_defprop = try es_helpers.makeStaticMember(self, object_ref, defprop_key, zero_span);
 
     // arg1: _classThis
-    const ct_ref = try es_helpers.makeSyntheticRefFromSpan(self, classThis_span);
+    const ct_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
     try class_this_read_refs.append(self.allocator, ct_ref);
 
     // arg2: Symbol.metadata
