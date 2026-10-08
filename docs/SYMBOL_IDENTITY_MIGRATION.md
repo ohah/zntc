@@ -158,6 +158,7 @@
 - 그 다음 범위는 같은 exact receiver chain 안의 computed optional member다. `getReceiver()?.[key()]?.method?.()`의 key는 receiver가 null이 아닐 때 한 번만 평가되고 method의 `this`가 보존된다. computed key를 받는 매개변수의 identity와 null 경로에서 key 평가가 생략되는 동작도 검사한다. 일반 computed tail, optional call receiver의 다른 모양은 계속 fallback에 둔다.
 - standalone optional call도 exact source-bound identifier에 한해 유지한다. `method?.(argument())`에서 callee parameter identity를 보존하고 null일 때 argument를 건너뛴다. global `eval?.()`은 indirect-eval 의미를 보존하도록 재분석에 남기며, nested optional call 형태도 이 범위에 포함하지 않는다.
 - optional call의 callee가 bound source identifier에서 시작하는 일반 call chain이면 그 결과도 기존 graph에 유지한다. `getTarget(enabled)?.(argument())`에서 factory와 argument의 평가 횟수, null 결과의 argument short-circuit, exact identity를 확인한다. `globalThis.getTarget()?.()`처럼 추적되지 않는 root는 재분석에 남기며, callee 안에 optional call이 중첩된 형태는 별도 경계다.
+- exact source-bound identifier 또는 audited member receiver에 대한 optional call 뒤에 일반 call tail이 오면, 그 tail까지 기존 graph에 유지한다. `getTarget(enabled)?.()(argument())`에서 receiver 호출과 후속 인자 평가가 null/non-null 경로에 맞게 한 번씩 실행되는지 확인한다. untracked optional member call과 그 뒤의 call tail은 재분석에 남긴다. optional call 안에 다시 optional call이 오는 형태는 별도 경계다.
 
 ### 매개변수 수정 후 남은 경계
 

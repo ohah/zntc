@@ -696,6 +696,28 @@ fn isRetainableOptionalChainMemberAccess(
     return isRetainableOptionalMemberChainTail(ast, semantic, receiver);
 }
 
+/// An ordinary call may continue a retained optional call result, but only
+/// when the callee spine reaches an optional call that passes the same exact
+/// source-rooted checks as a standalone optional call.
+fn isRetainableOptionalCallResultTail(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    var current = call_idx;
+    while (true) {
+        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        const call = ast.getNode(current);
+        if (call.tag != .call_expression) return false;
+        const extra = call.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
+        const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+        if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
+            return isRetainableOptionalCall(ast, semantic, current);
+        current = callee;
+    }
+}
+
 fn isRetainableOptionalCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -714,9 +736,14 @@ fn isRetainableOptionalCall(
         return optional_call and isBoundSourceIdentifierReference(ast, semantic, callee);
     }
     if (member.tag == .call_expression) {
-        // `factory()?.()` lowers the ordinary source call once, captures its
-        // result in a tracked temp, then guards the optional invocation.
-        return optional_call and isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
+        if (optional_call) {
+            // `factory()?.()` lowers the ordinary source call once, captures
+            // its result in a tracked temp, then guards the optional invocation.
+            return isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
+        }
+        // `method?.()()` keeps the optional short-circuit around the complete
+        // ordinary call tail and retains the source callee identity.
+        return isRetainableOptionalCallResultTail(ast, semantic, callee);
     }
     if (member.tag != .static_member_expression and member.tag != .computed_member_expression) return false;
     const member_extra = member.data.extra;
