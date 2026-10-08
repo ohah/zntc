@@ -10,6 +10,7 @@
 // transform 직후 exact 검사와 minify 후 최종 AST 재분석 identity 검사를 함께 확인한다.
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -338,6 +339,27 @@ function runCoverage(
 
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
+
+  // Pin the matrix surface; deriving the expected run count only from these
+  // arrays would let a removed fixture or target silently shrink the gate.
+  test('oracle fixture and target inventory cannot shrink silently', () => {
+    const fixtureNames = fixtures.map((file) => relative(FIXTURE_DIR, file).replaceAll('\\', '/'));
+    const fixtureInventory = createHash('sha256')
+      .update(fixtureNames.join('\n') + '\n')
+      .digest('hex');
+    expect(fixtureNames).toHaveLength(297);
+    expect(fixtureInventory).toBe(
+      '913add7b812a4e75b3557e7b52f4d7fde694be9336d2f908276de685efd63f76',
+    );
+    expect(TARGETS).toEqual([
+      { name: 'es5', arg: '--target=es5' },
+      { name: 'es2015', arg: '--target=es2015' },
+      { name: 'es2017', arg: '--target=es2017' },
+      { name: 'es2022', arg: '--target=es2022' },
+      { name: 'esnext', arg: '--target=esnext' },
+      { name: 'hermes', arg: '--platform=react-native' },
+    ]);
+  });
 
   test('report selection ignores marker text embedded in diagnostic paths', () => {
     const lines = [
@@ -8531,7 +8553,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     // 검사기가 실제로 돌았는지(출력 형식이 바뀌어 전부 건너뛰면 공허하게 통과한다).
     expect(fixtures.length).toBeGreaterThan(0);
     expect(problems).toEqual([]);
-    expect(runs).toBe(fixtures.length * TARGETS.length);
+    expect(runs).toBe(297 * 6);
     expect(generatedBindings).toBeGreaterThan(0);
     expect(generatedReferences).toBeGreaterThan(0);
     expect(strictExternalReferences).toBeGreaterThan(0);
