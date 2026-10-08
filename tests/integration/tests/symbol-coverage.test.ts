@@ -719,6 +719,117 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 exponentiation lowering reserves generated Math across modules', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-exponentiation-global-'));
+    const cases = [
+      {
+        name: 'binary',
+        source: 'function square(value) { return (() => value ** 2)(); }',
+        graph: 'retained',
+        output: '36 3 undefined\n',
+      },
+      {
+        name: 'binary-shadow',
+        source: [
+          'const Math = { pow(left, right) { return left + right; } };',
+          'globalThis.shadowMath = Math;',
+          'function square(value) { return (() => value ** 2)(); }',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '36 3 3\n',
+      },
+      {
+        name: 'assignment',
+        source: 'function square(input) { var value = input; return (() => (value **= 2))(); }',
+        graph: 'reanalyzed',
+        output: '36 3 undefined\n',
+      },
+      {
+        name: 'assignment-shadow',
+        source: [
+          'const Math = { pow(left, right) { return left + right; } };',
+          'globalThis.shadowMath = Math;',
+          'function square(input) { var value = input; return (() => (value **= 2))(); }',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '36 3 3\n',
+      },
+    ];
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        "import './power.mjs';",
+        "import { Math as mathValue } from './user-math.mjs';",
+        'console.log(globalThis.squareResult, mathValue.pow(1, 2), globalThis.shadowMath && globalThis.shadowMath.pow(1, 2));',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'user-math.mjs'),
+      'export const Math = { pow(left, right) { return left + right; } };',
+    );
+    try {
+      for (const fixture of cases) {
+        writeFileSync(
+          join(dir, 'power.mjs'),
+          [fixture.source, 'globalThis.squareResult = square(6);'].join('\n'),
+        );
+        for (const minifyIdentifiers of [false, true]) {
+          const variantOutput = join(
+            dir,
+            `out.${fixture.name}.${minifyIdentifiers ? 'minified' : 'plain'}.cjs`,
+          );
+          const args = ['--bundle', 'entry.mjs', '--target=es5', '--platform=node', '--format=cjs'];
+          if (minifyIdentifiers) args.push('--minify-identifiers');
+          args.push('-o', variantOutput);
+          const proc = spawnSync(ZNTC_BIN, args, {
+            cwd: dir,
+            env: minifyIdentifiers
+              ? { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }
+              : process.env,
+            encoding: 'utf8',
+          });
+          expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+
+          if (minifyIdentifiers) {
+            const report = (proc.stderr ?? '')
+              .split(/\r?\n/)
+              .find(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-prepass ') && line.includes('power.mjs'),
+              );
+            expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+            if (fixture.graph === 'retained') {
+              for (const counter of EXACT_ZERO_COUNTERS) {
+                expect(
+                  Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+                  `${fixture.name}: ${report}`,
+                ).toBe(0);
+              }
+              expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+            }
+
+            const graphMode = (proc.stderr ?? '')
+              .split(/\r?\n/)
+              .find(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+                  line.includes('power.mjs'),
+              );
+            expect(graphMode, `${fixture.name}: ${proc.stderr}`).toContain(
+              `semantic_graph=${fixture.graph}`,
+            );
+          }
+
+          const actual = spawnSync('node', [variantOutput], { encoding: 'utf8' });
+          expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+          expect(actual.stdout, fixture.name).toBe(fixture.output);
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native and ES5 for-of lowering retain exact loop and helper scopes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-for-of-catch-scope-'));
     const file = join(FIXTURE_DIR, '4819-for-of-iterator-close.mjs');
@@ -2326,11 +2437,22 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 downlevel forms with generated state keep arrow modules on semantic resync', () => {
+  test('ES5 downlevel forms with generated state use audited graph paths or semantic resync', () => {
     const cases = [
       {
         name: 'exponentiation',
+        graph: 'retained',
         source: 'function square(value) { return (() => value ** 2)(); }\nconsole.log(square(6));',
+        output: '36\n',
+      },
+      {
+        name: 'exponentiation with Math shadow',
+        graph: 'reanalyzed',
+        source: [
+          'const Math = { pow(left, right) { return left + right; } };',
+          'function square(value) { return (() => value ** 2)(); }',
+          'console.log(square(6));',
+        ].join('\n'),
         output: '36\n',
       },
       {
@@ -2343,6 +2465,16 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         name: 'exponentiation assignment',
         source: [
           'function square(value) { var result = value; return (() => (result **= 2))(); }',
+          'console.log(square(6));',
+        ].join('\n'),
+        output: '36\n',
+      },
+      {
+        name: 'exponentiation assignment with Math shadow',
+        graph: 'reanalyzed',
+        source: [
+          'const Math = { pow(left, right) { return left + right; } };',
+          'function square(input) { var value = input; return (() => (value **= 2))(); }',
           'console.log(square(6));',
         ].join('\n'),
         output: '36\n',
