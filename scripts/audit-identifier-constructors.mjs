@@ -40,6 +40,8 @@ const ALLOWLIST = {
   'src/transformer/es_helpers.zig::makeSyntheticBinding': '합성 바인딩 생성 함수',
   'src/transformer/es_helpers.zig::makeExactSyntheticBinding':
     '고유 이름을 확정한 합성 바인딩 생성 함수',
+  'src/transformer/es_helpers.zig::retagAssignmentTargetAsReference':
+    '기존 assignment target 노드를 읽기 reference로 재사용',
   'src/transformer/transformer/node_helpers.zig::makeUserBinding':
     '사용자 바인딩 생성 함수(심볼 전달)',
   'src/transformer/es_helpers.zig::jsxIdentifierNode':

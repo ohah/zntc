@@ -26,12 +26,10 @@ pub fn ES2021(comptime Transformer: type) type {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
             const target_node = self.ast.getNode(target.read);
             if (target_node.tag == .identifier_reference or target_node.tag == .assignment_target_identifier) {
-                const read_target = &self.ast.nodes.items[@intFromEnum(target.read)];
-                if (read_target.tag == .assignment_target_identifier) read_target.tag = .identifier_reference;
+                es_helpers.retagAssignmentTargetAsReference(self, target.read);
                 var value_read: ?NodeIndex = null;
                 if (self.options.unsupported.nullish_coalescing) {
-                    const value_node = &self.ast.nodes.items[@intFromEnum(target.value)];
-                    if (value_node.tag == .assignment_target_identifier) value_node.tag = .identifier_reference;
+                    es_helpers.retagAssignmentTargetAsReference(self, target.value);
                     value_read = target.value;
                 }
                 try self.splitLogicalAssignmentIdentifierReferences(target.read, value_read, target.write);
@@ -88,8 +86,7 @@ pub fn ES2021(comptime Transformer: type) type {
             const target = (try es_helpers.prepareAssignmentTargetRef(self, node.data.binary.left, node.span)) orelse unreachable;
             const target_node = self.ast.getNode(target.read);
             if (target_node.tag == .identifier_reference or target_node.tag == .assignment_target_identifier) {
-                const read_target = &self.ast.nodes.items[@intFromEnum(target.read)];
-                if (read_target.tag == .assignment_target_identifier) read_target.tag = .identifier_reference;
+                es_helpers.retagAssignmentTargetAsReference(self, target.read);
                 try self.splitLogicalAssignmentIdentifierReferences(target.read, null, target.write);
             }
             try es_helpers.trackAssignmentTargetTemps(self, target, false, true);

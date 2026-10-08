@@ -322,6 +322,15 @@ pub fn makeTempVarRef(self: anytype, span: Span, node_span: Span) !NodeIndex {
     }));
 }
 
+/// Reuse an assignment-target identifier node as a value reference after a
+/// lowering turns the target into a read. This changes an existing AST node;
+/// it does not create a name or choose a symbol.
+pub fn retagAssignmentTargetAsReference(self: anytype, idx: NodeIndex) void {
+    if (idx.isNone()) return;
+    const node = &self.ast.nodes.items[@intFromEnum(idx)];
+    if (node.tag == .assignment_target_identifier) node.tag = .identifier_reference;
+}
+
 /// left 노드가 단순 식별자(부작용 없음)인지 판단.
 pub fn isSimpleIdentifier(self: anytype, left_idx: NodeIndex) bool {
     const left_node = self.ast.getNode(left_idx);
