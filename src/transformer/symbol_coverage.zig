@@ -4145,14 +4145,17 @@ fn checkStrictImpl(
     // can still poison scope maps and later name allocation even though every
     // reachable identifier has exact identity.
     for (symbols, 0..) |symbol, raw_id| {
-        if (symbol.synthetic_name.len == 0 or raw_id > std.math.maxInt(u32)) continue;
+        const has_generated_name_provenance = symbol.synthetic_name.len > 0 or
+            symbol.synthetic_kind != null or
+            symbol.name.start & Ast.STRING_TABLE_BIT != 0;
+        if (!has_generated_name_provenance or raw_id > std.math.maxInt(u32)) continue;
         // Virtual namespace/enum IIFE parameters have no emitted AST binding
         // node; checkExact validates them against reachable owner scopes.
         if (symbol.synthetic_kind == .namespace_iife_parameter or symbol.synthetic_kind == .enum_iife_parameter or
             symbol.synthetic_kind == .enum_iife_member or symbol.synthetic_kind == .runtime_helper_preamble) continue;
         // Expression `export default` keeps a synthetic reachability facade
         // even when it has no emitted local binding.
-        if (symbol.decl_flags.is_default_export and std.mem.eql(u8, symbol.synthetic_name, "_default")) continue;
+        if (symbol.decl_flags.is_default_export and std.mem.eql(u8, exactSymbolName(ast, &symbol), "_default")) continue;
         const id: u32 = @intCast(raw_id);
         if (reachable_binding_symbols.contains(id)) continue;
         report.orphan_symbols += 1;

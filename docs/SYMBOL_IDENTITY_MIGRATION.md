@@ -161,6 +161,7 @@
 ## 검증과 완료 보고
 
 - exact scope audit는 서로 다른 reachable lexical owner가 같은 `ScopeId`를 공유하면 `duplicate_scope_owner`로 실패한다. unreachable stale owner map entry는 lowering 뒤 남을 수 있어 허용한다. 두 sibling block의 ID를 하나로 바꾸는 Zig 재현 케이스는 실패하고, 같은 ID를 가진 unreachable stale block은 허용됨을 확인한다.
+- synthetic inventory는 orphan generated Symbol을 `synthetic_name`뿐 아니라 `synthetic_kind`와 AST string-table name span으로도 식별한다. 이름 표식 하나가 사라져도 orphan 검사가 우회되지 않으며, source span을 가진 stale source symbol은 허용한다.
 - source scope-owner audit는 owner mismatch, parent-mismatch, duplicate owner 세 counter를 각각 한 번만 허용하며 0이 아닌 값, 누락·중복, unknown field, malformed token/value를 거부한다. marker 텍스트가 경로에 있어도 실제 report payload만 읽는다.
 - 구조 검사는 AST, SID, reference, scope owner/map의 일관성을 검사한다. `clean=1`만으로 원본 프로그램과 같은 의미라고 판정하지 않는다.
 - exact audit는 program top-level `Reference.stmt_idx`가 현재 AST 문장 위치와 맞는지 검사한다. 같은 reference `NodeIndex`가 서로 다른 중첩 statement-list 위치에서 공유되거나 하나의 값 사용 node가 AST의 여러 자리에 연결되면 실패한다. import/export shorthand의 local과 외부 이름 쌍은 한 semantic use로 분류한다. `scope_stmt_idx`는 분석기가 방문하는 문맥에 따라 바깥 statement-list 번호를 유지할 수 있어 변환 후 AST의 가장 가까운 block 위치와 직접 비교하지 않는다. 한 reference node는 하나의 statement-use record만 가질 수 있으므로, 변환이 문장 간 복사본을 만들면 별도 node와 `Reference`를 등록해야 한다.

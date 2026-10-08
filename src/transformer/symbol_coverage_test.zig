@@ -3222,6 +3222,29 @@ test "strict inventory reports generated symbols with no reachable binding" {
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, orphan.orphan_symbol_findings.items[0].kind);
     try std.testing.expectEqual(global_scope, orphan.orphan_symbol_findings.items[0].scope_id);
 
+    // Generated transformer symbols also carry their stable name in the AST
+    // string table. If the redundant synthetic_name marker is lost, the exact
+    // audit must still recognize the row as generated and reject its missing
+    // reachable binding.
+    var missing_name_marker_symbols = symbols;
+    missing_name_marker_symbols[0].synthetic_name = "";
+    var missing_name_marker = try coverage.checkStrict(
+        allocator,
+        &ast,
+        root,
+        0,
+        &.{},
+        &missing_name_marker_symbols,
+        &scopes,
+        &owners,
+        &.{},
+        &synthetic,
+        &unresolved,
+    );
+    defer missing_name_marker.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), missing_name_marker.orphan_symbols);
+    try std.testing.expect(!missing_name_marker.hasCompleteExactCoverage());
+
     // Expression `export default` uses an intentional symbol-table facade
     // when there is no emitted local declaration to attach it to.
     var default_facade_symbols = symbols;
@@ -3245,9 +3268,9 @@ test "strict inventory reports generated symbols with no reachable binding" {
 
 test "strict inventory checks generated identity and exact lexical scope" {
     const allocator = std.testing.allocator;
-    var ast = Ast.init(allocator, "");
+    var ast = Ast.init(allocator, "x");
     defer ast.deinit();
-    const name = try ast.addString("x");
+    const name: @import("../lexer/token.zig").Span = .{ .start = 0, .end = 1 };
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const read = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
     const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ binding, read }) } });
