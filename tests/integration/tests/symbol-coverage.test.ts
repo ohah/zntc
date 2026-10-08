@@ -658,6 +658,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const reportWithMarkerInPath =
       'zntc: symbol-identity /tmp/input: generated_bindings=3.js: ' + reportPayload;
     expect(exactSchemaProblems(reportWithMarkerInPath)).toEqual([]);
+    const prepassReport =
+      'zntc: symbol-identity-prepass /tmp/input: generated_bindings=3.js: ' + reportPayload;
+    expect(exactSchemaProblems(prepassReport)).toEqual([]);
+    expect(
+      exactSchemaProblems(prepassReport.replace(' invalid_id=0', ' invalid_id=0 invalid_id=1')),
+    ).toContain('invalid_id occurrences=2, expected 1');
     expect(exactSchemaProblems('zntc: symbol-identity input.js: clean=1')).toContain(
       'missing exact report payload',
     );
@@ -879,10 +885,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
       expect(reports, proc.stderr).toHaveLength(2);
       for (const report of reports) {
-        for (const counter of EXACT_ZERO_COUNTERS) {
-          expect(Number(report.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
-        }
-        expect(report).toMatch(/clean=1(?:\s|$)/);
+        expect(exactSchemaProblems(report), report).toEqual([]);
       }
 
       const dependency = reports.find((line) => line.includes('dep.ts'));
