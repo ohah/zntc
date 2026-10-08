@@ -154,6 +154,7 @@
 - ES5 bundler prepass는 bound source identifier에서 시작하는 일반 중첩 call chain을 optional member call receiver로 사용할 때도 graph를 유지한다. `factory()().method?.()`에서 call chain의 마지막 callee가 exact source binding인지 확인하고 모든 nested call이 일반 call인지 확인하며, optional call 및 다른 callee shape는 재분석한다. 호출 횟수, null/non-null method 경로, method `this`, exact graph를 검사한다. 이 제한된 receiver 확장은 optional chaining 전체의 재분석 제거를 뜻하지 않는다.
 
 - ES5 bundler prepass는 exact identifier 또는 tracked-call receiver에서 시작하는 optional member access 뒤의 일반 static-member/call tail도 기존 graph에 유지한다. `getReceiver()?.child.method()`에서 receiver는 한 번 평가되고 최종 method의 `this`도 보존한다. 일반 computed-member tail, optional call, chained optional receiver는 재분석한다. 실행 횟수와 exact graph를 확인하고 computed key가 short-circuit되는 fallback 음성 대조를 둔다. 이 범위는 optional chaining 전체 재분석 제거를 뜻하지 않는다.
+- 후속 범위는 위 optional member access에서 이어지는 중첩 optional static-member receiver다. `getReceiver()?.child?.method?.()`는 첫 receiver와 메서드를 각각 한 번 평가하고 메서드의 `this`를 보존하며, 어느 optional 단계에서든 `null`이면 안전하게 short-circuit한다. computed optional receiver는 계속 재분석한다. 런타임 출력, exact graph, computed-key 횟수 음성 대조로 확인하며 모든 optional chain을 이관한 것은 아니다.
 
 ### 매개변수 수정 후 남은 경계
 

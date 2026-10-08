@@ -2957,6 +2957,36 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: '42 1 1\nundefined 2 1\n',
       },
       {
+        name: 'chained optional member receiver',
+        graph: 'retained',
+        source: [
+          'var gets = 0; var calls = 0;',
+          'var receiver = { child: { n: 37, method: function () { calls++; return this.n; } } };',
+          'function getReceiver() { gets++; return receiver; }',
+          'function read() { return getReceiver()?.child?.method?.(); }',
+          'console.log(read(), gets, calls);',
+          'receiver = { child: null };',
+          'console.log(read(), gets, calls);',
+          'receiver = null;',
+          'console.log(read(), gets, calls);',
+        ].join('\n'),
+        output: '37 1 1\nundefined 2 1\nundefined 3 1\n',
+      },
+      {
+        name: 'chained computed optional member receiver fallback',
+        graph: 'reanalyzed',
+        source: [
+          'var gets = 0; var keys = 0; var receiver = { child: { value: 42 } };',
+          'function getReceiver() { gets++; return receiver; }',
+          'function key() { keys++; return "child"; }',
+          'function read() { return getReceiver()?.[key()]?.value; }',
+          'console.log(read(), gets, keys);',
+          'receiver = null;',
+          'console.log(read(), gets, keys);',
+        ].join('\n'),
+        output: '42 1 1\nundefined 2 1\n',
+      },
+      {
         name: 'chained optional member with computed tail',
         graph: 'reanalyzed',
         source: [
