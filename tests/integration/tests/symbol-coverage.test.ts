@@ -416,10 +416,9 @@ describe('symbol identity coverage gate (#4819)', () => {
             .split(/\r?\n/)
             .find((line) => line.startsWith('zntc: symbol-identity '));
           expect(exact, `${fixture} ${target.name}: ${stderr}`).toBeDefined();
-          expect(
-            exactSchemaProblems(exact ?? ''),
-            `${fixture} ${target.name}: ${stderr}`,
-          ).toEqual([]);
+          expect(exactSchemaProblems(exact ?? ''), `${fixture} ${target.name}: ${stderr}`).toEqual(
+            [],
+          );
           expect(exact, `${fixture} ${target.name}: ${stderr}`).toMatch(/clean=1(?:\s|$)/);
 
           const synthetic = stderr
@@ -4906,6 +4905,164 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(actual.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 JSX lowering retains audited arrows and rejects untracked downlevel cases', () => {
+    const cases = [
+      {
+        mode: 'classic',
+        graph: 'retained',
+        args: ['--jsx=classic', '--jsx-factory=h'],
+        source: [
+          'function render(h, value) {',
+          '  var _jsx = 7;',
+          '  var nested = (h, value) => <span>{value}</span>;',
+          '  return [<div>{nested(innerFactory, value)}</div>, _jsx];',
+          '}',
+          'function outerFactory(tag, _props, child) { return ["outer", tag, child]; }',
+          'function innerFactory(tag, _props, child) { return ["inner", tag, child]; }',
+          'console.log(JSON.stringify(render(outerFactory, 42)));',
+        ].join('\n'),
+        expectedOutput: '[["outer","div",["inner","span",42]],7]\n',
+      },
+      {
+        mode: 'automatic',
+        graph: 'retained',
+        args: ['--jsx=automatic', '--jsx-import-source=./runtime'],
+        source: [
+          'var _jsx = 7;',
+          'function render(value) {',
+          '  var nested = value => <span>{value}</span>;',
+          '  return [<div>{nested(value)}</div>, _jsx];',
+          '}',
+          'console.log(JSON.stringify(render(42)));',
+        ].join('\n'),
+        expectedOutput: '[["div",["span",42]],7]\n',
+        runtimeFile: 'jsx-runtime.js',
+        runtimeSource: [
+          'export function jsx(tag, props) { return [tag, props && props.children]; }',
+          'export function jsxs(tag, props) { return [tag, props && props.children]; }',
+          "export const Fragment = 'fragment';",
+        ].join('\n'),
+      },
+      {
+        mode: 'automatic-dev',
+        graph: 'retained',
+        args: ['--jsx=automatic-dev', '--jsx-import-source=./runtime'],
+        source: [
+          'var _jsxDEV = 7;',
+          'function render(value) {',
+          '  var nested = value => <span>{value}</span>;',
+          '  return [<div>{nested(value)}</div>, _jsxDEV];',
+          '}',
+          'console.log(JSON.stringify(render(42)));',
+        ].join('\n'),
+        expectedOutput: '[["div",["span",42]],7]\n',
+        runtimeFile: 'jsx-dev-runtime.js',
+        runtimeSource: [
+          'export function jsxDEV(tag, props) { return [tag, props && props.children]; }',
+          "export const Fragment = 'fragment';",
+        ].join('\n'),
+      },
+      {
+        mode: 'classic-optional-chain-fallback',
+        graph: 'reanalyzed',
+        args: ['--jsx=classic', '--jsx-factory=h'],
+        source: [
+          'function h(tag, _props, child) { return [tag, child]; }',
+          'var nested = value => <span>{value?.x}</span>;',
+          'console.log(JSON.stringify(nested({ x: 42 })));',
+        ].join('\n'),
+        expectedOutput: '["span",42]\n',
+      },
+      {
+        mode: 'classic-spread-attribute-fallback',
+        graph: 'reanalyzed',
+        args: ['--jsx=classic', '--jsx-factory=h'],
+        source: [
+          'function h(tag, props) { return [tag, props]; }',
+          'var props = { value: 42 };',
+          'console.log(JSON.stringify(<div {...props} />));',
+        ].join('\n'),
+        expectedOutput: '["div",{"value":42}]\n',
+      },
+      {
+        mode: 'classic-spread-child-fallback',
+        graph: 'reanalyzed',
+        args: ['--jsx=classic', '--jsx-factory=h'],
+        source: [
+          'function h(tag, _props, ...children) { return [tag, children]; }',
+          'var children = [42];',
+          'console.log(JSON.stringify(<div>{...children}</div>));',
+        ].join('\n'),
+        expectedOutput: '["div",[42]]\n',
+      },
+    ] as const;
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), `zntc-jsx-arrow-retained-${fixture.mode}-`));
+      const output = join(dir, 'out.cjs');
+
+      mkdirSync(join(dir, 'runtime'), { recursive: true });
+      if ('runtimeFile' in fixture) {
+        writeFileSync(join(dir, 'runtime', fixture.runtimeFile), fixture.runtimeSource);
+      }
+      writeFileSync(join(dir, 'entry.tsx'), fixture.source);
+
+      try {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.tsx',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            ...fixture.args,
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.mode}: ${proc.stderr}`).toBe(0);
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
+          );
+        expect(report, `${fixture.mode}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.mode}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, `${fixture.mode}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+
+        const graphMode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.tsx'),
+          );
+        expect(graphMode, `${fixture.mode}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.mode}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.mode).toBe(fixture.expectedOutput);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 
