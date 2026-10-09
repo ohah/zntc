@@ -887,10 +887,10 @@ fn isSafeConstructorValue(
     };
 }
 
-/// A member receiver may be an exact bound identifier or one non-optional
-/// static-member chain rooted at an exact bound identifier. The original
-/// member expression is retained, so property evaluation order and getter
-/// effects stay unchanged. The node-count bound also rejects malformed cycles.
+/// A member receiver may be an exact bound identifier or a non-optional
+/// static/computed member chain rooted at one. Computed keys must be safe
+/// values or calls; the expression worklist validates the calls separately.
+/// The node-count bound also rejects malformed cycles.
 fn isRetainableBoundStaticFieldMemberReceiver(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -905,23 +905,29 @@ fn isRetainableBoundStaticFieldMemberReceiver(
         const current = ast.getNode(current_idx);
         if (current.tag == .identifier_reference)
             return isBoundSourceIdentifierReference(ast, semantic, current_idx);
-        if (current.tag != .static_member_expression) return false;
+        if (current.tag != .static_member_expression and current.tag != .computed_member_expression) return false;
 
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
         const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
         const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-        if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
-            ast.getNode(property_idx).tag != .identifier_reference) return false;
+        if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+        const property = ast.getNode(property_idx);
+        switch (current.tag) {
+            .static_member_expression => if (property.tag != .identifier_reference) return false,
+            .computed_member_expression => if (!isSafeConstructorValue(ast, semantic, property_idx) and
+                property.tag != .call_expression) return false,
+            else => return false,
+        }
         current_idx = object_idx;
     }
     return false;
 }
 
 /// A member access is safe to retain when its receiver chain is rooted at an
-/// exact source binding and all receiver segments are plain non-optional dot
-/// accesses. A computed final key must be a safe value or a call; the shared
-/// iterative expression walk validates queued calls and their nested calls.
+/// exact source binding and every segment is non-optional. Computed keys must
+/// be safe values or calls; the shared iterative expression walk validates all
+/// calls in receiver segments and the final key.
 fn isBoundStaticFieldMemberAccessShape(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -945,24 +951,37 @@ fn isBoundStaticFieldMemberAccessShape(
     };
 }
 
-fn enqueueBoundStaticFieldMemberKeyCall(
+fn enqueueBoundStaticFieldMemberKeyCalls(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
     pending: *std.ArrayList(ast_mod.NodeIndex),
 ) bool {
-    const member = ast.getNode(member_idx);
-    if (member.tag != .computed_member_expression) return true;
     const extras = ast.extra_data.items;
-    const extra = member.data.extra;
-    if (extra > extras.len or extras.len - extra < 3) return false;
-    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-    if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
-    if (isSafeConstructorValue(ast, semantic, property_idx)) return true;
-    if (ast.getNode(property_idx).tag != .call_expression) return false;
-    pending.append(allocator, property_idx) catch return false;
-    return true;
+    var current_idx = member_idx;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const member = ast.getNode(current_idx);
+        if (member.tag != .static_member_expression and member.tag != .computed_member_expression) return false;
+        const extra = member.data.extra;
+        if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
+        const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+        if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+        if (member.tag == .computed_member_expression and
+            !isSafeConstructorValue(ast, semantic, property_idx))
+        {
+            if (ast.getNode(property_idx).tag != .call_expression) return false;
+            pending.append(allocator, property_idx) catch return false;
+        }
+        if (object_idx.isNone() or @intFromEnum(object_idx) >= ast.nodes.items.len) return false;
+        if (ast.getNode(object_idx).tag == .identifier_reference)
+            return isBoundSourceIdentifierReference(ast, semantic, object_idx);
+        current_idx = object_idx;
+    }
+    return false;
 }
 
 /// Safe static-field calls and computed keys are validated together on one
@@ -1011,7 +1030,7 @@ fn isRetainableBoundStaticFieldExpression(
                     },
                     .static_member_expression, .computed_member_expression => {
                         if (!isBoundStaticFieldMemberAccessShape(ast, semantic, callee_idx) or
-                            !enqueueBoundStaticFieldMemberKeyCall(allocator, ast, semantic, callee_idx, &pending)) return false;
+                            !enqueueBoundStaticFieldMemberKeyCalls(allocator, ast, semantic, callee_idx, &pending)) return false;
                     },
                     else => return false,
                 }
@@ -1028,7 +1047,7 @@ fn isRetainableBoundStaticFieldExpression(
             },
             .static_member_expression, .computed_member_expression => {
                 if (!isBoundStaticFieldMemberAccessShape(ast, semantic, current_idx) or
-                    !enqueueBoundStaticFieldMemberKeyCall(allocator, ast, semantic, current_idx, &pending)) return false;
+                    !enqueueBoundStaticFieldMemberKeyCalls(allocator, ast, semantic, current_idx, &pending)) return false;
             },
             else => return false,
         }
