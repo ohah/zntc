@@ -887,10 +887,11 @@ fn isSafeConstructorValue(
     };
 }
 
-/// A direct call in a static initializer can retain the source graph when its
-/// callee is an exact bound identifier and every argument is a safe value.
-/// Member/optional/unresolved calls and nested effectful argument expressions
-/// stay on semantic reanalysis.
+/// A call in a static initializer can retain the source graph when its callee
+/// is an exact bound identifier, or a simple static member of one, and every
+/// argument is a safe value. Keeping the original member expression preserves
+/// the method receiver (`this`). Computed, optional, unresolved, nested receiver
+/// calls, and nested effectful argument expressions stay on semantic reanalysis.
 fn isRetainableBoundStaticFieldCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -907,8 +908,26 @@ fn isRetainableBoundStaticFieldCall(
     const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
-    if (callee.tag != .identifier_reference or
-        !isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
+    switch (callee.tag) {
+        .identifier_reference => {
+            if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
+        },
+        .static_member_expression => {
+            const member_extra = callee.data.extra;
+            if (member_extra > extras.len or extras.len - member_extra < 3) return false;
+            const member_flags = extras[member_extra + 2];
+            if ((member_flags & ast_mod.MemberFlags.optional_chain) != 0 or
+                (member_flags & ~ast_mod.MemberFlags.optional_chain) != 0) return false;
+            const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
+            const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
+            if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
+                ast.getNode(receiver_idx).tag != .identifier_reference or
+                !isBoundSourceIdentifierReference(ast, semantic, receiver_idx) or
+                property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+                ast.getNode(property_idx).tag != .identifier_reference) return false;
+        },
+        else => return false,
+    }
     const args_start = extras[extra + 1];
     const args_len = extras[extra + 2];
     if (args_start > extras.len or args_len > extras.len - args_start) return false;
