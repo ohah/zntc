@@ -82,7 +82,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
 
 /// A static private method is read-only; an accessor has independent get/set slots.
 /// Both accessor halves share one descriptor, regardless of declaration order.
-pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, method_fn: ?NodeIndex, getter_fn: ?NodeIndex, setter_fn: ?NodeIndex, span: Span) !NodeIndex {
+pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, method_fn: ?NodeIndex, getter_fn: ?NodeIndex, setter_fn: ?NodeIndex, span: Span, binding_node: NodeIndex) !NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -133,9 +133,51 @@ pub fn buildStaticPrivateMethodDescriptor(self: anytype, var_name: []const u8, m
     }
 
     const obj = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
-    const binding = try makeSyntheticBinding(self, try self.ast.addString(var_name));
+    const binding = if (binding_node.isNone())
+        try makeSyntheticBinding(self, try self.ast.addString(var_name))
+    else
+        binding_node;
     const declarator = try makeDeclarator(self, binding, obj, span);
     return makeVarDeclaration(self, &.{declarator}, .@"var", span);
+}
+
+/// Reserve one exact WeakSet/descriptor binding for each private method name.
+/// Getter and setter mappings intentionally share the same binding identity.
+pub fn reservePrivateMethodWeakSetSymbols(self: anytype, mappings: anytype, scope: ScopeId, span: Span) !void {
+    if (!self.semantic_edit_enabled or mappings.len == 0) return;
+    if (scope.isNone()) std.debug.panic("private method helper has no planned output scope", .{});
+
+    for (mappings, 0..) |*mapping, i| {
+        if (mapping.weakset_symbol_id != null) continue;
+        var shared_binding: NodeIndex = .none;
+        var shared_symbol_id: ?u32 = null;
+        for (mappings[0..i]) |*previous| {
+            if (!std.mem.eql(u8, previous.weakset_name, mapping.weakset_name)) continue;
+            shared_binding = previous.weakset_binding_node;
+            shared_symbol_id = previous.weakset_symbol_id;
+            break;
+        }
+
+        if (!shared_binding.isNone()) {
+            mapping.weakset_binding_node = shared_binding;
+            mapping.weakset_symbol_id = shared_symbol_id orelse
+                std.debug.panic("shared private method helper has no SymbolId", .{});
+            continue;
+        }
+
+        const binding = try makeExactSyntheticBinding(self, mapping.weakset_name);
+        const symbol_id = try self.declareSyntheticInScope(binding, span, .variable_var, scope) orelse
+            std.debug.panic("private method helper has no direct SymbolId", .{});
+        mapping.weakset_binding_node = binding;
+        mapping.weakset_symbol_id = @intFromEnum(symbol_id);
+    }
+}
+
+/// Build a reference to the exact WeakSet/descriptor identity carried by a
+/// private method mapping. Scope is attached after the emitted class tree is
+/// assembled, using this node and SymbolId rather than the helper's spelling.
+pub fn makePrivateMethodWeakSetRef(self: anytype, mapping: anytype) !NodeIndex {
+    return makeDeferredExactSyntheticRef(self, mapping.weakset_name, mapping.weakset_symbol_id);
 }
 
 /// Extracted static private functions execute outside the class body. Capture
@@ -2414,7 +2456,7 @@ pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeInde
 }
 
 /// __classPrivateMethodInit(this, _set) expression_statement 생성.
-pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, span: Span) !NodeIndex {
+pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, raw_symbol_id: ?u32, span: Span) !NodeIndex {
     self.runtime_helpers.class_private_method_init = true;
     const callee = try makeRuntimeHelperRef(self, "__classPrivateMethodInit");
     const this_node = try self.ast.addNode(.{
@@ -2422,7 +2464,7 @@ pub fn buildPrivateMethodInit(self: anytype, ws_name: []const u8, span: Span) !N
         .span = span,
         .data = .{ .none = 0 },
     });
-    const ws_ref = try makeSyntheticRef(self, ws_name);
+    const ws_ref = try makeDeferredExactSyntheticRef(self, ws_name, raw_symbol_id);
     const call = try makeCallExpr(self, callee, &.{ this_node, ws_ref }, span);
     return makeExprStmt(self, call, span);
 }

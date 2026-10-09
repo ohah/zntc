@@ -79,6 +79,9 @@ pub const PrivateFieldMapping = struct {
 pub const PrivateMethodMapping = struct {
     original_name: []const u8, // "#method"
     weakset_name: []const u8, // "_method"
+    /// Exact generated WeakSet/descriptor binding and its producer-selected identity.
+    weakset_binding_node: NodeIndex = NodeIndex.none,
+    weakset_symbol_id: ?u32 = null,
     func_name: []const u8, // "_method_fn" / "_method_get" / "_method_set"
     member_idx: NodeIndex = NodeIndex.none,
     /// Exact parser method owner; member_idx may be a transformed copy.
