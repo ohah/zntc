@@ -1615,8 +1615,9 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 
 /// Static computed field keys are memoized outside the class key node. A read
 /// of the class's inner name can depend on the class-body binding's TDZ and
-/// must not be admitted to that path. Fail closed if the key subtree or its
-/// semantic identities cannot be inspected.
+/// must not be admitted to that path. The key allowlist separately validates
+/// every source reference; this scan only rejects references to inner class
+/// symbols.
 fn hasClassSelfReference(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1626,8 +1627,8 @@ fn hasClassSelfReference(
     defer ast.allocator.free(descendants);
     for (descendants) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag != .identifier_reference) continue;
-        if (raw_idx >= semantic.symbol_ids.len) return true;
-        const reference_symbol = semantic.symbol_ids[raw_idx] orelse return true;
+        if (raw_idx >= semantic.symbol_ids.len) continue;
+        const reference_symbol = semantic.symbol_ids[raw_idx] orelse continue;
         var class_self_symbols = semantic.class_self_symbol_map.valueIterator();
         while (class_self_symbols.next()) |class_self_symbol| {
             if (reference_symbol == class_self_symbol.*) return true;
@@ -1672,6 +1673,7 @@ fn isRetainableSimpleStaticClassField(
             if (key_value_idx.isNone() or @intFromEnum(key_value_idx) >= ast.nodes.items.len or
                 hasClassSelfReference(ast, semantic, key_value_idx) or
                 (!isSafeConstructorValue(ast, semantic, key_value_idx) and
+                    !isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, key_value_idx) and
                     !isRetainableBoundStaticFieldCall(allocator, ast, semantic, key_value_idx))) return false;
         },
         else => return false,
