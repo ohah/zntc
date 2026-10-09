@@ -9985,9 +9985,30 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '10\n',
       },
       {
-        name: 'deeper nested static-field call arguments stay on semantic reanalysis',
+        name: 'deep bound nested static-field calls retain evaluation order and member this',
         source:
-          'function inner(input) { return input + 1; } function middle(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepNestedCallField { static value = fieldValue(inner(middle(8))); } console.log(DeepNestedCallField.value);',
+          'var order = []; function inner(input) { order.push("inner:" + input); return input + 1; } function middle(input) { order.push("middle:" + input); return input + 1; } function fieldValue(input) { order.push("field:" + input); return input + 1; } var receiver = { order, fieldValue(input) { this.order.push("member:" + input); return input + 1; } }; class DeepNestedCallField { static first = fieldValue(inner(middle(8))); static second = receiver.fieldValue(inner(middle(10))); } console.log(DeepNestedCallField.first, DeepNestedCallField.second, order.join(","));',
+        graph: 'retained',
+        output: '11 13 middle:8,inner:9,field:10,middle:10,inner:11,member:12\n',
+      },
+      {
+        name: 'deep unresolved static-field call arguments stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcDeepFieldArgument = function (input) { return input + 1; }; function inner(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepUnresolvedCallField { static value = fieldValue(inner(__zntcDeepFieldArgument(8))); } console.log(DeepUnresolvedCallField.value);',
+        graph: 'reanalyzed',
+        output: '11\n',
+      },
+      {
+        name: 'deep optional static-field call arguments stay on semantic reanalysis',
+        source:
+          'function inner(input) { return input + 1; } function fieldArgument(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepOptionalCallField { static value = fieldValue(inner(fieldArgument?.(8))); } console.log(DeepOptionalCallField.value);',
+        graph: 'reanalyzed',
+        output: '11\n',
+      },
+      {
+        name: 'deep computed static-field call arguments stay on semantic reanalysis',
+        source:
+          'var receiver = { fieldArgument(input) { return input + 1; } }; function inner(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepComputedCallField { static value = fieldValue(inner(receiver["fieldArgument"](8))); } console.log(DeepComputedCallField.value);',
         graph: 'reanalyzed',
         output: '11\n',
       },
