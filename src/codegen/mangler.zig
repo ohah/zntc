@@ -220,7 +220,8 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
         if (sym.isSynthetic() and
             sym.synthetic_kind != .namespace_iife_parameter and
             sym.synthetic_kind != .enum_iife_parameter and
-            sym.synthetic_kind != .runtime_helper_preamble) continue;
+            sym.synthetic_kind != .runtime_helper_preamble and
+            sym.synthetic_kind != .runtime_helper_import) continue;
         const orig_name = if (input.ast) |ast| (if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name)) else sym.nameText(source);
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
@@ -477,7 +478,8 @@ const SlotSortEntry = struct {
 /// 지울 수 있어(TS `export =` → `module.exports =`) 변환 전 심볼로 이 판정을 다시 한다.
 pub fn preservesName(sym: Symbol) bool {
     if (sym.isExported()) return true;
-    if (sym.decl_flags.is_import and sym.synthetic_kind != .runtime_helper_preamble) return true;
+    if (sym.decl_flags.is_import and sym.synthetic_kind != .runtime_helper_preamble and
+        sym.synthetic_kind != .runtime_helper_import) return true;
     // `const Foo = class Bar {}` 의 inner `Bar` (#2197). mangle 시 `.name` 프로퍼티도
     // 함께 바뀌므로 spec 준수를 위해 원본 이름 보존.
     if (sym.decl_flags.preserve_class_name) return true;
@@ -503,7 +505,7 @@ fn hasFixedOutputName(sym: Symbol) bool {
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.
-        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
+        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
     };
 }
 

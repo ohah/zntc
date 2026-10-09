@@ -17,6 +17,7 @@ const ScopeKind = scope_mod.ScopeKind;
 const Symbol = symbol_mod.Symbol;
 const SymbolId = symbol_mod.SymbolId;
 const SymbolKind = symbol_mod.SymbolKind;
+const SyntheticKind = symbol_mod.SyntheticKind;
 const Reference = symbol_mod.Reference;
 const ReferenceFlags = symbol_mod.ReferenceFlags;
 
@@ -750,7 +751,7 @@ pub const SemanticEditor = struct {
         }
         if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
         if (self.helper_scope_map.contains(self.ast.getText(name_span))) return error.DuplicateBinding;
-        const id = try self.reserveRuntimeHelperSymbol(name_span, declaration_span, scope, false);
+        const id = try self.reserveRuntimeHelperSymbol(name_span, declaration_span, scope, false, false);
         try self.attachRuntimeHelperImport(local, id, declaration_span);
         return id;
     }
@@ -758,16 +759,29 @@ pub const SemanticEditor = struct {
     /// Reserve a helper SymbolId as soon as its first generated reference is
     /// created. The later import specifier attaches to this same ID; the local
     /// spelling only interns the helper declaration in helper_scope_map.
-    pub fn reserveRuntimeHelperSymbol(self: *SemanticEditor, name_span: Span, declaration_span: Span, scope: ScopeId, is_preamble: bool) Error!SymbolId {
+    pub fn reserveRuntimeHelperSymbol(
+        self: *SemanticEditor,
+        name_span: Span,
+        declaration_span: Span,
+        scope: ScopeId,
+        is_preamble: bool,
+        defer_import_name: bool,
+    ) Error!SymbolId {
         if (!self.validScope(scope)) return error.InvalidScope;
         if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
         const name = try self.ast.getTextStable(self.allocator, name_span);
         if (self.helper_scope_map.get(name)) |raw_id| {
             if (raw_id >= self.symbols.items.len) return error.InvalidSymbol;
             const existing = self.symbols.items[raw_id];
+            const expected_kind: ?SyntheticKind = if (is_preamble)
+                .runtime_helper_preamble
+            else if (defer_import_name)
+                .runtime_helper_import
+            else
+                null;
             if (existing.scope_id != scope or existing.kind != .import_binding or
                 !std.mem.eql(u8, existing.synthetic_name, name) or
-                (existing.synthetic_kind == .runtime_helper_preamble) != is_preamble)
+                existing.synthetic_kind != expected_kind)
                 return error.DuplicateBinding;
             return @enumFromInt(raw_id);
         }
@@ -780,7 +794,7 @@ pub const SemanticEditor = struct {
             .kind = .import_binding,
             .decl_flags = SymbolKind.import_binding.declFlags(),
             .declaration_span = declaration_span,
-            .synthetic_kind = if (is_preamble) .runtime_helper_preamble else null,
+            .synthetic_kind = if (is_preamble) .runtime_helper_preamble else if (defer_import_name) .runtime_helper_import else null,
             .synthetic_name = name,
         });
         errdefer _ = self.symbols.pop();
@@ -846,7 +860,7 @@ pub const SemanticEditor = struct {
         if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
         const name = self.ast.getText(name_span);
         if (self.helper_scope_map.contains(name)) return error.DuplicateBinding;
-        return self.reserveRuntimeHelperSymbol(name_span, declaration_span, scope, true);
+        return self.reserveRuntimeHelperSymbol(name_span, declaration_span, scope, true, false);
     }
 
     fn countsAsValue(flags: ReferenceFlags) bool {

@@ -2452,7 +2452,7 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
 /// 헬퍼 호출은 import 선언보다 먼저 생성된다. 첫 호출에서 helper SymbolId를
 /// 예약하고 즉시 Reference를 붙여, 뒤늦은 import가 이 ID에 연결되게 한다.
 pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!?SymbolId {
-    return trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports);
+    return trackRuntimeHelperRefKind(self, node, local_name, self.options.emit_runtime_helper_imports, false);
 }
 
 /// Reserve a standalone helper declaration that is emitted in the preamble
@@ -2482,10 +2482,15 @@ pub fn ensureStandaloneRuntimeHelperPreambleSymbol(self: *Transformer, name: []c
 /// JSX and plugin helper imports are AST imports even in standalone mode,
 /// where downlevel runtime helpers are emitted through an inline preamble.
 pub fn trackRuntimeHelperImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!?SymbolId {
-    return trackRuntimeHelperRefKind(self, node, local_name, true);
+    return trackRuntimeHelperRefKind(self, node, local_name, true, false);
 }
 
-fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []const u8, is_import: bool) Transformer.Error!?SymbolId {
+/// Reserve a standalone JSX runtime import local for late output naming.
+pub fn trackJsxRuntimeImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!?SymbolId {
+    return trackRuntimeHelperRefKind(self, node, local_name, true, self.options.defer_runtime_helper_name_resolution);
+}
+
+fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []const u8, is_import: bool, defer_import_name: bool) Transformer.Error!?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     if (self.current_scope.isNone()) std.debug.panic("runtime helper {s} created without scope", .{local_name});
     if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len)
@@ -2501,6 +2506,7 @@ fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []
         Span.EMPTY,
         self.programScope(),
         !is_import,
+        defer_import_name,
     ) catch |err| return editError(err);
     try trackRuntimeHelperRefWithId(self, node, id);
     return id;

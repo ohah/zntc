@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createFixture, runZntcInDir } from './helpers';
@@ -53,4 +54,49 @@ export const users = [_jsx(), _jsxs(), _jsxDEV(), _Fragment(), _createElement()]
       }
     });
   }
+
+  test('standalone automatic JSX late naming preserves an unresolved global', async () => {
+    const fx = await createFixture({
+      'node_modules/react/package.json': JSON.stringify({
+        exports: { './jsx-runtime': './jsx-runtime.mjs' },
+      }),
+      'node_modules/react/jsx-runtime.mjs': `
+export function jsx(type, props) { return { type, props }; }
+export function jsxs(type, props) { return { type, props }; }
+export const Fragment = Symbol.for('fragment');
+`,
+      'app.tsx': `
+globalThis._jsx = 40;
+const element = <div />;
+console.log(_jsx, element.type);
+`,
+    });
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, 'out.mjs');
+    const result = await runZntcInDir(fx.dir, ['app.tsx', '-o', out, '--jsx=automatic']);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = await readFile(out, 'utf8');
+    expect(code).toContain('jsx as _jsx2');
+    expect(code).toMatch(/_jsx2\(/);
+
+    const runtime = spawnSync('node', [out], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 div\n');
+  });
+
+  test('standalone automatic JSX keeps an unshadowed runtime import spelling', async () => {
+    const fx = await createFixture({
+      'app.tsx': 'export const element = <div />;\n',
+    });
+    cleanup = fx.cleanup;
+    const out = join(fx.dir, 'out.js');
+    const result = await runZntcInDir(fx.dir, ['app.tsx', '-o', out, '--jsx=automatic']);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = await readFile(out, 'utf8');
+    expect(code).toContain('jsx as _jsx');
+    expect(code).toMatch(/_jsx\(/);
+    expect(code).not.toContain('jsx as _jsx2');
+  });
 });

@@ -1131,9 +1131,9 @@ const StandaloneRuntimeHelperNameResolver = struct {
     }
 };
 
-/// Choose standalone preamble names after lowering, from the exact helper
-/// SymbolIds and the complete output symbol set. Call references and preamble
-/// declarations consume this same map through codegen and the template writer.
+/// Choose standalone helper names after lowering, from the exact helper
+/// SymbolIds and the complete output symbol set. Call references and both
+/// preamble declarations and AST imports consume this same map.
 fn buildStandaloneRuntimeHelperNameOverrides(
     allocator: std.mem.Allocator,
     transformer: *const Transformer,
@@ -1143,7 +1143,7 @@ fn buildStandaloneRuntimeHelperNameOverrides(
     defer reserved.deinit(allocator);
 
     for (transformer.symbols) |symbol| {
-        if (symbol.synthetic_kind == .runtime_helper_preamble) continue;
+        if (isStandaloneLateHelperNameSymbol(symbol)) continue;
         const raw_name = if (symbol.synthetic_name.len > 0)
             symbol.synthetic_name
         else
@@ -1155,14 +1155,16 @@ fn buildStandaloneRuntimeHelperNameOverrides(
         while (names.next()) |name| try reserved.put(allocator, name.*, {});
     }
     var generated_names = transformer.synthetic_taken.keyIterator();
-    while (generated_names.next()) |name| try reserved.put(allocator, name.*, {});
+    while (generated_names.next()) |name| {
+        if (!isStandaloneLateHelperNameBase(transformer, name.*)) try reserved.put(allocator, name.*, {});
+    }
     if (transformer.block_rename_map) |*renames| {
         var names = renames.valueIterator();
         while (names.next()) |name| try reserved.put(allocator, name.*, {});
     }
 
     for (transformer.symbols, 0..) |symbol, raw_id| {
-        if (symbol.synthetic_kind != .runtime_helper_preamble) continue;
+        if (!isStandaloneLateHelperNameSymbol(symbol)) continue;
         const base_name = symbol.synthetic_name;
         if (base_name.len == 0) return error.TransformError;
 
@@ -1177,6 +1179,17 @@ fn buildStandaloneRuntimeHelperNameOverrides(
     return overrides;
 }
 
+fn isStandaloneLateHelperNameSymbol(symbol: @import("semantic/symbol.zig").Symbol) bool {
+    return symbol.synthetic_kind == .runtime_helper_preamble or symbol.synthetic_kind == .runtime_helper_import;
+}
+
+fn isStandaloneLateHelperNameBase(transformer: *const Transformer, name: []const u8) bool {
+    for (transformer.symbols) |symbol| {
+        if (isStandaloneLateHelperNameSymbol(symbol) and std.mem.eql(u8, symbol.synthetic_name, name)) return true;
+    }
+    return false;
+}
+
 fn standaloneHelperNameIsUsed(
     allocator: std.mem.Allocator,
     transformer: *const Transformer,
@@ -1188,7 +1201,7 @@ fn standaloneHelperNameIsUsed(
     defer allocator.free(decode_scratch);
 
     for (transformer.symbols) |symbol| {
-        if (symbol.synthetic_kind == .runtime_helper_preamble) continue;
+        if (isStandaloneLateHelperNameSymbol(symbol)) continue;
         const raw_name = if (symbol.synthetic_name.len > 0)
             symbol.synthetic_name
         else
@@ -1775,13 +1788,13 @@ fn transpileWithCallbackInternal(
     } else transformer.symbol_ids.items;
     const has_helpers = transformer.runtime_helpers.hasAny();
     var standalone_helper_name_overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
-    const use_late_helper_names = has_helpers and
-        !options.minify_identifiers and
+    const use_late_helper_names = transformer.options.defer_runtime_helper_name_resolution and
         transformer.semantic_edit_enabled and
         !transformer.options.emit_runtime_helper_imports;
     if (use_late_helper_names) {
         standalone_helper_name_overrides = try buildStandaloneRuntimeHelperNameOverrides(arena_alloc, &transformer);
-        if (standalone_helper_name_overrides.count() == 0) return error.TransformError;
+        if ((has_helpers or transformer.jsx_import_info.hasImports()) and standalone_helper_name_overrides.count() == 0)
+            return error.TransformError;
     }
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
     if (mangle_uses_transform_semantic) {

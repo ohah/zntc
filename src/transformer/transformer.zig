@@ -848,6 +848,7 @@ pub const Transformer = struct {
     pub const trackRuntimeHelperRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperRef;
     pub const ensureStandaloneRuntimeHelperPreambleSymbol = @import("transformer/semantic_edit.zig").ensureStandaloneRuntimeHelperPreambleSymbol;
     pub const trackRuntimeHelperImportRef = @import("transformer/semantic_edit.zig").trackRuntimeHelperImportRef;
+    pub const trackJsxRuntimeImportRef = @import("transformer/semantic_edit.zig").trackJsxRuntimeImportRef;
     pub const bindRuntimeHelperImport = @import("transformer/semantic_edit.zig").bindRuntimeHelperImport;
     pub const declareRuntimeHelperImportId = @import("transformer/semantic_edit.zig").declareRuntimeHelperImportId;
     pub const bindRuntimeHelperImportById = @import("transformer/semantic_edit.zig").bindRuntimeHelperImportById;
