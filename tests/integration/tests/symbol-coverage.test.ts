@@ -9766,6 +9766,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '41\n',
       },
       {
+        name: 'static fields retain side-effect-free expressions with exact source references',
+        source:
+          'var seed = 41, delta = 2; class StaticExpressions { static sum = seed + delta; static selected = seed > 0 ? seed + 1 : 0; static logical = seed && delta; static negative = -delta; } console.log(StaticExpressions.sum, StaticExpressions.selected, StaticExpressions.logical, StaticExpressions.negative);',
+        graph: 'retained',
+        output: '43 42 2 -2\n',
+      },
+      {
         name: 'static field reads its exact class declaration binding',
         source:
           'class StaticSelf { static self = StaticSelf; } console.log(StaticSelf.self === StaticSelf);',
@@ -9819,6 +9826,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'function fieldValue() { return 9; } class EffectfulStaticField { static value = fieldValue(); } console.log(EffectfulStaticField.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'static field this initializers stay on semantic reanalysis',
+        source:
+          'class StaticThisField { static value = this; } console.log(StaticThisField.value === StaticThisField);',
+        graph: 'reanalyzed',
+        output: 'true\n',
       },
       {
         name: 'source Object bindings remain separate from generated class-field globals',
