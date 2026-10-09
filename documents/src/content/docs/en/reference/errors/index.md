@@ -230,3 +230,4 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 |------|--------|
 | [`ZNTC1500`](/zntc/en/reference/errors/zntc1500) | @jsx / @jsxFrag pragma ignored under the automatic JSX runtime |
 | [`ZNTC1501`](/zntc/en/reference/errors/zntc1501) | Regular expression inline modifier group is an ES2025 feature not supported by the target |
+| [`ZNTC1502`](/zntc/en/reference/errors/zntc1502) | Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe |
