@@ -28,13 +28,13 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name != null) {
                 return buildStaticPrivateFieldGet(self, mapping, obj_idx, node.span);
             }
-            return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, node.span);
+            return buildWeakMapCall(self, mapping.var_name, mapping, "get", obj_idx, &.{}, node.span);
         }
 
         /// instance/static 분기해서 private field get 호출을 구성.
         fn buildPrivateFieldGetCall(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             if (mapping.class_name != null) return buildStaticPrivateFieldGet(self, mapping, obj_idx, span);
-            return buildWeakMapCall(self, mapping.var_name, "get", obj_idx, &.{}, span);
+            return buildWeakMapCall(self, mapping.var_name, mapping, "get", obj_idx, &.{}, span);
         }
 
         /// this.#x = rhs (setter) → __classPrivateMethodGet(obj, _x, _x_set).call(obj, rhs) (#1523).
@@ -191,7 +191,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateMethodDescriptor(self, pm.weakset_name, method_fn, getter_fn, setter_fn, span));
                         self.runtime_helpers.class_static_private_field = true;
                     } else {
-                        try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span));
+                        try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakSet", pm.weakset_name, span, .none));
                         if (fields_out) |fo| {
                             try fo.append(self.allocator, try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span));
                         }
@@ -221,6 +221,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
             defer names.deinit(self.allocator);
             var function_names: std.StringHashMapUnmanaged(void) = .empty;
             defer function_names.deinit(self.allocator);
+            var field_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer field_symbol_ids.deinit(self.allocator);
             for (pms) |pm| {
                 const ws = try names.getOrPut(self.allocator, pm.weakset_name);
                 if (!ws.found_existing) ws.value_ptr.* = .{ .kind = .variable_var };
@@ -229,8 +231,20 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 try function_names.put(self.allocator, pm.func_name, {});
             }
             for (pfs) |pf| {
-                const field_entry = try names.getOrPut(self.allocator, pf.var_name);
-                if (!field_entry.found_existing) field_entry.value_ptr.* = .{ .kind = .variable_var };
+                const raw_id = pf.symbol_id orelse std.debug.panic("private field mapping has no direct SymbolId", .{});
+                try field_symbol_ids.put(self.allocator, raw_id, {});
+            }
+
+            var pending_field_refs: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+            defer pending_field_refs.deinit(self.allocator);
+            var finalized_field_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer finalized_field_refs.deinit(self.allocator);
+            for (self.pending_exact_symbol_refs.items) |pending| {
+                if (!field_symbol_ids.contains(pending.symbol_id)) continue;
+                const gop = try pending_field_refs.getOrPut(self.allocator, @intFromEnum(pending.node));
+                if (gop.found_existing)
+                    std.debug.panic("private field reference node is pending more than once", .{});
+                gop.value_ptr.* = pending.symbol_id;
             }
 
             var bindings: std.ArrayList(Binding) = .empty;
@@ -250,6 +264,17 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 try seen.put(self.allocator, raw, {});
                 const node = self.ast.getNode(work.node);
                 const scope = self.outputOwnedScope(work.node) orelse work.scope;
+
+                if (pending_field_refs.get(raw)) |raw_id| {
+                    const flags: ReferenceFlags = if (node.tag == .assignment_target_identifier)
+                        .{ .write = true }
+                    else if (node.tag == .identifier_reference)
+                        .{ .read = true }
+                    else
+                        std.debug.panic("pending private field identity points at a non-reference", .{});
+                    try self.addSyntheticRefInScope(work.node, @enumFromInt(raw_id), scope, flags);
+                    try finalized_field_refs.put(self.allocator, raw, {});
+                }
 
                 if (node.tag == .function_declaration) {
                     const name_idx = self.readNodeIdx(node.data.extra, ast_mod.FunctionExtra.name);
@@ -298,6 +323,16 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
                 var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
                 while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope, .parent = work.node });
+            }
+
+            if (finalized_field_refs.count() > 0) {
+                var kept: usize = 0;
+                for (self.pending_exact_symbol_refs.items) |pending| {
+                    if (field_symbol_ids.contains(pending.symbol_id) and finalized_field_refs.contains(@intFromEnum(pending.node))) continue;
+                    self.pending_exact_symbol_refs.items[kept] = pending;
+                    kept += 1;
+                }
+                self.pending_exact_symbol_refs.items.len = kept;
             }
 
             var entries = names.iterator();
@@ -421,12 +456,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
                 const new_obj = try self.visitNode(obj_idx);
                 const class_ref = try self.makeUserRefNamed(class_name, mapping.class_name_node);
-                const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
+                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
                 self.runtime_helpers.class_static_private_field = true;
                 return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);
             }
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateFieldSet");
-            const wm_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
+            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const new_obj = try self.visitNode(obj_idx);
             self.runtime_helpers.class_private_field_set = true;
             return es_helpers.makeCallExpr(self, helper, &.{ wm_ref, new_obj, new_value }, span);
@@ -439,12 +474,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
                 const class_ref = try self.makeUserRefNamed(class_name, mapping.class_name_node);
-                const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
+                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
                 self.runtime_helpers.class_static_private_field = true;
                 const call = try es_helpers.makeCallExpr(self, helper, &.{ obj_new, class_ref, desc_ref }, span);
                 return call;
             }
-            const wm_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
+            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const get_prop = try es_helpers.makePropertyName(self, "get");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, get_prop, span);
             const call = try es_helpers.makeCallExpr(self, callee, &.{obj_new}, span);
@@ -659,8 +694,11 @@ pub fn PrivateFields(comptime Transformer: type) type {
         }
 
         /// _name.method(obj, extra_args...) 호출 생성.
-        fn buildWeakMapCall(self: *Transformer, wm_name: []const u8, method: []const u8, obj_idx: NodeIndex, extra_arg_indices: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeSyntheticRef(self, wm_name);
+        fn buildWeakMapCall(self: *Transformer, wm_name: []const u8, field_mapping: ?Transformer.PrivateFieldMapping, method: []const u8, obj_idx: NodeIndex, extra_arg_indices: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const wm_ref = if (field_mapping) |mapping|
+                try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id)
+            else
+                try es_helpers.makeSyntheticRef(self, wm_name);
             const method_prop = try es_helpers.makePropertyName(self, method);
             const callee = try es_helpers.makeStaticMember(self, wm_ref, method_prop, span);
             const new_obj = try self.visitNode(obj_idx);
@@ -693,7 +731,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try self.makeUserRefNamed(mapping.class_name.?, mapping.class_name_node);
-            const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
+            const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref }, span);
         }
@@ -736,7 +774,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     });
                 }
                 // instance: _x.has(obj)
-                return buildWeakMapCall(self, pf.var_name, "has", right_idx, &.{}, node.span);
+                return buildWeakMapCall(self, pf.var_name, pf, "has", right_idx, &.{}, node.span);
             }
 
             // private method 매핑 조회
@@ -755,7 +793,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         } },
                     });
                 }
-                return buildWeakMapCall(self, pm.weakset_name, "has", right_idx, &.{}, node.span);
+                return buildWeakMapCall(self, pm.weakset_name, null, "has", right_idx, &.{}, node.span);
             }
 
             return null;
@@ -766,7 +804,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
             const new_obj = try self.visitNode(obj_idx);
             const class_ref = try self.makeUserRefNamed(mapping.class_name.?, mapping.class_name_node);
-            const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.var_name);
+            const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const new_value = try self.visitNode(value_idx);
             self.runtime_helpers.class_static_private_field = true;
             return es_helpers.makeCallExpr(self, helper, &.{ new_obj, class_ref, desc_ref, new_value }, span);

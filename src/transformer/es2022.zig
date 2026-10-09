@@ -295,6 +295,7 @@ pub fn ES2022(comptime Transformer: type) type {
             // 하고 current_private_* 를 호출자가 set/restore 한다(이중-visit 회피, decorator strip
             // 방지). fast path 는 false(기존 동작: visit + defer 복원).
             skip_visit_and_keep_private: bool,
+            private_helper_scope: ScopeId,
             // V1 정밀 fix (#3680 post-merge): static private field/method descriptor 를
             // 별도 array 로 받음 — caller 가 emit 순서를 제어. null 이면 pre_stmts 에 그대로
             // (기존 동작). non-null 이면 caller 가 class declaration 뒤, static block IIFE
@@ -375,6 +376,20 @@ pub fn ES2022(comptime Transformer: type) type {
 
             if (method_mappings.items.len == 0 and field_mappings.items.len == 0) return false;
 
+            // Reserve the exact private-field helper bindings before visiting
+            // any initializer or method body that can reference them.
+            if (self.semantic_edit_enabled) {
+                if (private_helper_scope.isNone())
+                    std.debug.panic("private field helper has no planned output scope", .{});
+                for (field_mappings.items) |*mapping| {
+                    const binding = try es_helpers.makeExactSyntheticBinding(self, mapping.var_name);
+                    const id = try self.declareSyntheticInScope(binding, span, .variable_var, private_helper_scope) orelse
+                        std.debug.panic("private field helper has no direct SymbolId", .{});
+                    mapping.binding_node = binding;
+                    mapping.symbol_id = @intFromEnum(id);
+                }
+            }
+
             // standalone fn body visit과 Pass 2 body visit 모두 this.#field / this.#method() 참조를
             // 변환해야 하므로 pre_stmts 생성 전에 컨텍스트를 설정한다.
             const saved_private_methods = self.current_private_methods;
@@ -400,11 +415,11 @@ pub fn ES2022(comptime Transformer: type) type {
             for (field_mappings.items, field_init_idx.items) |m, init_val| {
                 if (m.class_name) |cname| {
                     const cname_span = try self.ast.addString(cname);
-                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span, cname_span);
+                    const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span, cname_span, m.binding_node);
                     try desc_target.append(self.allocator, desc);
                     self.runtime_helpers.class_static_private_field = true;
                 } else {
-                    const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span);
+                    const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span, m.binding_node);
                     try pre_stmts.append(self.allocator, wm_decl);
                 }
             }
@@ -453,7 +468,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         self.runtime_helpers.class_static_private_field = true;
                     }
                 } else {
-                    const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span);
+                    const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span, .none);
                     try pre_stmts.append(self.allocator, ws_decl);
                 }
                 if (emit_method_standalone[i]) {
@@ -501,7 +516,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     field_mapping_idx += 1;
                     // static은 descriptor가 init 값을 이미 담고 있으므로 ctor 주입 없음, body에서 제거만.
                     if (fm.class_name == null) {
-                        const init_stmt = try buildPrivateFieldSetInit(self, fm.var_name, fi, span);
+                        const init_stmt = try buildPrivateFieldSetInit(self, fm, fi, span);
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
                     continue;
@@ -811,8 +826,8 @@ pub fn ES2022(comptime Transformer: type) type {
         //       별도 작업 필요.
 
         /// _f.set(this, init) expression_statement 생성. (es2015_class의 buildPrivateFieldInit 동일)
-        fn buildPrivateFieldSetInit(self: *Transformer, var_name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeSyntheticRef(self, var_name);
+        fn buildPrivateFieldSetInit(self: *Transformer, mapping: Transformer.PrivateFieldMapping, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
             const set_prop = try es_helpers.makePropertyName(self, "set");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const this_node = try self.ast.addNode(.{

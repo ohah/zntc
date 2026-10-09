@@ -314,7 +314,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
             // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
             const saved_private_fields = self.current_private_fields;
-            const total_private = try setupPrivateFieldMappings(self, &cm, name_span);
+            const total_private = try setupPrivateFieldMappings(self, &cm, name_span, iife_scope, span);
             defer {
                 if (total_private > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
@@ -356,12 +356,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             // instance private field → WeakMap 선언
             for (cm.private_fields.items) |pf| {
-                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span, pf.binding_node));
             }
             // static private field → descriptor 객체 선언: var _x = { writable: true, value: initValue }
             for (cm.static_private_fields.items) |pf| {
                 // V1 fix: class_name_span 전달 → static_receiver 보정
-                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span, pf.binding_node));
                 self.runtime_helpers.class_static_private_field = true;
             }
             const source_ctor = originalConstructorOwner(self, cm.constructor_idx);
@@ -641,7 +641,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // 매핑은 모든 private field 가 모인 뒤 단일 지점에서 build — 이후 deferred visit 들이 이 매핑으로 lowering.
             const saved_private_fields = self.current_private_fields;
-            const total_private_ce = try setupPrivateFieldMappings(self, &cm, name_span);
+            var total_private_ce: usize = 0;
             defer {
                 if (total_private_ce > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
@@ -674,6 +674,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.reserveGeneratedFunctionScope(iife_parent)
             else
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
+            total_private_ce = try setupPrivateFieldMappings(self, &cm, name_span, iife_scope, span);
             var expr_super_param_binding: NodeIndex = .none;
             if (super_span) |param_span| {
                 expr_super_param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, param_span);
@@ -854,12 +855,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.scratch.append(self.allocator, memo);
             }
             for (cm.private_fields.items) |pf| {
-                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span));
+                try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span, pf.binding_node));
             }
             // static private field → descriptor 객체 선언
             for (cm.static_private_fields.items) |pf| {
                 // V1 fix: class_name_span 전달
-                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span));
+                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span, pf.binding_node));
                 self.runtime_helpers.class_static_private_field = true;
             }
             try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, &post_private_method_initializers, span, name_span);
@@ -980,10 +981,20 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var field_mappings: std.ArrayList(Transformer.PrivateFieldMapping) = .empty;
             defer field_mappings.deinit(self.allocator);
             for (cm.private_fields.items) |pf| {
-                try field_mappings.append(self.allocator, .{ .original_name = pf.original_name, .var_name = pf.name });
+                try field_mappings.append(self.allocator, .{
+                    .original_name = pf.original_name,
+                    .var_name = pf.name,
+                    .binding_node = pf.binding_node,
+                    .symbol_id = pf.symbol_id,
+                });
             }
             for (cm.static_private_fields.items) |pf| {
-                try field_mappings.append(self.allocator, .{ .original_name = pf.original_name, .var_name = pf.name });
+                try field_mappings.append(self.allocator, .{
+                    .original_name = pf.original_name,
+                    .var_name = pf.name,
+                    .binding_node = pf.binding_node,
+                    .symbol_id = pf.symbol_id,
+                });
             }
             try trackPrivateMethodSymbols(self, root, cm.private_methods.items, field_mappings.items, scope);
         }

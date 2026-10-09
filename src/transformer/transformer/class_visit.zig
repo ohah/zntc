@@ -21,6 +21,7 @@ fn trackPrivateHelperPrelude(
     source_idx: NodeIndex,
     pre_stmts: []const NodeIndex,
     static_descriptors: []const NodeIndex,
+    static_block_iifes: []const NodeIndex,
     class_result: NodeIndex,
     method_mappings: []const PrivateMethodMapping,
     field_mappings: []const Transformer.PrivateFieldMapping,
@@ -35,6 +36,7 @@ fn trackPrivateHelperPrelude(
     try statements.appendSlice(self.allocator, pre_stmts);
     try statements.appendSlice(self.allocator, static_descriptors);
     try statements.append(self.allocator, class_result);
+    try statements.appendSlice(self.allocator, static_block_iifes);
     const root = try self.ast.addNode(.{
         .tag = .block_statement,
         .span = span,
@@ -260,6 +262,15 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             // class_expression 의 경우 wrapClassExprInIIFE 가 post_stmts 위치 (IIFE 안 class_decl
             // 뒤) 로 emit 하므로 TDZ 회피.
             const desc_out: ?*std.ArrayList(NodeIndex) = &static_descriptors;
+            const private_helper_scope = if (!self.semantic_edit_enabled)
+                @as(ScopeId, .none)
+            else if (node.tag == .class_expression)
+                prepared_wrapper_scope
+            else blk: {
+                const class_scope = self.outputOwnedScope(source_idx) orelse
+                    std.debug.panic("private helper class has no source scope", .{});
+                break :blk self.outputScopeParent(class_scope);
+            };
             const had_any = try es2022.ES2022(Transformer).lowerPrivateMembers(
                 self,
                 current_body_idx,
@@ -274,6 +285,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 class_name_text,
                 new_name,
                 false, // fast path 는 lowerPrivateMembers 가 통째 visit + 복원 (기존 동작).
+                private_helper_scope,
                 desc_out,
             );
             if (had_any) {
@@ -337,7 +349,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                     );
                 }
 
-                try trackPrivateHelperPrelude(self, source_idx, pre_stmts.items, static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items, node.span);
+                try trackPrivateHelperPrelude(self, source_idx, pre_stmts.items, static_descriptors.items, static_block_iifes.items, class_result, pm_mappings.items, pf_mappings.items, node.span);
 
                 for (static_key_memos.items) |stmt| {
                     try self.pending_nodes.append(self.allocator, stmt);
@@ -391,7 +403,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 );
             }
 
-            try trackPrivateHelperPrelude(self, source_idx, pre_stmts.items, static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items, node.span);
+            try trackPrivateHelperPrelude(self, source_idx, pre_stmts.items, static_descriptors.items, &.{}, class_result, pm_mappings.items, pf_mappings.items, node.span);
 
             for (pre_stmts.items) |stmt| {
                 try self.pending_nodes.append(self.allocator, stmt);

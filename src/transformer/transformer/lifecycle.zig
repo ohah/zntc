@@ -137,6 +137,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.transformed_scope_owner_map.deinit(self.allocator);
     if (self.semantic_editor) |*editor| editor.deinit();
     self.pending_temp_refs.deinit(self.allocator);
+    self.pending_exact_symbol_refs.deinit(self.allocator);
     self.pending_temp_ref_chains.deinit(self.allocator);
     self.lexical_capture_uses.deinit(self.allocator);
     self.capture_refs.deinit(self.allocator);
