@@ -646,8 +646,9 @@ fn isRetainableOptionalMemberAccess(
     return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
 }
 
-/// An ordinary member/call tail can follow one audited optional member access.
-/// Optional calls stay on the resync path.
+/// An ordinary member/call tail can follow one audited optional member access
+/// or optional call. The optional segment must pass the same exact source-root
+/// checks as its standalone form.
 fn isRetainableOptionalMemberChainTail(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -671,8 +672,13 @@ fn isRetainableOptionalMemberChainTail(
                 const extra = node.data.extra;
                 if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3)
                     return false;
-                if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
-                    return false;
+                if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) {
+                    // An exact source-rooted optional call can terminate the
+                    // chain before an ordinary member tail, as in
+                    // `getReceiver()?.method?.().value`. Keep the same source
+                    // identity gate used by standalone optional calls.
+                    return isRetainableOptionalCall(ast, semantic, current);
+                }
                 current = @enumFromInt(ast.extra_data.items[extra]);
             },
             else => return false,

@@ -280,8 +280,7 @@ pub fn ES2020(comptime Transformer: type) type {
             old_prop: NodeIndex,
             member_flags: u32,
         ) Transformer.Error!?NodeIndex {
-            if (root.tag != .call_expression) return null;
-            const call_e = root.data.extra;
+            const call_e = findOptionalMemberCallExtra(self, root, base_idx) orelse return null;
             const old_callee = self.readNodeIdx(call_e, 0);
             const call_flags = self.readU32(call_e, 3);
             if (old_callee != base_idx or (call_flags & ast_mod.CallFlags.optional_chain) == 0) {
@@ -289,6 +288,9 @@ pub fn ES2020(comptime Transformer: type) type {
             }
 
             if (isSuperExpression(self, old_obj)) {
+                // Keep the existing super path until its home-object reference
+                // can be rebuilt through a chain tail as well.
+                if (root.tag != .call_expression or root.data.extra != call_e) return null;
                 return try lowerOptionalSuperMethodCall(self, root, base_idx, old_prop, member_flags);
             }
 
@@ -321,7 +323,34 @@ pub fn ES2020(comptime Transformer: type) type {
                 .data = .{ .extra = member_extra },
             });
 
-            const inner = try buildOptionalCallEpilogue(self, member, receiver, call_e, root.span);
+            const inner = if (root.tag == .call_expression and root.data.extra == call_e) blk: {
+                break :blk try buildOptionalCallEpilogue(self, member, receiver, call_e, root.span);
+            } else blk: {
+                // When the optional call is followed by a chain tail, keep the
+                // method receiver on the call and put the full tail inside the
+                // call's non-null branch. For example,
+                // `receiver?.method?.().value` must evaluate as
+                // `method.call(receiver).value` only when both guards pass.
+                const fn_cap = try captureTrackedTemp(self, member, root.span);
+                const fn_ref = try readTrackedTemp(self, fn_cap.span, root.span);
+                const rebuilt = try rebuildChainNodeWithOptionalMemberCallThis(
+                    self,
+                    root,
+                    fn_ref,
+                    base_idx,
+                    receiver,
+                );
+                const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, root.span);
+                break :blk try self.ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = root.span,
+                    .data = .{ .ternary = .{
+                        .a = fn_eq_null,
+                        .b = try helpers.makeVoidZero(self, root.span),
+                        .c = rebuilt,
+                    } },
+                });
+            };
             const outer_eq_null = try helpers.makeEqNull(self, receiver_check, root.span);
             const outer = try self.ast.addNode(.{
                 .tag = .conditional_expression,
@@ -329,6 +358,37 @@ pub fn ES2020(comptime Transformer: type) type {
                 .data = .{ .ternary = .{ .a = outer_eq_null, .b = try helpers.makeVoidZero(self, root.span), .c = inner } },
             });
             return outer;
+        }
+
+        fn findOptionalMemberCallExtra(
+            self: *const Transformer,
+            root: Node,
+            member_idx: NodeIndex,
+        ) ?u32 {
+            var current = root;
+            var found: ?u32 = null;
+            while (true) {
+                switch (current.tag) {
+                    .call_expression => {
+                        const extra = current.data.extra;
+                        const callee = self.readNodeIdx(extra, 0);
+                        const flags = self.readU32(extra, 3);
+                        if (callee == member_idx and (flags & ast_mod.CallFlags.optional_chain) != 0) {
+                            if (found != null) return null;
+                            found = extra;
+                        }
+                        const next = self.readNodeIdx(extra, 0);
+                        if (next.isNone() or @intFromEnum(next) >= self.ast.nodes.items.len) return found;
+                        current = self.ast.getNode(next);
+                    },
+                    .static_member_expression, .computed_member_expression, .private_field_expression => {
+                        const next = self.readNodeIdx(current.data.extra, 0);
+                        if (next.isNone() or @intFromEnum(next) >= self.ast.nodes.items.len) return found;
+                        current = self.ast.getNode(next);
+                    },
+                    else => return found,
+                }
+            }
         }
 
         fn lowerOptionalSuperMethodCall(
