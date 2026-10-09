@@ -1425,26 +1425,79 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     return true;
 }
 
+/// A public static field with a source-independent literal initializer and
+/// ordinary identifier key is emitted as an exact class reference plus an
+/// explicit global Object.defineProperty call. Keep the wider field grammar
+/// on semantic resync until its initializer and key side effects are audited.
+fn isRetainableSimpleStaticClassField(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    if (node.tag != .property_definition) return false;
+    const extras = ast.extra_data.items;
+    const extra = node.data.extra;
+    if (extra > extras.len or extras.len - extra <= ast_mod.PropertyExtra.deco_len) return false;
+
+    const flags = extras[extra + ast_mod.PropertyExtra.flags];
+    const unsupported_flags = ast_mod.PropertyFlags.is_abstract |
+        ast_mod.PropertyFlags.is_declare |
+        ast_mod.PropertyFlags.flow_variance;
+    const allowed_flags = ast_mod.PropertyFlags.is_static | unsupported_flags;
+    if ((flags & ast_mod.PropertyFlags.is_static) == 0 or
+        (flags & unsupported_flags) != 0 or (flags & ~allowed_flags) != 0 or
+        extras[extra + ast_mod.PropertyExtra.deco_len] != 0) return false;
+
+    const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.key]);
+    const init_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.init]);
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len or
+        init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) return false;
+    const key = ast.getNode(key_idx);
+    if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
+    return switch (ast.nodes.items[@intFromEnum(init_idx)].tag) {
+        .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
+        else => false,
+    };
+}
+
+fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
+    if (ast.nodes.items.len == 0) return false;
+    const root_idx = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+    );
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return null;
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return null;
+    defer ast.allocator.free(reachable);
+    for (reachable) |raw| {
+        if (raw >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[raw];
+        if (node.tag != .property_definition) continue;
+        const extras = ast.extra_data.items;
+        const extra = node.data.extra;
+        if (extra > extras.len or extras.len - extra <= ast_mod.PropertyExtra.flags) continue;
+        const flags = extras[extra + ast_mod.PropertyExtra.flags];
+        if ((flags & ast_mod.PropertyFlags.is_static) == 0 or
+            extras.len - extra <= ast_mod.PropertyExtra.init) continue;
+        const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.key]);
+        const init_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.init]);
+        if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len or
+            ast.nodes.items[@intFromEnum(key_idx)].tag == .private_identifier or
+            init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) continue;
+        return true;
+    }
+    return false;
+}
+
 /// An ES5 class without a base preserves its graph when empty, when all members
 /// are plain methods, or when plain methods are followed by one accessor or a
 /// compatible getter/setter pair. One explicit constructor with only simple
 /// identifier parameters or identifier parameters with literal defaults may
-/// accompany plain methods and a terminal accessor
-/// group when its body contains only simple `var` declarations, safe nested
-/// blocks/`if` branches, switches with safe discriminants/case tests, simple
-/// try/catch/finally clauses, classic loops, and `for-in`/`for-of` loops with
-/// safe `var` or existing-identifier heads, safe values, and safe bodies.
-/// Labeled/unlabeled loop control, safe label statements, supported assignments/updates,
-/// returns with no value or an exact-safe value, and throws with an exact-safe
-/// value. Named or anonymous class expressions are admitted only as direct
-/// initializers of a top-level `var` declarator; other expression positions
-/// stay on reanalysis. Anonymous expressions are safe here because lowering
-/// registers the generated constructor self binding and call-check reference
-/// in the exact output function scope.
-/// Conditions and values are recursively limited to literals, exact
-/// source references, and ES5-native operators; loop clauses and bodies must
-/// pass their corresponding safe checks. Accessors must be terminal because lowering emits
-/// methods before accessors; computed/escaped keys and `super` stay excluded.
+/// accompany plain methods and a terminal accessor group when its body contains
+/// only audited declarations, expressions, control flow, and loops. Named or
+/// anonymous class expressions are admitted only as direct initializers of a
+/// top-level `var` declarator; other expression positions stay on reanalysis.
+/// Anonymous expressions are safe because lowering registers the generated
+/// constructor self binding and call-check reference in the exact output
+/// function scope. Static fields must pass
+/// `isRetainableSimpleStaticClassField`; computed/escaped keys and `super` stay
+/// excluded.
 fn isSimpleClass(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1478,6 +1531,7 @@ fn isSimpleClass(
         const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
         if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
+        if (isRetainableSimpleStaticClassField(ast, member)) continue;
         if (member.tag != .method_definition) return false;
         const method_extra = member.data.extra;
         if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
@@ -1527,6 +1581,7 @@ fn isSimpleClass(
         const accessor_is_static = (accessor.flags & ast_mod.MethodFlags.is_static) != 0;
         for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
             const member = ast.getNode(@enumFromInt(raw_member_idx));
+            if (member.tag != .method_definition) continue;
             const method_extra = member.data.extra;
             const flags = extras[method_extra + ast_mod.MethodExtra.flags];
             const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static;
@@ -1945,6 +2000,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_for_await = false;
     var found_native_class = false;
     var found_lowered_simple_class = false;
+    var found_lowered_simple_static_class_field = false;
     var found_native_destructuring = false;
     var found_lowered_var_destructuring = false;
     var found_lowered_destructuring_assignment = false;
@@ -2304,7 +2360,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len) return false;
                 if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier) {
                     if (options.unsupported.class_private_field) return false;
-                } else if (options.unsupported.class_field) return false;
+                } else if (options.unsupported.class_field or options.unsupported.class) {
+                    if (source_binds_object or !isRetainableSimpleStaticClassField(ast, node)) return false;
+                    found_lowered_simple_static_class_field = true;
+                }
             },
             .private_field_expression, .private_identifier => {
                 // The access node alone does not distinguish a private field
@@ -2453,6 +2512,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
         found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_class or
+        found_lowered_simple_static_class_field or
         found_native_destructuring or
         found_lowered_var_destructuring or found_lowered_destructuring_assignment or found_lowered_parameter_destructuring or
         found_safe_template_literal or found_lowered_optional_chaining or found_object_shorthand or found_lowered_object_method or
@@ -2750,8 +2810,17 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         hasReachableExponentiation(ast_ptr)
     else
         @as(?bool, false);
+    const downlevel_static_public_class_field_scan =
+        if (opts.unsupported.class or opts.unsupported.class_field)
+            hasReachableStaticPublicClassField(ast_ptr)
+        else
+            @as(?bool, false);
     const can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
+        downlevel_static_public_class_field_scan != null and
         canKeepPrepassSemanticGraph(self, module, opts, merged_plugins);
+    const lowered_simple_static_class_field_global = can_keep_semantic_graph and
+        (downlevel_static_public_class_field_scan orelse
+            (opts.unsupported.class or opts.unsupported.class_field));
     const flow_match_generated_globals = flowMatchGeneratedGlobals(ast_ptr);
     // If reachability allocation fails, reanalysis is already forced above.
     // Still record any generated Object reference conservatively in that path.
@@ -2764,7 +2833,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     transformer.record_explicit_global_references =
-        flow_match_generated_globals.has_match or has_lowered_object_spread or has_lowered_exponentiation;
+        flow_match_generated_globals.has_match or has_lowered_object_spread or has_lowered_exponentiation or
+        (downlevel_static_public_class_field_scan orelse
+            (opts.unsupported.class or opts.unsupported.class_field));
 
     if (module.semantic) |*sem| {
         transformer.initSymbolIds(sem.symbol_ids) catch return;
@@ -2942,11 +3013,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             addGeneratedGlobal(arena_alloc, &module.semantic.?, "Object") catch {};
         if (lowered_exponentiation_global)
             addGeneratedGlobal(arena_alloc, &module.semantic.?, "Math") catch {};
+        if (lowered_simple_static_class_field_global)
+            addGeneratedGlobal(arena_alloc, &module.semantic.?, "Object") catch {};
         const generated_globals_recorded =
             (!flow_match_generated_globals.array or module.semantic.?.unresolved_references.contains("Array")) and
             (!flow_match_generated_globals.object or module.semantic.?.unresolved_references.contains("Object")) and
             (!lowered_object_spread_global or module.semantic.?.unresolved_references.contains("Object")) and
-            (!lowered_exponentiation_global or module.semantic.?.unresolved_references.contains("Math"));
+            (!lowered_exponentiation_global or module.semantic.?.unresolved_references.contains("Math")) and
+            (!lowered_simple_static_class_field_global or module.semantic.?.unresolved_references.contains("Object"));
         if (!generated_globals_recorded) {
             resyncAfterAstMutation(self, module, arena_alloc, null) catch {
                 self.addDiag(
