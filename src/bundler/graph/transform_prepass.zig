@@ -951,6 +951,30 @@ fn isBoundStaticFieldMemberAccessShape(
     };
 }
 
+/// A single optional dot read rooted directly at an exact source binding can
+/// stay on the edited graph. Keep computed keys and optional/member chains out
+/// until their key evaluation and receiver scopes have their own field gate.
+fn isRetainableBoundStaticFieldOptionalMemberRead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    member_idx: ast_mod.NodeIndex,
+) bool {
+    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+    const member = ast.getNode(member_idx);
+    if (member.tag != .static_member_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = member.data.extra;
+    if (extra > extras.len or extras.len - extra < 3 or
+        extras[extra + 2] != ast_mod.MemberFlags.optional_chain) return false;
+    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+    return receiver_idx.isNone() == false and @intFromEnum(receiver_idx) < ast.nodes.items.len and
+        property_idx.isNone() == false and @intFromEnum(property_idx) < ast.nodes.items.len and
+        ast.getNode(receiver_idx).tag == .identifier_reference and
+        isBoundSourceIdentifierReference(ast, semantic, receiver_idx) and
+        ast.getNode(property_idx).tag == .identifier_reference;
+}
+
 fn enqueueBoundStaticFieldMemberKeyCalls(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -1062,6 +1086,16 @@ fn isRetainableBoundStaticFieldMemberAccess(
     member_idx: ast_mod.NodeIndex,
 ) bool {
     return isRetainableBoundStaticFieldExpression(allocator, ast, semantic, member_idx);
+}
+
+fn isRetainableBoundStaticFieldInitializerMemberAccess(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    member_idx: ast_mod.NodeIndex,
+) bool {
+    return isRetainableBoundStaticFieldOptionalMemberRead(ast, semantic, member_idx) or
+        isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, member_idx);
 }
 
 fn isRetainableBoundStaticFieldCall(
@@ -1679,7 +1713,7 @@ fn isRetainableSimpleStaticClassField(
         else => return false,
     }
     return isSafeConstructorValue(ast, semantic, init_idx) or
-        isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, init_idx) or
+        isRetainableBoundStaticFieldInitializerMemberAccess(allocator, ast, semantic, init_idx) or
         isRetainableBoundStaticFieldCall(allocator, ast, semantic, init_idx);
 }
 

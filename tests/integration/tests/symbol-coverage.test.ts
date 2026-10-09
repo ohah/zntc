@@ -9799,6 +9799,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '43 42 2 -2\n',
       },
       {
+        name: 'single bound optional static-member reads retain their graph and null short-circuit',
+        source:
+          'var reads = []; var holder = { get value() { reads.push("value"); return reads.length; } }; var missing = null; class OptionalStaticMemberRead { static present = holder?.value; static absent = missing?.value; } console.log(OptionalStaticMemberRead.present, OptionalStaticMemberRead.absent, reads.join(","));',
+        graph: 'retained',
+        output: '1 undefined value\n',
+      },
+      {
         name: 'bound deep static member reads retain getter order and receiver this',
         source:
           'var order = []; var holder = { get outer() { order.push("outer"); return { order, get value() { this.order.push("value"); return this.order.length; } }; } }; class StaticMemberReadField { static first = holder.outer.value; static second = holder.outer.value; } console.log(StaticMemberReadField.first, StaticMemberReadField.second, order.join(","));',
@@ -10017,9 +10024,16 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional static member value stays on semantic reanalysis',
+        name: 'unbound optional static member value stays on semantic reanalysis',
         source:
-          'var holder = { value: 9 }; class OptionalStaticMemberValueField { static value = holder?.value; } console.log(OptionalStaticMemberValueField.value);',
+          'globalThis.__zntcOptionalStaticReceiver = { value: 9 }; class UnboundOptionalStaticMemberValueField { static value = __zntcOptionalStaticReceiver?.value; } console.log(UnboundOptionalStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'nested optional static-member reads stay on semantic reanalysis',
+        source:
+          'var holder = { outer: { value: 9 } }; class NestedOptionalStaticMemberValueField { static value = holder?.outer?.value; } console.log(NestedOptionalStaticMemberValueField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
