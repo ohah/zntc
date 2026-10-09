@@ -82,20 +82,82 @@ pub fn ES2015Params(comptime Transformer: type) type {
         /// default_params(ES2015) 는 지원하나 object_spread(ES2018) 만 미지원인
         /// 타겟(es2016/es2017)에서, object rest 가 든 param 만 lowering 하기 위한
         /// target-aware 게이트. (default-param-only 함수의 불필요 lowering 회피.)
-        pub fn hasObjectRestParam(self: *const Transformer, params: ast_mod.NodeList) bool {
+        pub fn hasObjectRestParam(self: *const Transformer, params: ast_mod.NodeList) Transformer.Error!bool {
             const old_params = self.ast.extra_data.items[params.start .. params.start + params.len];
             for (old_params) |raw_idx| {
-                const param = self.ast.getNode(@enumFromInt(raw_idx));
-                const pattern_idx: NodeIndex = switch (param.tag) {
-                    .object_pattern => @enumFromInt(raw_idx),
-                    .formal_parameter => @enumFromInt(self.ast.extra_data.items[param.data.extra + ast_mod.FormalParameterExtra.pattern]),
-                    .assignment_pattern => param.data.binary.left,
-                    else => continue,
-                };
-                if (pattern_idx.isNone()) continue;
-                const pattern = self.ast.getNode(pattern_idx);
-                if (pattern.tag == .object_pattern and
-                    self.ast.nodeListSplitRest(pattern.data.list).rest_operand != null) return true;
+                if (try parameterHasObjectRest(self, @enumFromInt(raw_idx))) return true;
+            }
+            return false;
+        }
+
+        fn parameterHasObjectRest(self: *const Transformer, param_idx: NodeIndex) Transformer.Error!bool {
+            if (param_idx.isNone() or @intFromEnum(param_idx) >= self.ast.nodes.items.len) return false;
+            const param = self.ast.getNode(param_idx);
+            const pattern_idx: NodeIndex = switch (param.tag) {
+                .formal_parameter => blk: {
+                    const extra = param.data.extra;
+                    if (extra + ast_mod.FormalParameterExtra.pattern >= self.ast.extra_data.items.len) break :blk .none;
+                    break :blk @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]);
+                },
+                .assignment_pattern => param.data.binary.left,
+                else => param_idx,
+            };
+            return bindingPatternHasObjectRest(self, pattern_idx);
+        }
+
+        /// Search only binding-pattern positions. Default expressions and computed
+        /// keys may contain object spread, which does not require parameter lowering.
+        fn bindingPatternHasObjectRest(self: *const Transformer, root: NodeIndex) Transformer.Error!bool {
+            if (root.isNone() or @intFromEnum(root) >= self.ast.nodes.items.len) return false;
+            var pending: std.ArrayList(NodeIndex) = .empty;
+            defer pending.deinit(self.allocator);
+            try pending.append(self.allocator, root);
+
+            while (pending.pop()) |idx| {
+                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                const node = self.ast.getNode(idx);
+                switch (node.tag) {
+                    .formal_parameter => {
+                        const extra = node.data.extra;
+                        if (extra + ast_mod.FormalParameterExtra.pattern >= self.ast.extra_data.items.len) continue;
+                        const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]);
+                        if (!pattern.isNone()) try pending.append(self.allocator, pattern);
+                    },
+                    .assignment_pattern => {
+                        if (!node.data.binary.left.isNone()) try pending.append(self.allocator, node.data.binary.left);
+                    },
+                    .object_pattern => {
+                        const split = self.ast.nodeListSplitRest(node.data.list);
+                        if (split.rest_operand != null) return true;
+                        for (split.elements) |raw_child| {
+                            const child_idx: NodeIndex = @enumFromInt(raw_child);
+                            if (child_idx.isNone() or @intFromEnum(child_idx) >= self.ast.nodes.items.len) continue;
+                            const child = self.ast.getNode(child_idx);
+                            if (child.tag == .object_property) {
+                                const value = ast_mod.Ast.objectPropertyValue(child);
+                                if (!value.isNone()) try pending.append(self.allocator, value);
+                            } else {
+                                try pending.append(self.allocator, child_idx);
+                            }
+                        }
+                    },
+                    .array_pattern => {
+                        const split = self.ast.nodeListSplitRest(node.data.list);
+                        for (split.elements) |raw_child| {
+                            const child: NodeIndex = @enumFromInt(raw_child);
+                            if (!child.isNone()) try pending.append(self.allocator, child);
+                        }
+                        if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
+                    },
+                    .rest_element, .binding_rest_element => {
+                        if (!node.data.unary.operand.isNone()) try pending.append(self.allocator, node.data.unary.operand);
+                    },
+                    .object_property => {
+                        const value = ast_mod.Ast.objectPropertyValue(node);
+                        if (!value.isNone()) try pending.append(self.allocator, value);
+                    },
+                    else => {},
+                }
             }
             return false;
         }
@@ -179,6 +241,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 }
             }.call;
 
+            var object_rest_seen = false;
             var i_loop: u32 = 0;
             while (i_loop < params.len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[params.start + i_loop];
@@ -203,12 +266,46 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     continue;
                 }
 
+                // ES2016/2017 keep native default/destructuring parameters. Only
+                // parameters before the first ES2018 object-rest parameter can
+                // stay native. Parameters after it must keep body-lowering order
+                // because their initializers run after that parameter's pattern.
+                const has_object_rest = if (self.options.unsupported.default_params)
+                    false
+                else
+                    try parameterHasObjectRest(self, @enumFromInt(raw_idx));
+                if (!self.options.unsupported.default_params and !object_rest_seen and !has_object_rest) {
+                    const kept = try maybeVisit(self, @enumFromInt(raw_idx));
+                    if (!kept.isNone()) try self.scratch.append(self.allocator, kept);
+                    param_index += 1;
+                    continue;
+                }
+                if (has_object_rest) object_rest_seen = true;
+
                 if (param.tag == .formal_parameter) {
                     const pe = param.data.extra;
                     const pattern_idx: NodeIndex = self.readNodeIdx(pe, ast_mod.FormalParameterExtra.pattern);
                     const default_idx: NodeIndex = self.readNodeIdx(pe, ast_mod.FormalParameterExtra.default);
 
                     if (!default_idx.isNone()) {
+                        if (!self.options.unsupported.default_params) {
+                            const visited_pattern = try maybeVisit(self, pattern_idx);
+                            const visited_default = try maybeVisit(self, default_idx);
+                            try es_helpers.rewriteTDZReferences(self, visited_default, param_tdz_names.items[name_starts[i_loop]..]);
+                            const temp = try buildDestructuringParam(self, visited_pattern, &body_stmts, span);
+                            const extras = try self.ast.addExtras(&.{
+                                @intFromEnum(temp),
+                                @intFromEnum(NodeIndex.none),
+                                @intFromEnum(visited_default),
+                                self.ast.extra_data.items[pe + ast_mod.FormalParameterExtra.flags],
+                                self.ast.extra_data.items[pe + ast_mod.FormalParameterExtra.deco_start],
+                                self.ast.extra_data.items[pe + ast_mod.FormalParameterExtra.deco_len],
+                            });
+                            const lowered_param = try self.ast.addExtraNode(.formal_parameter, param.span, extras);
+                            try self.scratch.append(self.allocator, lowered_param);
+                            param_index += 1;
+                            continue;
+                        }
                         const pat_node = self.ast.getNode(pattern_idx);
                         if (pat_node.tag == .object_pattern or pat_node.tag == .array_pattern) {
                             const vp = try maybeVisit(self, pattern_idx);
@@ -232,6 +329,26 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 if (param.tag == .assignment_pattern) {
                     // assignment_pattern: binary { left=pattern, right=default }
                     const pattern_node = self.ast.getNode(param.data.binary.left);
+                    if (!self.options.unsupported.default_params and
+                        (try bindingPatternHasObjectRest(self, param.data.binary.left)))
+                    {
+                        const visited_pattern = try maybeVisit(self, param.data.binary.left);
+                        const visited_default = try maybeVisit(self, param.data.binary.right);
+                        try es_helpers.rewriteTDZReferences(self, visited_default, param_tdz_names.items[name_starts[i_loop]..]);
+                        const temp = try buildDestructuringParam(self, visited_pattern, &body_stmts, span);
+                        const lowered_param = try self.ast.addNode(.{
+                            .tag = .assignment_pattern,
+                            .span = param.span,
+                            .data = .{ .binary = .{
+                                .left = temp,
+                                .right = visited_default,
+                                .flags = param.data.binary.flags,
+                            } },
+                        });
+                        try self.scratch.append(self.allocator, lowered_param);
+                        param_index += 1;
+                        continue;
+                    }
                     if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) {
                         const vp = try maybeVisit(self, param.data.binary.left);
                         const vd = try maybeVisit(self, param.data.binary.right);

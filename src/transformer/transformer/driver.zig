@@ -343,12 +343,14 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 // #4251: default_params 미지원(es5..es2015)이면 전체(default/rest/
                 // destructuring) lowering. object_spread 만 미지원(es2016/es2017)이면
                 // object rest 든 param 만 — default-param-only 함수 불필요 lowering 회피.
-                // TODO(#4819): object-rest lowering itself must preserve native
-                // defaults on other parameters and their parameter environment.
+                // TODO(#4819): defaults after the first lowered object-rest
+                // parameter still move into the body to preserve evaluation
+                // order; preserving their parameter/body environment needs a
+                // separate exact-identity lowering (including dynamic-eval fallback).
                 const needs_lowering = if (self.options.unsupported.default_params)
                     es2015_params.ES2015Params(Self).hasDefaultOrRest(self, params_list)
                 else
-                    es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list);
+                    try es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list);
                 if (!needs_lowering) continue;
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
@@ -387,7 +389,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (params_node.tag != .formal_parameters) continue;
                 const params_list = params_node.data.list;
                 if (params_list.len == 0) continue;
-                if (!es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list)) continue;
+                if (!(try es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list))) continue;
                 // (이전 #4251 array-rest skip 제거: lowerParamsImpl 이 default_params
                 //  지원 타겟에선 array-rest 를 native 유지하므로 arrow arguments 크래시
                 //  없음. object rest 만 temp+body 분해.)
