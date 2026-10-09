@@ -9752,6 +9752,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'field-name\n',
       },
       {
+        name: 'static field reads a bound source identifier with its exact identity',
+        source:
+          'var seed = 41; class StaticReference { static value = seed; } console.log(StaticReference.value);',
+        graph: 'retained',
+        output: '41\n',
+      },
+      {
+        name: 'static field reads its exact class declaration binding',
+        source:
+          'class StaticSelf { static self = StaticSelf; } console.log(StaticSelf.self === StaticSelf);',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'static field reads its exact named class expression binding',
+        source:
+          'var StaticHolder = class StaticExpressionSelf { static self = StaticExpressionSelf; }; console.log(StaticHolder.self === StaticHolder);',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
         name: 'static literal field and method preserve class self identity',
         source:
           'var Holder = class Inner { static value = 6; static self() { return Inner; } }; console.log(Holder.value, Holder.self() === Holder);',
@@ -9770,6 +9791,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class ProtoStaticField { static __proto__ = 9; } console.log(Object.hasOwn(ProtoStaticField, "__proto__"), ProtoStaticField.__proto__);',
         graph: 'reanalyzed',
         output: 'true 9\n',
+      },
+      {
+        name: 'unbound global initializer stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcStaticFieldValue = 17; class GlobalStaticField { static value = __zntcStaticFieldValue; } console.log(GlobalStaticField.value);',
+        graph: 'reanalyzed',
+        output: '17\n',
       },
       {
         name: 'computed static fields stay on semantic reanalysis',
