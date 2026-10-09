@@ -10024,11 +10024,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'side-effectful optional computed static-member key stays on semantic reanalysis',
+        name: 'optional computed static-member reads retain exact-bound call keys and skip them for null receivers',
         source:
-          'var order = []; function makeOptionalStaticKey() { order.push("key"); return "value"; } var holder = { get value() { order.push("value"); return 9; } }; class OptionalComputedStaticMemberKeyCall { static value = holder?.[makeOptionalStaticKey()]; } console.log(OptionalComputedStaticMemberKeyCall.value, order.join(","));',
+          'var order = []; function makeOptionalStaticKey() { order.push("call"); return { toString: function() { order.push("coerce"); return "value"; } }; } var holder = { get value() { order.push("get"); return 9; } }; var missing = null; class OptionalComputedStaticMemberKeyCall { static present = holder?.[makeOptionalStaticKey()]; static absent = missing?.[makeOptionalStaticKey()]; } console.log(OptionalComputedStaticMemberKeyCall.present, OptionalComputedStaticMemberKeyCall.absent, order.join(","));',
+        graph: 'retained',
+        output: '9 undefined call,coerce,get\n',
+      },
+      {
+        name: 'unbound optional computed static-member key call stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcOptionalStaticMemberKeyFn = function() { return "value"; }; var holder = { value: 9 }; class UnboundOptionalComputedStaticMemberKeyCall { static value = holder?.[__zntcOptionalStaticMemberKeyFn()]; } console.log(UnboundOptionalComputedStaticMemberKeyCall.value);',
         graph: 'reanalyzed',
-        output: '9 key,value\n',
+        output: '9\n',
+      },
+      {
+        name: 'optional-call key stays on semantic reanalysis inside optional computed access',
+        source:
+          'var key = function() { return "value"; }; var holder = { value: 9 }; class OptionalCallComputedStaticMemberKey { static value = holder?.[key?.()]; } console.log(OptionalCallComputedStaticMemberKey.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
       },
       {
         name: 'call-result computed static member receiver stays on semantic reanalysis',
