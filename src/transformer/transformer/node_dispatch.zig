@@ -786,7 +786,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.native_parameter_initializer_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame)
             {
-                const ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+                // The wrapper created for this native-parameter environment
+                // later supplies the exact SymbolId. Keep a neutral spelling
+                // until then; semantic-less callers retain the old resolver.
+                const ref = if (self.semantic_edit_enabled)
+                    try es_helpers.makeExactSyntheticRef(self, "_newTarget")
+                else
+                    try es_helpers.makeSyntheticRef(self, "_newTarget");
                 try self.trackNativeParameterArrowRef(self.native_parameter_arrow_owner, ref);
                 return ref;
             }

@@ -170,6 +170,10 @@ fn checkNativeParameterNewTargetSymbols(source: []const u8) !void {
     for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, symbol_index| {
         if (!std.mem.startsWith(u8, symbol.synthetic_name, "_newTarget")) continue;
         try std.testing.expect(captures < capture_ids.len);
+        // The outer source function may already bind `_newTarget`. These
+        // factory parameters own separate nested scopes, so semantic naming
+        // keeps the common placeholder and lets exact SymbolIds disambiguate.
+        try std.testing.expectEqualStrings("_newTarget", symbol.synthetic_name);
         capture_ids[captures] = @intCast(symbol_index);
         capture_scopes[captures] = symbol.scope_id;
         try std.testing.expect(!symbol.scope_id.isNone());
