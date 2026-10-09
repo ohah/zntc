@@ -438,6 +438,9 @@ pub const Codegen = struct {
         }
         if (sid < self.options.semantic_symbols.len) {
             const symbol = self.options.semantic_symbols[sid];
+            if (symbol.output_name_hint.len > 0 and
+                (self.options.linking_metadata != null or self.options.semantic_symbol_name_overrides != null))
+                return symbol.output_name_hint;
             if (symbol.synthetic_kind != .enum_iife_member and symbol.synthetic_name.len > 0)
                 return symbol.synthetic_name;
         }

@@ -9892,6 +9892,64 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('Reanimated getter factory chooses its output name after preserving captured SymbolIds', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-late-factory-name-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      [
+        'const captured = 41;',
+        'const object = { get captured() { "worklet"; return captured + 1; } };',
+        'console.log(object.captured());',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    try {
+      for (const minifyIdentifiers of [false, true]) {
+        const runner = [
+          `import { build } from ${JSON.stringify(coreEntry)};`,
+          `const result = await build(${JSON.stringify({
+            entryPoints: [entry],
+            platform: 'node',
+            format: 'cjs',
+            target: 'esnext',
+            workletTransform: true,
+            minifyIdentifiers,
+            write: false,
+          })});`,
+          'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+          'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+        ].join('\n');
+        const proc = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(proc.status, proc.stderr).toBe(0);
+        const identity = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+          );
+        expect(identity, proc.stderr).toBeDefined();
+        expect(exactSchemaProblems(identity!), identity).toEqual([]);
+        expect(identity).toMatch(/clean=1(?:\s|$)/);
+
+        const outputs = JSON.parse(proc.stdout) as string[];
+        expect(outputs).toHaveLength(1);
+        writeFileSync(output, outputs[0]);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe('42\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('Reanimated worklet retains its graph when the body has an ordinary nested function', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-helper-retained-'));
     const entry = join(dir, 'entry.js');

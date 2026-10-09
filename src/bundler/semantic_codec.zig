@@ -2,8 +2,8 @@
 //!
 //! `ModuleSemanticData` 의 **relocatable 부분만** 직렬화한다 (사용자 결정: 점진 PR).
 //! - `scopes` / `symbol_ids` / `references`: 전부 인덱스·스칼라라 통째 memcpy.
-//! - `symbols`(ArrayList): Symbol 도 대부분 인덱스/Span 이라 memcpy, 단 `synthetic_name`
-//!   (`[]const u8`, 합성 심볼만 non-empty)만 별도 — memcpy 후 ""로 리셋하고 사이드테이블에서
+//! - `symbols`(ArrayList): Symbol 도 대부분 인덱스/Span 이라 memcpy, 단 `synthetic_name`과
+//!   `output_name_hint` (`[]const u8`)만 별도 — memcpy 후 빈 문자열로 리셋하고 직렬화 텍스트에서
 //!   복원(arena dupe).
 //! - HashMap 5개(scope_maps/exported_names/unresolved_references/numeric_const_texts/
 //!   helper_scope_map)는 **PR3**에서 복원한다. 키 문자열은 source/string_table(parse_arena)
@@ -29,8 +29,8 @@ const wyhash = @import("../util/wyhash.zig");
 const codec_io = @import("../util/codec_io.zig");
 
 pub const MAGIC: u32 = 0x5A53454D; // "ZSEM"
-// v12: declaration references carry their exact AST binding NodeIndex separately.
-pub const FORMAT_VERSION: u32 = 12;
+// v13: Symbol carries a late output-name hint separately from its staging AST name.
+pub const FORMAT_VERSION: u32 = 13;
 const HEADER_LEN: usize = 16;
 
 /// `?u32`(symbol_ids) 의 null 표식. 값은 symbols 배열 인덱스라 maxInt 에 도달하지 않으므로
@@ -69,7 +69,8 @@ comptime {
     const symbol_sig = "name:lexer.token.Span;scope_id:semantic.scope.ScopeId;origin_scope:semantic.scope.ScopeId;" ++
         "kind:semantic.symbol.SymbolKind;decl_flags:semantic.symbol.DeclFlags;declaration_span:lexer.token.Span;" ++
         "reference_count:u32;write_count:u32;const_kind:semantic.symbol.ConstValue.Kind;" ++
-        "synthetic_kind:?semantic.symbol.SyntheticKind;synthetic_name:[]const u8;synthetic_owner_id:?semantic.symbol.SymbolId;";
+        "synthetic_kind:?semantic.symbol.SyntheticKind;synthetic_name:[]const u8;output_name_hint:[]const u8;" ++
+        "synthetic_owner_id:?semantic.symbol.SymbolId;";
     if (!std.mem.eql(u8, fieldSig(Symbol), symbol_sig))
         @compileError("Symbol 필드 시그니처가 바뀜 — putSymbol/readSymbol 의 명시 직렬화 갱신 후 이 시그니처를 갱신.\n실제: " ++ fieldSig(Symbol));
     const scope_sig = "parent:semantic.scope.ScopeId;kind:semantic.scope.ScopeKind;is_strict:bool;" ++
@@ -129,6 +130,7 @@ fn putSymbol(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Symbol) !void
     // ?SyntheticKind → 0xFF=null, 아니면 enum 값(0xFF sentinel과 충돌하지 않음).
     try putU8(buf, alloc, if (s.synthetic_kind) |k| @intFromEnum(k) else 0xFF);
     try putBytes(buf, alloc, s.synthetic_name);
+    try putBytes(buf, alloc, s.output_name_hint);
     try putU32(buf, alloc, if (s.synthetic_owner_id) |owner| @intFromEnum(owner) else NULL_U32);
 }
 fn putScope(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Scope) !void {
@@ -378,6 +380,8 @@ fn readSymbol(r: *Reader, arena: std.mem.Allocator) Error!Symbol {
     s.synthetic_kind = if (syn == 0xFF) null else (std.enums.fromInt(symbol_mod.SyntheticKind, syn) orelse return error.Truncated);
     const name_text = try r.bytes();
     s.synthetic_name = if (name_text.len == 0) "" else try arena.dupe(u8, name_text);
+    const output_name_hint = try r.bytes();
+    s.output_name_hint = if (output_name_hint.len == 0) "" else try arena.dupe(u8, output_name_hint);
     const owner_id = try r.u32v();
     s.synthetic_owner_id = if (owner_id == NULL_U32) null else @enumFromInt(owner_id);
     return s;

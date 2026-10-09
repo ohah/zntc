@@ -224,6 +224,10 @@ pub const SyntheticKind = enum(u8) {
     /// Standalone generated runtime-helper import local whose emitted spelling
     /// is selected from its exact SymbolId after transformation.
     runtime_helper_import,
+    /// Generated local holding the original function inside a Worklet factory.
+    /// The linker assigns its final spelling after the complete module scopes
+    /// and captured references are known, avoiding accidental capture.
+    worklet_factory_local,
     /// TypeScript enum member names referenced bare from a later initializer.
     /// These are semantic property references, not lexical bindings.
     enum_iife_member,
@@ -321,6 +325,11 @@ pub const Symbol = struct {
     /// incremental rebuild 시 arena 불일치 방지.
     synthetic_name: []const u8 = "",
 
+    /// Optional preferred output spelling for a generated binding whose AST
+    /// name must stay collision-free while semantic edits are assembled.
+    /// Linkers and codegen consume this only after its exact SymbolId exists.
+    output_name_hint: []const u8 = "",
+
     /// Owner symbol for virtual references attached to an emitted binding,
     /// such as an enum member property owned by its generated IIFE parameter.
     synthetic_owner_id: ?SymbolId = null,
@@ -329,6 +338,11 @@ pub const Symbol = struct {
     pub fn nameText(self: *const Symbol, source: []const u8) []const u8 {
         if (self.synthetic_name.len > 0) return self.synthetic_name;
         return source[self.name.start..self.name.end];
+    }
+
+    pub fn preferredOutputName(self: *const Symbol, source: []const u8) []const u8 {
+        if (self.output_name_hint.len > 0) return self.output_name_hint;
+        return self.nameText(source);
     }
 
     pub fn isSynthetic(self: *const Symbol) bool {

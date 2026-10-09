@@ -72,11 +72,10 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     var codegen = @import("../codegen/codegen.zig").Codegen.init(allocator, transformer.ast);
     defer codegen.deinit();
     const output = try codegen.generate(root);
-    try std.testing.expect(std.mem.indexOf(u8, output, "var run2 = function(value)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "run2.__closure = { run: run }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "current4.__closure = { current: current }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "var value2 = function(value)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "value2.__workletHash") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "var __zntcWorkletFactoryLocal4 = function(value)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zntcWorkletFactoryLocal4.__closure = { run: run }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zntcWorkletFactoryLocal8.__closure = { current: current }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "__zntcWorkletFactoryLocal4.__workletHash") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "current.__workletHash") == null);
     const edited = (try transformer.finishSemanticEdit()).?;
     var report = try coverage.checkStrictWithExactExternalEvidence(

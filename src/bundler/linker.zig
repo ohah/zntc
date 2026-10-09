@@ -882,6 +882,62 @@ pub const Linker = struct {
         return true;
     }
 
+    /// Assign Worklet factory locals after the full semantic graph is available.
+    /// These locals can shadow outer bindings read by the generated closure
+    /// object, so checking only the factory's own scope is insufficient.
+    fn resolveWorkletFactoryLocalNames(
+        self: *Linker,
+        name_to_owners: *const NameToOwnersMap,
+        only: ?[]const ModuleIndex,
+    ) !void {
+        if (self.manglerActive()) return;
+        const count = if (only) |modules| modules.len else self.graph.moduleCount();
+        for (0..count) |i| {
+            const module_index = if (only) |modules| modules[i].toU32() else @as(u32, @intCast(i));
+            const module = self.getModule(module_index) orelse continue;
+            const semantic = module.semantic orelse continue;
+            for (semantic.symbols.items, 0..) |symbol, raw_symbol_id| {
+                if (symbol.synthetic_kind != .worklet_factory_local) continue;
+                if (symbol.output_name_hint.len == 0 or symbol.scope_id.isNone())
+                    return error.InvalidWorkletFactoryLocal;
+
+                const symbol_id = bundler_symbol.SymbolID.make(
+                    @enumFromInt(module_index),
+                    @as(u32, @intCast(raw_symbol_id)),
+                );
+                const base = symbol.output_name_hint;
+                const selected = if (self.workletFactoryNameAvailable(module_index, @intCast(raw_symbol_id), base, name_to_owners))
+                    try self.allocator.dupe(u8, base)
+                else blk: {
+                    var suffix: u32 = 1;
+                    break :blk try self.findAvailableCandidate(base, module_index, &suffix, name_to_owners);
+                };
+                try self.assignSymbolCanonical(symbol_id, selected);
+                if (!symbol.scope_id.isNone() and symbol.scope_id.toIndex() > 0)
+                    try self.nonminify_nested_shadow_modules.put(self.allocator, module_index, {});
+            }
+        }
+    }
+
+    fn workletFactoryNameAvailable(
+        self: *const Linker,
+        module_index: u32,
+        symbol_index: u32,
+        name: []const u8,
+        name_to_owners: *const NameToOwnersMap,
+    ) bool {
+        if (self.isReservedOrGlobal(name) or name_to_owners.contains(name) or self.isCanonicalNameTaken(name))
+            return false;
+        const module = self.getModule(module_index) orelse return false;
+        const semantic = module.semantic orelse return false;
+        for (semantic.scope_maps) |scope_map| {
+            if (scope_map.get(name)) |owner| {
+                if (owner != symbol_index) return false;
+            }
+        }
+        return true;
+    }
+
     /// 충돌 없는 후보 이름을 찾아 반환. suffix를 증가시키며 검색.
     /// 반환된 문자열은 allocator로 할당되었으므로 호출자가 소유.
     fn findAvailableCandidate(
@@ -2015,6 +2071,8 @@ pub const Linker = struct {
         try self.buildNestedBindingCache(&name_to_owners);
         defer self.clearNestedBindingCache();
 
+        try self.resolveWorkletFactoryLocalNames(&name_to_owners, null);
+
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
 
@@ -2915,7 +2973,7 @@ pub const Linker = struct {
                             // synthetic 루프 가드와 대칭.
                             if (self.graph.preserve_modules) continue;
                             // RFC #3940 L.4c: dedup key 도 build-scope rename_table 경유. miss → synthetic_name.
-                            const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
+                            const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.preferredOutputName(m.source);
                             if (key.len <= 1) continue;
                             if (exported.contains(key)) continue;
                             try candidates.append(self.allocator, .{
@@ -3004,7 +3062,7 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;
@@ -3045,7 +3103,7 @@ pub const Linker = struct {
                         // 드물어(RN) canonical 유지의 size 비용 무시 가능 → mangle 후보서 제외.
                         if ((sk == .esm_init or sk == .cjs_require) and rbm_module_indices.contains(m.index)) continue;
                         // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
-                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.synthetic_name;
+                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.preferredOutputName(m.source);
                         if (key.len <= 1) continue;
                         if (exported.contains(key)) continue;
 
@@ -5416,6 +5474,8 @@ pub const Linker = struct {
         // O(1). defer 로 에러 경로에서도 해제(code-review: non-defer clear 는 에러 시 populated 잔존).
         try self.buildNestedBindingCache(&name_to_owners);
         defer self.clearNestedBindingCache();
+
+        try self.resolveWorkletFactoryLocalNames(&name_to_owners, module_indices);
 
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
         try self.calculateRenames(&name_to_owners, true);

@@ -221,8 +221,9 @@ pub fn mangle(allocator: std.mem.Allocator, input: MangleInput) !ManglerResult {
             sym.synthetic_kind != .namespace_iife_parameter and
             sym.synthetic_kind != .enum_iife_parameter and
             sym.synthetic_kind != .runtime_helper_preamble and
-            sym.synthetic_kind != .runtime_helper_import) continue;
-        const orig_name = if (input.ast) |ast| (if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name)) else sym.nameText(source);
+            sym.synthetic_kind != .runtime_helper_import and
+            sym.synthetic_kind != .worklet_factory_local) continue;
+        const orig_name = if (input.ast) |ast| sym.preferredOutputName(ast.source) else sym.preferredOutputName(source);
 
         if (std.mem.eql(u8, orig_name, new_name)) continue;
 
@@ -505,7 +506,7 @@ fn hasFixedOutputName(sym: Symbol) bool {
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.
-        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
+        .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory => false,
     };
 }
 

@@ -350,7 +350,7 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
 fn buildFactoryBody(
     api: *AstTransformCtx,
     func_node: NodeIndex,
-    local_name: []const u8,
+    local_name: FactoryLocalName,
     prop_stmts: [5]NodeIndex,
     scope: @import("../../semantic/scope.zig").ScopeId,
 ) PluginError!NodeIndex {
@@ -358,12 +358,19 @@ fn buildFactoryBody(
     const t = api.transformer;
 
     // var funcName = <original function>;
-    const name_span = try t.ast.addString(local_name);
+    const name_span = try t.ast.addString(local_name.ast_name);
     const binding = try es_helpers.makeExactSyntheticBindingFromSpan(t, name_span);
     const binding_symbol = if (t.semantic_edit_enabled)
         try t.declareSyntheticInScope(binding, zero_span, .variable_var, scope)
     else
         null;
+    if (binding_symbol) |symbol_id| {
+        if (t.semantic_editor) |*editor| {
+            const symbol = &editor.symbols.items[@intFromEnum(symbol_id)];
+            symbol.synthetic_kind = .worklet_factory_local;
+            symbol.output_name_hint = local_name.output_name_hint orelse "";
+        } else unreachable;
+    }
     const binding_name_span = t.ast.getNode(binding).data.string_ref;
     const none = @intFromEnum(NodeIndex.none);
     const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
@@ -471,16 +478,35 @@ fn buildWorkletIIFE(
     });
 }
 
-/// A method's name is a property key, not a binding. Keep the historical
-/// generated local spelling unless it would shadow one of the worklet's
-/// captured variables. Accessors share their body scope with parameters and
-/// source locals, so their factory binding always needs a collision-free name.
+const FactoryLocalName = struct {
+    /// Collision-free spelling used while semantic edits are assembled. This
+    /// prevents a generated local from rebinding source references by text.
+    ast_name: []const u8,
+    /// The preferred emitted spelling. It is resolved after the exact SymbolId
+    /// and final output scopes are available.
+    output_name_hint: ?[]const u8 = null,
+};
+
+/// A method's name is a property key, not a binding. With semantic editing,
+/// use a private staging spelling while the graph is edited and defer the
+/// actual emitted name until the linker can inspect captured references. The
+/// semantic-less fallback still chooses its output spelling here.
 fn chooseFactoryLocalName(
     api: *AstTransformCtx,
     func_name: []const u8,
     closure_vars: []const worklet_mod.ClosureVar,
     force_unique: bool,
-) PluginError![]const u8 {
+) PluginError!FactoryLocalName {
+    // Bundler semantic edits give this local an exact SymbolId. Leave its
+    // emitted spelling as a hint; keep a unique staging name in the AST until
+    // all source references have their final semantic owners.
+    if (api.transformer.semantic_edit_enabled) {
+        var counter: u32 = 0;
+        const staging_name = es_helpers.uniqueSyntheticName(api.transformer, "__zntcWorkletFactoryLocal", &counter) catch return error.OutOfMemory;
+        const output_name_hint = api.getAllocator().dupe(u8, func_name) catch return error.OutOfMemory;
+        return .{ .ast_name = staging_name, .output_name_hint = output_name_hint };
+    }
+
     var needs_unique = force_unique;
     if (!needs_unique) {
         for (closure_vars) |closure| {
@@ -490,9 +516,9 @@ fn chooseFactoryLocalName(
             }
         }
     }
-    if (!needs_unique) return es_helpers.resolveSyntheticName(api.transformer, func_name) catch return error.OutOfMemory;
+    if (!needs_unique) return .{ .ast_name = es_helpers.resolveSyntheticName(api.transformer, func_name) catch return error.OutOfMemory };
     var counter: u32 = 0;
-    return es_helpers.uniqueSyntheticName(api.transformer, func_name, &counter) catch return error.OutOfMemory;
+    return .{ .ast_name = es_helpers.uniqueSyntheticName(api.transformer, func_name, &counter) catch return error.OutOfMemory };
 }
 
 // ================================================================
