@@ -1425,11 +1425,15 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     return true;
 }
 
-/// A public static field with a source-independent literal initializer and
-/// ordinary identifier key is emitted as an exact class reference plus an
-/// explicit global Object.defineProperty call. Keep the wider field grammar
-/// on semantic resync until its initializer and key side effects are audited.
-fn isRetainableSimpleStaticClassField(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+/// A public static field with a primitive literal or exact source-identifier
+/// initializer and ordinary identifier key is emitted as an exact class
+/// reference plus an explicit global Object.defineProperty call. Keep the
+/// wider field grammar on semantic resync until initializer behavior is audited.
+fn isRetainableSimpleStaticClassField(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node: ast_mod.Node,
+) bool {
     if (node.tag != .property_definition) return false;
     const extras = ast.extra_data.items;
     const extra = node.data.extra;
@@ -1452,6 +1456,7 @@ fn isRetainableSimpleStaticClassField(ast: *const ast_mod.Ast, node: ast_mod.Nod
     if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
     return switch (ast.nodes.items[@intFromEnum(init_idx)].tag) {
         .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
+        .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, init_idx),
         else => false,
     };
 }
@@ -1531,7 +1536,7 @@ fn isSimpleClass(
         const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
         if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
-        if (isRetainableSimpleStaticClassField(ast, member)) continue;
+        if (isRetainableSimpleStaticClassField(ast, semantic, member)) continue;
         if (member.tag != .method_definition) return false;
         const method_extra = member.data.extra;
         if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
@@ -2361,7 +2366,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier) {
                     if (options.unsupported.class_private_field) return false;
                 } else if (options.unsupported.class_field or options.unsupported.class) {
-                    if (source_binds_object or !isRetainableSimpleStaticClassField(ast, node)) return false;
+                    if (source_binds_object or !isRetainableSimpleStaticClassField(ast, semantic, node)) return false;
                     found_lowered_simple_static_class_field = true;
                 }
             },
