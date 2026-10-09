@@ -1892,16 +1892,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
 
-    // Object-super/class-method lowering and exponentiation lowering emit
-    // references to global `Object`/`Math`. If the matching source binding
-    // shadows one, keep the module on reanalysis.
+    // Object-super/class-method lowering keeps its separate shadow gate; the
+    // exponentiation path below is tracked through explicit-global markers.
     var source_binds_object = false;
-    var source_binds_math = false;
     for (semantic.symbols.items) |symbol| {
         const name = ast.getText(symbol.name);
         if (std.mem.eql(u8, name, "Object")) source_binds_object = true;
-        if (std.mem.eql(u8, name, "Math")) source_binds_math = true;
-        if (source_binds_object and source_binds_math) break;
+        if (source_binds_object) break;
     }
 
     // Default-parameter lowering replaces only these literal assignment
@@ -2150,7 +2147,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.exponentiation and operator == .star2_eq) {
                     // The transform editor tracks both source identifiers and
                     // generated member receiver/key temps by exact identity.
-                    if (source_binds_math or !isRetainableAssignmentTarget(ast, semantic, node.data.binary.left))
+                    if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left))
                         return false;
                     found_lowered_exponentiation = true;
                 }
@@ -2169,10 +2166,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (node.tag == .binary_expression and options.unsupported.exponentiation and
                     operator == .star2)
                 {
-                    // ES2016 lowering emits a global Math.pow call. The
-                    // retained graph can represent that external edge only
-                    // when no source binding with the same spelling exists.
-                    if (source_binds_math) return false;
+                    // ES2016 lowering marks Math.pow as an explicit global.
+                    // The linker reserves that spelling and renames only the
+                    // source binding that would otherwise capture the call.
                     found_lowered_exponentiation = true;
                 }
                 if (node.tag == .logical_expression and options.unsupported.nullish_coalescing and

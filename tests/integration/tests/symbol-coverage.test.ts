@@ -997,6 +997,17 @@ describe('symbol identity coverage gate (#4819)', () => {
         output: '36 undefined 3 3\n',
       },
       {
+        name: 'binary-var-math-shadow',
+        source: [
+          'var Math = { pow(left, right) { return left + right; } };',
+          'globalThis.shadowMath = Math;',
+          'function square(value) { return (() => value ** 2)(); }',
+        ].join('\n'),
+        graph: 'retained',
+        shadowedExternal: true,
+        output: '36 undefined 3 3\n',
+      },
+      {
         name: 'assignment',
         source: 'function square(input) { var value = input; return (() => (value **= 2))(); }',
         graph: 'retained',
@@ -1019,7 +1030,8 @@ describe('symbol identity coverage gate (#4819)', () => {
           'globalThis.shadowMath = Math;',
           'function square(input) { var value = input; return (() => (value **= 2))(); }',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
+        shadowedExternal: true,
         output: '36 undefined 3 3\n',
       },
       {
@@ -1094,12 +1106,16 @@ describe('symbol identity coverage gate (#4819)', () => {
             expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
             if (fixture.graph === 'retained') {
               for (const counter of EXACT_ZERO_COUNTERS) {
+                const expected =
+                  fixture.shadowedExternal && counter === 'shadowed_external_reference' ? 1 : 0;
                 expect(
                   Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
                   `${fixture.name}: ${report}`,
-                ).toBe(0);
+                ).toBe(expected);
               }
-              expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+              expect(report, fixture.name).toMatch(
+                fixture.shadowedExternal ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/,
+              );
             }
 
             const graphMode = (proc.stderr ?? '')
@@ -1119,6 +1135,138 @@ describe('symbol identity coverage gate (#4819)', () => {
           expect(actual.stdout, fixture.name).toBe(fixture.output);
         }
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 exponentiation renames only the enclosing nested Math binding', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-exponentiation-nested-math-'));
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        "import './power.mjs';",
+        'console.log(globalThis.squareResult, globalThis.shadowMath.pow(1, 2), globalThis.unrelatedMathResult);',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'power.mjs'),
+      [
+        'function square(value) {',
+        '  var Math = { pow(left, right) { return left + right; } };',
+        '  globalThis.shadowMath = Math;',
+        '  function unrelated() {',
+        '    var Math = { pow(left, right) { return left + right; } };',
+        '    return Math.pow(1, 2);',
+        '  }',
+        '  globalThis.unrelatedMathResult = unrelated();',
+        '  function power(input) { return (() => input ** 2)(); }',
+        '  return power(value);',
+        '}',
+        'globalThis.squareResult = square(6);',
+      ].join('\n'),
+    );
+    try {
+      for (const minifyIdentifiers of [false, true]) {
+        const output = join(dir, `out.${minifyIdentifiers ? 'minified' : 'plain'}.cjs`);
+        const args = ['--bundle', 'entry.mjs', '--target=es5', '--platform=node', '--format=cjs'];
+        if (minifyIdentifiers) args.push('--minify-identifiers');
+        args.push('-o', output);
+        const proc = spawnSync(ZNTC_BIN, args, {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(proc.status, `${minifyIdentifiers ? 'minified' : 'plain'}: ${proc.stderr}`).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const report = lines.find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('power.mjs'),
+        );
+        expect(report, `${minifyIdentifiers ? 'minified' : 'plain'}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          const expected = counter === 'shadowed_external_reference' ? 1 : 0;
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${counter}: ${report}`,
+          ).toBe(expected);
+        }
+        expect(report).toMatch(/clean=0(?:\s|$)/);
+
+        const graphMode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('power.mjs'),
+        );
+        expect(graphMode, `${proc.stderr}`).toContain('semantic_graph=retained');
+
+        const emitted = readFileSync(output, 'utf8');
+        if (!minifyIdentifiers) {
+          expect(emitted).toMatch(/Math\.pow\(/);
+          expect(emitted).toMatch(/Math\$\d+/);
+          expect(emitted).toMatch(/var Math =/);
+        }
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe('36 3 3\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  test('ES5 exponentiation nested shadow is safe in the per-module linker path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-exponentiation-preserve-math-'));
+    const outdir = join(dir, 'dist');
+    writeFileSync(
+      join(dir, 'entry.js'),
+      [
+        'import { square } from "./power.js";',
+        'console.log(square(6), globalThis.shadowMath.pow(1, 2), globalThis.unrelatedMathResult);',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'power.js'),
+      [
+        'export function square(value) {',
+        '  var Math = { pow(left, right) { return left + right; } };',
+        '  globalThis.shadowMath = Math;',
+        '  function unrelated() {',
+        '    var Math = { pow(left, right) { return left + right; } };',
+        '    return Math.pow(1, 2);',
+        '  }',
+        '  globalThis.unrelatedMathResult = unrelated();',
+        '  return (() => value ** 2)();',
+        '}',
+      ].join('\n'),
+    );
+    try {
+      const output = join(dir, 'out');
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          join(dir, 'entry.js'),
+          '--preserve-modules',
+          `--preserve-modules-root=${dir}`,
+          '--outdir',
+          output,
+          '--target=es5',
+          '--platform=node',
+          '--format=esm',
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const powerOutput = join(output, 'power.js');
+      const emitted = readFileSync(powerOutput, 'utf8');
+      expect(emitted).toMatch(/var Math\$\d+/);
+      expect(emitted).toMatch(/var Math =/);
+      writeFileSync(join(output, 'package.json'), '{"type":"module"}');
+
+      const actual = spawnSync('node', [join(output, 'entry.js')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('36 3 3\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -3842,12 +3990,16 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             );
           expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
           for (const counter of EXACT_ZERO_COUNTERS) {
+            const expected =
+              fixture.shadowedExternal && counter === 'shadowed_external_reference' ? 1 : 0;
             expect(
               Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
               `${fixture.name}: ${counter}: ${report}`,
-            ).toBe(0);
+            ).toBe(expected);
           }
-          expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+          expect(report, fixture.name).toMatch(
+            fixture.shadowedExternal ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/,
+          );
         }
         const actual = spawnSync('node', [output], { encoding: 'utf8' });
         expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
