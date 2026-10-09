@@ -230,3 +230,4 @@ ZNTC는 모든 에러에 고유 코드를 부여합니다. 에러 코드를 클�
 |------|--------|
 | [`ZNTC1500`](/zntc/reference/errors/zntc1500) | @jsx / @jsxFrag pragma ignored under the automatic JSX runtime |
 | [`ZNTC1501`](/zntc/reference/errors/zntc1501) | Regular expression inline modifier group is an ES2025 feature not supported by the target |
+| [`ZNTC1502`](/zntc/reference/errors/zntc1502) | Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe |
