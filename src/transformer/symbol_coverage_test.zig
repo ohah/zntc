@@ -3320,7 +3320,7 @@ test "#4819 private field helper references retain their producer SymbolIds" {
     }
 }
 
-test "#4819 private method WeakSet helpers retain their producer SymbolIds" {
+test "#4819 private method helpers retain their producer SymbolIds" {
     const source =
         \\class Methods {
         \\  #guard() { return 1; }
@@ -3331,6 +3331,7 @@ test "#4819 private method WeakSet helpers retain their producer SymbolIds" {
         \\  static #staticGate() { return 3; }
         \\  static readStatic() { return Methods.#staticGate(); }
         \\  read() { return this.#read() + this.#entry; }
+        \\  write(next) { this.#entry = next; }
         \\}
         \\new Methods().read();
     ;
@@ -3363,7 +3364,11 @@ test "#4819 private method WeakSet helpers retain their producer SymbolIds" {
         const edited = (try transformer.finishSemanticEdit()).?;
         const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
 
-        const helper_names = [_][]const u8{ "_guard", "_read", "_entry", "_staticGate" };
+        const helper_names = [_][]const u8{
+            "_guard",         "_read",    "_entry",     "_staticGate",
+            "_guard_fn",      "_read_fn", "_entry_get", "_entry_set",
+            "_staticGate_fn",
+        };
         for (helper_names) |helper_name| {
             var helper_id: ?u32 = null;
             var bindings: usize = 0;

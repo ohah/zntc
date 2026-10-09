@@ -44,7 +44,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const new_rhs = try self.visitNode(rhs_old);
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const ws_ref = try es_helpers.makePrivateMethodWeakSetRef(self, setter_mapping);
-            const fn_ref = try es_helpers.makeSyntheticRef(self, setter_mapping.func_name);
+            const fn_ref = try es_helpers.makePrivateMethodFunctionRef(self, setter_mapping);
             const get_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
             const call_prop = try es_helpers.makePropertyName(self, "call");
             const callee = try es_helpers.makeStaticMember(self, get_call, call_prop, span);
@@ -119,7 +119,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             // getter side: __classPrivateMethodGet(obj, _x, _x_get).call(obj)
             const get_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const get_ws = try es_helpers.makePrivateMethodWeakSetRef(self, getter_mapping);
-            const get_fn = try es_helpers.makeSyntheticRef(self, getter_mapping.func_name);
+            const get_fn = try es_helpers.makePrivateMethodFunctionRef(self, getter_mapping);
             const get_outer = try es_helpers.makeCallExpr(self, get_helper, &.{ try self.visitNode(obj_idx), get_ws, get_fn }, span);
             const get_call_prop = try es_helpers.makePropertyName(self, "call");
             const get_callee = try es_helpers.makeStaticMember(self, get_outer, get_call_prop, span);
@@ -136,7 +136,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             // setter side: __classPrivateMethodGet(obj, _x, _x_set).call(obj, computed)
             const set_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const set_ws = try es_helpers.makePrivateMethodWeakSetRef(self, setter_mapping);
-            const set_fn = try es_helpers.makeSyntheticRef(self, setter_mapping.func_name);
+            const set_fn = try es_helpers.makePrivateMethodFunctionRef(self, setter_mapping);
             const set_outer = try es_helpers.makeCallExpr(self, set_helper, &.{ try self.visitNode(obj_idx), set_ws, set_fn }, span);
             const set_call_prop = try es_helpers.makePropertyName(self, "call");
             const set_callee = try es_helpers.makeStaticMember(self, set_outer, set_call_prop, span);
@@ -154,7 +154,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             defer self.allocator.free(emit_standalone);
 
             for (pms, 0..) |pm, i| {
-                const function_node = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span);
+                const function_node = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span, pm.func_binding_node);
                 if (try es_helpers.capturePrivateClassSelf(self, pm, function_node, span)) |factory_call| {
                     function_values[i] = factory_call;
                     emit_standalone[i] = false;
@@ -179,7 +179,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         for (pms, 0..) |part, part_index| {
                             if (!std.mem.eql(u8, part.weakset_name, pm.weakset_name)) continue;
                             const value = if (emit_standalone[part_index])
-                                try es_helpers.makeSyntheticRef(self, part.func_name)
+                                try es_helpers.makePrivateMethodFunctionRef(self, part)
                             else
                                 function_values[part_index];
                             switch (part.kind) {
@@ -227,9 +227,13 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 const weakset_id = pm.weakset_symbol_id orelse
                     std.debug.panic("private method mapping has no direct WeakSet SymbolId", .{});
                 try private_symbol_ids.put(self.allocator, weakset_id, {});
-                const fn_entry = try names.getOrPut(self.allocator, pm.func_name);
-                if (!fn_entry.found_existing) fn_entry.value_ptr.* = .{ .kind = .function_decl };
-                try function_names.put(self.allocator, pm.func_name, {});
+                if (pm.func_symbol_id) |function_id| {
+                    try private_symbol_ids.put(self.allocator, function_id, {});
+                } else {
+                    const fn_entry = try names.getOrPut(self.allocator, pm.func_name);
+                    if (!fn_entry.found_existing) fn_entry.value_ptr.* = .{ .kind = .function_decl };
+                    try function_names.put(self.allocator, pm.func_name, {});
+                }
             }
             for (pfs) |pf| {
                 const raw_id = pf.symbol_id orelse std.debug.panic("private field mapping has no direct SymbolId", .{});

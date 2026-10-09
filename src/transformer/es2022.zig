@@ -402,6 +402,15 @@ pub fn ES2022(comptime Transformer: type) type {
             const saved_private_fields = self.current_private_fields;
             self.current_private_methods = method_mappings.items;
             self.current_private_fields = field_mappings.items;
+            if (self.semantic_edit_enabled) {
+                try es_helpers.reservePrivateMethodFunctionSymbols(
+                    self,
+                    method_mappings.items,
+                    field_mappings.items,
+                    private_helper_scope,
+                    span,
+                );
+            }
             // #3/#4: skip_visit_and_keep_private 면 호출자가 classifyClassMember 가 finish 한 뒤
             // 직접 복원 — defer 로 여기서 복원하면 호출자 visit 시점에 current_private 가 비어
             // this.# rewrite 누락.
@@ -434,7 +443,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const emit_method_standalone = try self.allocator.alloc(bool, method_mappings.items.len);
             defer self.allocator.free(emit_method_standalone);
             for (method_mappings.items, 0..) |m, i| {
-                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, m.source_member_idx, m.member_span);
+                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, m.source_member_idx, m.member_span, m.func_binding_node);
                 if (try es_helpers.capturePrivateClassSelf(self, m, fn_decl, span)) |factory_call| {
                     method_function_values[i] = factory_call;
                     emit_method_standalone[i] = false;
@@ -460,7 +469,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         for (method_mappings.items, 0..) |part, part_index| {
                             if (!std.mem.eql(u8, part.weakset_name, m.weakset_name)) continue;
                             const value = if (emit_method_standalone[part_index])
-                                try es_helpers.makeSyntheticRef(self, part.func_name)
+                                try es_helpers.makePrivateMethodFunctionRef(self, part)
                             else
                                 method_function_values[part_index];
                             switch (part.kind) {
@@ -807,7 +816,7 @@ pub fn ES2022(comptime Transformer: type) type {
             self.runtime_helpers.class_private_method_get = true;
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
             const ws_ref = try es_helpers.makePrivateMethodWeakSetRef(self, mapping);
-            const fn_ref = try es_helpers.makeSyntheticRef(self, mapping.func_name);
+            const fn_ref = try es_helpers.makePrivateMethodFunctionRef(self, mapping);
             return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
         }
 
