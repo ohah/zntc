@@ -160,6 +160,7 @@ pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
         .plugin_error => .plugin_error,
         .jsx_pragma_ignored => .jsx_pragma_ignored,
         .regex_modifier_unsupported => .regex_modifier_unsupported,
+        .exponentiation_dynamic_scope => .exponentiation_dynamic_scope,
     };
 }
 
@@ -272,6 +273,7 @@ test "bundlerErrorCode maps new bundler diagnostics to ZNTC numbers (#4432)" {
     try std.testing.expectEqualStrings("ZNTC0205", bundlerErrorCode(.plugin_error).?.format());
     try std.testing.expectEqualStrings("ZNTC1500", bundlerErrorCode(.jsx_pragma_ignored).?.format());
     try std.testing.expectEqualStrings("ZNTC1501", bundlerErrorCode(.regex_modifier_unsupported).?.format());
+    try std.testing.expectEqualStrings("ZNTC1502", bundlerErrorCode(.exponentiation_dynamic_scope).?.format());
     // 기존 매핑 회귀 가드(대표).
     try std.testing.expectEqualStrings("ZNTC0100", bundlerErrorCode(.unresolved_import).?.format());
 }

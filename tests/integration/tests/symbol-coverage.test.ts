@@ -1272,6 +1272,153 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 exponentiation under direct eval preserves operators and visible names', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-exponentiation-direct-eval-'));
+    writeFileSync(
+      join(dir, 'input.js'),
+      [
+        'function __getMath() { return { pow(left, right) { return left + right; } }; }',
+        'function power(value) {',
+        '  var Math = { pow(left, right) { return left + right; } };',
+        "  var evalVisibleMath = eval('Math');",
+        "  var evalVisibleHelper = eval('typeof __getMath2');",
+        '  return [value ** 2, evalVisibleMath === Math, evalVisibleHelper];',
+        '}',
+        'class PrivatePower {',
+        '  #value = 6;',
+        '  run() {',
+        '    var Math = { pow(left, right) { return left + right; } };',
+        "    var evalVisibleMath = eval('Math');",
+        '    this.#value **= 2;',
+        '    return [this.#value, evalVisibleMath === Math];',
+        '  }',
+        '}',
+        'console.log(JSON.stringify([power(6), new PrivatePower().run()]));',
+      ].join('\n'),
+    );
+    try {
+      const output = join(dir, 'output.cjs');
+      const proc = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '--format=cjs', '-o', output], {
+        cwd: dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('exponentiation is emitted unchanged');
+      expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
+      const identity = proc.stderr
+        .split('\n')
+        .find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(identity, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), counter).toBe(
+          0,
+        );
+      }
+      const emitted = readFileSync(output, 'utf8');
+      expect(emitted).toMatch(/\*\*\s*2/);
+      expect(emitted).not.toMatch(/Math\.pow\(/);
+      expect(emitted).not.toMatch(/function __getMath2\(\)/);
+      expect(emitted).toMatch(/function __getMath\(\) \{/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('[[36,true,"undefined"],[36,true]]\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('bundled ES5 exponentiation under direct eval preserves operators and visible names', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-exponentiation-bundled-eval-'));
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      ["import { power } from './power.mjs';", 'console.log(JSON.stringify(power(6)));'].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'power.mjs'),
+      [
+        'export function power(value) {',
+        '  var Math = { pow(left, right) { return left + right; } };',
+        "  var evalVisibleMath = eval('Math');",
+        "  var evalVisibleHelper = eval('typeof __getMath');",
+        '  var result = value;',
+        '  result **= 2;',
+        '  return [value ** 2, result, evalVisibleMath === Math, evalVisibleHelper];',
+        '}',
+      ].join('\n'),
+    );
+    try {
+      for (const minifyWhitespace of [false, true]) {
+        const output = join(dir, `bundle.${minifyWhitespace ? 'min' : 'plain'}.cjs`);
+        const args = ['--bundle', 'entry.mjs', '--target=es5', '--platform=node', '--format=cjs'];
+        if (minifyWhitespace) args.push('--minify-whitespace');
+        args.push('-o', output);
+        const proc = spawnSync(ZNTC_BIN, args, {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(proc.status, proc.stderr).toBe(0);
+        expect(proc.stderr).toContain('exponentiation is emitted unchanged');
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const report = lines.find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('power.mjs'),
+        );
+        expect(report, proc.stderr).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), counter).toBe(
+            0,
+          );
+        }
+        const graphMode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('power.mjs'),
+        );
+        expect(graphMode, proc.stderr).toContain('semantic_graph=reanalyzed');
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe('[36,36,true,"undefined"]\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 exponentiation preserves ** when dynamic root lookup can observe generated names', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-exponentiation-dynamic-root-'));
+    writeFileSync(
+      join(dir, 'input.js'),
+      [
+        'var Math = { pow(left, right) { return left + right; } };',
+        "eval('Math');",
+        'var value = 6;',
+        'value **= 2;',
+        'console.log(value);',
+      ].join('\n'),
+    );
+    try {
+      const output = join(dir, 'output.cjs');
+      const proc = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '--format=cjs', '-o', output], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('exponentiation is emitted unchanged');
+      const emitted = readFileSync(output, 'utf8');
+      expect(emitted).toMatch(/\*\*\s*2/);
+      expect(emitted).not.toMatch(/Math\.pow\(/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('36\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 nullish coalescing retains exact graphs and evaluates left expressions once', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-nullish-graph-'));
     const cases = [

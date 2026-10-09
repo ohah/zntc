@@ -2857,6 +2857,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     if (transformer.used_unsupported_modifier) {
         self.addDiag(.regex_modifier_unsupported, .warning, module.path, Span.EMPTY, .parse, TransformOptions.regex_modifier_unsupported_msg, null);
     }
+    if (transformer.used_unsupported_exponentiation) {
+        self.addDiag(.exponentiation_dynamic_scope, .warning, module.path, Span.EMPTY, .parse, TransformOptions.exponentiation_dynamic_scope_msg, null);
+    }
     if (self.ignore_annotations) {
         purity.clearPureCallFlags(transformer.ast);
     } else {

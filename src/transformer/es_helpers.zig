@@ -1450,9 +1450,25 @@ fn makeNullCompare(self: anytype, base: NodeIndex, span: Span, op: token_mod.Kin
     });
 }
 
-/// `Math.pow(left, right)` 호출 노드 생성 — left/right는 이미 visit된(new-AST) 노드.
+/// `**` lowering을 위한 `Math.pow(left, right)` 호출을 생성하거나,
+/// 동적 스코프에서 안전하지 않으면 방문된 피연산자로 원래 연산자를 보존한다.
 /// `**` lowering(es2016) 및 `**=` private field compound 경로에서 공용.
 pub fn makeMathPowCall(self: anytype, left: NodeIndex, right: NodeIndex, span: Span) !NodeIndex {
+    if (rootBlocksNameMangling(self)) {
+        // Any helper binding emitted for this lowering becomes observable to direct
+        // eval, and a free Math reference can resolve to a source binding. Preserve
+        // the original operator instead of changing either dynamic-scope behavior.
+        self.used_unsupported_exponentiation = true;
+        return self.ast.addNode(.{
+            .tag = .binary_expression,
+            .span = span,
+            .data = .{ .binary = .{
+                .left = left,
+                .right = right,
+                .flags = @intFromEnum(token_mod.Kind.star2),
+            } },
+        });
+    }
     const math_ref = try makeGlobalRef(self, "Math");
     const pow_ref = try makePropertyName(self, "pow");
     const callee = try makeStaticMember(self, math_ref, pow_ref, span);
@@ -1465,6 +1481,11 @@ pub fn makeMathPowCall(self: anytype, left: NodeIndex, right: NodeIndex, span: S
         .span = span,
         .data = .{ .extra = call_extra },
     });
+}
+
+fn rootBlocksNameMangling(self: anytype) bool {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    return scopes.len > 0 and scopes[0].blocksMangling();
 }
 
 /// boolean literal 노드 생성. codegen(node_dispatch) 와 DCE 가 boolean_literal

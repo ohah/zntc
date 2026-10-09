@@ -596,6 +596,11 @@ pub const Transformer = struct {
     /// 띄운다 (source-scan 보다 정확 — 실제 fold bail 을 반영).
     used_unsupported_modifier: bool = false,
 
+    /// Exponentiation could not be lowered safely because a dynamic root scope
+    /// also declares Math; the original operator is preserved and a target warning
+    /// is emitted by transpile/bundler callers.
+    used_unsupported_exponentiation: bool = false,
+
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.
     runtime_es5_compat: bool = false,

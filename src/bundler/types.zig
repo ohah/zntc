@@ -942,6 +942,9 @@ pub const BundlerDiagnostic = struct {
         /// ES2025 regex inline modifier `(?ims-ims:...)` 를 미지원 타겟에서 사용 — lowering
         /// 부재로 verbatim 패스스루, 구형 엔진 SyntaxError (#4210). warning severity.
         regex_modifier_unsupported,
+        /// dynamic eval/with 가 보이는 program-level Math binding 때문에 exponentiation
+        /// lowering 을 보존함 — configured target 에서 `**` syntax 가 남을 수 있음.
+        exponentiation_dynamic_scope,
     };
 
     pub const Severity = enum {
