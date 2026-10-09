@@ -1425,10 +1425,10 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     return true;
 }
 
-/// A public static field with a primitive literal or exact source-identifier
-/// initializer and ordinary identifier key is emitted as an exact class
-/// reference plus an explicit global Object.defineProperty call. Keep the
-/// wider field grammar on semantic resync until initializer behavior is audited.
+/// A public static field with a side-effect-free value expression composed of
+/// primitive literals and exact source-identifier references is emitted as an
+/// exact class reference plus an explicit global Object.defineProperty call.
+/// Calls, `this`, unresolved names, and other initializer forms stay on resync.
 fn isRetainableSimpleStaticClassField(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1454,11 +1454,7 @@ fn isRetainableSimpleStaticClassField(
         init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
     if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
-    return switch (ast.nodes.items[@intFromEnum(init_idx)].tag) {
-        .boolean_literal, .null_literal, .numeric_literal, .string_literal => true,
-        .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, init_idx),
-        else => false,
-    };
+    return isSafeConstructorValue(ast, semantic, init_idx);
 }
 
 fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
