@@ -1108,6 +1108,7 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
 const StandaloneRuntimeHelperNameResolver = struct {
     transformer: *Transformer,
     final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
+    final_output_names: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null,
 
     fn resolve(self: StandaloneRuntimeHelperNameResolver, base_name: []const u8, minify: bool) TranspileError![]const u8 {
         const transformer = self.transformer;
@@ -1123,9 +1124,85 @@ const StandaloneRuntimeHelperNameResolver = struct {
         if (self.final_renames) |renames| {
             if (renames.get(@intCast(raw_id))) |renamed| return renamed;
         }
+        if (self.final_output_names) |names| {
+            return names.get(@intCast(raw_id)) orelse error.TransformError;
+        }
         return symbol.synthetic_name;
     }
 };
+
+/// Choose standalone preamble names after lowering, from the exact helper
+/// SymbolIds and the complete output symbol set. Call references and preamble
+/// declarations consume this same map through codegen and the template writer.
+fn buildStandaloneRuntimeHelperNameOverrides(
+    allocator: std.mem.Allocator,
+    transformer: *const Transformer,
+) TranspileError!std.AutoHashMapUnmanaged(u32, []const u8) {
+    var overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    var reserved: std.StringHashMapUnmanaged(void) = .empty;
+    defer reserved.deinit(allocator);
+
+    for (transformer.symbols) |symbol| {
+        if (symbol.synthetic_kind == .runtime_helper_preamble) continue;
+        const raw_name = if (symbol.synthetic_name.len > 0)
+            symbol.synthetic_name
+        else
+            transformer.ast.getText(symbol.name);
+        if (raw_name.len > 0) try reserved.put(allocator, raw_name, {});
+    }
+    if (transformer.unresolved_references) |unresolved| {
+        var names = unresolved.keyIterator();
+        while (names.next()) |name| try reserved.put(allocator, name.*, {});
+    }
+    var generated_names = transformer.synthetic_taken.keyIterator();
+    while (generated_names.next()) |name| try reserved.put(allocator, name.*, {});
+    if (transformer.block_rename_map) |*renames| {
+        var names = renames.valueIterator();
+        while (names.next()) |name| try reserved.put(allocator, name.*, {});
+    }
+
+    for (transformer.symbols, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != .runtime_helper_preamble) continue;
+        const base_name = symbol.synthetic_name;
+        if (base_name.len == 0) return error.TransformError;
+
+        var candidate = base_name;
+        var suffix: usize = 2;
+        while (try standaloneHelperNameIsUsed(allocator, transformer, &reserved, candidate)) : (suffix += 1) {
+            candidate = try std.fmt.allocPrint(allocator, "{s}{d}", .{ base_name, suffix });
+        }
+        try reserved.put(allocator, candidate, {});
+        try overrides.put(allocator, @intCast(raw_id), candidate);
+    }
+    return overrides;
+}
+
+fn standaloneHelperNameIsUsed(
+    allocator: std.mem.Allocator,
+    transformer: *const Transformer,
+    reserved: *const std.StringHashMapUnmanaged(void),
+    candidate: []const u8,
+) TranspileError!bool {
+    if (reserved.contains(candidate)) return true;
+    const decode_scratch = try allocator.alloc(u8, candidate.len);
+    defer allocator.free(decode_scratch);
+
+    for (transformer.symbols) |symbol| {
+        if (symbol.synthetic_kind == .runtime_helper_preamble) continue;
+        const raw_name = if (symbol.synthetic_name.len > 0)
+            symbol.synthetic_name
+        else
+            transformer.ast.getText(symbol.name);
+        if (raw_name.len > 0 and Scanner.identifierTextEqualsAscii(raw_name, candidate, decode_scratch)) return true;
+    }
+    if (transformer.unresolved_references) |unresolved| {
+        var names = unresolved.keyIterator();
+        while (names.next()) |name| {
+            if (Scanner.identifierTextEqualsAscii(name.*, candidate, decode_scratch)) return true;
+        }
+    }
+    return false;
+}
 
 fn standaloneRuntimeHelperSymbolName(
     transformer: *Transformer,
@@ -1356,6 +1433,9 @@ fn transpileWithCallbackInternal(
         .jsx_filename = file_path,
         // #1621: standalone transpile 경로도 minify 시 runtime helper 축약 이름 사용.
         .minify_whitespace = options.minify_whitespace,
+        // Non-minified standalone output chooses helper aliases after all
+        // generated SymbolIds are registered, immediately before codegen.
+        .defer_runtime_helper_name_resolution = !options.minify_identifiers,
         .react_refresh = options.react_refresh,
         .react_refresh_hook_signatures = options.react_refresh_hook_signatures,
     };
@@ -1694,6 +1774,15 @@ fn transpileWithCallbackInternal(
         break :blk transformer.symbol_ids.items;
     } else transformer.symbol_ids.items;
     const has_helpers = transformer.runtime_helpers.hasAny();
+    var standalone_helper_name_overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    const use_late_helper_names = has_helpers and
+        !options.minify_identifiers and
+        transformer.semantic_edit_enabled and
+        !transformer.options.emit_runtime_helper_imports;
+    if (use_late_helper_names) {
+        standalone_helper_name_overrides = try buildStandaloneRuntimeHelperNameOverrides(arena_alloc, &transformer);
+        if (standalone_helper_name_overrides.count() == 0) return error.TransformError;
+    }
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
     if (mangle_uses_transform_semantic) {
         if (mangle_result) |*mr| helper_final_renames = &mr.renames;
@@ -1701,15 +1790,37 @@ fn transpileWithCallbackInternal(
     const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
         .transformer = &transformer,
         .final_renames = helper_final_renames,
+        .final_output_names = if (use_late_helper_names) &standalone_helper_name_overrides else null,
     };
     // The block-scoping map is keyed by transform-graph SymbolIds. A
     // post-transform reanalysis builds unrelated IDs, so only expose these
     // overrides when codegen uses the transform graph (or no mangle graph).
-    const codegen_symbol_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) =
+    const codegen_transform_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) =
         if (mangle_metadata == null or mangle_uses_transform_semantic)
             if (transformer.block_rename_map) |*names| names else null
         else
             null;
+    var codegen_symbol_name_overrides_storage: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    if (codegen_transform_name_overrides) |names| {
+        var entries = names.iterator();
+        while (entries.next()) |entry| try codegen_symbol_name_overrides_storage.put(
+            arena_alloc,
+            entry.key_ptr.*,
+            entry.value_ptr.*,
+        );
+    }
+    if (use_late_helper_names) {
+        var entries = standalone_helper_name_overrides.iterator();
+        while (entries.next()) |entry| {
+            if (codegen_symbol_name_overrides_storage.get(entry.key_ptr.*)) |existing| {
+                if (!std.mem.eql(u8, existing, entry.value_ptr.*)) return error.TransformError;
+            } else {
+                try codegen_symbol_name_overrides_storage.put(arena_alloc, entry.key_ptr.*, entry.value_ptr.*);
+            }
+        }
+    }
+    const codegen_symbol_name_overrides: ?*const std.AutoHashMapUnmanaged(u32, []const u8) =
+        if (codegen_symbol_name_overrides_storage.count() > 0) &codegen_symbol_name_overrides_storage else null;
     const helper_preamble = if (has_helpers) blk: {
         var buf: std.ArrayList(u8) = .empty;
         var local_names: rt.StandaloneRuntimeHelperLocalNames = .{};
