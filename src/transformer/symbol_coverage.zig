@@ -303,8 +303,15 @@ pub const ExactReport = struct {
         var counts: SchemaCounts = .{};
         inline for (std.meta.fields(ExactReport)) |field| {
             if (comptime isObservationField(field.name)) {
+                if (comptime std.mem.eql(u8, field.name, "legacy_debt_fingerprint")) {
+                    if (comptime field.type != u64) @compileError("ExactReport legacy fingerprint must remain u64");
+                } else if (comptime field.type != usize) {
+                    @compileError("ExactReport observation fields must remain usize except the legacy fingerprint");
+                }
                 counts.observation_fields += 1;
             } else if (comptime isDiagnosticField(field.name)) {
+                if (comptime @typeInfo(field.type) != .optional)
+                    @compileError("ExactReport diagnostic fields must remain optional findings");
                 counts.diagnostic_fields += 1;
             } else {
                 if (comptime field.type != usize) @compileError("unclassified ExactReport field");
@@ -312,6 +319,26 @@ pub const ExactReport = struct {
             }
         }
         return counts;
+    }
+
+    /// Stable schema signature pinned independently by the integration gate.
+    /// Counts alone cannot detect one diagnostic field replacing another.
+    pub fn schemaFingerprint() u64 {
+        var hash: u64 = 0xcbf29ce484222325;
+        feedSchemaFingerprint(&hash, "zntc.ExactReport/v1\x00");
+        inline for (std.meta.fields(ExactReport)) |field| {
+            const category = if (comptime isObservationField(field.name))
+                "observation"
+            else if (comptime isDiagnosticField(field.name))
+                "diagnostic"
+            else
+                "invariant";
+            feedSchemaFingerprint(&hash, field.name);
+            feedSchemaFingerprint(&hash, "\x00");
+            feedSchemaFingerprint(&hash, category);
+            feedSchemaFingerprint(&hash, "\n");
+        }
+        return hash;
     }
 
     /// Observations are allowed to be nonzero. Every other numeric field is
@@ -330,6 +357,13 @@ pub const ExactReport = struct {
         return true;
     }
 };
+
+fn feedSchemaFingerprint(hash: *u64, bytes: []const u8) void {
+    for (bytes) |byte| {
+        hash.* ^= byte;
+        hash.* *%= 0x100000001b3;
+    }
+}
 
 pub const ExactFinding = struct {
     name: []const u8,
@@ -3528,7 +3562,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
         },
     ) catch unreachable;
     std.debug.print(
-        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x} schema_fingerprint={x}\n",
         .{
             name,
             file_path,
@@ -3555,6 +3589,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             secondary_counts,
             @intFromBool(report.isClean()),
             report.legacy_debt_fingerprint,
+            ExactReport.schemaFingerprint(),
         },
     );
     if (report.first_missing_binding) |finding| printExactFinding(file_path, "missing_binding", finding);

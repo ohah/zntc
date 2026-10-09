@@ -319,7 +319,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 // after state-machine collection. Give each binding its
                 // function-scoped identity now; the final wrapper binding
                 // reuses this exact symbol through state-machine hoisting.
-                const var_scope = self.nearestVarScope(loop_scope);
+                // During generator collection the source loop can still be owned
+                // by its original outer scope even after its body has moved into
+                // an extracted per-iteration generator. Bind these wrapper temps
+                // directly to the exact function scope that owns this state
+                // machine; final wrapper declarations reuse these SymbolIds.
+                const temp_owner_scope = if (self.generator_state_machine_scope.isNone()) loop_scope else self.generator_state_machine_scope;
+                const var_scope = self.nearestVarScope(temp_owner_scope);
                 try self.recordGeneratorStateTempSymbol(obj, try self.declareSyntheticTempInScope(obj_binding, span, var_scope));
                 try self.recordGeneratorStateTempSymbol(names.keys, try self.declareSyntheticTempInScope(keys_binding, span, var_scope));
                 try self.recordGeneratorStateTempSymbol(key, try self.declareSyntheticTempInScope(key_binding, span, var_scope));

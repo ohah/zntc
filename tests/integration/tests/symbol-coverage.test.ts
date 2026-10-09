@@ -101,7 +101,9 @@ const EXACT_SINGLETON_FIELDS = [
   ['enum_iife_params', '\\d+'],
   ['clean', '\\d+'],
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
+  ['schema_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
+const EXACT_REPORT_SCHEMA_FINGERPRINT = '173a275d5745ac09';
 const EXACT_OBSERVATION_FIELD_COUNT = 6;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 15;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
@@ -162,6 +164,14 @@ function exactKnownValueProblems(identity: string): string[] {
       ? [`${field}=${value ?? 'missing'}, expected ${expected}`]
       : [];
   });
+  const schemaFingerprint = identity
+    .match(/(?:^| )schema_fingerprint=([0-9a-fA-F]+)(?: |$)/)?.[1]
+    ?.toLowerCase();
+  if (schemaFingerprint !== EXACT_REPORT_SCHEMA_FINGERPRINT) {
+    problems.push(
+      `schema_fingerprint=${schemaFingerprint ?? 'missing'}, expected ${EXACT_REPORT_SCHEMA_FINGERPRINT}`,
+    );
+  }
   for (const [field, valuePattern] of EXACT_SINGLETON_FIELDS) {
     const matches =
       identity.match(new RegExp('(?:^| )' + field + `=(${valuePattern})(?=\\s|$)`, 'g')) ?? [];
@@ -207,7 +217,10 @@ function exactSchemaProblems(identity: string): string[] {
       problems.push('unexpected exact report field ' + field);
       continue;
     }
-    const valuePattern = field === 'legacy_debt_fingerprint' ? /^[0-9a-fA-F]+$/ : /^\d+$/;
+    const valuePattern =
+      field === 'legacy_debt_fingerprint' || field === 'schema_fingerprint'
+        ? /^[0-9a-fA-F]+$/
+        : /^\d+$/;
     if (!valuePattern.test(value)) {
       problems.push('malformed exact report value ' + field + '=' + value);
     }
@@ -682,10 +695,19 @@ describe('symbol identity coverage gate (#4819)', () => {
       'enum_iife_params=5',
       'clean=1',
       'legacy_debt_fingerprint=cbf29ce484222325',
+      `schema_fingerprint=${EXACT_REPORT_SCHEMA_FINGERPRINT}`,
     ]
       .concat(EXACT_ZERO_COUNTERS.map((counter) => counter + '=0'))
       .join(' ');
     expect(exactSchemaProblems(complete)).toEqual([]);
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          `schema_fingerprint=${EXACT_REPORT_SCHEMA_FINGERPRINT}`,
+          'schema_fingerprint=0000000000000001',
+        ),
+      ),
+    ).toContain('schema_fingerprint=0000000000000001, expected ' + EXACT_REPORT_SCHEMA_FINGERPRINT);
     expect(exactSchemaProblems(complete.replace(' clean=1', ' clean=0'))).toContain(
       'clean=0, expected 1',
     );
