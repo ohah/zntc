@@ -1371,7 +1371,7 @@ pub const Linker = struct {
 
         const base = rt_names.helperName("__toBinary", self.minify_whitespace);
         if (self.to_binary_runtime_symbol_id) |symbol_id| {
-            self.to_binary_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base);
+            self.to_binary_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base, null);
             return;
         }
         var semantic_modules = self.graph.modulesIterator();
@@ -1381,7 +1381,12 @@ pub const Linker = struct {
         self.to_binary_runtime_name = try self.allocator.dupe(u8, base);
     }
 
-    fn calculateGraphWideRuntimeHelperName(self: *Linker, symbol_id: bundler_symbol.SymbolID, base: []const u8) ![]const u8 {
+    fn calculateGraphWideRuntimeHelperName(
+        self: *Linker,
+        symbol_id: bundler_symbol.SymbolID,
+        base: []const u8,
+        cross_chunk_export_name: ?[]const u8,
+    ) ![]const u8 {
         const module_index = @intFromEnum(symbol_id.module);
         const owner_module = self.getModule(module_index) orelse return error.BundlerRuntimeHelperOwnerMissing;
         const previous_name = self.rename_table.get(symbol_id);
@@ -1397,6 +1402,18 @@ pub const Linker = struct {
         };
 
         for (self.global_identifiers) |name| try self.reserved_globals.put(self.allocator, name, {});
+        var cross_chunk_names = self.cross_chunk_global_names.iterator();
+        while (cross_chunk_names.next()) |module_entry| {
+            var export_names = module_entry.value_ptr.iterator();
+            while (export_names.next()) |export_entry| {
+                if (module_entry.key_ptr.* == module_index) {
+                    if (cross_chunk_export_name) |current_export| {
+                        if (std.mem.eql(u8, export_entry.key_ptr.*, current_export)) continue;
+                    }
+                }
+                try self.reserved_globals.put(self.allocator, export_entry.value_ptr.*, {});
+            }
+        }
         var modules = self.graph.modulesIterator();
         while (modules.next()) |m| {
             if (m.semantic) |sem| {
@@ -1405,10 +1422,15 @@ pub const Linker = struct {
                 // Runtime callsites can be injected into nested expressions
                 // (for example dynamic-import rewrites). Avoid every source
                 // binding, not only module-scope declarations, so direct eval
-                // and nested shadowing keep observing the source binding.
-                for (sem.scope_maps) |scope_map| {
+                // and nested shadowing keep observing the source binding. Skip
+                // only the helper declaration currently receiving this name.
+                for (sem.scope_maps, 0..) |scope_map, scope_idx| {
                     var scope_names = scope_map.iterator();
-                    while (scope_names.next()) |entry| try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
+                    while (scope_names.next()) |entry| {
+                        if (m.index == symbol_id.module and scope_idx == 0 and
+                            entry.value_ptr.* == @intFromEnum(symbol_id.inner)) continue;
+                        try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
+                    }
                 }
             }
             const wrapper_names = [_]?[]const u8{
@@ -1437,10 +1459,44 @@ pub const Linker = struct {
         try self.calculateRenames(&name_to_owners, false);
         const selected = self.rename_table.get(symbol_id) orelse return error.BundlerRuntimeHelperNameMissing;
         const result = try self.allocator.dupe(u8, selected);
+        try self.reserved_globals.put(self.allocator, result, {});
         self.reserved_globals.deinit(self.allocator);
         self.reserved_globals = previous_reserved_globals;
         restore_reserved_globals = false;
         return result;
+    }
+
+    /// Cross-chunk runtime-helper names must be chosen before any chunk is emitted:
+    /// each chunk clears its local rename table, while provider exports and consumer
+    /// imports still need one shared SymbolId-derived public name. Reserve every source
+    /// scope so direct eval and nested bindings keep their source-visible spellings.
+    pub fn prepareCrossChunkRuntimeHelperNames(self: *Linker) !void {
+        const helper_modules = @import("../runtime_helper_modules.zig");
+        var seen: std.AutoHashMapUnmanaged(bundler_symbol.SymbolID, void) = .empty;
+        defer seen.deinit(self.allocator);
+
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |m| {
+            for (m.import_bindings) |ib| {
+                if (!ib.is_helper) continue;
+                const resolved = self.getResolvedBinding(m.index.toU32(), ib.local_span) orelse continue;
+                const helper_module_index: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
+                const helper_module = self.getModule(helper_module_index) orelse continue;
+                if (!helper_modules.isVirtualId(helper_module.path)) continue;
+                if (self.getCrossChunkGlobalName(helper_module_index, resolved.canonical.export_name) == null) continue;
+
+                const export_local = self.getExportLocalName(helper_module_index, resolved.canonical.export_name) orelse resolved.canonical.export_name;
+                const helper_inner = self.findSymbolIdx(helper_module_index, export_local) orelse return error.BundlerRuntimeHelperIdentityMissing;
+                const helper_id = bundler_symbol.SymbolID.make(@enumFromInt(helper_module_index), helper_inner);
+                const seen_entry = try seen.getOrPut(self.allocator, helper_id);
+                if (seen_entry.found_existing) continue;
+                seen_entry.value_ptr.* = {};
+
+                const selected = try self.calculateGraphWideRuntimeHelperName(helper_id, export_local, resolved.canonical.export_name);
+                errdefer self.allocator.free(selected);
+                try self.putCrossChunkGlobalName(helper_module_index, resolved.canonical.export_name, selected);
+            }
+        }
     }
 
     fn reserveToBinaryRuntimeName(self: *Linker) !void {
@@ -1640,7 +1696,7 @@ pub const Linker = struct {
 
         const base = rt_names.helperName("__esm", self.minify_whitespace);
         if (self.esm_factory_runtime_symbol_id) |symbol_id| {
-            self.esm_factory_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base);
+            self.esm_factory_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base, null);
             return;
         }
         var runtime_it = self.graph.modulesIterator();
@@ -1734,7 +1790,7 @@ pub const Linker = struct {
                 const index = @intFromEnum(helper);
                 const symbol_id = self.esm_interop_runtime_symbol_ids[index] orelse return error.EsmInteropRuntimeIdentityMissing;
                 const base_name = rt_names.helperName(rt_names.esmInteropRuntimeHelperBaseName(helper), self.minify_whitespace);
-                const selected_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base_name);
+                const selected_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base_name, null);
                 owned_names[owned_count] = selected_name;
                 owned_count += 1;
                 names.set(helper, selected_name);
@@ -2435,11 +2491,11 @@ pub const Linker = struct {
     }
 
     /// import binding의 canonical name이 importer 모듈의 중첩 스코프에 같은 이름이
-    /// 있으면, target module의 이름을 한 단계 더 rename하여 shadowing 충돌 방지.
-    /// 단 ZNTC runtime helper module 은 cross-module 공유 symbol 이라 consumer 별로
-    /// rename 하면 매 호출이 canonical_name 을 덮어써 최종 하나만 유효, 나머지
-    /// `__extends$1`, `$2` ... 호출은 ReferenceError (미선언). helper module 은 rename
-    /// 대상에서 제외 — 충돌은 consumer 측 nested binding 을 mangling 단계가 처리한다.
+    /// 있으면 final SymbolId rename으로 shadowing 충돌을 해소한다. Generated helper
+    /// references are intentionally bound outside the lexical scope chain, so their local
+    /// spelling can equal a nested parameter even though ordinary source references cannot.
+    /// Shared runtime-helper exports keep one graph-wide name: with identifier mangling the
+    /// mangler renames consumer locals; without it, rename those exact nested SymbolIds here.
     /// `only` non-null(#4563 per-chunk 경로): 그 모듈들의 import binding 만 검사하고, target(정의)이
     /// **같은 청크**일 때만 rename 한다 — 다른 청크면 cross-chunk 네이밍이 담당(여기서 그 청크의
     /// canonical 을 건드리면 그 청크 per-chunk rename 과 충돌). null(global computeRenames, 비-splitting)
@@ -2481,8 +2537,10 @@ pub const Linker = struct {
             else
                 self.resolveToLocalName(resolved.canonical);
 
-            // ref_name 이 이 모듈의 중첩 스코프에 있고, import local_name 과 다르면(참조가 재작성됨) 충돌
-            if (std.mem.eql(u8, ib.local_name, ref_name)) continue;
+            // Ordinary imports cannot retain a reference through a same-name nested binding,
+            // so equal local/canonical spellings need no repair for them. Generated helper
+            // references bypass lexical resolution by SymbolId and can be captured in output.
+            if (!ib.is_helper and std.mem.eql(u8, ib.local_name, ref_name)) continue;
             if (!self.hasNestedBinding(mod_i, ref_name)) continue;
 
             // (#4566 C) same-chunk 라도 target 이 **cross-chunk-export** 되면, dev-split 의 lazy override
@@ -2496,7 +2554,17 @@ pub const Linker = struct {
             if (use_target_rename) {
                 // target canonical 을 한 단계 더 rename (글로벌 경로 / same-chunk splitting, #4563).
                 const target_module = self.getModule(cmod) orelse continue;
-                if (helper_modules.isVirtualId(target_module.path)) continue;
+                if (helper_modules.isVirtualId(target_module.path)) {
+                    // A runtime helper has one shared output SymbolId across all importers.
+                    // Choose its alias against every source scope so a user parameter (including
+                    // one visible to direct eval) keeps its spelling and cannot capture calls.
+                    const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
+                    const helper_inner = self.findSymbolIdx(cmod, export_local) orelse continue;
+                    const helper_id = bundler_symbol.SymbolID.make(@enumFromInt(cmod), helper_inner);
+                    const helper_name = try self.calculateGraphWideRuntimeHelperName(helper_id, export_local, resolved.canonical.export_name);
+                    self.allocator.free(helper_name);
+                    continue;
+                }
                 const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
                 var suffix: u32 = 1;
                 const candidate = try self.findAvailableCandidate(ref_name, cmod, &suffix, name_to_owners);
@@ -3270,6 +3338,34 @@ pub const Linker = struct {
             if (scope_map.get(name) != null) return true;
         }
         return false;
+    }
+
+    pub fn preserveRuntimeHelperImportIsShadowed(
+        self: *const Linker,
+        consumer_module_index: u32,
+        helper_module_index: u32,
+        export_name: []const u8,
+        binding_name: []const u8,
+    ) bool {
+        const helper_modules = @import("../runtime_helper_modules.zig");
+        const helper_module = self.getModule(helper_module_index) orelse return false;
+        if (!helper_modules.isVirtualId(helper_module.path)) return false;
+        if (self.getCrossChunkGlobalName(helper_module_index, export_name) != null) return false;
+        return self.hasNestedBinding(consumer_module_index, binding_name);
+    }
+
+    pub fn preserveRuntimeHelperImportAliasAvailable(self: *const Linker, consumer_module_index: u32, name: []const u8) bool {
+        if (self.isReservedOrGlobal(name) or self.isCanonicalNameTaken(name)) return false;
+        for (self.global_identifiers) |global| {
+            if (std.mem.eql(u8, global, name)) return false;
+        }
+        const module = self.getModule(consumer_module_index) orelse return false;
+        const sem = module.semantic orelse return false;
+        if (sem.unresolved_references.contains(name)) return false;
+        for (sem.scope_maps) |scope_map| {
+            if (scope_map.contains(name)) return false;
+        }
+        return true;
     }
 
     /// RFC #3399 PR-2: namespace `X.member` → exp.local 직접 재작성(ns-object

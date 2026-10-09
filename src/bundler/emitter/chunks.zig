@@ -128,17 +128,51 @@ fn deconflictedConsumerLocal(
     sym: chunk_mod.CrossChunkSym,
     binding: []const u8,
     fixed: bool,
+    consumer_module_index: ?u32,
     allocator: std.mem.Allocator,
     used_locals: *std.StringHashMapUnmanaged(void),
     natural_bindings: *const std.StringHashMapUnmanaged(void),
     alias_strs: *std.ArrayList([]const u8),
 ) ![]const u8 {
-    const local = if (fixed)
+    var helper_local: ?[]const u8 = null;
+    if (linker) |l| {
+        if (l.graph.preserve_modules) {
+            helper_local = l.getConsumerImportLocal(sym.canonical_module, sym.name);
+            if (helper_local) |planned| {
+                try used_locals.put(allocator, planned, {});
+            } else if (consumer_module_index) |consumer| {
+                if (l.preserveRuntimeHelperImportIsShadowed(
+                    consumer,
+                    sym.canonical_module,
+                    sym.name,
+                    binding,
+                )) {
+                    var suffix: u32 = 1;
+                    while (true) : (suffix += 1) {
+                        const candidate = try std.fmt.allocPrint(allocator, "{s}${d}", .{ binding, suffix });
+                        if (used_locals.contains(candidate) or natural_bindings.contains(candidate) or
+                            !l.preserveRuntimeHelperImportAliasAvailable(consumer, candidate))
+                        {
+                            allocator.free(candidate);
+                            continue;
+                        }
+                        try alias_strs.append(allocator, candidate);
+                        try used_locals.put(allocator, candidate, {});
+                        try l.putConsumerImportLocal(sym.canonical_module, sym.name, candidate);
+                        helper_local = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    const local = helper_local orelse if (fixed)
         binding
     else
         try mintConsumerLocal(allocator, binding, used_locals, natural_bindings, alias_strs);
     if (linker) |l| {
-        if (l.graph.preserve_modules) try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
+        if (l.graph.preserve_modules and helper_local == null)
+            try l.putConsumerImportLocal(sym.canonical_module, sym.name, local);
     }
     return local;
 }
@@ -213,7 +247,7 @@ fn emitPmCjsLiveImport(
             }
         } else {
             // 비재할당 심볼: 현행 스냅샷 구조분해.
-            const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, allocator, used_locals, natural_bindings, alias_strs);
+            const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, null, allocator, used_locals, natural_bindings, alias_strs);
             if (!std.mem.eql(u8, key, local)) {
                 try chunk_output.appendSlice(allocator, key);
                 try chunk_output.appendSlice(allocator, if (min) ":" else ": ");
@@ -1143,7 +1177,11 @@ pub fn emitChunks(
                 const binding = crossChunkBindingName(linker, sym);
                 // pm_cjs 라 lazy(reg_split/cjs_split=!preserve_modules)는 여기 안 옴 → has_global 만 고정.
                 const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
-                const local = try deconflictedConsumerLocal(linker, sym, binding, has_global, allocator, &used_locals, &natural_bindings, &alias_strs);
+                const consumer_module_index = if (options.preserve_modules and chunk.modules.items.len == 1)
+                    @as(?u32, @intFromEnum(chunk.modules.items[0]))
+                else
+                    null;
+                const local = try deconflictedConsumerLocal(linker, sym, binding, has_global, consumer_module_index, allocator, &used_locals, &natural_bindings, &alias_strs);
                 try chunk_output.appendSlice(allocator, "const ");
                 try chunk_output.appendSlice(allocator, local);
                 try chunk_output.appendSlice(allocator, if (options.minify_whitespace) "=require(\"" else " = require(\"");
@@ -1221,7 +1259,11 @@ pub fn emitChunks(
 
                     // (#4572/#4576) 선언 로컬은 항상 binding. has_global/lazy 는 고정, 그 외 유일 발급 +
                     // deconflict 시 body 정합(deconflictedConsumerLocal, #4580 전체바인딩 site 와 공용).
-                    const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, allocator, &used_locals, &natural_bindings, &alias_strs);
+                    const consumer_module_index = if (options.preserve_modules and chunk.modules.items.len == 1)
+                        @as(?u32, @intFromEnum(chunk.modules.items[0]))
+                    else
+                        null;
+                    const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, consumer_module_index, allocator, &used_locals, &natural_bindings, &alias_strs);
 
                     if (!std.mem.eql(u8, key, local)) {
                         // key != local → `key: local` / `key as local`. key!=binding(예약어 export 키

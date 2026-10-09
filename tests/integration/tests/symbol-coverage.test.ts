@@ -1651,6 +1651,151 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('bundled using helper references survive same-name function parameters', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-4819-using-helper-shadow-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      `globalThis.events = [];\nfunction run(Symbol, __using, __callDispose) {\n  const key = globalThis.Symbol.dispose;\n  using _stack = { [key]() { events.push('outer-dispose'); } };\n  { using _error = { [key]() { events.push('inner-dispose'); } }; events.push('inner'); }\n  events.push('outer');\n}\nrun(null, null, null);\nconsole.log(events.join(','));\n`,
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--target=es2022', '--platform=node', '--format=cjs', '-o', output],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const identity = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, proc.stderr).toContain('clean=1');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('inner,inner-dispose,outer,outer-dispose\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('bundled using helpers keep names visible to direct eval', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-4819-using-helper-eval-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      `globalThis.events = [];\nfunction userUsing(stack, value) { events.push('user-using'); return value; }\nfunction userDispose() { events.push('user-dispose'); }\nfunction run(__using, __callDispose) {\n  events.push(eval('typeof __callDispose'));\n  using resource = { [globalThis.Symbol.dispose]() { events.push('actual-dispose'); } };\n  events.push('body');\n}\nrun(userUsing, userDispose);\nconsole.log(events.join(','));\n`,
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--target=es2022', '--platform=node', '--format=cjs', '-o', output],
+        { encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('function,body,actual-dispose\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('split and preserved using helpers keep direct-eval-visible names distinct', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-4819-split-using-helper-eval-'));
+    const input = join(dir, 'entry.js');
+    const lazyA = join(dir, 'lazy-a.js');
+    const lazyB = join(dir, 'lazy-b.js');
+    const output = join(dir, 'out');
+    writeFileSync(
+      input,
+      `globalThis.events = [];\nfunction userUsing(stack, value) { events.push('user-using'); return value; }\nfunction userDispose() { events.push('user-dispose'); }\nPromise.all([import('./lazy-a.js'), import('./lazy-b.js')]).then(([a, b]) => {\n  a.run(userUsing, userDispose);\n  b.run(userUsing, userDispose);\n  console.log(events.join(','));\n});\n`,
+    );
+    writeFileSync(
+      lazyA,
+      `export function run(__using, __callDispose) {\n  events.push(eval('typeof __callDispose'));\n  using resource = { [globalThis.Symbol.dispose]() { events.push('a-dispose'); } };\n  events.push('a-body');\n}\n`,
+    );
+    writeFileSync(
+      lazyB,
+      `export function run(__using, __callDispose) {\n  events.push(eval('typeof __callDispose'));\n  using resource = { [globalThis.Symbol.dispose]() { events.push('b-dispose'); } };\n  events.push('b-body');\n}\n`,
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--splitting', '--outdir', output, '--format=esm', '--target=es2022'],
+        { encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).not.toContain('error(DebugAllocator)');
+      const emittedFiles = readdirSync(output);
+      expect(emittedFiles.filter((file) => file.startsWith('lazy-'))).toHaveLength(2);
+      expect(emittedFiles.some((file) => file.startsWith('chunk-'))).toBe(true);
+      writeFileSync(join(output, 'package.json'), JSON.stringify({ type: 'module' }));
+
+      const actual = spawnSync('node', [join(output, 'entry.js')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('function,a-body,a-dispose,function,b-body,b-dispose\n');
+
+      const preservedOutput = join(dir, 'preserved');
+      const preserved = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--preserve-modules',
+          `--preserve-modules-root=${dir}`,
+          '--outdir',
+          preservedOutput,
+          '--format=esm',
+          '--target=es2022',
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(preserved.status, preserved.stderr).toBe(0);
+      expect(readdirSync(preservedOutput).filter((file) => file.startsWith('lazy-'))).toHaveLength(
+        2,
+      );
+      writeFileSync(join(preservedOutput, 'package.json'), JSON.stringify({ type: 'module' }));
+
+      const preservedActual = spawnSync('node', [join(preservedOutput, 'entry.js')], {
+        encoding: 'utf8',
+      });
+      expect(preservedActual.status, preservedActual.stderr).toBe(0);
+      expect(preservedActual.stdout).toBe('function,a-body,a-dispose,function,b-body,b-dispose\n');
+
+      const preservedCjsOutput = join(dir, 'preserved-cjs');
+      const preservedCjs = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--preserve-modules',
+          `--preserve-modules-root=${dir}`,
+          '--outdir',
+          preservedCjsOutput,
+          '--format=cjs',
+          '--target=es2022',
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(preservedCjs.status, preservedCjs.stderr).toBe(0);
+
+      const preservedCjsActual = spawnSync('node', [join(preservedCjsOutput, 'entry.js')], {
+        encoding: 'utf8',
+      });
+      expect(preservedCjsActual.status, preservedCjsActual.stderr).toBe(0);
+      expect(preservedCjsActual.stdout).toBe(
+        'function,a-body,a-dispose,function,b-body,b-dispose\n',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('private for-in/of target temps retain their explicit loop-head binding', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-private-loop-target-symbols-'));
     const fixtures = ['4819-static-private-write-targets.mjs', 'forof-private-left-target.mjs'];

@@ -2054,8 +2054,10 @@ pub const Bundler = struct {
             // 바뀌는 mismatch 는 없다. 단 computeCrossChunkGlobalNames 안에서 **wrap 된 owner 로 한정**
             // 한다(non-wrap ESM provider 는 자연명 export → 전역명 붙이면 provider/consumer 어긋남).
             if (linker) |*l| {
-                if ((self.options.code_splitting and !self.options.preserve_modules) or pm_xchunk_naming)
+                if ((self.options.code_splitting and !self.options.preserve_modules) or pm_xchunk_naming) {
                     try chunk_mod.computeCrossChunkGlobalNames(self.allocator, &chunk_graph, l);
+                    try l.prepareCrossChunkRuntimeHelperNames();
+                }
             }
 
             var emit_opts = self.makeEmitOptions(self.options.format);
