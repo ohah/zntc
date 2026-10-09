@@ -9838,11 +9838,46 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'effectful static field initializers stay on semantic reanalysis',
+        name: 'direct bound static initializer calls retain their graph and run once in order',
         source:
-          'function fieldValue() { return 9; } class EffectfulStaticField { static value = fieldValue(); } console.log(EffectfulStaticField.value);',
+          'var calls = []; function fieldValue(input) { calls.push(input); return input + 1; } class DirectCallField { static first = fieldValue(8); static value = fieldValue(9); } console.log(DirectCallField.first, DirectCallField.value, calls.join(","));',
+        graph: 'retained',
+        output: '9 10 8,9\n',
+      },
+      {
+        name: 'member-call static field initializers stay on semantic reanalysis',
+        source:
+          'var receiver = { calls: 0, fieldValue(input) { this.calls++; return input + 1; } }; class MemberCallField { static value = receiver.fieldValue(8); } console.log(MemberCallField.value, receiver.calls);',
+        graph: 'reanalyzed',
+        output: '9 1\n',
+      },
+      {
+        name: 'unresolved direct static initializer calls stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcUnresolvedFieldCall = function (input) { return input + 1; }; class UnresolvedCallField { static value = __zntcUnresolvedFieldCall(8); } console.log(UnresolvedCallField.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'nested effectful static initializer arguments stay on semantic reanalysis',
+        source:
+          'var calls = 0; function fieldArgument() { calls++; return 8; } function fieldValue(input) { return input + 1; } class NestedCallField { static value = fieldValue(fieldArgument()); } console.log(NestedCallField.value, calls);',
+        graph: 'reanalyzed',
+        output: '9 1\n',
+      },
+      {
+        name: 'optional direct static initializer calls stay on semantic reanalysis',
+        source:
+          'function fieldValue(input) { return input + 1; } class OptionalCallField { static value = fieldValue?.(8); } console.log(OptionalCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'escaped direct eval in a static initializer stays on semantic reanalysis',
+        source:
+          'class DirectEvalField { static value = e\\u0076al("1 + 2"); } console.log(DirectEvalField.value);',
+        graph: 'reanalyzed',
+        output: '3\n',
       },
       {
         name: 'static field this initializers stay on semantic reanalysis',
