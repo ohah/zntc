@@ -627,7 +627,7 @@ pub fn ES2017(comptime Transformer: type) type {
             self.in_extracted_fn_body = true;
             var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
             defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
-            var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+            var sm_result = try GenMod.buildStateMachine(self, body_idx, span, self.stateMachineOwnerScope(source_owner));
             defer sm_result.hoisted_temps.deinit(self.allocator);
             self.in_extracted_fn_body = saved_ext_sm;
             if (sm_result.body.isNone()) return .none;
@@ -708,7 +708,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 defer self.arrow_this_depth -= 1;
 
                 const params_list = try es2015_arrow.ES2015Arrow(Transformer).arrowParamsToList(self, params_idx);
-                const sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+                const sm_result = try GenMod.buildStateMachine(self, body_idx, span, self.stateMachineOwnerScope(source_owner));
                 break :blk .{ .params_list = params_list, .sm_result = sm_result };
             };
             const params_list = lowered.params_list;

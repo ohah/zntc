@@ -354,7 +354,6 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
     try std.testing.expectEqual(owner_scope, transformer.semantic_editor.?.symbols.items[@intFromEnum(id)].scope_id);
     try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_bindings.items.len);
     try std.testing.expectEqual(owner_scope, transformer.generator_state_bindings.items[0].owner_scope);
-    try std.testing.expect(!transformer.generator_state_bindings.items[0].deferred_wrapper_owner);
 
     const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name_span);
     try transformer.trackHoistedTempRefInScope(name_span, reference, owner_scope, .{ .read = true });

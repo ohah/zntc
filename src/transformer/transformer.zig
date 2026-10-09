@@ -98,15 +98,10 @@ pub const GeneratedTempBinding = struct {
     /// Existing source bindings retain their SymbolId when moved into output storage.
     symbol_id: ?u32 = null,
     /// `true` means this declaration belongs to the generated state-machine
-    /// callback. Otherwise `owner_scope` wins, with the wrapper as fallback.
+    /// callback. Otherwise the exact wrapper `owner_scope` is required.
     callback_local: bool = false,
-    /// Exact var owner known by a producer that created the binding before
-    /// the generated state-machine callback was assembled.
+    /// Exact var owner recorded when the wrapper binding is produced.
     owner_scope: ScopeId = .none,
-    /// The producer supplied the exact binding, while its wrapper owner was
-    /// deferred until the enclosing state machine was assembled. Bind it by
-    /// NodeIndex at that point instead of resolving its name in the scope map.
-    deferred_wrapper_owner: bool = false,
 };
 
 pub const ParameterBodyVarCopy = struct {
@@ -829,6 +824,7 @@ pub const Transformer = struct {
     pub const remapCopiedScopeOwner = @import("transformer/semantic_edit.zig").remapCopiedScopeOwner;
     pub const removeInPlaceScopeOwner = @import("transformer/semantic_edit.zig").removeInPlaceScopeOwner;
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;
+    pub const stateMachineOwnerScope = @import("transformer/semantic_edit.zig").stateMachineOwnerScope;
     pub const bindGeneratedState = @import("transformer/semantic_edit.zig").bindGeneratedState;
     pub const migrateGeneratorLoopBody = @import("transformer/semantic_edit.zig").migrateGeneratorLoopBody;
     pub const registerGeneratedFunctionScopes = @import("transformer/semantic_edit.zig").registerGeneratedFunctionScopes;
