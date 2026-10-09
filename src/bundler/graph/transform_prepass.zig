@@ -888,31 +888,34 @@ fn isSafeConstructorValue(
 }
 
 /// A member receiver may be an exact bound identifier or one non-optional
-/// static member rooted at an exact bound identifier. The original member
-/// expression is retained, so property evaluation order and getter effects stay
-/// unchanged.
+/// static-member chain rooted at an exact bound identifier. The original
+/// member expression is retained, so property evaluation order and getter
+/// effects stay unchanged. The node-count bound also rejects malformed cycles.
 fn isRetainableBoundStaticFieldMemberReceiver(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     receiver_idx: ast_mod.NodeIndex,
 ) bool {
     if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len) return false;
-    const receiver = ast.getNode(receiver_idx);
-    if (receiver.tag == .identifier_reference)
-        return isBoundSourceIdentifierReference(ast, semantic, receiver_idx);
-    if (receiver.tag != .static_member_expression) return false;
-
     const extras = ast.extra_data.items;
-    const extra = receiver.data.extra;
-    if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
-    const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-    if (object_idx.isNone() or @intFromEnum(object_idx) >= ast.nodes.items.len or
-        ast.getNode(object_idx).tag != .identifier_reference or
-        !isBoundSourceIdentifierReference(ast, semantic, object_idx) or
-        property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
-        ast.getNode(property_idx).tag != .identifier_reference) return false;
-    return true;
+    var current_idx = receiver_idx;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const current = ast.getNode(current_idx);
+        if (current.tag == .identifier_reference)
+            return isBoundSourceIdentifierReference(ast, semantic, current_idx);
+        if (current.tag != .static_member_expression) return false;
+
+        const extra = current.data.extra;
+        if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
+        const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+        if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+            ast.getNode(property_idx).tag != .identifier_reference) return false;
+        current_idx = object_idx;
+    }
+    return false;
 }
 
 /// A call in a static initializer can retain the source graph when its callee
