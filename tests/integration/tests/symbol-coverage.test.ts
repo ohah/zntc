@@ -9738,6 +9738,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
   });
 
   test('ES5 empty classes, safe static fields, plain methods and compatible accessors retain their graph; other forms resync', () => {
+    let deeplyNestedComputedKey = 'makeKey()';
+    for (let depth = 0; depth < 64; depth += 1) {
+      deeplyNestedComputedKey = `wrap(holder[${deeplyNestedComputedKey}]())`;
+    }
     const cases = [
       {
         name: 'empty named class',
@@ -9852,6 +9856,61 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 6 make,field,get,make,field,get\n',
       },
       {
+        name: 'bound computed static member calls retain exact graph, this and nested evaluation order',
+        source:
+          'var order = []; function makeInnerKey() { order.push("inner-key"); return "next"; } function fieldKey(key) { order.push("field-key"); return key; } function fieldArgument() { order.push("argument"); return 4; } var holder = { base: 3, next() { order.push("next"); return "value"; }, value(input) { order.push("value"); return this.base + input; } }; class ComputedStaticMemberCallField { static value = holder[fieldKey(holder[makeInnerKey()]())](fieldArgument()); } console.log(ComputedStaticMemberCallField.value, order.join(","));',
+        graph: 'retained',
+        output: '7 inner-key,next,field-key,argument,value\n',
+      },
+      {
+        name: 'deeply nested computed static member calls use the iterative validator',
+        source: `function makeKey() { return "method"; } function wrap(key) { return key; } var holder = { method() { return "method"; } }; class DeepComputedMemberCallField { static value = holder[${deeplyNestedComputedKey}](); } console.log(DeepComputedMemberCallField.value);`,
+        graph: 'retained',
+        output: 'method\n',
+      },
+      {
+        name: 'unbound computed static member call key stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedStaticCallKey = "value"; var holder = { value() { return 9; } }; class UnboundComputedStaticMemberCallField { static value = holder[__zntcComputedStaticCallKey](); } console.log(UnboundComputedStaticMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unbound computed static member call key function stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedStaticCallKeyFn = () => "value"; var holder = { value() { return 9; } }; class UnboundComputedStaticMemberCallKeyFunctionField { static value = holder[__zntcComputedStaticCallKeyFn()](); } console.log(UnboundComputedStaticMemberCallKeyFunctionField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static member call key function stays on semantic reanalysis',
+        source:
+          'var key = () => "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberCallKeyFunctionField { static value = holder[key?.()](); } console.log(OptionalComputedStaticMemberCallKeyFunctionField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static member call access stays on semantic reanalysis',
+        source:
+          'var key = "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberCallField { static value = holder?.[key](); } console.log(OptionalComputedStaticMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static member invocation stays on semantic reanalysis',
+        source:
+          'var key = "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberInvocationField { static value = holder[key]?.(); } console.log(OptionalComputedStaticMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result computed static member call receiver stays on semantic reanalysis',
+        source:
+          'var key = "value"; function makeHolder() { return { value() { return 9; } }; } class CallResultComputedStaticMemberCallField { static value = makeHolder()[key](); } console.log(CallResultComputedStaticMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
         name: 'unbound computed static member key call stays on semantic reanalysis',
         source:
           'globalThis.__zntcStaticMemberKeyFn = () => "value"; var holder = { value: 9 }; class UnboundComputedStaticMemberKeyCallField { static value = holder[__zntcStaticMemberKeyFn()]; } console.log(UnboundComputedStaticMemberKeyCallField.value);',
@@ -9929,10 +9988,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 10 8,9\n',
       },
       {
-        name: 'computed member-call static field initializers stay on semantic reanalysis',
+        name: 'bound computed member-call static field initializers retain their graph',
         source:
           'var receiver = { fieldValue(input) { return input + 1; } }; function fieldKey() { return "fieldValue"; } class ComputedMemberCallField { static value = receiver[fieldKey()](8); } console.log(ComputedMemberCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -10055,10 +10114,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '10\n',
       },
       {
-        name: 'computed nested static-field call arguments stay on semantic reanalysis',
+        name: 'bound computed member calls in static-field arguments retain their graph',
         source:
           'var receiver = { fieldArgument(input) { return input + 1; } }; function fieldValue(input) { return input + 1; } class ComputedNestedCallField { static value = fieldValue(receiver["fieldArgument"](8)); } console.log(ComputedNestedCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '10\n',
       },
       {
@@ -10083,10 +10142,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '11\n',
       },
       {
-        name: 'deep computed static-field call arguments stay on semantic reanalysis',
+        name: 'deep bound computed member calls in static-field arguments retain their graph',
         source:
           'var receiver = { fieldArgument(input) { return input + 1; } }; function inner(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepComputedCallField { static value = fieldValue(inner(receiver["fieldArgument"](8))); } console.log(DeepComputedCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '11\n',
       },
       {
