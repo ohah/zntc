@@ -9887,6 +9887,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 10 receiver,method:8,receiver,method:9\n',
       },
       {
+        name: 'deep bound static member receiver chains retain getter order and method this',
+        source:
+          'var order = []; var holder = { get outer() { order.push("outer"); return { get receiver() { order.push("receiver"); return { order, fieldValue(input) { this.order.push("method:" + input); return input + 1; } }; } }; } }; class DeepMemberReceiverField { static first = holder.outer.receiver.fieldValue(8); static value = holder.outer.receiver.fieldValue(9); } console.log(DeepMemberReceiverField.first, DeepMemberReceiverField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 10 outer,receiver,method:8,outer,receiver,method:9\n',
+      },
+      {
         name: 'computed nested member receiver static fields stay on semantic reanalysis',
         source:
           'var holder = { receiver: { fieldValue(input) { return input + 1; } } }; function receiverKey() { return "receiver"; } class ComputedNestedMemberReceiverField { static value = holder[receiverKey()].fieldValue(8); } console.log(ComputedNestedMemberReceiverField.value);',
@@ -9908,9 +9915,30 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'deeper nested member receiver static fields stay on semantic reanalysis',
+        name: 'call-result deep member receiver static fields stay on semantic reanalysis',
         source:
-          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class DeeperNestedMemberReceiverField { static value = holder.outer.receiver.fieldValue(8); } console.log(DeeperNestedMemberReceiverField.value);',
+          'function getFieldHolder() { return { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; } class CallResultDeepMemberReceiverField { static value = getFieldHolder().outer.receiver.fieldValue(8); } console.log(CallResultDeepMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'computed deep member receiver static fields stay on semantic reanalysis',
+        source:
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; function receiverKey() { return "receiver"; } class ComputedDeepMemberReceiverField { static value = holder.outer[receiverKey()].fieldValue(8); } console.log(ComputedDeepMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional deep member receiver static fields stay on semantic reanalysis',
+        source:
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class OptionalDeepMemberReceiverField { static value = holder.outer?.receiver.fieldValue(8); } console.log(OptionalDeepMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unresolved deep member receiver static fields stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcDeepFieldHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class UnresolvedDeepMemberReceiverField { static value = __zntcDeepFieldHolder.outer.receiver.fieldValue(8); } console.log(UnresolvedDeepMemberReceiverField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
