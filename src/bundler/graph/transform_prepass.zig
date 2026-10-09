@@ -887,6 +887,38 @@ fn isSafeConstructorValue(
     };
 }
 
+/// A direct call in a static initializer can retain the source graph when its
+/// callee is an exact bound identifier and every argument is a safe value.
+/// Member/optional/unresolved calls and nested effectful argument expressions
+/// stay on semantic reanalysis.
+fn isRetainableBoundStaticFieldCall(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    const call = ast.getNode(call_idx);
+    if (call.tag != .call_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = call.data.extra;
+    if (extra > extras.len or extras.len - extra < 4) return false;
+    if ((extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+
+    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.getNode(callee_idx);
+    if (callee.tag != .identifier_reference or
+        !isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
+    const args_start = extras[extra + 1];
+    const args_len = extras[extra + 2];
+    if (args_start > extras.len or args_len > extras.len - args_start) return false;
+    for (extras[args_start .. args_start + args_len]) |raw_arg| {
+        if (raw_arg >= ast.nodes.items.len) return false;
+        if (!isSafeConstructorValue(ast, semantic, @enumFromInt(raw_arg))) return false;
+    }
+    return true;
+}
+
 fn isSafeConstructorVarDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1428,7 +1460,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// A public static field with a side-effect-free value expression composed of
 /// primitive literals and exact source-identifier references is emitted as an
 /// exact class reference plus an explicit global Object.defineProperty call.
-/// Calls, `this`, unresolved names, and other initializer forms stay on resync.
+/// Only a direct source-bound call with safe arguments is additionally allowed;
+/// `this`, unresolved names, and other call shapes stay on resync.
 fn isRetainableSimpleStaticClassField(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1454,7 +1487,8 @@ fn isRetainableSimpleStaticClassField(
         init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
     if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
-    return isSafeConstructorValue(ast, semantic, init_idx);
+    return isSafeConstructorValue(ast, semantic, init_idx) or
+        isRetainableBoundStaticFieldCall(ast, semantic, init_idx);
 }
 
 fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
