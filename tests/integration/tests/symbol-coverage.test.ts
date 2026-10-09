@@ -10023,6 +10023,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '7\n',
       },
       {
+        name: 'bound computed static field member-read keys retain getter receiver and order',
+        source:
+          'var order = []; var holder = { get first() { order.push(this === holder ? "first:true" : "first:false"); return "alpha"; }, get second() { order.push(this === holder ? "second:true" : "second:false"); return "beta"; } }; var fieldName = "second"; class ComputedStaticMemberReadKeys { static [holder.first] = 7; static [holder[fieldName]] = 8; } console.log(ComputedStaticMemberReadKeys.alpha, ComputedStaticMemberReadKeys.beta, order.join(","));',
+        graph: 'retained',
+        output: '7 8 first:true,second:true\n',
+      },
+      {
         name: 'bound computed static field names retain their exact key temp graph',
         source:
           'function fieldKey() { return "value"; } class ComputedStaticField { static [fieldKey()] = 9; } console.log(ComputedStaticField.value);',
@@ -10063,6 +10070,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'var SelfKey = class SelfKey { static [false && SelfKey] = 1; }; console.log(SelfKey.false);',
         graph: 'reanalyzed',
         output: '1\n',
+      },
+      {
+        name: 'unbound receiver in computed static field member-read key stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedStaticFieldKeyHolder = { key: "value" }; class UnboundComputedStaticFieldMemberKey { static [__zntcComputedStaticFieldKeyHolder.key] = 9; } console.log(UnboundComputedStaticFieldMemberKey.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static field member-read key stays on semantic reanalysis',
+        source:
+          'var holder = { key: "value" }; class OptionalComputedStaticFieldMemberKey { static [holder?.key] = 9; } console.log(OptionalComputedStaticFieldMemberKey.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result receiver in computed static field member-read key stays on semantic reanalysis',
+        source:
+          'function makeHolder() { return { key: "value" }; } class CallResultComputedStaticFieldMemberKey { static [makeHolder().key] = 9; } console.log(CallResultComputedStaticFieldMemberKey.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
       },
       {
         name: 'direct bound static initializer calls retain their graph and run once in order',
