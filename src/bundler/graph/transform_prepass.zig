@@ -181,6 +181,21 @@ fn addGeneratedGlobal(
     try semantic.unresolved_references.put(allocator, stable_name, {});
 }
 
+fn hasExplicitGlobalReferenceNamed(
+    ast: *const ast_mod.Ast,
+    explicit_global_reference_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    name: []const u8,
+) bool {
+    var nodes = explicit_global_reference_nodes.keyIterator();
+    while (nodes.next()) |raw| {
+        if (raw.* >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[raw.*];
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (std.mem.eql(u8, ast.getText(node.span), name)) return true;
+    }
+    return false;
+}
+
 /// Flow match array/object-rest lowering emits these free references without
 /// parser nodes. The full analyzer normally discovers them after lowering;
 /// when keeping the editor graph, preserve the same linker reservation facts.
@@ -2880,6 +2895,21 @@ fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
     return false;
 }
 
+fn hasNestedFunctionScope(scopes: []const @import("../../semantic/scope.zig").Scope) bool {
+    for (scopes) |scope| {
+        if (scope.kind != .function) continue;
+        var parent = scope.parent;
+        var hops: usize = 0;
+        while (!parent.isNone() and hops < scopes.len) : (hops += 1) {
+            const parent_index = parent.toIndex();
+            if (parent_index >= scopes.len) break;
+            if (scopes[parent_index].kind == .function) return true;
+            parent = scopes[parent_index].parent;
+        }
+    }
+    return false;
+}
+
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -2891,8 +2921,19 @@ fn canKeepPrepassSemanticGraph(
     const semantic = &module.semantic.?;
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
-    if (self.worklet_transform or
-        self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
+    // The Reanimated visitor edits only the module AST. Its generated factory
+    // bindings/references and scopes are attached to the semantic editor, so
+    // preserve that graph when it is the sole built-in plugin. Arbitrary user
+    // plugins remain on the full reanalysis path because their graph effects
+    // are not declared to the transformer.
+    const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
+        !self.react_refresh and !self.styled_components and !self.emotion and
+        !options.unsupported.hasAny() and !ast.has_jsx and !ast.has_decorator and
+        !hasNestedFunctionScope(semantic.scopes) and
+        isBuiltinWorkletPluginSet(plugins) and isBuiltinWorkletPluginSet(options.plugins);
+    if ((self.worklet_transform and !safe_builtin_worklet) or self.plugins.len != 0 or
+        (plugins.len != 0 and !safe_builtin_worklet) or
+        (options.plugins.len != 0 and !safe_builtin_worklet)) return false;
     // The displayName/namespace styled-components visitor only wraps existing
     // expressions and preserves every source binding/reference. CSS-prop mode
     // injects a new package import, whose module-graph edge must still be
@@ -2923,7 +2964,7 @@ fn canKeepPrepassSemanticGraph(
 
     const safe_styled_components = options.styled_components and !options.styled_components_css_prop;
     var found_transform = graph_editable_jsx or safe_graph_subset or safe_styled_components or
-        options.react_refresh or options.emotion;
+        options.react_refresh or options.emotion or safe_builtin_worklet;
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
@@ -3016,6 +3057,25 @@ fn canKeepPrepassSemanticGraph(
         }
     }
     return found_transform;
+}
+
+fn isBuiltinWorkletPluginSet(plugins: anytype) bool {
+    return plugins.len == 1 and std.mem.eql(u8, plugins[0].name, "reanimated-worklet");
+}
+
+test "worklet graph retention admits only the built-in plugin" {
+    const Plugin = @import("../plugin.zig").Plugin;
+    const built_in = [_]Plugin{.{ .name = "reanimated-worklet" }};
+    const custom = [_]Plugin{.{ .name = "user-ast-plugin" }};
+    const mixed = [_]Plugin{
+        .{ .name = "reanimated-worklet" },
+        .{ .name = "user-ast-plugin" },
+    };
+
+    try std.testing.expect(isBuiltinWorkletPluginSet(&built_in));
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&custom));
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&mixed));
+    try std.testing.expect(!isBuiltinWorkletPluginSet(&.{}));
 }
 
 fn printPrepassExact(
@@ -3120,6 +3180,15 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const merged_plugins = builtin_plugins.collect(.{
         .worklet = self.worklet_transform and !exclude_worklet,
     }, self.plugins, arena_alloc) catch return;
+    const has_nested_function_scopes = if (module.semantic) |*semantic|
+        hasNestedFunctionScope(semantic.scopes)
+    else
+        true;
+    const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
+        !self.react_refresh and !self.styled_components and !self.emotion and
+        !self.transform_options_base.unsupported.hasAny() and !ast_ptr.has_jsx and !ast_ptr.has_decorator and
+        !has_nested_function_scopes and
+        isBuiltinWorkletPluginSet(merged_plugins);
 
     const parser_node_count: u32 = @intCast(ast_ptr.nodes.items.len);
 
@@ -3185,6 +3254,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     var transformer = Transformer.init(arena_alloc, ast_ptr, opts) catch return;
     transformer.record_explicit_global_references =
         flow_match_generated_globals.has_match or has_lowered_object_spread or has_lowered_exponentiation or
+        safe_builtin_worklet or
         (downlevel_static_public_class_field_scan orelse
             (opts.unsupported.class or opts.unsupported.class_field));
 
@@ -3366,12 +3436,20 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             addGeneratedGlobal(arena_alloc, &module.semantic.?, "Math") catch {};
         if (lowered_simple_static_class_field_global)
             addGeneratedGlobal(arena_alloc, &module.semantic.?, "Object") catch {};
+        const worklet_global_reference = safe_builtin_worklet and hasExplicitGlobalReferenceNamed(
+            ast_ptr,
+            &transformer.explicit_global_reference_nodes,
+            "global",
+        );
+        if (worklet_global_reference)
+            addGeneratedGlobal(arena_alloc, &module.semantic.?, "global") catch {};
         const generated_globals_recorded =
             (!flow_match_generated_globals.array or module.semantic.?.unresolved_references.contains("Array")) and
             (!flow_match_generated_globals.object or module.semantic.?.unresolved_references.contains("Object")) and
             (!lowered_object_spread_global or module.semantic.?.unresolved_references.contains("Object")) and
             (!lowered_exponentiation_global or module.semantic.?.unresolved_references.contains("Math")) and
-            (!lowered_simple_static_class_field_global or module.semantic.?.unresolved_references.contains("Object"));
+            (!lowered_simple_static_class_field_global or module.semantic.?.unresolved_references.contains("Object")) and
+            (!worklet_global_reference or module.semantic.?.unresolved_references.contains("global"));
         if (!generated_globals_recorded) {
             resyncAfterAstMutation(self, module, arena_alloc, null) catch {
                 self.addDiag(
