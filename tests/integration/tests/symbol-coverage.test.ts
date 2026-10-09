@@ -459,12 +459,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(297);
+    expect(fixtureNames).toHaveLength(298);
     expect(fixtureInventory).toBe(
-      '913add7b812a4e75b3557e7b52f4d7fde694be9336d2f908276de685efd63f76',
+      'e87df13e5570d8a5f69589ee7758090627a211ad12ab003968362d28a75bf879',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      'e791b797d6eb2ef753d78fee270586352cf2796d31c92d205f3f0c4f9e04b311',
+      '72466bb609b5ea43fd2562d6e6777c540f704c22c3ffa937c082f5b5aff7d423',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
@@ -9661,7 +9661,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     // 검사기가 실제로 돌았는지(출력 형식이 바뀌어 전부 건너뛰면 공허하게 통과한다).
     expect(fixtures.length).toBeGreaterThan(0);
     expect(problems).toEqual([]);
-    expect(runs).toBe(297 * 6);
+    expect(runs).toBe(298 * 6);
     expect(generatedBindings).toBeGreaterThan(0);
     expect(generatedReferences).toBeGreaterThan(0);
     expect(strictExternalReferences).toBeGreaterThan(0);
