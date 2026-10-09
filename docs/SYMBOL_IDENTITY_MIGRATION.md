@@ -161,6 +161,7 @@
 - standalone optional call도 exact source-bound identifier에 한해 유지한다. `method?.(argument())`에서 callee parameter identity를 보존하고 null일 때 argument를 건너뛴다. global `eval?.()`은 indirect-eval 의미를 보존하도록 재분석에 남기며, nested optional call 형태도 이 범위에 포함하지 않는다.
 - optional call의 callee가 bound source identifier에서 시작하는 일반 call chain이면 그 결과도 기존 graph에 유지한다. `getTarget(enabled)?.(argument())`에서 factory와 argument의 평가 횟수, null 결과의 argument short-circuit, exact identity를 확인한다. `getTarget(enabled)?.()?.(argument())`처럼 각 단계가 이 exact source-rooted 검사에 맞는 중첩 optional call도 기존 graph에 유지하며, 첫 결과 또는 두 번째 결과가 null일 때 뒤 호출과 인자 평가를 건너뛴다. `globalThis.getTarget()?.()`와 그 중첩 형태처럼 추적되지 않는 root는 재분석에 남는다.
 - exact source-bound identifier 또는 audited member receiver에 대한 optional call 뒤에 일반 call tail이 오면, 그 tail까지 기존 graph에 유지한다. `getTarget(enabled)?.()(argument())`에서 receiver 호출과 후속 인자 평가가 null/non-null 경로에 맞게 한 번씩 실행되는지 확인한다. untracked optional member call과 그 뒤의 call tail은 재분석에 남긴다. optional member call과 optional call이 섞인 더 넓은 체인 및 추적할 수 없는 중첩 callee 형태는 별도 경계다.
+- ES5 bundler prepass는 exact source-rooted optional member call의 결과가 optional member access로 이어지는 형태도 기존 graph에 유지한다. `getReceiver()?.method?.(argument())?.value`에서 null/undefined receiver, null/undefined method, method getter의 단일 평가, method의 `this`, argument·call 횟수, null 반환값의 후속 access 생략을 실행 및 exact graph로 확인한다. untracked global에서 시작하는 같은 모양은 재분석에 남긴다. optional call 결과 뒤의 일반 `.value` tail은 별도의 ES5 `this` 보존 문제를 확인해 이 allowlist에 넣지 않았으며, optional member call/call 조합 전체를 이관한 것은 아니다.
 
 ### 매개변수 수정 후 남은 경계
 

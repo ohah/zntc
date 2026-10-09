@@ -622,7 +622,7 @@ fn isRetainableOptionalMemberReceiver(
                 if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3)
                     return false;
                 if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
-                    return false;
+                    return isRetainableOptionalCall(ast, semantic, current);
                 const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
                 return isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
             },
