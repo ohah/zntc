@@ -9892,6 +9892,72 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('Reanimated worklet retains its graph when the body has an ordinary nested function', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-helper-retained-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      [
+        'export function work(value) {',
+        '  "worklet";',
+        '  function addOne(input) { return value + input; }',
+        '  return addOne(1);',
+        '}',
+        'console.log(work(41));',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build(${JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        workletTransform: true,
+        minifyIdentifiers: true,
+        write: false,
+      })});`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('Reanimated worklet nested in another function stays on semantic reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-reanalysis-'));
     const entry = join(dir, 'entry.js');
@@ -9949,6 +10015,72 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('44 NestedError\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('Reanimated file-level Worklet directive retains the graph with a nested helper', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-file-directive-nested-retained-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      [
+        '"worklet";',
+        'export function make(value) {',
+        '  function addOne(input) { return value + input; }',
+        '  return addOne(1);',
+        '}',
+        'console.log(make(41));',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build(${JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        workletTransform: true,
+        minifyIdentifiers: true,
+        write: false,
+      })});`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

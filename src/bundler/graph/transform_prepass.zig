@@ -20,6 +20,7 @@ const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
+const worklet_mod = @import("../../transformer/transformer/worklet.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
@@ -2895,17 +2896,54 @@ fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
     return false;
 }
 
-fn hasNestedFunctionScope(scopes: []const @import("../../semantic/scope.zig").Scope) bool {
-    for (scopes) |scope| {
-        if (scope.kind != .function) continue;
+fn functionHasWorkletDirective(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+    const body_idx = ast.functionBodyBlock(node) orelse return false;
+    const body_raw = @intFromEnum(body_idx);
+    if (body_raw >= ast.nodes.items.len) return true;
+    const body = ast.nodes.items[body_raw];
+    if (body.tag != .block_statement and body.tag != .function_body) return true;
+    const list = body.data.list;
+    if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return true;
+    const scan_len = @min(list.len, 5);
+    var i: u32 = 0;
+    while (i < scan_len) : (i += 1) {
+        const raw_stmt = ast.extra_data.items[list.start + i];
+        if (raw_stmt >= ast.nodes.items.len) return true;
+        const text = worklet_mod.directiveText(ast, @enumFromInt(raw_stmt)) orelse continue;
+        if (std.mem.eql(u8, text, "worklet")) return true;
+    }
+    return false;
+}
+
+/// A nested function with its own Worklet directive is rewritten independently
+/// of its enclosing function. Keep that case on semantic reanalysis until the
+/// generated wrapper's output scope is tracked across that nested boundary.
+/// Nested helper functions in explicit and file-level Worklets keep their
+/// source scopes and share the edited graph; unsupported syntax remains gated
+/// by the other prepass checks.
+fn hasNestedWorkletFunctionScope(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+) bool {
+    for (ast.nodes.items, 0..) |node, raw| {
+        switch (node.tag) {
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {},
+            else => continue,
+        }
+        if (!functionHasWorkletDirective(ast, node)) continue;
+        const raw_scope = semantic.scope_owner_map.get(@intCast(raw)) orelse return true;
+        if (raw_scope >= semantic.scopes.len) return true;
+        const scope = semantic.scopes[raw_scope];
+        if (scope.kind != .function) return true;
         var parent = scope.parent;
         var hops: usize = 0;
-        while (!parent.isNone() and hops < scopes.len) : (hops += 1) {
+        while (!parent.isNone() and hops < semantic.scopes.len) : (hops += 1) {
             const parent_index = parent.toIndex();
-            if (parent_index >= scopes.len) break;
-            if (scopes[parent_index].kind == .function) return true;
-            parent = scopes[parent_index].parent;
+            if (parent_index >= semantic.scopes.len) return true;
+            if (semantic.scopes[parent_index].kind == .function) return true;
+            parent = semantic.scopes[parent_index].parent;
         }
+        if (!parent.isNone()) return true;
     }
     return false;
 }
@@ -2929,7 +2967,7 @@ fn canKeepPrepassSemanticGraph(
     const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
         !self.react_refresh and !self.styled_components and !self.emotion and
         !options.unsupported.hasAny() and !ast.has_jsx and !ast.has_decorator and
-        !hasNestedFunctionScope(semantic.scopes) and
+        !hasNestedWorkletFunctionScope(ast, semantic) and
         isBuiltinWorkletPluginSet(plugins) and isBuiltinWorkletPluginSet(options.plugins);
     if ((self.worklet_transform and !safe_builtin_worklet) or self.plugins.len != 0 or
         (plugins.len != 0 and !safe_builtin_worklet) or
@@ -3180,14 +3218,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const merged_plugins = builtin_plugins.collect(.{
         .worklet = self.worklet_transform and !exclude_worklet,
     }, self.plugins, arena_alloc) catch return;
-    const has_nested_function_scopes = if (module.semantic) |*semantic|
-        hasNestedFunctionScope(semantic.scopes)
+    const has_nested_worklet_function_scopes = if (module.semantic) |*semantic|
+        hasNestedWorkletFunctionScope(ast_ptr, semantic)
     else
         true;
     const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
         !self.react_refresh and !self.styled_components and !self.emotion and
         !self.transform_options_base.unsupported.hasAny() and !ast_ptr.has_jsx and !ast_ptr.has_decorator and
-        !has_nested_function_scopes and
+        !has_nested_worklet_function_scopes and
         isBuiltinWorkletPluginSet(merged_plugins);
 
     const parser_node_count: u32 = @intCast(ast_ptr.nodes.items.len);
