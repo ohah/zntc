@@ -919,69 +919,74 @@ fn isRetainableBoundStaticFieldMemberReceiver(
 }
 
 /// A call in a static initializer can retain the source graph when its callee
-/// is an exact bound identifier, or a simple static member of one, and every
-/// argument is a safe value. The top-level call may also have one nested call
-/// argument when that call has only safe-value arguments. Keeping the original
-/// expressions preserves evaluation order and a member callee's receiver
-/// (`this`). Computed, optional, unresolved, nested receiver calls, and deeper
-/// effectful argument expressions stay on semantic reanalysis.
+/// is an exact bound identifier, or a non-optional static member whose
+/// receiver chain is rooted at one, and every argument is a safe value or
+/// another call that passes the same check. The
+/// iterative walk avoids adding recursive stack use for deeply nested calls and
+/// rejects repeated nodes/cycles. Keeping the original expressions preserves
+/// evaluation order and a member callee's receiver (`this`). Computed,
+/// optional, and unresolved callees plus effectful non-call arguments stay on
+/// semantic reanalysis.
 fn isRetainableBoundStaticFieldCall(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
-) bool {
-    return isRetainableBoundStaticFieldCallWithArgumentPolicy(ast, semantic, call_idx, true);
-}
-
-fn isRetainableBoundStaticFieldCallWithArgumentPolicy(
-    ast: *const ast_mod.Ast,
-    semantic: *const ModuleSemanticData,
-    call_idx: ast_mod.NodeIndex,
-    allow_nested_call_argument: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
-    const call = ast.getNode(call_idx);
-    if (call.tag != .call_expression) return false;
     const extras = ast.extra_data.items;
-    const extra = call.data.extra;
-    if (extra > extras.len or extras.len - extra < 4) return false;
-    if ((extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    var pending: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    defer pending.deinit(allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(allocator);
+    pending.append(allocator, call_idx) catch return false;
+    var remaining_nodes = ast.nodes.items.len;
 
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
-    const callee = ast.getNode(callee_idx);
-    switch (callee.tag) {
-        .identifier_reference => {
-            if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
-        },
-        .static_member_expression => {
-            const member_extra = callee.data.extra;
-            if (member_extra > extras.len or extras.len - member_extra < 3) return false;
-            const member_flags = extras[member_extra + 2];
-            if ((member_flags & ast_mod.MemberFlags.optional_chain) != 0 or
-                (member_flags & ~ast_mod.MemberFlags.optional_chain) != 0) return false;
-            const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
-            const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
-            if (!isRetainableBoundStaticFieldMemberReceiver(ast, semantic, receiver_idx) or
-                property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
-                ast.getNode(property_idx).tag != .identifier_reference) return false;
-        },
-        else => return false,
-    }
-    const args_start = extras[extra + 1];
-    const args_len = extras[extra + 2];
-    if (args_start > extras.len or args_len > extras.len - args_start) return false;
-    for (extras[args_start .. args_start + args_len]) |raw_arg| {
-        if (raw_arg >= ast.nodes.items.len) return false;
-        const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
-        if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
-        if (!allow_nested_call_argument or
-            !isRetainableBoundStaticFieldCallWithArgumentPolicy(
-                ast,
-                semantic,
-                argument_idx,
-                false,
-            )) return false;
+    while (pending.pop()) |current_idx| {
+        if (remaining_nodes == 0 or current_idx.isNone() or
+            @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        remaining_nodes -= 1;
+        const raw_current = @intFromEnum(current_idx);
+        if (visited.contains(raw_current)) return false;
+        visited.put(allocator, raw_current, {}) catch return false;
+
+        const call = ast.getNode(current_idx);
+        if (call.tag != .call_expression) return false;
+        const extra = call.data.extra;
+        if (extra > extras.len or extras.len - extra < 4) return false;
+        if ((extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+
+        const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+        const callee = ast.getNode(callee_idx);
+        switch (callee.tag) {
+            .identifier_reference => {
+                if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
+            },
+            .static_member_expression => {
+                const member_extra = callee.data.extra;
+                if (member_extra > extras.len or extras.len - member_extra < 3) return false;
+                const member_flags = extras[member_extra + 2];
+                if ((member_flags & ast_mod.MemberFlags.optional_chain) != 0 or
+                    (member_flags & ~ast_mod.MemberFlags.optional_chain) != 0) return false;
+                const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
+                const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
+                if (!isRetainableBoundStaticFieldMemberReceiver(ast, semantic, receiver_idx) or
+                    property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+                    ast.getNode(property_idx).tag != .identifier_reference) return false;
+            },
+            else => return false,
+        }
+        const args_start = extras[extra + 1];
+        const args_len = extras[extra + 2];
+        if (args_start > extras.len or args_len > extras.len - args_start) return false;
+        for (extras[args_start .. args_start + args_len]) |raw_arg| {
+            if (raw_arg >= ast.nodes.items.len) return false;
+            const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
+            if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
+            if (ast.getNode(argument_idx).tag != .call_expression) return false;
+            pending.append(allocator, argument_idx) catch return false;
+        }
     }
     return true;
 }
@@ -1527,9 +1532,10 @@ fn isSimpleParamsConstructorBodyGraphSafe(
 /// A public static field with a side-effect-free value expression composed of
 /// primitive literals and exact source-identifier references is emitted as an
 /// exact class reference plus an explicit global Object.defineProperty call.
-/// Only a direct source-bound call with safe arguments is additionally allowed;
+/// Exact-bound calls with safe-value leaves are additionally allowed;
 /// `this`, unresolved names, and other call shapes stay on resync.
 fn isRetainableSimpleStaticClassField(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
@@ -1555,7 +1561,7 @@ fn isRetainableSimpleStaticClassField(
     const key = ast.getNode(key_idx);
     if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
     return isSafeConstructorValue(ast, semantic, init_idx) or
-        isRetainableBoundStaticFieldCall(ast, semantic, init_idx);
+        isRetainableBoundStaticFieldCall(allocator, ast, semantic, init_idx);
 }
 
 fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
@@ -1601,6 +1607,7 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// `isRetainableSimpleStaticClassField`; computed/escaped keys and `super` stay
 /// excluded.
 fn isSimpleClass(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
@@ -1633,7 +1640,7 @@ fn isSimpleClass(
         const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
         if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
-        if (isRetainableSimpleStaticClassField(ast, semantic, member)) continue;
+        if (isRetainableSimpleStaticClassField(allocator, ast, semantic, member)) continue;
         if (member.tag != .method_definition) return false;
         const method_extra = member.data.extra;
         if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
@@ -1730,6 +1737,7 @@ fn isDirectTopLevelVarClassExpression(ast: *const ast_mod.Ast, target_raw: u32) 
 }
 
 fn isTopLevelSimpleClass(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
@@ -1742,7 +1750,7 @@ fn isTopLevelSimpleClass(
         .class_expression => isDirectTopLevelVarClassExpression(ast, @intCast(raw_node)),
         else => false,
     };
-    return is_top_level and isSimpleClass(ast, semantic, node, source_binds_object);
+    return is_top_level and isSimpleClass(allocator, ast, semantic, node, source_binds_object);
 }
 
 fn collectSimpleConstructorDefaultParameterNodes(
@@ -1789,6 +1797,7 @@ fn collectSimpleConstructorDefaultParameterNodes(
 /// templates add no binding or scope edges. Keep these paths only for the
 /// audited syntax subset; downlevel async/generator/template bodies stay on reanalysis.
 fn canRetainGraphForAuditedSyntaxSubset(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     options: TransformOptions,
@@ -2072,6 +2081,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             const class_node = ast.nodes.items[raw_idx];
             if (class_node.tag != .class_declaration and class_node.tag != .class_expression) continue;
             if (!isTopLevelSimpleClass(
+                allocator,
                 ast,
                 semantic,
                 class_node,
@@ -2463,7 +2473,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier) {
                     if (options.unsupported.class_private_field) return false;
                 } else if (options.unsupported.class_field or options.unsupported.class) {
-                    if (source_binds_object or !isRetainableSimpleStaticClassField(ast, semantic, node)) return false;
+                    if (source_binds_object or !isRetainableSimpleStaticClassField(allocator, ast, semantic, node)) return false;
                     found_lowered_simple_static_class_field = true;
                 }
             },
@@ -2660,7 +2670,7 @@ fn canKeepPrepassSemanticGraph(
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const safe_graph_subset = options.unsupported.hasAny() and
-        canRetainGraphForAuditedSyntaxSubset(ast, semantic, options);
+        canRetainGraphForAuditedSyntaxSubset(self.allocator, ast, semantic, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph. Unlike
