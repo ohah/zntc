@@ -10016,11 +10016,53 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'computed static fields stay on semantic reanalysis',
+        name: 'bound computed static field name identifiers retain their exact key temp graph',
+        source:
+          'var fieldName = "value"; class BoundComputedStaticFieldName { static [fieldName] = 7; } console.log(BoundComputedStaticFieldName.value);',
+        graph: 'retained',
+        output: '7\n',
+      },
+      {
+        name: 'bound computed static field names retain their exact key temp graph',
         source:
           'function fieldKey() { return "value"; } class ComputedStaticField { static [fieldKey()] = 9; } console.log(ComputedStaticField.value);',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'nested bound computed static field names retain key and initializer evaluation order',
+        source:
+          'var order = []; function baseKey() { order.push("base-key"); return "first"; } function fieldKey(key) { order.push("field-key"); return key; } function fieldValue(value) { order.push("field-value:" + value); return value; } class OrderedComputedStaticFields { static [fieldKey(baseKey())] = fieldValue(7); static [fieldKey("second")] = fieldValue(8); } console.log(OrderedComputedStaticFields.first, OrderedComputedStaticFields.second, order.join(","));',
+        graph: 'retained',
+        output: '7 8 base-key,field-key,field-key,field-value:7,field-value:8\n',
+      },
+      {
+        name: 'unbound computed static field name reference stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedStaticFieldName = "value"; class UnboundComputedStaticFieldName { static [__zntcComputedStaticFieldName] = 9; } console.log(UnboundComputedStaticFieldName.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'unbound computed static field name call stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedStaticFieldNameFn = () => "value"; class UnboundComputedStaticFieldNameCall { static [__zntcComputedStaticFieldNameFn()] = 9; } console.log(UnboundComputedStaticFieldNameCall.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static field name call stays on semantic reanalysis',
+        source:
+          'var fieldKey = () => "value"; class OptionalComputedStaticFieldNameCall { static [fieldKey?.()] = 9; } console.log(OptionalComputedStaticFieldNameCall.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'class-self references in computed static field keys stay on semantic reanalysis',
+        source:
+          'var SelfKey = class SelfKey { static [false && SelfKey] = 1; }; console.log(SelfKey.false);',
+        graph: 'reanalyzed',
+        output: '1\n',
       },
       {
         name: 'direct bound static initializer calls retain their graph and run once in order',
