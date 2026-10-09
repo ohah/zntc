@@ -889,13 +889,24 @@ fn isSafeConstructorValue(
 
 /// A call in a static initializer can retain the source graph when its callee
 /// is an exact bound identifier, or a simple static member of one, and every
-/// argument is a safe value. Keeping the original member expression preserves
-/// the method receiver (`this`). Computed, optional, unresolved, nested receiver
-/// calls, and nested effectful argument expressions stay on semantic reanalysis.
+/// argument is a safe value. The top-level call may also have one nested call
+/// argument when that call has only safe-value arguments. Keeping the original
+/// expressions preserves evaluation order and a member callee's receiver
+/// (`this`). Computed, optional, unresolved, nested receiver calls, and deeper
+/// effectful argument expressions stay on semantic reanalysis.
 fn isRetainableBoundStaticFieldCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
+) bool {
+    return isRetainableBoundStaticFieldCallWithArgumentPolicy(ast, semantic, call_idx, true);
+}
+
+fn isRetainableBoundStaticFieldCallWithArgumentPolicy(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+    allow_nested_call_argument: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
@@ -933,7 +944,15 @@ fn isRetainableBoundStaticFieldCall(
     if (args_start > extras.len or args_len > extras.len - args_start) return false;
     for (extras[args_start .. args_start + args_len]) |raw_arg| {
         if (raw_arg >= ast.nodes.items.len) return false;
-        if (!isSafeConstructorValue(ast, semantic, @enumFromInt(raw_arg))) return false;
+        const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
+        if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
+        if (!allow_nested_call_argument or
+            !isRetainableBoundStaticFieldCallWithArgumentPolicy(
+                ast,
+                semantic,
+                argument_idx,
+                false,
+            )) return false;
     }
     return true;
 }
