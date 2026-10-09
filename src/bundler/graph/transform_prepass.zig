@@ -953,9 +953,11 @@ fn isBoundStaticFieldMemberAccessShape(
 
 /// Optional member chains rooted directly at an exact source binding can stay
 /// on the edited graph when their segments are dot reads or optional computed
-/// reads with safe literal / source-bound key expressions. Keep calls and
-/// non-source roots on reanalysis.
+/// reads with safe values or exact-bound call keys. The shared iterative call
+/// validator checks call-key subtrees. Keep other calls and non-source roots
+/// on reanalysis.
 fn isRetainableBoundStaticFieldOptionalMemberChain(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
@@ -993,7 +995,8 @@ fn isRetainableBoundStaticFieldOptionalMemberChain(
         if (member.tag == .static_member_expression) {
             if (property.tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
-            return false;
+            if (property.tag != .call_expression or
+                !isRetainableBoundStaticFieldExpression(allocator, ast, semantic, property_idx)) return false;
         }
         current_idx = receiver_idx;
     }
@@ -1119,7 +1122,7 @@ fn isRetainableBoundStaticFieldInitializerMemberAccess(
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
 ) bool {
-    return isRetainableBoundStaticFieldOptionalMemberChain(ast, semantic, member_idx) or
+    return isRetainableBoundStaticFieldOptionalMemberChain(allocator, ast, semantic, member_idx) or
         isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, member_idx);
 }
 
