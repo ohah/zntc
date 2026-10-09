@@ -9926,11 +9926,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional computed member receiver access stays on semantic reanalysis',
+        name: 'optional computed member receiver with exact-bound key retains getter order',
         source:
-          'var key = "outer"; var holder = { outer: { value: 9 } }; class OptionalComputedMemberReceiverField { static value = holder?.[key].value; } console.log(OptionalComputedMemberReceiverField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; var key = "outer"; var holder = { get outer() { order.push("outer"); return { get value() { order.push("value"); return 9; } }; } }; class OptionalComputedMemberReceiverField { static value = holder?.[key].value; } console.log(OptionalComputedMemberReceiverField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 outer,value\n',
       },
       {
         name: 'optional computed member receiver key calls stay on semantic reanalysis',
@@ -10010,11 +10010,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional computed static member value stays on semantic reanalysis',
+        name: 'optional computed static-member reads retain only literal and exact-bound keys',
         source:
-          'var key = "value"; var holder = { value: 9 }; class OptionalComputedStaticMemberValueField { static value = holder?.[key]; } console.log(OptionalComputedStaticMemberValueField.value);',
+          'var order = []; var key = "value"; var holder = { get value() { order.push("value"); return 9; } }; var missing = null; class OptionalComputedStaticMemberValueField { static bound = holder?.[key]; static literal = holder?.["value"]; static absent = missing?.[key]; } console.log(OptionalComputedStaticMemberValueField.bound, OptionalComputedStaticMemberValueField.literal, OptionalComputedStaticMemberValueField.absent, order.join(","));',
+        graph: 'retained',
+        output: '9 9 undefined value,value\n',
+      },
+      {
+        name: 'unbound optional computed static-member key stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcOptionalComputedStaticKey = "value"; var holder = { value: 9 }; class UnboundOptionalComputedStaticMemberKey { static value = holder?.[__zntcOptionalComputedStaticKey]; } console.log(UnboundOptionalComputedStaticMemberKey.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'side-effectful optional computed static-member key stays on semantic reanalysis',
+        source:
+          'var order = []; function makeOptionalStaticKey() { order.push("key"); return "value"; } var holder = { get value() { order.push("value"); return 9; } }; class OptionalComputedStaticMemberKeyCall { static value = holder?.[makeOptionalStaticKey()]; } console.log(OptionalComputedStaticMemberKeyCall.value, order.join(","));',
+        graph: 'reanalyzed',
+        output: '9 key,value\n',
       },
       {
         name: 'call-result computed static member receiver stays on semantic reanalysis',
