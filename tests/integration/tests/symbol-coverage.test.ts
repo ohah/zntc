@@ -9845,9 +9845,23 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '17\n',
       },
       {
-        name: 'computed static member value stays on semantic reanalysis',
+        name: 'bound nested calls in computed static member keys retain exact graph and order',
         source:
-          'var holder = { value: 9 }; function fieldKey() { return "value"; } class ComputedStaticMemberValueField { static value = holder[fieldKey()]; } console.log(ComputedStaticMemberValueField.value);',
+          'var order = []; function makeKey() { order.push("make"); return "value"; } function fieldKey(key) { order.push("field"); return key; } var holder = { get value() { order.push("get"); return order.length; } }; class ComputedStaticMemberValueField { static first = holder[fieldKey(makeKey())]; static second = holder[fieldKey(makeKey())]; } console.log(ComputedStaticMemberValueField.first, ComputedStaticMemberValueField.second, order.join(","));',
+        graph: 'retained',
+        output: '3 6 make,field,get,make,field,get\n',
+      },
+      {
+        name: 'unbound computed static member key call stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcStaticMemberKeyFn = () => "value"; var holder = { value: 9 }; class UnboundComputedStaticMemberKeyCallField { static value = holder[__zntcStaticMemberKeyFn()]; } console.log(UnboundComputedStaticMemberKeyCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static member key call stays on semantic reanalysis',
+        source:
+          'var key = () => "value"; var holder = { value: 9 }; class OptionalComputedStaticMemberKeyCallField { static value = holder[key?.()]; } console.log(OptionalComputedStaticMemberKeyCallField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
