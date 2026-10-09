@@ -236,7 +236,14 @@ fn wrapNativeParameterArrow(
     is_outermost_native_parameter_arrow: bool,
     parent_native_parameter_arrow_owner: NodeIndex,
 ) !NodeIndex {
-    const name = try es_helpers.resolveSyntheticName(self, "_newTarget");
+    // The semantic path binds every deferred capture to this parameter's
+    // exact SymbolId. Let final output naming handle collisions instead of
+    // selecting an alias while the wrapper is being built. Low-level callers
+    // without semantic identities keep the compatibility spelling resolver.
+    const name = if (self.semantic_edit_enabled)
+        "_newTarget"
+    else
+        try es_helpers.resolveSyntheticName(self, "_newTarget");
     const binding = try es_helpers.makeExactSyntheticBinding(self, name);
     const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), span);
 
@@ -314,7 +321,10 @@ fn wrapNativeParameterArrow(
             .data = .{ .none = 1 },
         });
     } else blk: {
-        const ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+        const ref = if (self.semantic_edit_enabled)
+            try es_helpers.makeExactSyntheticRef(self, name)
+        else
+            try es_helpers.makeSyntheticRef(self, "_newTarget");
         try self.trackNativeParameterArrowRef(parent_native_parameter_arrow_owner, ref);
         break :blk ref;
     };
