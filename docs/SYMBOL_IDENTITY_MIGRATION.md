@@ -35,6 +35,8 @@
 
 Bundler React Refresh registration은 `_c` binding에 생성 시점의 `SymbolId`를 주고 component 참조는 source binding의 정확한 ID를 유지한다. `$RefreshReg$`는 명시적 외부 전역으로 기록한다. 다른 허용 조건을 만족하는 모듈은 이 편집 graph를 재사용하며, 안전하지 않은 문법·plugin 경계는 기존 semantic resync에 남긴다. 이는 React Refresh 조합의 전수 조사나 bundler 재분석 전반 제거를 뜻하지 않는다.
 
+Bundler Emotion의 JSX `css` prop은 exact import SID와 shadowing alias SID를 갱신한 semantic graph를 재사용할 수 있다. 다만 runtime import 형태가 보존되는 `verbatimModuleSyntax` 조합에서만 허용하며, import elision이 가능한 조합과 직접 `eval`은 재분석에 남긴다. 이는 Emotion 옵션·문법 조합의 전수조사나 다른 plugin 경계의 제거를 뜻하지 않는다.
+
 ## 보정 경로별 제거 조건
 
 | 제거 대상                                               | 제거 전에 필요한 증거                                                                                                                                                        |
