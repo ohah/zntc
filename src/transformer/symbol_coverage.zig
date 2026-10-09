@@ -1744,7 +1744,14 @@ const ExactCtx = struct {
         if (expectedReferenceScope(ctx.ast, ctx.root, ctx.parent_by_node, ctx.scope_owner_map, raw)) |expected_scope| {
             if (@intFromEnum(indexed.scope_id) != expected_scope.scope) {
                 const retained_source_scope = !ctx.helper_reference_nodes.contains(raw) and
-                    isRetainedSourceScopeReference(ctx, raw, id, indexed.scope_id);
+                    isRetainedSourceScopeReference(
+                        ctx,
+                        raw,
+                        name,
+                        id,
+                        indexed.scope_id,
+                        @enumFromInt(expected_scope.scope),
+                    );
                 if (!retained_source_scope) {
                     ctx.report.reference_scope_mismatch += 1;
                     const actual_owner = scopeOwnerNode(ctx.scope_owner_map, @intFromEnum(indexed.scope_id));
@@ -3074,9 +3081,17 @@ fn countCyclicAstEdges(
 /// after its source owner node is removed (for example an extracted generator
 /// loop argument). Accept that reference scope only when it remains visible
 /// for the same source symbol and no reachable output AST node owns it.
-fn isRetainedSourceScopeReference(ctx: *const ExactCtx, node: u32, symbol_id: SymbolId, use_scope: ScopeId) bool {
+fn isRetainedSourceScopeReference(
+    ctx: *ExactCtx,
+    node: u32,
+    name: []const u8,
+    symbol_id: SymbolId,
+    use_scope: ScopeId,
+    output_scope: ScopeId,
+) bool {
     const raw_id = @intFromEnum(symbol_id);
-    if (raw_id >= ctx.symbols.len or !exactValidScope(ctx.scopes, use_scope)) return false;
+    if (raw_id >= ctx.symbols.len or !exactValidScope(ctx.scopes, use_scope) or
+        !exactValidScope(ctx.scopes, output_scope)) return false;
     const symbol = ctx.symbols[raw_id];
     if (symbol.synthetic_kind != null or symbol.synthetic_name.len > 0) {
         // A generator state machine can replace a generated catch clause with
@@ -3088,6 +3103,14 @@ fn isRetainedSourceScopeReference(ctx: *const ExactCtx, node: u32, symbol_id: Sy
             !hasReachableBindingForSymbol(ctx, raw_id)) return false;
     }
     if (!exactVisibleFrom(ctx.scopes, ctx.symbols, symbol_id, use_scope)) return false;
+    // A retained source ScopeId is historical evidence for the moved binding,
+    // not evidence that the emitted reference still resolves to it. Confirm
+    // lexical lookup from the actual output AST scope too, or a same-name
+    // binding introduced below the removed source owner can silently capture
+    // this reference while the stale source scope continues to resolve cleanly.
+    const output_resolution = resolveInExactScopes(ctx, name, output_scope);
+    if (output_resolution != raw_id and
+        !ctx.isEnumMemberReference(node, name, raw_id, output_scope)) return false;
     var child = node;
     var hops: usize = 0;
     while (ctx.parent_by_node.get(child)) |parent| : (hops += 1) {
@@ -5671,7 +5694,7 @@ test "exact identity audit rejects a visible but non-innermost reference scope" 
     try std.testing.expect(!report.isClean());
 }
 
-test "exact identity audit preserves visible source scopes whose owner was lowered away" {
+test "exact identity audit preserves a relocated source binding after its source scope owner is lowered away" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -5679,27 +5702,37 @@ test "exact identity audit preserves visible source scopes whose owner was lower
     var ast = Ast.init(allocator, "");
     defer ast.deinit();
     const name = try ast.addString("x");
+    const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
     const ref_node = try makeTestIdentifierNode(&ast, .identifier_reference, name);
-    const list = try ast.addNodeList(&.{ref_node});
-    const root = try ast.addNode(.{
-        .tag = .block_statement,
-        .span = name,
-        .data = .{ .list = list },
+    const none = @intFromEnum(NodeIndex.none);
+    const declarator_extra = try ast.addExtras(&.{ @intFromEnum(binding), none, none });
+    const declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = name, .data = .{ .extra = declarator_extra } });
+    const declarators = try ast.addNodeList(&.{declarator});
+    const declaration_extra = try ast.addExtras(&.{
+        @intFromEnum(ast_mod.VariableDeclarationKind.@"var"),
+        declarators.start,
+        declarators.len,
     });
+    const declaration = try ast.addNode(.{ .tag = .variable_declaration, .span = name, .data = .{ .extra = declaration_extra } });
+    const root = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{ declaration, ref_node }));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
         .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
     };
-    var source_names: std.StringHashMapUnmanaged(usize) = .empty;
-    defer source_names.deinit(allocator);
-    try source_names.put(allocator, "x", 0);
-    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, source_names, .empty };
+    var output_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer output_names.deinit(allocator);
+    try output_names.put(allocator, "x", 0);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ output_names, .empty, .empty };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @enumFromInt(0), .origin_scope = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
     };
-    const symbol_ids = [_]?u32{ 0, null };
+    var symbol_ids = try allocator.alloc(?u32, ast.nodes.items.len);
+    @memset(symbol_ids, null);
+    symbol_ids[@intFromEnum(binding)] = 0;
+    symbol_ids[@intFromEnum(ref_node)] = 0;
     const references = [_]Reference{
+        .{ .node_index = .none, .declaration_node_index = binding, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
         .{ .node_index = ref_node, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -5713,8 +5746,8 @@ test "exact identity audit preserves visible source scopes whose owner was lower
         allocator,
         &ast,
         root,
-        0,
-        &symbol_ids,
+        @intCast(ast.nodes.items.len),
+        symbol_ids,
         &symbols,
         &scopes,
         &scope_maps,
@@ -5729,6 +5762,114 @@ test "exact identity audit preserves visible source scopes whose owner was lower
     try std.testing.expectEqual(@as(usize, 0), report.reference_scope_mismatch);
     try std.testing.expectEqual(@as(usize, 0), report.scope_resolution_mismatch);
     try std.testing.expectEqual(@as(usize, 0), report.invisible_reference);
+    try std.testing.expect(report.isClean());
+}
+
+test "exact identity audit rejects retained source scope when output binding shadows it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const name = try ast.addString("x");
+    const relocated_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const shadow_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
+    const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
+    const none = @intFromEnum(NodeIndex.none);
+
+    const relocated_declarator_extra = try ast.addExtras(&.{ @intFromEnum(relocated_binding), none, none });
+    const relocated_declarator = try ast.addNode(.{
+        .tag = .variable_declarator,
+        .span = name,
+        .data = .{ .extra = relocated_declarator_extra },
+    });
+    const relocated_declarators = try ast.addNodeList(&.{relocated_declarator});
+    const relocated_declaration_extra = try ast.addExtras(&.{
+        @intFromEnum(ast_mod.VariableDeclarationKind.@"var"),
+        relocated_declarators.start,
+        relocated_declarators.len,
+    });
+    const relocated_declaration = try ast.addNode(.{
+        .tag = .variable_declaration,
+        .span = name,
+        .data = .{ .extra = relocated_declaration_extra },
+    });
+
+    const shadow_declarator_extra = try ast.addExtras(&.{ @intFromEnum(shadow_binding), none, none });
+    const shadow_declarator = try ast.addNode(.{
+        .tag = .variable_declarator,
+        .span = name,
+        .data = .{ .extra = shadow_declarator_extra },
+    });
+    const shadow_declarators = try ast.addNodeList(&.{shadow_declarator});
+    const shadow_declaration_extra = try ast.addExtras(&.{
+        @intFromEnum(ast_mod.VariableDeclarationKind.let),
+        shadow_declarators.start,
+        shadow_declarators.len,
+    });
+    const shadow_declaration = try ast.addNode(.{
+        .tag = .variable_declaration,
+        .span = name,
+        .data = .{ .extra = shadow_declaration_extra },
+    });
+    const inner = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{ shadow_declaration, reference }));
+    const root = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{ relocated_declaration, inner }));
+
+    const scopes = [_]Scope{
+        .{ .parent = .none, .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(2), .kind = .block, .is_strict = false },
+    };
+    var output_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer output_names.deinit(allocator);
+    try output_names.put(allocator, "x", 0);
+    var shadow_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer shadow_names.deinit(allocator);
+    try shadow_names.put(allocator, "x", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ output_names, .empty, .empty, shadow_names };
+    const symbols = [_]Symbol{
+        .{ .name = name, .scope_id = @enumFromInt(0), .origin_scope = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @enumFromInt(3), .kind = .variable_let, .declaration_span = name },
+    };
+    var symbol_ids = try allocator.alloc(?u32, ast.nodes.items.len);
+    @memset(symbol_ids, null);
+    symbol_ids[@intFromEnum(relocated_binding)] = 0;
+    symbol_ids[@intFromEnum(shadow_binding)] = 1;
+    symbol_ids[@intFromEnum(reference)] = 0;
+    const references = [_]Reference{
+        .{ .node_index = .none, .declaration_node_index = relocated_binding, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .declaration_node_index = shadow_binding, .scope_id = @enumFromInt(3), .symbol_id = @enumFromInt(1), .flags = .{ .declare = true } },
+        .{ .node_index = reference, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+    };
+    var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer scope_owner_map.deinit(allocator);
+    try scope_owner_map.put(allocator, @intFromEnum(root), 2);
+    try scope_owner_map.put(allocator, @intFromEnum(inner), 3);
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+
+    const report = try checkExact(
+        allocator,
+        &ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        symbol_ids,
+        &symbols,
+        &scopes,
+        &scope_maps,
+        &scope_owner_map,
+        &references,
+        &.{},
+        &.{},
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), report.reference_scope_mismatch);
+    try std.testing.expect(!report.isClean());
 }
 
 test "exact identity audit preserves generated catch symbols after state-machine lowering" {
@@ -5756,7 +5897,7 @@ test "exact identity audit preserves generated catch symbols after state-machine
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = @enumFromInt(0), .kind = .catch_clause, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
     };
     var catch_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer catch_names.deinit(allocator);
@@ -5767,7 +5908,7 @@ test "exact identity audit preserves generated catch symbols after state-machine
     };
     const symbol_ids = [_]?u32{ 0, 0, null, null, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .declaration_node_index = binding, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
         .{ .node_index = ref, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
