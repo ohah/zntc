@@ -306,6 +306,97 @@ test "#4819 deferred generated temp owner follows exact allocation SymbolId" {
     try std.testing.expectEqual(@as(?usize, @intFromEnum(decoy_id)), editor.scope_maps.items[decoy_scope.toIndex()].get(transformer.ast.getText(name_span)));
 }
 
+test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const empty_list = try transformer.ast.addNodeList(&.{});
+    const params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
+    const owner_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = empty_list },
+    });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(owner_body), 0, none });
+    const owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = owner_extra },
+    });
+    const owner_scope = try transformer.addGeneratedFunctionScope(transformer.programScope(), owner);
+    transformer.current_scope = owner_scope;
+    transformer.state_machine_depth = 1;
+    defer transformer.state_machine_depth = 0;
+
+    const name_span = try transformer.ast.addString("_stack");
+    const binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const id = (try transformer.registerGeneratedWrapperTemp(binding, name_span, .EMPTY, owner_scope)) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(binding));
+    try std.testing.expectEqual(owner_scope, transformer.semantic_editor.?.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_bindings.items.len);
+    try std.testing.expectEqual(owner_scope, transformer.generator_state_bindings.items[0].owner_scope);
+    try std.testing.expect(!transformer.generator_state_bindings.items[0].deferred_wrapper_owner);
+
+    const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name_span);
+    try transformer.trackHoistedTempRefInScope(name_span, reference, owner_scope, .{ .read = true });
+    const statement = try transformer.ast.addNode(.{
+        .tag = .expression_statement,
+        .span = .EMPTY,
+        .data = .{ .unary = .{ .operand = reference, .flags = 0 } },
+    });
+    const callback_body_list = try transformer.ast.addNodeList(&.{statement});
+    const callback_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = callback_body_list },
+    });
+    const state_name = try transformer.ast.addString("_state");
+    const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
+    const callback_params_list = try transformer.ast.addNodeList(&.{state_parameter});
+    const callback_params = try transformer.ast.addFormalParameters(callback_params_list, .EMPTY);
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(callback_params), @intFromEnum(callback_body), 0, none });
+    const callback = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = callback_extra },
+    });
+    try transformer.bindGeneratedState(owner_scope, owner_scope, callback, state_parameter, 0, &.{}, &.{}, .EMPTY);
+
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(reference));
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
+    const reference_record = (try editor.referenceForNode(reference)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(id, reference_record.symbol_id);
+    try std.testing.expectEqual(owner_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expect(reference_record.scope_id != owner_scope);
+    var callback_scope_found = false;
+    var owners = editor.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (entry.key_ptr.* == @intFromEnum(callback) and entry.value_ptr.* == @intFromEnum(reference_record.scope_id))
+            callback_scope_found = true;
+    }
+    try std.testing.expect(callback_scope_found);
+}
+
 fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.compat.ESTarget, disable_top_level_await: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -553,8 +553,8 @@ pub fn ES2025Using(comptime Transformer: type) type {
 fn registerUsingVar(self: anytype, binding: NodeIndex, name_span: Span, declaration_span: Span) !?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     if (self.state_machine_depth > 0) {
-        try self.deferGeneratedWrapperTemp(binding, name_span);
-        return null;
+        const owner_scope = self.nearestVarScope(self.current_scope);
+        return self.registerGeneratedWrapperTemp(binding, name_span, declaration_span, owner_scope);
     }
     return self.declareSyntheticInScope(binding, declaration_span, SymbolKind.variable_var, self.nearestVarScope(self.current_scope));
 }

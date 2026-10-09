@@ -2998,13 +2998,16 @@ test "#4819 downlevel using lowering preserves exact transform identities" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    // The async-using lowering adds wrapper-owned temps while generator hoisting
-    // sees the same binding nodes. Keep that deferred owner attached by NodeIndex.
+    // Async-using temps receive their exact var owner before generator hoisting
+    // sees the same binding nodes. Keep the ID and owner stable across that handoff.
     const source = "function run(resource: any, _stack: any, _error: any, _hasError: any, _: any, __using: any, __callDispose: any) { " ++
         "using local = resource; return local + _stack; } " ++
         "async function wait(resource: any, _stack3: any, _error3: any, _hasError3: any) { " ++
         "await using asyncLocal = resource; { await using nestedLocal = resource; " ++
         "await Promise.resolve(nestedLocal); } return asyncLocal; } " ++
+        "async function nestedMachine(resource: any) { async function inner() { " ++
+        "await using nestedInner = resource; await Promise.resolve(nestedInner); } " ++
+        "await Promise.resolve(); return inner; } " ++
         "function nested(resource: any) { { using blockLocal = resource; use(blockLocal); } return 1; } " ++
         "function loop(resources: any) { for (using item of resources) use(item); }";
     var scanner = try Scanner.init(allocator, source);

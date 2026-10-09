@@ -98,8 +98,11 @@ pub const GeneratedTempBinding = struct {
     /// Existing source bindings retain their SymbolId when moved into output storage.
     symbol_id: ?u32 = null,
     /// `true` means this declaration belongs to the generated state-machine
-    /// callback; otherwise it belongs to the surrounding wrapper function.
+    /// callback. Otherwise `owner_scope` wins, with the wrapper as fallback.
     callback_local: bool = false,
+    /// Exact var owner known by a producer that created the binding before
+    /// the generated state-machine callback was assembled.
+    owner_scope: ScopeId = .none,
     /// The producer supplied the exact binding, while its wrapper owner was
     /// deferred until the enclosing state machine was assembled. Bind it by
     /// NodeIndex at that point instead of resolving its name in the scope map.
@@ -842,7 +845,7 @@ pub const Transformer = struct {
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const recordGeneratorStateTempSymbol = @import("transformer/semantic_edit.zig").recordGeneratorStateTempSymbol;
-    pub const deferGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").deferGeneratedWrapperTemp;
+    pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
     pub const bindLexicalCaptureToExistingSymbol = @import("transformer/semantic_edit.zig").bindLexicalCaptureToExistingSymbol;
