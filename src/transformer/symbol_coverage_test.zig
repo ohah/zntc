@@ -3408,6 +3408,145 @@ test "#4819 private method helpers retain their producer SymbolIds" {
     }
 }
 
+test "#4819 class-self captured private methods keep separate inner and outer function SymbolIds" {
+    const source =
+        \\class Methods {
+        \\  #guard() { return Methods; }
+        \\  #read() { return this.#guard(); }
+        \\  read() { return this.#read(); }
+        \\}
+        \\new Methods().read();
+    ;
+
+    for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015 }) |target| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        const original_symbol_count = analyzer.symbols.items.len;
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(target),
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        const edited = (try transformer.finishSemanticEdit()).?;
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+
+        var binding_ids: [2]?u32 = .{ null, null };
+        var binding_count: usize = 0;
+        var read_counts: [2]usize = .{ 0, 0 };
+        var write_counts: [2]usize = .{ 0, 0 };
+        for (nodes) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .binding_identifier) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_guard_fn")) continue;
+            const sid = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+            try std.testing.expect(sid >= original_symbol_count);
+            if (binding_count >= binding_ids.len) return error.TestUnexpectedResult;
+            binding_ids[binding_count] = sid;
+            binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), binding_count);
+        try std.testing.expect(binding_ids[0] != null and binding_ids[1] != null);
+        try std.testing.expect(binding_ids[0].? != binding_ids[1].?);
+
+        for (nodes) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_guard_fn")) continue;
+            const sid = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+            const binding_index: usize = if (sid == binding_ids[0].?)
+                0
+            else if (sid == binding_ids[1].?)
+                1
+            else
+                return error.TestUnexpectedResult;
+            var rows: usize = 0;
+            for (edited.references) |ref| {
+                if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
+                try std.testing.expectEqual(sid, @intFromEnum(ref.symbol_id));
+                const symbol = edited.symbols.items[sid];
+                try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, symbol.scope_id));
+                if (ref.flags.read) read_counts[binding_index] += 1;
+                if (ref.flags.write) write_counts[binding_index] += 1;
+                rows += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), rows);
+        }
+
+        const outer_index: usize = if (write_counts[0] > 0) 0 else 1;
+        const inner_index = 1 - outer_index;
+        try std.testing.expect(write_counts[outer_index] > 0);
+        try std.testing.expectEqual(@as(usize, 0), write_counts[inner_index]);
+        try std.testing.expect(read_counts[outer_index] > 0);
+        try std.testing.expect(read_counts[inner_index] > 0);
+    }
+}
+
+test "#4819 static private method extraction retains class-self capture from parameters" {
+    const source =
+        \\class Counter {
+        \\  static #method(value = Counter) {
+        \\    function nested() { return Counter; }
+        \\    return [Counter, value, nested()];
+        \\  }
+        \\  static #evalClass() { return eval('Counter'); }
+        \\  static #assignClass() { Counter = null; }
+        \\  static #shadow(Counter) { function nested() { return Counter; } return [Counter, nested()]; }
+        \\  static get #entry() { return Counter; }
+        \\  static set #entry(value) { globalThis.observedClass = Counter; }
+        \\  static run() { return this.#method(); }
+        \\  static evalRun() { return this.#evalClass(); }
+        \\  static assignRun() { return this.#assignClass(); }
+        \\  static shadowRun() { return this.#shadow('parameter'); }
+        \\  static read() { return this.#entry; }
+        \\  static write() { this.#entry = 1; }
+        \\}
+        \\const Saved = Counter;
+        \\Counter = null;
+        \\Saved.run();
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    _ = try transformer.finishSemanticEdit();
+}
+
 test "#4819 synthesized private accessors retain exact function and parameter scopes" {
     const source =
         \\class Accessors {

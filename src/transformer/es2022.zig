@@ -489,7 +489,14 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (emit_method_standalone[i]) {
                     try pre_stmts.append(self.allocator, method_function_values[i]);
                 } else if (m.class_name == null) {
-                    const assignment = try es_helpers.buildCapturedFunctionAssignment(self, m.func_name, method_function_values[i], span);
+                    const assignment = try es_helpers.buildCapturedFunctionAssignment(
+                        self,
+                        m.func_name,
+                        method_function_values[i],
+                        span,
+                        m.func_outer_binding_node,
+                        m.func_outer_symbol_id,
+                    );
                     try pre_stmts.append(self.allocator, assignment.declaration);
                     try desc_target.append(self.allocator, assignment.assignment);
                 }

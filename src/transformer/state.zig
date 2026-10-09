@@ -1,5 +1,6 @@
 const Span = @import("../lexer/token.zig").Span;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const es_helpers = @import("es_helpers.zig");
 
 /// transformer 가 보유한 AST 의 소유 관계.
@@ -83,11 +84,20 @@ pub const PrivateMethodMapping = struct {
     weakset_binding_node: NodeIndex = NodeIndex.none,
     weakset_symbol_id: ?u32 = null,
     func_name: []const u8, // "_method_fn" / "_method_get" / "_method_set"
-    /// Exact standalone-function binding when the method does not need a
-    /// class-self capture factory. Captured methods retain the name-scan path
-    /// until their inner and outer bindings are represented separately.
+    /// Exact standalone-function binding, or the inner function binding in a
+    /// class-self capture factory.
     func_binding_node: NodeIndex = NodeIndex.none,
     func_symbol_id: ?u32 = null,
+    /// Scope reserved for the captured function's class-self factory. The
+    /// function binding above belongs to this scope when it is non-none.
+    func_factory_scope: ScopeId = .none,
+    /// Source class-self identity used by the pre-lowering capture classifier.
+    /// Later class/helper visits can change the active transformer context.
+    capture_class_self_symbol_id: ?u32 = null,
+    /// Captured instance methods expose the returned closure through an outer
+    /// variable with the same spelling as the inner function declaration.
+    func_outer_binding_node: NodeIndex = NodeIndex.none,
+    func_outer_symbol_id: ?u32 = null,
     member_idx: NodeIndex = NodeIndex.none,
     /// Exact parser method owner; member_idx may be a transformed copy.
     source_member_idx: NodeIndex = NodeIndex.none,
