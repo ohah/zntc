@@ -190,7 +190,9 @@ pub fn stateMachineOwnerScope(self: *Transformer, owner: NodeIndex) ScopeId {
 /// Register one state machine callback and its exact pending `_state` uses.
 pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, wrapper_temps: []const @import("lists.zig").HoistedStateTemp, callback_temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
     if (ref_start > self.generator_state_refs.items.len) std.debug.panic("invalid state machine frame", .{});
-    if (self.semantic_edit_enabled and !parent.isNone()) {
+    if (self.semantic_edit_enabled) {
+        if (parent.isNone() or source_scope.isNone() or callback.isNone() or parameter.isNone())
+            std.debug.panic("state callback has no exact owner scope or binding nodes", .{});
         const editor = try editorFor(self);
         const scope = try addGeneratedFunctionScope(self, parent, callback);
         const symbol = try declareSyntheticInScope(self, parameter, span, .parameter, scope);
@@ -259,17 +261,6 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
             migration.state_callback_scope = scope;
         }
         try migrateDeferredGeneratorLoopBodies(self, source_scope);
-    } else if (self.semantic_edit_enabled) {
-        if (callback.isNone() or parameter.isNone())
-            std.debug.panic("deferred state callback has no exact owner or parameter", .{});
-        const references = try self.allocator.dupe(NodeIndex, self.generator_state_refs.items[ref_start..]);
-        errdefer self.allocator.free(references);
-        try self.deferred_generated_state_symbols.append(self.allocator, .{
-            .callback = callback,
-            .parameter = parameter,
-            .references = references,
-            .span = span,
-        });
     }
     self.generator_state_refs.shrinkRetainingCapacity(ref_start);
 }
@@ -1527,52 +1518,7 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
             try stack.append(self.allocator, .{ .node = child, .scope = child_scope });
         }
     }
-    try bindDeferredGeneratedStateSymbols(self, &seen);
     self.deferred_generator_helper_refs.clearRetainingCapacity();
-}
-
-/// Complete only the state callbacks recorded by their producer. The final AST
-/// supplies their owner ScopeId; names are never used to rediscover a binding.
-fn bindDeferredGeneratedStateSymbols(self: *Transformer, reachable_nodes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
-    for (self.deferred_generated_state_symbols.items) |deferred| {
-        const callback_raw = @intFromEnum(deferred.callback);
-        if (!reachable_nodes.contains(callback_raw)) continue;
-        const callback_scope = self.outputOwnedScope(deferred.callback) orelse
-            std.debug.panic("deferred state callback has no registered output scope", .{});
-        if (self.ast.getNode(deferred.parameter).tag != .binding_identifier)
-            std.debug.panic("deferred state parameter is not a binding identifier", .{});
-        if (self.getSymbolIdAt(deferred.parameter) != null)
-            std.debug.panic("deferred state parameter already has a SymbolId", .{});
-        const symbol = (try self.declareSyntheticInScope(deferred.parameter, deferred.span, .parameter, callback_scope)) orelse
-            std.debug.panic("deferred state parameter did not receive a SymbolId", .{});
-
-        var pending: std.AutoHashMapUnmanaged(u32, void) = .empty;
-        defer pending.deinit(self.allocator);
-        for (deferred.references) |reference| try pending.put(self.allocator, @intFromEnum(reference), {});
-        var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
-        defer visited.deinit(self.allocator);
-        var stack: std.ArrayList(NodeIndex) = .empty;
-        defer stack.deinit(self.allocator);
-        try stack.append(self.allocator, deferred.callback);
-        while (stack.pop()) |node| {
-            if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
-            const raw = @intFromEnum(node);
-            if (visited.contains(raw)) continue;
-            try visited.put(self.allocator, raw, {});
-            if (pending.contains(raw)) {
-                if (self.ast.getNode(node).tag != .identifier_reference)
-                    std.debug.panic("deferred state reference is not an identifier reference", .{});
-                if (self.getSymbolIdAt(node) != null)
-                    std.debug.panic("deferred state reference already has a SymbolId", .{});
-                try self.addSyntheticRefInScope(node, symbol, callback_scope, .{ .read = true });
-            }
-            var it = ast_walk.children(self.ast, self.ast.getNode(node));
-            while (it.next()) |child| try stack.append(self.allocator, child);
-        }
-    }
-    for (self.deferred_generated_state_symbols.items) |deferred|
-        self.allocator.free(deferred.references);
-    self.deferred_generated_state_symbols.clearRetainingCapacity();
 }
 
 fn generatedFunctionNameKind(flags: u32) SymbolKind {
