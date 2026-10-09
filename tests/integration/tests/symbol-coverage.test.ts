@@ -9773,6 +9773,23 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '43 42 2 -2\n',
       },
       {
+        name: 'whitespace-only minification keeps the exact graph for safe static fields',
+        source:
+          'var seed = 41; class WhitespaceOnly { static value = seed + 1; } console.log(WhitespaceOnly.value);',
+        graph: 'retained',
+        output: '42\n',
+        minifyWhitespace: true,
+      },
+      {
+        name: 'syntax minification still uses semantic reanalysis',
+        source:
+          'var seed = 41; class SyntaxMinified { static value = seed + 1; } console.log(SyntaxMinified.value);',
+        graph: 'reanalyzed',
+        output: '42\n',
+        minifyWhitespace: true,
+        minifySyntax: true,
+      },
+      {
         name: 'static field reads its exact class declaration binding',
         source:
           'class StaticSelf { static self = StaticSelf; } console.log(StaticSelf.self === StaticSelf);',
@@ -10920,23 +10937,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       const output = join(dir, 'out.cjs');
       writeFileSync(entry, fixture.source);
       try {
-        const proc = spawnSync(
-          ZNTC_BIN,
-          [
-            '--bundle',
-            entry,
-            '--target=es5',
-            '--platform=node',
-            '--format=cjs',
-            '--minify-identifiers',
-            '-o',
-            output,
-          ],
-          {
-            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-            encoding: 'utf8',
-          },
-        );
+        const args = [
+          '--bundle',
+          entry,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+        ];
+        if ('minifyWhitespace' in fixture && fixture.minifyWhitespace) {
+          args.push('--minify-whitespace');
+        }
+        if ('minifySyntax' in fixture && fixture.minifySyntax) {
+          args.push('--minify-syntax');
+        }
+        args.push('-o', output);
+        const proc = spawnSync(ZNTC_BIN, args, {
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
         expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
 
         const lines = (proc.stderr ?? '').split(/\0|\r?\n/);
