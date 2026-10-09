@@ -295,6 +295,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
             var cm = try classifyMembers(self, body_idx, span, name_span);
             defer cm.deinit(self.allocator);
+            try es_helpers.reservePrivateMethodWeakSetSymbols(self, cm.private_methods.items, iife_scope, span);
             try bindComputedKeyTemps(self, &cm, iife_scope, span);
             const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
             const inner = self.class_self_symbol_map.get(@intFromEnum(source_idx)) orelse
@@ -674,6 +675,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 try self.reserveGeneratedFunctionScope(iife_parent)
             else
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
+            try es_helpers.reservePrivateMethodWeakSetSymbols(self, cm.private_methods.items, iife_scope, span);
             total_private_ce = try setupPrivateFieldMappings(self, &cm, name_span, iife_scope, span);
             var expr_super_param_binding: NodeIndex = .none;
             if (super_span) |param_span| {
@@ -720,7 +722,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
                 if (pm.class_name != null) continue;
-                const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, span);
+                const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, pm.weakset_symbol_id, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }
 

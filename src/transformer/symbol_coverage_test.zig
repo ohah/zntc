@@ -3320,6 +3320,89 @@ test "#4819 private field helper references retain their producer SymbolIds" {
     }
 }
 
+test "#4819 private method WeakSet helpers retain their producer SymbolIds" {
+    const source =
+        \\class Methods {
+        \\  #guard() { return 1; }
+        \\  #read() { return this.#guard(); }
+        \\  get #entry() { return this.#guard(); }
+        \\  set #entry(value) { this.#guard(); }
+        \\  has(other) { return #guard in other; }
+        \\  static #staticGate() { return 3; }
+        \\  static readStatic() { return Methods.#staticGate(); }
+        \\  read() { return this.#read() + this.#entry; }
+        \\}
+        \\new Methods().read();
+    ;
+
+    for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015 }) |target| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        const original_symbol_count = analyzer.symbols.items.len;
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(target),
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        const edited = (try transformer.finishSemanticEdit()).?;
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+
+        const helper_names = [_][]const u8{ "_guard", "_read", "_entry", "_staticGate" };
+        for (helper_names) |helper_name| {
+            var helper_id: ?u32 = null;
+            var bindings: usize = 0;
+            var references: usize = 0;
+            for (nodes) |raw| {
+                const node = transformer.ast.nodes.items[raw];
+                if (node.tag != .binding_identifier and node.tag != .identifier_reference and node.tag != .assignment_target_identifier)
+                    continue;
+                if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), helper_name)) continue;
+                const sid = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+                try std.testing.expect(sid >= original_symbol_count);
+                if (helper_id) |expected| {
+                    try std.testing.expectEqual(expected, sid);
+                } else {
+                    helper_id = sid;
+                }
+                if (node.tag == .binding_identifier) {
+                    bindings += 1;
+                    continue;
+                }
+
+                var rows: usize = 0;
+                for (edited.references) |ref| {
+                    if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
+                    try std.testing.expectEqual(sid, @intFromEnum(ref.symbol_id));
+                    const symbol = edited.symbols.items[sid];
+                    try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, symbol.scope_id));
+                    rows += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), rows);
+                references += 1;
+            }
+            try std.testing.expect(helper_id != null);
+            try std.testing.expectEqual(@as(usize, 1), bindings);
+            try std.testing.expect(references > 0);
+        }
+    }
+}
+
 test "#4819 synthesized private accessors retain exact function and parameter scopes" {
     const source =
         \\class Accessors {

@@ -388,6 +388,12 @@ pub fn ES2022(comptime Transformer: type) type {
                     mapping.binding_node = binding;
                     mapping.symbol_id = @intFromEnum(id);
                 }
+                try es_helpers.reservePrivateMethodWeakSetSymbols(
+                    self,
+                    method_mappings.items,
+                    private_helper_scope,
+                    span,
+                );
             }
 
             // standalone fn body visit과 Pass 2 body visit 모두 this.#field / this.#method() 참조를
@@ -463,12 +469,12 @@ pub fn ES2022(comptime Transformer: type) type {
                                 .setter => setter_fn = value,
                             }
                         }
-                        const desc = try es_helpers.buildStaticPrivateMethodDescriptor(self, m.weakset_name, method_fn, getter_fn, setter_fn, span);
+                        const desc = try es_helpers.buildStaticPrivateMethodDescriptor(self, m.weakset_name, method_fn, getter_fn, setter_fn, span, m.weakset_binding_node);
                         try desc_target.append(self.allocator, desc);
                         self.runtime_helpers.class_static_private_field = true;
                     }
                 } else {
-                    const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span, .none);
+                    const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span, m.weakset_binding_node);
                     try pre_stmts.append(self.allocator, ws_decl);
                 }
                 if (emit_method_standalone[i]) {
@@ -502,7 +508,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     const m = method_mappings.items[method_mapping_idx];
                     method_mapping_idx += 1;
                     if (m.class_name == null) {
-                        const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, span);
+                        const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, m.weakset_symbol_id, span);
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
                     continue;
@@ -795,12 +801,12 @@ pub fn ES2022(comptime Transformer: type) type {
                 self.runtime_helpers.class_static_private_field = true;
                 const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
                 const class_ref = try self.makeUserRefNamed(class_name, mapping.class_name_node);
-                const desc_ref = try es_helpers.makeSyntheticRef(self, mapping.weakset_name);
+                const desc_ref = try es_helpers.makePrivateMethodWeakSetRef(self, mapping);
                 return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
             }
             self.runtime_helpers.class_private_method_get = true;
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const ws_ref = try es_helpers.makeSyntheticRef(self, mapping.weakset_name);
+            const ws_ref = try es_helpers.makePrivateMethodWeakSetRef(self, mapping);
             const fn_ref = try es_helpers.makeSyntheticRef(self, mapping.func_name);
             return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
         }
