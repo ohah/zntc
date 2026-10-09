@@ -276,6 +276,10 @@ pub const Transformer = struct {
     /// Manual generator operation collection carries lexical insertion context
     /// separately from `current_scope`, which remains the visitor's source scope.
     generator_operation_scope: ScopeId = .none,
+    /// Exact function scope owning the state machine currently being collected.
+    /// Source-node scope owners can still point outside extracted generator
+    /// loops, so generated wrapper temps must use this scope when available.
+    generator_state_machine_scope: ScopeId = .none,
     /// 첫 합성 바인딩이 필요할 때만 기존 의미 정보를 복사한다.
     semantic_edit_enabled: bool = false,
     semantic_editor: ?SemanticEditor = null,

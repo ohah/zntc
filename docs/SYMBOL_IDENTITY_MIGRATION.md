@@ -13,6 +13,8 @@
 - 최종 이름 결정은 비-minify 출력도 포함한다. 미해결 전역, direct `eval`/`with`, export/property 이름, 외부 runtime 계약을 먼저 보존·예약하고 모든 내부 이름 소비자가 같은 결과를 사용한다.
 - 출력 별칭과 원본 함수·클래스의 `.name`은 별도 계약이다. alias 예약은 Unicode escape를 해석한 identifier StringValue로 비교하고, 이름 복원은 정확한 초기화 식 노드와 선언 SID에 연결한다. 같은 선언의 이름을 변환기와 codegen이 중복 복원하지 않는다.
 - 의도적인 분석 생략 또는 저수준 Transformer의 `semantic_edit_enabled=false` 경로는 적용 범위를 별도로 기록한다. 해당 경로의 `null`을 심볼 기반 경로에서 누락을 허용하는 근거로 사용하지 않는다.
+- generator 상태 머신 안에서 추출된 루프의 `for-in` 임시변수는 원본 loop node의 오래된 scope 대신 현재 상태 머신의 정확한 wrapper function `ScopeId`에 등록한다. 최종 hoist binding도 이 SID를 재사용한다.
+- exact coverage 보고서는 observation·diagnostic·invariant의 field name과 분류를 stable schema fingerprint로 출력하고 integration gate가 독립 상수와 대조한다. field 개수만 같은 진단 항목 교체도 통과하지 않는다. observation과 diagnostic field의 type shape도 컴파일 시 검증한다.
 
 ## 이름 생성자와 남은 경계
 

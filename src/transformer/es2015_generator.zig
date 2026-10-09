@@ -283,6 +283,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span, wrapper_scope: ScopeId) Transformer.Error!StateMachineResult {
             if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
+            const saved_state_machine_scope = self.generator_state_machine_scope;
+            self.generator_state_machine_scope = wrapper_scope;
+            defer self.generator_state_machine_scope = saved_state_machine_scope;
+
             const body = self.ast.getNode(body_idx);
 
             // expression body (arrow function): implicit return으로 처리
@@ -439,8 +443,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const id = try self.declareSyntheticTempInScope(binding, span, wrapper_scope) orelse
                         std.debug.panic("generated generator wrapper temp lost its SymbolId", .{});
                     if (self.generator_state_temp_symbols.get(temp_span.start)) |recorded| {
-                        if (recorded != @intFromEnum(id))
+                        if (recorded != @intFromEnum(id)) {
                             std.debug.panic("generator temp producer and wrapper registration disagree on SymbolId", .{});
+                        }
                     }
                     break :blk @intFromEnum(id);
                 } else self.generator_state_temp_symbols.get(temp_span.start);
