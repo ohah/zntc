@@ -19,6 +19,7 @@ const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
+const define_mod = @import("../../transformer/transformer/define.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
@@ -2872,6 +2873,13 @@ fn runtimeHelpersSafeForRetainedGraph(
     return !other_helpers.hasAny();
 }
 
+fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag == .property_definition) return true;
+    }
+    return false;
+}
+
 fn canKeepPrepassSemanticGraph(
     self: anytype,
     module: *const Module,
@@ -2883,8 +2891,13 @@ fn canKeepPrepassSemanticGraph(
     const semantic = &module.semantic.?;
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
-    if (self.worklet_transform or self.react_refresh or self.styled_components or self.emotion or
+    if (self.worklet_transform or self.react_refresh or self.emotion or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
+    // The displayName/namespace styled-components visitor only wraps existing
+    // expressions and preserves every source binding/reference. CSS-prop mode
+    // injects a new package import, whose module-graph edge must still be
+    // reconciled by the full prepass.
+    if (options.styled_components_css_prop) return false;
     if (!options.strip_types) return false;
     const classic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .classic;
     const automatic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic;
@@ -2898,8 +2911,8 @@ fn canKeepPrepassSemanticGraph(
     // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
         options.drop_console or options.drop_debugger or
-        options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
-        !options.use_define_for_class_fields or options.experimental_decorators or
+        options.drop_labels.len != 0 or define_mod.astUsesDefine(ast, options.define) or options.module_specifier_map.len != 0 or
+        (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
     // The parser already records native TLA exactly. Lowered TLA moves await
@@ -2908,7 +2921,8 @@ fn canKeepPrepassSemanticGraph(
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
     if (!hasStableRuntimeImports(ast, options)) return false;
 
-    var found_transform = graph_editable_jsx or safe_graph_subset;
+    const safe_styled_components = options.styled_components and !options.styled_components_css_prop;
+    var found_transform = graph_editable_jsx or safe_graph_subset or safe_styled_components;
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");

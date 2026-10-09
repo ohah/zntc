@@ -4450,12 +4450,17 @@ pub const SemanticAnalyzer = struct {
             switch (spec_node.tag) {
                 .import_default_specifier => {
                     try self.checkStrictBindingName(spec_node.span);
-                    // D20: predeclareImportDecl 가 1st-pass 에 user import 를 이미
-                    // .import_binding symbol 로 등록 — 중복 declare 방지 (func/var
-                    // predeclare-skip 패턴과 동일). default/namespace 는 helper 가
-                    // 아니므로 (helper 는 named only) predeclare 가 항상 처리.
-                    if (self.isInPredeclaredScope()) continue;
-                    try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
+                    if (self.isHelperRefNode(spec_idx)) {
+                        // CSS-prop can inject a default styled-components import.
+                        // predeclareImportDecl skips marked helpers, so register
+                        // this binding in the isolated helper map like named helpers.
+                        try self.declareHelperImportSpec(spec_node.span, spec_node.span, @intFromEnum(spec_idx));
+                    } else {
+                        // D20: predeclareImportDecl registered ordinary top-level
+                        // imports in pass one. Preserve the fallback for nested imports.
+                        if (self.isInPredeclaredScope()) continue;
+                        try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
+                    }
                 },
                 .import_namespace_specifier => {
                     try self.checkStrictBindingName(spec_node.span);

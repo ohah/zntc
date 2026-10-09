@@ -1006,6 +1006,185 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('styled-components display-name transform retains its exact prepass graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-styled-prepass-exact-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'index.ts'),
+      [
+        "import styled from 'styled-components';",
+        'export const Button = styled.button`color: red;`;',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'zntc.config.json'),
+      JSON.stringify({ compiler: { styledComponents: { namespace: 'audit' } } }),
+    );
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({
+        compilerOptions: { verbatimModuleSyntax: true, useDefineForClassFields: false },
+      }),
+    );
+    try {
+      const proc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'index.ts',
+          '--external',
+          'styled-components',
+          '--use-define-for-class-fields=false',
+          '--verbatim-module-syntax',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const reports = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(reports, proc.stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0])).toEqual([]);
+
+      const modes = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(modes, proc.stderr).toHaveLength(1);
+      expect(modes[0], proc.stderr).toContain('semantic_graph=retained');
+
+      const bundle = readFileSync(output, 'utf8');
+      expect(bundle).toContain('withConfig');
+      expect(bundle).toContain('audit__');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('styled-components CSS-prop import keeps semantic reanalysis enabled', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-styled-css-prop-prepass-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'index.tsx'),
+      'export const App = () => <main css={{ color: "red" }} />;',
+    );
+    writeFileSync(
+      join(dir, 'zntc.config.json'),
+      JSON.stringify({ compiler: { styledComponents: { cssProp: true, namespace: 'audit' } } }),
+    );
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { verbatimModuleSyntax: true } }),
+    );
+    try {
+      const proc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'index.tsx',
+          '--external',
+          'styled-components',
+          '--verbatim-module-syntax',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const reports = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(reports, proc.stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0]), proc.stderr).toEqual([]);
+
+      const modes = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(modes, proc.stderr).toHaveLength(1);
+      expect(modes[0], proc.stderr).toContain('semantic_graph=reanalyzed');
+
+      const bundle = readFileSync(output, 'utf8');
+      expect(bundle).toContain('styled-components');
+      expect(bundle).toContain('styled.main');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('styled-components define replacement keeps semantic reanalysis enabled', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-styled-prepass-define-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'index.ts'),
+      [
+        "import styled from 'styled-components';",
+        'export const Button = styled.button`color: red;`;',
+        'export const BuildValue = __ZNTC_SYMBOL_GATE__;',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'zntc.config.json'),
+      JSON.stringify({ compiler: { styledComponents: { namespace: 'audit' } } }),
+    );
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      JSON.stringify({ compilerOptions: { verbatimModuleSyntax: true } }),
+    );
+    try {
+      const proc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'index.ts',
+          '--external',
+          'styled-components',
+          '--define:__ZNTC_SYMBOL_GATE__=123',
+          '--verbatim-module-syntax',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const reports = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(reports, proc.stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0])).toEqual([]);
+
+      const modes = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(modes, proc.stderr).toHaveLength(1);
+      expect(modes[0], proc.stderr).toContain('semantic_graph=reanalyzed');
+
+      const bundle = readFileSync(output, 'utf8');
+      expect(bundle).toContain('123');
+      expect(bundle).toContain('withConfig');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 exponentiation lowering reserves generated Math across modules', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-es5-exponentiation-global-'));
     const cases = [

@@ -2372,11 +2372,12 @@ fn checkExactImpl(
     var helper_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer helper_refs.deinit(allocator);
     for (helper_reference_nodes) |node| try helper_refs.put(allocator, node, {});
-    // Runtime helper markers include both local call/import nodes and, for
-    // defensive coverage, import_specifier.left (the imported export name).
-    // The export-name slot is not a local binding unless it aliases the local
-    // slot itself; every reachable local/call node must resolve through the
-    // exact helper map entry and carry that SymbolId.
+    // Runtime helper markers include local call/import nodes, including a
+    // default-import specifier used as its own binding node, and for defensive
+    // coverage import_specifier.left (the imported export name). The export-name
+    // slot is not a local binding unless it aliases the local slot itself;
+    // every reachable local/call node must resolve through the exact helper
+    // map entry and carry that SymbolId.
     for (helper_reference_nodes) |raw| {
         if (raw >= ast.nodes.items.len) {
             report.helper_symbol_mismatch += 1;
@@ -2398,7 +2399,9 @@ fn checkExactImpl(
             }
         }
         const node = ast.nodes.items[raw];
-        if (node.tag != .identifier_reference and node.tag != .jsx_identifier) {
+        if (node.tag != .identifier_reference and node.tag != .jsx_identifier and
+            node.tag != .import_default_specifier)
+        {
             report.helper_symbol_mismatch += 1;
             continue;
         }
