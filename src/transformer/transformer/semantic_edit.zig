@@ -164,6 +164,7 @@ pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
 pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, wrapper_temps: []const @import("lists.zig").HoistedStateTemp, callback_temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
     if (ref_start > self.generator_state_refs.items.len) std.debug.panic("invalid state machine frame", .{});
     if (self.semantic_edit_enabled and !parent.isNone()) {
+        const editor = try editorFor(self);
         const scope = try addGeneratedFunctionScope(self, parent, callback);
         const symbol = try declareSyntheticInScope(self, parameter, span, .parameter, scope);
         try reparentDeferredGeneratorLoops(self, source_scope, scope);
@@ -196,7 +197,17 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
             try bindStateCallbackTemp(self, temp, span, source_scope, source_scope, scope, &seen, &live_scopes, &callback_traces);
         }
         for (self.generator_state_bindings.items) |temp| {
-            const binding_scope = if (temp.callback_local) scope else source_scope;
+            const binding_scope = if (temp.callback_local)
+                scope
+            else if (!temp.owner_scope.isNone())
+                temp.owner_scope
+            else
+                source_scope;
+            if (!temp.callback_local and !temp.owner_scope.isNone() and temp.symbol_id == null)
+                std.debug.panic("generated wrapper temp has an owner but no exact SymbolId", .{});
+            if (!temp.callback_local and !temp.owner_scope.isNone() and
+                !scopeWithin(editor.scopes.items, binding_scope, source_scope))
+                std.debug.panic("generated wrapper temp owner is outside its source function", .{});
             if (temp.symbol_id != null) {
                 try bindStateCallbackTemp(self, temp, span, source_scope, binding_scope, scope, &seen, &live_scopes, &callback_traces);
             } else if (temp.callback_local) {
@@ -2289,19 +2300,28 @@ pub fn recordGeneratorStateTempSymbol(self: *Transformer, name_span: Span, symbo
     gop.value_ptr.* = @intFromEnum(id);
 }
 
-pub fn deferGeneratedWrapperTemp(self: *Transformer, binding: NodeIndex, name_span: Span) Transformer.Error!void {
-    if (!self.semantic_edit_enabled) return;
-    if (self.state_machine_depth == 0) std.debug.panic("generated wrapper temp deferred outside state-machine lowering", .{});
+pub fn registerGeneratedWrapperTemp(self: *Transformer, binding: NodeIndex, name_span: Span, declaration_span: Span, owner_scope: ScopeId) Transformer.Error!?SymbolId {
+    if (!self.semantic_edit_enabled) return null;
+    if (self.state_machine_depth == 0) std.debug.panic("generated wrapper temp registered outside state-machine lowering", .{});
+    if (owner_scope.isNone() or variableScope(self, owner_scope) != owner_scope)
+        std.debug.panic("generated wrapper temp has no exact var owner", .{});
+    const symbol = try declareSyntheticTempInScope(self, binding, declaration_span, owner_scope);
+    const id = symbol orelse std.debug.panic("generated wrapper temp registration lost its SymbolId", .{});
     for (self.generator_state_bindings.items) |existing| {
-        if (existing.binding == binding) return;
+        if (existing.binding != binding) continue;
+        if (existing.name_span.start != name_span.start or existing.name_span.end != name_span.end or
+            existing.symbol_id != @intFromEnum(id) or existing.owner_scope != owner_scope or existing.callback_local)
+            std.debug.panic("generated wrapper temp was registered with conflicting identity", .{});
+        return id;
     }
     try self.generator_state_bindings.append(self.allocator, .{
         .binding = binding,
         .name_span = name_span,
-        .symbol_id = self.getSymbolIdAt(binding),
+        .symbol_id = @intFromEnum(id),
         .callback_local = false,
-        .deferred_wrapper_owner = true,
+        .owner_scope = owner_scope,
     });
+    return id;
 }
 
 fn declareSynthetic(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind) Transformer.Error!?SymbolId {
