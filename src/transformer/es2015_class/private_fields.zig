@@ -9,7 +9,6 @@ const Span = token_mod.Span;
 const es_helpers = @import("../es_helpers.zig");
 const es2022 = @import("../es2022.zig");
 const assign_ops = @import("assign_ops.zig");
-const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
@@ -202,38 +201,36 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 } else if (pm.class_name == null) {
                     const post_class = post_class_out orelse
                         std.debug.panic("captured instance private method has no post-class emission list", .{});
-                    const assignment = try es_helpers.buildCapturedFunctionAssignment(self, pm.func_name, function_values[i], span);
+                    const assignment = try es_helpers.buildCapturedFunctionAssignment(
+                        self,
+                        pm.func_name,
+                        function_values[i],
+                        span,
+                        pm.func_outer_binding_node,
+                        pm.func_outer_symbol_id,
+                    );
                     try self.scratch.append(self.allocator, assignment.declaration);
                     try post_class.append(self.allocator, assignment.assignment);
                 }
             }
         }
 
-        /// Private method lowering creates declarations and references in several
-        /// helpers before the enclosing class IIFE is complete. Once its owner
-        /// scope is known, bind the exact generated names across that live tree.
+        /// Private method lowering creates references before the enclosing
+        /// class tree is complete. Finalize those exact node/SymbolId pairs once
+        /// the emitted scope ancestry is available.
         pub fn trackPrivateMethodSymbols(self: *Transformer, root: NodeIndex, pms: []const Transformer.PrivateMethodMapping, pfs: []const Transformer.PrivateFieldMapping, root_scope: ScopeId) Transformer.Error!void {
             if (!self.semantic_edit_enabled or (pms.len == 0 and pfs.len == 0)) return;
-            const PrivateName = struct { kind: SymbolKind };
-            const Binding = struct { name: []const u8, node: NodeIndex, kind: SymbolKind, scope: ScopeId, raw_id: u32 };
-            const Ref = struct { node: NodeIndex, scope: ScopeId };
-            var names: std.StringHashMapUnmanaged(PrivateName) = .empty;
-            defer names.deinit(self.allocator);
-            var function_names: std.StringHashMapUnmanaged(void) = .empty;
-            defer function_names.deinit(self.allocator);
             var private_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer private_symbol_ids.deinit(self.allocator);
             for (pms) |pm| {
                 const weakset_id = pm.weakset_symbol_id orelse
                     std.debug.panic("private method mapping has no direct WeakSet SymbolId", .{});
                 try private_symbol_ids.put(self.allocator, weakset_id, {});
-                if (pm.func_symbol_id) |function_id| {
-                    try private_symbol_ids.put(self.allocator, function_id, {});
-                } else {
-                    const fn_entry = try names.getOrPut(self.allocator, pm.func_name);
-                    if (!fn_entry.found_existing) fn_entry.value_ptr.* = .{ .kind = .function_decl };
-                    try function_names.put(self.allocator, pm.func_name, {});
-                }
+                const function_id = pm.func_symbol_id orelse
+                    std.debug.panic("private method mapping has no direct function SymbolId", .{});
+                try private_symbol_ids.put(self.allocator, function_id, {});
+                if (pm.func_outer_symbol_id) |outer_id|
+                    try private_symbol_ids.put(self.allocator, outer_id, {});
             }
             for (pfs) |pf| {
                 const raw_id = pf.symbol_id orelse std.debug.panic("private field mapping has no direct SymbolId", .{});
@@ -252,11 +249,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 gop.value_ptr.* = pending.symbol_id;
             }
 
-            var bindings: std.ArrayList(Binding) = .empty;
-            defer bindings.deinit(self.allocator);
-            var refs: std.ArrayList(Ref) = .empty;
-            defer refs.deinit(self.allocator);
-            const Work = struct { node: NodeIndex, scope: ScopeId, parent: NodeIndex = .none };
+            const Work = struct { node: NodeIndex, scope: ScopeId };
             var stack: std.ArrayList(Work) = .empty;
             defer stack.deinit(self.allocator);
             try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
@@ -281,53 +274,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     try finalized_exact_refs.put(self.allocator, raw, {});
                 }
 
-                if (node.tag == .function_declaration) {
-                    const name_idx = self.readNodeIdx(node.data.extra, ast_mod.FunctionExtra.name);
-                    if (!name_idx.isNone()) {
-                        const name = self.ast.getText(self.ast.getNode(name_idx).data.string_ref);
-                        if (names.getPtr(name)) |entry| {
-                            try bindings.append(self.allocator, .{
-                                .name = name,
-                                .node = name_idx,
-                                .kind = functionSymbolKind(self, node),
-                                .scope = work.scope,
-                                .raw_id = 0,
-                            });
-                            entry.kind = functionSymbolKind(self, node);
-                        }
-                    }
-                }
-
-                switch (node.tag) {
-                    .binding_identifier => {
-                        const name = self.ast.getText(node.data.string_ref);
-                        if (names.getPtr(name)) |entry| {
-                            const is_function_name = if (!work.parent.isNone()) blk: {
-                                const parent = self.ast.getNode(work.parent);
-                                if (parent.tag != .function_declaration) break :blk false;
-                                break :blk self.readNodeIdx(parent.data.extra, ast_mod.FunctionExtra.name) == work.node;
-                            } else false;
-                            if (!is_function_name) {
-                                const parent_is_declarator = !work.parent.isNone() and self.ast.getNode(work.parent).tag == .variable_declarator;
-                                try bindings.append(self.allocator, .{
-                                    .name = name,
-                                    .node = work.node,
-                                    .kind = if (parent_is_declarator and function_names.contains(name)) .variable_var else entry.kind,
-                                    .scope = work.scope,
-                                    .raw_id = 0,
-                                });
-                            }
-                        }
-                    },
-                    .identifier_reference, .assignment_target_identifier => {
-                        const name = self.ast.getText(node.data.string_ref);
-                        if (names.contains(name)) try refs.append(self.allocator, .{ .node = work.node, .scope = scope });
-                    },
-                    else => {},
-                }
-
                 var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
-                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope, .parent = work.node });
+                while (it.next()) |child| try stack.append(self.allocator, .{ .node = child, .scope = scope });
             }
 
             if (finalized_exact_refs.count() > 0) {
@@ -339,66 +287,6 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 }
                 self.pending_exact_symbol_refs.items.len = kept;
             }
-
-            var entries = names.iterator();
-            while (entries.next()) |entry| {
-                const name = entry.key_ptr.*;
-                var found = false;
-                for (bindings.items) |*binding| {
-                    if (!std.mem.eql(u8, binding.name, name)) continue;
-                    found = true;
-                    const binding_node = self.ast.getNode(binding.node);
-                    const id = try self.declareSyntheticInScope(binding.node, binding_node.span, binding.kind, binding.scope) orelse
-                        std.debug.panic("private helper {s} has no direct SymbolId", .{name});
-                    binding.raw_id = @intFromEnum(id);
-                }
-                if (!found) std.debug.panic("private helper {s} has no emitted binding", .{name});
-            }
-
-            for (refs.items) |ref| {
-                const name = self.ast.getText(self.ast.getNode(ref.node).data.string_ref);
-                var selected: ?*const Binding = null;
-                var selected_distance: usize = std.math.maxInt(usize);
-                for (bindings.items) |*binding| {
-                    if (!std.mem.eql(u8, binding.name, name)) continue;
-                    const distance = privateBindingDistance(self, ref.scope, binding.scope) orelse continue;
-                    if (distance < selected_distance) {
-                        selected = binding;
-                        selected_distance = distance;
-                    }
-                }
-                const binding = selected orelse std.debug.panic("private helper reference {s} has no visible emitted binding", .{name});
-                const flags: ReferenceFlags = if (self.ast.getNode(ref.node).tag == .assignment_target_identifier)
-                    .{ .write = true }
-                else
-                    .{ .read = true };
-                try self.addSyntheticRefInScope(ref.node, @enumFromInt(binding.raw_id), ref.scope, flags);
-            }
-        }
-
-        fn privateBindingDistance(self: *Transformer, start: ScopeId, target: ScopeId) ?usize {
-            var scope = start;
-            var distance: usize = 0;
-            while (!scope.isNone()) : (distance += 1) {
-                if (scope == target) return distance;
-                scope = self.outputScopeParent(scope);
-            }
-            return null;
-        }
-
-        fn functionSymbolKind(self: *Transformer, node: Node) SymbolKind {
-            const flags = self.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
-            const FnFlags = ast_mod.FunctionFlags;
-            const is_async = (flags & FnFlags.is_async) != 0;
-            const is_generator = (flags & FnFlags.is_generator) != 0;
-            return if (is_async and is_generator)
-                .async_generator_decl
-            else if (is_async)
-                .async_function_decl
-            else if (is_generator)
-                .generator_decl
-            else
-                .function_decl;
         }
 
         /// target이 private_field_expression이면 set 호출 생성(instance/static 자동 분기). 해당 없으면 null.

@@ -173,35 +173,50 @@ pub fn reservePrivateMethodWeakSetSymbols(self: anytype, mappings: anytype, scop
     }
 }
 
-/// Reserve exact function bindings for extracted private methods that do not
-/// need a class-self closure. Those references all share one declaration in
-/// the class helper scope. Captured functions keep the name-based path because
-/// they currently have both a nested function binding and, for instance
-/// methods, an outer closure variable with the same spelling.
+/// Reserve exact function bindings for extracted private methods. A method
+/// that captures class-self gets an inner binding in its reserved factory
+/// scope; captured instance methods also get the outer closure variable used
+/// by references in the class helper scope.
 pub fn reservePrivateMethodFunctionSymbols(self: anytype, mappings: anytype, field_mappings: anytype, scope: ScopeId, span: Span) !void {
     if (!self.semantic_edit_enabled or mappings.len == 0) return;
     if (scope.isNone()) std.debug.panic("private method function has no planned output scope", .{});
 
     for (mappings) |*mapping| {
-        if (try privateMethodNeedsClassSelfCapture(self, mapping.*, mappings, field_mappings)) continue;
+        const capture_class_self_id = try privateMethodNeedsClassSelfCapture(self, mapping.*, mappings, field_mappings);
+        const captures_class_self = capture_class_self_id != null;
+        mapping.capture_class_self_symbol_id = capture_class_self_id;
+        const function_scope = if (captures_class_self)
+            try self.reserveGeneratedFunctionScope(scope)
+        else
+            scope;
         const binding = try makeExactSyntheticBinding(self, mapping.func_name);
-        const symbol_id = try self.declareSyntheticInScope(binding, span, .function_decl, scope) orelse
+        const symbol_id = try self.declareSyntheticInScope(binding, span, .function_decl, function_scope) orelse
             std.debug.panic("private method function has no direct SymbolId", .{});
         mapping.func_binding_node = binding;
         mapping.func_symbol_id = @intFromEnum(symbol_id);
+        if (captures_class_self) {
+            mapping.func_factory_scope = function_scope;
+            if (mapping.class_name == null) {
+                const outer_binding = try makeExactSyntheticBinding(self, mapping.func_name);
+                const outer_symbol_id = try self.declareSyntheticInScope(outer_binding, span, .variable_var, scope) orelse
+                    std.debug.panic("captured private method function has no outer SymbolId", .{});
+                mapping.func_outer_binding_node = outer_binding;
+                mapping.func_outer_symbol_id = @intFromEnum(outer_symbol_id);
+            }
+        }
     }
 }
 
 /// Match the class-self capture precondition against the parser-owned method
-/// node before visiting its body. This allows non-captured functions to reserve
-/// their exact binding before lowering creates references to sibling methods.
-fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mappings: anytype, field_mappings: anytype) !bool {
-    if (!self.semantic_edit_enabled) return false;
+/// node before visiting its body, so its exact binding scopes can be reserved
+/// before lowering creates references to sibling methods.
+fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mappings: anytype, field_mappings: anytype) !?u32 {
+    if (!self.semantic_edit_enabled) return null;
     const class_name_node = if (!pm.class_name_node.isNone()) pm.class_name_node else self.current_class_name_node;
-    if (class_name_node.isNone()) return false;
-    const class_self_id = self.current_class_self_symbol_id orelse self.getSymbolIdAt(class_name_node) orelse return false;
+    if (class_name_node.isNone()) return null;
+    const class_self_id = self.current_class_self_symbol_id orelse self.getSymbolIdAt(class_name_node) orelse return null;
     const source_owner = if (!pm.source_member_idx.isNone()) pm.source_member_idx else pm.member_idx;
-    if (source_owner.isNone()) return false;
+    if (source_owner.isNone()) return null;
 
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
@@ -226,15 +241,15 @@ fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mapping
         if ((node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
             self.getSymbolIdAt(current) == class_self_id)
         {
-            return true;
+            return class_self_id;
         }
         if (node.tag == .private_identifier) {
             const name = self.ast.getText(node.span);
             for (field_mappings) |field| {
-                if (field.class_name != null and std.mem.eql(u8, field.original_name, name)) return true;
+                if (field.class_name != null and std.mem.eql(u8, field.original_name, name)) return class_self_id;
             }
             for (method_mappings) |method| {
-                if (method.class_name != null and std.mem.eql(u8, method.original_name, name)) return true;
+                if (method.class_name != null and std.mem.eql(u8, method.original_name, name)) return class_self_id;
             }
         }
         if (node.tag == .call_expression) {
@@ -242,13 +257,13 @@ fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mapping
             if (!callee_idx.isNone()) {
                 const callee = self.ast.getNode(callee_idx);
                 if (callee.tag == .identifier_reference and std.mem.eql(u8, self.ast.getText(callee.data.string_ref), "eval"))
-                    return true;
+                    return class_self_id;
             }
         }
         var children = @import("../parser/ast_walk.zig").children(self.ast, node);
         while (children.next()) |child| try stack.append(self.allocator, child);
     }
-    return false;
+    return null;
 }
 
 /// Build a reference to the exact WeakSet/descriptor identity carried by a
@@ -259,11 +274,15 @@ pub fn makePrivateMethodWeakSetRef(self: anytype, mapping: anytype) !NodeIndex {
 }
 
 /// Reference an extracted private method function when it has a direct
-/// producer-owned binding. Captured methods temporarily retain name-based
-/// resolution until their nested and outer bindings are represented together.
+/// producer-owned binding. Captured instance methods resolve to the outer
+/// closure variable; their factory return uses the inner function identity.
 pub fn makePrivateMethodFunctionRef(self: anytype, mapping: anytype) !NodeIndex {
+    if (mapping.func_outer_symbol_id) |symbol_id|
+        return makeDeferredExactSyntheticRef(self, mapping.func_name, symbol_id);
     if (mapping.func_symbol_id) |symbol_id|
         return makeDeferredExactSyntheticRef(self, mapping.func_name, symbol_id);
+    if (self.semantic_edit_enabled)
+        std.debug.panic("private method function reference has no producer-selected SymbolId", .{});
     return makeSyntheticRef(self, mapping.func_name);
 }
 
@@ -275,7 +294,10 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
     if (!self.semantic_edit_enabled) return null;
     const class_name_node = if (!pm.class_name_node.isNone()) pm.class_name_node else self.current_class_name_node;
     if (class_name_node.isNone()) return null;
-    const class_self_id = self.current_class_self_symbol_id orelse self.getSymbolIdAt(class_name_node) orelse return null;
+    const class_self_id = pm.capture_class_self_symbol_id orelse
+        self.current_class_self_symbol_id orelse
+        self.getSymbolIdAt(class_name_node) orelse
+        return null;
     const function_scope = self.outputOwnedScope(function_node) orelse
         std.debug.panic("static private method has no output function scope", .{});
 
@@ -310,10 +332,17 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         while (children.next()) |child| try stack.append(self.allocator, child);
     }
     // Direct eval can name the class binding through a string, so no AST
-    // identifier reference exists to reveal that capture requirement.
-    if (references.items.len == 0 and !has_direct_eval) return null;
-    if (pm.func_symbol_id != null)
-        std.debug.panic("private method capture classification changed after exact function reservation", .{});
+    // identifier reference exists to reveal that capture requirement. The
+    // source prepass reserves the factory before lowering; lowering may replace
+    // class-self writes with the shared write target, so the emitted function
+    // can legitimately have no references to the original class-self SymbolId.
+    if (pm.func_factory_scope.isNone()) {
+        if (references.items.len != 0 or has_direct_eval)
+            std.debug.panic("private method capture was not reserved before exact function emission: {s}", .{pm.func_name});
+        return null;
+    }
+    if (pm.func_symbol_id == null)
+        std.debug.panic("captured private method has no reserved inner function identity", .{});
 
     const class_name_span = self.ast.getNode(class_name_node).data.string_ref;
     const class_name = pm.class_name orelse self.ast.getText(class_name_span);
@@ -321,7 +350,11 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         std.debug.panic("static private method class name lost its source binding", .{});
     const output_scope = self.outputScopeParent(function_scope);
     if (output_scope.isNone()) std.debug.panic("static private method has no emitted parent scope", .{});
-    const factory_scope = try self.reserveGeneratedFunctionScope(output_scope);
+    const factory_scope = pm.func_factory_scope;
+    if (self.outputScopeParent(factory_scope) != output_scope)
+        std.debug.panic("captured private method factory scope has the wrong parent", .{});
+    if (pm.class_name == null and (pm.func_outer_binding_node.isNone() or pm.func_outer_symbol_id == null))
+        std.debug.panic("captured private instance method has no outer closure identity", .{});
 
     var private_names = try PrivateNameAllocator.init(self.allocator, self.ast);
     defer private_names.deinit();
@@ -349,7 +382,7 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
     try self.reparentGeneratedScope(function_scope, factory_scope);
     for (references.items) |reference| try self.rebindOutputReference(reference, @intFromEnum(class_alias_symbol));
 
-    const function_ref = try makeExactSyntheticRef(self, pm.func_name);
+    const function_ref = try makeDeferredExactSyntheticRef(self, pm.func_name, pm.func_symbol_id);
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
@@ -808,9 +841,13 @@ pub const CapturedFunctionAssignment = struct { declaration: NodeIndex, assignme
 
 /// Declare a captured extracted function before its class and assign the
 /// closure after the class binding has a value.
-pub fn buildCapturedFunctionAssignment(self: anytype, name: []const u8, value: NodeIndex, span: Span) !CapturedFunctionAssignment {
-    const name_span = try self.ast.addString(name);
-    const binding = try makeExactSyntheticBindingFromSpan(self, name_span);
+pub fn buildCapturedFunctionAssignment(self: anytype, name: []const u8, value: NodeIndex, span: Span, binding_node: NodeIndex, raw_symbol_id: ?u32) !CapturedFunctionAssignment {
+    if (self.semantic_edit_enabled and (binding_node.isNone() or raw_symbol_id == null))
+        std.debug.panic("captured private method assignment has no exact outer binding", .{});
+    const binding = if (binding_node.isNone())
+        try makeExactSyntheticBindingFromSpan(self, try self.ast.addString(name))
+    else
+        binding_node;
     const declaration = try makeVarDeclaration(self, &.{try makeDeclarator(self, binding, .none, span)}, .@"var", span);
     const target_span = try self.ast.addString(name);
     const target = try self.ast.addNode(.{
@@ -818,6 +855,7 @@ pub fn buildCapturedFunctionAssignment(self: anytype, name: []const u8, value: N
         .span = target_span,
         .data = .{ .string_ref = target_span },
     });
+    if (raw_symbol_id) |symbol_id| try self.recordPendingExactSymbolRef(target, symbol_id);
     const assignment = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,
