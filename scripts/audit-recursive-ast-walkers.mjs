@@ -50,6 +50,7 @@ const ALLOWLIST = {
   "src/transformer/es2015_class/members.zig::moveInstanceInitScopes": { class: "iterative_safe", note: "explicit node stack for field initializer scope transfer" },
   "src/transformer/es2015_class/private_fields.zig::trackPrivateMethodSymbols": { class: "iterative_safe", note: "scoped Work stack + seen set; collected helper bindings/references are attached in flat follow-up loops" },
   "src/transformer/es_helpers.zig::capturePrivateClassSelf": { class: "iterative_safe", note: "explicit NodeIndex stack + seen set scans exact class-self references and direct eval without recursion" },
+  "src/transformer/es_helpers.zig::privateMethodNeedsClassSelfCapture": { class: "iterative_safe", note: "explicit NodeIndex stack + seen set classifies source references and private names before lowering; nested classes are skipped without recursion" },
   "src/transformer/es2015_class/private_fields.zig::trackGeneratedParameterSymbols": { class: "iterative_safe", note: "scoped Work stack + seen set; parameter references are registered without recursively visiting children" },
   "src/transformer/es2017.zig::moveAsyncGeneratorBodyScopes": { class: "iterative_safe", note: "explicit node stack for async generator scope transfer" },
   "src/transformer/minify.zig::mergeDecls": { class: "iterative_safe", note: "explicit node stack before adjacent declaration merge" },
