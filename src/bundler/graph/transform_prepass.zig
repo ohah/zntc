@@ -3031,7 +3031,7 @@ fn printPrepassExact(
     const ast = &(module.ast orelse return);
     const helper_refs = if (module.transform_cache) |cache| cache.helper_ref_nodes else &.{};
     const coverage = @import("../../transformer/symbol_coverage.zig");
-    const exact = try coverage.checkExactWithNamespaceMetadata(
+    const exact = try coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
         allocator,
         ast,
         root,
@@ -3224,7 +3224,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         if (module.semantic) |*sem| {
             const coverage = @import("../../transformer/symbol_coverage.zig");
             const source_root: ast_mod.NodeIndex = @enumFromInt(parser_node_count - 1);
-            const source_scope_owner_audit = coverage.checkExact(
+            const source_scope_owner_audit = coverage.checkExactWithDeclarationAnchors(
                 arena_alloc,
                 ast_ptr,
                 source_root,

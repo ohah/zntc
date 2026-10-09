@@ -230,6 +230,8 @@ pub const ExactReport = struct {
     reference_node_use_alias: usize = 0,
     declaration_scope_mismatch: usize = 0,
     declaration_identity_mismatch: usize = 0,
+    declaration_anchor_mismatch: usize = 0,
+    declaration_anchors_checked: usize = 0,
     scope_map_mismatch: usize = 0,
     scope_owner_mismatch: usize = 0,
     scope_owner_parent_mismatch: usize = 0,
@@ -247,6 +249,7 @@ pub const ExactReport = struct {
     legacy_debt_fingerprint: u64 = 0xcbf29ce484222325,
     first_missing_binding: ?ExactFinding = null,
     first_missing_reference: ?ExactFinding = null,
+    first_declaration_anchor_mismatch: ?ExactFinding = null,
     first_unclassified_reference: ?ExactFinding = null,
     first_scope_owner_mismatch: ?ScopeOwnerFinding = null,
     first_scope_owner_parent_mismatch: ?ScopeOwnerFinding = null,
@@ -265,6 +268,7 @@ pub const ExactReport = struct {
         return std.mem.eql(u8, name, "generated_bindings") or
             std.mem.eql(u8, name, "generated_references") or
             std.mem.eql(u8, name, "external_references") or
+            std.mem.eql(u8, name, "declaration_anchors_checked") or
             std.mem.eql(u8, name, "namespace_iife_params") or
             std.mem.eql(u8, name, "enum_iife_params") or
             std.mem.eql(u8, name, "legacy_debt_fingerprint");
@@ -274,6 +278,7 @@ pub const ExactReport = struct {
         @setEvalBranchQuota(4000);
         return std.mem.eql(u8, name, "first_missing_binding") or
             std.mem.eql(u8, name, "first_missing_reference") or
+            std.mem.eql(u8, name, "first_declaration_anchor_mismatch") or
             std.mem.eql(u8, name, "first_unclassified_reference") or
             std.mem.eql(u8, name, "first_scope_owner_mismatch") or
             std.mem.eql(u8, name, "first_scope_owner_parent_mismatch") or
@@ -1967,6 +1972,49 @@ pub fn checkExact(
         null,
         null,
         null,
+        false,
+    );
+}
+
+/// Exact source audit that additionally requires one declaration row anchored
+/// to every reachable declaration node with a SymbolId.
+pub fn checkExactWithDeclarationAnchors(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+) std.mem.Allocator.Error!ExactReport {
+    return checkExactImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+        scope_owner_map,
+        references,
+        helper_reference_nodes,
+        helper_scope_map,
+        unresolved_nodes,
+        explicit_global_nodes,
+        origins,
+        null,
+        null,
+        null,
+        true,
     );
 }
 
@@ -2011,6 +2059,7 @@ pub fn checkExactWithScopeBoundary(
         null,
         null,
         pre_transform_scope_count,
+        false,
     );
 }
 
@@ -2055,6 +2104,52 @@ pub fn checkExactWithNamespaceMetadata(
         namespace_member_owners,
         namespace_declaration_owners,
         pre_transform_scope_count,
+        false,
+    );
+}
+
+/// Exact post-transform audit used by the strict coverage gate. Callers must
+/// enable analyzer declaration-anchor collection before transformation.
+pub fn checkExactWithNamespaceMetadataAndDeclarationAnchors(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    parser_node_count: u32,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+    helper_reference_nodes: []const u32,
+    helper_scope_map: *const std.StringHashMapUnmanaged(usize),
+    unresolved_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    explicit_global_nodes: *const std.AutoHashMapUnmanaged(u32, void),
+    origins: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_member_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    namespace_declaration_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    pre_transform_scope_count: ?usize,
+) std.mem.Allocator.Error!ExactReport {
+    return checkExactImpl(
+        allocator,
+        ast,
+        root,
+        parser_node_count,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+        scope_owner_map,
+        references,
+        helper_reference_nodes,
+        helper_scope_map,
+        unresolved_nodes,
+        explicit_global_nodes,
+        origins,
+        namespace_member_owners,
+        namespace_declaration_owners,
+        pre_transform_scope_count,
+        true,
     );
 }
 
@@ -2077,6 +2172,7 @@ fn checkExactImpl(
     namespace_member_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     namespace_declaration_owners: ?*const std.AutoHashMapUnmanaged(u32, u32),
     pre_transform_scope_count: ?usize,
+    require_declaration_anchors: bool,
 ) std.mem.Allocator.Error!ExactReport {
     const VisitState = enum { visiting, visited };
     const VisitFrame = struct {
@@ -2367,6 +2463,10 @@ fn checkExactImpl(
     }
     var declaration_nodes = try collectDeclarationNodes(allocator, ast, &reachable_nodes);
     defer declaration_nodes.deinit(allocator);
+    var declaration_anchor_counts: std.AutoHashMapUnmanaged(u32, usize) = .empty;
+    defer declaration_anchor_counts.deinit(allocator);
+    var declaration_anchor_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer declaration_anchor_symbols.deinit(allocator);
     var references_by_node: std.AutoHashMapUnmanaged(u32, IndexedReference) = .empty;
     defer references_by_node.deinit(allocator);
     var helper_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -2911,6 +3011,17 @@ fn checkExactImpl(
                 {
                     report.declaration_identity_mismatch += 1;
                 }
+                if (declaration_raw < symbol_ids.len and symbol_ids[declaration_raw] == sid and
+                    declaration_nodes.contains(declaration_raw))
+                {
+                    try declaration_anchor_symbols.put(allocator, sid, {});
+                    const anchor_count = try declaration_anchor_counts.getOrPut(allocator, declaration_raw);
+                    if (anchor_count.found_existing) {
+                        anchor_count.value_ptr.* += 1;
+                    } else {
+                        anchor_count.value_ptr.* = 1;
+                    }
+                }
             }
             // A declaration row records the target storage scope, unlike a
             // value reference which records the scope where the read/write
@@ -2971,6 +3082,36 @@ fn checkExactImpl(
                 .symbol_id = sid,
                 .scope_id = reference.scope_id,
             });
+        }
+    }
+    if (require_declaration_anchors) {
+        var checked_declaration_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer checked_declaration_symbols.deinit(allocator);
+        var declaration_iter = declaration_nodes.iterator();
+        while (declaration_iter.next()) |entry| {
+            const raw = entry.key_ptr.*;
+            if (raw >= symbol_ids.len) continue;
+            const maybe_id = symbol_ids[raw] orelse continue;
+            if (maybe_id >= symbols.len) continue;
+            const checked = try checked_declaration_symbols.getOrPut(allocator, maybe_id);
+            if (checked.found_existing) continue;
+            report.declaration_anchors_checked += 1;
+            if (!declaration_anchor_symbols.contains(maybe_id)) {
+                report.declaration_anchor_mismatch += 1;
+                if (report.first_declaration_anchor_mismatch == null) {
+                    const node = ast.nodes.items[raw];
+                    report.first_declaration_anchor_mismatch = .{
+                        .name = ast.getText(node.data.string_ref),
+                        .tag = node.tag,
+                        .node_index = raw,
+                        .span_start = node.span.start,
+                    };
+                }
+            }
+        }
+        var anchors = declaration_anchor_counts.iterator();
+        while (anchors.next()) |entry| {
+            if (entry.value_ptr.* > 1) report.declaration_anchor_mismatch += 1;
         }
     }
     if (ast.nodes.items[@intFromEnum(root)].tag == .program) {
@@ -3545,7 +3686,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
     var secondary_counts_buffer: [512]u8 = undefined;
     const secondary_counts = std.fmt.bufPrint(
         &secondary_counts_buffer,
-        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_statement_mismatch={d} reference_scope_statement_alias={d} reference_node_use_alias={d} declaration_scope_mismatch={d} declaration_identity_mismatch={d} reference_count_mismatch={d} write_count_mismatch={d}",
+        "namespace_iife_params={d} namespace_iife_param_mismatch={d} enum_iife_params={d} enum_iife_param_mismatch={d} helper_symbol_mismatch={d} scope_resolution_mismatch={d} invisible_reference={d} unclassified_reference={d} reference_statement_mismatch={d} reference_scope_statement_alias={d} reference_node_use_alias={d} declaration_scope_mismatch={d} declaration_identity_mismatch={d} declaration_anchor_mismatch={d} reference_count_mismatch={d} write_count_mismatch={d}",
         .{
             report.namespace_iife_params,
             report.namespace_iife_param_mismatch,
@@ -3560,18 +3701,20 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
             report.reference_node_use_alias,
             report.declaration_scope_mismatch,
             report.declaration_identity_mismatch,
+            report.declaration_anchor_mismatch,
             report.reference_count_mismatch,
             report.write_count_mismatch,
         },
     ) catch unreachable;
     std.debug.print(
-        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x} schema_fingerprint={x}\n",
+        "zntc: {s} {s}: generated_bindings={d} generated_references={d} external={d} declaration_anchors_checked={d} missing_binding={d} invalid_reference_node={d} unreachable_reference={d} {s} shadowed_external_reference={d} invalid_id={d} missing_reference={d} duplicate_reference={d} identity_mismatch={d} binding_scope_mismatch={d} binding_scope_unknown={d} invalid_scope={d} reference_scope_mismatch={d} scope_map_mismatch={d} scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d} {s} clean={d} legacy_debt_fingerprint={x} schema_fingerprint={x}\n",
         .{
             name,
             file_path,
             report.generated_bindings,
             report.generated_references,
             report.external_references,
+            report.declaration_anchors_checked,
             report.missing_binding,
             report.invalid_reference_node,
             report.unreachable_reference,
@@ -3597,6 +3740,7 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
     );
     if (report.first_missing_binding) |finding| printExactFinding(file_path, "missing_binding", finding);
     if (report.first_missing_reference) |finding| printExactFinding(file_path, "missing_reference", finding);
+    if (report.first_declaration_anchor_mismatch) |finding| printExactFinding(file_path, "declaration_anchor_mismatch", finding);
     if (report.first_unclassified_reference) |finding| printExactFinding(file_path, "unclassified_reference", finding);
     if (report.first_shadowed_external_reference) |finding| printExactFinding(file_path, "shadowed_external_reference", finding);
     printExactDiagnostics(file_path, report);

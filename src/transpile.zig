@@ -1406,6 +1406,7 @@ fn transpileWithCallbackInternal(
         analyzer.es_target = options.es_target;
         analyzer.unsupported = options.unsupported;
         analyzer.collect_unresolved_reference_nodes = symbol_coverage_env.enabled();
+        analyzer.enable_exact_declaration_anchors = symbol_coverage_env.enabled();
         analyzer.analyze() catch return error.SemanticError;
         // tsc 호환: 시맨틱 에러가 있어도 codegen 을 진행한다 — 콜백으로 stderr 통지 후
         // 변환 결과도 함께 반환.
@@ -1491,7 +1492,7 @@ fn transpileWithCallbackInternal(
     if (symbol_coverage_env.enabled()) {
         if (analyzer_storage) |*analyzer| {
             const coverage = @import("transformer/symbol_coverage.zig");
-            const source_scope_owner_audit = coverage.checkExact(
+            const source_scope_owner_audit = coverage.checkExactWithDeclarationAnchors(
                 arena_alloc,
                 transformer.ast,
                 source_root,
@@ -1565,7 +1566,7 @@ fn transpileWithCallbackInternal(
             const coverage = @import("transformer/symbol_coverage.zig");
             var report = coverage.check(arena_alloc, transformer.ast, root, transformer.parser_node_count, transformer.symbol_ids.items, analyzer.symbols.items, if (transformer.synthetic_idents) |*s| s else null) catch return error.OutOfMemory;
             coverage.print(arena_alloc, file_path, &report);
-            const exact = coverage.checkExactWithNamespaceMetadata(
+            const exact = coverage.checkExactWithNamespaceMetadataAndDeclarationAnchors(
                 arena_alloc,
                 transformer.ast,
                 root,

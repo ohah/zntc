@@ -259,6 +259,9 @@ pub const SemanticAnalyzer = struct {
 
     /// StmtInfo 사전 수집 활성화 여부. 번들러 모드에서만 true.
     enable_stmt_info: bool = false,
+    /// Exact SymbolId coverage audit can retain declaration-node anchors
+    /// without enabling statement indexing or changing optimizer inputs.
+    enable_exact_declaration_anchors: bool = false,
     /// import 바인딩/namespace 멤버 변형(`marker = v`/`ns.x = v`/`delete ns.x`) 검출 활성화.
     /// 번들 단계(parse_module)에서만 true — esbuild/rolldown 처럼 *bundle* 시에만 에러
     /// (single-file transpile/transform 은 통과). false 면 checkImportMutation no-op.
@@ -896,20 +899,20 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// 선언을 `references` 배열에 `flags.declare` 로 기록. #1669.
-    /// 현재 `enable_stmt_info` + 유효 stmt_idx 가 있을 때만 기록.
+    /// 번들러 stmt_info 또는 exact coverage audit 중 하나가 활성화된 경우 기록.
     /// `scope_id` 는 선언 대상 scope — top-level 판별은 buildFromSemantic 에서 수행.
     /// `stmt_idx` (enclosing top-level) 는 bundler bucket 분배용, `scope_stmt_idx` 는 per-scope
     /// adjacency 검사용 — 둘 다 저장한다.
     fn recordDeclareRef(self: *SemanticAnalyzer, sym_index: u32, scope_id: ScopeId, declaration_node_index: ?u32) void {
-        if (!self.enable_stmt_info) return;
-        if (self.current_stmt_idx == symbol_mod.Reference.NO_STMT) return;
+        if (!self.enable_stmt_info and !self.enable_exact_declaration_anchors) return;
+        if (self.enable_stmt_info and self.current_stmt_idx == symbol_mod.Reference.NO_STMT) return;
         self.references.append(self.allocator, .{
             .node_index = .none,
             .declaration_node_index = if (declaration_node_index) |raw| @enumFromInt(raw) else .none,
             .scope_id = scope_id,
             .symbol_id = @enumFromInt(sym_index),
-            .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
-            .scope_stmt_idx = self.current_stmt_idx,
+            .stmt_idx = if (self.enable_stmt_info) self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT else symbol_mod.Reference.NO_STMT,
+            .scope_stmt_idx = if (self.enable_stmt_info) self.current_stmt_idx else symbol_mod.Reference.NO_STMT,
             .flags = .{ .declare = true },
         }) catch {
             self.alloc_failed = true;
