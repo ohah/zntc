@@ -291,6 +291,12 @@ pub const Transformer = struct {
         flags: ReferenceFlags,
         next: ?usize = null,
     }) = .empty,
+    /// Generated references with producer-selected identity whose final
+    /// output ScopeId is determined after their AST owner is assembled.
+    pending_exact_symbol_refs: std.ArrayListUnmanaged(struct {
+        node: NodeIndex,
+        symbol_id: u32,
+    }) = .empty,
     pending_temp_ref_chains: std.AutoHashMapUnmanaged(u32, struct { first: usize, last: usize }) = .empty,
     /// Exact generated lexical-capture uses, paired with the function frame
     /// that will emit their `_this` or `_arguments` declaration.
@@ -836,6 +842,7 @@ pub const Transformer = struct {
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const recordGeneratorStateTempSymbol = @import("transformer/semantic_edit.zig").recordGeneratorStateTempSymbol;
+    pub const recordPendingExactSymbolRef = @import("transformer/semantic_edit.zig").recordPendingExactSymbolRef;
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;

@@ -15,6 +15,7 @@ const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const class_visit_mod = @import("class_visit.zig");
 pub const visitClass = class_visit_mod.visitClass;
 const shouldDropClassExprName = class_visit_mod.shouldDropClassExprName;
+const classBodyHasLowerableMember = class_visit_mod.classBodyHasLowerableMember;
 // #3/#4: assign-semantics 경로의 private member 다운레벨용 (fast path 와 공유).
 const classBodyHasStaticPrivateMember = class_visit_mod.classBodyHasStaticPrivateMember;
 const wrapClassExprInIIFE = class_visit_mod.wrapClassExprInIIFE;
@@ -28,6 +29,7 @@ fn trackPrivateHelperPrelude(
     source_idx: NodeIndex,
     pre_stmts: []const NodeIndex,
     static_descriptors: []const NodeIndex,
+    static_block_iifes: []const NodeIndex,
     class_result: NodeIndex,
     method_mappings: []const PrivateMethodMapping,
     field_mappings: []const Transformer.PrivateFieldMapping,
@@ -41,6 +43,7 @@ fn trackPrivateHelperPrelude(
     try statements.appendSlice(self.allocator, pre_stmts);
     try statements.appendSlice(self.allocator, static_descriptors);
     try statements.append(self.allocator, class_result);
+    try statements.appendSlice(self.allocator, static_block_iifes);
     const root = try self.ast.addNode(.{
         .tag = .block_statement,
         .span = self.ast.getNode(class_result).span,
@@ -181,6 +184,20 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             self.ast.getText(s)
         else
             null;
+        if (self.semantic_edit_enabled and node.tag == .class_expression and prepared_wrapper_scope.isNone() and
+            classBodyHasLowerableMember(self, body_idx, lower_pm, lower_pf, false))
+        {
+            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+        }
+        const private_helper_scope = if (!self.semantic_edit_enabled)
+            @as(ScopeId, .none)
+        else if (node.tag == .class_expression)
+            prepared_wrapper_scope
+        else blk: {
+            const class_scope = self.outputOwnedScope(source_idx) orelse
+                std.debug.panic("private helper class has no source scope", .{});
+            break :blk self.outputScopeParent(class_scope);
+        };
         const had_any = try es2022.ES2022(Transformer).lowerPrivateMembers(
             self,
             body_idx,
@@ -195,6 +212,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             class_name_text,
             new_name,
             true, // skip_visit_and_keep_private — public member 는 classifyClassMember 가 단일 visit.
+            private_helper_scope,
             // V_ASSIGN fix: descriptor 를 별도 array 로 받아 class 뒤에 emit (TDZ 회피).
             &assign_static_descriptors,
         );
@@ -471,7 +489,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         if (node.tag == .class_expression) {
             return wrapClassExprInIIFE(self, source_idx, &.{}, priv_pre_stmts.items, class_result, post.items, new_name, prepared_wrapper_scope, pm_mappings.items, pf_mappings.items, node.span);
         }
-        try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items);
+        try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, static_block_iifes.items, class_result, pm_mappings.items, pf_mappings.items);
         // #3/#4: private weakset 선언은 class 정의/static 할당 앞에.
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
@@ -505,7 +523,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 node.span,
             );
         }
-        try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, class_result, pm_mappings.items, pf_mappings.items);
+        try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, static_block_iifes.items, class_result, pm_mappings.items, pf_mappings.items);
         for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
         try self.pending_nodes.append(self.allocator, class_result);
         // V_ASSIGN fix: descriptor 를 class 뒤에 emit.

@@ -3240,6 +3240,190 @@ test "#4819 static private initializer this uses the active class symbol" {
     }
 }
 
+test "#4819 private field helper references retain their producer SymbolIds" {
+    const source =
+        \\class Fields {
+        \\  #value = 1;
+        \\  static #count = 2;
+        \\  static { this.#count += 1; }
+        \\  read() { return this.#value; }
+        \\  write(next) { this.#value = next; return this.#value; }
+        \\  has(other) { return #value in other; }
+        \\  static read() { return this.#count; }
+        \\  static write(next) { this.#count = next; return this.#count; }
+        \\}
+        \\new Fields().read();
+    ;
+    for ([_]TransformOptions.compat.ESTarget{ .es5, .es2015 }) |target| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".mjs");
+        _ = try parser.parse();
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        analyzer.is_module = true;
+        try analyzer.analyze();
+        const original_symbol_count = analyzer.symbols.items.len;
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(target),
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.semantic_edit_enabled = true;
+        _ = try transformer.transform();
+        const edited = (try transformer.finishSemanticEdit()).?;
+
+        const helper_names = [_][]const u8{ "_value", "_count" };
+        const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+        for (helper_names) |helper_name| {
+            var helper_id: ?usize = null;
+            for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, id| {
+                if (std.mem.eql(u8, transformer.ast.getText(symbol.name), helper_name)) helper_id = id;
+            }
+            const id = helper_id orelse return error.TestUnexpectedResult;
+            const symbol = edited.symbols.items[id];
+            try std.testing.expect(symbol.scope_id.toIndex() < edited.scopes.len);
+            var bindings: usize = 0;
+            var references: usize = 0;
+            for (nodes) |raw| {
+                const node = transformer.ast.nodes.items[raw];
+                if (node.tag != .binding_identifier and node.tag != .identifier_reference and node.tag != .assignment_target_identifier)
+                    continue;
+                if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), helper_name)) continue;
+                try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[raw]);
+                if (node.tag == .binding_identifier) {
+                    bindings += 1;
+                    continue;
+                }
+
+                var rows: usize = 0;
+                for (edited.references) |ref| {
+                    if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
+                    try std.testing.expectEqual(@as(u32, @intCast(id)), @intFromEnum(ref.symbol_id));
+                    try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, symbol.scope_id));
+                    rows += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), rows);
+                references += 1;
+            }
+            try std.testing.expect(bindings > 0);
+            try std.testing.expect(references > 0);
+        }
+    }
+}
+
+test "#4819 synthesized private accessors retain exact function and parameter scopes" {
+    const source =
+        \\class Accessors {
+        \\  accessor #entry = 1;
+        \\  read() { return this.#entry; }
+        \\  write(next) { this.#entry = next; return this.#entry; }
+        \\}
+        \\new Accessors().read();
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+    const parents = try allocator.alloc(AstNodeIndex, transformer.ast.nodes.items.len);
+    @memset(parents, .none);
+    for (nodes) |parent_raw| {
+        var children = @import("../parser/ast_walk.zig").children(transformer.ast, transformer.ast.nodes.items[parent_raw]);
+        while (children.next()) |child| {
+            if (!child.isNone()) parents[@intFromEnum(child)] = @enumFromInt(parent_raw);
+        }
+    }
+    var getter_scope: ?ScopeId = null;
+    var setter_scope: ?ScopeId = null;
+    for (nodes) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .function_declaration) continue;
+        const name_idx = transformer.readNodeIdx(node.data.extra, @import("../parser/ast.zig").FunctionExtra.name);
+        if (name_idx.isNone()) continue;
+        const name = transformer.ast.getText(transformer.ast.getNode(name_idx).data.string_ref);
+        if (std.mem.eql(u8, name, "_entry_get")) {
+            getter_scope = transformer.outputOwnedScope(@enumFromInt(raw)) orelse return error.TestUnexpectedResult;
+        } else if (std.mem.eql(u8, name, "_entry_set")) {
+            setter_scope = transformer.outputOwnedScope(@enumFromInt(raw)) orelse return error.TestUnexpectedResult;
+        }
+    }
+    const get_scope = getter_scope orelse return error.TestUnexpectedResult;
+    const set_scope = setter_scope orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[get_scope.toIndex()].kind);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[set_scope.toIndex()].kind);
+
+    var value_binding_count: usize = 0;
+    var value_symbol: ?SymbolId = null;
+    for (nodes) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "value")) continue;
+        value_binding_count += 1;
+        value_symbol = @enumFromInt(edited.symbol_ids[raw] orelse return error.TestUnexpectedResult);
+    }
+    try std.testing.expectEqual(@as(usize, 1), value_binding_count);
+    const value_id = value_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(set_scope, edited.symbols.items[@intFromEnum(value_id)].scope_id);
+
+    var value_reference_count: usize = 0;
+    for (nodes) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "value")) continue;
+        var ancestor = parents[raw];
+        var in_setter_scope = false;
+        while (!ancestor.isNone()) {
+            if (transformer.outputOwnedScope(ancestor)) |scope| {
+                if (scope == set_scope) {
+                    in_setter_scope = true;
+                    break;
+                }
+            }
+            ancestor = parents[@intFromEnum(ancestor)];
+        }
+        if (!in_setter_scope) continue;
+        try std.testing.expectEqual(@as(?u32, @intFromEnum(value_id)), edited.symbol_ids[raw]);
+        var exact_rows: usize = 0;
+        for (edited.references) |ref| {
+            if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
+            try std.testing.expectEqual(value_id, ref.symbol_id);
+            try std.testing.expectEqual(set_scope, ref.scope_id);
+            exact_rows += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), exact_rows);
+        value_reference_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), value_reference_count);
+}
+
 test "#4819 static private accessor and method temps have exact semantic references" {
     const source =
         \\class Counter {

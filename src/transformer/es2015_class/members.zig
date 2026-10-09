@@ -41,6 +41,8 @@ pub fn Members(comptime Transformer: type) type {
             name: []const u8, // "#x" → "_x" 변환된 이름
             original_name: []const u8, // "#x" 원본 이름 (매칭용)
             init: NodeIndex, // 초기값 (none이면 undefined)
+            binding_node: NodeIndex = .none,
+            symbol_id: ?u32 = null,
         };
 
         /// instance field init 의 emission 정보를 source order 로 보존하는 union.
@@ -178,7 +180,7 @@ pub fn Members(comptime Transformer: type) type {
                 const init_stmt = switch (entry) {
                     .private_field => |idx| blk: {
                         const pf = cm.private_fields.items[idx];
-                        break :blk try buildPrivateFieldInit(self, pf.name, pf.init, span);
+                        break :blk try buildPrivateFieldInit(self, pf.name, pf.symbol_id, pf.init, span);
                     },
                     .public_field => |pub_init| blk: {
                         const this_node = try self.ast.addNode(.{
@@ -244,24 +246,51 @@ pub fn Members(comptime Transformer: type) type {
 
         /// instance + static private field 매핑을 빌드하여 current_private_fields에 설정.
         /// 반환값: 매핑 총 개수 (defer에서 free 판단용).
-        pub fn setupPrivateFieldMappings(self: *Transformer, cm: *ClassifiedMembers, name_span: Span) Transformer.Error!usize {
+        pub fn setupPrivateFieldMappings(
+            self: *Transformer,
+            cm: *ClassifiedMembers,
+            name_span: Span,
+            helper_scope: @import("../../semantic/scope.zig").ScopeId,
+            declaration_span: Span,
+        ) Transformer.Error!usize {
             const total = cm.private_fields.items.len + cm.static_private_fields.items.len;
             if (total == 0) return 0;
 
             var mappings = try self.allocator.alloc(Transformer.PrivateFieldMapping, total);
-            for (cm.private_fields.items, 0..) |pf, i| {
-                mappings[i] = .{ .original_name = pf.original_name, .var_name = pf.name };
+            for (cm.private_fields.items, 0..) |*pf, i| {
+                if (self.semantic_edit_enabled) {
+                    const binding = try es_helpers.makeExactSyntheticBinding(self, pf.name);
+                    const id = try self.declareSyntheticInScope(binding, declaration_span, .variable_var, helper_scope) orelse
+                        std.debug.panic("private field helper has no direct SymbolId", .{});
+                    pf.binding_node = binding;
+                    pf.symbol_id = @intFromEnum(id);
+                }
+                mappings[i] = .{
+                    .original_name = pf.original_name,
+                    .var_name = pf.name,
+                    .binding_node = pf.binding_node,
+                    .symbol_id = pf.symbol_id,
+                };
             }
             // 매핑은 방문 내내 보관된다 — 리네임된 이름(`string_table`)이면 조각이 옮겨질 수 있다(#4768).
             const class_name = try self.stableName(self.ast.getText(name_span));
             // 이 span 이 지금 낮추는 클래스 이름이면 그 바인딩 심볼을 참조에 물려준다 (#4760).
             const cls = self.current_class_name_node;
             const class_name_node: NodeIndex = if (!cls.isNone() and std.meta.eql(self.ast.getNode(cls).data.string_ref, name_span)) cls else .none;
-            for (cm.static_private_fields.items, 0..) |pf, i| {
+            for (cm.static_private_fields.items, 0..) |*pf, i| {
+                if (self.semantic_edit_enabled) {
+                    const binding = try es_helpers.makeExactSyntheticBinding(self, pf.name);
+                    const id = try self.declareSyntheticInScope(binding, declaration_span, .variable_var, helper_scope) orelse
+                        std.debug.panic("static private field helper has no direct SymbolId", .{});
+                    pf.binding_node = binding;
+                    pf.symbol_id = @intFromEnum(id);
+                }
                 mappings[cm.private_fields.items.len + i] = .{
                     .original_name = pf.original_name,
                     .var_name = pf.name,
                     .class_name = class_name,
+                    .binding_node = pf.binding_node,
+                    .symbol_id = pf.symbol_id,
                     .class_name_node = class_name_node,
                 };
             }
@@ -565,6 +594,7 @@ pub fn Members(comptime Transformer: type) type {
             });
             const getter_return = try makePrivateFieldAccess(self, storage_span, span);
             const getter_idx = try self.buildGetterMethod(priv_key_get, getter_return, false, span);
+            if (self.semantic_edit_enabled) _ = try self.addGeneratedFunctionScope(self.current_scope, getter_idx);
 
             const priv_key_set = try self.ast.addNode(.{
                 .tag = .private_identifier,
@@ -572,11 +602,23 @@ pub fn Members(comptime Transformer: type) type {
                 .data = .{ .string_ref = key_node.span },
             });
             const setter_target = try makePrivateFieldAccess(self, storage_span, span);
-            const setter_idx = try self.buildSetterMethod(priv_key_set, setter_target, false, span);
+            const setter = try self.buildSetterMethodWithHandles(priv_key_set, setter_target, false, span);
+            if (self.semantic_edit_enabled) {
+                const setter_scope = try self.addGeneratedFunctionScope(self.current_scope, setter.method);
+                const parameter_node = self.ast.getNode(setter.parameter);
+                const value_symbol = (try self.declareSyntheticInScope(
+                    setter.parameter,
+                    parameter_node.span,
+                    .parameter,
+                    setter_scope,
+                )) orelse std.debug.panic("private accessor setter parameter has no direct SymbolId", .{});
+                try self.addSyntheticRefInScope(setter.value_reference, value_symbol, setter_scope, .{ .read = true });
+            }
 
             const get_names = try private_names.makePrivateMethodNames(orig_name, .getter);
             try cm.private_methods.append(self.allocator, .{
                 .member_idx = getter_idx,
+                .source_member_idx = getter_idx,
                 .original_name = orig_name,
                 .weakset_name = get_names.ws_name,
                 .func_name = get_names.fn_name,
@@ -586,7 +628,8 @@ pub fn Members(comptime Transformer: type) type {
 
             const set_names = try private_names.makePrivateMethodNames(orig_name, .setter);
             try cm.private_methods.append(self.allocator, .{
-                .member_idx = setter_idx,
+                .member_idx = setter.method,
+                .source_member_idx = setter.method,
                 .original_name = orig_name,
                 .weakset_name = set_names.ws_name,
                 .func_name = set_names.fn_name,
@@ -739,8 +782,8 @@ pub fn Members(comptime Transformer: type) type {
         }
 
         /// _x.set(this, init) expression_statement 생성.
-        fn buildPrivateFieldInit(self: *Transformer, name: []const u8, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const wm_ref = try es_helpers.makeSyntheticRef(self, name);
+        fn buildPrivateFieldInit(self: *Transformer, name: []const u8, raw_symbol_id: ?u32, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, name, raw_symbol_id);
             const set_prop = try es_helpers.makePropertyName(self, "set");
             const callee = try es_helpers.makeStaticMember(self, wm_ref, set_prop, span);
             const this_node = try self.ast.addNode(.{

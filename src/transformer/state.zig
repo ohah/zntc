@@ -66,6 +66,10 @@ pub const PrivateFieldMapping = struct {
     original_name: []const u8, // "#x"
     var_name: []const u8, // "_x"
     class_name: ?[]const u8 = null,
+    /// Exact generated binding node and SymbolId selected before class
+    /// members are visited.
+    binding_node: NodeIndex = NodeIndex.none,
+    symbol_id: ?u32 = null,
     /// `class_name` 의 원래 바인딩 노드 — 클래스 참조에 심볼을 물려준다 (#4760).
     class_name_node: NodeIndex = NodeIndex.none,
 };

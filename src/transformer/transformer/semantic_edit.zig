@@ -2250,6 +2250,27 @@ pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId
     try setSymbolId(self, node, symbol);
 }
 
+/// Carry a producer-selected SymbolId with a generated reference whose final
+/// output scope is not known until its containing class/wrapper is assembled.
+/// The finalizer resolves scope from this exact node's output ancestry; it
+/// never searches for a binding by spelling.
+pub fn recordPendingExactSymbolRef(self: *Transformer, node: NodeIndex, raw_symbol_id: u32) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len or raw_symbol_id >= editor.symbols.items.len)
+        std.debug.panic("pending exact SymbolId reference has invalid node or identity", .{});
+    const tag = self.ast.getNode(node).tag;
+    if (tag != .identifier_reference and tag != .assignment_target_identifier)
+        std.debug.panic("pending exact SymbolId reference has a non-reference node", .{});
+    for (self.pending_exact_symbol_refs.items) |pending| {
+        if (pending.node != node) continue;
+        if (pending.symbol_id != raw_symbol_id)
+            std.debug.panic("generated reference was assigned multiple exact SymbolIds", .{});
+        std.debug.panic("generated reference was queued twice for exact SymbolId finalization", .{});
+    }
+    try self.pending_exact_symbol_refs.append(self.allocator, .{ .node = node, .symbol_id = raw_symbol_id });
+}
+
 /// Drop a parser reference that was resolved before a lowering assigned its
 /// generated identifier a distinct name and SymbolId.
 pub fn removeSemanticReference(self: *Transformer, node: NodeIndex) Transformer.Error!void {
@@ -3300,6 +3321,8 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
         _ = try editorFor(self);
     }
     const editor = if (self.semantic_editor) |*e| e else return null;
+    if (self.pending_exact_symbol_refs.items.len != 0)
+        std.debug.panic("semantic edit finished with unresolved producer-owned SymbolId references", .{});
     if (self.deferred_generator_loop_migrations.count() != 0)
         std.debug.panic("semantic edit finished with unresolved generator loop migrations", .{});
     var deferred_loop_owners = self.deferred_generator_loop_owners.iterator();

@@ -27,7 +27,7 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 /// 그 class 의 이름으로 set — 그러면 buildSuperReceiver 가 raw `this` 가 아닌 class 식별자를
 /// receiver 로 사용. 추출 위치가 module top-level (this=undefined in ESM) 인 점을 보정한다.
 /// `null` 이면 호출자가 class 이름 없는 컨텍스트 (익명 IIFE 등) — fallback 으로 raw `this` 유지.
-pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, init_idx: NodeIndex, span: Span, class_name_span: ?Span) !NodeIndex {
+pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, init_idx: NodeIndex, span: Span, class_name_span: ?Span, binding_node: NodeIndex) !NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     const source_class_scope = self.current_scope;
@@ -75,7 +75,7 @@ pub fn buildStaticPrivateFieldDescriptor(self: anytype, var_name: []const u8, in
 
     const obj = try makeObjectLiteral(self, self.scratch.items[scratch_top..], span);
 
-    const binding = try makeSyntheticBinding(self, try self.ast.addString(var_name));
+    const binding = if (binding_node.isNone()) try makeSyntheticBinding(self, try self.ast.addString(var_name)) else binding_node;
     const declarator = try makeDeclarator(self, binding, obj, span);
     return makeVarDeclaration(self, &.{declarator}, .@"var", span);
 }
@@ -643,6 +643,17 @@ pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
 /// 이미 고유 이름을 확정한 생성자가 동일한 철자의 바인딩/참조를 만든다.
 pub fn makeExactSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
     return markSynthetic(self, try makeIdentifierRef(self, name));
+}
+
+/// Create a reference to a generated binding whose SymbolId was selected by
+/// its producer. Its output ScopeId is finalized from the emitted AST ancestry
+/// once the containing class or wrapper has been assembled.
+pub fn makeDeferredExactSyntheticRef(self: anytype, name: []const u8, raw_symbol_id: ?u32) !NodeIndex {
+    if (!self.semantic_edit_enabled) return makeSyntheticRef(self, name);
+    const symbol_id = raw_symbol_id orelse std.debug.panic("generated private helper reference has no SymbolId", .{});
+    const node = try makeExactSyntheticRef(self, name);
+    try self.recordPendingExactSymbolRef(node, symbol_id);
+    return node;
 }
 
 /// Reference the exact already-resolved spelling carried by a generated
@@ -2035,7 +2046,7 @@ pub fn privateMethodKindFromFlags(method_flags: u32) PrivateMethodKind {
 }
 
 /// var _name = new Constructor(); 선언 생성. (WeakMap, WeakSet 등)
-pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_name: []const u8, span: Span) !NodeIndex {
+pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_name: []const u8, span: Span, binding_node: NodeIndex) !NodeIndex {
     const ctor_ref = try makeGlobalRef(self, constructor_name);
     const empty_args = try self.ast.addNodeList(&.{});
     const new_extra = try self.ast.addExtras(&.{
@@ -2046,7 +2057,9 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
         .span = span,
         .data = .{ .extra = new_extra },
     });
-    return self.buildVarDecl(var_name, new_expr, span);
+    if (binding_node.isNone()) return self.buildVarDecl(var_name, new_expr, span);
+    const declarator = try makeDeclarator(self, binding_node, new_expr, span);
+    return makeVarDeclaration(self, &.{declarator}, .@"var", span);
 }
 
 /// static 초기값·static 블록·static private 초기값을 **클래스 밖으로 옮겨** 방문할 때의 문맥.
