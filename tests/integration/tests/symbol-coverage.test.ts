@@ -693,6 +693,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       'generated_bindings=1',
       'generated_references=2',
       'external=3',
+      'declaration_anchors_checked=4',
       'namespace_iife_params=4',
       'enum_iife_params=5',
       'clean=1',
@@ -733,8 +734,8 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(
       exactSchemaProblems(
         complete.replace(
-          ' observation_field_count=6',
-          ' observation_field_count=6 observation_field_count=6',
+          ` observation_field_count=${EXACT_OBSERVATION_FIELD_COUNT}`,
+          ` observation_field_count=${EXACT_OBSERVATION_FIELD_COUNT} observation_field_count=${EXACT_OBSERVATION_FIELD_COUNT}`,
         ),
       ),
     ).toContain('observation_field_count occurrences=2, expected 1');
@@ -792,16 +793,28 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(
       exactSchemaProblems(complete.replace(' legacy_debt_fingerprint=cbf29ce484222325', '')),
     ).toContain('legacy_debt_fingerprint occurrences=0, expected 1');
+    const invalidInvariantCounterCount = EXACT_ZERO_COUNTERS.length + 1;
     expect(
       exactSchemaProblems(
-        complete.replace(/invariant_counter_count=\d+/, 'invariant_counter_count=23'),
+        complete.replace(
+          /invariant_counter_count=\d+/,
+          `invariant_counter_count=${invalidInvariantCounterCount}`,
+        ),
       ),
-    ).toContain(`invariant_counter_count=23, expected ${EXACT_ZERO_COUNTERS.length}`);
+    ).toContain(
+      `invariant_counter_count=${invalidInvariantCounterCount}, expected ${EXACT_ZERO_COUNTERS.length}`,
+    );
+    const invalidObservationFieldCount = EXACT_OBSERVATION_FIELD_COUNT + 1;
     expect(
       exactSchemaProblems(
-        complete.replace(/observation_field_count=\d+/, 'observation_field_count=7'),
+        complete.replace(
+          /observation_field_count=\d+/,
+          `observation_field_count=${invalidObservationFieldCount}`,
+        ),
       ),
-    ).toContain(`observation_field_count=7, expected ${EXACT_OBSERVATION_FIELD_COUNT}`);
+    ).toContain(
+      `observation_field_count=${invalidObservationFieldCount}, expected ${EXACT_OBSERVATION_FIELD_COUNT}`,
+    );
     const invalidDiagnosticFieldCount = EXACT_DIAGNOSTIC_FIELD_COUNT + 1;
     expect(
       exactSchemaProblems(
@@ -1065,6 +1078,93 @@ describe('symbol identity coverage gate (#4819)', () => {
       const bundle = readFileSync(output, 'utf8');
       expect(bundle).toContain('withConfig');
       expect(bundle).toContain('audit__');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('bundler React Refresh retains exact prepass graph and component identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-refresh-prepass-exact-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(join(dir, 'entry.jsx'), 'export function App() { return 42; }');
+    try {
+      const proc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'entry.jsx',
+          '--react-refresh=true',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const reports = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(reports, proc.stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0])).toEqual([]);
+      expect(Number(reports[0].match(/clean=(\d+)/)?.[1] ?? 0)).toBe(1);
+
+      const modes = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(modes, proc.stderr).toHaveLength(1);
+      expect(modes[0], proc.stderr).toContain('semantic_graph=retained');
+
+      writeFileSync(
+        join(dir, 'run.cjs'),
+        [
+          'globalThis.__refreshRegistrations = [];',
+          'globalThis.$RefreshReg$ = (component, name) => __refreshRegistrations.push([name, typeof component]);',
+          "const bundle = require('./out.cjs');",
+          'console.log(bundle.App(), JSON.stringify(__refreshRegistrations));',
+        ].join('\n'),
+      );
+      const actual = spawnSync('node', [join(dir, 'run.cjs')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 [["App","function"]]\n');
+
+      writeFileSync(join(dir, 'entry.jsx'), 'export function App() { return eval("42"); }');
+      const evalProc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'entry.jsx',
+          '--react-refresh=true',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(evalProc.status, evalProc.stderr).toBe(0);
+      const evalMode = (evalProc.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(evalMode, evalProc.stderr).toContain('semantic_graph=reanalyzed');
+      const evalReport = (evalProc.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(evalReport, evalProc.stderr).toMatch(/clean=1(?:\s|$)/);
+      const evalActual = spawnSync('node', [join(dir, 'run.cjs')], { encoding: 'utf8' });
+      expect(evalActual.status, evalActual.stderr).toBe(0);
+      expect(evalActual.stdout).toBe('42 [["App","function"]]\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -4509,7 +4609,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         rmSync(dir, { recursive: true, force: true });
       }
     }
-  });
+  }, 30_000);
 
   test('direct eval keeps ES5 arrow lowering on the semantic resync path', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-eval-resync-'));
