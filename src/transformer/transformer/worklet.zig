@@ -612,6 +612,7 @@ pub fn buildWorkletPropertyAssignments(
     init_code: []const u8,
     hash: u32,
     source_location: []const u8,
+    metadata_scope: @import("../../semantic/scope.zig").ScopeId,
     /// 원본 함수 노드 인덱스. 이 노드의 name span을 사용하면
     /// codegen의 scope hoisting rename이 자동 적용된다.
     func_node_idx: NodeIndex,
@@ -658,7 +659,7 @@ pub fn buildWorkletPropertyAssignments(
     // 빈 배열이면 stack trace 관련 경로에서 silently 실패할 수 있음 (#1203).
     // lineOffset = 1 - (closure_vars.len + 2) — closure destructuring에 의한 라인 시프트 보정.
     const line_offset: i32 = if (closure_vars.len > 0) 1 - @as(i32, @intCast(closure_vars.len + 2)) else 1;
-    const stack_array = try buildStackDetailsArray(self, line_offset, zero_span);
+    const stack_array = try buildStackDetailsArray(self, line_offset, zero_span, metadata_scope);
     const stack_stmt = try buildPropAssignment(self, func_name_span, "__stackDetails", stack_array, func_node_idx);
 
     // 5. funcName.__pluginVersion = "<version>";
@@ -686,9 +687,14 @@ pub const WORKLET_PLUGIN_VERSION = "zntc-0.0.1";
 /// 원본 참조의 symbol_id를 복사하여 scope hoisting rename을 지원한다.
 /// __stackDetails 배열 노드 생성: `[new global.Error(), <lineOffset>, -27]`.
 /// Babel workletFactory.ts:298-327 대응. Reanimated가 worklet 예외 발생 시 stack trace 생성에 사용.
-fn buildStackDetailsArray(self: *Transformer, line_offset: i32, zero_span: Span) Error!NodeIndex {
+fn buildStackDetailsArray(
+    self: *Transformer,
+    line_offset: i32,
+    zero_span: Span,
+    metadata_scope: @import("../../semantic/scope.zig").ScopeId,
+) Error!NodeIndex {
     // global identifier
-    const global_id = try es_helpers.makeGlobalRef(self, "global");
+    const global_id = try self.makeLexicalScopeRefAtScope("global", metadata_scope);
     // Error — `global.Error` 의 속성 이름
     const error_id = try es_helpers.makePropertyName(self, "Error");
     // global.Error member expression

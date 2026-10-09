@@ -306,15 +306,27 @@ pub fn makeRootScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
 /// Unlike makeRootScopeRef, a JSX factory can be shadowed by a parameter or a
 /// local binding, so bind it through the current lexical scope chain.
 pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
+    return makeLexicalScopeRefAtScope(self, name, self.current_scope);
+}
+
+/// Create a generated read that resolves as ordinary code in an explicitly
+/// chosen output scope. Plugin metadata can be emitted beside a function or
+/// inside a wrapper, so the function's own scope is not always the scope where
+/// the generated read will execute.
+pub fn makeLexicalScopeRefAtScope(
+    self: anytype,
+    name: []const u8,
+    scope: @import("../../semantic/scope.zig").ScopeId,
+) Error!NodeIndex {
     // This starts with global provenance as a fallback; remove it below if
     // the exact lexical lookup finds a local binding.
     const ref = try es_helpers.makeGlobalRef(self, name);
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
-    var scope = self.current_scope;
+    var lookup_scope = scope;
     var hops: usize = 0;
-    while (!scope.isNone() and hops < scopes.len) : (hops += 1) {
-        const scope_index = scope.toIndex();
+    while (!lookup_scope.isNone() and hops < scopes.len) : (hops += 1) {
+        const scope_index = lookup_scope.toIndex();
         if (scope_index >= scopes.len or scope_index >= scope_maps.len) break;
         if (scope_maps[scope_index].get(name)) |raw_symbol| {
             const symbol_id: u32 = @intCast(raw_symbol);
@@ -323,7 +335,7 @@ pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
             // provenance so a later analyzer refresh resolves the local read.
             _ = self.explicit_global_reference_nodes.remove(@intFromEnum(ref));
             if (self.semantic_edit_enabled) {
-                try self.addSyntheticRefInScope(ref, @enumFromInt(symbol_id), self.current_scope, .{ .read = true });
+                try self.addSyntheticRefInScope(ref, @enumFromInt(symbol_id), scope, .{ .read = true });
             } else {
                 const raw_node = @intFromEnum(ref);
                 if (self.symbol_ids.items.len <= raw_node)
@@ -334,7 +346,7 @@ pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
             }
             return ref;
         }
-        scope = scopes[scope_index].parent;
+        lookup_scope = scopes[scope_index].parent;
     }
     try self.markExplicitGlobalReference(ref);
     return ref;

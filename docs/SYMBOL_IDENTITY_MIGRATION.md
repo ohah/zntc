@@ -37,6 +37,8 @@ Bundler React Refresh registration은 `_c` binding에 생성 시점의 `SymbolId
 
 Bundler Emotion의 JSX `css` prop은 exact import SID와 shadowing alias SID를 갱신한 semantic graph를 재사용할 수 있다. 다만 runtime import 형태가 보존되는 `verbatimModuleSyntax` 조합에서만 허용하며, import elision이 가능한 조합과 직접 `eval`은 재분석에 남긴다. 이는 Emotion 옵션·문법 조합의 전수조사나 다른 plugin 경계의 제거를 뜻하지 않는다.
 
+Bundler Reanimated Worklets는 내장 plugin만 활성화되고 중첩 함수·downlevel·JSX·decorator·Refresh·styled-components·Emotion 변환이 없는 조합에서 생성 factory의 binding/reference/scope SID를 유지할 수 있다. 생성된 `global.Error`는 실제 출력 스코프의 `global` 바인딩에 연결하고, 바인딩이 없을 때만 unresolved-name 예약에 반영한다. 직접 `eval`과 이 경계 밖 조합은 재분석에 남는다. Worklet factory 이름은 아직 `resolveSyntheticName`/`uniqueSyntheticName`으로 일찍 선택하므로 단일 최종 이름 결정은 미완료다.
+
 ## 보정 경로별 제거 조건
 
 | 제거 대상                                               | 제거 전에 필요한 증거                                                                                                                                                        |

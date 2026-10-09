@@ -9814,6 +9814,381 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
+  test('Reanimated worklet preserves generated SymbolIds on the bundler prepass path', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-symbol-identity-'));
+    const entry = join(dir, 'entry.js');
+    const shadow = join(dir, 'shadow.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      shadow,
+      'const global = { Error: class ShadowError {} }; console.log(global.Error.name); export {};\n',
+    );
+    writeFileSync(
+      entry,
+      [
+        "import './shadow.js';",
+        'let captured = 40;',
+        'export function declared() { "worklet"; return captured + 1; }',
+        'export const arrow = (value) => { "worklet"; return captured + value; };',
+        'export const handlers = { method(value) { "worklet"; return captured + value; } };',
+        'console.log(declared(), arrow(2), handlers.method(3), declared.__stackDetails[0] instanceof Error);',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const buildOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      workletTransform: true,
+      minifyIdentifiers: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build(${buildOptions});`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: {
+          ...process.env,
+          ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+          ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+        },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      expect(Number(identity!.match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      expect(Number(identity!.match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('ShadowError\n41 42 43 true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('Reanimated worklet nested in another function stays on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-reanalysis-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      [
+        'function make(global) { return function nested() { "worklet"; return 44; }; }',
+        'const nested = make({ Error: class NestedError {} });',
+        'console.log(nested(), nested.__stackDetails[0].constructor.name);',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build(${JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        workletTransform: true,
+        minifyIdentifiers: true,
+        write: false,
+      })});`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('44 NestedError\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('Reanimated worklet with downlevel syntax stays on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-downlevel-reanalysis-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'export const compute = (value) => { "worklet"; return value + 1; };\nconsole.log(compute(41));\n',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build(${JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'es5',
+        workletTransform: true,
+        minifyIdentifiers: true,
+        write: false,
+      })});`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('Reanimated worklet binds generated global.Error to a same-file source symbol', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-global-shadow-reanalysis-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      [
+        'const global = { Error: class ShadowError {} };',
+        'export function work() { "worklet"; return 42; }',
+        'console.log(work(), global.Error.name);',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build(${JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        workletTransform: true,
+        minifyIdentifiers: true,
+        write: false,
+      })});`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42 ShadowError\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('Reanimated worklet with direct eval stays on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-eval-reanalysis-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'export function dynamic() { "worklet"; return eval("40 + 2"); }\nconsole.log(dynamic());\n',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build(${JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        workletTransform: true,
+        write: false,
+      })});`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test('Reanimated worklet with a user AST plugin stays on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-plugin-reanalysis-'));
+    const entry = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'export function work() { "worklet"; return 42; }\nconsole.log(work());\n',
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const baseOptions = JSON.stringify({
+      entryPoints: [entry],
+      platform: 'node',
+      format: 'cjs',
+      target: 'esnext',
+      workletTransform: true,
+      write: false,
+    });
+    const runner = [
+      `import { build } from ${JSON.stringify(coreEntry)};`,
+      `const result = await build({ ...${baseOptions}, plugins: [{ name: 'noop-ast', setup(build) { build.onAstFunction({ filter: /.*/ }, () => null); } }] });`,
+      'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+      'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+    ].join('\n');
+    try {
+      const proc = spawnSync('bun', ['-e', runner], {
+        cwd: join(import.meta.dir, '../../..'),
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      const stderr = proc.stderr ?? '';
+      expect(proc.status, stderr).toBe(0);
+      const identity = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.js'),
+        );
+      expect(identity, stderr).toBeDefined();
+      expect(exactSchemaProblems(identity!), identity).toEqual([]);
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.js'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=reanalyzed');
+
+      const outputs = JSON.parse(proc.stdout) as string[];
+      expect(outputs).toHaveLength(1);
+      writeFileSync(output, outputs[0]);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('Emotion css prop keeps its exact import identity through bundling and minification', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-symbol-identity-'));
     const emotionDir = join(dir, 'node_modules', '@emotion', 'react');

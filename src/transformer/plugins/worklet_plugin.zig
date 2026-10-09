@@ -221,17 +221,32 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     const hash = @as(u32, @truncate(wyhash.hashU64(init_code)));
 
     const function_binding = if (info.node_tag == .function_declaration) info.node_idx else NodeIndex.none;
-    const stmts = try worklet_mod.buildWorkletPropertyAssignments(
-        api.transformer,
-        func_name,
-        closure_vars,
-        init_code,
-        hash,
-        info.source_path,
-        function_binding,
-    );
+    const method_accessor = if (info.node_tag == .method_definition) blk: {
+        const method_node = api.transformer.ast.getNode(info.node_idx);
+        const method_flags = api.transformer.ast.extra_data.items[method_node.data.extra + 3];
+        break :blk (method_flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER)) != 0;
+    } else false;
+    const enclosing_scope = blk: {
+        const scopes = if (api.transformer.semantic_editor) |*editor|
+            editor.scopes.items
+        else
+            api.transformer.scopes;
+        const current_scope = api.transformer.current_scope;
+        if (current_scope.isNone() or current_scope.toIndex() >= scopes.len) break :blk current_scope;
+        break :blk scopes[current_scope.toIndex()].parent;
+    };
 
     if (info.node_tag == .function_declaration) {
+        const stmts = try worklet_mod.buildWorkletPropertyAssignments(
+            api.transformer,
+            func_name,
+            closure_vars,
+            init_code,
+            hash,
+            info.source_path,
+            enclosing_scope,
+            function_binding,
+        );
         // statement 위치: trailing_nodes로 함수 뒤에 삽입
         for (stmts) |stmt| {
             try api.addTrailingStatement(stmt);
@@ -242,11 +257,19 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         const t = api.transformer;
         const method_node = t.ast.getNode(info.node_idx);
         const me = method_node.data.extra;
-        const method_flags = t.ast.extra_data.items[me + 3];
-        const is_accessor = (method_flags & (METHOD_FLAG_GETTER | METHOD_FLAG_SETTER)) != 0;
         const func_expr = try buildFunctionExprFromMethod(api, info, stripped_body);
 
-        if (is_accessor) {
+        if (method_accessor) {
+            const stmts = try worklet_mod.buildWorkletPropertyAssignments(
+                t,
+                func_name,
+                closure_vars,
+                init_code,
+                hash,
+                info.source_path,
+                t.current_scope,
+                NodeIndex.none,
+            );
             // class body의 getter/setter는 IIFE object_property로 교체 불가 (class syntax 제약).
             // Babel 호환: body를 `var _w=function(){...}; _w.__workletHash=...; return _w;`로 치환.
             // getter 접근 시 worklet 함수를 반환 (Reanimated runtime 동작과 일치).
@@ -257,7 +280,15 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
         // 일반 object method → `{ key: (function(){ var fn=...; fn.__workletHash=...; return fn; })() }`
         if (t.semantic_edit_enabled) try t.remapCopiedScopeOwner(info.node_idx, func_expr);
-        const iife = try buildWorkletIIFE(api, func_expr, func_name, closure_vars, stmts);
+        const iife = try buildWorkletIIFE(
+            api,
+            func_expr,
+            func_name,
+            closure_vars,
+            init_code,
+            hash,
+            info.source_path,
+        );
         const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
         const prop = try t.ast.addNode(.{
             .tag = .object_property,
@@ -267,7 +298,15 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
         api.replaced_node = prop;
     } else {
         // expression 위치 (function_expression/arrow): IIFE factory로 감싸서 교체
-        const iife = try buildWorkletIIFE(api, info.node_idx, func_name, closure_vars, stmts);
+        const iife = try buildWorkletIIFE(
+            api,
+            info.node_idx,
+            func_name,
+            closure_vars,
+            init_code,
+            hash,
+            info.source_path,
+        );
         api.replaced_node = iife;
     }
 }
@@ -380,7 +419,9 @@ fn buildWorkletIIFE(
     func_node: NodeIndex,
     func_name: []const u8,
     closure_vars: []const worklet_mod.ClosureVar,
-    prop_stmts: [5]NodeIndex,
+    init_code: []const u8,
+    hash: u32,
+    source_location: []const u8,
 ) PluginError!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const t = api.transformer;
@@ -400,6 +441,16 @@ fn buildWorkletIIFE(
         try t.addGeneratedFunctionScope(t.current_scope, wrapper_func)
     else
         .none;
+    const prop_stmts = try worklet_mod.buildWorkletPropertyAssignments(
+        t,
+        func_name,
+        closure_vars,
+        init_code,
+        hash,
+        source_location,
+        wrapper_scope,
+        NodeIndex.none,
+    );
     const local_name = try chooseFactoryLocalName(api, func_name, closure_vars, false);
     const body = try buildFactoryBody(api, func_node, local_name, prop_stmts, wrapper_scope);
     const wrapper_extra = t.ast.getNode(wrapper_func).data.extra;
