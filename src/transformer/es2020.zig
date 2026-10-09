@@ -142,24 +142,34 @@ pub fn ES2020(comptime Transformer: type) type {
             base_idx: NodeIndex,
             ctx: LowerCtx,
         ) Transformer.Error!NodeIndex {
+            // A later optional call can continue a method call that already
+            // started an optional chain. Let that first source-rooted method
+            // call own the complete chain so a short-circuit skips ordinary
+            // member tails before later optional calls (for example,
+            // `receiver?.method?.().next?.()`).
+            const effective_base_idx = if (ctx == .normal)
+                findInnermostOptionalMemberCallBase(self, node) orelse base_idx
+            else
+                base_idx;
+
             // chain base 가 (wrapped) super 면 optional 검사 무의미 — super 는 항상 정의되어 있다.
             // 일반 capture 경로는 base_idx 를 visit 해서 raw `super` 를 temp 에 대입 → syntax error.
             // optional flag 만 벗겨내고 정상 super lowering 으로 우회 (#2034).
-            if (ctx == .normal and isSuperExpression(self, base_idx)) {
-                const stripped = try stripOptionalAtSuperBase(self, node, base_idx);
+            if (ctx == .normal and isSuperExpression(self, effective_base_idx)) {
+                const stripped = try stripOptionalAtSuperBase(self, node, effective_base_idx);
                 return self.visitNode(stripped);
             }
 
             const optional_member_call = if (ctx == .normal)
-                try prepareOptionalMemberCall(self, node, base_idx)
+                try prepareOptionalMemberCall(self, node, effective_base_idx)
             else
                 null;
             if (optional_member_call) |mc| {
                 if (mc.full_result) |result| return result;
             }
 
-            const simple = optional_member_call == null and helpers.isSimpleIdentifier(self, base_idx);
-            const visited_base = if (optional_member_call) |mc| mc.null_check_base else try self.visitNode(base_idx);
+            const simple = optional_member_call == null and helpers.isSimpleIdentifier(self, effective_base_idx);
+            const visited_base = if (optional_member_call) |mc| mc.null_check_base else try self.visitNode(effective_base_idx);
 
             var null_check_base: NodeIndex = undefined;
             var chain_base: NodeIndex = undefined;
@@ -178,7 +188,7 @@ pub fn ES2020(comptime Transformer: type) type {
             }
 
             const rebuilt_chain = if (optional_member_call) |mc|
-                try rebuildChainNodeWithOptionalMemberCallThis(self, node, chain_base, base_idx, mc.receiver)
+                try rebuildChainNodeWithOptionalMemberCallThis(self, node, chain_base, effective_base_idx, mc.receiver)
             else
                 try rebuildChainNode(self, node, chain_base);
             const eq_null = try helpers.makeEqNull(self, null_check_base, node.span);
@@ -389,6 +399,71 @@ pub fn ES2020(comptime Transformer: type) type {
                     else => return found,
                 }
             }
+        }
+
+        fn findInnermostOptionalMemberCallBase(self: *const Transformer, root: Node) ?NodeIndex {
+            if (root.tag != .call_expression or
+                (self.readU32(root.data.extra, 3) & ast_mod.CallFlags.optional_chain) == 0)
+            {
+                return null;
+            }
+            var current = root;
+            var found: ?NodeIndex = null;
+            while (true) {
+                switch (current.tag) {
+                    .call_expression => {
+                        const extra = current.data.extra;
+                        if (extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - extra <= 3)
+                            return found;
+                        const callee = self.readNodeIdx(extra, 0);
+                        const flags = self.readU32(extra, 3);
+                        if ((flags & ast_mod.CallFlags.optional_chain) != 0 and
+                            !callee.isNone() and @intFromEnum(callee) < self.ast.nodes.items.len)
+                        {
+                            const callee_node = self.ast.getNode(callee);
+                            if (callee_node.tag == .static_member_expression or callee_node.tag == .computed_member_expression) {
+                                const member_extra = callee_node.data.extra;
+                                if (member_extra <= self.ast.extra_data.items.len and self.ast.extra_data.items.len - member_extra > 2) {
+                                    const receiver = self.readNodeIdx(member_extra, 0);
+                                    // This targeted chain rewriter can carry the
+                                    // first optional member-call result through
+                                    // later tails. Leave a chain whose receiver
+                                    // already contains an optional segment to
+                                    // the existing lowering path.
+                                    if (!isSuperExpression(self, receiver) and !hasOptionalChainSegment(self, receiver))
+                                        found = callee;
+                                }
+                            }
+                        }
+                        if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return found;
+                        current = self.ast.getNode(callee);
+                    },
+                    .static_member_expression, .computed_member_expression, .private_field_expression => {
+                        const extra = current.data.extra;
+                        if (extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - extra <= 2)
+                            return found;
+                        const receiver = self.readNodeIdx(extra, 0);
+                        if (receiver.isNone() or @intFromEnum(receiver) >= self.ast.nodes.items.len) return found;
+                        current = self.ast.getNode(receiver);
+                    },
+                    else => return found,
+                }
+            }
+        }
+
+        fn hasOptionalChainSegment(self: *const Transformer, start: NodeIndex) bool {
+            var current = start;
+            while (!current.isNone() and @intFromEnum(current) < self.ast.nodes.items.len) {
+                const node = self.ast.getNode(current);
+                if (hasOptionalFlag(self, node)) return true;
+                switch (node.tag) {
+                    .static_member_expression, .computed_member_expression, .private_field_expression, .call_expression => {
+                        current = getChainObject(self, node);
+                    },
+                    else => return false,
+                }
+            }
+            return false;
         }
 
         fn lowerOptionalSuperMethodCall(
@@ -695,6 +770,18 @@ pub fn ES2020(comptime Transformer: type) type {
                         return helpers.makeCallExprPrepend(self, call_member, receiver, new_args, old_node.span);
                     }
 
+                    if (is_optional) {
+                        if (try rebuildOptionalMemberCallTail(
+                            self,
+                            old_node,
+                            old_callee,
+                            chain_base,
+                            optional_call_callee_idx,
+                            receiver,
+                            new_args,
+                        )) |tail| return tail;
+                    }
+
                     const new_callee = if (is_optional)
                         try makeOptionalCallCallee(self, old_callee, chain_base, old_node.span)
                     else
@@ -705,6 +792,108 @@ pub fn ES2020(comptime Transformer: type) type {
                 },
                 else => unreachable,
             }
+        }
+
+        fn rebuildOptionalMemberCallTail(
+            self: *Transformer,
+            old_call: Node,
+            old_callee: NodeIndex,
+            chain_base: NodeIndex,
+            optional_call_callee_idx: NodeIndex,
+            receiver: NodeIndex,
+            args: ast_mod.NodeList,
+        ) Transformer.Error!?NodeIndex {
+            const old_callee_node = self.ast.getNode(old_callee);
+            const old_call_extra = old_call.data.extra;
+            const call_flags = self.readU32(old_call_extra, 3) & ~ast_mod.CallFlags.optional_chain;
+
+            if (old_callee_node.tag == .static_member_expression or old_callee_node.tag == .computed_member_expression) {
+                const member_extra = old_callee_node.data.extra;
+                const old_obj = self.readNodeIdx(member_extra, 0);
+                const old_prop = self.readNodeIdx(member_extra, 1);
+                const member_flags = self.readU32(member_extra, 2);
+                const is_optional_member = (member_flags & ast_mod.MemberFlags.optional_chain) != 0;
+
+                const rebuilt_obj = try rebuildChainNodeWithOptionalMemberCallThis(
+                    self,
+                    self.ast.getNode(old_obj),
+                    chain_base,
+                    optional_call_callee_idx,
+                    receiver,
+                );
+                const obj_cap = try captureTrackedTemp(self, rebuilt_obj, old_call.span);
+                const obj_ref = try readTrackedTemp(self, obj_cap.span, old_call.span);
+                const prop = try self.visitNode(old_prop);
+                const member_obj = if (is_optional_member) obj_ref else obj_cap.paren_assign;
+                const member = try self.ast.addNode(.{
+                    .tag = old_callee_node.tag,
+                    .span = old_callee_node.span,
+                    .data = .{ .extra = try self.ast.addExtras(&.{
+                        @intFromEnum(member_obj),
+                        @intFromEnum(prop),
+                        member_flags & ~ast_mod.MemberFlags.optional_chain,
+                    }) },
+                });
+                const fn_cap = try captureTrackedTemp(self, member, old_call.span);
+                const fn_ref = try readTrackedTemp(self, fn_cap.span, old_call.span);
+                const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, old_call.span);
+                const call_prop = try helpers.makePropertyName(self, "call");
+                const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, old_call.span);
+                const call = try helpers.makeCallExprPrepend(self, call_member, obj_ref, args, old_call.span);
+                const call_or_skip = try self.ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = old_call.span,
+                    .data = .{ .ternary = .{
+                        .a = fn_eq_null,
+                        .b = try helpers.makeVoidZero(self, old_call.span),
+                        .c = call,
+                    } },
+                });
+                if (!is_optional_member) return call_or_skip;
+
+                const obj_eq_null = try helpers.makeEqNull(self, obj_cap.paren_assign, old_call.span);
+                return try self.ast.addNode(.{
+                    .tag = .conditional_expression,
+                    .span = old_call.span,
+                    .data = .{ .ternary = .{
+                        .a = obj_eq_null,
+                        .b = try helpers.makeVoidZero(self, old_call.span),
+                        .c = call_or_skip,
+                    } },
+                });
+            }
+
+            if (old_callee_node.tag != .call_expression) return null;
+            const rebuilt_callee = try rebuildChainNodeWithOptionalMemberCallThis(
+                self,
+                old_callee_node,
+                chain_base,
+                optional_call_callee_idx,
+                receiver,
+            );
+            const fn_cap = try captureTrackedTemp(self, rebuilt_callee, old_call.span);
+            const fn_ref = try readTrackedTemp(self, fn_cap.span, old_call.span);
+            const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, old_call.span);
+            const call_extra = try self.ast.addExtras(&.{
+                @intFromEnum(fn_ref),
+                args.start,
+                args.len,
+                call_flags,
+            });
+            const call = try self.ast.addNode(.{
+                .tag = .call_expression,
+                .span = old_call.span,
+                .data = .{ .extra = call_extra },
+            });
+            return try self.ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = old_call.span,
+                .data = .{ .ternary = .{
+                    .a = fn_eq_null,
+                    .b = try helpers.makeVoidZero(self, old_call.span),
+                    .c = call,
+                } },
+            });
         }
 
         fn makeOptionalCallCallee(
