@@ -9869,6 +9869,55 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'method\n',
       },
       {
+        name: 'bound computed member receiver chains retain getter order, method this and nested calls',
+        source:
+          'var order = []; function innerKey() { order.push("inner-key"); return "next"; } function outerKey(key) { order.push("outer-key"); return key; } function argument() { order.push("argument"); return 4; } var holder = { next() { order.push("next"); return "outer"; }, get outer() { order.push("outer-get"); return { base: 5, method(input) { order.push("method"); return this.base + input; } }; } }; class ComputedMemberReceiverChainField { static value = holder[outerKey(holder[innerKey()]())].method(argument()); } console.log(ComputedMemberReceiverChainField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 inner-key,next,outer-key,outer-get,argument,method\n',
+      },
+      {
+        name: 'unbound computed member receiver keys stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedReceiverKey = "outer"; var holder = { outer: { value: 9 } }; class UnboundComputedMemberReceiverField { static value = holder[__zntcComputedReceiverKey].value; } console.log(UnboundComputedMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unbound roots of computed member receiver chains stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedReceiverRoot = { outer: { value: 9 } }; var key = "outer"; class UnboundComputedMemberReceiverRootField { static value = __zntcComputedReceiverRoot[key].value; } console.log(UnboundComputedMemberReceiverRootField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unbound computed member receiver key calls stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcComputedReceiverKeyFn = () => "outer"; var holder = { outer: { value: 9 } }; class UnboundComputedMemberReceiverCallField { static value = holder[__zntcComputedReceiverKeyFn()].value; } console.log(UnboundComputedMemberReceiverCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed member receiver access stays on semantic reanalysis',
+        source:
+          'var key = "outer"; var holder = { outer: { value: 9 } }; class OptionalComputedMemberReceiverField { static value = holder?.[key].value; } console.log(OptionalComputedMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed member receiver key calls stay on semantic reanalysis',
+        source:
+          'var key = () => "outer"; var holder = { outer: { value: 9 } }; class OptionalComputedMemberReceiverCallField { static value = holder[key?.()].value; } console.log(OptionalComputedMemberReceiverCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result computed member receiver stays on semantic reanalysis',
+        source:
+          'var key = "outer"; function makeHolder() { return { outer: { value: 9 } }; } class CallResultComputedMemberReceiverField { static value = makeHolder()[key].value; } console.log(CallResultComputedMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
         name: 'unbound computed static member call key stays on semantic reanalysis',
         source:
           'globalThis.__zntcComputedStaticCallKey = "value"; var holder = { value() { return 9; } }; class UnboundComputedStaticMemberCallField { static value = holder[__zntcComputedStaticCallKey](); } console.log(UnboundComputedStaticMemberCallField.value);',
@@ -10030,10 +10079,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 10 outer,receiver,method:8,outer,receiver,method:9\n',
       },
       {
-        name: 'computed nested member receiver static fields stay on semantic reanalysis',
+        name: 'bound computed nested member receiver static fields retain their graph',
         source:
           'var holder = { receiver: { fieldValue(input) { return input + 1; } } }; function receiverKey() { return "receiver"; } class ComputedNestedMemberReceiverField { static value = holder[receiverKey()].fieldValue(8); } console.log(ComputedNestedMemberReceiverField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -10058,10 +10107,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'computed deep member receiver static fields stay on semantic reanalysis',
+        name: 'bound computed deep member receiver static fields retain their graph',
         source:
           'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; function receiverKey() { return "receiver"; } class ComputedDeepMemberReceiverField { static value = holder.outer[receiverKey()].fieldValue(8); } console.log(ComputedDeepMemberReceiverField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
