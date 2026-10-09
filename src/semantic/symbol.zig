@@ -221,6 +221,9 @@ pub const SyntheticKind = enum(u8) {
     enum_iife_parameter,
     /// 단일 파일 출력에서 AST 밖에 prepend되는 런타임 helper 선언.
     runtime_helper_preamble,
+    /// Standalone generated runtime-helper import local whose emitted spelling
+    /// is selected from its exact SymbolId after transformation.
+    runtime_helper_import,
     /// TypeScript enum member names referenced bare from a later initializer.
     /// These are semantic property references, not lexical bindings.
     enum_iife_member,

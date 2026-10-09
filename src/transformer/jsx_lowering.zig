@@ -158,7 +158,10 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// resync 분석기가 이 ref 를 user scope 가 아닌 helper_scope_map 으로 binding
         /// 시킨다 — 사용자가 같은 이름의 식별자를 선언해도 충돌 회피 (#3068).
         fn makeJsxRuntimeRef(self: *Transformer, name: []const u8, node_span: Span) Transformer.Error!NodeIndex {
-            const local = try helpers.resolveSyntheticName(self, name);
+            const local = if (self.options.defer_runtime_helper_name_resolution and self.semantic_edit_enabled)
+                name
+            else
+                try helpers.resolveSyntheticName(self, name);
             self.jsx_import_info.setLocal(name, local);
             const local_span = try self.ast.addString(local);
             const idx = try helpers.makeExactSyntheticRefAt(self, local_span, node_span);
@@ -167,7 +170,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             // exact SymbolId for later callsites and the generated import.
             if (self.jsx_import_info.symbolId(name)) |symbol_id| {
                 try self.trackRuntimeHelperRefWithId(idx, symbol_id);
-            } else if (try self.trackRuntimeHelperImportRef(idx, local)) |symbol_id| {
+            } else if (try self.trackJsxRuntimeImportRef(idx, local)) |symbol_id| {
                 self.jsx_import_info.setSymbolId(name, symbol_id);
             }
             return idx;

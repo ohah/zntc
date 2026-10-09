@@ -3004,7 +3004,7 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;
