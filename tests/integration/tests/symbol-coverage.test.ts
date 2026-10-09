@@ -9845,11 +9845,53 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 10 8,9\n',
       },
       {
-        name: 'member-call static field initializers stay on semantic reanalysis',
+        name: 'bound member-call static initializers retain receiver this and source order',
         source:
-          'var receiver = { calls: 0, fieldValue(input) { this.calls++; return input + 1; } }; class MemberCallField { static value = receiver.fieldValue(8); } console.log(MemberCallField.value, receiver.calls);',
+          'var receiver = { order: [], fieldValue(input) { this.order.push(input); return input + 1; } }; class MemberCallField { static first = receiver.fieldValue(8); static value = receiver.fieldValue(9); } console.log(MemberCallField.first, MemberCallField.value, receiver.order.join(","));',
+        graph: 'retained',
+        output: '9 10 8,9\n',
+      },
+      {
+        name: 'computed member-call static field initializers stay on semantic reanalysis',
+        source:
+          'var receiver = { fieldValue(input) { return input + 1; } }; function fieldKey() { return "fieldValue"; } class ComputedMemberCallField { static value = receiver[fieldKey()](8); } console.log(ComputedMemberCallField.value);',
         graph: 'reanalyzed',
-        output: '9 1\n',
+        output: '9\n',
+      },
+      {
+        name: 'optional member-call static field initializers stay on semantic reanalysis',
+        source:
+          'var receiver = { fieldValue(input) { return input + 1; } }; class OptionalMemberCallField { static value = receiver?.fieldValue(8); } console.log(OptionalMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional member-call invocation static field initializers stay on semantic reanalysis',
+        source:
+          'var receiver = { fieldValue(input) { return input + 1; } }; class OptionalCallMemberCallField { static value = receiver.fieldValue?.(8); } console.log(OptionalCallMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unresolved member receiver static field initializers stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcFieldReceiver = { fieldValue(input) { return input + 1; } }; class ExternalReceiverMemberCallField { static value = __zntcFieldReceiver.fieldValue(8); } console.log(ExternalReceiverMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'nested member receiver static field initializers stay on semantic reanalysis',
+        source:
+          'var holder = { receiver: { fieldValue(input) { return input + 1; } } }; class NestedMemberReceiverField { static value = holder.receiver.fieldValue(8); } console.log(NestedMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result member receiver static field initializers stay on semantic reanalysis',
+        source:
+          'function getFieldReceiver() { return { fieldValue(input) { return input + 1; } }; } class NestedReceiverMemberCallField { static value = getFieldReceiver().fieldValue(8); } console.log(NestedReceiverMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
       },
       {
         name: 'unresolved direct static initializer calls stay on semantic reanalysis',
