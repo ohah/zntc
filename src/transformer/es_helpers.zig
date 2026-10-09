@@ -706,6 +706,7 @@ pub fn uniqueSyntheticName(self: anytype, prefix: []const u8, counter: *u32) ![]
 /// reserve it. The preamble rewriter uses the same cached mapping.
 pub fn resolveRuntimeHelperName(self: anytype, name: []const u8) ![]const u8 {
     if (self.options.emit_runtime_helper_imports) return name;
+    if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution) return name;
     if (self.runtime_helper_aliases.get(name)) |resolved| return resolved;
 
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);

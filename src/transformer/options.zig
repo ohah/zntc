@@ -252,6 +252,12 @@ pub const TransformOptions = struct {
     /// 사고 방지). 자세한 매핑은 `runtime_helper_imports.zig`.
     emit_runtime_helper_imports: bool = false,
 
+    /// Standalone transpile can bind runtime helper identities during lowering
+    /// and defer their output spelling until all generated symbols are known.
+    /// Low-level Transformer callers keep the legacy collision-aware spelling
+    /// unless they explicitly provide a final SymbolId name map.
+    defer_runtime_helper_name_resolution: bool = false,
+
     /// standalone transpile 에서 JSX automatic runtime import 를 AST 노드로 prepend.
     /// bundler 는 `emit_runtime_helper_imports` 경로에서 함께 처리하므로 이 옵션은
     /// 단일 파일 변환 전용이다. 문자열 prepend 대신 semantic edit 가 import binding 과

@@ -68,6 +68,52 @@ console.log(__extends, new Child() instanceof Base);
     expect(runtime.stdout).toBe('40 true\n');
   });
 
+  test('late helper naming reserves free global references', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+globalThis.__extends = 40;
+class Base {}
+class Child extends Base {}
+console.log(__extends, new Child() instanceof Base);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/var __extends2 = function/);
+    expect(code).toMatch(/__extends2\(Child, _super\)/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 true\n');
+  });
+
+  test('late helper naming compares escaped source binding StringValues', async () => {
+    const fixture = await createFixture({
+      'input.ts': String.raw`
+var \u005f_extends = 40;
+class Base {}
+class Child extends Base {}
+console.log(\u005f_extends, new Child() instanceof Base);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/var __extends2 = function/);
+    expect(code).toMatch(/__extends2\(Child, _super\)/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('40 true\n');
+  });
+
   test('standalone minified ES5 extends preamble uses the collision-free helper SymbolId name', async () => {
     const fixture = await createFixture({
       'input.ts': `
@@ -360,8 +406,8 @@ collect(values(), []);
       const code = readFileSync(output, 'utf8');
       const awaitHelper = code.match(
         minify
-          ? /var (__await[a-zA-Z0-9_$]*)=function\(v,s\)/
-          : /var (__await\w*) = function\(v, s\)/,
+          ? /var (__await[a-zA-Z0-9_$]*)=function(?: __awaitCtor)?\(v,s\)/
+          : /var (__await\w*) = function(?: __awaitCtor)?\(v, s\)/,
       )?.[1];
       const asyncGeneratorHelper = code.match(
         minify
@@ -379,7 +425,8 @@ collect(values(), []);
       expect(awaitHelper).not.toBe(awaitSourceName);
       expect(asyncGeneratorHelper).not.toBe(asyncGeneratorSourceName);
       expect(yieldStarHelper).not.toBe(yieldStarSourceName);
-      expect(code).toContain(`this instanceof ${awaitHelper}`);
+      expect(code).toMatch(/this instanceof __awaitCtor/);
+      expect(code).toMatch(/new __awaitCtor\(v,\s*s\)/);
       expect(code).toContain(`r.value instanceof ${awaitHelper}`);
       expect(code).toContain(`${awaitHelper}(new Promise`);
       expect(code).toContain(`${asyncGeneratorHelper}(this`);
@@ -636,7 +683,7 @@ values().next().then(function (result) { console.log(__await, result.value); });
         expect(result.exitCode, result.stderr).toBe(0);
 
         const code = readFileSync(output, 'utf8');
-        expect(code).toMatch(/var __await2\s*=\s*function\(v,\s*s\)/);
+        expect(code).toMatch(/var __await2\s*=\s*function(?:\s+__awaitCtor)?\(v,\s*s\)/);
         expect(code).toMatch(/__await2\(new Promise/);
         expect(code).not.toMatch(/__yieldStar\([^)]*__await\(/);
 
@@ -1602,7 +1649,7 @@ console.log(events.join('|'));
     expect(exact).toContain('identity_mismatch=0');
     expect(exact).toContain('clean=1');
     expect(proc.stderr).toMatch(
-      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
     );
   });
 
@@ -1687,7 +1734,7 @@ console.log(events.join('|'));
       expect(exact).toContain('clean=1');
       if (minify) {
         expect(proc.stderr).toMatch(
-          /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+          /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
         );
       }
     });
@@ -1777,7 +1824,7 @@ console.log(events.join('|'));
     expect(exact).toContain('shadowed_external_reference=0');
     expect(exact).toContain('clean=1');
     expect(proc.stderr).toMatch(
-      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 clean=1/,
+      /symbol-identity-post-minify .* missing_binding_id=0 missing_reference_id=0 dangling_reference_id=0 wrong_reference_target=0 shadowed_external_reference=0 unproven_external_reference=0 clean=1/,
     );
   });
 });
