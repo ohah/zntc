@@ -56,6 +56,7 @@ const EXACT_ZERO_COUNTERS = [
   'reference_node_use_alias',
   'declaration_scope_mismatch',
   'declaration_identity_mismatch',
+  'declaration_anchor_mismatch',
   'scope_map_mismatch',
   'scope_owner_mismatch',
   'scope_owner_parent_mismatch',
@@ -97,15 +98,16 @@ const EXACT_SINGLETON_FIELDS = [
   ['generated_bindings', '\\d+'],
   ['generated_references', '\\d+'],
   ['external', '\\d+'],
+  ['declaration_anchors_checked', '\\d+'],
   ['namespace_iife_params', '\\d+'],
   ['enum_iife_params', '\\d+'],
   ['clean', '\\d+'],
   ['legacy_debt_fingerprint', '[0-9a-fA-F]+'],
   ['schema_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
-const EXACT_REPORT_SCHEMA_FINGERPRINT = '173a275d5745ac09';
-const EXACT_OBSERVATION_FIELD_COUNT = 6;
-const EXACT_DIAGNOSTIC_FIELD_COUNT = 15;
+const EXACT_REPORT_SCHEMA_FINGERPRINT = 'eb9b778e9933c134';
+const EXACT_OBSERVATION_FIELD_COUNT = 7;
+const EXACT_DIAGNOSTIC_FIELD_COUNT = 16;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
   'invariant_counter_count',
   'observation_field_count',
@@ -9804,6 +9806,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     const exactExamples = new Map<string, string[]>();
     let generatedBindings = 0;
     let generatedReferences = 0;
+    let declarationAnchorsChecked = 0;
     let strictExternalReferences = 0;
     let strictRawScopeMismatches = 0;
     let runs = 0;
@@ -9921,11 +9924,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           }
           const generatedBindingsMatch = identity.match(/generated_bindings=(\d+)/);
           const generatedReferencesMatch = identity.match(/generated_references=(\d+)/);
-          if (!generatedBindingsMatch || !generatedReferencesMatch) {
+          const declarationAnchorsMatch = identity.match(/declaration_anchors_checked=(\d+)/);
+          if (!generatedBindingsMatch || !generatedReferencesMatch || !declarationAnchorsMatch) {
             problems.push(`${name} ${target.name}: missing generated-node totals: ${identity}`);
           } else {
             generatedBindings += Number(generatedBindingsMatch[1]);
             generatedReferences += Number(generatedReferencesMatch[1]);
+            declarationAnchorsChecked += Number(declarationAnchorsMatch[1]);
           }
           for (const counter of EXACT_ZERO_COUNTERS) {
             const value = identity.match(new RegExp(`${counter}=(\\d+)`))?.[1];
@@ -9987,6 +9992,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     expect(runs).toBe(298 * 6);
     expect(generatedBindings).toBeGreaterThan(0);
     expect(generatedReferences).toBeGreaterThan(0);
+    expect(declarationAnchorsChecked).toBeGreaterThan(0);
     expect(strictExternalReferences).toBeGreaterThan(0);
     // Exercise the documented raw-trace exception while the separate exact
     // report still requires all transform-aware binding/reference scopes clean.
