@@ -10010,11 +10010,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional computed static-member reads retain only literal and exact-bound keys',
+        name: 'optional computed static-member reads retain safe exact-bound key expressions',
         source:
-          'var order = []; var key = "value"; var holder = { get value() { order.push("value"); return 9; } }; var missing = null; class OptionalComputedStaticMemberValueField { static bound = holder?.[key]; static literal = holder?.["value"]; static absent = missing?.[key]; } console.log(OptionalComputedStaticMemberValueField.bound, OptionalComputedStaticMemberValueField.literal, OptionalComputedStaticMemberValueField.absent, order.join(","));',
+          'var order = []; var key = { toString: function() { order.push("coerce"); return "value"; } }; var prefix = "va"; var suffix = "lue"; var holder = { get value() { order.push("get"); return 9; } }; var missing = null; class OptionalComputedStaticMemberValueField { static bound = holder?.[key]; static literal = holder?.["value"]; static expression = holder?.[prefix + suffix]; static absent = missing?.[key]; } console.log(OptionalComputedStaticMemberValueField.bound, OptionalComputedStaticMemberValueField.literal, OptionalComputedStaticMemberValueField.expression, OptionalComputedStaticMemberValueField.absent, order.join(","));',
         graph: 'retained',
-        output: '9 9 undefined value,value\n',
+        output: '9 9 9 undefined coerce,get,get,get\n',
       },
       {
         name: 'unbound optional computed static-member key stays on semantic reanalysis',

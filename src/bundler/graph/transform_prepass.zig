@@ -953,8 +953,8 @@ fn isBoundStaticFieldMemberAccessShape(
 
 /// Optional member chains rooted directly at an exact source binding can stay
 /// on the edited graph when their segments are dot reads or optional computed
-/// reads with literal / bound identifier keys. Keep calls and non-source roots
-/// on reanalysis.
+/// reads with safe literal / source-bound key expressions. Keep calls and
+/// non-source roots on reanalysis.
 fn isRetainableBoundStaticFieldOptionalMemberChain(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -992,11 +992,7 @@ fn isRetainableBoundStaticFieldOptionalMemberChain(
         const property = ast.getNode(property_idx);
         if (member.tag == .static_member_expression) {
             if (property.tag != .identifier_reference) return false;
-        } else if (property.tag == .identifier_reference) {
-            if (!isBoundSourceIdentifierReference(ast, semantic, property_idx)) return false;
-        } else if (property.tag != .string_literal and property.tag != .numeric_literal and
-            property.tag != .boolean_literal and property.tag != .null_literal)
-        {
+        } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
             return false;
         }
         current_idx = receiver_idx;
