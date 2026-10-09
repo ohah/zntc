@@ -9730,13 +9730,68 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
-  test('ES5 empty, plain methods and compatible accessors retain their graph; other forms resync', () => {
+  test('ES5 empty classes, safe static fields, plain methods and compatible accessors retain their graph; other forms resync', () => {
     const cases = [
       {
         name: 'empty named class',
         source: 'class Empty {}\nconsole.log(new Empty() instanceof Empty);\n',
         graph: 'retained',
         output: 'true\n',
+      },
+      {
+        name: 'static primitive fields retain their exact class graph and generated Object global',
+        source:
+          'class StaticField { static enabled = true; static empty = null; static value = 9; static label = "ready"; } console.log(StaticField.enabled, StaticField.empty, StaticField.value, StaticField.label);',
+        graph: 'retained',
+        output: 'true null 9 ready\n',
+      },
+      {
+        name: 'static name field keeps DefineOwnProperty semantics',
+        source: 'class StaticName { static name = "field-name"; } console.log(StaticName.name);',
+        graph: 'retained',
+        output: 'field-name\n',
+      },
+      {
+        name: 'static literal field and method preserve class self identity',
+        source:
+          'var Holder = class Inner { static value = 6; static self() { return Inner; } }; console.log(Holder.value, Holder.self() === Holder);',
+        graph: 'retained',
+        output: '6 true\n',
+      },
+      {
+        name: 'instance fields stay on semantic reanalysis',
+        source: 'class InstanceField { value = 9; } console.log(new InstanceField().value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'static __proto__ field stays on semantic reanalysis',
+        source:
+          'class ProtoStaticField { static __proto__ = 9; } console.log(Object.hasOwn(ProtoStaticField, "__proto__"), ProtoStaticField.__proto__);',
+        graph: 'reanalyzed',
+        output: 'true 9\n',
+      },
+      {
+        name: 'computed static fields stay on semantic reanalysis',
+        source:
+          'function fieldKey() { return "value"; } class ComputedStaticField { static [fieldKey()] = 9; } console.log(ComputedStaticField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'effectful static field initializers stay on semantic reanalysis',
+        source:
+          'function fieldValue() { return 9; } class EffectfulStaticField { static value = fieldValue(); } console.log(EffectfulStaticField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'source Object bindings remain separate from generated class-field globals',
+        source:
+          'var Object = { defineProperty() { throw new Error("captured generated global"); } }; class ShadowedStaticField { static value = 9; } console.log(ShadowedStaticField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+        shadowedExternal: true,
       },
       {
         name: 'named class expression in a top-level var initializer retains exact inner identity',
