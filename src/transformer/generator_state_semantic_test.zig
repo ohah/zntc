@@ -11,13 +11,13 @@ const symbol_coverage = @import("symbol_coverage.zig");
 const output_scope = @import("output_scope_test_utils.zig");
 const es_helpers = @import("es_helpers.zig");
 
-const DeferredStateCallback = struct {
+const StateCallback = struct {
     callback: ast_mod.NodeIndex,
     parameter: ast_mod.NodeIndex,
     reference: ast_mod.NodeIndex,
 };
 
-fn makeDeferredStateCallback(transformer: *Transformer) !DeferredStateCallback {
+fn makeStateCallback(transformer: *Transformer) !StateCallback {
     const span = try transformer.ast.addString("_state");
     const parameter = try es_helpers.makeSyntheticBinding(transformer, span);
     const reference = try es_helpers.makeExactSyntheticRefFromSpan(transformer, transformer.ast.getNode(parameter).data.string_ref);
@@ -948,7 +948,7 @@ test "#4819 static private async generator method owns its state callback" {
     );
 }
 
-test "#4819 deferred state symbols bind only their recorded callback nodes" {
+test "#4819 state symbols bind only recorded references inside their exact callback" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -970,21 +970,19 @@ test "#4819 deferred state symbols bind only their recorded callback nodes" {
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
 
-    const first = try makeDeferredStateCallback(&transformer);
-    const second = try makeDeferredStateCallback(&transformer);
-    const unrelated = try makeDeferredStateCallback(&transformer);
-    const dead = try makeDeferredStateCallback(&transformer);
+    const first = try makeStateCallback(&transformer);
+    const second = try makeStateCallback(&transformer);
+    const unrelated = try makeStateCallback(&transformer);
+    const program_scope = transformer.programScope();
     const orphan_reference = try es_helpers.makeExactSyntheticRefFromSpan(
         &transformer,
         transformer.ast.getNode(first.parameter).data.string_ref,
     );
     try std.testing.expectEqualStrings("_state3", transformer.ast.getText(transformer.ast.getNode(first.parameter).data.string_ref));
     try transformer.generator_state_refs.appendSlice(allocator, &.{ first.reference, first.reference, orphan_reference });
-    try transformer.bindGeneratedState(.none, .none, first.callback, first.parameter, 0, &.{}, &.{}, .EMPTY);
+    try transformer.bindGeneratedState(program_scope, program_scope, first.callback, first.parameter, 0, &.{}, &.{}, .EMPTY);
     try transformer.generator_state_refs.append(allocator, second.reference);
-    try transformer.bindGeneratedState(.none, .none, second.callback, second.parameter, 0, &.{}, &.{}, .EMPTY);
-    try transformer.generator_state_refs.append(allocator, dead.reference);
-    try transformer.bindGeneratedState(.none, .none, dead.callback, dead.parameter, 0, &.{}, &.{}, .EMPTY);
+    try transformer.bindGeneratedState(program_scope, program_scope, second.callback, second.parameter, 0, &.{}, &.{}, .EMPTY);
 
     const first_stmt = try transformer.ast.addNode(.{
         .tag = .expression_statement,
@@ -1007,7 +1005,6 @@ test "#4819 deferred state symbols bind only their recorded callback nodes" {
         .span = .EMPTY,
         .data = .{ .list = root_list },
     });
-    const program_scope = transformer.programScope();
     try transformer.registerGeneratedFunctionScopes(root, program_scope);
     try transformer.completeGeneratedStateSymbols(root, program_scope);
 
@@ -1017,12 +1014,9 @@ test "#4819 deferred state symbols bind only their recorded callback nodes" {
     try std.testing.expectEqual(first_id, transformer.getSymbolIdAt(first.reference).?);
     try std.testing.expectEqual(second_id, transformer.getSymbolIdAt(second.reference).?);
     try std.testing.expect(transformer.getSymbolIdAt(orphan_reference) == null);
-    try std.testing.expect(transformer.getSymbolIdAt(dead.parameter) == null);
-    try std.testing.expect(transformer.getSymbolIdAt(dead.reference) == null);
     // The name looks like a state parameter, but no state-machine producer
     // recorded it. It must stay untouched instead of being inferred by name.
     try std.testing.expect(transformer.getSymbolIdAt(unrelated.parameter) == null);
-    try std.testing.expectEqual(@as(usize, 0), transformer.deferred_generated_state_symbols.items.len);
 
     const editor = &transformer.semantic_editor.?;
     const first_scope = transformer.outputOwnedScope(first.callback).?;

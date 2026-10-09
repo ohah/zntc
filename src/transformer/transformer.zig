@@ -70,13 +70,6 @@ pub const DeferredGeneratorLoopOwner = struct {
     migration_complete: bool = false,
 };
 
-pub const DeferredGeneratedStateSymbols = struct {
-    callback: NodeIndex,
-    parameter: NodeIndex,
-    references: []const NodeIndex,
-    span: Span,
-};
-
 pub const NamespaceExportFrame = struct {
     parameter_symbol_id: u32,
     /// Canonical SymbolId for the namespace object shared by merged declarations.
@@ -527,9 +520,6 @@ pub const Transformer = struct {
     /// Resolved `_state` spelling shared by one state machine's refs and callback
     /// parameter. Nested state machines save and restore the enclosing handle.
     generator_state_name_span: ?token_mod.Span = null,
-    /// Exact callback, parameter, and reference nodes whose output owner scope
-    /// was not available when the state machine was built.
-    deferred_generated_state_symbols: std.ArrayListUnmanaged(DeferredGeneratedStateSymbols) = .empty,
     /// Exact for-await generated references whose scopes move into an ES5
     /// generator callback. Capture identity and read/write intent at creation.
     generator_state_semantic_refs: std.ArrayListUnmanaged(struct {
