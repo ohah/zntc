@@ -280,7 +280,8 @@ function postMinifyAuditProblems(stderr: string): string[] {
 }
 
 function strictSchemaProblems(report: string): string[] {
-  const payloadStart = report.indexOf(': bound=');
+  if (!report.startsWith('zntc: synthetic-coverage ')) return ['missing strict report'];
+  const payloadStart = report.lastIndexOf(': bound=');
   if (payloadStart === -1) return ['missing strict report payload'];
 
   const expectedFields = new Set<string>(STRICT_REPORT_FIELDS);
@@ -799,6 +800,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const report = `zntc: synthetic-coverage fixture.mjs: ${complete}`;
 
     expect(strictSchemaProblems(report)).toEqual([]);
+    expect(
+      strictSchemaProblems(`zntc: synthetic-coverage /tmp/zntc: bound=7.js: ${complete}`),
+    ).toEqual([]);
+    expect(
+      strictSchemaProblems(`zntc: synthetic-coverage-detail fixture.mjs: ${complete}`),
+    ).toContain('missing strict report');
     expect(strictSchemaProblems(report.replace(' missing_binding=0', ''))).toContain(
       'missing_binding occurrences=0, expected 1',
     );
