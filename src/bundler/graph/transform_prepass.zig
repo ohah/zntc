@@ -1613,6 +1613,29 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     return true;
 }
 
+/// Static computed field keys are memoized outside the class key node. A read
+/// of the class's inner name can depend on the class-body binding's TDZ and
+/// must not be admitted to that path. Fail closed if the key subtree or its
+/// semantic identities cannot be inspected.
+fn hasClassSelfReference(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    expression_idx: ast_mod.NodeIndex,
+) bool {
+    const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, expression_idx) catch return true;
+    defer ast.allocator.free(descendants);
+    for (descendants) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag != .identifier_reference) continue;
+        if (raw_idx >= semantic.symbol_ids.len) return true;
+        const reference_symbol = semantic.symbol_ids[raw_idx] orelse return true;
+        var class_self_symbols = semantic.class_self_symbol_map.valueIterator();
+        while (class_self_symbols.next()) |class_self_symbol| {
+            if (reference_symbol == class_self_symbol.*) return true;
+        }
+    }
+    return false;
+}
+
 /// A public static field with a safe value expression, exact-bound static
 /// member read, or exact-bound call is emitted as an exact class reference
 /// plus an explicit global Object.defineProperty call. `this`, unresolved names,
@@ -1642,7 +1665,17 @@ fn isRetainableSimpleStaticClassField(
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len or
         init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
-    if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
+    switch (key.tag) {
+        .identifier_reference => if (std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false,
+        .computed_property_key => {
+            const key_value_idx = key.data.unary.operand;
+            if (key_value_idx.isNone() or @intFromEnum(key_value_idx) >= ast.nodes.items.len or
+                hasClassSelfReference(ast, semantic, key_value_idx) or
+                (!isSafeConstructorValue(ast, semantic, key_value_idx) and
+                    !isRetainableBoundStaticFieldCall(allocator, ast, semantic, key_value_idx))) return false;
+        },
+        else => return false,
+    }
     return isSafeConstructorValue(ast, semantic, init_idx) or
         isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, init_idx) or
         isRetainableBoundStaticFieldCall(allocator, ast, semantic, init_idx);
@@ -2095,19 +2128,30 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
 
-    // Plain computed data properties, synchronous object methods, and computed
-    // accessors without `super` lower through tracked temps and output scopes.
-    // Accessor `super` may add a runtime helper module, so it stays on reanalysis.
-    // Async/generator methods and class keys also remain gated out.
-    const ComputedObjectKeyOwner = enum { data_property, method, accessor };
+    // Plain computed data properties, synchronous object methods, computed
+    // accessors without `super`, and audited static class-field keys lower
+    // through tracked temps and output scopes. Accessor `super` may add a
+    // runtime helper module, so it stays on reanalysis. Async/generator methods
+    // and unaudited class keys remain gated out.
+    const ComputedObjectKeyOwner = enum { data_property, method, accessor, static_class_field };
     const ComputedObjectKey = struct { node: ast_mod.NodeIndex, owner: ComputedObjectKeyOwner };
     var computed_object_keys: std.AutoHashMapUnmanaged(u32, ComputedObjectKeyOwner) = .empty;
     defer computed_object_keys.deinit(ast.allocator);
     if (options.unsupported.object_extensions) {
         for (reachable_nodes) |raw_idx| {
-            const object = ast.nodes.items[raw_idx];
-            if (object.tag != .object_expression) continue;
-            const members = object.data.list;
+            const owner_node = ast.nodes.items[raw_idx];
+            if (owner_node.tag == .property_definition) {
+                const key_at = owner_node.data.extra + ast_mod.PropertyExtra.key;
+                if (key_at >= ast.extra_data.items.len) return false;
+                const key: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[key_at]);
+                if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len or
+                    ast.nodes.items[@intFromEnum(key)].tag != .computed_property_key or
+                    !isRetainableSimpleStaticClassField(allocator, ast, semantic, owner_node)) continue;
+                computed_object_keys.put(ast.allocator, @intFromEnum(key), .static_class_field) catch return false;
+                continue;
+            }
+            if (owner_node.tag != .object_expression) continue;
+            const members = owner_node.data.list;
             if (members.start > ast.extra_data.items.len or
                 members.len > ast.extra_data.items.len - members.start) return false;
             for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_member| {
@@ -2491,6 +2535,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                             if (source_binds_object) return false;
                             found_computed_object_accessor_key = true;
                         },
+                        .static_class_field => found_lowered_simple_static_class_field = true,
                     }
                 }
             },
