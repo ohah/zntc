@@ -2561,8 +2561,11 @@ fn canKeepPrepassSemanticGraph(
     const safe_graph_subset = options.unsupported.hasAny() and
         canRetainGraphForAuditedSyntaxSubset(ast, semantic, options);
     if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
+    // Whitespace minification changes emission and helper spellings, but the
+    // transformer records those helper identities in the edited graph. Unlike
+    // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
-        options.minify_whitespace or options.drop_console or options.drop_debugger or
+        options.drop_console or options.drop_debugger or
         options.drop_labels.len != 0 or options.define.len != 0 or options.module_specifier_map.len != 0 or
         !options.use_define_for_class_fields or options.experimental_decorators or
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable) return false;
