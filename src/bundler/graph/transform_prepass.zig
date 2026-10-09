@@ -920,8 +920,10 @@ fn isRetainableBoundStaticFieldMemberReceiver(
 
 /// A member read is safe to retain when its receiver chain is rooted at an
 /// exact source binding and all receiver segments are plain non-optional dot
-/// accesses. A computed final key must itself be a safe exact source value.
+/// accesses. A computed final key may be a safe exact source value or a call
+/// whose callee and nested calls are all exact-bound.
 fn isRetainableBoundStaticFieldMemberAccess(
+    allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
@@ -938,7 +940,8 @@ fn isRetainableBoundStaticFieldMemberAccess(
         property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
     return switch (member.tag) {
         .static_member_expression => ast.getNode(property_idx).tag == .identifier_reference,
-        .computed_member_expression => isSafeConstructorValue(ast, semantic, property_idx),
+        .computed_member_expression => isSafeConstructorValue(ast, semantic, property_idx) or
+            isRetainableBoundStaticFieldCall(allocator, ast, semantic, property_idx),
         else => false,
     };
 }
@@ -989,7 +992,7 @@ fn isRetainableBoundStaticFieldCall(
                 if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
             },
             .static_member_expression => {
-                if (!isRetainableBoundStaticFieldMemberAccess(ast, semantic, callee_idx)) return false;
+                if (!isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, callee_idx)) return false;
             },
             else => return false,
         }
@@ -1576,7 +1579,7 @@ fn isRetainableSimpleStaticClassField(
     const key = ast.getNode(key_idx);
     if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
     return isSafeConstructorValue(ast, semantic, init_idx) or
-        isRetainableBoundStaticFieldMemberAccess(ast, semantic, init_idx) or
+        isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, init_idx) or
         isRetainableBoundStaticFieldCall(allocator, ast, semantic, init_idx);
 }
 
