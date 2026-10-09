@@ -1524,6 +1524,9 @@ fn transpileWithCallbackInternal(
     if (transformer.used_unsupported_modifier) {
         std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.regex_modifier_unsupported_msg });
     }
+    if (transformer.used_unsupported_exponentiation) {
+        std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.exponentiation_dynamic_scope_msg });
+    }
 
     if (options.stop_after == .transform) {
         return .{ .code = try allocator.dupe(u8, "") };

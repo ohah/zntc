@@ -258,6 +258,8 @@ pub const Code = enum(u16) {
     jsx_pragma_ignored = 1500,
     /// RegExp inline modifier group ((?i:...)) 가 타겟 미지원이라 그대로 emit (warning).
     regex_modifier_unsupported = 1501,
+    /// dynamic scope 에서는 안전하게 낮출 수 없어 exponentiation 을 그대로 emit (warning).
+    exponentiation_dynamic_scope = 1502,
 
     /// 에러 코드를 "ZNTC0001" 형식의 문자열로 반환한다.
     pub fn format(self: Code) []const u8 {
@@ -492,6 +494,7 @@ pub const Code = enum(u16) {
             // 트랜스포머
             .jsx_pragma_ignored => "@jsx / @jsxFrag pragma ignored under the automatic JSX runtime",
             .regex_modifier_unsupported => "Regular expression inline modifier group is an ES2025 feature not supported by the target",
+            .exponentiation_dynamic_scope => "Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe",
         };
     }
 };

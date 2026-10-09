@@ -453,6 +453,12 @@ pub const TransformOptions = struct {
         "ES2025 feature not supported by the configured target — it is emitted unchanged " ++
         "and will throw a SyntaxError on older engines. Raise the target to es2025+, or " ++
         "rewrite the pattern without inline modifiers.";
+
+    /// Downlevel exponentiation cannot safely use a generated Math binding when a
+    /// dynamic root scope makes generated bindings observable to direct eval.
+    /// Preserve the original operator and make the configured target limitation explicit.
+    pub const exponentiation_dynamic_scope_msg =
+        "exponentiation is emitted unchanged because a dynamic scope prevents safe downleveling without exposing generated bindings; the configured target may not support **.";
 };
 
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게
