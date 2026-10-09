@@ -2438,6 +2438,124 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('3:c,d');
     });
 
+    test('object-rest lowering keeps unrelated native defaults outside body var scope', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let outside = 3;',
+            'function f(value = outside, { a, ...rest }: any) {',
+            '  var outside = 4;',
+            '  return [value, outside, Object.keys(rest).join(",")];',
+            '}',
+            'console.log(JSON.stringify(f(undefined, { a: 1, b: 2 })));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[3,4,"b"]');
+    });
+
+    test('object-rest parameter default stays native and precedes body declarations', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let outside = 3;',
+            'function f({ a, ...rest }: any = { a: outside, b: 2 }) {',
+            '  var outside = 4;',
+            '  return [a, outside, Object.keys(rest).join(",")];',
+            '}',
+            'console.log(JSON.stringify(f(undefined)));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[3,4,"b"]');
+    });
+
+    test('typed object-rest parameter default stays native', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let outside = 3;',
+            'function f({ a, ...rest }: any = { a: outside, b: 2 }) {',
+            '  var outside = 4;',
+            '  return [a, outside, Object.keys(rest).join(",")];',
+            '}',
+            'console.log(JSON.stringify(f(undefined)));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[3,4,"b"]');
+    });
+
+    test('later defaults still run after object-rest bindings initialize', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'function f({ a, ...rest }: any, value = a) {',
+            '  return [a, value, Object.keys(rest).join(",")];',
+            '}',
+            'console.log(JSON.stringify(f({ a: 2, b: 3 }, undefined)));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[2,2,"b"]');
+    });
+
+    test('later default side effects follow object-rest property reads', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'const events: string[] = [];',
+            'const input = { get a() { events.push("a"); return 1; }, get b() { events.push("b"); return 2; } };',
+            'function f({ a, ...rest }: any, value = (events.push("default"), a)) {',
+            '  return [value, Object.keys(rest).join(","), events.join("|")];',
+            '}',
+            'console.log(JSON.stringify(f(input, undefined)));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[1,"b","a|b|default"]');
+    });
+
+    test('nested parameter object-rest is detected without lowering surrounding defaults', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let outside = 3;',
+            'function f(value = outside, { nested: { a, ...rest } }: any) {',
+            '  var outside = 4;',
+            '  return [value, a, Object.keys(rest).join(",")];',
+            '}',
+            'console.log(JSON.stringify(f(undefined, { nested: { a: 1, b: 2 } })));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[3,1,"b"]');
+    });
+
     test('arrow object rest 가 es2017 에서 keep-arrow lowering (this 보존)', async () => {
       // 회귀: arrow object rest 가 es2017 에서 미lowering(arrow 는 변환 안 되고
       // param lowering 경로 부재) → native 잔존. arrow→function 변환은 this 를
