@@ -887,6 +887,34 @@ fn isSafeConstructorValue(
     };
 }
 
+/// A member receiver may be an exact bound identifier or one non-optional
+/// static member rooted at an exact bound identifier. The original member
+/// expression is retained, so property evaluation order and getter effects stay
+/// unchanged.
+fn isRetainableBoundStaticFieldMemberReceiver(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    receiver_idx: ast_mod.NodeIndex,
+) bool {
+    if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len) return false;
+    const receiver = ast.getNode(receiver_idx);
+    if (receiver.tag == .identifier_reference)
+        return isBoundSourceIdentifierReference(ast, semantic, receiver_idx);
+    if (receiver.tag != .static_member_expression) return false;
+
+    const extras = ast.extra_data.items;
+    const extra = receiver.data.extra;
+    if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
+    const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+    if (object_idx.isNone() or @intFromEnum(object_idx) >= ast.nodes.items.len or
+        ast.getNode(object_idx).tag != .identifier_reference or
+        !isBoundSourceIdentifierReference(ast, semantic, object_idx) or
+        property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+        ast.getNode(property_idx).tag != .identifier_reference) return false;
+    return true;
+}
+
 /// A call in a static initializer can retain the source graph when its callee
 /// is an exact bound identifier, or a simple static member of one, and every
 /// argument is a safe value. The top-level call may also have one nested call
@@ -931,9 +959,7 @@ fn isRetainableBoundStaticFieldCallWithArgumentPolicy(
                 (member_flags & ~ast_mod.MemberFlags.optional_chain) != 0) return false;
             const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
             const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
-            if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
-                ast.getNode(receiver_idx).tag != .identifier_reference or
-                !isBoundSourceIdentifierReference(ast, semantic, receiver_idx) or
+            if (!isRetainableBoundStaticFieldMemberReceiver(ast, semantic, receiver_idx) or
                 property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
                 ast.getNode(property_idx).tag != .identifier_reference) return false;
         },
