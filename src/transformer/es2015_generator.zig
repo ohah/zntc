@@ -40,6 +40,7 @@ const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const es_helpers = @import("es_helpers.zig");
@@ -96,6 +97,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const params_len = params_list_old.len;
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
+            const source_scope = self.stateMachineOwnerScope(source_owner);
 
             // An extracted per-iteration generator is an implementation
             // function, not a lexical boundary for arrows in the source loop
@@ -134,7 +136,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try self.label_scope.append(self.allocator, null);
             defer _ = self.label_scope.pop();
 
-            var sm_result = try buildStateMachine(self, body_idx, span);
+            var sm_result = try buildStateMachine(self, body_idx, span, source_scope);
             defer sm_result.hoisted_temps.deinit(self.allocator);
             self.in_extracted_fn_body = saved_ext;
             if (sm_result.body.isNone()) return .none;
@@ -152,7 +154,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 break :blk ref;
             } else .none;
             const gen = try buildGeneratorHelperCallWithProto(self, sm_body, genFn_ref, span);
-            const source_scope = self.originalFunctionScope(source_owner);
             try self.bindGeneratedState(source_scope, source_scope, gen.callback, gen.state_param, frame.state_ref_start, sm_result.hoisted_temps.items, frame.callback_temps.items, span);
             const gen_call = gen.call;
 
@@ -279,14 +280,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             frame.callback_temps.deinit(self.allocator);
         }
 
-        pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span) Transformer.Error!StateMachineResult {
+        pub fn buildStateMachine(self: *Transformer, body_idx: NodeIndex, span: Span, wrapper_scope: ScopeId) Transformer.Error!StateMachineResult {
             if (body_idx.isNone()) return .{ .body = .none, .var_decl = .none };
 
             const body = self.ast.getNode(body_idx);
 
             // expression body (arrow function): implicit return으로 처리
             if (body.tag != .block_statement and body.tag != .function_body) {
-                return buildExpressionBodyStateMachine(self, body_idx, body, span);
+                return buildExpressionBodyStateMachine(self, body_idx, body, span, wrapper_scope);
             }
 
             const body_list = try rewriteUsingForStateMachine(self, body.data.list);
@@ -322,7 +323,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const switch_node = try buildSwitchFromOps(self, ops.items, span);
             var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             errdefer state_temps.deinit(self.allocator);
-            const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span, &state_temps);
+            const var_decl_node = try buildHoistedVarDecl(self, hoisted_vars.items, span, &state_temps, wrapper_scope);
             return .{ .body = switch_node, .var_decl = var_decl_node, .hoisted_temps = state_temps };
         }
 
@@ -330,8 +331,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return (@as(u64, span.start) << 32) | span.end;
         }
 
-        fn recordGeneratorStateBinding(self: *Transformer, binding: NodeIndex, name_span: Span) Transformer.Error!void {
-            const symbol_id = self.getSymbolIdAt(binding);
+        fn recordGeneratorStateBinding(self: *Transformer, binding: NodeIndex, name_span: Span, owner_scope: ScopeId, declaration_span: Span) Transformer.Error!void {
+            var symbol_id = self.getSymbolIdAt(binding);
+            if (self.semantic_edit_enabled) {
+                if (owner_scope.isNone()) std.debug.panic("generator wrapper binding has no exact owner ScopeId", .{});
+                if (@intFromEnum(binding) >= self.parser_node_count) {
+                    const registered = try self.registerGeneratedWrapperTemp(binding, name_span, declaration_span, owner_scope) orelse
+                        std.debug.panic("generated generator wrapper binding lost its SymbolId", .{});
+                    if (symbol_id) |existing| {
+                        if (existing != @intFromEnum(registered))
+                            std.debug.panic("generator wrapper binding changed its exact SymbolId", .{});
+                    }
+                    symbol_id = @intFromEnum(registered);
+                } else {
+                    const raw_id = symbol_id orelse std.debug.panic("source generator wrapper binding has no exact SymbolId", .{});
+                    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                    if (raw_id >= symbols.len or symbols[raw_id].scope_id != owner_scope)
+                        std.debug.panic("source generator wrapper binding has no exact owner scope", .{});
+                }
+            }
             for (self.generator_state_bindings.items) |existing| {
                 if (existing.binding != binding) continue;
                 if (self.semantic_edit_enabled) {
@@ -341,8 +359,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                         std.debug.panic("generator state binding changed its exact SymbolId", .{});
                     if (existing.callback_local)
                         std.debug.panic("callback-local binding was also hoisted to the generator wrapper", .{});
-                    if (symbol_id == null and !existing.deferred_wrapper_owner)
-                        std.debug.panic("generator wrapper binding has no exact or deferred owner", .{});
+                    if (existing.owner_scope != owner_scope)
+                        std.debug.panic("generator state binding changed its exact owner ScopeId", .{});
                 }
                 return;
             }
@@ -351,7 +369,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .binding = binding,
                 .name_span = name_span,
                 .symbol_id = symbol_id,
-                .deferred_wrapper_owner = self.semantic_edit_enabled and symbol_id == null,
+                .owner_scope = if (self.semantic_edit_enabled) owner_scope else .none,
             });
         }
 
@@ -379,7 +397,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// generator body 의 hoisted `var` 선언과 for-of/await 변환에서 생성한 임시 변수를
         /// 하나의 `var` 선언으로 합쳐 반환. __generator 콜백 밖(함수 스코프)에 배치해야 한다 —
         /// 콜백 안에 두면 매 호출마다 재선언되어 상태가 리셋된다. 합칠 변수가 없으면 `.none`.
-        fn buildHoistedVarDecl(self: *Transformer, hoisted_vars: []const NodeIndex, span: Span, state_temps: *std.ArrayListUnmanaged(HoistedStateTemp)) Transformer.Error!NodeIndex {
+        fn buildHoistedVarDecl(self: *Transformer, hoisted_vars: []const NodeIndex, span: Span, state_temps: *std.ArrayListUnmanaged(HoistedStateTemp), wrapper_scope: ScopeId) Transformer.Error!NodeIndex {
             if (hoisted_vars.len == 0 and self.generator_temp_var_spans.items.len == 0) return .none;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -393,7 +411,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     for (self.generator_temp_var_spans.items) |temp_span| {
                         if (self.generator_var_origins.contains(spanKey(temp_span))) continue;
                         if (bnode.data.string_ref.start == temp_span.start) {
-                            try recordGeneratorStateBinding(self, binding, temp_span);
+                            try recordGeneratorStateBinding(self, binding, temp_span, wrapper_scope, span);
                             break;
                         }
                     }
@@ -412,16 +430,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 else
                     try es_helpers.makeExactSyntheticBindingFromSpan(self, temp_span);
                 if (origin == null) try self.generated_temp_spans.append(self.allocator, temp_span);
-                const symbol_id: ?u32 = if (origin) |source|
-                    self.getSymbolIdAt(source)
-                else if (self.generator_state_temp_symbols.get(temp_span.start)) |id|
-                    id
-                else
-                    null;
+                const symbol_id: ?u32 = if (origin) |source| blk: {
+                    const id = self.getSymbolIdAt(source);
+                    if (self.semantic_edit_enabled and id == null)
+                        std.debug.panic("source generator var temp has no exact SymbolId", .{});
+                    break :blk id;
+                } else if (self.semantic_edit_enabled) blk: {
+                    const id = try self.declareSyntheticTempInScope(binding, span, wrapper_scope) orelse
+                        std.debug.panic("generated generator wrapper temp lost its SymbolId", .{});
+                    if (self.generator_state_temp_symbols.get(temp_span.start)) |recorded| {
+                        if (recorded != @intFromEnum(id))
+                            std.debug.panic("generator temp producer and wrapper registration disagree on SymbolId", .{});
+                    }
+                    break :blk @intFromEnum(id);
+                } else self.generator_state_temp_symbols.get(temp_span.start);
                 try state_temps.append(self.allocator, .{
                     .binding = binding,
                     .name_span = temp_span,
                     .symbol_id = symbol_id,
+                    .owner_scope = if (self.semantic_edit_enabled) wrapper_scope else .none,
                 });
                 const declarator = try es_helpers.makeDeclarator(self, binding, .none, span);
                 try self.scratch.append(self.allocator, declarator);
@@ -2373,7 +2400,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return makeGeneratorTempRef(self, temp_span, temp_span, .{ .read = true });
         }
 
-        fn buildExpressionBodyStateMachine(self: *Transformer, body_idx: NodeIndex, body: Node, span: Span) Transformer.Error!StateMachineResult {
+        fn buildExpressionBodyStateMachine(self: *Transformer, body_idx: NodeIndex, body: Node, span: Span, wrapper_scope: ScopeId) Transformer.Error!StateMachineResult {
             var ops: std.ArrayList(Operation) = .empty;
             defer ops.deinit(self.allocator);
             var next_label: u32 = 1;
@@ -2404,7 +2431,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const switch_node = try buildSwitchFromOps(self, ops.items, span);
             var state_temps: std.ArrayListUnmanaged(HoistedStateTemp) = .empty;
             errdefer state_temps.deinit(self.allocator);
-            const var_decl_node = try buildHoistedVarDecl(self, &.{}, span, &state_temps);
+            const var_decl_node = try buildHoistedVarDecl(self, &.{}, span, &state_temps, wrapper_scope);
             return .{ .body = switch_node, .var_decl = var_decl_node, .hoisted_temps = state_temps };
         }
 
@@ -2812,7 +2839,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// The async helper receives a real function wrapper. Its body contains
         /// the `__generator` call, and its child callback owns `_state`.
         pub fn bindWrappedStateMachine(self: *Transformer, source_owner: NodeIndex, wrapper: NodeIndex, gen: GeneratorCall, frame: *const StateMachineFrame, wrapper_temps: []const HoistedStateTemp, span: Span) Transformer.Error!void {
-            const parent = self.originalFunctionScope(source_owner);
+            const parent = self.stateMachineOwnerScope(source_owner);
             if (parent.isNone()) {
                 try self.bindGeneratedState(.none, .none, gen.callback, gen.state_param, frame.state_ref_start, wrapper_temps, frame.callback_temps.items, span);
                 return;
@@ -2875,55 +2902,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
 test "ES2015 generator module compiles" {
     _ = ES2015Generator;
-}
-
-test "generator state binding records preserve exact and deferred owners" {
-    const Entry = struct {
-        binding: NodeIndex,
-        name_span: Span,
-        symbol_id: ?u32 = null,
-        callback_local: bool = false,
-        deferred_wrapper_owner: bool = false,
-    };
-    const Mock = struct {
-        pub const Error = std.mem.Allocator.Error;
-        allocator: std.mem.Allocator,
-        semantic_edit_enabled: bool,
-        generator_state_bindings: std.ArrayListUnmanaged(Entry) = .empty,
-        generated_temp_spans: std.ArrayListUnmanaged(Span) = .empty,
-        symbol_id: ?u32 = null,
-
-        fn getSymbolIdAt(self: *@This(), _: NodeIndex) ?u32 {
-            return self.symbol_id;
-        }
-    };
-
-    const allocator = std.testing.allocator;
-    var mock = Mock{ .allocator = allocator, .semantic_edit_enabled = true };
-    defer mock.generator_state_bindings.deinit(allocator);
-    defer mock.generated_temp_spans.deinit(allocator);
-
-    const Generator = ES2015Generator(Mock);
-    const source_binding: NodeIndex = @enumFromInt(1);
-    const source_span: Span = .{ .start = 10, .end = 15 };
-    mock.symbol_id = 42;
-    try Generator.recordGeneratorStateBinding(&mock, source_binding, source_span);
-    try std.testing.expectEqual(@as(usize, 1), mock.generator_state_bindings.items.len);
-    try std.testing.expectEqual(@as(?u32, 42), mock.generator_state_bindings.items[0].symbol_id);
-    try std.testing.expect(!mock.generator_state_bindings.items[0].deferred_wrapper_owner);
-
-    // Duplicate visits keep the original exact record and generated span.
-    try Generator.recordGeneratorStateBinding(&mock, source_binding, source_span);
-    try std.testing.expectEqual(@as(usize, 1), mock.generator_state_bindings.items.len);
-    try std.testing.expectEqual(@as(usize, 1), mock.generated_temp_spans.items.len);
-
-    const generated_binding: NodeIndex = @enumFromInt(2);
-    const generated_span: Span = .{ .start = 20, .end = 27 };
-    mock.symbol_id = null;
-    try Generator.recordGeneratorStateBinding(&mock, generated_binding, generated_span);
-    try std.testing.expectEqual(@as(usize, 2), mock.generator_state_bindings.items.len);
-    try std.testing.expect(mock.generator_state_bindings.items[1].symbol_id == null);
-    try std.testing.expect(mock.generator_state_bindings.items[1].deferred_wrapper_owner);
 }
 
 test "generator state name handoff survives nested cache invalidation" {

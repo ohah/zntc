@@ -239,7 +239,7 @@ pub fn Methods(comptime Transformer: type) type {
                     const saved_temp_counter = self.temp_var_counter;
                     var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
                     defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
-                    var sm_result = try GenMod.buildStateMachine(self, body_idx, span);
+                    var sm_result = try GenMod.buildStateMachine(self, body_idx, span, self.stateMachineOwnerScope(info.source_member_idx));
                     defer sm_result.hoisted_temps.deinit(self.allocator);
                     // body == none 은 buildStateMachine 의 empty-body 조기반환뿐
                     // (temp 미할당) → counter 복원 불필요, non-generator 경로로

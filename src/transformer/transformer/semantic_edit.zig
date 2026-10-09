@@ -160,6 +160,33 @@ pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
     std.debug.panic("missing source function scope for state machine", .{});
 }
 
+/// Return the exact function scope that owns state-machine wrapper temps.
+/// Extracted generator-loop functions already have a reserved function ScopeId
+/// even while their insertion parent awaits the enclosing state callback.
+pub fn stateMachineOwnerScope(self: *Transformer, owner: NodeIndex) ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
+    const raw = @intFromEnum(owner);
+    if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |scope| {
+        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        if (scope >= scopes.len or scopes[scope].kind != .function)
+            std.debug.panic("state machine owner {d} has no function scope", .{raw});
+        return @enumFromInt(scope);
+    }
+    if (self.deferred_generator_loop_owners.get(raw)) |deferred_owner| {
+        const function_scope = deferred_owner.function_scope orelse
+            std.debug.panic("deferred generator loop owner has no exact function ScopeId", .{});
+        const migration = self.deferred_generator_loop_migrations.get(@intFromEnum(function_scope)) orelse
+            std.debug.panic("deferred generator loop owner has no exact migration", .{});
+        if (migration.loop_function != owner)
+            std.debug.panic("deferred generator loop owner and migration disagree", .{});
+        const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+        if (function_scope.toIndex() >= scopes.len or scopes[function_scope.toIndex()].kind != .function)
+            std.debug.panic("deferred generator loop owner ScopeId is not a function scope", .{});
+        return function_scope;
+    }
+    std.debug.panic("missing exact wrapper function scope for state machine", .{});
+}
+
 /// Register one state machine callback and its exact pending `_state` uses.
 pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: ScopeId, callback: NodeIndex, parameter: NodeIndex, ref_start: usize, wrapper_temps: []const @import("lists.zig").HoistedStateTemp, callback_temps: []const @import("lists.zig").HoistedStateTemp, span: Span) Transformer.Error!void {
     if (ref_start > self.generator_state_refs.items.len) std.debug.panic("invalid state machine frame", .{});
@@ -194,7 +221,11 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         var callback_traces = try collectGeneratedNodeTraces(self, callback, scope);
         defer callback_traces.deinit(self.allocator);
         for (wrapper_temps) |temp| {
-            try bindStateCallbackTemp(self, temp, span, source_scope, source_scope, scope, &seen, &live_scopes, &callback_traces);
+            if (temp.owner_scope.isNone() or temp.symbol_id == null)
+                std.debug.panic("generated wrapper temp has no exact owner or SymbolId", .{});
+            if (!scopeWithin(editor.scopes.items, temp.owner_scope, source_scope))
+                std.debug.panic("generated wrapper temp owner is outside its source function", .{});
+            try bindStateCallbackTemp(self, temp, span, source_scope, temp.owner_scope, scope, &seen, &live_scopes, &callback_traces);
         }
         for (self.generator_state_bindings.items) |temp| {
             const binding_scope = if (temp.callback_local)
@@ -202,20 +233,17 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
             else if (!temp.owner_scope.isNone())
                 temp.owner_scope
             else
-                source_scope;
-            if (!temp.callback_local and !temp.owner_scope.isNone() and temp.symbol_id == null)
+                std.debug.panic("generated wrapper temp has no exact owner ScopeId", .{});
+            if (!temp.callback_local and temp.symbol_id == null)
                 std.debug.panic("generated wrapper temp has an owner but no exact SymbolId", .{});
-            if (!temp.callback_local and !temp.owner_scope.isNone() and
-                !scopeWithin(editor.scopes.items, binding_scope, source_scope))
+            if (!temp.callback_local and !scopeWithin(editor.scopes.items, binding_scope, source_scope))
                 std.debug.panic("generated wrapper temp owner is outside its source function", .{});
             if (temp.symbol_id != null) {
                 try bindStateCallbackTemp(self, temp, span, source_scope, binding_scope, scope, &seen, &live_scopes, &callback_traces);
             } else if (temp.callback_local) {
                 try bindTrackedCallbackTemp(self, temp, span, source_scope, scope, &seen, &live_scopes);
-            } else if (temp.deferred_wrapper_owner) {
-                try bindDeferredWrapperTemp(self, temp, span, source_scope, scope, &seen, &live_scopes);
             } else {
-                std.debug.panic("generator wrapper temp has no exact SymbolId or deferred owner", .{});
+                std.debug.panic("generator wrapper temp has no exact SymbolId", .{});
             }
         }
         for (callback_temps) |temp| {
@@ -1615,14 +1643,6 @@ fn stateTempOutputScope(self: *Transformer, source_scope: ScopeId, target_scope:
     std.debug.panic("generated state temp has no visible output scope", .{});
 }
 
-fn hasDeferredWrapperTemp(self: *Transformer, name_span: Span) bool {
-    for (self.generator_state_bindings.items) |temp| {
-        if (temp.deferred_wrapper_owner and temp.name_span.start == name_span.start and temp.name_span.end == name_span.end)
-            return true;
-    }
-    return false;
-}
-
 fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, binding_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void), traces: *const std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace)) Transformer.Error!void {
     const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
     const editor = try editorFor(self);
@@ -1670,20 +1690,6 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     if (self.getSymbolIdAt(temp.binding)) |existing| {
         if (existing != @intFromEnum(id)) std.debug.panic("state callback temp binding changed SymbolId", .{});
     } else try setSymbolId(self, temp.binding, id);
-
-    if (hasDeferredWrapperTemp(self, temp.name_span)) {
-        // Preserve the exact temp allocation identity for another emitted
-        // binding node from this same producer. Its deferred owner can attach
-        // the node without resolving the spelling in a scope map.
-        const temp_key = syntheticTempSymbolKey(temp.name_span, variableScope(self, binding_scope));
-        const bound = try self.bound_temp_symbols.getOrPut(self.allocator, temp_key);
-        if (bound.found_existing) {
-            if (bound.value_ptr.* != @intFromEnum(id))
-                std.debug.panic("generated state temp Span was assigned multiple SymbolIds", .{});
-        } else {
-            bound.value_ptr.* = @intFromEnum(id);
-        }
-    }
 
     if (temp.symbol_id) |raw_id| {
         var nodes = live.iterator();
@@ -1762,65 +1768,6 @@ pub fn reparentGeneratedBodyScopes(self: *Transformer, source_scope: ScopeId, ta
     var scopes = try liveScopeOwners(self, &live);
     defer scopes.deinit(self.allocator);
     try reparentLiveSourceScopes(self, source_scope, target_scope, &scopes);
-}
-
-/// Complete a wrapper temp whose producer retained the exact binding node but
-/// could not know the generated function scope yet. The generated name span is
-/// used only to join references emitted by the same producer; symbol identity
-/// comes from this binding node and the finalized wrapper owner.
-fn bindDeferredWrapperTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
-    const editor = try editorFor(self);
-    var expected_scope = source_scope;
-    var hops: usize = 0;
-    while (hops < editor.scopes.items.len) : (hops += 1) {
-        if (editor.scopes.items[expected_scope.toIndex()].kind.isVarScope()) break;
-        expected_scope = editor.scopes.items[expected_scope.toIndex()].parent;
-        if (expected_scope.isNone()) std.debug.panic("generated wrapper temp has no var scope", .{});
-    }
-
-    const temp_key = (@as(u64, @intFromEnum(expected_scope)) << 32) | temp.name_span.start;
-    const id: SymbolId = if (self.bound_temp_symbols.get(temp_key)) |raw_id| blk: {
-        if (raw_id >= editor.symbols.items.len) std.debug.panic("deferred wrapper temp symbol is out of range", .{});
-        const existing = editor.symbols.items[raw_id];
-        if (existing.scope_id != expected_scope or existing.kind != .variable_var or
-            !std.mem.eql(u8, self.ast.getText(existing.name), self.ast.getText(temp.name_span)))
-            std.debug.panic("deferred wrapper temp Span was rebound to an unrelated symbol", .{});
-        if (self.getSymbolIdAt(temp.binding)) |binding_id| {
-            if (binding_id != raw_id) std.debug.panic("deferred wrapper binding already has a different SymbolId", .{});
-        } else {
-            editor.attachExistingBinding(temp.binding, @enumFromInt(raw_id)) catch |err| return editError(err);
-        }
-        break :blk @enumFromInt(raw_id);
-    } else blk: {
-        const created = editor.declare(
-            temp.binding,
-            temp.name_span,
-            declaration_span,
-            expected_scope,
-            .variable_var,
-            Reference.NO_STMT,
-            Reference.NO_STMT,
-        ) catch |err| return editError(err);
-        try self.bound_temp_symbols.put(self.allocator, temp_key, @intFromEnum(created));
-        break :blk created;
-    };
-    if (self.getSymbolIdAt(temp.binding)) |existing| {
-        if (existing != @intFromEnum(id)) std.debug.panic("deferred wrapper temp binding changed SymbolId", .{});
-    } else try setSymbolId(self, temp.binding, id);
-
-    const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
-    var i: ?usize = if (chain) |found| found.value.first else null;
-    while (i) |index| {
-        const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == temp.name_span.start);
-        if (live.contains(@intFromEnum(ref.node))) {
-            const scope = try generatedTempRefScope(self, source_scope, callback_scope, ref.scope, live_scopes);
-            editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-            try setSymbolId(self, ref.node, id);
-        }
-        i = ref.next;
-    }
-    if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
 }
 
 /// Bind a deferred generated temp from an exact SymbolId or its binding node
