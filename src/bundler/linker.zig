@@ -29,6 +29,9 @@ const Module = @import("module.zig").Module;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
+const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
+const NodeIndex = ast_mod.NodeIndex;
 pub const ImportBinding = @import("binding_scanner.zig").ImportBinding;
 const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
@@ -2015,6 +2018,11 @@ pub const Linker = struct {
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
 
+        // Generated explicit globals have no SymbolId to rename. If a nested
+        // source binding with the same spelling encloses one, rename that
+        // exact binding so the emitted global reference remains external.
+        try self.resolveExplicitGlobalShadows(&name_to_owners, null);
+
         // 3. import binding의 canonical name이 해당 모듈의 중첩 스코프와 충돌하는지 확인.
         // 충돌하면 target module의 canonical name을 한 단계 더 rename.
         // 예: d3-color의 cubehelix와 d3-interpolate 내부의 function cubehelix 충돌.
@@ -2505,6 +2513,145 @@ pub const Linker = struct {
             for (mods) |mi| try self.resolveNestedShadowForModule(mi.toU32(), name_to_owners, true);
         } else {
             for (0..self.graph.moduleCount()) |mod_i| try self.resolveNestedShadowForModule(@intCast(mod_i), name_to_owners, false);
+        }
+    }
+
+    /// Rename only the lexical binding that encloses a transformer-produced
+    /// explicit global reference. `reserved_globals` already makes the
+    /// top-level case part of `calculateRenames`; this covers nested scopes,
+    /// whose names are not in `name_to_owners`.
+    fn resolveExplicitGlobalShadows(
+        self: *Linker,
+        name_to_owners: *const NameToOwnersMap,
+        only: ?[]const ModuleIndex,
+    ) !void {
+        if (self.manglerActive()) return;
+        if (only) |modules| {
+            for (modules) |module_index| try self.resolveExplicitGlobalShadowsInModule(
+                module_index.toU32(),
+                name_to_owners,
+            );
+        } else {
+            for (0..self.graph.moduleCount()) |module_index| try self.resolveExplicitGlobalShadowsInModule(
+                @intCast(module_index),
+                name_to_owners,
+            );
+        }
+    }
+
+    fn resolveExplicitGlobalShadowsInModule(
+        self: *Linker,
+        module_index: u32,
+        name_to_owners: *const NameToOwnersMap,
+    ) !void {
+        const module = self.getModule(module_index) orelse return;
+        const semantic = if (module.semantic) |*value| value else return;
+        const transform_cache = module.transform_cache orelse return;
+        if (transform_cache.explicit_global_ref_nodes.len == 0) return;
+        if (semantic.scopes.len == 0 or semantic.scope_maps.len == 0) return;
+
+        // Renaming a source binding visible to direct eval or `with` changes
+        // dynamic name lookup. Preserve the existing dynamic-scope boundary.
+        if (semantic.scopes[0].blocksMangling()) return;
+
+        const ast = if (module.ast) |*value| value else return;
+        const root = ast.transformed_root orelse if (ast.nodes.items.len > 0)
+            @as(NodeIndex, @enumFromInt(ast.nodes.items.len - 1))
+        else
+            return;
+
+        const Frame = struct { node: NodeIndex, parent: ?u32 };
+        var stack: std.ArrayList(Frame) = .empty;
+        defer stack.deinit(self.allocator);
+        try stack.append(self.allocator, .{ .node = root, .parent = null });
+
+        var reachable: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer reachable.deinit(self.allocator);
+        var parents: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+        defer parents.deinit(self.allocator);
+        var ambiguous: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer ambiguous.deinit(self.allocator);
+
+        while (stack.pop()) |frame| {
+            if (frame.node.isNone() or @intFromEnum(frame.node) >= ast.nodes.items.len) continue;
+            const raw = @intFromEnum(frame.node);
+            if (reachable.contains(raw)) {
+                if (frame.parent) |parent| {
+                    if (parents.get(raw)) |first_parent| {
+                        if (first_parent != parent) try ambiguous.put(self.allocator, raw, {});
+                    }
+                }
+                continue;
+            }
+            try reachable.put(self.allocator, raw, {});
+            if (frame.parent) |parent| try parents.put(self.allocator, raw, parent);
+
+            var children = ast_walk.children(ast, ast.getNode(frame.node));
+            while (children.next()) |child| {
+                if (!child.isNone()) try stack.append(self.allocator, .{ .node = child, .parent = raw });
+            }
+        }
+
+        var renamed_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer renamed_symbols.deinit(self.allocator);
+        for (transform_cache.explicit_global_ref_nodes) |raw| {
+            if (!reachable.contains(raw)) continue;
+            if (raw >= ast.nodes.items.len or ast.nodes.items[raw].tag != .identifier_reference) continue;
+            const name = ast.getText(ast.nodes.items[raw].data.string_ref);
+
+            var scope_cursor: ?u32 = null;
+            var node_cursor: ?u32 = raw;
+            var hops: usize = 0;
+            while (node_cursor) |node| : (hops += 1) {
+                if (hops > ast.nodes.items.len) return error.CyclicExplicitGlobalParent;
+                if (ambiguous.contains(node)) return error.AmbiguousExplicitGlobalParent;
+                if (semantic.scope_owner_map.get(node)) |scope| {
+                    scope_cursor = scope;
+                    break;
+                }
+                node_cursor = parents.get(node);
+            }
+
+            var scope = scope_cursor orelse continue;
+            var scope_hops: usize = 0;
+            while (true) : (scope_hops += 1) {
+                if (scope >= semantic.scopes.len or scope_hops >= semantic.scopes.len)
+                    return error.InvalidExplicitGlobalScope;
+                const scope_index: usize = @intCast(scope);
+                const binding = if (scope_index < semantic.scope_maps.len)
+                    semantic.scope_maps[scope_index].get(name)
+                else
+                    null;
+                if (binding) |symbol_index| {
+                    if (symbol_index >= semantic.symbols.items.len)
+                        return error.InvalidExplicitGlobalBinding;
+                    const symbol_raw: u32 = @intCast(symbol_index);
+                    const symbol_id = bundler_symbol.SymbolID.make(
+                        @enumFromInt(module_index),
+                        symbol_index,
+                    );
+                    if (renamed_symbols.contains(symbol_raw)) break;
+                    if (self.rename_table.get(symbol_id)) |selected| {
+                        if (!std.mem.eql(u8, selected, name)) break;
+                    }
+                    if (semantic.scopes[scope_index].blocksMangling()) break;
+
+                    const candidate = try self.pickConsumerShadowName(
+                        name,
+                        module_index,
+                        module,
+                        name_to_owners,
+                    );
+                    try self.assignSymbolCanonical(symbol_id, candidate);
+                    try renamed_symbols.put(self.allocator, symbol_raw, {});
+                    if (scope > 0)
+                        try self.nonminify_nested_shadow_modules.put(self.allocator, module_index, {});
+                    break;
+                }
+                const parent = semantic.scopes[scope_index].parent;
+                if (parent.isNone()) break;
+                scope = parent.toIndex();
+            }
         }
     }
 
@@ -5272,6 +5419,10 @@ pub const Linker = struct {
 
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
         try self.calculateRenames(&name_to_owners, true);
+
+        // The same generated-global deconflict must run for each chunk's own
+        // nested scopes before cross-chunk import shadow resolution.
+        try self.resolveExplicitGlobalShadows(&name_to_owners, module_indices);
 
         // 2.05 (#4563/#4566) import binding 의 canonical(hoisted module-level)이 그 모듈의 nested 스코프
         // 바인딩과 충돌하면(`const channels = channels.set(...)` self-TDZ = khroma rgba) 해소한다. 전역
