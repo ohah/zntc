@@ -576,6 +576,8 @@ pub fn tryEmitNsVarAssignment(self: anytype, def_name: []const u8, inner: NodeIn
     if (inner_node.tag != .identifier_reference) return false;
     const sid = self.resolveSymbolId(inner, md) orelse return false;
     const entry = md.ns_inline_objects.get(sid) orelse return false;
+    const inline_name = md.renames.get(sid) orelse return error.MissingNamespaceInlineObjectRename;
+    if (!std.mem.eql(u8, inline_name, entry.var_name)) return error.InvalidNamespaceInlineObjectRename;
 
     if (!self.options.esm_var_assign_only) try self.write("var ");
     try self.write(def_name);
@@ -584,7 +586,7 @@ pub fn tryEmitNsVarAssignment(self: anytype, def_name: []const u8, inner: NodeIn
     } else {
         try self.write(" = ");
     }
-    try self.write(entry.var_name);
+    try self.write(inline_name);
     try self.writeByte(';');
     return true;
 }

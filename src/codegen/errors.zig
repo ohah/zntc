@@ -7,4 +7,6 @@ pub const Error = error{
     InvalidEnumIifeMemberSymbol,
     MissingNamespaceDeclarationSymbol,
     InvalidNamespaceDeclarationSymbol,
+    MissingNamespaceInlineObjectRename,
+    InvalidNamespaceInlineObjectRename,
 };

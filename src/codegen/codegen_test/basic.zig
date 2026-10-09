@@ -408,6 +408,69 @@ test "Codegen: namespace destructuring export follows renamed local SymbolId" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "N.original=original;") == null);
 }
 
+test "#4819 namespace inline value requires the matching SymbolId rename" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "const ns = 1; Object.keys(ns);";
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    analyzer.is_flow = parser.is_flow;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    const root = try transformer.transform();
+
+    var ns_sid: ?u32 = null;
+    for (transformer.ast.nodes.items, 0..) |node, raw_idx| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.span), "ns")) continue;
+        ns_sid = transformer.symbol_ids.items[raw_idx];
+        break;
+    }
+    const sid = ns_sid orelse return error.MissingNamespaceReferenceSymbol;
+    const var_name = try allocator.dupe(u8, "ns_alias");
+    const object_literal = try allocator.dupe(u8, "{}");
+    const inline_entries = try allocator.alloc(LinkingMetadata.NsInlineObjects.Entry, 1);
+    inline_entries[0] = .{
+        .symbol_id = sid,
+        .object_literal = object_literal,
+        .var_name = var_name,
+    };
+    var metadata: LinkingMetadata = .{
+        .skip_nodes = try std.DynamicBitSet.initEmpty(allocator, transformer.ast.nodes.items.len),
+        .renames = .empty,
+        .final_exports = null,
+        .symbol_ids = transformer.symbol_ids.items,
+        .ns_inline_objects = .{ .entries = inline_entries },
+        .allocator = allocator,
+    };
+    defer metadata.deinit();
+
+    var missing_cg = Codegen.initWithOptions(allocator, transformer.ast, .{ .linking_metadata = &metadata });
+    try std.testing.expectError(error.MissingNamespaceInlineObjectRename, missing_cg.generate(root));
+
+    try metadata.renames.put(allocator, sid, "wrong_alias");
+    var mismatch_cg = Codegen.initWithOptions(allocator, transformer.ast, .{ .linking_metadata = &metadata });
+    try std.testing.expectError(error.InvalidNamespaceInlineObjectRename, mismatch_cg.generate(root));
+
+    try metadata.renames.put(allocator, sid, var_name);
+    var valid_cg = Codegen.initWithOptions(allocator, transformer.ast, .{ .linking_metadata = &metadata });
+    const output = try valid_cg.generate(root);
+    try std.testing.expect(std.mem.indexOf(u8, output, "Object.keys(ns_alias)") != null);
+}
+
 test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");

@@ -1082,7 +1082,7 @@ pub fn buildMetadataForAst(
                 const force_inline = isNamespaceUsedAsValue(self.allocator, ast, effective_syms, ns_sym_id) or
                     (exported_locals.contains(local_name) and
                         self.isNamespaceExportConsumed(module_index, local_name));
-                try self.registerNamespaceRewrites(
+                const inline_name = try self.registerNamespaceRewrites(
                     &ns_rewrite_list,
                     &ns_inline_list,
                     &owned_nested_renames,
@@ -1095,6 +1095,9 @@ pub fn buildMetadataForAst(
                     @intCast(canonical_mod),
                     local_name,
                 );
+                if (inline_name) |name| {
+                    try putOwnedRename(self, &renames, &owned_nested_renames, ns_sym_id, name);
+                }
                 continue;
             }
 
@@ -1145,6 +1148,7 @@ pub fn buildMetadataForAst(
                 }
             }
 
+            var ns_inline_target_name: ?[]const u8 = null;
             const target_name = blk: {
                 if (resolved) |rb| {
                     const local = self.resolveToLocalName(rb.canonical);
@@ -1162,7 +1166,7 @@ pub fn buildMetadataForAst(
                                         const src = cmod_ptr.import_records[rec_idx].resolved;
                                         if (!src.isNone()) {
                                             const import_sym_id = module_scope.get(ib.local_name) orelse break :blk ib.imported_name;
-                                            try self.registerNamespaceRewrites(
+                                            const inline_name = try self.registerNamespaceRewrites(
                                                 &ns_rewrite_list,
                                                 &ns_inline_list,
                                                 &owned_nested_renames,
@@ -1175,7 +1179,8 @@ pub fn buildMetadataForAst(
                                                 @intFromEnum(src),
                                                 ib.local_name,
                                             );
-                                            break :blk ib.local_name;
+                                            ns_inline_target_name = inline_name;
+                                            break :blk inline_name orelse ib.local_name;
                                         }
                                     }
                                 }
@@ -1194,7 +1199,7 @@ pub fn buildMetadataForAst(
                                     @intFromEnum(cmod2_ptr.import_records[cib.import_record_index].resolved)
                                 else
                                     break;
-                                try self.registerNamespaceRewrites(
+                                const inline_name = try self.registerNamespaceRewrites(
                                     &ns_rewrite_list,
                                     &ns_inline_list,
                                     &owned_nested_renames,
@@ -1207,7 +1212,8 @@ pub fn buildMetadataForAst(
                                     @intCast(ns_target_mod),
                                     ib.local_name,
                                 );
-                                break :blk ib.local_name;
+                                ns_inline_target_name = inline_name;
+                                break :blk inline_name orelse ib.local_name;
                             }
                         }
                     }
@@ -1233,7 +1239,7 @@ pub fn buildMetadataForAst(
             // minify_identifiers 로 로컬이 `n` 으로 mangle 되면 `second` 는 자유 변수가 되어
             // 런타임 `ReferenceError` (빌드·파싱은 통과). 형제 호출부(cjs_interop / entry
             // exports)는 이미 `isCrossChunkConsumer` 로 게이트한다 — 여기만 빠져 있었다.
-            const effective_target = if (resolved) |rb| blk_eff: {
+            const effective_target = if (ns_inline_target_name) |inline_name| inline_name else if (resolved) |rb| blk_eff: {
                 const canon_mi = @intFromEnum(rb.canonical.module_index);
                 if (!self.isCrossChunkConsumer(module_index, canon_mi)) break :blk_eff target_name;
                 if (self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name)) |g| break :blk_eff g;
@@ -1532,6 +1538,11 @@ pub fn buildMetadataForAst(
     // ns_member_rewrites / ns_inline_objects 소유권 이동 + namespace preamble 생성.
     // finalizeNamespaceData가 리스트를 소비(deinit)하므로, 이후 에러 시
     // errdefer가 이미 해제된 리스트에 접근하지 않도록 마지막에 호출한다.
+    for (ns_inline_list.items) |entry| {
+        const sid = entry.symbol_id orelse continue;
+        const rename = renames.get(sid) orelse return error.MissingNamespaceInlineObjectRename;
+        if (!std.mem.eql(u8, rename, entry.var_name)) return error.InvalidNamespaceInlineObjectRename;
+    }
     const ns_result = blk: {
         var ns_scope = profile.begin(.metadata_finalize_ns);
         defer ns_scope.end();

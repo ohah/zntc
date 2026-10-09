@@ -108,7 +108,7 @@ pub fn registerNamespaceRewrites(
     symbol_id: u32,
     target_mod_idx: u32,
     var_name: []const u8,
-) std.mem.Allocator.Error!void {
+) std.mem.Allocator.Error!?[]const u8 {
     var scope = profile.begin(.metadata_register_ns_rewrites);
     defer scope.end();
 
@@ -319,9 +319,10 @@ pub fn registerNamespaceRewrites(
 
     // ns_inline_list 활성화 조건: caller 가 명시 (force_inline) 또는 shadow 충돌 발생.
     // 후자의 경우 codegen fallback 이 namespace 객체 access 로 emit 할 수 있도록 객체가 필요.
+    var inline_name: ?[]const u8 = null;
     if (force_inline or has_shadow) {
         if (self.useSharedNsInline(target_mod_idx)) {
-            _ = try appendSharedNsInlineEntry(self, ns_inline_list, symbol_id, target_mod_idx, &seen_exports);
+            inline_name = try appendSharedNsInlineEntry(self, ns_inline_list, symbol_id, target_mod_idx, &seen_exports);
         } else {
             // 비-shared 경로 — importer self-preamble(= importer 청크) 이 emitter.
             const obj_str = try buildInlineObjectStr(self, importer_mod_idx, target_mod_idx, 0);
@@ -331,8 +332,10 @@ pub fn registerNamespaceRewrites(
                 .object_literal = obj_str,
                 .var_name = ns_var_name,
             });
+            inline_name = ns_var_name;
         }
     }
+    return inline_name;
 }
 
 /// cross-chunk namespace re-export 배선용: target 의 shared ns 객체 변수를

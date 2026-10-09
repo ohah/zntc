@@ -225,9 +225,11 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
                     // namespace 변수 참조: ns를 값으로 사용 → 변수명으로 치환.
                     // 원본 식별자 이름을 names 에 등록해 디버거가 원형 lookup 가능.
                     if (meta.ns_inline_objects.get(sid)) |entry| {
+                        const inline_name = meta.renames.get(sid) orelse return error.MissingNamespaceInlineObjectRename;
+                        if (!std.mem.eql(u8, inline_name, entry.var_name)) return error.InvalidNamespaceInlineObjectRename;
                         const original = self.ast.getText(node.data.string_ref);
                         try self.addSourceMappingWithName(node.span, original);
-                        try self.write(entry.var_name);
+                        try self.write(inline_name);
                         return;
                     }
                     // mangler rename — 원본 이름 names 등록.
