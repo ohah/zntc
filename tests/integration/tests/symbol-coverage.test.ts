@@ -9780,6 +9780,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 4 outer,value,outer,value\n',
       },
       {
+        name: 'bound safe computed static member keys retain exact reads and getter order',
+        source:
+          'var order = []; var prefix = "va"; var suffix = "lue"; var holder = { get value() { order.push("value"); return order.length; } }; class ComputedStaticMemberReadField { static first = holder[prefix + suffix]; static second = holder["value"]; } console.log(ComputedStaticMemberReadField.first, ComputedStaticMemberReadField.second, order.join(","));',
+        graph: 'retained',
+        output: '1 2 value,value\n',
+      },
+      {
         name: 'whitespace-only minification keeps the exact graph for safe static fields',
         source:
           'var seed = 41; class WhitespaceOnly { static value = seed + 1; } console.log(WhitespaceOnly.value);',
@@ -9841,6 +9848,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'computed static member value stays on semantic reanalysis',
         source:
           'var holder = { value: 9 }; function fieldKey() { return "value"; } class ComputedStaticMemberValueField { static value = holder[fieldKey()]; } console.log(ComputedStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unbound computed static member key stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcStaticMemberKey = "value"; var holder = { value: 9 }; class UnboundComputedStaticMemberValueField { static value = holder[__zntcStaticMemberKey]; } console.log(UnboundComputedStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static member value stays on semantic reanalysis',
+        source:
+          'var key = "value"; var holder = { value: 9 }; class OptionalComputedStaticMemberValueField { static value = holder?.[key]; } console.log(OptionalComputedStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result computed static member receiver stays on semantic reanalysis',
+        source:
+          'var key = "value"; function makeComputedStaticMemberHolder() { return { value: 9 }; } class CallResultComputedStaticMemberValueField { static value = makeComputedStaticMemberHolder()[key]; } console.log(CallResultComputedStaticMemberValueField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },

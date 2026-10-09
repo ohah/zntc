@@ -918,9 +918,9 @@ fn isRetainableBoundStaticFieldMemberReceiver(
     return false;
 }
 
-/// A static member access is safe to retain when its receiver chain is rooted
-/// at an exact source binding and every segment is a plain non-optional dot
-/// access. The property is part of the original AST and is not a lexical read.
+/// A member read is safe to retain when its receiver chain is rooted at an
+/// exact source binding and all receiver segments are plain non-optional dot
+/// accesses. A computed final key must itself be a safe exact source value.
 fn isRetainableBoundStaticFieldMemberAccess(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -928,15 +928,19 @@ fn isRetainableBoundStaticFieldMemberAccess(
 ) bool {
     if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
     const member = ast.getNode(member_idx);
-    if (member.tag != .static_member_expression) return false;
+    if (member.tag != .static_member_expression and member.tag != .computed_member_expression) return false;
     const extras = ast.extra_data.items;
     const extra = member.data.extra;
     if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
     const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
     const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-    return isRetainableBoundStaticFieldMemberReceiver(ast, semantic, receiver_idx) and
-        !property_idx.isNone() and @intFromEnum(property_idx) < ast.nodes.items.len and
-        ast.getNode(property_idx).tag == .identifier_reference;
+    if (!isRetainableBoundStaticFieldMemberReceiver(ast, semantic, receiver_idx) or
+        property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+    return switch (member.tag) {
+        .static_member_expression => ast.getNode(property_idx).tag == .identifier_reference,
+        .computed_member_expression => isSafeConstructorValue(ast, semantic, property_idx),
+        else => false,
+    };
 }
 
 /// A call in a static initializer can retain the source graph when its callee
