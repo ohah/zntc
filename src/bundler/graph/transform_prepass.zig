@@ -2891,7 +2891,7 @@ fn canKeepPrepassSemanticGraph(
     const semantic = &module.semantic.?;
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
-    if (self.worklet_transform or self.emotion or
+    if (self.worklet_transform or
         self.plugins.len != 0 or plugins.len != 0 or options.plugins.len != 0) return false;
     // The displayName/namespace styled-components visitor only wraps existing
     // expressions and preserves every source binding/reference. CSS-prop mode
@@ -2922,7 +2922,8 @@ fn canKeepPrepassSemanticGraph(
     if (!hasStableRuntimeImports(ast, options)) return false;
 
     const safe_styled_components = options.styled_components and !options.styled_components_css_prop;
-    var found_transform = graph_editable_jsx or safe_graph_subset or safe_styled_components or options.react_refresh;
+    var found_transform = graph_editable_jsx or safe_graph_subset or safe_styled_components or
+        options.react_refresh or options.emotion;
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");

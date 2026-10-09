@@ -9853,6 +9853,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
             '--bundle',
             'index.tsx',
             target.arg,
+            ...(target.name === 'esnext' ? ['--verbatim-module-syntax'] : []),
             '--jsx=classic',
             '--jsx-factory=h',
             '--minify-identifiers',
@@ -9881,6 +9882,19 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(identityReports, `${target.name}: ${stderr}`).toHaveLength(1);
         const identity = identityReports[0];
         expect(exactSchemaProblems(identity), `${target.name}: ${identity}`).toEqual([]);
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        const mode = stderr
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+              line.includes('/index.tsx:'),
+          );
+        if (target.name === 'esnext') {
+          expect(mode, `${target.name}: ${stderr}`).toContain('semantic_graph=retained');
+        } else if (target.name === 'es2022') {
+          expect(mode, `${target.name}: ${stderr}`).toContain('semantic_graph=reanalyzed');
+        }
         expect(
           Number(identity.match(/generated_bindings=(\d+)/)?.[1] ?? 0),
           `${target.name}: ${identity}`,
@@ -9894,10 +9908,102 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, target.name).toBe('EMOTION:red\n');
       }
+
+      const noVerbatimOutput = join(dir, 'out-esnext-no-verbatim.js');
+      const noVerbatimProc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'index.tsx',
+          '--target=esnext',
+          '--jsx=classic',
+          '--jsx-factory=h',
+          '--minify-identifiers',
+          '-o',
+          noVerbatimOutput,
+        ],
+        {
+          cwd: dir,
+          env: {
+            ...process.env,
+            ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+            ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+          },
+          encoding: 'utf8',
+        },
+      );
+      const noVerbatimStderr = noVerbatimProc.stderr ?? '';
+      expect(noVerbatimProc.status, noVerbatimStderr).toBe(0);
+      const noVerbatimMode = noVerbatimStderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/index.tsx:'),
+        );
+      expect(noVerbatimMode, noVerbatimStderr).toContain('semantic_graph=reanalyzed');
+      const noVerbatimIdentity = noVerbatimStderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/index.tsx:'),
+        );
+      expect(noVerbatimIdentity, noVerbatimStderr).toMatch(/clean=1(?:\s|$)/);
+      const noVerbatimActual = spawnSync('node', [noVerbatimOutput], { encoding: 'utf8' });
+      expect(noVerbatimActual.status, noVerbatimActual.stderr).toBe(0);
+      expect(noVerbatimActual.stdout).toBe('EMOTION:red\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  test('bundler Emotion keeps direct eval on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-eval-reanalysis-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(join(dir, 'zntc.config.json'), JSON.stringify({ compiler: { emotion: true } }));
+    writeFileSync(join(dir, 'entry.tsx'), "void eval('40 + 2');\n");
+    try {
+      const proc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'entry.tsx',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const mode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('/entry.tsx:'),
+        );
+      expect(mode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass ') && line.includes('/entry.tsx:'),
+        );
+      expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('오라클 전체에서 exact 구조 불변식과 심볼 부채가 모두 0', async () => {
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-symcov-'));
