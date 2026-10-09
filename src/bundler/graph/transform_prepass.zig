@@ -951,28 +951,43 @@ fn isBoundStaticFieldMemberAccessShape(
     };
 }
 
-/// A single optional dot read rooted directly at an exact source binding can
-/// stay on the edited graph. Keep computed keys and optional/member chains out
-/// until their key evaluation and receiver scopes have their own field gate.
-fn isRetainableBoundStaticFieldOptionalMemberRead(
+/// Optional dot-member chains rooted directly at an exact source binding can
+/// stay on the edited graph. Keep computed keys, calls, and non-source roots
+/// out until their evaluation and receiver scopes have their own field gate.
+fn isRetainableBoundStaticFieldOptionalMemberChain(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
 ) bool {
-    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
-    const member = ast.getNode(member_idx);
-    if (member.tag != .static_member_expression) return false;
     const extras = ast.extra_data.items;
-    const extra = member.data.extra;
-    if (extra > extras.len or extras.len - extra < 3 or
-        extras[extra + 2] != ast_mod.MemberFlags.optional_chain) return false;
-    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-    return receiver_idx.isNone() == false and @intFromEnum(receiver_idx) < ast.nodes.items.len and
-        property_idx.isNone() == false and @intFromEnum(property_idx) < ast.nodes.items.len and
-        ast.getNode(receiver_idx).tag == .identifier_reference and
-        isBoundSourceIdentifierReference(ast, semantic, receiver_idx) and
-        ast.getNode(property_idx).tag == .identifier_reference;
+    var current_idx = member_idx;
+    var saw_optional = false;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const member = ast.getNode(current_idx);
+        if (member.tag == .identifier_reference)
+            return saw_optional and isBoundSourceIdentifierReference(ast, semantic, current_idx);
+        if (member.tag != .static_member_expression) return false;
+        const extra = member.data.extra;
+        if (extra > extras.len or extras.len - extra < 3) return false;
+        const flags = extras[extra + 2];
+        if (flags == ast_mod.MemberFlags.optional_chain) {
+            saw_optional = true;
+        } else if (flags != 0) {
+            return false;
+        }
+        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+        if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+            ast.getNode(property_idx).tag != .identifier_reference)
+        {
+            return false;
+        }
+        current_idx = receiver_idx;
+    }
+    return false;
 }
 
 fn enqueueBoundStaticFieldMemberKeyCalls(
@@ -1094,7 +1109,7 @@ fn isRetainableBoundStaticFieldInitializerMemberAccess(
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
 ) bool {
-    return isRetainableBoundStaticFieldOptionalMemberRead(ast, semantic, member_idx) or
+    return isRetainableBoundStaticFieldOptionalMemberChain(ast, semantic, member_idx) or
         isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, member_idx);
 }
 

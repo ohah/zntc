@@ -10031,11 +10031,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'nested optional static-member reads stay on semantic reanalysis',
+        name: 'nested bound optional static-member chains retain getter order and null short-circuit',
         source:
-          'var holder = { outer: { value: 9 } }; class NestedOptionalStaticMemberValueField { static value = holder?.outer?.value; } console.log(NestedOptionalStaticMemberValueField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; var holder = { get outer() { order.push("outer"); return { get value() { order.push("value"); return 9; } }; } }; var missing = null; var empty = { get outer() { order.push("empty"); return null; } }; class NestedOptionalStaticMemberValueField { static first = holder?.outer?.value; static tail = holder?.outer.value; static missingRoot = missing?.outer?.value; static missingMiddle = empty?.outer?.value; } console.log(NestedOptionalStaticMemberValueField.first, NestedOptionalStaticMemberValueField.tail, NestedOptionalStaticMemberValueField.missingRoot, NestedOptionalStaticMemberValueField.missingMiddle, order.join(","));',
+        graph: 'retained',
+        output: '9 9 undefined undefined outer,value,outer,value,empty\n',
       },
       {
         name: 'unresolved static member receiver stays on semantic reanalysis',
