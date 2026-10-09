@@ -27,6 +27,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
     try ana.analyze();
 
     try testing.expect(ana.symbols.items.len > 0); // 비어있으면 검증 무의미
+    ana.symbols.items[0].output_name_hint = "deferred_output_name";
 
     try testing.expect(ana.scope_maps.items.len > 0); // 맵 round-trip 검증 의미 보장
     try testing.expect(ana.scope_owner_map.count() > 0);
@@ -89,6 +90,7 @@ test "semantic_codec: analyzer round-trip — relocatable 필드 보존" {
         try testing.expectEqual(s1.kind, s2.kind);
         try testing.expectEqual(s1.declaration_span, s2.declaration_span);
         try testing.expectEqualStrings(s1.synthetic_name, s2.synthetic_name);
+        try testing.expectEqualStrings(s1.output_name_hint, s2.output_name_hint);
         try testing.expectEqual(s1.synthetic_owner_id, s2.synthetic_owner_id);
     }
 
@@ -388,6 +390,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             var s: Symbol = undefined;
             @memset(std.mem.asBytes(&s), poison);
             s.synthetic_name = ""; // 슬라이스는 명시 세팅(poison ptr 미사용)
+            s.output_name_hint = "";
             s.name = .{ .start = 1, .end = 2 };
             s.scope_id = @enumFromInt(0);
             s.origin_scope = @enumFromInt(0);
