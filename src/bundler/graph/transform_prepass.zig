@@ -951,9 +951,10 @@ fn isBoundStaticFieldMemberAccessShape(
     };
 }
 
-/// Optional dot-member chains rooted directly at an exact source binding can
-/// stay on the edited graph. Keep computed keys, calls, and non-source roots
-/// out until their evaluation and receiver scopes have their own field gate.
+/// Optional member chains rooted directly at an exact source binding can stay
+/// on the edited graph when their segments are dot reads or optional computed
+/// reads with literal / bound identifier keys. Keep calls and non-source roots
+/// on reanalysis.
 fn isRetainableBoundStaticFieldOptionalMemberChain(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -968,11 +969,15 @@ fn isRetainableBoundStaticFieldOptionalMemberChain(
         const member = ast.getNode(current_idx);
         if (member.tag == .identifier_reference)
             return saw_optional and isBoundSourceIdentifierReference(ast, semantic, current_idx);
-        if (member.tag != .static_member_expression) return false;
+        if (member.tag != .static_member_expression and member.tag != .computed_member_expression)
+            return false;
         const extra = member.data.extra;
         if (extra > extras.len or extras.len - extra < 3) return false;
         const flags = extras[extra + 2];
-        if (flags == ast_mod.MemberFlags.optional_chain) {
+        if (member.tag == .computed_member_expression) {
+            if (flags != ast_mod.MemberFlags.optional_chain) return false;
+            saw_optional = true;
+        } else if (flags == ast_mod.MemberFlags.optional_chain) {
             saw_optional = true;
         } else if (flags != 0) {
             return false;
@@ -980,8 +985,17 @@ fn isRetainableBoundStaticFieldOptionalMemberChain(
         const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
         const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
         if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
-            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
-            ast.getNode(property_idx).tag != .identifier_reference)
+            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len)
+        {
+            return false;
+        }
+        const property = ast.getNode(property_idx);
+        if (member.tag == .static_member_expression) {
+            if (property.tag != .identifier_reference) return false;
+        } else if (property.tag == .identifier_reference) {
+            if (!isBoundSourceIdentifierReference(ast, semantic, property_idx)) return false;
+        } else if (property.tag != .string_literal and property.tag != .numeric_literal and
+            property.tag != .boolean_literal and property.tag != .null_literal)
         {
             return false;
         }
