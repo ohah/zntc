@@ -316,6 +316,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
             const saved_private_fields = self.current_private_fields;
             const total_private = try setupPrivateFieldMappings(self, &cm, name_span, iife_scope, span);
+            const method_capture_fields: []const Transformer.PrivateFieldMapping = if (total_private > 0)
+                self.current_private_fields
+            else
+                &.{};
+            try es_helpers.reservePrivateMethodFunctionSymbols(self, cm.private_methods.items, method_capture_fields, iife_scope, span);
             defer {
                 if (total_private > 0) self.allocator.free(self.current_private_fields);
                 self.current_private_fields = saved_private_fields;
@@ -677,6 +682,11 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 @as(@import("../semantic/scope.zig").ScopeId, .none);
             try es_helpers.reservePrivateMethodWeakSetSymbols(self, cm.private_methods.items, iife_scope, span);
             total_private_ce = try setupPrivateFieldMappings(self, &cm, name_span, iife_scope, span);
+            const method_capture_fields: []const Transformer.PrivateFieldMapping = if (total_private_ce > 0)
+                self.current_private_fields
+            else
+                &.{};
+            try es_helpers.reservePrivateMethodFunctionSymbols(self, cm.private_methods.items, method_capture_fields, iife_scope, span);
             var expr_super_param_binding: NodeIndex = .none;
             if (super_span) |param_span| {
                 expr_super_param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, param_span);

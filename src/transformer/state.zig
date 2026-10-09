@@ -83,6 +83,11 @@ pub const PrivateMethodMapping = struct {
     weakset_binding_node: NodeIndex = NodeIndex.none,
     weakset_symbol_id: ?u32 = null,
     func_name: []const u8, // "_method_fn" / "_method_get" / "_method_set"
+    /// Exact standalone-function binding when the method does not need a
+    /// class-self capture factory. Captured methods retain the name-scan path
+    /// until their inner and outer bindings are represented separately.
+    func_binding_node: NodeIndex = NodeIndex.none,
+    func_symbol_id: ?u32 = null,
     member_idx: NodeIndex = NodeIndex.none,
     /// Exact parser method owner; member_idx may be a transformed copy.
     source_member_idx: NodeIndex = NodeIndex.none,
