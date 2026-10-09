@@ -3696,6 +3696,41 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: '42\n',
       },
       {
+        name: 'optional member call result feeds an optional member access',
+        graph: 'retained',
+        source: [
+          'var gets = 0; var methodGets = 0; var calls = 0; var args = 0; var receiver = null; var method = null;',
+          'function getReceiver() { gets++; return receiver; }',
+          'function argument() { args++; return 5; }',
+          'function read() { return getReceiver()?.method?.(argument())?.value; }',
+          'console.log(read(), gets, methodGets, args, calls);',
+          'receiver = { n: 37, get method() { methodGets++; return method; } };',
+          'console.log(read(), gets, methodGets, args, calls);',
+          'method = function (value) { calls++; return { value: this.n + value }; };',
+          'console.log(read(), gets, methodGets, args, calls);',
+          'method = function () { calls++; return null; };',
+          'console.log(read(), gets, methodGets, args, calls);',
+          'receiver = null;',
+          'console.log(read(), gets, methodGets, args, calls);',
+          'receiver = undefined;',
+          'console.log(read(), gets, methodGets, args, calls);',
+          'receiver = { n: 37, get method() { methodGets++; return method; } }; method = undefined;',
+          'console.log(read(), gets, methodGets, args, calls);',
+        ].join('\n'),
+        output:
+          'undefined 1 0 0 0\nundefined 2 1 0 0\n42 3 2 1 1\nundefined 4 3 2 2\nundefined 5 3 2 2\nundefined 6 3 2 2\nundefined 7 4 2 2\n',
+      },
+      {
+        name: 'optional member and call chain rooted at an unbound global',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.getReceiver = function () { return { method: function () { return { value: 42 }; } }; };',
+          'function read() { return getReceiver()?.method?.()?.value; }',
+          'console.log(read());',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
         name: 'destructuring assignment',
         graph: 'retained',
         source: [
