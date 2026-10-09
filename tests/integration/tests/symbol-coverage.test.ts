@@ -9901,11 +9901,39 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'nested effectful static initializer arguments stay on semantic reanalysis',
+        name: 'one level of bound nested static-field calls retains graph and evaluation order',
         source:
-          'var calls = 0; function fieldArgument() { calls++; return 8; } function fieldValue(input) { return input + 1; } class NestedCallField { static value = fieldValue(fieldArgument()); } console.log(NestedCallField.value, calls);',
+          'var order = []; function fieldArgument(input) { order.push("arg:" + input); return input + 1; } function fieldValue(input) { order.push("field:" + input); return input + 1; } var receiver = { order, fieldValue(input) { this.order.push("member:" + input); return input + 1; } }; class NestedCallField { static first = fieldValue(fieldArgument(8)); static second = receiver.fieldValue(fieldArgument(10)); } console.log(NestedCallField.first, NestedCallField.second, order.join(","));',
+        graph: 'retained',
+        output: '10 12 arg:8,field:9,arg:10,member:11\n',
+      },
+      {
+        name: 'unresolved nested static-field call arguments stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcNestedFieldArgument = function (input) { return input + 1; }; function fieldValue(input) { return input + 1; } class UnresolvedNestedCallField { static value = fieldValue(__zntcNestedFieldArgument(8)); } console.log(UnresolvedNestedCallField.value);',
         graph: 'reanalyzed',
-        output: '9 1\n',
+        output: '10\n',
+      },
+      {
+        name: 'optional nested static-field call arguments stay on semantic reanalysis',
+        source:
+          'function fieldArgument(input) { return input + 1; } function fieldValue(input) { return input + 1; } class OptionalNestedCallField { static value = fieldValue(fieldArgument?.(8)); } console.log(OptionalNestedCallField.value);',
+        graph: 'reanalyzed',
+        output: '10\n',
+      },
+      {
+        name: 'computed nested static-field call arguments stay on semantic reanalysis',
+        source:
+          'var receiver = { fieldArgument(input) { return input + 1; } }; function fieldValue(input) { return input + 1; } class ComputedNestedCallField { static value = fieldValue(receiver["fieldArgument"](8)); } console.log(ComputedNestedCallField.value);',
+        graph: 'reanalyzed',
+        output: '10\n',
+      },
+      {
+        name: 'deeper nested static-field call arguments stay on semantic reanalysis',
+        source:
+          'function inner(input) { return input + 1; } function middle(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepNestedCallField { static value = fieldValue(inner(middle(8))); } console.log(DeepNestedCallField.value);',
+        graph: 'reanalyzed',
+        output: '11\n',
       },
       {
         name: 'optional direct static initializer calls stay on semantic reanalysis',
