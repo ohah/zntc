@@ -1293,13 +1293,33 @@ fn hasSelfOrForwardReferenceToLexicalForHeadBinding(
     return false;
 }
 
+fn hasOnlyReadReferencesToBinding(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    binding_idx: ast_mod.NodeIndex,
+) bool {
+    if (!isBoundSourceIdentifierBinding(ast, semantic, binding_idx)) return false;
+    const symbol_raw = semantic.symbol_ids[@intFromEnum(binding_idx)] orelse return false;
+    var declaration_found = false;
+    for (semantic.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != symbol_raw) continue;
+        if (reference.flags.declare) {
+            if (reference.declaration_node_index == binding_idx) declaration_found = true;
+            continue;
+        }
+        if (reference.flags.write) return false;
+    }
+    return declaration_found;
+}
+
 fn isSafeRetainedLexicalForHead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     declaration: ast_mod.Node,
 ) bool {
-    if (declaration.tag != .variable_declaration or
-        ast.variableDeclarationKind(declaration) != .let) return false;
+    if (declaration.tag != .variable_declaration) return false;
+    const declaration_kind = ast.variableDeclarationKind(declaration);
+    if (declaration_kind != .let and declaration_kind != .@"const") return false;
     const extras = ast.extra_data.items;
     const extra = declaration.data.extra;
     if (extra > extras.len or extras.len - extra < 3) return false;
@@ -1320,6 +1340,8 @@ fn isSafeRetainedLexicalForHead(
         const initializer: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
         if (!type_annotation.isNone() or
             !isBoundSourceIdentifierBinding(ast, semantic, binding) or
+            (declaration_kind == .@"const" and
+                !hasOnlyReadReferencesToBinding(ast, semantic, binding)) or
             initializer.isNone() or
             !isSafeConstructorValue(ast, semantic, initializer) or
             hasSelfOrForwardReferenceToLexicalForHeadBinding(

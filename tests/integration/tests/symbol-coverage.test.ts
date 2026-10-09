@@ -2755,8 +2755,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
 
   test('ES5 simple lexical for headers retain exact identities; closure capture keeps reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-retained-lexical-for-'));
-    // The current ES5 lowerer loses loop-head TDZ behavior even on reanalysis;
-    // these two controls assert only that the graph is conservatively reanalyzed.
+    // ES5 loop-head TDZ and const-assignment behavior are not repaired here;
+    // negative cases assert graph selection only.
     const cases: Array<{
       name: string;
       graph: string;
@@ -2847,14 +2847,26 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stdout: '1\n',
       },
       {
-        name: 'const-header-remains-outside-this-slice',
-        graph: 'reanalyzed',
+        name: 'multiple-simple-const-header-bindings-with-outer-shadow',
+        graph: 'retained',
         source: [
+          'var index = 41;',
+          'var step = 99;',
           'var total = 0;',
-          'for (const index = 0; index < 1;) { total += index; break; }',
-          'console.log(total);',
+          'for (const index = 0, step = index + 1; index < 1;) { total += step; break; }',
+          'index++; step++;',
+          'console.log(total, index, step);',
         ].join('\n'),
-        stdout: '0\n',
+        stdout: '1 42 100\n',
+      },
+      {
+        name: 'const-header-write-keeps-reanalysis',
+        graph: 'reanalyzed',
+        compareRuntime: false,
+        source: [
+          'try { for (const index = 0; index < 1; index++) {} }',
+          'catch (error) { console.log(error instanceof TypeError); }',
+        ].join('\n'),
       },
     ];
     try {
