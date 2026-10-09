@@ -9773,6 +9773,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '43 42 2 -2\n',
       },
       {
+        name: 'bound deep static member reads retain getter order and receiver this',
+        source:
+          'var order = []; var holder = { get outer() { order.push("outer"); return { order, get value() { this.order.push("value"); return this.order.length; } }; } }; class StaticMemberReadField { static first = holder.outer.value; static second = holder.outer.value; } console.log(StaticMemberReadField.first, StaticMemberReadField.second, order.join(","));',
+        graph: 'retained',
+        output: '2 4 outer,value,outer,value\n',
+      },
+      {
         name: 'whitespace-only minification keeps the exact graph for safe static fields',
         source:
           'var seed = 41; class WhitespaceOnly { static value = seed + 1; } console.log(WhitespaceOnly.value);',
@@ -9829,6 +9836,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'globalThis.__zntcStaticFieldValue = 17; class GlobalStaticField { static value = __zntcStaticFieldValue; } console.log(GlobalStaticField.value);',
         graph: 'reanalyzed',
         output: '17\n',
+      },
+      {
+        name: 'computed static member value stays on semantic reanalysis',
+        source:
+          'var holder = { value: 9 }; function fieldKey() { return "value"; } class ComputedStaticMemberValueField { static value = holder[fieldKey()]; } console.log(ComputedStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional static member value stays on semantic reanalysis',
+        source:
+          'var holder = { value: 9 }; class OptionalStaticMemberValueField { static value = holder?.value; } console.log(OptionalStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unresolved static member receiver stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcStaticMemberHolder = { value: 9 }; class UnresolvedStaticMemberValueField { static value = __zntcStaticMemberHolder.value; } console.log(UnresolvedStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result static member value stays on semantic reanalysis',
+        source:
+          'function makeStaticMemberHolder() { return { value: 9 }; } class CallResultStaticMemberValueField { static value = makeStaticMemberHolder().value; } console.log(CallResultStaticMemberValueField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
       },
       {
         name: 'computed static fields stay on semantic reanalysis',

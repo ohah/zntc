@@ -918,6 +918,27 @@ fn isRetainableBoundStaticFieldMemberReceiver(
     return false;
 }
 
+/// A static member access is safe to retain when its receiver chain is rooted
+/// at an exact source binding and every segment is a plain non-optional dot
+/// access. The property is part of the original AST and is not a lexical read.
+fn isRetainableBoundStaticFieldMemberAccess(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    member_idx: ast_mod.NodeIndex,
+) bool {
+    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+    const member = ast.getNode(member_idx);
+    if (member.tag != .static_member_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = member.data.extra;
+    if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
+    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+    return isRetainableBoundStaticFieldMemberReceiver(ast, semantic, receiver_idx) and
+        !property_idx.isNone() and @intFromEnum(property_idx) < ast.nodes.items.len and
+        ast.getNode(property_idx).tag == .identifier_reference;
+}
+
 /// A call in a static initializer can retain the source graph when its callee
 /// is an exact bound identifier, or a non-optional static member whose
 /// receiver chain is rooted at one, and every argument is a safe value or
@@ -964,16 +985,7 @@ fn isRetainableBoundStaticFieldCall(
                 if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
             },
             .static_member_expression => {
-                const member_extra = callee.data.extra;
-                if (member_extra > extras.len or extras.len - member_extra < 3) return false;
-                const member_flags = extras[member_extra + 2];
-                if ((member_flags & ast_mod.MemberFlags.optional_chain) != 0 or
-                    (member_flags & ~ast_mod.MemberFlags.optional_chain) != 0) return false;
-                const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
-                const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
-                if (!isRetainableBoundStaticFieldMemberReceiver(ast, semantic, receiver_idx) or
-                    property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
-                    ast.getNode(property_idx).tag != .identifier_reference) return false;
+                if (!isRetainableBoundStaticFieldMemberAccess(ast, semantic, callee_idx)) return false;
             },
             else => return false,
         }
@@ -1529,11 +1541,10 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     return true;
 }
 
-/// A public static field with a side-effect-free value expression composed of
-/// primitive literals and exact source-identifier references is emitted as an
-/// exact class reference plus an explicit global Object.defineProperty call.
-/// Exact-bound calls with safe-value leaves are additionally allowed;
-/// `this`, unresolved names, and other call shapes stay on resync.
+/// A public static field with a safe value expression, exact-bound static
+/// member read, or exact-bound call is emitted as an exact class reference
+/// plus an explicit global Object.defineProperty call. `this`, unresolved names,
+/// and other call/member shapes stay on resync.
 fn isRetainableSimpleStaticClassField(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -1561,6 +1572,7 @@ fn isRetainableSimpleStaticClassField(
     const key = ast.getNode(key_idx);
     if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false;
     return isSafeConstructorValue(ast, semantic, init_idx) or
+        isRetainableBoundStaticFieldMemberAccess(ast, semantic, init_idx) or
         isRetainableBoundStaticFieldCall(allocator, ast, semantic, init_idx);
 }
 
