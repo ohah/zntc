@@ -457,6 +457,44 @@ function runCoverage(
   };
 }
 
+function transformIdentityAuditProblems(stderr: string): string[] {
+  const lines = stderr.split(/\r?\n/);
+  const problems: string[] = [];
+  const exact = lines.filter((line) => line.startsWith('zntc: symbol-identity '));
+  if (exact.length !== 1) {
+    problems.push(`exact identity reports=${exact.length}, expected 1`);
+  } else {
+    problems.push(...exactSchemaProblems(exact[0]));
+  }
+
+  const owners = lines.filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+  if (owners.length !== 1) {
+    problems.push(`source scope-owner reports=${owners.length}, expected 1`);
+  } else {
+    problems.push(...scopeOwnerAuditProblems(owners[0]));
+  }
+
+  const coverage = lines.filter((line) => line.startsWith('zntc: symbol-coverage '));
+  if (coverage.length !== 1) {
+    problems.push(`symbol coverage reports=${coverage.length}, expected 1`);
+  } else {
+    const match = coverage[0].match(/(?:^| )missing=(\d+) wrong=(\d+)(?: |$)/);
+    if (!match) {
+      problems.push(`malformed symbol coverage report: ${coverage[0]}`);
+    } else if (match[1] !== '0' || match[2] !== '0') {
+      problems.push(`symbol coverage missing=${match[1]} wrong=${match[2]}`);
+    }
+  }
+
+  const strict = lines.filter((line) => line.startsWith('zntc: synthetic-coverage '));
+  if (strict.length !== 1) {
+    problems.push(`strict synthetic coverage reports=${strict.length}, expected 1`);
+  } else {
+    problems.push(...strictSchemaProblems(strict[0]));
+  }
+  return problems;
+}
+
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
 
@@ -1047,6 +1085,15 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(postMinifyAuditProblems(report + '\n' + report)).toContain(
       'post-minify reports=2, expected 1',
     );
+  });
+
+  test('minify transform-stage gate requires exact identity and scope reports', () => {
+    expect(transformIdentityAuditProblems('')).toEqual([
+      'exact identity reports=0, expected 1',
+      'source scope-owner reports=0, expected 1',
+      'symbol coverage reports=0, expected 1',
+      'strict synthetic coverage reports=0, expected 1',
+    ]);
   });
 
   test('the emitted exact report matches the locked schema', () => {
@@ -12854,6 +12901,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     try {
       const problems: string[] = [];
       let runs = 0;
+      let generatedBindings = 0;
+      let generatedReferences = 0;
+      let declarationAnchorsChecked = 0;
+      let markedSynthetic = 0;
       for (const file of fixtures) {
         const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
         for (const target of MINIFY_TARGETS) {
@@ -12866,6 +12917,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
                 env: {
                   ...process.env,
                   ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+                  ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
                   PATH: process.env.PATH ?? '/usr/bin:/bin',
                 },
                 encoding: 'utf8',
@@ -12877,6 +12929,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${stderr}`,
               );
             }
+            for (const auditProblem of transformIdentityAuditProblems(stderr)) {
+              problems.push(
+                `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: transform identity audit ${auditProblem}: ${stderr}`,
+              );
+            }
+            const exact = stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: symbol-identity '));
+            if (exact) {
+              generatedBindings += Number(
+                exact.match(/(?:^| )generated_bindings=(\d+)(?: |$)/)?.[1] ?? 0,
+              );
+              generatedReferences += Number(
+                exact.match(/(?:^| )generated_references=(\d+)(?: |$)/)?.[1] ?? 0,
+              );
+              declarationAnchorsChecked += Number(
+                exact.match(/(?:^| )declaration_anchors_checked=(\d+)(?: |$)/)?.[1] ?? 0,
+              );
+            }
+            const strict = stderr
+              .split(/\r?\n/)
+              .find((line) => line.startsWith('zntc: synthetic-coverage '));
+            if (strict)
+              markedSynthetic += Number(
+                strict.match(/(?:^| )marked_synthetic=(\d+)(?: |$)/)?.[1] ?? 0,
+              );
             for (const auditProblem of postMinifyAuditProblems(stderr)) {
               problems.push(
                 `${relative(FIXTURE_DIR, file)} [${target.name}; ${mode.join('+')}]: ${auditProblem}: ${stderr}`,
@@ -12888,6 +12966,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       }
       expect(fixtures.length).toBeGreaterThan(0);
       expect(runs).toBe(fixtures.length * MINIFY_TARGETS.length * MINIFY_MODES.length);
+      expect(generatedBindings).toBeGreaterThan(0);
+      expect(generatedReferences).toBeGreaterThan(0);
+      expect(declarationAnchorsChecked).toBeGreaterThan(0);
+      expect(markedSynthetic).toBeGreaterThan(0);
       expect(problems).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
