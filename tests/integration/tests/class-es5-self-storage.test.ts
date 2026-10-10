@@ -87,9 +87,17 @@ describe('ES5 class self storage (#4819)', () => {
       const code = readFileSync(output, 'utf8');
       if (minify) {
         expect(code).not.toContain('_classSelfWrite');
+        expect(code).not.toContain('_classSelfReadonly');
+        expect(code).not.toContain('_ignoredClassSelfWrite');
       } else {
-        expect(code).toContain('_classSelfWrite');
-        expect(code).toContain('_classSelfWrite2');
+        for (const baseName of [
+          '_classSelfWrite',
+          '_classSelfReadonly',
+          '_ignoredClassSelfWrite',
+        ]) {
+          expect(code).toContain(baseName);
+          expect(code).toContain(`${baseName}2`);
+        }
       }
       const runtime = spawnSync('node', [output], { encoding: 'utf8' });
       expect(runtime.status, runtime.stderr).toBe(0);
@@ -100,9 +108,11 @@ describe('ES5 class self storage (#4819)', () => {
   test('source names cannot be captured by the class-self write binding', async () => {
     const input = `
       const _classSelfWrite = 'source';
+      const _classSelfReadonly = 'readonly source';
+      const _ignoredClassSelfWrite = 'ignored source';
       class CollisionTarget {
         static write() { CollisionTarget = 3; }
-        static readSource() { return _classSelfWrite; }
+        static readSource() { return [_classSelfWrite, _classSelfReadonly, _ignoredClassSelfWrite]; }
       }
       let writeError = 'none';
       try { CollisionTarget.write(); } catch (error) { writeError = error.name; }
@@ -120,6 +130,8 @@ describe('ES5 class self storage (#4819)', () => {
     expect(result.exitCode, result.stderr).toBe(0);
     const code = readFileSync(output, 'utf8');
     expect(code).toContain('_classSelfWrite2');
+    expect(code).toContain('_classSelfReadonly2');
+    expect(code).toContain('_ignoredClassSelfWrite2');
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
     expect(runtime.stdout).toBe(native.stdout);
@@ -128,9 +140,13 @@ describe('ES5 class self storage (#4819)', () => {
   test('direct eval keeps the class-self write name away from eval-visible globals', async () => {
     const input = `
       globalThis._classSelfWrite = 'global';
+      globalThis._classSelfReadonly = 'readonly';
+      globalThis._ignoredClassSelfWrite = 'ignored';
       class EvalTarget {
         static write() { EvalTarget = 3; }
-        static readGlobal() { return eval('_classSelfWrite'); }
+        static readGlobal() {
+          return eval('_classSelfWrite + ":" + _classSelfReadonly + ":" + _ignoredClassSelfWrite');
+        }
       }
       console.log(JSON.stringify(EvalTarget.readGlobal()));
     `;
@@ -146,6 +162,8 @@ describe('ES5 class self storage (#4819)', () => {
     expect(result.exitCode, result.stderr).toBe(0);
     const code = readFileSync(output, 'utf8');
     expect(code).toContain('_classSelfWrite2');
+    expect(code).toContain('_classSelfReadonly2');
+    expect(code).toContain('_ignoredClassSelfWrite2');
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
     expect(runtime.stdout).toBe(native.stdout);

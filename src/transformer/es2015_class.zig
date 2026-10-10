@@ -132,15 +132,18 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // A named function expression has an immutable self binding. An
             // assignment to that binding in strict code raises the intrinsic
             // TypeError even when user code shadows the global TypeError.
-            const setter_name = try es_helpers.resolveSyntheticName(self, "_classSelfReadonly");
-            const setter_binding = try es_helpers.makeExactSyntheticBinding(self, setter_name);
-            const setter_ref = try es_helpers.makeExactSyntheticRef(self, setter_name);
             const accessor_scope = if (self.semantic_edit_enabled) try self.reserveGeneratedFunctionScope(scope) else scope;
             const setter_scope = if (self.semantic_edit_enabled) try self.reserveGeneratedFunctionScope(accessor_scope) else accessor_scope;
+            const setter_output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_classSelfReadonly", setter_scope);
+            const setter_binding = try es_helpers.makeExactSyntheticBinding(self, setter_output_name.name);
+            const setter_ref = try es_helpers.makeExactSyntheticRef(self, setter_output_name.name);
             const setter_id = if (self.semantic_edit_enabled)
                 try self.declareSyntheticInScope(setter_binding, span, .variable_const, setter_scope)
             else
                 null;
+            if (setter_output_name.late) {
+                es_helpers.markStandaloneLateSyntheticSymbol(self, setter_id orelse std.debug.panic("late class-self readonly binding has no SymbolId", .{}), .class_self_write_binding);
+            }
             if (self.semantic_edit_enabled)
                 try self.addSyntheticRefInScope(setter_ref, setter_id, setter_scope, .{ .write = true });
             const zero = try es_helpers.makeNumericLiteral(self, 0);
@@ -155,9 +158,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) try self.bindReservedFunctionOwner(setter_scope, thrower);
             const call_thrower = try es_helpers.makeCallExpr(self, thrower, &.{}, span);
             const accessor_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{try es_helpers.makeExprStmt(self, call_thrower, span)}) } });
-            const setter_param = try es_helpers.makeExactSyntheticBinding(self, try es_helpers.resolveSyntheticName(self, "_ignoredClassSelfWrite"));
+            const setter_param_output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_ignoredClassSelfWrite", accessor_scope);
+            const setter_param = try es_helpers.makeExactSyntheticBinding(self, setter_param_output_name.name);
             const accessor_params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{setter_param}), span);
-            if (self.semantic_edit_enabled) _ = try self.declareSyntheticInScope(setter_param, span, .parameter, accessor_scope);
+            const setter_param_id = if (self.semantic_edit_enabled)
+                try self.declareSyntheticInScope(setter_param, span, .parameter, accessor_scope)
+            else
+                null;
+            if (setter_param_output_name.late) {
+                es_helpers.markStandaloneLateSyntheticSymbol(self, setter_param_id orelse std.debug.panic("late class-self setter parameter has no SymbolId", .{}), .class_self_write_binding);
+            }
             const accessor_key = try es_helpers.makePropertyName(self, "value");
             const accessor_extra = try self.ast.addExtras(&.{ @intFromEnum(accessor_key), @intFromEnum(accessor_params), @intFromEnum(accessor_body), ast_mod.MethodFlags.is_setter, 0, 0 });
             const setter = try self.ast.addNode(.{ .tag = .method_definition, .span = span, .data = .{ .extra = accessor_extra } });
