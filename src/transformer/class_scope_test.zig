@@ -273,27 +273,48 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
 
     const late_kind = @import("../semantic/symbol.zig").SyntheticKind.class_self_write_binding;
     var late_target_ids: [2]u32 = undefined;
+    var late_target_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
     var late_target_count: usize = 0;
+    var late_readonly_count: usize = 0;
+    var late_ignored_parameter_count: usize = 0;
     for (edited.symbols.items, 0..) |symbol, raw_id| {
         if (symbol.synthetic_kind != late_kind) continue;
-        try std.testing.expect(late_target_count < late_target_ids.len);
-        try std.testing.expectEqualStrings("_classSelfWrite", symbol.synthetic_name);
         try std.testing.expect(!symbol.scope_id.isNone());
-        late_target_ids[late_target_count] = @intCast(raw_id);
-        late_target_count += 1;
+        if (std.mem.eql(u8, symbol.synthetic_name, "_classSelfWrite")) {
+            try std.testing.expect(late_target_count < late_target_ids.len);
+            late_target_ids[late_target_count] = @intCast(raw_id);
+            late_target_scopes[late_target_count] = symbol.scope_id;
+            late_target_count += 1;
+        } else if (std.mem.eql(u8, symbol.synthetic_name, "_classSelfReadonly")) {
+            late_readonly_count += 1;
+        } else if (std.mem.eql(u8, symbol.synthetic_name, "_ignoredClassSelfWrite")) {
+            late_ignored_parameter_count += 1;
+        } else {
+            return error.UnexpectedClassSelfWriteSyntheticName;
+        }
     }
     try std.testing.expectEqual(@as(usize, 2), late_target_count);
+    try std.testing.expectEqual(@as(usize, 2), late_readonly_count);
+    try std.testing.expectEqual(@as(usize, 2), late_ignored_parameter_count);
     try std.testing.expect(late_target_ids[0] != late_target_ids[1]);
+    try std.testing.expect(late_target_scopes[0] != late_target_scopes[1]);
 
-    for (late_target_ids) |target_id| {
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != late_kind) continue;
+        const symbol_id: u32 = @intCast(raw_id);
+        try std.testing.expect(symbol.scope_id.toIndex() < edited.scope_maps.len);
+        try std.testing.expectEqual(
+            @as(?usize, symbol_id),
+            edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name),
+        );
         var declaration_count: usize = 0;
         var exact_reference_count: usize = 0;
         for (reachable) |raw| {
             const node = transformer.ast.nodes.items[raw];
             if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
-            if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_classSelfWrite")) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), symbol.synthetic_name)) continue;
             const exact_id = edited.symbol_ids[raw] orelse continue;
-            if (exact_id != target_id) continue;
+            if (exact_id != symbol_id) continue;
             if (node.tag == .binding_identifier) {
                 declaration_count += 1;
             } else {
@@ -301,10 +322,28 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
             }
         }
         try std.testing.expectEqual(@as(usize, 1), declaration_count);
-        try std.testing.expect(exact_reference_count > 0);
+        if (std.mem.eql(u8, symbol.synthetic_name, "_classSelfWrite") or
+            std.mem.eql(u8, symbol.synthetic_name, "_classSelfReadonly"))
+            try std.testing.expect(exact_reference_count > 0)
+        else
+            try std.testing.expectEqual(@as(usize, 0), exact_reference_count);
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != target_id or reference.node_index.isNone()) continue;
-            try std.testing.expectEqual(@as(?u32, target_id), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            if (@intFromEnum(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
+            const reference_raw = @intFromEnum(reference.node_index);
+            try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[reference_raw]);
+            var visible_scope = reference.scope_id;
+            var is_visible = false;
+            var hops: usize = 0;
+            while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+                if (edited.scope_maps[visible_scope.toIndex()].get(symbol.synthetic_name)) |visible_id| {
+                    if (visible_id == symbol_id) {
+                        is_visible = true;
+                        break;
+                    }
+                }
+                visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+            }
+            try std.testing.expect(is_visible);
         }
     }
 }
