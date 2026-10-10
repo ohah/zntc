@@ -199,7 +199,7 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
     const allocator = arena.allocator();
     const source =
         \\let Outer = class Inner { constructor(Inner) { this.arg = Inner; } static write() { Inner = 3; } static self() { return Inner; } };
-        \\class Declared { static write() { Declared++; } static self() { return Declared; } }
+        \\class Declared { constructor(Declared) { this.arg = Declared; } static write() { Declared++; } static self() { return Declared; } }
         \\Outer = Declared;
     ;
     var scanner = try Scanner.init(allocator, source);
@@ -346,6 +346,59 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
             try std.testing.expect(is_visible);
         }
     }
+
+    const alias_kind = @import("../semantic/symbol.zig").SyntheticKind.class_self_alias_binding;
+    var alias_ids: [2]u32 = undefined;
+    var alias_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
+    var alias_count: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != alias_kind) continue;
+        try std.testing.expectEqualStrings("_classSelf", symbol.synthetic_name);
+        try std.testing.expect(!symbol.scope_id.isNone());
+        try std.testing.expect(alias_count < alias_ids.len);
+        alias_ids[alias_count] = @intCast(raw_id);
+        alias_scopes[alias_count] = symbol.scope_id;
+        alias_count += 1;
+
+        const symbol_id: u32 = @intCast(raw_id);
+        try std.testing.expect(symbol.scope_id.toIndex() < edited.scope_maps.len);
+        try std.testing.expectEqual(
+            @as(?usize, symbol_id),
+            edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name),
+        );
+        var binding_count: usize = 0;
+        var reference_count: usize = 0;
+        for (reachable) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), symbol.synthetic_name)) continue;
+            if (edited.symbol_ids[raw] != symbol_id) continue;
+            if (node.tag == .binding_identifier) binding_count += 1 else reference_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+        try std.testing.expect(reference_count > 0);
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
+            const reference_raw = @intFromEnum(reference.node_index);
+            try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[reference_raw]);
+            var visible_scope = reference.scope_id;
+            var is_visible = false;
+            var hops: usize = 0;
+            while (!visible_scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+                if (edited.scope_maps[visible_scope.toIndex()].get(symbol.synthetic_name)) |visible_id| {
+                    if (visible_id == symbol_id) {
+                        is_visible = true;
+                        break;
+                    }
+                }
+                visible_scope = edited.scopes[visible_scope.toIndex()].parent;
+            }
+            try std.testing.expect(is_visible);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), alias_count);
+    try std.testing.expect(alias_ids[0] != alias_ids[1]);
+    try std.testing.expect(alias_scopes[0] != alias_scopes[1]);
 }
 
 test "#4819 ES5 class IIFE scopes enclose source class bodies" {
