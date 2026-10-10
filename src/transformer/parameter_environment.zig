@@ -441,7 +441,6 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
 /// Record the exact RHS roots before visiting; this also covers destructuring
 /// defaults and logical assignments whose visitors lower the parent directly.
 pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Allocator.Error!void {
-    if (renames.count() == 0) return;
     const symbols = symbolsOf(self);
     for (self.ast.nodes.items) |node| {
         const pair: [2]ast_mod.NodeIndex = switch (node.tag) {
@@ -461,7 +460,6 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
         const binding = self.ast.getNode(pair[0]);
         if (binding.tag != .binding_identifier and binding.tag != .assignment_target_identifier and binding.tag != .identifier_reference) continue;
         const id = self.getSymbolIdAt(pair[0]) orelse continue;
-        if (!renames.contains(id)) continue;
         var value_root = pair[1];
         var value = self.ast.getNode(value_root);
         while (value.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(value.tag)) {
@@ -474,7 +472,16 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
             .class_expression => self.ast.readExtraNode(value.data.extra, ast_mod.ClassExtra.name).isNone(),
             else => false,
         };
-        if (anonymous) {
+        const renamed_anonymous = renames.contains(id);
+        // Unlike an inferred `const` class name, assigning a name to a
+        // `var`/`let` class expression's inner class binding changes reads
+        // after the outer variable is reassigned. Preserve only the public
+        // Function.name value for these downleveled expressions; class
+        // lowering consumes this hint before static elements run.
+        const downleveled_anonymous_class = value.tag == .class_expression and
+            self.options.unsupported.class and id < symbols.len and
+            symbols[id].kind != @import("../semantic/symbol.zig").SymbolKind.variable_const;
+        if (anonymous and (renamed_anonymous or downleveled_anonymous_class)) {
             // Class static initialization must see NamedEvaluation first.
             // Its lowering consumes this exact class node inside the IIFE.
             const root = if (value.tag == .class_expression and self.options.unsupported.class) value_root else pair[1];
