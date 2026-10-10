@@ -43,30 +43,51 @@ fn scopeOwnersOf(self: anytype) *const std.AutoHashMapUnmanaged(u32, u32) {
 /// the analyzer propagates body flags to the parameter scope's ancestors.
 pub fn parameterListHasDynamicLookup(self: anytype, params: ast_mod.NodeList) std.mem.Allocator.Error!bool {
     for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
-        const roots = try ast_walk.collectReachableNodeIndicesFrom(
-            self.allocator,
-            self.ast,
-            @enumFromInt(raw_param),
-        );
-        defer self.allocator.free(roots);
-        for (roots) |raw| {
-            if (raw >= self.ast.nodes.items.len) continue;
-            const node = self.ast.nodes.items[raw];
-            if (node.tag == .with_statement) return true;
-            if (node.tag != .call_expression) continue;
-            const callee_idx = self.ast.readExtraNode(node.data.extra, 0);
-            if (callee_idx.isNone() or @intFromEnum(callee_idx) >= self.ast.nodes.items.len) continue;
+        if (try nodeHasDynamicLookup(self, @enumFromInt(raw_param))) return true;
+    }
+    return false;
+}
+
+/// Find dynamic lookup without relying on the optional semantic graph. This is
+/// also used to fail closed in semantic-less transformer entry points, where a
+/// moved parameter initializer cannot be isolated from body `var` bindings.
+pub fn nodeHasDynamicLookup(self: anytype, root: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    if (root.isNone() or @intFromEnum(root) >= self.ast.nodes.items.len) return false;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+    defer self.allocator.free(reachable);
+    for (reachable) |raw| {
+        if (raw >= self.ast.nodes.items.len) continue;
+        const node = self.ast.nodes.items[raw];
+        if (node.tag == .with_statement) return true;
+        if (node.tag != .call_expression) continue;
+        var callee_idx = self.ast.readExtraNode(node.data.extra, 0);
+        while (!callee_idx.isNone() and @intFromEnum(callee_idx) < self.ast.nodes.items.len) {
             const callee = self.ast.getNode(callee_idx);
-            if (callee.tag != .identifier_reference) continue;
+            if (callee.tag == .parenthesized_expression) {
+                callee_idx = callee.data.unary.operand;
+                continue;
+            }
+            if (callee.tag != .identifier_reference) break;
             const raw_name = self.ast.identifierNameText(callee);
             if (std.mem.eql(u8, raw_name, "eval")) return true;
-            if (std.mem.indexOfScalar(u8, raw_name, '\\') == null) continue;
-            var decode_buffer: [64]u8 = undefined;
-            const decoded_name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse continue;
-            if (std.mem.eql(u8, decoded_name, "eval")) return true;
+            if (std.mem.indexOfScalar(u8, raw_name, '\\') != null) {
+                var decode_buffer: [64]u8 = undefined;
+                const decoded_name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse break;
+                if (std.mem.eql(u8, decoded_name, "eval")) return true;
+            }
+            break;
         }
     }
     return false;
+}
+
+pub fn functionBodyHasDynamicLookup(self: anytype, function_scope: ScopeId, body: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    const scopes = scopesOf(self);
+    if (!function_scope.isNone() and function_scope.toIndex() < scopes.len) {
+        const scope = scopes[function_scope.toIndex()];
+        if (scope.subtree_has_direct_eval or scope.subtree_has_with) return true;
+    }
+    return nodeHasDynamicLookup(self, body);
 }
 
 fn functionParamsNode(self: anytype, function_raw: u32) ?u32 {

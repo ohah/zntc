@@ -1755,7 +1755,13 @@ const ExactCtx = struct {
                     else
                         null;
                     const lexical_binding_matches = lexical_binding != null and lexical_binding.? == raw_id;
-                    const shadowed_lexical_owner = lexical_binding != null and lexical_binding.? != raw_id;
+                    const separate_parameter_environment = symbol.kind == .parameter and
+                        if (nonSimpleParameterScope(ctx, raw)) |parameter_scope|
+                            parameter_scope == symbol.scope_id.toIndex()
+                        else
+                            false;
+                    const shadowed_lexical_owner = lexical_binding != null and lexical_binding.? != raw_id and
+                        !separate_parameter_environment;
                     const shadowed_storage_owner = owner_binding != null and owner_binding.? != raw_id and
                         !lexical_binding_matches;
                     const symbol_keeps_lexical_scope = if (lexical_scope) |lexical|
@@ -1937,10 +1943,141 @@ fn outputBindingIsVar(ctx: *const ExactCtx, node: u32) bool {
     return false;
 }
 
+fn formalParametersAreNonSimple(ctx: *const ExactCtx, params: @import("../parser/ast.zig").NodeList) bool {
+    if (params.start > ctx.ast.extra_data.items.len or
+        params.len > ctx.ast.extra_data.items.len - params.start) return false;
+    for (ctx.ast.extra_data.items[params.start .. params.start + params.len]) |param_raw| {
+        if (param_raw >= ctx.ast.nodes.items.len) continue;
+        const param = ctx.ast.nodes.items[param_raw];
+        switch (param.tag) {
+            .spread_element,
+            .rest_element,
+            .binding_rest_element,
+            .object_pattern,
+            .array_pattern,
+            .assignment_pattern,
+            => return true,
+            .formal_parameter => {
+                const extra: usize = param.data.extra;
+                const extra_len = ctx.ast.extra_data.items.len;
+                if (extra <= extra_len and extra_len - extra > 2 and
+                    ctx.ast.extra_data.items[extra + 2] != @intFromEnum(NodeIndex.none)) return true;
+                if (extra < extra_len) {
+                    const pattern_raw = ctx.ast.extra_data.items[extra];
+                    if (pattern_raw < ctx.ast.nodes.items.len) {
+                        const pattern = ctx.ast.nodes.items[pattern_raw];
+                        if (pattern.tag == .object_pattern or pattern.tag == .array_pattern) return true;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+test "non-simple parameter scope discovery tolerates malformed formal parameter extras" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const span = try ast.addString("x");
+    const parameter = try ast.addNode(.{
+        .tag = .formal_parameter,
+        .span = span,
+        .data = .{ .extra = std.math.maxInt(u32) },
+    });
+    const params = try ast.addNodeList(&.{parameter});
+
+    var empty_u32_u32: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    var empty_u32_void: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    var empty_u32_reference: std.AutoHashMapUnmanaged(u32, IndexedReference) = .empty;
+    var empty_string_usize: std.StringHashMapUnmanaged(usize) = .empty;
+    var report: ExactReport = .{};
+    const ctx = ExactCtx{
+        .allocator = allocator,
+        .ast = &ast,
+        .root = .none,
+        .parser_node_count = 0,
+        .parent_by_node = &empty_u32_u32,
+        .scope_owner_map = &empty_u32_u32,
+        .symbol_ids = &.{},
+        .declaration_nodes = &empty_u32_void,
+        .symbols = &.{},
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .references_by_node = &empty_u32_reference,
+        .helper_reference_nodes = &empty_u32_void,
+        .helper_scope_map = &empty_string_usize,
+        .dynamic_eval_units = &empty_u32_void,
+        .with_body_roots = &empty_u32_void,
+        .declaration_counts = &.{},
+        .unresolved_nodes = &empty_u32_void,
+        .explicit_global_nodes = &empty_u32_void,
+        .origins = &empty_u32_u32,
+        .reachable_nodes = &empty_u32_void,
+        .report = &report,
+    };
+
+    try std.testing.expect(!formalParametersAreNonSimple(&ctx, params));
+}
+
+fn sameFormalParameterNodes(
+    ctx: *const ExactCtx,
+    left: @import("../parser/ast.zig").NodeList,
+    right: @import("../parser/ast.zig").NodeList,
+) bool {
+    if (left.len != right.len or
+        left.start > ctx.ast.extra_data.items.len or left.len > ctx.ast.extra_data.items.len - left.start or
+        right.start > ctx.ast.extra_data.items.len or right.len > ctx.ast.extra_data.items.len - right.start) return false;
+    for (0..left.len) |index| {
+        if (ctx.ast.extra_data.items[left.start + index] != ctx.ast.extra_data.items[right.start + index]) return false;
+    }
+    return true;
+}
+
+/// A transform may copy the formal-parameters list container while retaining
+/// the original parameter nodes. Resolve its parameter environment through the
+/// exact source container that owns the same NodeIndex sequence.
+fn nonSimpleParameterScope(ctx: *const ExactCtx, node: u32) ?u32 {
+    var parent = ctx.parent_by_node.get(node);
+    var hops: usize = 0;
+    while (parent) |raw| : (hops += 1) {
+        if (hops >= ctx.ast.nodes.items.len or raw >= ctx.ast.nodes.items.len) return null;
+        const ancestor = ctx.ast.nodes.items[raw];
+        if (ancestor.tag == .formal_parameters) {
+            const params = ancestor.data.list;
+            if (!formalParametersAreNonSimple(ctx, params)) return null;
+            if (ctx.scope_owner_map.get(raw)) |scope| return scope;
+
+            var matching_scope: ?u32 = null;
+            for (ctx.ast.nodes.items, 0..) |candidate, candidate_raw| {
+                if (candidate.tag != .formal_parameters or
+                    !sameFormalParameterNodes(ctx, params, candidate.data.list)) continue;
+                const scope = ctx.scope_owner_map.get(@intCast(candidate_raw)) orelse continue;
+                if (matching_scope) |existing| {
+                    if (existing != scope) return null;
+                } else {
+                    matching_scope = scope;
+                }
+            }
+            return matching_scope;
+        }
+        switch (ancestor.tag) {
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => return null,
+            else => {},
+        }
+        parent = ctx.parent_by_node.get(raw);
+    }
+    return null;
+}
+
 fn expectedBindingScope(ctx: *const ExactCtx, node: u32, kind: @import("../semantic/symbol.zig").SymbolKind) ?u32 {
     if (node >= ctx.ast.nodes.items.len) return null;
     const binding_name = ctx.ast.nodes.items[node];
     if (binding_name.tag != .binding_identifier) return null;
+    if (kind == .parameter) {
+        if (nonSimpleParameterScope(ctx, node)) |scope| return scope;
+    }
     // A named function expression's self-binding lives in the synthetic block
     // scope immediately surrounding its function scope.
     var child = node;

@@ -2631,6 +2631,42 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       );
     });
 
+    test('unsafe dynamic parameter lowering keeps the original environment (#4819)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let outside = 3;',
+            'function noArrowWrapper({ a, ...rest }, value = outside) {',
+            '  var outside = 4;',
+            '  eval("outside");',
+            '  return [a, value, outside, rest.b];',
+            '}',
+            'function* generatorWrapper({ a, ...rest }, value = outside) {',
+            '  var outside = 4, a;',
+            '  eval("a = 9; outside");',
+            '  yield [a, value, outside, rest.b];',
+            '}',
+            'function parameterEval({ a, ...rest }, value = eval("outside")) {',
+            '  var outside = 4;',
+            '  eval("outside");',
+            '  return [a, value, outside, rest.b];',
+            '}',
+            'console.log(JSON.stringify([noArrowWrapper({ a: 1, b: 2 }), Array.from(generatorWrapper({ a: 1, b: 2 })), parameterEval({ a: 1, b: 2 })]));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es5'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[[1,3,4,2],[[9,3,4,2]],[1,3,4,2]]');
+      // These combinations cannot use the dynamic-body arrow wrapper or would
+      // move a direct eval out of its parameter environment. Retaining native
+      // parameter syntax is safer than emitting a behavior-changing lowering.
+      expect(result.bundleOutput).toContain('...rest');
+      expect(result.bundleOutput).toContain('eval("outside")');
+    });
+
     test('nested parameter object-rest is detected without lowering surrounding defaults', async () => {
       const result = await bundleAndRun(
         {

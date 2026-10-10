@@ -321,20 +321,27 @@ fn appendParameterBodyVarCopies(
 /// and direct eval together in a nested arrow function so the prologue cannot
 /// see body-only names. Split parameter/body var identities before this step so
 /// the arrow keeps a local copy while parameter expressions retain their binding.
-fn reserveDynamicBodyWrapperScope(
+fn supportsDynamicBodyWrapper(
     self: anytype,
     function_scope: @import("../../semantic/scope.zig").ScopeId,
-    params: ast_mod.NodeList,
     function_flags: u32,
-) Error!?@import("../../semantic/scope.zig").ScopeId {
+) bool {
     if (!self.semantic_edit_enabled or function_scope.isNone() or
         self.options.unsupported.arrow or
         ((function_flags & ast_mod.FunctionFlags.is_async) != 0 and self.options.unsupported.async_await) or
-        (function_flags & ast_mod.FunctionFlags.is_generator) != 0) return null;
+        (function_flags & ast_mod.FunctionFlags.is_generator) != 0) return false;
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_raw = function_scope.toIndex();
-    if (scope_raw >= scopes.len or !scopes[scope_raw].blocksMangling()) return null;
-    if (try @import("../parameter_environment.zig").parameterListHasDynamicLookup(self, params)) return null;
+    if (scope_raw >= scopes.len) return false;
+    return true;
+}
+
+fn reserveDynamicBodyWrapperScope(
+    self: anytype,
+    function_scope: @import("../../semantic/scope.zig").ScopeId,
+    function_flags: u32,
+) Error!?@import("../../semantic/scope.zig").ScopeId {
+    if (!supportsDynamicBodyWrapper(self, function_scope, function_flags)) return null;
     return try self.reserveGeneratedFunctionScope(function_scope);
 }
 
@@ -459,10 +466,6 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 else
                     try es2015_params.ES2015Params(Self).hasObjectRestParam(self, params_list);
                 if (!needs_lowering) continue;
-                var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
-                defer lr.body_stmts.deinit(self.allocator);
-                const parameter_initializer_len = lr.body_stmts.items.len;
-
                 const raw_flags = if (e + ast_mod.FunctionExtra.flags < self.ast.extra_data.items.len)
                     self.ast.extra_data.items[e + ast_mod.FunctionExtra.flags]
                 else
@@ -471,8 +474,29 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                     ast_mod.methodFlagsToFunctionFlags(raw_flags)
                 else
                     raw_flags;
+                const parameter_env = @import("../parameter_environment.zig");
+                if (try parameter_env.parameterListHasDynamicLookup(self, params_list)) continue;
+                const source_body_idx = self.ast.functionBodyBlock(node) orelse continue;
+                const body_has_dynamic_lookup = try parameter_env.functionBodyHasDynamicLookup(
+                    self,
+                    self.current_scope,
+                    source_body_idx,
+                );
+                // Moving a default expression into this body changes what
+                // direct eval/with can see. Only proceed when the source body
+                // can be isolated in a generated arrow scope; otherwise keep
+                // the original parameter syntax intact.
+                if (body_has_dynamic_lookup and
+                    !supportsDynamicBodyWrapper(self, self.current_scope, function_flags)) continue;
+
+                var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
+                defer lr.body_stmts.deinit(self.allocator);
+                const parameter_initializer_len = lr.body_stmts.items.len;
                 const body_wrapper_scope = if (lr.body_stmts.items.len > 0)
-                    try reserveDynamicBodyWrapperScope(self, self.current_scope, params_list, function_flags)
+                    if (body_has_dynamic_lookup)
+                        try reserveDynamicBodyWrapperScope(self, self.current_scope, function_flags)
+                    else
+                        null
                 else
                     null;
                 const copy_scope = body_wrapper_scope orelse self.current_scope;

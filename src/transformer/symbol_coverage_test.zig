@@ -718,6 +718,99 @@ test "exact source scope audit separates parameter expressions from body var bin
     try std.testing.expect(report.isClean());
 }
 
+test "exact scope audit follows copied non-simple parameter lists and rejects relocated bindings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function* f({ a, ...rest }, value = 3) { var a; yield [a, value, rest.x]; }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+
+    var function_raw: ?u32 = null;
+    var parameter_a: ?u32 = null;
+    var body_a: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_declaration) function_raw = @intCast(raw);
+        if (node.tag != .binding_identifier or raw >= analyzer.symbol_ids.items.len) continue;
+        if (!std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "a")) continue;
+        const symbol_id = analyzer.symbol_ids.items[raw] orelse continue;
+        if (symbol_id >= analyzer.symbols.items.len) continue;
+        const symbol = analyzer.symbols.items[symbol_id];
+        if (symbol.kind == .parameter) parameter_a = symbol_id;
+        if (symbol.kind == .variable_var) body_a = symbol_id;
+    }
+    const function = function_raw orelse return error.TestUnexpectedResult;
+    const parameter_symbol = parameter_a orelse return error.TestUnexpectedResult;
+    const body_symbol = body_a orelse return error.TestUnexpectedResult;
+    const function_node = parser.ast.nodes.items[function];
+    const params_raw = parser.ast.extra_data.items[function_node.data.extra + 1];
+    const params_node: AstNodeIndex = @enumFromInt(params_raw);
+    const parameter_scope = analyzer.scope_owner_map.get(params_raw) orelse return error.TestUnexpectedResult;
+    const body_scope = analyzer.scope_owner_map.get(function) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(parameter_scope != body_scope);
+    try std.testing.expectEqual(parameter_scope, @intFromEnum(analyzer.symbols.items[parameter_symbol].scope_id));
+    try std.testing.expectEqual(body_scope, @intFromEnum(analyzer.symbols.items[body_symbol].scope_id));
+
+    // Model the transform's copied formal_parameters container: the output
+    // list has a new owner node but retains the exact original parameter nodes.
+    const original_params = parser.ast.getNode(params_node);
+    const copied_params = try parser.ast.addNode(.{
+        .tag = .formal_parameters,
+        .span = original_params.span,
+        .data = .{ .list = original_params.data.list },
+    });
+    parser.ast.extra_data.items[function_node.data.extra + 1] = @intFromEnum(copied_params);
+    try analyzer.scope_owner_map.put(allocator, @intFromEnum(copied_params), parameter_scope);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const correct = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(correct.isClean());
+
+    // If the exact parameter SymbolId is relocated into the body scope, the
+    // stale same-name body var must not make the copied-list exception pass.
+    const corrupted_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    corrupted_symbols[parameter_symbol].scope_id = @enumFromInt(body_scope);
+    const corrupted = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        corrupted_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(corrupted.binding_scope_mismatch > 0);
+    try std.testing.expect(!corrupted.isClean());
+}
+
 test "parameter default import reference keeps its exact parameter-environment scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
