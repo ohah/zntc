@@ -126,7 +126,7 @@ fn checkCaptureSymbols(source: []const u8, frame_tag: @import("../parser/ast.zig
     );
 }
 
-fn checkNativeParameterNewTargetSymbols(source: []const u8) !void {
+fn checkNativeParameterNewTargetSymbols(source: []const u8, expected_name: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -170,10 +170,11 @@ fn checkNativeParameterNewTargetSymbols(source: []const u8) !void {
     for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, symbol_index| {
         if (!std.mem.startsWith(u8, symbol.synthetic_name, "_newTarget")) continue;
         try std.testing.expect(captures < capture_ids.len);
-        // The outer source function may already bind `_newTarget`. These
-        // factory parameters own separate nested scopes, so semantic naming
-        // keeps the common placeholder and lets exact SymbolIds disambiguate.
-        try std.testing.expectEqualStrings("_newTarget", symbol.synthetic_name);
+        // The generated parameter encloses the returned arrow, so reusing a
+        // source `_newTarget` spelling would shadow the user's binding there.
+        // Nested factories may share a safe placeholder; exact SymbolIds keep
+        // their bindings and references distinct.
+        try std.testing.expectEqualStrings(expected_name, symbol.synthetic_name);
         capture_ids[captures] = @intCast(symbol_index);
         capture_scopes[captures] = symbol.scope_id;
         try std.testing.expect(!symbol.scope_id.isNone());
@@ -236,18 +237,21 @@ fn checkNativeParameterNewTargetSymbols(source: []const u8) !void {
 test "#4819 native parameter new.target factories retain exact pre-reanalysis symbols" {
     try checkNativeParameterNewTargetSymbols(
         "function outer(_newTarget = 11, value = () => () => new.target) { return value()(); } outer();",
+        "_newTarget2",
     );
 }
 
 test "#4819 retained class parameter new.target factories keep exact pre-reanalysis symbols" {
     try checkNativeParameterNewTargetSymbols(
         "class Base { constructor(value = () => () => new.target) { this.target = value()(); } }",
+        "_newTarget",
     );
 }
 
 test "#4819 native parameter new.target factories reset exact owners at nested function boundaries" {
     try checkNativeParameterNewTargetSymbols(
         "function outer(value = () => function inner(read = () => () => new.target) { return read()(); }) { return value; }",
+        "_newTarget",
     );
 }
 

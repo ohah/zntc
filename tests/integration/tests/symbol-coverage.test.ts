@@ -3620,20 +3620,22 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     writeFileSync(
       join(dir, 'entry.mjs'),
       [
-        'function Foo(_newTarget = 11, value = () => () => new.target) {',
+        'function Foo(_newTarget = 11, value = () => () => [new.target, _newTarget, eval("typeof _newTarget2")]) {',
+        '  var captured = value()();',
         '  this.name = value.name;',
-        '  this.target = value()();',
-        '  this.parameter = _newTarget;',
+        '  this.target = captured[0];',
+        '  this.parameter = captured[1];',
+        '  this.evalName = captured[2];',
         '}',
         'class Derived extends Foo {}',
-        'class NativeBase { constructor(_newTarget = 13, value = () => () => new.target) { this.target = value()(); this.parameter = _newTarget; } }',
+        'class NativeBase { constructor(_newTarget = 13, value = () => () => [new.target, _newTarget, eval("typeof _newTarget2")]) { var captured = value()(); this.target = captured[0]; this.parameter = captured[1]; this.evalName = captured[2]; } }',
         'class NativeDerived extends NativeBase {}',
         'class ExplicitNativeDerived extends NativeBase { constructor(value = () => new.target) { super(); this.explicitTarget = value(); } }',
         'var plain = new Foo();',
         'var derived = Reflect.construct(Foo, [undefined, undefined], Derived);',
         'var nativeDerived = new NativeDerived();',
         'var explicitNativeDerived = new ExplicitNativeDerived();',
-        'console.log(plain.target === Foo, derived.target === Derived, plain.parameter, plain.name, nativeDerived.target === NativeDerived, explicitNativeDerived.explicitTarget === ExplicitNativeDerived);',
+        'console.log(plain.target === Foo, derived.target === Derived, plain.parameter, plain.name, plain.evalName, nativeDerived.target === NativeDerived, nativeDerived.parameter, nativeDerived.evalName, explicitNativeDerived.explicitTarget === ExplicitNativeDerived);',
       ].join('\n'),
     );
     try {
@@ -3670,7 +3672,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
 
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('true true 11 value true true\n');
+      expect(actual.stdout).toBe('true true 11 value undefined true 13 undefined true\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

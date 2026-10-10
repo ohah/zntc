@@ -236,14 +236,16 @@ fn wrapNativeParameterArrow(
     is_outermost_native_parameter_arrow: bool,
     parent_native_parameter_arrow_owner: NodeIndex,
 ) !NodeIndex {
-    // The semantic path binds every deferred capture to this parameter's
-    // exact SymbolId. Let final output naming handle collisions instead of
-    // selecting an alias while the wrapper is being built. Low-level callers
-    // without semantic identities keep the compatibility spelling resolver.
-    const name = if (self.semantic_edit_enabled)
-        "_newTarget"
+    const arrow_scope = self.outputOwnedScope(source_owner) orelse self.current_scope;
+    // Share the same scoped spelling choice with the refs created while this
+    // arrow is visited. In particular, this generated parameter must not
+    // shadow a source parameter such as `_newTarget` in the enclosing
+    // parameter environment.
+    const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled)
+        try es_helpers.resolveScopedSyntheticOutputName(self, "_newTarget", arrow_scope)
     else
-        try es_helpers.resolveSyntheticName(self, "_newTarget");
+        .{ .name = try es_helpers.resolveSyntheticName(self, "_newTarget"), .late = false };
+    const name = output_name.name;
     const binding = try es_helpers.makeExactSyntheticBinding(self, name);
     const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), span);
 
@@ -292,11 +294,14 @@ fn wrapNativeParameterArrow(
         .data = .{ .extra = wrapper_extra },
     });
 
-    const arrow_scope = self.outputOwnedScope(source_owner) orelse self.current_scope;
     const parent_scope = self.outputScopeParent(arrow_scope);
     const wrapper_scope = try self.addGeneratedFunctionScope(parent_scope, wrapper);
     try self.reparentGeneratedScope(arrow_scope, wrapper_scope);
     const wrapper_symbol = try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope);
+    if (output_name.late) {
+        const symbol_id = wrapper_symbol orelse std.debug.panic("late native parameter _newTarget binding has no SymbolId", .{});
+        es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .new_target_capture_binding);
+    }
     try self.bindNativeParameterArrowRefs(source_owner, wrapper_symbol);
     try self.remapCopiedScopeOwner(source_owner, lowered_arrow);
 

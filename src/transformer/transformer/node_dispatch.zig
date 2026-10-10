@@ -789,10 +789,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 // The wrapper created for this native-parameter environment
                 // later supplies the exact SymbolId. Keep a neutral spelling
                 // until then; semantic-less callers retain the old resolver.
-                const ref = if (self.semantic_edit_enabled)
-                    try es_helpers.makeExactSyntheticRef(self, "_newTarget")
-                else
-                    try es_helpers.makeSyntheticRef(self, "_newTarget");
+                const ref = if (self.semantic_edit_enabled) blk: {
+                    const arrow_scope = self.outputOwnedScope(self.native_parameter_arrow_owner) orelse self.current_scope;
+                    const output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_newTarget", arrow_scope);
+                    break :blk try es_helpers.makeExactSyntheticRef(self, output_name.name);
+                } else try es_helpers.makeSyntheticRef(self, "_newTarget");
                 try self.trackNativeParameterArrowRef(self.native_parameter_arrow_owner, ref);
                 return ref;
             }
