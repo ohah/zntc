@@ -13878,6 +13878,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 1\n',
       },
       {
+        name: 'post-super try catch finally preserves catch identity and write order',
+        source:
+          'var sentinel = { value: 7 }, writes = [], baseCalls = 0; function Base() { baseCalls += 1; return new Proxy({}, { set(target, key, value, receiver) { writes.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var caught, finalized = false; try { throw sentinel; } catch (error) { caught = error; } finally { finalized = true; } this.same = caught === sentinel; this.finalized = finalized; } } var child = new Child(); console.log(child.same, child.finalized, baseCalls, writes.join(","), child instanceof Child);',
+        graph: 'retained',
+        output: 'true true 1 same:true,finalized:true false\n',
+      },
+      {
+        name: 'post-super try this access in catch stays on reanalysis',
+        source:
+          'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); try { throw sentinel; } catch (error) { this.value = error; } } } var child = new Child(); console.log(child.value === sentinel, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: 'true true\n',
+      },
+      {
+        name: 'post-super try call initializer stays on reanalysis',
+        source:
+          'var calls = 0; function readValue() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); var value; try { value = readValue(); } catch (error) { value = 0; } this.value = value; } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '3 1\n',
+      },
+      {
         name: 'post-super else-if call condition stays on reanalysis',
         source:
           'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (false) this.value = 1; else if (selected()) this.value = 2; else this.value = 3; } } console.log(new Child().value, calls);',
