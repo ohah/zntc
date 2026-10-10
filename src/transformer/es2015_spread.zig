@@ -133,9 +133,11 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // (`new a.b(...args)` --target=es5 crash). #4500 의 파서 수정으로
             // `` new tag`x`(...args) `` / `new new A().b(...args)` 도 이 경로로 들어온다.
             const bind_target: NodeIndex, const this_arg: NodeIndex =
-                if (es_helpers.isSimpleIdentifier(self, new_callee))
-                    .{ new_callee, try es_helpers.cloneNode(self, new_callee) }
-                else blk: {
+                if (es_helpers.isSimpleIdentifier(self, new_callee)) blk: {
+                    const this_ref = try es_helpers.cloneNode(self, new_callee);
+                    try self.duplicateUserReference(new_callee, this_ref);
+                    break :blk .{ new_callee, this_ref };
+                } else blk: {
                     const cap = try es_helpers.captureToTemp(self, new_callee, span);
                     const assignment = self.ast.getNode(cap.paren_assign);
                     std.debug.assert(assignment.tag == .assignment_expression);
