@@ -317,13 +317,13 @@ pub fn makeUserRefNamedAtScope(self: anytype, name: []const u8, origin: NodeInde
             classNameOutputLookupScope(self, scope)
         else
             classNameOutputScopeOutsideFunction(self, scope);
-        if (output_scope) |lookup_scope| {
+        if (output_scope) |lookup_scope| if (outputScopeResolvesCurrentClass(self, name, lookup_scope)) {
             const ref = try makeLexicalScopeRefAtScope(self, name, lookup_scope);
             const symbol_id = self.getSymbolIdAt(ref) orelse
                 std.debug.panic("generated class-name read has no output binding", .{});
             try self.trackExactOutputReference(ref, symbol_id);
             return ref;
-        }
+        };
     }
     if (same_class_name) {
         return makeCurrentClassRefAtScope(self, name_span, scope);
@@ -347,6 +347,20 @@ pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
     return makeLexicalScopeRefAtScope(self, name, self.current_scope);
 }
 
+fn lexicalSymbolIdAtScope(self: anytype, name: []const u8, scope: @import("../../semantic/scope.zig").ScopeId) ?u32 {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    var cursor = scope;
+    var hops: usize = 0;
+    while (!cursor.isNone() and hops < scopes.len) : (hops += 1) {
+        const scope_index = cursor.toIndex();
+        if (scope_index >= scopes.len or scope_index >= scope_maps.len) return null;
+        if (scope_maps[scope_index].get(name)) |raw_symbol| return @intCast(raw_symbol);
+        cursor = scopes[scope_index].parent;
+    }
+    return null;
+}
+
 /// Create a generated read that resolves as ordinary code in an explicitly
 /// chosen output scope. Plugin metadata can be emitted beside a function or
 /// inside a wrapper, so the function's own scope is not always the scope where
@@ -359,32 +373,22 @@ pub fn makeLexicalScopeRefAtScope(
     // This starts with global provenance as a fallback; remove it below if
     // the exact lexical lookup finds a local binding.
     const ref = try es_helpers.makeGlobalRef(self, name);
-    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-    const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
-    var lookup_scope = scope;
-    var hops: usize = 0;
-    while (!lookup_scope.isNone() and hops < scopes.len) : (hops += 1) {
-        const scope_index = lookup_scope.toIndex();
-        if (scope_index >= scopes.len or scope_index >= scope_maps.len) break;
-        if (scope_maps[scope_index].get(name)) |raw_symbol| {
-            const symbol_id: u32 = @intCast(raw_symbol);
-            // makeGlobalRef marks a no-binding fallback before this lookup.
-            // Once this exact lexical binding is found, remove that external
-            // provenance so a later analyzer refresh resolves the local read.
-            _ = self.explicit_global_reference_nodes.remove(@intFromEnum(ref));
-            if (self.semantic_edit_enabled) {
-                try self.addSyntheticRefInScope(ref, @enumFromInt(symbol_id), scope, .{ .read = true });
-            } else {
-                const raw_node = @intFromEnum(ref);
-                if (self.symbol_ids.items.len <= raw_node)
-                    try self.symbol_ids.appendNTimes(self.allocator, null, raw_node + 1 - self.symbol_ids.items.len);
-                if (self.symbol_ids.items[raw_node]) |existing| {
-                    if (existing != symbol_id) std.debug.panic("lexical generated reference changed SymbolId", .{});
-                } else self.symbol_ids.items[raw_node] = symbol_id;
-            }
-            return ref;
+    if (lexicalSymbolIdAtScope(self, name, scope)) |symbol_id| {
+        // makeGlobalRef marks a no-binding fallback before this lookup.
+        // Once this exact lexical binding is found, remove that external
+        // provenance so a later analyzer refresh resolves the local read.
+        _ = self.explicit_global_reference_nodes.remove(@intFromEnum(ref));
+        if (self.semantic_edit_enabled) {
+            try self.addSyntheticRefInScope(ref, @enumFromInt(symbol_id), scope, .{ .read = true });
+        } else {
+            const raw_node = @intFromEnum(ref);
+            if (self.symbol_ids.items.len <= raw_node)
+                try self.symbol_ids.appendNTimes(self.allocator, null, raw_node + 1 - self.symbol_ids.items.len);
+            if (self.symbol_ids.items[raw_node]) |existing| {
+                if (existing != symbol_id) std.debug.panic("lexical generated reference changed SymbolId", .{});
+            } else self.symbol_ids.items[raw_node] = symbol_id;
         }
-        lookup_scope = scopes[scope_index].parent;
+        return ref;
     }
     try self.markExplicitGlobalReference(ref);
     return ref;
@@ -404,11 +408,13 @@ pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import
     const same = !cls.isNone() and std.mem.eql(u8, self.ast.getText(self.ast.getNode(cls).data.string_ref), self.ast.getText(name_span));
     if (self.semantic_edit_enabled and isCurrentStaticClassName(self, name_span)) {
         const lookup_scope = classNameOutputLookupScope(self, scope);
-        const ref = try makeLexicalScopeRefAtScope(self, self.ast.getText(name_span), lookup_scope);
-        const output_id = self.getSymbolIdAt(ref) orelse
-            std.debug.panic("generated static class-name read has no output binding", .{});
-        try self.trackExactOutputReference(ref, output_id);
-        return ref;
+        if (outputScopeResolvesCurrentClass(self, self.ast.getText(name_span), lookup_scope)) {
+            const ref = try makeLexicalScopeRefAtScope(self, self.ast.getText(name_span), lookup_scope);
+            const output_id = self.getSymbolIdAt(ref) orelse
+                std.debug.panic("generated static class-name read lost its checked output binding", .{});
+            try self.trackExactOutputReference(ref, output_id);
+            return ref;
+        }
     }
     // 클래스 이름 노드가 합성(`const C = class {}` 의 안쪽 `C`)이면 `propagateSymbolId` 가 합성 표시를
     // 물려준다. 심볼이 없다는 이유만으로 합성이라 하지 않는다 — 그러면 심볼을 빠뜨린 경우도 가려진다.
@@ -478,6 +484,12 @@ fn isCurrentStaticClassName(self: anytype, name_span: Span) bool {
     const current_span = self.ast.getNode(self.current_class_name_node).data.string_ref;
     return std.meta.eql(current_span, static_span) and
         std.mem.eql(u8, self.ast.getText(static_span), self.ast.getText(name_span));
+}
+
+fn outputScopeResolvesCurrentClass(self: anytype, name: []const u8, scope: @import("../../semantic/scope.zig").ScopeId) bool {
+    const output_symbol_id = lexicalSymbolIdAtScope(self, name, scope) orelse return false;
+    const class_self_symbol_id = self.current_class_self_symbol_id orelse return true;
+    return output_symbol_id == class_self_symbol_id;
 }
 
 /// Deferred class initializer helpers can be created after the static-context
