@@ -241,11 +241,31 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
             scope_raw;
         if (parameter_scope_raw >= scopes.len or parameter_scope_raw >= scope_maps.len) continue;
         const parameter_scope: ScopeId = @enumFromInt(parameter_scope_raw);
-        if (scopes[parameter_scope_raw].blocksMangling()) continue;
+        const parameter_dynamic_lookup = lower_object_rest_only and
+            (scopes[parameter_scope_raw].subtree_has_direct_eval or scopes[parameter_scope_raw].subtree_has_with);
+        if (scopes[parameter_scope_raw].blocksMangling() and !parameter_dynamic_lookup) continue;
         const first_affected_param = if (lower_object_rest_only)
             (try params_mod.firstObjectRestParamIndex(self, params)) orelse continue
         else
             0;
+        if (parameter_dynamic_lookup) {
+            // Defaults moved after object-rest execute in the output body. A
+            // direct eval or with nested in the original parameter environment
+            // can dynamically look up any body binding; isolate that original
+            // environment by aliasing every body-owned name before moving it.
+            // If the body itself has dynamic lookup, the function-scope guard
+            // above keeps us on the existing conservative path.
+            var body_symbols = scope_maps[scope_raw].valueIterator();
+            while (body_symbols.next()) |raw_id| {
+                if (raw_id.* >= symbols.len or symbols[raw_id.*].scope_id != scope_id) continue;
+                const kind = symbols[raw_id.*].kind;
+                if (kind == .parameter or kind == .variable_var or kind == .variable_let or
+                    kind == .variable_const or kind == .class_decl or kind.isFunctionLike())
+                {
+                    try result.put(self.allocator, @intCast(raw_id.*), {});
+                }
+            }
+        }
         const affected_params = self.ast.extra_data.items[params.start + first_affected_param .. params.start + params.len];
         for (affected_params) |param| {
             var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, @enumFromInt(param), .{});
