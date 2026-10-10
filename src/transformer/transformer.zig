@@ -849,6 +849,7 @@ pub const Transformer = struct {
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
     pub const trackLexicalCaptureRef = @import("transformer/semantic_edit.zig").trackLexicalCaptureRef;
     pub const bindLexicalCapture = @import("transformer/semantic_edit.zig").bindLexicalCapture;
+    pub const bindLexicalCaptureWithSyntheticKind = @import("transformer/semantic_edit.zig").bindLexicalCaptureWithSyntheticKind;
     pub const bindLexicalCaptureToExistingSymbol = @import("transformer/semantic_edit.zig").bindLexicalCaptureToExistingSymbol;
     pub const hasLexicalCapture = @import("transformer/semantic_edit.zig").hasLexicalCapture;
     pub const hasLexicalCaptureSince = @import("transformer/semantic_edit.zig").hasLexicalCaptureSince;

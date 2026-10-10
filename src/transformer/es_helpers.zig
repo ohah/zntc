@@ -1075,6 +1075,22 @@ pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
     return key;
 }
 
+pub const ScopedSyntheticOutputName = struct {
+    name: []const u8,
+    late: bool,
+};
+
+/// Share one collision decision between an exact generated reference and the
+/// binding that is emitted later for its output scope.
+pub fn resolveScopedSyntheticOutputName(self: anytype, name: []const u8, scope_id: ScopeId) !ScopedSyntheticOutputName {
+    const late = canUseLateStandaloneOutputName(self, scope_id);
+    const resolved = if (late)
+        try deferSyntheticOutputName(self, name)
+    else
+        try resolveSyntheticNameAvoidingDynamicEval(self, name, scope_id);
+    return .{ .name = resolved, .late = late };
+}
+
 /// Mark an exact generated binding for the standalone final-name pass.
 pub fn markStandaloneLateSyntheticSymbol(self: anytype, symbol_id: symbol_mod.SymbolId, kind: symbol_mod.SyntheticKind) void {
     const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late synthetic output name has no semantic editor", .{});
@@ -2538,8 +2554,19 @@ pub fn buildNewTargetCapture(self: anytype, span: Span) !NodeIndex {
             .span = initializer_span,
             .data = .{ .none = 1 },
         });
-    const declaration = try self.buildVarDecl("_newTarget", new_target, span);
-    try self.bindLexicalCapture(declaration, .new_target_value);
+    const output_name = try resolveScopedSyntheticOutputName(self, "_newTarget", self.capture_scope);
+    const binding = try makeExactSyntheticBinding(self, output_name.name);
+    const declaration = try makeVarDeclaration(
+        self,
+        &.{try makeDeclarator(self, binding, new_target, span)},
+        .@"var",
+        span,
+    );
+    try self.bindLexicalCaptureWithSyntheticKind(
+        declaration,
+        .new_target_value,
+        if (output_name.late) .new_target_capture_binding else null,
+    );
     return declaration;
 }
 
