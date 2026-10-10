@@ -13324,10 +13324,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'ReferenceError\n',
       },
       {
-        name: 'function local empty class',
+        name: 'function local empty class retains its exact binding graph',
         source:
           'function make() { class Local {} return new Local() instanceof Local; }\nconsole.log(make());\n',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
@@ -13395,6 +13395,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         source:
           'function make() { var Holder = class { read() { return Holder; } }; return new Holder().read() === Holder; } console.log(make());',
         graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'function-body class declaration retains its exact self binding beside an outer parameter',
+        source:
+          'function make(Local) { function inner() { class Local { self() { return Local; } } return new Local().self() === Local && Local.name === "Local"; } return inner() && Local === 9; } console.log(make(9));',
+        graph: 'retained',
+        output: 'true\n',
+      },
+      {
+        name: 'class declaration inside a nested block stays on reanalysis',
+        source:
+          'function make(Local) { if (true) { class Local { self() { return Local; } } return new Local().self() === Local && Local.name === "Local"; } return Local === 9; } console.log(make(9));',
+        graph: 'reanalyzed',
         output: 'true\n',
       },
       {
