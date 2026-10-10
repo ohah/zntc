@@ -13387,6 +13387,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 true true 7 8 9 10 11\n',
       },
       {
+        name: 'explicit super keeps primitive and bound identifier arguments exact',
+        source:
+          'var baseValue = 4; function Base(first, second) { this.sum = first + second; } class Child extends Base { constructor() { super(3, baseValue); } } var child = new Child(); console.log(child.sum, child instanceof Child);',
+        graph: 'retained',
+        output: '7 true\n',
+      },
+      {
+        name: 'explicit super argument coercion with side effects happens once',
+        source:
+          'var coercions = 0; var operand = { valueOf() { coercions += 1; return 4; } }; function Base(value) { this.value = value; } class Child extends Base { constructor() { super(operand + 1); } } console.log(new Child().value, coercions);',
+        graph: 'retained',
+        output: '5 1\n',
+      },
+      {
         name: 'nested explicit super constructor retains exact outer base and inner class identities',
         source:
           'function make(Base, Child) { function inner() { class Child extends Base { constructor() { super(); } self() { return Child; } } var child = new Child(); return [child.self() === Child, child instanceof Base, Child.name]; } return [inner().join(" "), Child]; } console.log(make(function Base() {}, 9).join("|"));',
@@ -13406,6 +13420,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'var evaluations = 0; function value() { evaluations += 1; return 2; } function Base(argument) { this.argument = argument; } class Child extends Base { constructor() { super(value()); } } console.log(new Child().argument, evaluations);',
         graph: 'reanalyzed',
         output: '2 1\n',
+      },
+      {
+        name: 'explicit derived constructor super property getter stays on reanalysis',
+        source:
+          'var reads = 0; var argument = { get value() { reads += 1; return 2; } }; function Base(value) { this.value = value; } class Child extends Base { constructor() { super(argument.value); } } console.log(new Child().value, reads);',
+        graph: 'reanalyzed',
+        output: '2 1\n',
+      },
+      {
+        name: 'explicit derived constructor super spread stays on reanalysis',
+        source:
+          'var values = [2]; function Base(value) { this.value = value; } class Child extends Base { constructor() { super(...values); } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
       },
       {
         name: 'explicit derived constructor conditional super stays on reanalysis',
