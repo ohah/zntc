@@ -1897,6 +1897,7 @@ fn isSafePostSuperCallExpression(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
+    allow_this_receiver: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
@@ -1911,7 +1912,7 @@ fn isSafePostSuperCallExpression(
         const name = ast.getText(callee.span);
         if (std.mem.eql(u8, name, "eval") or std.mem.indexOfScalar(u8, name, '\\') != null or
             !isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
-    } else if (!isSafeConstructorThisPropertyTarget(ast, callee_idx)) return false;
+    } else if (!allow_this_receiver or !isSafeConstructorThisPropertyTarget(ast, callee_idx)) return false;
 
     const args_start = extras[extra + 1];
     const args_len = extras[extra + 2];
@@ -1933,7 +1934,26 @@ fn isSafePostSuperExpressionStatement(
     if (statement.tag != .expression_statement) return false;
     const expression_idx = statement.data.unary.operand;
     return isSafeConstructorExpressionStatement(ast, semantic, statement) or
-        isSafePostSuperCallExpression(ast, semantic, expression_idx);
+        isSafePostSuperCallExpression(ast, semantic, expression_idx, true);
+}
+
+fn isSafePostSuperSwitchExpressionStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    if (statement.tag != .expression_statement) return false;
+    const expression_idx = statement.data.unary.operand;
+    if (isSafePostSuperCallExpression(ast, semantic, expression_idx, false)) return true;
+    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    const expression = ast.getNode(expression_idx);
+    if (expression.tag == .update_expression)
+        return isSafeConstructorLocalUpdate(ast, semantic, expression);
+    if (expression.tag == .assignment_expression)
+        return isSafeConstructorLocalAssignment(ast, semantic, expression);
+    return false;
 }
 
 fn isSafePostSuperConditionalStatement(
@@ -1966,6 +1986,62 @@ fn isSafePostSuperConditionalStatement(
         return isSafePostSuperConditionalBranch(ast, semantic, branches.c);
     }
     return false;
+}
+
+fn isSafePostSuperSwitchCase(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    case_idx: ast_mod.NodeIndex,
+) bool {
+    if (case_idx.isNone() or @intFromEnum(case_idx) >= ast.nodes.items.len) return false;
+    const switch_case = ast.getNode(case_idx);
+    if (switch_case.tag != .switch_case) return false;
+    const extras = ast.extra_data.items;
+    const extra = switch_case.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const statements_start = extras[extra + 1];
+    const statements_len = extras[extra + 2];
+    if ((!test_idx.isNone() and !isSafeConstructorValue(ast, semantic, test_idx)) or
+        statements_start > extras.len or statements_len > extras.len - statements_start) return false;
+
+    for (extras[statements_start .. statements_start + statements_len], 0..) |raw_statement_idx, index| {
+        if (raw_statement_idx >= ast.nodes.items.len) return false;
+        const case_statement_idx: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
+        const case_statement = ast.getNode(case_statement_idx);
+        if (index + 1 == statements_len) {
+            if (isSafeDerivedConstructorReturnStatement(ast, semantic, case_statement_idx) or
+                isSafeDerivedConstructorThrowStatement(ast, semantic, case_statement_idx)) return true;
+            if (case_statement.tag == .break_statement and case_statement.data.unary.operand.isNone()) return true;
+        }
+        if (isSafeConstructorVarDeclaration(ast, semantic, case_statement) or
+            isSafePostSuperSwitchExpressionStatement(ast, semantic, case_statement_idx)) continue;
+        return false;
+    }
+    return true;
+}
+
+fn isSafePostSuperSwitchStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    if (statement.tag != .switch_statement) return false;
+    const extras = ast.extra_data.items;
+    const extra = statement.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const discriminant_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const cases_start = extras[extra + 1];
+    const cases_len = extras[extra + 2];
+    if (!isSafeConstructorValue(ast, semantic, discriminant_idx) or
+        cases_start > extras.len or cases_len > extras.len - cases_start) return false;
+    for (extras[cases_start .. cases_start + cases_len]) |raw_case_idx| {
+        if (raw_case_idx >= ast.nodes.items.len or
+            !isSafePostSuperSwitchCase(ast, semantic, @enumFromInt(raw_case_idx))) return false;
+    }
+    return true;
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
@@ -2019,6 +2095,11 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                     following_statement,
                 )) continue;
                 if (!return_seen and isSafePostSuperConditionalStatement(
+                    ast,
+                    semantic,
+                    following_statement,
+                )) continue;
+                if (!return_seen and isSafePostSuperSwitchStatement(
                     ast,
                     semantic,
                     following_statement,
