@@ -129,6 +129,7 @@ pub const AstTransformCtx = struct {
             for (cached.vars) |cv| {
                 alloc.free(cv.name);
                 if (cv.class_factory_base) |b| alloc.free(b);
+                if (cv.closure_key) |key| alloc.free(key);
             }
             alloc.free(cached.vars);
             self.closure_cache = null;
