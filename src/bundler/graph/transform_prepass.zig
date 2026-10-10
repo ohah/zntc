@@ -1810,6 +1810,33 @@ fn isSafeDerivedConstructorReturnStatement(
     return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
 }
 
+fn isSafePostSuperConditionalBranch(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    branch_idx: ast_mod.NodeIndex,
+) bool {
+    if (branch_idx.isNone() or @intFromEnum(branch_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(branch_idx);
+    if (statement.tag == .block_statement) {
+        const statements = statement.data.list;
+        const extras = ast.extra_data.items;
+        if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
+        for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
+            if (raw_statement_idx >= ast.nodes.items.len) return false;
+            const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
+            if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
+                isSafeConstructorThisPropertyAssignmentStatement(
+                    ast,
+                    semantic,
+                    @enumFromInt(raw_statement_idx),
+                )) continue;
+            return false;
+        }
+        return true;
+    }
+    return isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branch_idx);
+}
+
 fn isSafePostSuperConditionalStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1820,9 +1847,9 @@ fn isSafePostSuperConditionalStatement(
     if (statement.tag != .if_statement) return false;
     const branches = statement.data.ternary;
     return isSafeConstructorValue(ast, semantic, branches.a) and
-        isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branches.b) and
+        isSafePostSuperConditionalBranch(ast, semantic, branches.b) and
         (branches.c.isNone() or
-            isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branches.c));
+            isSafePostSuperConditionalBranch(ast, semantic, branches.c));
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
@@ -1859,7 +1886,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
         if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
             // Keep the initialization boundary explicit: simple `var`
             // declarations, direct `this` property writes, and bounded
-            // conditionals may follow, with an optional final return.
+            // conditionals with simple branch blocks may follow, with an
+            // optional final return.
             var return_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
