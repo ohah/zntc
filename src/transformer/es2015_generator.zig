@@ -130,7 +130,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 덮으면 안 된다. 예전에는 끝에서 통째로 clear 했는데, 바깥 상태 기계를
             // 수집하는 도중에 안쪽 generator 가 낮아지면(#4716 의 `_loopN` 추출이 그렇다)
             // 바깥이 쌓아 둔 temp 가 같이 지워져 선언이 사라진다. 저장 후 복원한다.
-            var frame = try enterStateMachineTemps(self);
+            var frame = try enterStateMachineTempsForScope(self, source_scope);
             defer leaveStateMachineTemps(self, &frame);
             // 함수 경계 — 바깥 함수의 라벨은 여기서 보이지 않는다 (#4722).
             try self.label_scope.append(self.allocator, null);
@@ -232,11 +232,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             saved_temp_symbols: std.AutoHashMapUnmanaged(u32, u32),
             saved_state_bindings: std.ArrayListUnmanaged(HoistedStateTemp),
             saved_state_name_span: ?Span,
+            saved_state_output_scope: ScopeId,
             state_ref_start: usize,
             callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty,
         };
 
         pub fn enterStateMachineTemps(self: *Transformer) Transformer.Error!StateMachineFrame {
+            return enterStateMachineTempsForScope(self, self.current_scope);
+        }
+
+        /// Bind late output naming to the exact source owner of this state
+        /// machine. `current_scope` can differ for generated async/class paths.
+        pub fn enterStateMachineTempsForScope(self: *Transformer, output_scope: ScopeId) Transformer.Error!StateMachineFrame {
             var saved: std.ArrayListUnmanaged(Span) = .empty;
             try saved.appendSlice(self.allocator, self.generator_temp_var_spans.items);
             self.generator_temp_var_spans.clearRetainingCapacity();
@@ -249,6 +256,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.generator_state_bindings.clearRetainingCapacity();
             const saved_state_name_span = self.generator_state_name_span;
             self.generator_state_name_span = null;
+            const saved_state_output_scope = self.generator_state_output_scope;
+            self.generator_state_output_scope = output_scope;
             self.state_machine_depth += 1;
             return .{
                 .saved_temp_spans = saved,
@@ -256,6 +265,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .saved_temp_symbols = saved_temp_symbols,
                 .saved_state_bindings = saved_state_bindings,
                 .saved_state_name_span = saved_state_name_span,
+                .saved_state_output_scope = saved_state_output_scope,
                 .state_ref_start = self.generator_state_refs.items.len,
             };
         }
@@ -265,6 +275,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             self.state_machine_depth -= 1;
             self.generator_state_refs.shrinkRetainingCapacity(frame.state_ref_start);
             self.generator_state_name_span = frame.saved_state_name_span;
+            self.generator_state_output_scope = frame.saved_state_output_scope;
             self.generator_temp_var_spans.clearRetainingCapacity();
             self.generator_temp_var_spans.appendSlice(self.allocator, frame.saved_temp_spans.items) catch {};
             self.generator_state_temp_symbols.deinit(self.allocator);
@@ -2824,7 +2835,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         fn generatorStateNameSpan(self: *Transformer) Transformer.Error!Span {
             if (self.generator_state_name_span) |span| return span;
-            const name = try es_helpers.resolveSyntheticName(self, "_state");
+            const name = if (es_helpers.canUseLateStandaloneOutputName(self, self.generator_state_output_scope))
+                try es_helpers.deferSyntheticOutputName(self, "_state")
+            else
+                try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "_state", self.generator_state_output_scope);
             const span = try self.ast.addString(name);
             self.generator_state_name_span = span;
             return span;
@@ -2917,6 +2931,12 @@ test "generator state name handoff survives nested cache invalidation" {
         symbols: []const @import("../semantic/symbol.zig").Symbol = &.{},
         unresolved_references: ?*const std.StringHashMapUnmanaged(void) = null,
         user_symbol_names: ?std.StringHashMapUnmanaged(void) = null,
+        options: @import("options.zig").TransformOptions = .{},
+        semantic_edit_enabled: bool = false,
+        current_scope: ScopeId = .none,
+        semantic_editor: ?@import("../semantic/editor.zig").SemanticEditor = null,
+        scopes: []const @import("../semantic/scope.zig").Scope = &.{},
+        generator_state_output_scope: ScopeId = .none,
         synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
         synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
         name_arena: ?std.heap.ArenaAllocator = null,

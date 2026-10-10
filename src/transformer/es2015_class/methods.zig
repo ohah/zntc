@@ -237,9 +237,10 @@ pub fn Methods(comptime Transformer: type) type {
                     // 미사용으로 elide → generator body 의 `_c` 가 미선언 →
                     // `ReferenceError: _c is not defined` (react-query v5 smoke).
                     const saved_temp_counter = self.temp_var_counter;
-                    var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
+                    const state_parent_scope = self.stateMachineOwnerScope(info.source_member_idx);
+                    var saved_sm_temps = try GenMod.enterStateMachineTempsForScope(self, state_parent_scope);
                     defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
-                    var sm_result = try GenMod.buildStateMachine(self, body_idx, span, self.stateMachineOwnerScope(info.source_member_idx));
+                    var sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
                     defer sm_result.hoisted_temps.deinit(self.allocator);
                     // body == none 은 buildStateMachine 의 empty-body 조기반환뿐
                     // (temp 미할당) → counter 복원 불필요, non-generator 경로로

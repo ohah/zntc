@@ -195,7 +195,13 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
             std.debug.panic("state callback has no exact owner scope or binding nodes", .{});
         const editor = try editorFor(self);
         const scope = try addGeneratedFunctionScope(self, parent, callback);
-        const symbol = try declareSyntheticInScope(self, parameter, span, .parameter, scope);
+        const symbol = (try declareSyntheticInScope(self, parameter, span, .parameter, scope)) orelse
+            std.debug.panic("generator state binding is missing its exact SymbolId", .{});
+        if (self.options.defer_runtime_helper_name_resolution and
+            es_helpers.canUseLateStandaloneOutputName(self, scope))
+        {
+            editor.symbols.items[@intFromEnum(symbol)].synthetic_kind = .generator_state_parameter;
+        }
         try reparentDeferredGeneratorLoops(self, source_scope, scope);
         // Operation lowering can create an expression and then discard it.
         // Only references actually contained in this callback count as uses.

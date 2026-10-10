@@ -625,9 +625,10 @@ pub fn ES2017(comptime Transformer: type) type {
             // arrow 의 arguments 는 바깥 함수 것이고 arrow_this_depth 가 따로 처리한다).
             const saved_ext_sm = self.in_extracted_fn_body;
             self.in_extracted_fn_body = true;
-            var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
+            const state_parent_scope = self.stateMachineOwnerScope(source_owner);
+            var saved_sm_temps = try GenMod.enterStateMachineTempsForScope(self, state_parent_scope);
             defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
-            var sm_result = try GenMod.buildStateMachine(self, body_idx, span, self.stateMachineOwnerScope(source_owner));
+            var sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
             defer sm_result.hoisted_temps.deinit(self.allocator);
             self.in_extracted_fn_body = saved_ext_sm;
             if (sm_result.body.isNone()) return .none;
@@ -699,7 +700,8 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const saved_temp_counter = self.temp_var_counter;
 
-            var saved_sm_temps = try GenMod.enterStateMachineTemps(self);
+            const state_parent_scope = self.stateMachineOwnerScope(source_owner);
+            var saved_sm_temps = try GenMod.enterStateMachineTempsForScope(self, state_parent_scope);
             defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
             const lowered = blk: {
                 // Async arrow skips ES2015Arrow.lowerArrowFunction(), so enter
@@ -708,7 +710,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 defer self.arrow_this_depth -= 1;
 
                 const params_list = try es2015_arrow.ES2015Arrow(Transformer).arrowParamsToList(self, params_idx);
-                const sm_result = try GenMod.buildStateMachine(self, body_idx, span, self.stateMachineOwnerScope(source_owner));
+                const sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
                 break :blk .{ .params_list = params_list, .sm_result = sm_result };
             };
             const params_list = lowered.params_list;

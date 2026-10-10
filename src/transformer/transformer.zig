@@ -530,6 +530,9 @@ pub const Transformer = struct {
     /// Resolved `_state` spelling shared by one state machine's refs and callback
     /// parameter. Nested state machines save and restore the enclosing handle.
     generator_state_name_span: ?token_mod.Span = null,
+    /// Exact source owner scope that will contain the generated state callback.
+    /// Nested state-machine frames save and restore this alongside its name span.
+    generator_state_output_scope: ScopeId = .none,
     /// Exact for-await generated references whose scopes move into an ES5
     /// generator callback. Capture identity and read/write intent at creation.
     generator_state_semantic_refs: std.ArrayListUnmanaged(struct {
