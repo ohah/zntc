@@ -1194,7 +1194,8 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         symbol.synthetic_kind == .class_self_alias_binding or
         symbol.synthetic_kind == .anonymous_class_export_binding or
         symbol.synthetic_kind == .block_scoping_loop_binding or
-        symbol.synthetic_kind == .for_of_step_binding;
+        symbol.synthetic_kind == .for_of_step_binding or
+        symbol.synthetic_kind == .object_super_home_binding;
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
@@ -4186,6 +4187,26 @@ test "#4819 standalone for-await step names are finalized from their exact Symbo
     try std.testing.expect(std.mem.indexOf(u8, result.code, "_step3") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "_step4") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_step") == null);
+}
+
+test "#4819 standalone object-super home names are finalized from exact parameter SymbolIds" {
+    const source =
+        \\var _obj = 10;
+        \\var _obj2 = 20;
+        \\var base = { read() { return this.input; } };
+        \\var methods = { read() { return super.read() + 1; } };
+        \\Object.setPrototypeOf(methods, base);
+        \\console.log(methods.read.call({ input: 41 }), _obj, _obj2);
+    ;
+    const compat = @import("transformer/compat.zig");
+    var result = try transpile(std.testing.allocator, source, "/src/a.js", .{
+        .unsupported = compat.fromESTarget(.es5),
+        .es_target = .es5,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_obj3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_object_home") == null);
 }
 
 test "#4759 이름 줄이기는 낮춘·접은 뒤 코드로 한다 — 새 노드도 같은 이름을 따른다" {

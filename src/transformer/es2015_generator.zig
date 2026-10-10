@@ -2283,7 +2283,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const object_super = @import("object_super.zig");
                 const home_mark = self.object_super_homes.items.len;
                 defer object_super.release(self, home_mark);
-                const home = if (node.tag == .object_expression) try object_super.prepareHome(self, node) else null;
+                const home = if (node.tag == .object_expression) try object_super.prepareHome(self, node, false) else null;
 
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
