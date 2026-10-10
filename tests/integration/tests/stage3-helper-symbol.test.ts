@@ -78,12 +78,27 @@ var _classThis = 21, _classThis2 = 22;
 var _classDecorators = 31, _classDecorators2 = 32;
 var _classDescriptor = 41, _classDescriptor2 = 42;
 var _classExtraInitializers = 51, _classExtraInitializers2 = 52;
+var _method_decorators = 61, _method_decorators2 = 62;
+var _value_decorators = 71, _value_decorators2 = 72;
+var _value_initializers = 81, _value_initializers2 = 82;
+var _value_extraInitializers = 91, _value_extraInitializers2 = 92;
+var _instanceExtraInitializers = 101, _instanceExtraInitializers2 = 102;
+var _staticMethod_decorators = 111, _staticMethod_decorators2 = 112;
+var _staticExtraInitializers = 121, _staticExtraInitializers2 = 122;
 function dec(value: any, context: any): any { return value; }
 @dec
-class Example { @dec method() { return 4; } }
+class Example {
+  @dec method() { return 4; }
+  @dec value = 6;
+  @dec static staticMethod() { return 8; }
+}
 @dec
-class Another { @dec method() { return 5; } }
-console.log(_metadata, _metadata2, _classThis, _classThis2, _classDecorators, _classDecorators2, _classDescriptor, _classDescriptor2, _classExtraInitializers, _classExtraInitializers2, new Example().method(), new Another().method());
+class Another {
+  @dec method() { return 5; }
+  @dec value = 7;
+  @dec static staticMethod() { return 9; }
+}
+console.log(_metadata, _metadata2, _classThis, _classThis2, _classDecorators, _classDecorators2, _classDescriptor, _classDescriptor2, _classExtraInitializers, _classExtraInitializers2, _method_decorators, _method_decorators2, _value_decorators, _value_decorators2, _value_initializers, _value_initializers2, _value_extraInitializers, _value_extraInitializers2, _instanceExtraInitializers, _instanceExtraInitializers2, _staticMethod_decorators, _staticMethod_decorators2, _staticExtraInitializers, _staticExtraInitializers2, new Example().method(), new Example().value, Example.staticMethod(), new Another().method(), new Another().value, Another.staticMethod());
 `,
     });
     cleanup = fixture.cleanup;
@@ -104,9 +119,70 @@ console.log(_metadata, _metadata2, _classThis, _classThis2, _classDecorators, _c
     expect(code).toMatch(/\b_classDescriptor4\b/);
     expect(code).toMatch(/\b_classExtraInitializers3\b/);
     expect(code).toMatch(/\b_classExtraInitializers4\b/);
+    expect(code).toMatch(/\b_method_decorators3\b/);
+    expect(code).toMatch(/\b_method_decorators4\b/);
+    expect(code).toMatch(/\b_value_decorators3\b/);
+    expect(code).toMatch(/\b_value_decorators4\b/);
+    expect(code).toMatch(/\b_value_initializers3\b/);
+    expect(code).toMatch(/\b_value_initializers4\b/);
+    expect(code).toMatch(/\b_value_extraInitializers3\b/);
+    expect(code).toMatch(/\b_value_extraInitializers4\b/);
+    expect(code).toMatch(/\b_instanceExtraInitializers3\b/);
+    expect(code).toMatch(/\b_instanceExtraInitializers4\b/);
+    expect(code).toMatch(/\b_staticMethod_decorators3\b/);
+    expect(code).toMatch(/\b_staticMethod_decorators4\b/);
+    expect(code).toMatch(/\b_staticExtraInitializers3\b/);
+    expect(code).toMatch(/\b_staticExtraInitializers4\b/);
 
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
-    expect(runtime.stdout).toBe('11 12 21 22 31 32 41 42 51 52 4 5\n');
+    expect(runtime.stdout).toBe(
+      '11 12 21 22 31 32 41 42 51 52 61 62 71 72 81 82 91 92 101 102 111 112 121 122 4 6 8 5 7 9\n',
+    );
+  });
+
+  test('standalone private Stage 3 descriptor bindings get distinct exact SymbolId names', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var _private_secret_descriptor = 131, _private_secret_descriptor2 = 132;
+function dec(value: any, context: any): any { return value; }
+@dec class Example { @dec #secret() { return 10; } }
+@dec class Another { @dec #secret() { return 11; } }
+console.log(_private_secret_descriptor, _private_secret_descriptor2);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toContain('var _private_secret_descriptor = 131');
+    expect(code).toContain('_private_secret_descriptor2 = 132');
+    expect(code).toMatch(/\b_private_secret_descriptor3\s*=/);
+    expect(code).toMatch(/\b_private_secret_descriptor4\s*=/);
+  });
+
+  test('direct eval outside the Stage 3 wrapper cannot observe its member locals', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+function dec(value: any, context: any): any { return value; }
+function run() {
+  var seen: string;
+  eval("seen = typeof _method_decorators");
+  @dec class Example { @dec method() { return 1; } }
+  return seen + " " + new Example().method();
+}
+console.log(run());
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('undefined 1\n');
   });
 });

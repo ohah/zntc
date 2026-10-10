@@ -260,6 +260,9 @@ pub const SyntheticKind = enum(u8) {
     /// Stage 3 class decorator locals. Standalone output selects their
     /// spellings from exact SymbolIds after all generated names are known.
     stage3_class_decorator_binding,
+    /// Stage 3 member decorator locals. Standalone output selects their
+    /// spellings from exact SymbolIds after all generated names are known.
+    stage3_member_decorator_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

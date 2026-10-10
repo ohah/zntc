@@ -1185,7 +1185,8 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         symbol.synthetic_kind == .optional_catch_binding or
         symbol.synthetic_kind == .stage3_metadata_binding or
         symbol.synthetic_kind == .stage3_class_this_binding or
-        symbol.synthetic_kind == .stage3_class_decorator_binding;
+        symbol.synthetic_kind == .stage3_class_decorator_binding or
+        symbol.synthetic_kind == .stage3_member_decorator_binding;
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
