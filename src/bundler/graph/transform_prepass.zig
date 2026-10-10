@@ -1747,12 +1747,17 @@ fn isSimpleConstructorParameterGraphSafe(
     return isSafeConstructorParameterDefaultValue(ast, semantic, default_idx, params, parameter_index);
 }
 
-/// The first retained explicit derived-constructor case is intentionally
-/// narrow: a zero-argument constructor whose sole statement is `super()`.
-/// Lowering this shape adds only the audited `_this`/`_newTarget` captures and
-/// derived-constructor runtime helpers. Calls with arguments and constructors
-/// with additional control flow remain on semantic reanalysis.
-fn isBareSuperConstructorStatement(ast: *const ast_mod.Ast, statement_idx: ast_mod.NodeIndex) bool {
+/// The retained explicit derived-constructor case is intentionally narrow: a
+/// zero-parameter constructor whose only statement is `super(...)`, with every
+/// argument in the audited constructor value allowlist. Lowering this
+/// shape adds tracked `_this`/`_newTarget` captures and derived-constructor
+/// runtime helpers. Call, member-access, and spread arguments, plus constructors
+/// with additional statements, remain on semantic reanalysis.
+fn isSafeSuperConstructorStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
     if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .expression_statement) return false;
@@ -1762,11 +1767,18 @@ fn isBareSuperConstructorStatement(ast: *const ast_mod.Ast, statement_idx: ast_m
     if (call.tag != .call_expression) return false;
     const extras = ast.extra_data.items;
     const extra = call.data.extra;
-    if (extra > extras.len or extras.len - extra < 4 or
-        extras[extra + 2] != 0 or extras[extra + 3] != 0) return false;
+    if (extra > extras.len or extras.len - extra < 4 or extras[extra + 3] != 0) return false;
     const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    return !callee_idx.isNone() and @intFromEnum(callee_idx) < ast.nodes.items.len and
-        ast.getNode(callee_idx).tag == .super_expression;
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len or
+        ast.getNode(callee_idx).tag != .super_expression) return false;
+    const args_start = extras[extra + 1];
+    const args_len = extras[extra + 2];
+    if (args_start > extras.len or args_len > extras.len - args_start) return false;
+    for (extras[args_start .. args_start + args_len]) |raw_argument_idx| {
+        if (raw_argument_idx >= ast.nodes.items.len or
+            !isSafeConstructorValue(ast, semantic, @enumFromInt(raw_argument_idx))) return false;
+    }
+    return true;
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
@@ -1800,7 +1812,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
     if (statements.len == 1 and params.data.list.len == 0) {
         const only_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
-        if (isBareSuperConstructorStatement(ast, only_statement)) return true;
+        if (isSafeSuperConstructorStatement(ast, semantic, only_statement)) return true;
     }
     for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
         if (raw_statement_idx >= ast.nodes.items.len or
