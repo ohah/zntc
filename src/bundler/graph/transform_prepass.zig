@@ -1992,18 +1992,17 @@ fn isSimpleClass(
     return true;
 }
 
-fn isDirectVarClassExpression(
+fn collectDirectVarClassExpressions(
     ast: *const ast_mod.Ast,
     reachable_nodes: []const u32,
-    target_raw: u32,
+    class_expressions: *std.AutoHashMapUnmanaged(u32, void),
 ) bool {
-    if (target_raw >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
     for (reachable_nodes) |raw_statement| {
         if (raw_statement >= ast.nodes.items.len) return false;
         const statement = ast.nodes.items[raw_statement];
-        if (statement.tag != .variable_declaration) continue;
-        if (ast.variableDeclarationKind(statement) != .@"var") continue;
+        if (statement.tag != .variable_declaration or
+            ast.variableDeclarationKind(statement) != .@"var") continue;
         const declaration_extra = statement.data.extra;
         if (declaration_extra > extras.len or extras.len - declaration_extra < 3) return false;
         const declarators_start = extras[declaration_extra + 1];
@@ -2015,25 +2014,56 @@ fn isDirectVarClassExpression(
             if (declarator.tag != .variable_declarator) return false;
             const declarator_extra = declarator.data.extra;
             if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-            if (extras[declarator_extra + 2] == target_raw) return true;
+            const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+            if (initializer_idx.isNone()) continue;
+            const initializer_raw = @intFromEnum(initializer_idx);
+            if (initializer_raw >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[initializer_raw].tag != .class_expression) continue;
+            class_expressions.put(ast.allocator, initializer_raw, {}) catch return false;
         }
     }
-    return false;
+    return true;
+}
+
+fn collectDirectFunctionBodyClassDeclarations(
+    ast: *const ast_mod.Ast,
+    reachable_nodes: []const u32,
+    class_declarations: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    for (reachable_nodes) |raw_function| {
+        if (raw_function >= ast.nodes.items.len) return false;
+        const function = ast.nodes.items[raw_function];
+        const body_idx = ast.functionBodyBlock(function) orelse continue;
+        if (@intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+        const body = ast.getNode(body_idx);
+        if (body.tag != .block_statement and body.tag != .function_body) continue;
+        const statements = body.data.list;
+        if (statements.start > ast.extra_data.items.len or
+            statements.len > ast.extra_data.items.len - statements.start) return false;
+        for (ast.extra_data.items[statements.start .. statements.start + statements.len]) |raw_statement| {
+            if (raw_statement >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[raw_statement].tag == .class_declaration)
+                class_declarations.put(ast.allocator, raw_statement, {}) catch return false;
+        }
+    }
+    return true;
 }
 
 fn isRetainableGraphClass(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
-    reachable_nodes: []const u32,
     node: ast_mod.Node,
     raw_node: usize,
     top_level_statements: *const std.DynamicBitSet,
+    function_body_class_declarations: *const std.AutoHashMapUnmanaged(u32, void),
+    direct_var_class_expressions: *const std.AutoHashMapUnmanaged(u32, void),
     source_binds_object: bool,
 ) bool {
+    const raw: u32 = @intCast(raw_node);
     const has_safe_owner = switch (node.tag) {
-        .class_declaration => top_level_statements.isSet(raw_node),
-        .class_expression => isDirectVarClassExpression(ast, reachable_nodes, @intCast(raw_node)),
+        .class_declaration => top_level_statements.isSet(raw_node) or function_body_class_declarations.contains(raw),
+        .class_expression => direct_var_class_expressions.contains(raw),
         else => false,
     };
     return has_safe_owner and isSimpleClass(allocator, ast, semantic, node, source_binds_object);
@@ -2374,7 +2404,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer retained_simple_class_nodes.deinit(ast.allocator);
     var lowered_simple_constructor_default_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_simple_constructor_default_nodes.deinit(ast.allocator);
+    var function_body_class_declarations: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer function_body_class_declarations.deinit(ast.allocator);
+    var direct_var_class_expressions: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer direct_var_class_expressions.deinit(ast.allocator);
     if (options.unsupported.class) {
+        if (!collectDirectFunctionBodyClassDeclarations(ast, reachable_nodes, &function_body_class_declarations) or
+            !collectDirectVarClassExpressions(ast, reachable_nodes, &direct_var_class_expressions)) return false;
         for (reachable_nodes) |raw_idx| {
             const class_node = ast.nodes.items[raw_idx];
             if (class_node.tag != .class_declaration and class_node.tag != .class_expression) continue;
@@ -2382,10 +2418,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 allocator,
                 ast,
                 semantic,
-                reachable_nodes,
                 class_node,
                 raw_idx,
                 &top_level_statements,
+                &function_body_class_declarations,
+                &direct_var_class_expressions,
                 source_binds_object,
             )) continue;
             retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
@@ -3153,9 +3190,9 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .class_declaration, .class_expression => {
-                // The audited subset validates direct class declarations and
-                // direct top-level `var` initializers for named or anonymous
-                // class expressions.
+                // The audited subset validates top-level and direct function-body
+                // class declarations, plus class expressions used as direct `var`
+                // initializers.
                 const is_simple_downlevel_class = safe_graph_subset;
                 if (options.unsupported.class and !is_simple_downlevel_class) return false;
                 // Native classes add no output scopes. Admitted downlevel
