@@ -281,6 +281,10 @@ pub const SyntheticKind = enum(u8) {
     /// Outer variable synthesized for `export default class {}` during ES5
     /// lowering. Standalone output can finalize its spelling from this SymbolId.
     anonymous_class_export_binding,
+    /// Inner constructor binding synthesized for an anonymous ES5 class
+    /// expression. Standalone output selects its spelling from this exact
+    /// SymbolId after the generated class scopes are complete.
+    anonymous_class_expression_binding,
     /// Binding for an extracted ES5 loop closure. Standalone output selects
     /// its final spelling from this exact SymbolId after lowering completes.
     block_scoping_loop_binding,

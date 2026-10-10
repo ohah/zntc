@@ -1833,6 +1833,84 @@ test "#4819 anonymous ES5 class expression name gets an exact SymbolId before wr
     try std.testing.expectEqual(@as(usize, 3), reads);
 }
 
+test "#4819 anonymous ES5 class expression names are finalized from exact SymbolIds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "var First = class { method() { return 1; } }; var Second = class { method() { return 2; } };";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var late_class_self_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
+    var late_class_self_count: usize = 0;
+    for (edited.symbols.items) |symbol| {
+        if (symbol.synthetic_kind != .anonymous_class_expression_binding) continue;
+        try std.testing.expectEqualStrings("_Class", symbol.synthetic_name);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, symbol.kind);
+        if (late_class_self_count >= late_class_self_scopes.len) return error.TestUnexpectedResult;
+        late_class_self_scopes[late_class_self_count] = symbol.scope_id;
+        late_class_self_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), late_class_self_count);
+    try std.testing.expect(late_class_self_scopes[0] != late_class_self_scopes[1]);
+}
+
+test "#4819 anonymous ES5 class expression name reserves identifiers seen by direct eval" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "var Holder = class { static read() { return eval('typeof _Class'); } };";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var found_binding = false;
+    for (edited.symbols.items) |symbol| {
+        if (symbol.kind != .function_decl or !std.mem.startsWith(u8, symbol.synthetic_name, "_Class")) continue;
+        try std.testing.expectEqualStrings("_Class2", symbol.synthetic_name);
+        try std.testing.expect(symbol.synthetic_kind != .anonymous_class_expression_binding);
+        found_binding = true;
+    }
+    try std.testing.expect(found_binding);
+}
+
 test "#4819 anonymous default ES5 class export has an exact generated binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

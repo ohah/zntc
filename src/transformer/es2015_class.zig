@@ -647,13 +647,23 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const name_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.name);
             const super_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.super);
             const body_idx: NodeIndex = self.readNodeIdx(e, ast_mod.ClassExtra.body);
+            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
+                std.debug.panic("ES5 class expression has no source scope owner", .{})
+            else
+                self.current_scope;
 
             // 클래스 이름
             const new_name = try self.visitNode(name_idx);
+            const generated_class_output_name: ?es_helpers.ScopedSyntheticOutputName = if (!new_name.isNone())
+                null
+            else if (self.semantic_edit_enabled)
+                try es_helpers.resolveScopedSyntheticOutputName(self, "_Class", source_class_scope)
+            else
+                .{ .name = try es_helpers.resolveSyntheticName(self, "_Class"), .late = false };
             const name_span = if (!new_name.isNone())
                 self.ast.getNode(new_name).data.string_ref
             else
-                try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
+                try self.ast.addString(generated_class_output_name.?.name);
 
             const name_node = if (!new_name.isNone())
                 new_name
@@ -669,10 +679,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_class_name_node = saved_class_name_node;
             defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
-            const source_class_scope = self.outputOwnedScope(source_idx) orelse if (self.semantic_edit_enabled)
-                std.debug.panic("ES5 class expression has no source scope owner", .{})
-            else
-                self.current_scope;
             const iife_parent = if (self.semantic_edit_enabled) self.outputScopeParent(source_class_scope) else self.current_scope;
 
             // super class
@@ -802,7 +808,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 null;
             if (self.semantic_edit_enabled and name_idx.isNone() and has_extra and !class_self_storage_bound and generated_class_name_id == null)
                 std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
-            if (generated_class_name_id) |id| self.current_class_self_symbol_id = @intFromEnum(id);
+            if (generated_class_name_id) |id| {
+                self.current_class_self_symbol_id = @intFromEnum(id);
+                if (generated_class_output_name) |output_name| {
+                    if (output_name.late)
+                        es_helpers.markStandaloneLateSyntheticSymbol(self, id, .anonymous_class_expression_binding);
+                }
+            }
             try visitDeferredStaticBlocks(self, &cm, name_span);
 
             const previous_write_target = self.active_class_self_write_target;
@@ -855,6 +867,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const id = try self.declareSyntheticInScope(func_name, span, .function_decl, ctor_scope) orelse
                     std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
                 self.current_class_self_symbol_id = @intFromEnum(id);
+                if (generated_class_output_name) |output_name| {
+                    if (output_name.late)
+                        es_helpers.markStandaloneLateSyntheticSymbol(self, id, .anonymous_class_expression_binding);
+                }
             }
             var func_node: NodeIndex = .none;
             var alias_check_ref: NodeIndex = .none;
