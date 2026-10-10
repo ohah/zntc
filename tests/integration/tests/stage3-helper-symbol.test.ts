@@ -74,12 +74,13 @@ console.log(${sourceNames.join(', ')}, new Example().value);
     const fixture = await createFixture({
       'input.ts': `
 var _metadata = 11, _metadata2 = 12;
+var _classThis = 21, _classThis2 = 22;
 function dec(value: any, context: any): any { return value; }
 @dec
 class Example { @dec method() { return 4; } }
 @dec
 class Another { @dec method() { return 5; } }
-console.log(_metadata, _metadata2, new Example().method(), new Another().method());
+console.log(_metadata, _metadata2, _classThis, _classThis2, new Example().method(), new Another().method());
 `,
     });
     cleanup = fixture.cleanup;
@@ -92,9 +93,11 @@ console.log(_metadata, _metadata2, new Example().method(), new Another().method(
     expect(code).toContain('_metadata2 = 12');
     expect(code).toMatch(/\b_metadata3\s*=/);
     expect(code).toMatch(/\b_metadata4\s*=/);
+    expect(code).toMatch(/\b_classThis3\b/);
+    expect(code).toMatch(/\b_classThis4\b/);
 
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
-    expect(runtime.stdout).toBe('11 12 4 5\n');
+    expect(runtime.stdout).toBe('11 12 21 22 4 5\n');
   });
 });
