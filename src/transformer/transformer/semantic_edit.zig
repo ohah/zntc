@@ -3196,6 +3196,12 @@ pub fn renameParameterEnvironmentBinding(self: *Transformer, raw_id: u32, name: 
     editor.renameParameterEnvironmentBinding(@enumFromInt(raw_id), name) catch |err| return editError(err);
 }
 
+pub fn renameParameterEnvironmentBindingForDynamicBody(self: *Transformer, raw_id: u32, name: []const u8) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    const editor = try editorFor(self);
+    editor.renameParameterEnvironmentBindingForDynamicBody(@enumFromInt(raw_id), name) catch |err| return editError(err);
+}
+
 pub fn rebindOutputReference(self: *Transformer, node: NodeIndex, raw_id: u32) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);

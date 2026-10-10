@@ -254,11 +254,33 @@ pub const SemanticEditor = struct {
     /// distinct winner until its own emitted spelling is reserved.
     /// This is not a general escape hatch for inconsistent scope maps.
     pub fn renameParameterEnvironmentBinding(self: *SemanticEditor, id: SymbolId, output_name: []const u8) Error!void {
+        try self.renameParameterEnvironmentBindingImpl(id, output_name, false);
+    }
+
+    /// A dynamic body wrapper gives a colliding body `var` its own local
+    /// binding. In that one proven case, rename the parameter side even though
+    /// body `eval` marks its parent parameter scope as un-mangleable.
+    pub fn renameParameterEnvironmentBindingForDynamicBody(
+        self: *SemanticEditor,
+        id: SymbolId,
+        output_name: []const u8,
+    ) Error!void {
+        try self.renameParameterEnvironmentBindingImpl(id, output_name, true);
+    }
+
+    fn renameParameterEnvironmentBindingImpl(
+        self: *SemanticEditor,
+        id: SymbolId,
+        output_name: []const u8,
+        allow_dynamic_body_var_shadow: bool,
+    ) Error!void {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
         const symbol = &self.symbols.items[@intFromEnum(id)];
         if (!self.validScope(symbol.scope_id)) return error.InvalidScope;
         const scope = self.scopes.items[symbol.scope_id.toIndex()];
-        if (scope.kind != .function or scope.blocksMangling()) return error.InvalidScope;
+        if (scope.kind != .function or
+            (scope.blocksMangling() and
+                (!allow_dynamic_body_var_shadow or !self.hasDynamicBodyVarShadow(id)))) return error.InvalidScope;
         if (symbol.kind != .parameter and symbol.kind != .variable_var and
             symbol.kind != .variable_let and symbol.kind != .variable_const and
             symbol.kind != .class_decl and !symbol.kind.isFunctionLike()) return error.InvalidSymbol;
@@ -282,7 +304,9 @@ pub const SemanticEditor = struct {
                     if (body_id != @intFromEnum(id)) {
                         if (body_id >= self.symbols.items.len) return error.InvalidSymbol;
                         const body_symbol = self.symbols.items[body_id];
-                        if (!body_symbol.kind.isFunctionLike() or body_symbol.scope_id != body_scope)
+                        const valid_body_alias = body_symbol.kind.isFunctionLike() or
+                            (allow_dynamic_body_var_shadow and body_symbol.kind == .variable_var);
+                        if (!valid_body_alias or body_symbol.scope_id != body_scope)
                             return error.InvalidSymbol;
                         const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
                         if (!std.mem.eql(u8, body_name, old_name)) return error.InvalidSymbol;
@@ -297,6 +321,19 @@ pub const SemanticEditor = struct {
         symbol.synthetic_name = stable_name;
         const declaration_node = self.bindingNodeForSymbol(id) orelse .none;
         try self.ensureDeclarationAtNode(id, symbol.scope_id, declaration_node);
+    }
+
+    fn hasDynamicBodyVarShadow(self: *const SemanticEditor, id: SymbolId) bool {
+        if (!self.validSymbol(id)) return false;
+        const parameter = self.symbols.items[@intFromEnum(id)];
+        if (parameter.kind != .parameter) return false;
+        const body_scope = self.parameterBodyFunctionScope(parameter.scope_id) orelse return false;
+        if (!self.scopes.items[body_scope.toIndex()].blocksMangling()) return false;
+        const name = if (parameter.synthetic_name.len > 0) parameter.synthetic_name else self.ast.getText(parameter.name);
+        const body_raw = self.scope_maps.items[body_scope.toIndex()].get(name) orelse return false;
+        if (body_raw >= self.symbols.items.len or body_raw == @intFromEnum(id)) return false;
+        const body_var = self.symbols.items[body_raw];
+        return body_var.kind == .variable_var and body_var.scope_id == body_scope;
     }
 
     fn parameterBodyFunctionScope(self: *const SemanticEditor, parameter_scope: ScopeId) ?ScopeId {

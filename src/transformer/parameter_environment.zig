@@ -17,6 +17,7 @@ const Scope = @import("../semantic/scope.zig").Scope;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const Table = @import("block_rename_table.zig").Table;
 const es_helpers = @import("es_helpers.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 
 fn symbolsOf(self: anytype) []const Symbol {
     if (self.semantic_editor) |*editor| return editor.symbols.items;
@@ -36,6 +37,36 @@ fn scopeMapsOf(self: anytype) []const std.StringHashMapUnmanaged(usize) {
 fn scopeOwnersOf(self: anytype) *const std.AutoHashMapUnmanaged(u32, u32) {
     if (self.semantic_editor) |*editor| return &editor.scope_owner_map;
     return &self.scope_owner_map;
+}
+
+/// Dynamic lookup in a parameter expression is distinct from a body `eval`:
+/// the analyzer propagates body flags to the parameter scope's ancestors.
+pub fn parameterListHasDynamicLookup(self: anytype, params: ast_mod.NodeList) std.mem.Allocator.Error!bool {
+    for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
+        const roots = try ast_walk.collectReachableNodeIndicesFrom(
+            self.allocator,
+            self.ast,
+            @enumFromInt(raw_param),
+        );
+        defer self.allocator.free(roots);
+        for (roots) |raw| {
+            if (raw >= self.ast.nodes.items.len) continue;
+            const node = self.ast.nodes.items[raw];
+            if (node.tag == .with_statement) return true;
+            if (node.tag != .call_expression) continue;
+            const callee_idx = self.ast.readExtraNode(node.data.extra, 0);
+            if (callee_idx.isNone() or @intFromEnum(callee_idx) >= self.ast.nodes.items.len) continue;
+            const callee = self.ast.getNode(callee_idx);
+            if (callee.tag != .identifier_reference) continue;
+            const raw_name = self.ast.identifierNameText(callee);
+            if (std.mem.eql(u8, raw_name, "eval")) return true;
+            if (std.mem.indexOfScalar(u8, raw_name, '\\') == null) continue;
+            var decode_buffer: [64]u8 = undefined;
+            const decoded_name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse continue;
+            if (std.mem.eql(u8, decoded_name, "eval")) return true;
+        }
+    }
+    return false;
 }
 
 fn functionParamsNode(self: anytype, function_raw: u32) ?u32 {
@@ -60,7 +91,8 @@ fn functionParamsNode(self: anytype, function_raw: u32) ?u32 {
 pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table {
     var split_parameters: Table = .empty;
     errdefer split_parameters.deinit(self.allocator);
-    if (!self.options.unsupported.default_params or !self.semantic_edit_enabled or self.scopes.len == 0) return split_parameters;
+    if ((!self.options.unsupported.default_params and !self.options.unsupported.object_spread) or
+        !self.semantic_edit_enabled or self.scopes.len == 0) return split_parameters;
 
     const Self = @TypeOf(self.*);
     const Params = @import("es2015_params.zig").ES2015Params(Self);
@@ -91,7 +123,26 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         if (scope_raw >= scopes.len) continue;
         const function_scope: ScopeId = @enumFromInt(scope_raw);
         const scope = scopes[scope_raw];
-        if (scope.kind != .function or scope.blocksMangling()) continue;
+        if (scope.kind != .function) continue;
+
+        const body_dynamic_lookup = scope.subtree_has_direct_eval or scope.subtree_has_with;
+        const parameter_dynamic_lookup = try parameterListHasDynamicLookup(self, params);
+        const raw_flags = if (function.data.extra + ast_mod.FunctionExtra.flags < self.ast.extra_data.items.len)
+            self.ast.extra_data.items[function.data.extra + ast_mod.FunctionExtra.flags]
+        else
+            0;
+        const function_flags = if (function.tag == .method_definition)
+            ast_mod.methodFlagsToFunctionFlags(raw_flags)
+        else
+            raw_flags;
+        const can_wrap_dynamic_body = !self.options.unsupported.arrow and
+            ((function_flags & ast_mod.FunctionFlags.is_async) == 0 or !self.options.unsupported.async_await) and
+            (function_flags & ast_mod.FunctionFlags.is_generator) == 0;
+        // The body wrapper gives body vars their own dynamic-eval environment.
+        // Only split shared parameter/body identities when parameter expressions
+        // themselves are statically nameable and that wrapper will be emitted.
+        const split_dynamic_body_vars = body_dynamic_lookup and !parameter_dynamic_lookup and can_wrap_dynamic_body;
+        if (scope.blocksMangling() and !split_dynamic_body_vars) continue;
         const body = self.ast.functionBodyBlock(function) orelse continue;
 
         var body_vars: std.AutoHashMapUnmanaged(u32, @import("../lexer/token.zig").Span) = .empty;
@@ -142,6 +193,10 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
                 if (body_vars.contains(id)) try referenced_shared_ids.put(self.allocator, id, {});
             }
         }
+        if (split_dynamic_body_vars) {
+            var body_var_ids = body_vars.keyIterator();
+            while (body_var_ids.next()) |id| try referenced_shared_ids.put(self.allocator, id.*, {});
+        }
 
         var split_by_source: std.AutoHashMapUnmanaged(u32, u32) = .empty;
         defer split_by_source.deinit(self.allocator);
@@ -181,6 +236,43 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
             for (parameter_refs.items) |reference| {
                 if (self.getSymbolIdAt(reference) != source_id) continue;
                 try semantic_edit.rebindParameterBodyVarReference(self, reference, parameter_id);
+            }
+        }
+
+        if (split_dynamic_body_vars) {
+            const current_symbols = symbolsOf(self);
+            const current_scope_maps = scopeMapsOf(self);
+            for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
+                const param: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_param);
+                var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{});
+                defer bindings.deinit();
+                while (try bindings.next()) |binding| {
+                    const parameter_raw = self.getSymbolIdAt(binding) orelse continue;
+                    if (parameter_raw >= current_symbols.len or scope_raw >= current_scope_maps.len) continue;
+                    const parameter = current_symbols[parameter_raw];
+                    if (parameter.kind != .parameter) continue;
+                    const name = self.ast.getText(parameter.name);
+                    const body_raw = current_scope_maps[scope_raw].get(name) orelse continue;
+                    if (body_raw >= current_symbols.len) continue;
+                    const body_id: u32 = @intCast(body_raw);
+                    const body_var_span = body_vars.get(body_id) orelse continue;
+                    if (body_id == parameter_raw or
+                        current_symbols[body_raw].scope_id != function_scope) continue;
+
+                    try split_parameters.put(self.allocator, parameter_raw, {});
+                    const already_copied = for (self.parameter_body_var_copies.items) |copy| {
+                        if (copy.function_scope == function_scope and copy.body_var_symbol_id == body_id and
+                            copy.parameter_symbol_id == parameter_raw) break true;
+                    } else false;
+                    if (!already_copied) {
+                        try self.parameter_body_var_copies.append(self.allocator, .{
+                            .function_scope = function_scope,
+                            .body_var_symbol_id = body_id,
+                            .parameter_symbol_id = parameter_raw,
+                            .source_span = body_var_span,
+                        });
+                    }
+                }
             }
         }
     }

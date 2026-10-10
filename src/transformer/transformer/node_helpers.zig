@@ -136,7 +136,11 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         try reserved.put(self.allocator, name, {});
         try map.put(self.allocator, @intCast(i), name);
         if (parameter_rename) {
-            try @import("semantic_edit.zig").renameParameterEnvironmentBinding(self, @intCast(i), name);
+            if (sym.scope_id.toIndex() < scopes.len and scopes[sym.scope_id.toIndex()].blocksMangling()) {
+                try @import("semantic_edit.zig").renameParameterEnvironmentBindingForDynamicBody(self, @intCast(i), name);
+            } else {
+                try @import("semantic_edit.zig").renameParameterEnvironmentBinding(self, @intCast(i), name);
+            }
         }
     }
     self.block_rename_map = map;
