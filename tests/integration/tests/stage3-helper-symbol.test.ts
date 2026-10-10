@@ -180,6 +180,40 @@ console.log(
     expect(runtime.stdout).toBe('131 132 true 10 true 11\n');
   });
 
+  test('standalone Stage 3 accessor helpers keep exact bindings through ES5 lowering', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var _secret_initializers = 31, _secret_initializers2 = 32;
+var _secret_extraInitializers = 33, _secret_extraInitializers2 = 34;
+let accessorAccess: any;
+function dec(value: any, context: any): any {
+  if (context.kind === 'accessor') accessorAccess = context.access;
+  return value;
+}
+@dec class Example { @dec accessor secret = 10; }
+const example = new Example();
+console.log(
+  _secret_initializers,
+  _secret_initializers2,
+  _secret_extraInitializers,
+  _secret_extraInitializers2,
+  accessorAccess.has(example),
+  accessorAccess.get(example),
+);
+accessorAccess.set(example, 14);
+console.log(accessorAccess.get(example));
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('31 32 33 34 true 10\n14\n');
+  });
+
   test('direct eval outside the Stage 3 wrapper cannot observe its member locals', async () => {
     const fixture = await createFixture({
       'input.ts': `
