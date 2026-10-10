@@ -470,23 +470,43 @@ fn hasOnlyRetainableSpreadOperands(
 ) bool {
     const extras = ast.extra_data.items;
     var direct_identifier_callee: ?ast_mod.NodeIndex = null;
+    var simple_member_callee: ?ast_mod.NodeIndex = null;
     const start: u32, const len: u32 = switch (node.tag) {
         .array_expression => .{ node.data.list.start, node.data.list.len },
         .call_expression, .new_expression => blk: {
             const extra = node.data.extra;
             if (extra > extras.len or extras.len - extra <= 3) return false;
             const callee: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-            if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len or
-                ast.nodes.items[@intFromEnum(callee)].tag != .identifier_reference) return false;
-            direct_identifier_callee = callee;
+            if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len) return false;
+            const callee_node = ast.nodes.items[@intFromEnum(callee)];
+            if (callee_node.tag == .identifier_reference) {
+                direct_identifier_callee = callee;
+            } else if (node.tag == .call_expression and callee_node.tag == .static_member_expression) {
+                // lowerSpreadCall clones a simple receiver identifier and
+                // registers that second reference with its exact source SID.
+                // Keep computed, optional, nested, and effectful receivers on
+                // reanalysis until their distinct graph edits are audited.
+                const member_extra = callee_node.data.extra;
+                if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0)
+                    return false;
+                const receiver: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
+                const property: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
+                if (receiver.isNone() or @intFromEnum(receiver) >= ast.nodes.items.len or
+                    ast.nodes.items[@intFromEnum(receiver)].tag != .identifier_reference or
+                    !isBoundSourceIdentifierReference(ast, semantic, receiver) or
+                    property.isNone() or @intFromEnum(property) >= ast.nodes.items.len or
+                    ast.nodes.items[@intFromEnum(property)].tag != .identifier_reference) return false;
+                simple_member_callee = callee;
+            } else return false;
             break :blk .{ extras[extra + 1], extras[extra + 2] };
         },
         else => return false,
     };
     if (start > extras.len or len > extras.len - start) return false;
     if (node.tag == .call_expression or node.tag == .new_expression) {
-        const callee = direct_identifier_callee orelse return false;
-        if (!isBoundSourceIdentifierReference(ast, semantic, callee)) return false;
+        if (direct_identifier_callee) |callee| {
+            if (!isBoundSourceIdentifierReference(ast, semantic, callee)) return false;
+        } else if (node.tag != .call_expression or simple_member_callee == null) return false;
         const expression_extra = node.data.extra;
         if (expression_extra > extras.len or extras.len - expression_extra <= 3) return false;
         const expression_flags = extras[expression_extra + 3];
@@ -504,10 +524,10 @@ fn hasOnlyRetainableSpreadOperands(
         if (operand.isNone() or @intFromEnum(operand) >= ast.nodes.items.len) return false;
         const operand_node = ast.nodes.items[@intFromEnum(operand)];
         if (operand_node.tag == .identifier_reference) {
-            // Array literals need only the exact helper reference. Direct call
-            // and constructor spread also need a bound identifier callee so
-            // the retained graph covers both source references. Other callees
-            // and unresolved operands stay on reanalysis.
+            // Array literals need only the exact helper reference. Direct,
+            // simple-member, and constructor calls also need bound source
+            // references so the retained graph covers the complete call.
+            // Other callees and unresolved operands stay on reanalysis.
             if (!isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
             if (node.tag != .array_expression and node.tag != .call_expression and
                 node.tag != .new_expression)
