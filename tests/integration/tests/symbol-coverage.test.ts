@@ -13471,6 +13471,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 2 2 false false\n',
       },
       {
+        name: 'post-super composed condition preserves getter and short-circuit coercion counts',
+        source:
+          'var selected = true, reads = 0, coercions = 0; var conditionValue = { valueOf() { coercions += 1; return 1; } }; function Base() { return new Proxy({ selected: selected }, { get(target, key, receiver) { if (key === "selected") reads += 1; return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (this.selected && +conditionValue) this.value = 1; else this.value = 2; } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, reads, coercions);',
+        graph: 'retained',
+        output: '1 2 2 1\n',
+      },
+      {
+        name: 'post-super property comparison preserves coercive equality effects once',
+        source:
+          'var reads = 0, coercions = 0; var expected = { valueOf() { coercions += 1; return 1; } }; function Base() { return new Proxy({ selected: 1 }, { get(target, key, receiver) { if (key === "selected") reads += 1; return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (this.selected == expected) this.value = 1; else this.value = 2; } } var child = new Child(); console.log(child.value, reads, coercions);',
+        graph: 'retained',
+        output: '1 1 1\n',
+      },
+      {
+        name: 'post-super ternary condition preserves branch reads and unary coercion once',
+        source:
+          'var selected = true, selectedReads = 0, amountReads = 0, coercions = 0; var amount = { valueOf() { coercions += 1; return 1; } }; function Base() { return new Proxy({ selected: selected, amount: amount }, { get(target, key, receiver) { if (key === "selected") selectedReads += 1; if (key === "amount") amountReads += 1; return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (this.selected ? +this.amount : false) this.value = 1; else this.value = 2; } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, selectedReads, amountReads, coercions);',
+        graph: 'retained',
+        output: '1 2 2 1 1\n',
+      },
+      {
         name: 'post-super return of a bound object preserves derived constructor return semantics',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
@@ -13579,6 +13600,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super computed this-property condition stays on reanalysis',
         source:
           'var reads = 0, key = "selected"; function Base() { return new Proxy({ selected: true }, { get(target, property, receiver) { if (property === "selected") reads += 1; return Reflect.get(target, property, receiver); } }); } class Child extends Base { constructor() { super(); if (this[key]) this.value = 1; else this.value = 2; } } var child = new Child(); console.log(child.value, reads);',
+        graph: 'reanalyzed',
+        output: '1 1\n',
+      },
+      {
+        name: 'post-super nested this-property condition stays on reanalysis',
+        source:
+          'var reads = 0; function Base() { return new Proxy({ nested: { selected: true } }, { get(target, key, receiver) { if (key === "nested") reads += 1; return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (this.nested.selected) this.value = 1; else this.value = 2; } } var child = new Child(); console.log(child.value, reads);',
         graph: 'reanalyzed',
         output: '1 1\n',
       },

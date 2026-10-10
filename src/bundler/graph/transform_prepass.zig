@@ -1842,10 +1842,39 @@ fn isSafePostSuperCondition(
     semantic: *const ModuleSemanticData,
     condition_idx: ast_mod.NodeIndex,
 ) bool {
-    // A direct read may invoke a getter or Proxy trap, but the retained AST
-    // evaluates this one source expression once through the initialized this.
-    return isSafeConstructorValue(ast, semantic, condition_idx) or
-        isSafeConstructorThisPropertyTarget(ast, condition_idx);
+    // Reads may invoke getters or Proxy traps. The retained AST preserves each
+    // operand's evaluation count and short-circuit order through initialized this.
+    if (isSafeConstructorValue(ast, semantic, condition_idx) or
+        isSafeConstructorThisPropertyTarget(ast, condition_idx)) return true;
+    if (condition_idx.isNone() or @intFromEnum(condition_idx) >= ast.nodes.items.len) return false;
+    const condition = ast.getNode(condition_idx);
+    if (condition.tag == .binary_expression) {
+        const operator: token_mod.Kind = @enumFromInt(condition.data.binary.flags);
+        return isSafeConstructorBinaryOperator(operator) and
+            isSafePostSuperCondition(ast, semantic, condition.data.binary.left) and
+            isSafePostSuperCondition(ast, semantic, condition.data.binary.right);
+    }
+    if (condition.tag == .logical_expression) {
+        const operator: token_mod.Kind = @enumFromInt(condition.data.binary.flags);
+        return isSafeConstructorLogicalOperator(operator) and
+            isSafePostSuperCondition(ast, semantic, condition.data.binary.left) and
+            isSafePostSuperCondition(ast, semantic, condition.data.binary.right);
+    }
+    if (condition.tag == .unary_expression) {
+        const extras = ast.extra_data.items;
+        const extra = condition.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        return isSafeConstructorUnaryOperator(operator) and
+            isSafePostSuperCondition(ast, semantic, operand_idx);
+    }
+    if (condition.tag == .conditional_expression) {
+        return isSafePostSuperCondition(ast, semantic, condition.data.ternary.a) and
+            isSafePostSuperCondition(ast, semantic, condition.data.ternary.b) and
+            isSafePostSuperCondition(ast, semantic, condition.data.ternary.c);
+    }
+    return false;
 }
 
 fn isSafePostSuperConditionalStatement(
