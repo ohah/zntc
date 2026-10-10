@@ -2339,6 +2339,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_arrow = false;
     var found_native_await = false;
     var found_native_generator = false;
+    var found_lowered_generator = false;
     var found_native_tagged_template = false;
     var found_native_for_in = false;
     var found_lowered_for_in = false;
@@ -2386,8 +2387,14 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const flags = ast.extra_data.items[flags_at];
                 const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
                 const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
-                if ((is_generator and (is_async or options.unsupported.generator)) or
-                    (is_async and options.unsupported.async_await)) return false;
+                if (is_generator and is_async) return false;
+                if (is_generator and options.unsupported.generator) {
+                    // The state-machine visitor binds its generated state and
+                    // temp symbols into the edited graph. Async generators
+                    // still use the conservative resync path above.
+                    found_lowered_generator = true;
+                }
+                if (is_async and options.unsupported.async_await) return false;
             },
             .variable_declaration => {
                 const kind = ast.variableDeclarationKind(node);
@@ -2653,8 +2660,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 found_native_await = true;
             },
             .yield_expression => {
-                if (options.unsupported.generator) return false;
-                found_native_generator = true;
+                if (options.unsupported.generator) {
+                    found_lowered_generator = true;
+                } else {
+                    found_native_generator = true;
+                }
             },
             .tagged_template_expression => {
                 if (options.unsupported.template_literal) return false;
@@ -2858,7 +2868,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             found_lowered_optional_catch_binding = true;
         }
     }
-    return found_arrow or found_native_await or found_native_generator or found_native_tagged_template or
+    return found_arrow or found_native_await or found_native_generator or found_lowered_generator or found_native_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
         found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_class or
@@ -2872,15 +2882,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_optional_catch_binding;
 }
 
-/// A retained prepass graph may absorb only the `__values`/`__asyncValues`
-/// virtual imports introduced by audited iterator lowering and `__read`/`__rest`
-/// imports introduced by audited destructuring/object-rest lowering.
-/// Any other runtime helper can indicate an independently lowered construct,
-/// so keep that module on semantic resync.
+/// A retained prepass graph may absorb the `__generator` import introduced by
+/// synchronous generator lowering, `__values`/`__asyncValues` imports introduced
+/// by audited iterator lowering, `__read`/`__rest` imports introduced by audited
+/// destructuring/object-rest lowering, and class-call checks from bounded class
+/// lowering. Any other runtime helper can indicate an independently lowered
+/// construct, so keep that module on semantic resync.
 fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
 ) bool {
     var other_helpers = helpers;
+    other_helpers.generator = false;
     other_helpers.values = false;
     other_helpers.async_values = false;
     other_helpers.read = false;
@@ -3041,10 +3053,9 @@ fn canKeepPrepassSemanticGraph(
             .with_statement,
             => return false,
             .yield_expression => {
-                // Native sync generators preserve the source function scope.
-                // The reachable-node subset check rejects async and downlevel
-                // generators before this module can retain its semantic graph.
-                if (options.unsupported.generator) return false;
+                // The reachable-node subset validates the generated state and
+                // temp identities for synchronous downlevel generators. Async
+                // generators and unsupported method forms are rejected there.
             },
             .await_expression => {
                 // Top-level await is vetoed above. Await inside a native async
