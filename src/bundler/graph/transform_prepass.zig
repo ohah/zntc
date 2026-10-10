@@ -1889,7 +1889,7 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// accompany plain methods and a terminal accessor group when its body contains
 /// only audited declarations, expressions, control flow, and loops. Named or
 /// anonymous class expressions are admitted only as direct initializers of a
-/// top-level `var` declarator; other expression positions stay on reanalysis.
+/// `var` declarator; other expression positions stay on reanalysis.
 /// Anonymous expressions are safe because lowering registers the generated
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass
@@ -1992,22 +1992,18 @@ fn isSimpleClass(
     return true;
 }
 
-fn isDirectTopLevelVarClassExpression(ast: *const ast_mod.Ast, target_raw: u32) bool {
-    if (ast.nodes.items.len == 0) return false;
-    const root_idx = ast.transformed_root orelse @as(
-        ast_mod.NodeIndex,
-        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
-    );
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len or
-        ast.getNode(root_idx).tag != .program) return false;
-    const statements = ast.getNode(root_idx).data.list;
+fn isDirectVarClassExpression(
+    ast: *const ast_mod.Ast,
+    reachable_nodes: []const u32,
+    target_raw: u32,
+) bool {
+    if (target_raw >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
-    if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
-    for (extras[statements.start .. statements.start + statements.len]) |raw_statement| {
+    for (reachable_nodes) |raw_statement| {
         if (raw_statement >= ast.nodes.items.len) return false;
         const statement = ast.nodes.items[raw_statement];
-        if (statement.tag != .variable_declaration or
-            ast.variableDeclarationKind(statement) != .@"var") continue;
+        if (statement.tag != .variable_declaration) continue;
+        if (ast.variableDeclarationKind(statement) != .@"var") continue;
         const declaration_extra = statement.data.extra;
         if (declaration_extra > extras.len or extras.len - declaration_extra < 3) return false;
         const declarators_start = extras[declaration_extra + 1];
@@ -2025,21 +2021,22 @@ fn isDirectTopLevelVarClassExpression(ast: *const ast_mod.Ast, target_raw: u32) 
     return false;
 }
 
-fn isTopLevelSimpleClass(
+fn isRetainableGraphClass(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
+    reachable_nodes: []const u32,
     node: ast_mod.Node,
     raw_node: usize,
     top_level_statements: *const std.DynamicBitSet,
     source_binds_object: bool,
 ) bool {
-    const is_top_level = switch (node.tag) {
+    const has_safe_owner = switch (node.tag) {
         .class_declaration => top_level_statements.isSet(raw_node),
-        .class_expression => isDirectTopLevelVarClassExpression(ast, @intCast(raw_node)),
+        .class_expression => isDirectVarClassExpression(ast, reachable_nodes, @intCast(raw_node)),
         else => false,
     };
-    return is_top_level and isSimpleClass(allocator, ast, semantic, node, source_binds_object);
+    return has_safe_owner and isSimpleClass(allocator, ast, semantic, node, source_binds_object);
 }
 
 fn collectSimpleConstructorDefaultParameterNodes(
@@ -2370,7 +2367,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
 
     // Default-parameter lowering replaces only these literal assignment
     // patterns with exact reads/writes of the same parameter SymbolId. Admit
-    // those nodes only when their owning top-level class already passes the
+    // those nodes only when their owning retained class already passes the
     // complete retained-graph preflight. Cache the class decisions so the
     // node walk below does not repeat the full class-body check.
     var retained_simple_class_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -2381,10 +2378,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
         for (reachable_nodes) |raw_idx| {
             const class_node = ast.nodes.items[raw_idx];
             if (class_node.tag != .class_declaration and class_node.tag != .class_expression) continue;
-            if (!isTopLevelSimpleClass(
+            if (!isRetainableGraphClass(
                 allocator,
                 ast,
                 semantic,
+                reachable_nodes,
                 class_node,
                 raw_idx,
                 &top_level_statements,
