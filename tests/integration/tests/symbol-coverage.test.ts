@@ -9759,6 +9759,35 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 constructor spread preserves callee identity and evaluates complex callees once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-constructor-spread-symbols-'));
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-constructor-spread-output-'));
+    const file = join(dir, 'entry.mjs');
+    writeFileSync(
+      file,
+      [
+        'function Pair(left, right) { this.total = left + right; }',
+        'function make(values) { return new Pair(...values); }',
+        'var constructorCalls = 0;',
+        'function getPair() { constructorCalls++; return Pair; }',
+        'function makeIndirect(values) { return new (getPair())(...values); }',
+        'console.log(make([4, 7]).total, makeIndirect([5, 6]).total, constructorCalls);',
+      ].join('\n'),
+    );
+    try {
+      const { stderr, exitCode } = runCoverage(file, TARGETS[0], outDir);
+      expect(exitCode, stderr).toBe(0);
+      expect(transformIdentityAuditProblems(stderr), stderr).toEqual([]);
+
+      const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('11 11 1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 arrow lowering retains computed object data key temp identities', () => {
     const cases = [
       {
