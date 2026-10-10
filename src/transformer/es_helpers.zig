@@ -15,6 +15,7 @@ const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const symbol_mod = @import("../semantic/symbol.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const string_escape = @import("../string_escape.zig");
 
@@ -1072,6 +1073,14 @@ pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
     try self.synthetic_names.put(self.allocator, key, key);
     try self.synthetic_taken.put(self.allocator, key, {});
     return key;
+}
+
+/// Mark an exact generated binding for the standalone final-name pass.
+pub fn markStandaloneLateSyntheticSymbol(self: anytype, symbol_id: symbol_mod.SymbolId, kind: symbol_mod.SyntheticKind) void {
+    const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late synthetic output name has no semantic editor", .{});
+    const raw = @intFromEnum(symbol_id);
+    if (raw >= editor.symbols.items.len) std.debug.panic("late synthetic output name has an invalid SymbolId", .{});
+    editor.symbols.items[raw].synthetic_kind = kind;
 }
 
 /// Resolve a codegen-created binding whose readable base name is not one of the

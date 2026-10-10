@@ -595,7 +595,11 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // The constructor scope is already reserved by the class lowering
             // caller. Give the generated NewTarget binding its exact identity
             // here, then carry that handle to its only use below.
-            const new_target_name = try es_helpers.resolveSyntheticName(self, "_newTarget");
+            const late_new_target_name = es_helpers.canUseLateStandaloneOutputName(self, function_scope);
+            const new_target_name = if (late_new_target_name)
+                try es_helpers.deferSyntheticOutputName(self, "_newTarget")
+            else
+                try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "_newTarget", function_scope);
             const new_target_binding = try es_helpers.makeExactSyntheticBinding(self, new_target_name);
             const new_target_name_span = self.ast.getNode(new_target_binding).data.string_ref;
             const new_target_symbol = try self.declareSyntheticInScope(
@@ -604,6 +608,10 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 .variable_var,
                 function_scope,
             );
+            if (late_new_target_name) {
+                const symbol_id = new_target_symbol orelse std.debug.panic("late default class _newTarget binding has no SymbolId", .{});
+                es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .class_new_target_binding);
+            }
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const parent_ref = try self.makeCurrentClassSuperRef(super_class_span, self.current_super_class_old_idx, function_scope);
             const args_ref = try es_helpers.makeGlobalRef(self, "arguments");
