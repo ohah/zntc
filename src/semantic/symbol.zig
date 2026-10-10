@@ -278,6 +278,9 @@ pub const SyntheticKind = enum(u8) {
     /// ES5 class-self aliases for constructors that shadow their class name.
     /// Standalone output selects their spellings from exact SymbolIds after generated names are known.
     class_self_alias_binding,
+    /// Outer variable synthesized for `export default class {}` during ES5
+    /// lowering. Standalone output can finalize its spelling from this SymbolId.
+    anonymous_class_export_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

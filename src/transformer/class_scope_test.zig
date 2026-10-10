@@ -1833,6 +1833,135 @@ test "#4819 anonymous ES5 class expression name gets an exact SymbolId before wr
     try std.testing.expectEqual(@as(usize, 3), reads);
 }
 
+test "#4819 anonymous default ES5 class export has an exact generated binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "class Base { static read() { return 1; } } const _Class = 17; const _Class2 = 18; export default class extends Base { static self() { return super.read(); } }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    if (!report.hasCompleteExactCoverage()) coverage.printStrict("anonymous-default-class-es5.ts", &report);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var generated_bindings: usize = 0;
+    var outer_symbol: ?u32 = null;
+    var inner_symbol: ?u32 = null;
+    for (reachable) |raw| {
+        const binding = transformer.ast.nodes.items[raw];
+        if (binding.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(binding.data.string_ref), "_Class3")) continue;
+        if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
+        const id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
+        generated_bindings += 1;
+        switch (edited.symbols.items[id].kind) {
+            .variable_var => outer_symbol = id,
+            .function_decl => inner_symbol = id,
+            else => return error.TestUnexpectedResult,
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), generated_bindings);
+    const outer_id = outer_symbol orelse return error.TestUnexpectedResult;
+    const inner_id = inner_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expect(outer_id != inner_id);
+    try std.testing.expectEqual(
+        @as(?usize, outer_id),
+        edited.scope_maps[edited.symbols.items[outer_id].scope_id.toIndex()].get("_Class3"),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, inner_id),
+        edited.scope_maps[edited.symbols.items[inner_id].scope_id.toIndex()].get("_Class3"),
+    );
+
+    var export_uses_outer_symbol = false;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .export_default_declaration) continue;
+        const operand: NodeIndex = node.data.unary.operand;
+        if (operand.isNone() or @intFromEnum(operand) >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[@intFromEnum(operand)] == outer_id) export_uses_outer_symbol = true;
+    }
+    try std.testing.expect(export_uses_outer_symbol);
+
+    var inner_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) == inner_id and reference.flags.read) inner_reads += 1;
+    }
+    try std.testing.expect(inner_reads > 0);
+}
+
+test "#4819 anonymous default ES5 class export marks its late output name by SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export default class { static value() { return 1; } }");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var outer_class_symbols: usize = 0;
+    for (edited.symbols.items) |symbol| {
+        if ((symbol.synthetic_kind orelse continue) != .anonymous_class_export_binding) continue;
+        try std.testing.expectEqualStrings("_Class", symbol.synthetic_name);
+        outer_class_symbols += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), outer_class_symbols);
+}
+
 test "#4819 inferred anonymous class does not gain a named-class wrapper" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
