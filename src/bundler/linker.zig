@@ -3062,7 +3062,7 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper, .optional_catch_binding => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper, .optional_catch_binding, .stage3_metadata_binding => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;

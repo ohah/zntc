@@ -608,7 +608,12 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // → 2번째 static { } 블록에 모두 넣기
 
     // const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-    const metadata_decl = try self.buildMetadataDecl();
+    const metadata_late_output_name = es_helpers.canUseLateStandaloneOutputName(self, class_parent_scope);
+    const metadata_name = if (metadata_late_output_name)
+        try es_helpers.deferSyntheticOutputName(self, "_metadata")
+    else
+        try es_helpers.resolveSyntheticName(self, "_metadata");
+    const metadata_decl = try self.buildMetadataDecl(metadata_name);
     const metadata_binding = generatedLetBinding(self, metadata_decl);
     try static_block_stmts.append(self.allocator, metadata_decl);
 
@@ -741,6 +746,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_const,
             metadata_block_scope,
         )) orelse std.debug.panic("Stage 3 metadata binding has no SymbolId", .{});
+        if (metadata_late_output_name) {
+            const editor = if (self.semantic_editor) |*semantic_editor|
+                semantic_editor
+            else
+                std.debug.panic("late-named Stage 3 metadata has no semantic editor", .{});
+            editor.symbols.items[@intFromEnum(metadata_symbol)].synthetic_kind = .stage3_metadata_binding;
+        }
         for (metadata_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, metadata_symbol, metadata_block_scope, .{ .read = true });
         }

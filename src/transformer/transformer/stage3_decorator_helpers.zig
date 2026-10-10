@@ -542,7 +542,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
 }
 
 /// const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
+pub fn buildMetadataDecl(self: anytype, metadata_name: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @intFromEnum(NodeIndex.none);
 
@@ -596,7 +596,7 @@ pub fn buildMetadataDecl(self: anytype) Error!NodeIndex {
     });
 
     // const _metadata = ...;
-    const metadata_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_metadata"));
+    const metadata_span = try self.ast.addString(metadata_name);
     const metadata_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, metadata_span);
     const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(metadata_binding), none, @intFromEnum(ternary),

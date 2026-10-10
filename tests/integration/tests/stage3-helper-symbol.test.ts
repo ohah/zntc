@@ -69,4 +69,32 @@ console.log(${sourceNames.join(', ')}, new Example().value);
       expect(runtime.stdout).toBe('7 8 9 10 4\n');
     });
   }
+
+  test('standalone Stage 3 metadata binding gets its output name from its exact SymbolId', async () => {
+    const fixture = await createFixture({
+      'input.ts': `
+var _metadata = 11, _metadata2 = 12;
+function dec(value: any, context: any): any { return value; }
+@dec
+class Example { @dec method() { return 4; } }
+@dec
+class Another { @dec method() { return 5; } }
+console.log(_metadata, _metadata2, new Example().method(), new Another().method());
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).toContain('var _metadata = 11');
+    expect(code).toContain('_metadata2 = 12');
+    expect(code).toMatch(/\b_metadata3\s*=/);
+    expect(code).toMatch(/\b_metadata4\s*=/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('11 12 4 5\n');
+  });
 });
