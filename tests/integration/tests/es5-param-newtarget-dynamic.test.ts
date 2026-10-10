@@ -118,6 +118,40 @@ describe('ES5 new.target in retained native parameter environments (#4819)', () 
     expect(stdout).toBe('true\n');
   });
 
+  test('late capture naming avoids a same-named source parameter before semantic resync', () => {
+    const { stdout, emitted } = compileAndRun(
+      [
+        'function Foo(_newTarget = 11, value = () => () => [new.target, _newTarget]) {',
+        '  var result = value()();',
+        '  this.target = result[0];',
+        '  this.parameter = result[1];',
+        '}',
+        'var instance = new Foo();',
+        'console.log(instance.target === Foo, instance.parameter);',
+      ].join('\n'),
+    );
+    expect(stdout).toBe('true 11\n');
+    expect(emitted).toContain('var _newTarget2 =');
+    expect(emitted).toContain('[_newTarget2, _newTarget]');
+  });
+
+  test('a collision in a later function is reserved before earlier late capture resolution', () => {
+    const { stdout } = compileAndRun(
+      [
+        'function Plain(value = () => () => new.target) { this.target = value()(); }',
+        'function Foo(_newTarget = 11, value = () => () => [new.target, _newTarget]) {',
+        '  var result = value()();',
+        '  this.target = result[0];',
+        '  this.parameter = result[1];',
+        '}',
+        'var plain = new Plain();',
+        'var instance = new Foo();',
+        'console.log(plain.target === Plain, instance.target === Foo, instance.parameter);',
+      ].join('\n'),
+    );
+    expect(stdout).toBe('true true 11\n');
+  });
+
   test('a nested ordinary function keeps its own new.target boundary', () => {
     const { stdout } = compileAndRun(
       [

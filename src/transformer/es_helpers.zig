@@ -1083,7 +1083,10 @@ pub const ScopedSyntheticOutputName = struct {
 /// Share one collision decision between an exact generated reference and the
 /// binding that is emitted later for its output scope.
 pub fn resolveScopedSyntheticOutputName(self: anytype, name: []const u8, scope_id: ScopeId) !ScopedSyntheticOutputName {
-    const late = canUseLateStandaloneOutputName(self, scope_id);
+    // Late output naming still needs a unique working spelling while the
+    // semantic graph is reconciled. A source collision can otherwise make a
+    // generated binding share a source SymbolId before the final-name pass.
+    const late = canUseLateStandaloneOutputName(self, scope_id) and !(try syntheticNameInUse(self, name));
     const resolved = if (late)
         try deferSyntheticOutputName(self, name)
     else
