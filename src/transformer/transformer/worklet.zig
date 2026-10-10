@@ -35,6 +35,12 @@ pub const ClosureVar = struct {
     /// true면 `<name>` 대신 `<base_class>.<name>` 형태로 closure 값 생성.
     /// name은 이미 `<BaseClass>__classFactory`로 설정되어 있어야 함.
     class_factory_base: ?[]const u8 = null,
+    /// The closure object's property key when it differs from the source name.
+    /// This keeps a source variable from colliding with a reserved class-factory key.
+    closure_key: ?[]const u8 = null,
+    /// Class-factory metadata can share a spelling with a user local. Keep its
+    /// closure entry, but don't inject a duplicate lexical binding into initData.
+    skip_binding: bool = false,
 };
 
 // ================================================================
@@ -214,19 +220,37 @@ pub fn collectClosureVars(
     }
 
     // 4b. `new X()` — 로컬/전역/사용자 globals 제외, 각 class의 factory entry 추가.
+    const NewClassEntry = struct { name: []const u8, callee: NodeIndex };
+    var ordered_new_classes: std.ArrayList(NewClassEntry) = .empty;
+    defer ordered_new_classes.deinit(self.allocator);
     var nc_iter = new_classes.iterator();
     while (nc_iter.next()) |entry| {
-        const base_name = entry.key_ptr.*;
+        try ordered_new_classes.append(self.allocator, .{ .name = entry.key_ptr.*, .callee = entry.value_ptr.* });
+    }
+    std.mem.sort(NewClassEntry, ordered_new_classes.items, {}, struct {
+        fn lessThan(_: void, a: NewClassEntry, b: NewClassEntry) bool {
+            return std.mem.order(u8, a.name, b.name) == .lt;
+        }
+    }.lessThan);
+    for (ordered_new_classes.items) |entry| {
+        const base_name = entry.name;
         if (locals.contains(base_name)) continue;
         if (isClosureExcludedGlobal(base_name)) continue;
         if (string_list.contains(self.options.worklet_globals, base_name)) continue;
         const base_duped = self.allocator.dupe(u8, base_name) catch return error.OutOfMemory;
         // factory key: "<BaseClass>__classFactory"
         const factory_name = std.fmt.allocPrint(self.allocator, "{s}__classFactory", .{base_name}) catch return error.OutOfMemory;
+        var factory_name_collision = locals.contains(factory_name);
+        for (result.items) |*closure_var| {
+            if (closure_var.class_factory_base != null or !std.mem.eql(u8, closure_var.name, factory_name)) continue;
+            closure_var.closure_key = try uniqueWorkletClosureKey(self, result.items, &new_classes);
+            factory_name_collision = true;
+        }
         try result.append(self.allocator, .{
             .name = factory_name,
-            .ref_idx = entry.value_ptr.*,
+            .ref_idx = entry.callee,
             .class_factory_base = base_duped,
+            .skip_binding = factory_name_collision,
         });
     }
 
@@ -238,6 +262,42 @@ pub fn collectClosureVars(
     }.lessThan);
 
     return result.toOwnedSlice(self.allocator);
+}
+
+/// Pick a closure object key that cannot overwrite a captured source value or
+/// one of the special `<Class>__classFactory` entries.
+fn uniqueWorkletClosureKey(
+    self: *Transformer,
+    closure_vars: []const ClosureVar,
+    new_classes: *const std.StringHashMapUnmanaged(NodeIndex),
+) Error![]const u8 {
+    var suffix: usize = 0;
+    while (true) : (suffix += 1) {
+        const candidate = try std.fmt.allocPrint(self.allocator, "__zntcWorkletClosure{d}", .{suffix});
+        var used = false;
+        for (closure_vars) |closure_var| {
+            if (std.mem.eql(u8, closure_var.name, candidate) or
+                (closure_var.closure_key != null and std.mem.eql(u8, closure_var.closure_key.?, candidate)))
+            {
+                used = true;
+                break;
+            }
+        }
+        if (!used) {
+            var iter = new_classes.keyIterator();
+            while (iter.next()) |base_name| {
+                const factory_name = try std.fmt.allocPrint(self.allocator, "{s}__classFactory", .{base_name.*});
+                const collides = std.mem.eql(u8, factory_name, candidate);
+                self.allocator.free(factory_name);
+                if (collides) {
+                    used = true;
+                    break;
+                }
+            }
+        }
+        if (!used) return candidate;
+        self.allocator.free(candidate);
+    }
 }
 
 /// 바인딩 패턴에서 이름을 추출한다.
@@ -749,19 +809,24 @@ fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Erro
     const zero_span = Span{ .start = 0, .end = 0 };
 
     for (closure_vars) |cv| {
-        const name_span = try self.ast.addString(cv.name);
-        const key = try es_helpers.makePropertyNameFromSpan(self, name_span);
+        const source_name_span = try self.ast.addString(cv.name);
+        const closure_key = cv.closure_key orelse cv.name;
+        const key_span = if (std.mem.eql(u8, closure_key, cv.name))
+            source_name_span
+        else
+            try self.ast.addString(closure_key);
+        const key = try es_helpers.makePropertyNameFromSpan(self, key_span);
         // 값 생성: 일반 closure는 identifier_reference, worklet class factory는
         // `<BaseClass>.<name>` 형태의 static_member_expression.
         const value = if (cv.class_factory_base) |base| blk: {
             // `<BaseClass>` — ref_idx 는 `new BaseClass()` 의 callee 라 그 클래스 심볼을 물려받는다.
             const base_ref = try self.makeUserRefNamed(base, cv.ref_idx);
-            const factory_ref = try es_helpers.makePropertyNameFromSpan(self, name_span);
+            const factory_ref = try es_helpers.makePropertyNameFromSpan(self, key_span);
             break :blk try self.addExtraNode(.static_member_expression, zero_span, &.{
                 @intFromEnum(base_ref), @intFromEnum(factory_ref), 0,
             });
         } else blk: {
-            const ref = try self.makeIdentifierRefWithSymbol(name_span, cv.ref_idx);
+            const ref = try self.makeIdentifierRefWithSymbol(source_name_span, cv.ref_idx);
             // Closure object values are fresh reads at the generated factory
             // site. Preserve their exact semantic evidence as well as their
             // SymbolId so coverage and downstream scope analysis see the use.
@@ -956,11 +1021,18 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
     // Babel/Metro 출력 (`const {X,Y}`)과 형태 일치 — Reanimated가 worklet code string을 파싱할 때 동일 형태 기대.
     // key 는 buildClosureObject 가 만든 `__closure` 객체의 속성 이름(원래 이름)과 같아야 한다.
     for (closure_vars) |cv| {
-        const key = try es_helpers.makePropertyName(self, cv.name);
+        if (cv.skip_binding) continue;
+        const closure_key = cv.closure_key orelse cv.name;
+        const key_span = try self.ast.addString(closure_key);
+        const key = try es_helpers.makePropertyNameFromSpan(self, key_span);
+        const binding = if (std.mem.eql(u8, closure_key, cv.name))
+            NodeIndex.none
+        else
+            try es_helpers.makeExactSyntheticBinding(self, cv.name);
         const prop = try self.ast.addNode(.{
             .tag = .binding_property,
             .span = zero_span,
-            .data = .{ .binary = .{ .left = key, .right = NodeIndex.none, .flags = 0 } },
+            .data = .{ .binary = .{ .left = key, .right = binding, .flags = 0 } },
         });
         try self.scratch.append(self.allocator, prop);
     }

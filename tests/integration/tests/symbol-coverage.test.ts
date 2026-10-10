@@ -10063,6 +10063,117 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('Reanimated class factory closure key does not capture same-named source locals', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-class-factory-name-collision-'));
+    const entry = join(dir, 'entry.js');
+    writeFileSync(
+      entry,
+      [
+        'class Clazz { __workletClass = true; value() { return 1; } }',
+        'class Other { __workletClass = true; value() { return 2; } }',
+        'const Clazz__classFactory = 73;',
+        'const Other__classFactory = 74;',
+        'const __zntcWorkletClosure0 = 88;',
+        'export function capturedName() {',
+        '  "worklet";',
+        '  const other = new Other();',
+        '  const instance = new Clazz();',
+        '  return [other.value(), instance.value(), Clazz__classFactory, Other__classFactory, __zntcWorkletClosure0];',
+        '}',
+        'export function plainName() {',
+        '  "worklet";',
+        '  return Clazz__classFactory;',
+        '}',
+        'export function localName() {',
+        '  "worklet";',
+        '  const Clazz__classFactory = 19;',
+        '  const instance = new Clazz();',
+        '  return [instance.value(), Clazz__classFactory];',
+        '}',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    try {
+      for (const minifyIdentifiers of [false, true]) {
+        const runner = [
+          `import { build } from ${JSON.stringify(coreEntry)};`,
+          `const result = await build(${JSON.stringify({
+            entryPoints: [entry],
+            platform: 'react-native',
+            format: 'cjs',
+            target: 'esnext',
+            workletTransform: true,
+            minifyIdentifiers,
+            write: false,
+          })});`,
+          'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+          'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+        ].join('\n');
+        const proc = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          encoding: 'utf8',
+        });
+        expect(proc.status, proc.stderr).toBe(0);
+        const outputs = JSON.parse(proc.stdout) as string[];
+        expect(outputs).toHaveLength(1);
+        const output = outputs[0]!;
+        expect(output).toMatch(/Clazz__classFactory:\s*[A-Za-z_$][\w$]*\.Clazz__classFactory/);
+        expect(output).toMatch(/Other__classFactory:\s*[A-Za-z_$][\w$]*\.Other__classFactory/);
+        const userClosureAlias = output.match(/(__zntcWorkletClosure1):\s*[A-Za-z_$][\w$]*/)?.[1];
+        const otherClosureAlias = output.match(/(__zntcWorkletClosure2):\s*[A-Za-z_$][\w$]*/)?.[1];
+        expect(userClosureAlias).toBeDefined();
+        expect(otherClosureAlias).toBeDefined();
+
+        const initDataCodes = Array.from(
+          output.matchAll(/__initData\s*=\s*\{\s*code:\s*("(?:\\.|[^"\\])*")/g),
+          (match) => JSON.parse(match[1]!) as string,
+        );
+        for (const name of ['capturedName', 'plainName', 'localName']) {
+          const initDataCode = initDataCodes.find((code) => code.startsWith(`function ${name}(`));
+          expect(initDataCode, `${name} init data was not emitted`).toBeDefined();
+          expect(() => new Function(initDataCode!)).not.toThrow();
+          if (initDataCode) {
+            if (name === 'capturedName') {
+              expect(initDataCode).toContain('__zntcWorkletClosure1:Clazz__classFactory');
+              expect(initDataCode).toContain('__zntcWorkletClosure2:Other__classFactory');
+            }
+            const generated = new Function(`return (${initDataCode});`)() as (this: {
+              __closure: Record<string, unknown>;
+            }) => unknown;
+            const closure: Record<string, unknown> = {
+              Clazz: class {
+                value() {
+                  return 1;
+                }
+              },
+              Other: class {
+                value() {
+                  return 2;
+                }
+              },
+            };
+            if (name === 'capturedName') {
+              closure[userClosureAlias!] = 73;
+              closure[otherClosureAlias!] = 74;
+              closure.__zntcWorkletClosure0 = 88;
+              closure.Clazz__classFactory = () => class {};
+              closure.Other__classFactory = () => class {};
+            } else {
+              closure.Clazz__classFactory = name === 'plainName' ? 73 : () => class {};
+            }
+            const value = generated.call({ __closure: closure });
+            const expectedValue =
+              name === 'capturedName' ? [2, 1, 73, 74, 88] : name === 'plainName' ? 73 : [1, 19];
+            expect(value, `${name}, minifyIdentifiers=${minifyIdentifiers}`).toEqual(expectedValue);
+          }
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('Reanimated worklet retains its graph when the body has an ordinary nested function', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-helper-retained-'));
     const entry = join(dir, 'entry.js');
