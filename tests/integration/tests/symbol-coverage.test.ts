@@ -4835,6 +4835,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       },
       {
         name: 'tagged template',
+        graph: 'retained',
         source: [
           'function tag(parts, value) { return parts[0] + value; }',
           'function render(value) { return (() => tag`answer:${value}`)(); }',
@@ -6612,14 +6613,46 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
       expect(nativeOutput.stdout).toBe('n=41!:false n=42!:true\n');
 
-      // ES5 lowering must retain the per-site template object identity while
-      // using the existing semantic reanalysis path for generated helpers.
+      // ES5 lowering creates an exact cache-function scope and data binding,
+      // so bundling can keep the edited graph through the generated helpers.
       const downlevel = run('--target=es5');
       expect(downlevel.status, downlevel.stderr).toBe(0);
-      expect(graphMode(downlevel.stderr), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(graphMode(downlevel.stderr), downlevel.stderr).toContain('semantic_graph=retained');
+      const downlevelReport = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(downlevelReport, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(downlevelReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${downlevelReport}`,
+        ).toBe(0);
+      }
+      expect(downlevelReport).toMatch(/clean=1(?:\s|$)/);
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('n=41!:false n=42!:true\n');
+
+      // Direct eval can shadow generated cache names, so the conservative
+      // resynchronization boundary remains in place for that module.
+      writeFileSync(
+        input,
+        [
+          'function tag(parts: TemplateStringsArray, value: number) { return `${parts[0]}${value}`; }',
+          'function emit(value: number) { eval("var _templateObject = 1"); return tag`answer:${value}`; }',
+          'console.log(emit(42));',
+        ].join('\n'),
+      );
+      const directEval = run('--target=es5');
+      expect(directEval.status, directEval.stderr).toBe(0);
+      expect(graphMode(directEval.stderr), directEval.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
+      expect(directEvalOutput.stdout).toBe('answer:42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

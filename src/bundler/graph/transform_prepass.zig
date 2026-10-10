@@ -2019,9 +2019,10 @@ fn collectSimpleConstructorDefaultParameterNodes(
 }
 
 /// Arrow lowering edits the existing graph and creates only output function
-/// scopes plus explicitly tracked captures. Native `await`, `yield`, and tagged
-/// templates add no binding or scope edges. Keep these paths only for the
-/// audited syntax subset; downlevel async/generator/template bodies stay on reanalysis.
+/// scopes plus explicitly tracked captures. Native `await` and `yield` add no
+/// binding or scope edges. Tagged-template lowering registers its cache
+/// functions, data bindings, and references with exact identities. Keep these
+/// paths only for the audited syntax subset; async lowering stays on reanalysis.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -2341,6 +2342,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_native_generator = false;
     var found_lowered_generator = false;
     var found_native_tagged_template = false;
+    var found_lowered_tagged_template = false;
     var found_native_for_in = false;
     var found_lowered_for_in = false;
     var found_lowered_classic_for = false;
@@ -2667,8 +2669,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .tagged_template_expression => {
-                if (options.unsupported.template_literal) return false;
-                found_native_tagged_template = true;
+                if (options.unsupported.template_literal) {
+                    // The ES2015 lowering creates a cache function plus its
+                    // function-local data binding. The transformer registers
+                    // both output scopes, exact binding SymbolIds, and every
+                    // cache/data reference, so this edit can keep the graph.
+                    found_lowered_tagged_template = true;
+                } else {
+                    found_native_tagged_template = true;
+                }
             },
             .for_of_statement => {
                 if (options.unsupported.for_of) {
@@ -2868,7 +2877,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
             found_lowered_optional_catch_binding = true;
         }
     }
-    return found_arrow or found_native_await or found_native_generator or found_lowered_generator or found_native_tagged_template or
+    return found_arrow or found_native_await or found_native_generator or found_lowered_generator or
+        found_native_tagged_template or found_lowered_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
         found_native_for_of or found_lowered_for_of or
         found_native_for_await or found_lowered_for_await or found_native_class or found_lowered_simple_class or
@@ -2882,12 +2892,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_optional_catch_binding;
 }
 
-/// A retained prepass graph may absorb the `__generator` import introduced by
-/// synchronous generator lowering, `__values`/`__asyncValues` imports introduced
-/// by audited iterator lowering, `__read`/`__rest` imports introduced by audited
-/// destructuring/object-rest lowering, and class-call checks from bounded class
-/// lowering. Any other runtime helper can indicate an independently lowered
-/// construct, so keep that module on semantic resync.
+/// A retained prepass graph may absorb imports introduced by audited generator,
+/// iterator, destructuring, tagged-template, inferred class-name, and bounded
+/// class lowering. Any other runtime helper can indicate an independently
+/// lowered construct, so keep that module on semantic resync.
 fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
 ) bool {
@@ -2898,6 +2906,8 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.read = false;
     other_helpers.rest = false;
     other_helpers.class_call_check = false;
+    other_helpers.tagged_template_literal = false;
+    other_helpers.keep_names = false;
     return !other_helpers.hasAny();
 }
 
