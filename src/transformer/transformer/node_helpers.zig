@@ -309,9 +309,23 @@ pub fn makeUserRefNamed(self: anytype, name: []const u8, origin: NodeIndex) Erro
 /// synthesized argument will live, so `current_scope` is not sufficient.
 pub fn makeUserRefNamedAtScope(self: anytype, name: []const u8, origin: NodeIndex, scope: @import("../../semantic/scope.zig").ScopeId) Error!NodeIndex {
     const name_span = try self.ast.addString(name);
-    if (!self.current_class_name_node.isNone() and
-        std.mem.eql(u8, self.ast.getText(self.ast.getNode(self.current_class_name_node).data.string_ref), name))
-    {
+    const same_class_name = !self.current_class_name_node.isNone() and
+        std.mem.eql(u8, self.ast.getText(self.ast.getNode(self.current_class_name_node).data.string_ref), name);
+    const static_class_name = isCurrentStaticClassName(self, name_span);
+    if (self.semantic_edit_enabled and same_class_name) {
+        const output_scope = if (static_class_name)
+            classNameOutputLookupScope(self, scope)
+        else
+            classNameOutputScopeOutsideFunction(self, scope);
+        if (output_scope) |lookup_scope| {
+            const ref = try makeLexicalScopeRefAtScope(self, name, lookup_scope);
+            const symbol_id = self.getSymbolIdAt(ref) orelse
+                std.debug.panic("generated class-name read has no output binding", .{});
+            try self.trackExactOutputReference(ref, symbol_id);
+            return ref;
+        }
+    }
+    if (same_class_name) {
         return makeCurrentClassRefAtScope(self, name_span, scope);
     }
     const ref = try makeIdentifierRefWithSymbol(self, name_span, origin);
@@ -388,6 +402,14 @@ pub fn makeCurrentClassRef(self: anytype, name_span: Span) Error!NodeIndex {
 pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import("../../semantic/scope.zig").ScopeId) Error!NodeIndex {
     const cls = self.current_class_name_node;
     const same = !cls.isNone() and std.mem.eql(u8, self.ast.getText(self.ast.getNode(cls).data.string_ref), self.ast.getText(name_span));
+    if (self.semantic_edit_enabled and isCurrentStaticClassName(self, name_span)) {
+        const lookup_scope = classNameOutputLookupScope(self, scope);
+        const ref = try makeLexicalScopeRefAtScope(self, self.ast.getText(name_span), lookup_scope);
+        const output_id = self.getSymbolIdAt(ref) orelse
+            std.debug.panic("generated static class-name read has no output binding", .{});
+        try self.trackExactOutputReference(ref, output_id);
+        return ref;
+    }
     // 클래스 이름 노드가 합성(`const C = class {}` 의 안쪽 `C`)이면 `propagateSymbolId` 가 합성 표시를
     // 물려준다. 심볼이 없다는 이유만으로 합성이라 하지 않는다 — 그러면 심볼을 빠뜨린 경우도 가려진다.
     if (same) if (self.current_class_self_symbol_id) |raw_id| {
@@ -431,6 +453,49 @@ pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import
         };
     };
     return ref;
+}
+
+/// Static initializers are emitted after the class body. Resolve their class
+/// name from the output parent of that class body, which may be a wrapper
+/// function for a downlevel class expression.
+fn classNameOutputLookupScope(self: anytype, start: @import("../../semantic/scope.zig").ScopeId) @import("../../semantic/scope.zig").ScopeId {
+    if (start.isNone()) return start;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var cursor = start;
+    var hops: usize = 0;
+    while (!cursor.isNone() and hops < scopes.len) : (hops += 1) {
+        if (cursor.toIndex() >= scopes.len) return start;
+        const current = scopes[cursor.toIndex()];
+        if (current.kind == .class_body) return current.parent;
+        cursor = current.parent;
+    }
+    return start;
+}
+
+fn isCurrentStaticClassName(self: anytype, name_span: Span) bool {
+    const static_span = self.static_block_class_name orelse return false;
+    if (self.current_class_name_node.isNone()) return false;
+    const current_span = self.ast.getNode(self.current_class_name_node).data.string_ref;
+    return std.meta.eql(current_span, static_span) and
+        std.mem.eql(u8, self.ast.getText(static_span), self.ast.getText(name_span));
+}
+
+/// Deferred class initializer helpers can be created after the static-context
+/// frame has closed. A class-body scope with no intervening function still
+/// identifies an emitted use outside the class body.
+fn classNameOutputScopeOutsideFunction(self: anytype, start: @import("../../semantic/scope.zig").ScopeId) ?@import("../../semantic/scope.zig").ScopeId {
+    if (start.isNone()) return null;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var cursor = start;
+    var hops: usize = 0;
+    while (!cursor.isNone() and hops < scopes.len) : (hops += 1) {
+        if (cursor.toIndex() >= scopes.len) return null;
+        const current = scopes[cursor.toIndex()];
+        if (current.kind == .function) return null;
+        if (current.kind == .class_body) return current.parent;
+        cursor = current.parent;
+    }
+    return null;
 }
 
 /// 사용자 변수 **바인딩**을 `name_span` 으로 새로 만들고 원래 바인딩(`origin`)의 심볼을 물려준다
