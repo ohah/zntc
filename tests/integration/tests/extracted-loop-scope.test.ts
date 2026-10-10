@@ -67,6 +67,34 @@ console.log(collect());
 `,
   },
   {
+    name: 'control-flow result names use the final standalone symbol set',
+    extension: 'mjs',
+    source: `function run(_ret, _ret2) {
+  const readers = [];
+  for (let index = 0; index < 3; index++) {
+    readers.push(() => index);
+    if (index === 1) return readers.map((read) => read()).join(',');
+  }
+  return 'none';
+}
+console.log(run(10, 20));
+`,
+  },
+  {
+    name: 'escaped direct eval identifiers reserve early control-flow result names',
+    extension: 'mjs',
+    source: `function run() {
+  const readers = [];
+  for (let index = 0; index < 3; index++) {
+    readers.push(() => index);
+    if (index === 1) return [eval('typeof \\u005fret'), readers.map((read) => read()).join(',')].join(':');
+  }
+  return 'none';
+}
+console.log(run());
+`,
+  },
+  {
     name: 'erased type references and nested function defaults',
     extension: 'ts',
     source: `
@@ -126,6 +154,18 @@ describe('extracted loop scopes (#4819)', () => {
             out,
           ]);
           expect(result.exitCode).toBe(0);
+          if (fixtureCase.name.includes('control-flow result')) {
+            const emitted = await Bun.file(out).text();
+            expect(emitted).not.toContain('__zntc_loop_ret');
+            if (
+              fixtureCase.name ===
+                'control-flow result names use the final standalone symbol set' &&
+              !bundled &&
+              !minify
+            ) {
+              expect(emitted).toContain('_ret3');
+            }
+          }
           const runtime = spawnSync('node', [out], { encoding: 'utf8' });
           expect(runtime.status).toBe(0);
           expect(runtime.stdout).toBe(native.stdout);
