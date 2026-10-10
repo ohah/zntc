@@ -535,17 +535,33 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     // 같은 NodeIndex 를 getter/setter 양쪽에서 공유 — codegen 은
                     // index 만 보고 emit 하므로 안전 — method-level decorator
                     // computed key path 와 동일 방향.
+                    // These methods are synthesized after source semantic scopes
+                    // exist, so register exact function and parameter bindings
+                    // before later class lowering rewrites their references.
                     {
                         const return_expr = try makeThisPrivateField(self, storage_span);
                         const getter = try self.buildGetterMethod(new_key, return_expr, is_static, zero_span);
+                        if (self.semantic_edit_enabled)
+                            _ = try self.addGeneratedFunctionScope(class_parent_scope, getter);
                         try new_members.append(self.allocator, getter);
                     }
 
                     // set x(value) { this.#_x_accessor_storage = value; }
                     {
                         const assign_target = try makeThisPrivateField(self, storage_span);
-                        const setter = try self.buildSetterMethod(new_key, assign_target, is_static, zero_span);
-                        try new_members.append(self.allocator, setter);
+                        const setter = try self.buildSetterMethodWithHandles(new_key, assign_target, is_static, zero_span);
+                        if (self.semantic_edit_enabled) {
+                            const setter_scope = try self.addGeneratedFunctionScope(class_parent_scope, setter.method);
+                            const parameter_span = self.ast.getNode(setter.parameter).span;
+                            const parameter_symbol = (try self.declareSyntheticInScope(
+                                setter.parameter,
+                                parameter_span,
+                                .parameter,
+                                setter_scope,
+                            )) orelse std.debug.panic("Stage 3 accessor setter has no exact parameter SymbolId", .{});
+                            try self.addSyntheticRefInScope(setter.value_reference, parameter_symbol, setter_scope, .{ .read = true });
+                        }
+                        try new_members.append(self.allocator, setter.method);
                     }
                 } else {
                     // decorator 없는 accessor → 그대로 유지
