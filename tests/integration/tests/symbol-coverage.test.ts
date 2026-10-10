@@ -5104,13 +5104,16 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       [
         'type Count = number;',
         'function* numbers(start: Count) {',
-        '  const sent: Count = yield start;',
+        '  var sent: Count = yield start;',
+        '  for (const value of [sent, sent + 1]) yield value;',
         '  return sent;',
         '}',
-        'const iterator = numbers(41);',
-        'const first = iterator.next();',
-        'const second = iterator.next(42);',
-        'console.log(first.value, first.done, second.value, second.done);',
+        'var iterator = numbers(41);',
+        'var first = iterator.next();',
+        'var second = iterator.next(42);',
+        'var third = iterator.next();',
+        'var fourth = iterator.next();',
+        'console.log(first.value, first.done, second.value, second.done, third.value, third.done, fourth.value, fourth.done);',
       ].join('\n'),
     );
 
@@ -5158,16 +5161,68 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(report).toMatch(/clean=1(?:\s|$)/);
       const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
-      expect(nativeOutput.stdout).toBe('41 false 42 true\n');
+      expect(nativeOutput.stdout).toBe('41 false 42 false 43 false 42 true\n');
 
-      // Generator downlevel replaces the native source body and remains on
-      // semantic reanalysis.
+      // Downlevel state-machine and per-iteration loop bindings keep their
+      // exact SymbolIds and ScopeIds without running a replacement analyzer.
       const downlevel = run('--target=es5');
       expect(downlevel.status, downlevel.stderr).toBe(0);
-      expect(graphMode(downlevel.stderr), downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(graphMode(downlevel.stderr), downlevel.stderr).toContain('semantic_graph=retained');
+      const downlevelReport = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(downlevelReport, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(downlevelReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${downlevelReport}`,
+        ).toBe(0);
+      }
+      expect(downlevelReport).toMatch(/clean=1(?:\s|$)/);
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
-      expect(downlevelOutput.stdout).toBe('41 false 42 true\n');
+      expect(downlevelOutput.stdout).toBe('41 false 42 false 43 false 42 true\n');
+
+      // Direct eval observes source names, so it stays on semantic reanalysis.
+      writeFileSync(
+        input,
+        [
+          'function* values() {',
+          '  var sourceName = 41;',
+          "  eval('console.log(sourceName + 1)');",
+          '  yield sourceName;',
+          '}',
+          'var iterator = values();',
+          'console.log(iterator.next().value);',
+        ].join('\n'),
+      );
+      const directEval = run('--target=es5');
+      expect(directEval.status, directEval.stderr).toBe(0);
+      expect(graphMode(directEval.stderr), directEval.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
+      expect(directEvalOutput.stdout).toBe('42\n41\n');
+
+      // Generator methods are outside this bounded graph-retention slice.
+      writeFileSync(
+        input,
+        [
+          'var object = { *values() { yield 42; } };',
+          'console.log(object.values().next().value);',
+        ].join('\n'),
+      );
+      const generatorMethod = run('--target=es5');
+      expect(generatorMethod.status, generatorMethod.stderr).toBe(0);
+      expect(graphMode(generatorMethod.stderr), generatorMethod.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const generatorMethodOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(generatorMethodOutput.status, generatorMethodOutput.stderr).toBe(0);
+      expect(generatorMethodOutput.stdout).toBe('42\n');
 
       // Async generators remain conservative even for a native-capable target.
       writeFileSync(
