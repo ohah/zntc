@@ -13401,6 +13401,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '5 1\n',
       },
       {
+        name: 'explicit super followed by one simple this-property assignment retains its graph',
+        source:
+          'var seed = 4; function Base() { this.base = 2; } class Child extends Base { constructor() { super(); this.value = seed + 1; } } var child = new Child(); console.log(child.base, child.value, child instanceof Child);',
+        graph: 'retained',
+        output: '2 5 true\n',
+      },
+      {
+        name: 'post-super this assignment uses the object returned by the base constructor once',
+        source:
+          'var writes = 0; function Base() { return new Proxy({}, { set(target, key, value) { writes += 1; target[key] = value; return true; } }); } class Child extends Base { constructor() { super(); this.value = 3; } } var child = new Child(); console.log(child.value, writes, child instanceof Child);',
+        graph: 'retained',
+        output: '3 1 false\n',
+      },
+      {
         name: 'nested explicit super constructor retains exact outer base and inner class identities',
         source:
           'function make(Base, Child) { function inner() { class Child extends Base { constructor() { super(); } self() { return Child; } } var child = new Child(); return [child.self() === Child, child instanceof Base, Child.name]; } return [inner().join(" "), Child]; } console.log(make(function Base() {}, 9).join("|"));',
@@ -13441,6 +13455,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'function Base(value) { this.value = value; } class Child extends Base { constructor(flag) { if (flag) super(1); else super(2); this.seen = this.value; } } console.log(new Child(true).seen, new Child(false).seen);',
         graph: 'reanalyzed',
         output: '1 2\n',
+      },
+      {
+        name: 'post-super this assignment with a call initializer stays on reanalysis',
+        source:
+          'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); this.value = value(); } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '3 1\n',
+      },
+      {
+        name: 'post-super constructor with a second assignment stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); this.value = 3; this.other = 4; } } var child = new Child(); console.log(child.value, child.other);',
+        graph: 'reanalyzed',
+        output: '3 4\n',
       },
       {
         name: 'explicit derived constructor this before super stays on reanalysis',
