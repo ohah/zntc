@@ -236,13 +236,37 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // 클래스 이름 추출. `export default class {}` 는 class_declaration 이지만
             // 이름이 없으므로, ES5 lowering 의 outer `var` 선언에도 실제 binding 이 필요하다.
             var new_name = try self.visitNode(name_idx);
+            var anonymous_export_name: ?es_helpers.ScopedSyntheticOutputName = null;
             const outer_name_span = if (!new_name.isNone())
                 self.ast.getNode(new_name).data.string_ref
             else blk: {
-                const synthetic = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
+                const output_name = if (self.semantic_edit_enabled) blk_name: {
+                    const scope = self.nearestVarScope(self.current_scope);
+                    break :blk_name try es_helpers.resolveScopedSyntheticOutputName(self, "_Class", scope);
+                } else es_helpers.ScopedSyntheticOutputName{
+                    .name = try es_helpers.resolveSyntheticName(self, "_Class"),
+                    .late = false,
+                };
+                anonymous_export_name = output_name;
+                const synthetic = try self.ast.addString(output_name.name);
                 new_name = try es_helpers.makeExactSyntheticBindingFromSpan(self, synthetic);
                 break :blk synthetic;
             };
+            if (anonymous_export_name) |output_name| {
+                if (self.semantic_edit_enabled) {
+                    const output_scope = self.nearestVarScope(self.current_scope);
+                    const symbol_id = try self.declareSyntheticInScope(new_name, span, .variable_var, output_scope) orelse
+                        std.debug.panic("anonymous default class export binding has no direct SymbolId", .{});
+                    try self.lowered_anonymous_class_export_bindings.put(
+                        self.allocator,
+                        @intFromEnum(source_idx),
+                        @intFromEnum(new_name),
+                    );
+                    if (output_name.late) {
+                        es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .anonymous_class_export_binding);
+                    }
+                }
+            }
             // The outer declaration may need an alias, but class-self uses
             // retain their exact inner SymbolId and original source spelling.
             const name_span = if (!name_idx.isNone()) self.ast.getNode(name_idx).data.string_ref else outer_name_span;
@@ -393,8 +417,17 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // realloc에 freed될 수 있어 쥐지 않는다 (#1481).
             const fresh_name_span = name_span;
             const fresh_name = try self.makeUserBinding(fresh_name_span, .none);
-            if (name_idx.isNone() or !(try self.bindClassSelfStorage(source_idx, fresh_name, iife_scope)))
+            const bound_source_class_self = if (!name_idx.isNone())
+                try self.bindClassSelfStorage(source_idx, fresh_name, iife_scope)
+            else
+                false;
+            if (!name_idx.isNone() and !bound_source_class_self)
                 try self.propagateSymbolId(new_name, fresh_name);
+            if (self.semantic_edit_enabled and name_idx.isNone()) {
+                const class_self_id = try self.declareSyntheticInScope(fresh_name, span, .function_decl, iife_scope) orelse
+                    std.debug.panic("anonymous ES5 class declaration has no exact class-self SymbolId", .{});
+                self.current_class_self_symbol_id = @intFromEnum(class_self_id);
+            }
             if (inner != null and (write_binding != null or has_self_alias or renamed_outer))
                 try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
 

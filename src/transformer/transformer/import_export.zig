@@ -28,11 +28,23 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[operand_node.data.extra]);
             // named class/function → 원본 이름 사용
             // anonymous class → lowerClassDeclaration이 "_Class"로 합성 (addString)
+            const generated_export_binding: NodeIndex = if (operand_node.tag == .class_declaration and name_idx.isNone())
+                if (self.lowered_anonymous_class_export_bindings.get(@intFromEnum(operand_idx))) |raw| @enumFromInt(raw) else .none
+            else
+                .none;
             const name_span = if (!name_idx.isNone())
                 self.ast.getNode(name_idx).data.string_ref
+            else if (!generated_export_binding.isNone())
+                self.ast.getNode(generated_export_binding).data.string_ref
             else
                 try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_Class"));
-            const name_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
+            const name_ref = if (!generated_export_binding.isNone() and self.semantic_edit_enabled) blk: {
+                const symbol_id = self.getSymbolIdAt(generated_export_binding) orelse
+                    std.debug.panic("anonymous default class export reference lost its exact binding SymbolId", .{});
+                const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
+                try self.trackExactOutputRead(ref, symbol_id);
+                break :blk ref;
+            } else try self.makeIdentifierRefWithSymbol(name_span, name_idx);
             return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = node.span,

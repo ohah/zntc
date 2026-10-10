@@ -211,4 +211,90 @@ describe('ES5 class self storage (#4819)', () => {
     expect(runtime.status, runtime.stderr).toBe(0);
     expect(runtime.stdout).toBe(native.stdout);
   });
+
+  for (const minify of [false, true]) {
+    test(`anonymous default class keeps exact export and eval names, ${minify ? 'minified' : 'plain'}`, async () => {
+      const input = `
+        globalThis._Class3 = 'global';
+        const _Class = 'source';
+        const _Class2 = 'source2';
+        class Base { static read() { return 'base'; } }
+        export default class extends Base {
+          static read() { return [_Class, _Class2, eval('_Class3'), super.read()]; }
+        }
+      `;
+      const fixture = await createFixture({
+        'input.mjs': input,
+        'package.json': '{"type":"module"}',
+      });
+      cleanup = fixture.cleanup;
+      const inputPath = join(fixture.dir, 'input.mjs');
+      const native = spawnSync(
+        'node',
+        [
+          '--input-type=module',
+          '-e',
+          'const { default: C } = await import(process.argv[1]); console.log(JSON.stringify(C.read()));',
+          inputPath,
+        ],
+        { cwd: fixture.dir, encoding: 'utf8' },
+      );
+      expect(native.status, native.stderr).toBe(0);
+      const output = join(fixture.dir, 'out.mjs');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.mjs',
+        '--target=es5',
+        ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const code = readFileSync(output, 'utf8');
+      if (!minify) expect(code).toContain('_Class4');
+      const runtime = spawnSync(
+        'node',
+        [
+          '--input-type=module',
+          '-e',
+          'const { default: C } = await import(process.argv[1]); console.log(JSON.stringify(C.read()));',
+          output,
+        ],
+        { cwd: fixture.dir, encoding: 'utf8' },
+      );
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe(native.stdout);
+    });
+  }
+
+  for (const bundle of [false, true]) {
+    test(`anonymous default class export follows its finalized SymbolId name, ${bundle ? 'bundle' : 'single'}`, async () => {
+      const fixture = await createFixture({
+        'input.mjs': 'export default class { static read() { return 42; } }',
+        'package.json': '{"type":"module"}',
+      });
+      cleanup = fixture.cleanup;
+      const inputPath = join(fixture.dir, 'input.mjs');
+      const script = 'const { default: C } = await import(process.argv[1]); console.log(C.read());';
+      const native = spawnSync('node', ['--input-type=module', '-e', script, inputPath], {
+        cwd: fixture.dir,
+        encoding: 'utf8',
+      });
+      expect(native.status, native.stderr).toBe(0);
+      const output = join(fixture.dir, 'out.mjs');
+      const result = await runZntcInDir(fixture.dir, [
+        ...(bundle ? ['--bundle', '--platform=node', '--format=esm'] : []),
+        'input.mjs',
+        '--target=es5',
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const runtime = spawnSync('node', ['--input-type=module', '-e', script, output], {
+        cwd: fixture.dir,
+        encoding: 'utf8',
+      });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe(native.stdout);
+    });
+  }
 });
