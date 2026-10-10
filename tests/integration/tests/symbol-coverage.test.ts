@@ -13408,11 +13408,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 5 true\n',
       },
       {
-        name: 'post-super this assignment uses the object returned by the base constructor once',
+        name: 'post-super assignments use the base-returned object in source order',
         source:
-          'var writes = 0; function Base() { return new Proxy({}, { set(target, key, value) { writes += 1; target[key] = value; return true; } }); } class Child extends Base { constructor() { super(); this.value = 3; } } var child = new Child(); console.log(child.value, writes, child instanceof Child);',
+          'var writes = []; function Base() { return new Proxy({}, { set(target, key, value) { writes.push(key + ":" + value); target[key] = value; return true; } }); } class Child extends Base { constructor() { super(); this.value = 3; this.other = 4; } } var child = new Child(); console.log(child.value, child.other, writes.join(","), child instanceof Child);',
         graph: 'retained',
-        output: '3 1 false\n',
+        output: '3 4 value:3,other:4 false\n',
       },
       {
         name: 'nested explicit super constructor retains exact outer base and inner class identities',
@@ -13464,11 +13464,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 1\n',
       },
       {
-        name: 'post-super constructor with a second assignment stays on reanalysis',
+        name: 'post-super constructor with a local declaration stays on reanalysis',
         source:
-          'function Base() {} class Child extends Base { constructor() { super(); this.value = 3; this.other = 4; } } var child = new Child(); console.log(child.value, child.other);',
+          'function Base() {} class Child extends Base { constructor() { super(); this.value = 3; var other = 4; } } var child = new Child(); console.log(child.value);',
         graph: 'reanalyzed',
-        output: '3 4\n',
+        output: '3\n',
       },
       {
         name: 'explicit derived constructor this before super stays on reanalysis',

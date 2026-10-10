@@ -1827,17 +1827,21 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (body.tag != .block_statement) return false;
     const statements = body.data.list;
     if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
-    if (statements.len == 1 and params.data.list.len == 0) {
-        const only_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
-        if (isSafeSuperConstructorStatement(ast, semantic, only_statement)) return true;
-    }
-    // Keep the initialization boundary explicit: only one direct assignment to
-    // a named `this` property may follow the single super call.
-    if (statements.len == 2 and params.data.list.len == 0) {
+    if (statements.len > 0 and params.data.list.len == 0) {
         const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
-        const assignment_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start + 1]);
-        if (isSafeSuperConstructorStatement(ast, semantic, super_statement) and
-            isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, assignment_statement)) return true;
+        if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
+            // Keep the initialization boundary explicit: every following
+            // statement must be a named `this` property assignment.
+            for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
+                if (raw_statement_idx >= ast.nodes.items.len or
+                    !isSafeConstructorThisPropertyAssignmentStatement(
+                        ast,
+                        semantic,
+                        @enumFromInt(raw_statement_idx),
+                    )) return false;
+            }
+            return true;
+        }
     }
     for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
         if (raw_statement_idx >= ast.nodes.items.len or
