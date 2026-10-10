@@ -51,6 +51,27 @@ const PropertyExtra = ast_mod.PropertyExtra;
 
 pub fn ES2015Class(comptime Transformer: type) type {
     return struct {
+        const ClassSuperParameterName = struct {
+            name: []const u8,
+            late: bool,
+        };
+
+        fn classSuperParameterName(self: *Transformer, output_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!ClassSuperParameterName {
+            const late = es_helpers.canUseLateStandaloneOutputName(self, output_scope);
+            const name = if (late)
+                try es_helpers.deferSyntheticOutputName(self, "_super")
+            else
+                try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "_super", output_scope);
+            return .{ .name = name, .late = late };
+        }
+
+        fn markLateClassSuperParameter(self: *Transformer, symbol_id: @import("../semantic/symbol.zig").SymbolId) void {
+            const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late class super parameter has no semantic editor", .{});
+            const raw = @intFromEnum(symbol_id);
+            if (raw >= editor.symbols.items.len) std.debug.panic("late class super parameter has an invalid SymbolId", .{});
+            editor.symbols.items[raw].synthetic_kind = .class_super_parameter;
+        }
+
         /// A source class-name use is identified by its inner SymbolId. The
         /// descriptor is private to the emitted class wrapper and makes every
         /// assignment form use JavaScript's ordinary getter/setter sequencing.
@@ -231,9 +252,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // super class 처리
             const has_super = !super_idx.isNone();
+            var late_super_parameter = false;
             var super_span: ?Span = null;
             var super_expr_node: NodeIndex = .none; // 표현식 super class 저장용
             if (has_super) {
+                const parameter_name = try classSuperParameterName(self, iife_parent);
+                late_super_parameter = parameter_name.late;
                 const super_node = self.ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
                     // 단순 식별자: IIFE 매개변수 _super로 전달.
@@ -246,12 +270,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         super_node.data.string_ref;
                     super_expr_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
                     try self.trackUserReadFromBinding(super_expr_node, super_idx, iife_parent);
-                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
+                    super_span = try self.ast.addString(parameter_name.name);
                 } else {
                     // 표현식 (e.g. React.Component, eventTargetShim.EventTarget):
                     // visit하여 new AST 노드로 변환, IIFE 매개변수 _super로 전달.
                     super_expr_node = try self.visitNode(super_idx);
-                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
+                    super_span = try self.ast.addString(parameter_name.name);
                 }
             }
 
@@ -266,6 +290,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const exact_name_span = self.ast.getNode(super_param_binding).data.string_ref;
                 super_span = exact_name_span;
                 const symbol_id = try self.declareSyntheticInScope(super_param_binding, span, .parameter, iife_scope);
+                if (late_super_parameter) {
+                    const exact_symbol_id = symbol_id orelse std.debug.panic("late class super parameter is missing its exact SymbolId", .{});
+                    markLateClassSuperParameter(self, exact_symbol_id);
+                }
                 self.active_class_super_parameter = .{ .binding = super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
             }
 
@@ -596,9 +624,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // super class
             const has_super = !super_idx.isNone();
+            var late_super_parameter = false;
             var super_span: ?Span = null;
             var expr_super_node: NodeIndex = .none;
             if (has_super) {
+                const parameter_name = try classSuperParameterName(self, iife_parent);
+                late_super_parameter = parameter_name.late;
                 const super_node = self.ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
                     // 단순 식별자도 IIFE 매개변수 _super로 전달 (스코프 격리)
@@ -608,10 +639,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         super_node.data.string_ref;
                     expr_super_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
                     try self.trackUserReadFromBinding(expr_super_node, super_idx, iife_parent);
-                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
+                    super_span = try self.ast.addString(parameter_name.name);
                 } else {
                     expr_super_node = try self.visitNode(super_idx);
-                    super_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_super"));
+                    super_span = try self.ast.addString(parameter_name.name);
                 }
             }
 
@@ -694,6 +725,10 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 super_span = exact_name_span;
                 self.current_super_class = exact_name_span;
                 const symbol_id = try self.declareSyntheticInScope(expr_super_param_binding, span, .parameter, iife_scope);
+                if (late_super_parameter) {
+                    const exact_symbol_id = symbol_id orelse std.debug.panic("late class expression super parameter is missing its exact SymbolId", .{});
+                    markLateClassSuperParameter(self, exact_symbol_id);
+                }
                 self.active_class_super_parameter = .{ .binding = expr_super_param_binding, .name_span = exact_name_span, .symbol_id = symbol_id };
             }
             if (has_extra or wrap_self_alias) try self.reparentGeneratedScope(source_class_scope, iife_scope);
