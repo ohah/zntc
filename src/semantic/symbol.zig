@@ -281,6 +281,9 @@ pub const SyntheticKind = enum(u8) {
     /// Outer variable synthesized for `export default class {}` during ES5
     /// lowering. Standalone output can finalize its spelling from this SymbolId.
     anonymous_class_export_binding,
+    /// Binding for an extracted ES5 loop closure. Standalone output selects
+    /// its final spelling from this exact SymbolId after lowering completes.
+    block_scoping_loop_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

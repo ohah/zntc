@@ -50,6 +50,23 @@ console.log(readers.map(read => read()).join(','));
 `,
   },
   {
+    name: 'direct eval keeps the source-visible loop spelling reserved',
+    extension: 'mjs',
+    source: `
+function collect() {
+  const readers = [];
+  for (let index = 0; index < 2; index++) {
+    readers.push(() => [index, eval('typeof _loop2')].join(':'));
+  }
+  for (let index = 0; index < 2; index++) {
+    readers.push(() => [index, eval('typeof _loop2')].join(':'));
+  }
+  return readers.map(read => read()).join('|');
+}
+console.log(collect());
+`,
+  },
+  {
     name: 'erased type references and nested function defaults',
     extension: 'ts',
     source: `
