@@ -9427,7 +9427,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('array and call spread lowering retain audited helper and literal graphs', () => {
+  test('array, call, and constructor spread lowering retain audited graphs', () => {
     const cases = [
       {
         name: 'native array call and constructor spread on node5',
@@ -9533,13 +9533,61 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: '11\n',
       },
       {
-        name: 'constructor dynamic spread stays on reanalysis on node4',
+        name: 'bound direct constructor dynamic spread retains graph on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function Pair(left, right) { this.total = left + right; }',
           'function pair(values) { return new Pair(...values); }',
           'console.log(pair([4, 7]).total);',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'unbound direct constructor callee stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.RemotePair = function (left, right) { this.total = left + right; };',
+          'function pair(values) { return new RemotePair(...values); }',
+          'console.log(pair([4, 7]).total);',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'member constructor callee stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'var constructors = { Pair: function (left, right) { this.total = left + right; } };',
+          'function pair(values) { return new constructors.Pair(...values); }',
+          'console.log(pair([4, 7]).total);',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'complex constructor callee stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'var constructorCalls = 0;',
+          'function Pair(left, right) { this.total = left + right; }',
+          'function getPair() { constructorCalls++; return Pair; }',
+          'function pair(values) { return new (getPair())(...values); }',
+          'var result = pair([4, 7]);',
+          'console.log(result.total, constructorCalls);',
+        ].join('\n'),
+        output: '11 1\n',
+      },
+      {
+        name: 'unbound constructor spread operand stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.remoteValues = [4, 7];',
+          'function Pair(left, right) { this.total = left + right; }',
+          'function pair() { return new Pair(...remoteValues); }',
+          'console.log(pair().total);',
         ].join('\n'),
         output: '11\n',
       },
@@ -9554,9 +9602,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: '7\n',
       },
       {
-        name: 'constructor spread literal lowering on node4',
+        name: 'constructor spread literal lowering retains graph on node4',
         target: 'node4',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'function Pair(left, right) { this.left = left; this.right = right; }',
           'function pair() { return (() => new Pair(...[4, 7]))(); }',

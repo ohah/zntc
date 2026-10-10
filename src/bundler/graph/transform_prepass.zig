@@ -463,33 +463,37 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return false;
 }
 
-fn hasOnlyRetainableArraySpreadOperands(
+fn hasOnlyRetainableSpreadOperands(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
 ) bool {
     const extras = ast.extra_data.items;
-    var direct_call_callee: ?ast_mod.NodeIndex = null;
+    var direct_identifier_callee: ?ast_mod.NodeIndex = null;
     const start: u32, const len: u32 = switch (node.tag) {
         .array_expression => .{ node.data.list.start, node.data.list.len },
-        .call_expression => blk: {
+        .call_expression, .new_expression => blk: {
             const extra = node.data.extra;
             if (extra > extras.len or extras.len - extra <= 3) return false;
             const callee: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
             if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len or
                 ast.nodes.items[@intFromEnum(callee)].tag != .identifier_reference) return false;
-            direct_call_callee = callee;
+            direct_identifier_callee = callee;
             break :blk .{ extras[extra + 1], extras[extra + 2] };
         },
         else => return false,
     };
     if (start > extras.len or len > extras.len - start) return false;
-    if (node.tag == .call_expression) {
-        const callee = direct_call_callee orelse return false;
+    if (node.tag == .call_expression or node.tag == .new_expression) {
+        const callee = direct_identifier_callee orelse return false;
         if (!isBoundSourceIdentifierReference(ast, semantic, callee)) return false;
-        const call_extra = node.data.extra;
-        if (call_extra > extras.len or extras.len - call_extra <= 3 or
-            (extras[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+        const expression_extra = node.data.extra;
+        if (expression_extra > extras.len or extras.len - expression_extra <= 3) return false;
+        const expression_flags = extras[expression_extra + 3];
+        if (node.tag == .call_expression and
+            (expression_flags & ast_mod.CallFlags.optional_chain) != 0) return false;
+        if (node.tag == .new_expression and
+            (expression_flags & ast_mod.CallFlags.callee_optional_chain) != 0) return false;
     }
 
     for (extras[start .. start + len]) |raw_idx| {
@@ -501,11 +505,13 @@ fn hasOnlyRetainableArraySpreadOperands(
         const operand_node = ast.nodes.items[@intFromEnum(operand)];
         if (operand_node.tag == .identifier_reference) {
             // Array literals need only the exact helper reference. Direct call
-            // spread also needs a bound, non-optional identifier callee so the
-            // retained graph covers both source references. Other callees,
-            // constructor spread, and unresolved operands stay on reanalysis.
+            // and constructor spread also need a bound identifier callee so
+            // the retained graph covers both source references. Other callees
+            // and unresolved operands stay on reanalysis.
             if (!isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
-            if (node.tag != .array_expression and node.tag != .call_expression) {
+            if (node.tag != .array_expression and node.tag != .call_expression and
+                node.tag != .new_expression)
+            {
                 return false;
             }
             continue;
@@ -2629,7 +2635,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_lowered_optional_chaining = true;
                 }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
-                    if (!hasOnlyRetainableArraySpreadOperands(ast, semantic, node)) return false;
+                    if (!hasOnlyRetainableSpreadOperands(ast, semantic, node)) return false;
                     found_lowered_array_spread = true;
                 }
             },
