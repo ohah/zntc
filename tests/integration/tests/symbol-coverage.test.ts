@@ -13899,6 +13899,83 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 1\n',
       },
       {
+        name: 'post-super while preserves local identity, continue, and Proxy write order',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var _this = 10, i = 0; while (i < 3) { if (i === 1) { i++; continue; } this.value = i; i++; } this.total = i; } } var child = new Child(); console.log(child.value, child.total, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '2 3 90 value:0|value:2|total:3 false\n',
+      },
+      {
+        name: 'post-super do while preserves first-iteration and Proxy write order',
+        source:
+          'var events = []; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var i = 0; do { this.value = i; i++; } while (i < 2); } } var child = new Child(); console.log(child.value, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '1 value:0|value:1 false\n',
+      },
+      {
+        name: 'post-super classic for preserves continue and local binding identities',
+        source:
+          'var events = []; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var total = 0; for (var i = 0; i < 3; i++) { if (i === 1) continue; total += i; this.total = total; } } } var child = new Child(); console.log(child.total, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '2 total:0|total:2 false\n',
+      },
+      {
+        name: 'post-super lexical for retains per-loop binding with this writes',
+        source:
+          'var events = []; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); for (let i = 0; i < 2; i++) { this.value = i; } } } var child = new Child(); console.log(child.value, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '1 value:0|value:1 false\n',
+      },
+      {
+        name: 'post-super for of preserves iterator calls, temp collisions, and write order',
+        source:
+          'var iteratorReads = 0, nextCalls = 0, events = [], _iterator = 70, _step = 80; var values = { [Symbol.iterator]() { iteratorReads++; var i = 0; return { next() { nextCalls++; return i < 2 ? { value: ++i, done: false } : { done: true }; } }; } }; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var _iterator = 1, _step = 2, sum = 0; for (var value of values) { sum += value; this.total = sum; } } } var child = new Child(); console.log(child.total, iteratorReads, nextCalls, _iterator, _step, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '3 1 3 70 80 total:1|total:3 false\n',
+      },
+      {
+        name: 'post-super for in preserves enumerated key order and writes',
+        source:
+          'var events = [], values = { a: 2, b: 3 }; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var count = 0; for (var key in values) { count++; this.last = key; } this.count = count; } } var child = new Child(); console.log(child.last, child.count, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: 'b 2 last:a|last:b|count:2 false\n',
+      },
+      {
+        name: 'post-super while this condition stays on reanalysis',
+        source:
+          'function Base() { this.count = 0; } class Child extends Base { constructor() { super(); while (this.count < 2) { this.count++; } } } var child = new Child(); console.log(child.count, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super for of call iterable stays on reanalysis',
+        source:
+          'var calls = 0; function values() { calls++; return [1, 2]; } function Base() {} class Child extends Base { constructor() { super(); var sum = 0; for (var value of values()) sum += value; this.total = sum; } } console.log(new Child().total, calls);',
+        graph: 'reanalyzed',
+        output: '3 1\n',
+      },
+      {
+        name: 'post-super loop nested switch with this stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); var i = 0; while (i < 1) { switch (i) { case 0: this.value = 1; break; } i++; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
+      },
+      {
+        name: 'post-super loop nested loop stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); var i = 0, j = 0; while (i < 1) { while (j < 1) j++; i++; } this.value = j; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
+      },
+      {
+        name: 'post-super lexical for of head stays on reanalysis',
+        source:
+          'var values = [1, 2]; function Base() {} class Child extends Base { constructor() { super(); var sum = 0; for (let value of values) sum += value; this.total = sum; } } var child = new Child(); console.log(child.total, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '3 true\n',
+      },
+      {
         name: 'post-super else-if call condition stays on reanalysis',
         source:
           'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (false) this.value = 1; else if (selected()) this.value = 2; else this.value = 3; } } console.log(new Child().value, calls);',
