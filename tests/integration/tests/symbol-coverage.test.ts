@@ -610,7 +610,25 @@ describe('symbol identity coverage gate (#4819)', () => {
           '  eval("a = 11");',
           '  return [a, read(), rest.b];',
           '}',
-          'console.log(JSON.stringify([run({ a: 1, b: 2 }), sameName({ a: 7, b: 8 }), sameNameClosure({ a: 12, b: 13 })]));',
+          'function* generator({ a, ...rest }, value = outside) {',
+          '  var outside = 4, a;',
+          '  eval("a = 9; outside");',
+          '  yield [a, value, outside, rest.b];',
+          '}',
+          'function parameterEval({ a, ...rest }, value = eval("outside")) {',
+          '  var outside = 4;',
+          '  eval("outside");',
+          '  return [a, value, outside, rest.b];',
+          '}',
+          'function parenthesizedParameterEval({ a, ...rest }, value = ((eval))("outside")) {',
+          '  var outside = 4;',
+          '  return [a, value, outside, rest.b];',
+          '}',
+          'function escapedParameterEval({ a, ...rest }, value = \\u0065val("outside")) {',
+          '  var outside = 4;',
+          '  return [a, value, outside, rest.b];',
+          '}',
+          'console.log(JSON.stringify([run({ a: 1, b: 2 }), sameName({ a: 7, b: 8 }), sameNameClosure({ a: 12, b: 13 }), Array.from(generator({ a: 1, b: 2 })), parameterEval({ a: 1, b: 2 }), parenthesizedParameterEval({ a: 1, b: 2 }), escapedParameterEval({ a: 1, b: 2 })]));',
         ].join('\n'),
       );
       const baseline = spawnSync('node', [file], { encoding: 'utf8' });
@@ -635,6 +653,42 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(synthetic, stderr).toBeDefined();
       expect(strictSchemaProblems(synthetic ?? ''), stderr).toEqual([]);
       expect(synthetic, stderr).toMatch(/consistent=1(?:\s|$).*symbol_identity_complete=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(baseline.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('with in a function body keeps moved defaults outside the body environment (#4819)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-dynamic-param-with-scope-'));
+    const file = join(dir, 'input.js');
+    const outDir = join(dir, 'out');
+    mkdirSync(outDir);
+    try {
+      writeFileSync(
+        file,
+        [
+          'var outside = 3;',
+          'function run({ a, ...rest }, value = outside) {',
+          '  var outside = 4;',
+          '  with ({ outside: 9 }) { value = outside; }',
+          '  return [a, value, outside, rest.b];',
+          '}',
+          'console.log(JSON.stringify(run({ a: 1, b: 2 })));',
+        ].join('\n'),
+      );
+      const baseline = spawnSync('node', [file], { encoding: 'utf8' });
+      expect(baseline.status, baseline.stderr).toBe(0);
+
+      const { stderr, exitCode } = runCoverage(file, TARGETS[2], outDir);
+      expect(exitCode, stderr).toBe(0);
+      const exact = stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(exact, stderr).toBeDefined();
+      expect(exactSchemaProblems(exact ?? ''), stderr).toEqual([]);
+      expect(exact, stderr).toMatch(/clean=1(?:\s|$)/);
 
       const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);

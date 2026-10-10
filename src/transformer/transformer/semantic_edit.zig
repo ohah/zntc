@@ -452,15 +452,52 @@ fn isGeneratedOutputVar(symbol: Symbol) bool {
             std.mem.startsWith(u8, symbol.synthetic_name, "_using"));
 }
 
+fn collectOutputNonSimpleParameterScopes(
+    self: *Transformer,
+    editor: *SemanticEditor,
+    root: NodeIndex,
+    scopes: *std.AutoHashMapUnmanaged(u32, void),
+) Transformer.Error!void {
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root) catch return error.OutOfMemory;
+    defer self.allocator.free(reachable);
+    const Params = @import("../es2015_params.zig").ES2015Params(Transformer);
+    for (reachable) |raw| {
+        if (raw >= self.ast.nodes.items.len) continue;
+        const function = self.ast.nodes.items[raw];
+        switch (function.tag) {
+            .arrow_function_expression,
+            .function_declaration,
+            .function_expression,
+            .function,
+            .method_definition,
+            => {},
+            else => continue,
+        }
+        const function_scope = self.outputOwnedScope(@enumFromInt(raw)) orelse continue;
+        if (function_scope.isNone() or function_scope.toIndex() >= editor.scopes.items.len) continue;
+        const parameter_scope = editor.scopes.items[function_scope.toIndex()].parent;
+        if (parameter_scope.isNone() or parameter_scope.toIndex() >= editor.scopes.items.len) continue;
+        const params = self.ast.functionParamsList(function);
+        if (params.len == 0 or !Params.hasDefaultOrRest(self, params)) continue;
+        try scopes.put(self.allocator, parameter_scope.toIndex(), {});
+    }
+}
+
 fn outputBindingTargetScope(
     self: *Transformer,
     editor: *SemanticEditor,
+    non_simple_parameter_scopes: *const std.AutoHashMapUnmanaged(u32, void),
     lexical_scope: ScopeId,
     symbol: Symbol,
     is_declaration_name: bool,
     output_var: bool,
 ) ScopeId {
     if (is_declaration_name) return lexical_scope;
+    // A retained non-simple formal list has a parameter environment distinct
+    // from the body's var scope. Once lowering makes that list simple, params
+    // share the emitted function scope and follow the usual var-scope rule.
+    if (symbol.kind == .parameter and non_simple_parameter_scopes.contains(symbol.scope_id.toIndex()))
+        return symbol.scope_id;
     if (symbol.kind.declFlags().function_scoped or
         (output_var and (isGeneratedOutputVar(symbol) or symbol.decl_flags.is_default_export)))
         return self.nearestVarScope(lexical_scope);
@@ -521,6 +558,9 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
     if (self.outputOwnedScope(root) == null) {
         try editor.scope_owner_map.put(self.allocator, @intFromEnum(root), @intFromEnum(root_scope));
     }
+    var non_simple_parameter_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer non_simple_parameter_scopes.deinit(self.allocator);
+    try collectOutputNonSimpleParameterScopes(self, editor, root, &non_simple_parameter_scopes);
     var stack: std.ArrayList(OutputScopeWork) = .empty;
     defer stack.deinit(self.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -617,7 +657,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                 const target_scope = if (isNamedFunctionExpressionBinding(self, work.parent, work.node))
                     symbol.scope_id
                 else
-                    outputBindingTargetScope(self, editor, scope, symbol, is_declaration_name, output_var);
+                    outputBindingTargetScope(self, editor, &non_simple_parameter_scopes, scope, symbol, is_declaration_name, output_var);
                 if (target_scope.isNone()) std.debug.panic("moved source binding has no emitted scope", .{});
                 if (symbol.scope_id != target_scope)
                     editor.relocateSymbolAs(@enumFromInt(id), target_scope, work.node) catch |err| return editError(err);
@@ -635,7 +675,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                     const target_scope = if (isNamedFunctionExpressionBinding(self, work.parent, work.node))
                         symbol.scope_id
                     else
-                        outputBindingTargetScope(self, editor, scope, symbol, is_declaration_name, output_var);
+                        outputBindingTargetScope(self, editor, &non_simple_parameter_scopes, scope, symbol, is_declaration_name, output_var);
                     if (!target_scope.isNone() and (symbol.synthetic_name.len > 0 or symbol.scope_id != target_scope)) {
                         try output_bindings.append(self.allocator, .{
                             .node = work.node,
