@@ -721,7 +721,10 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     const source_scope = class_scope orelse return error.TestUnexpectedResult;
     const source_parent = analyzer.scopes.items[source_scope].parent;
 
-    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
@@ -753,6 +756,11 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     }
     try std.testing.expectEqual(@as(usize, 1), metadata_bindings);
     const exact_metadata_id = metadata_id orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        @import("../semantic/symbol.zig").SyntheticKind.stage3_metadata_binding,
+        edited.symbols.items[exact_metadata_id].synthetic_kind.?,
+    );
+    try std.testing.expectEqualStrings("_metadata", edited.symbols.items[exact_metadata_id].synthetic_name);
     const metadata_scope = edited.symbols.items[exact_metadata_id].scope_id;
     try std.testing.expectEqual(class_iife, metadata_scope);
     try std.testing.expectEqual(@as(?usize, exact_metadata_id), edited.scope_maps[metadata_scope.toIndex()].get("_metadata"));

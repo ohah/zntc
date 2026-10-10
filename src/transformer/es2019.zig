@@ -49,7 +49,7 @@ pub fn ES2019(comptime Transformer: type) type {
             // SymbolId 집합을 보는 마지막 이름 단계에서 실제 이름을 배정한다.
             const new_body = try self.visitNode(body);
             const catch_scope = self.outputOwnedScope(owner) orelse self.current_scope;
-            const late_output_name = canUseLateCatchName(self, catch_scope);
+            const late_output_name = es_helpers.canUseLateStandaloneOutputName(self, catch_scope);
             const unused_span = if (late_output_name)
                 try self.ast.addString("_unused")
             else blk: {
@@ -70,20 +70,6 @@ pub fn ES2019(comptime Transformer: type) type {
                 .span = node.span,
                 .data = .{ .binary = .{ .left = unused_binding, .right = new_body, .flags = 0 } },
             });
-        }
-
-        fn canUseLateCatchName(self: *Transformer, catch_scope: @import("../semantic/scope.zig").ScopeId) bool {
-            if (!self.semantic_edit_enabled or !self.options.defer_runtime_helper_name_resolution or
-                self.options.emit_runtime_helper_imports or catch_scope.isNone()) return false;
-            const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-            var scope = catch_scope;
-            var hops: usize = 0;
-            while (!scope.isNone() and hops < scopes.len) : (hops += 1) {
-                const raw = scope.toIndex();
-                if (raw >= scopes.len or scopes[raw].blocksMangling()) return false;
-                scope = scopes[raw].parent;
-            }
-            return scope.isNone();
         }
     };
 }

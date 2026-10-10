@@ -567,6 +567,22 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
     return nameAppearsInSource(self, name);
 }
 
+/// Late standalone output names are safe only when the exact output scope is
+/// available and no enclosing scope exposes local spellings through eval/with.
+pub fn canUseLateStandaloneOutputName(self: anytype, scope_id: ScopeId) bool {
+    if (!self.semantic_edit_enabled or !self.options.defer_runtime_helper_name_resolution or
+        self.options.emit_runtime_helper_imports or scope_id.isNone()) return false;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var scope = scope_id;
+    var hops: usize = 0;
+    while (!scope.isNone() and hops < scopes.len) : (hops += 1) {
+        const raw = scope.toIndex();
+        if (raw >= scopes.len or scopes[raw].blocksMangling()) return false;
+        scope = scopes[raw].parent;
+    }
+    return scope.isNone();
+}
+
 /// A generated catch parameter is visible to direct eval in its catch body.
 /// Also reserve names written inside string literals that eval can parse as
 /// identifiers. This is intentionally conservative: a matching token in an
@@ -1017,6 +1033,20 @@ pub fn resolveSyntheticName(self: anytype, name: []const u8) ![]const u8 {
     try self.synthetic_names.put(self.allocator, key, resolved);
     try self.synthetic_taken.put(self.allocator, resolved, {});
     return resolved;
+}
+
+/// Keep a stable internal spelling for a generated name whose exact SymbolId
+/// will receive its emitted spelling in the standalone final-name pass.
+pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
+    if (self.synthetic_names.get(name)) |resolved| {
+        try self.synthetic_taken.put(self.allocator, resolved, {});
+        return resolved;
+    }
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const key = try self.name_arena.?.allocator().dupe(u8, name);
+    try self.synthetic_names.put(self.allocator, key, key);
+    try self.synthetic_taken.put(self.allocator, key, {});
+    return key;
 }
 
 /// Resolve a codegen-created binding whose readable base name is not one of the

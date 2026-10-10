@@ -1182,7 +1182,8 @@ fn buildStandaloneRuntimeHelperNameOverrides(
 fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbol) bool {
     return symbol.synthetic_kind == .runtime_helper_preamble or
         symbol.synthetic_kind == .runtime_helper_import or
-        symbol.synthetic_kind == .optional_catch_binding;
+        symbol.synthetic_kind == .optional_catch_binding or
+        symbol.synthetic_kind == .stage3_metadata_binding;
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {

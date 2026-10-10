@@ -251,6 +251,9 @@ pub const SyntheticKind = enum(u8) {
     /// non-minified output selects its spelling from this exact SymbolId after
     /// the transformed symbol set is complete.
     optional_catch_binding,
+    /// Stage 3 decorator metadata local. Standalone output selects its
+    /// spelling from this exact SymbolId after all generated names are known.
+    stage3_metadata_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
