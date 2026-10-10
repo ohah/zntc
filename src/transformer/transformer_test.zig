@@ -14,6 +14,7 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const Scope = @import("../semantic/scope.zig").Scope;
 const Span = @import("../lexer/token.zig").Span;
 const es_helpers = @import("es_helpers.zig");
+const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
 
 test "#4819 distinct synthetic bases do not reuse a reserved fallback name" {
     var ast = Ast.init(std.testing.allocator, "var _loop;");
@@ -96,6 +97,47 @@ test "#4819 numbered loop names avoid direct eval identifiers" {
     const scope: ScopeId = @enumFromInt(0);
     try std.testing.expectEqualStrings("_loop", try transformer.buildUniqueNameAvoidingDynamicEval("_loop", &counter, scope));
     try std.testing.expectEqualStrings("_loop3", try transformer.buildUniqueNameAvoidingDynamicEval("_loop", &counter, scope));
+}
+
+test "#4819 for-of step names avoid escaped direct eval identifiers" {
+    const source = "function f(){ eval('typeof \\u005fstep'); }";
+    var ast = Ast.init(std.testing.allocator, source);
+    defer ast.deinit();
+    const eval_text_start = std.mem.indexOf(u8, source, "'typeof \\u005fstep'").?;
+    const eval_text_span = Span{
+        .start = @intCast(eval_text_start),
+        .end = @intCast(eval_text_start + "'typeof \\u005fstep'".len),
+    };
+    _ = try ast.addNode(.{
+        .tag = .string_literal,
+        .span = eval_text_span,
+        .data = .{ .string_ref = eval_text_span },
+    });
+
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+    const symbol_name_start = std.mem.indexOf(u8, source, "f(").?;
+    var symbols = [_]@import("../semantic/symbol.zig").Symbol{.{
+        .name = .{ .start = @intCast(symbol_name_start), .end = @intCast(symbol_name_start + 1) },
+        .scope_id = .none,
+        .kind = .function_decl,
+        .declaration_span = .EMPTY,
+    }};
+    transformer.symbols = &symbols;
+    var scopes = [_]Scope{.{
+        .parent = .none,
+        .kind = .function,
+        .is_strict = false,
+        .subtree_has_direct_eval = true,
+    }};
+    transformer.scopes = &scopes;
+    var unresolved: std.StringHashMapUnmanaged(void) = .empty;
+    defer unresolved.deinit(std.testing.allocator);
+    transformer.unresolved_references = &unresolved;
+
+    const scope: ScopeId = @enumFromInt(0);
+    const step = try ForOf.uniqueStepName(&transformer, scope, false);
+    try std.testing.expectEqualStrings("_step2", transformer.ast.getText(step));
 }
 
 test "Transformer: empty program" {

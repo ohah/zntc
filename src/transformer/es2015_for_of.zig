@@ -96,10 +96,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const did_err = try es_helpers.makeTempVarSpan(self); // _b
             const err_val = try es_helpers.makeTempVarSpan(self); // _c
             const iter = try es_helpers.makeTempVarSpan(self); // _d
-            // step 은 본문(루프 변수 선언)에서 읽는다 — 본문이 `_loop` 함수로 추출되면 **함수 경계
-            // 너머**의 참조가 된다. 카운터 temp(`_e`)는 중첩 함수가 자기 temp 로 같은 이름을
-            // 다시 선언해 가릴 수 있어서, 모듈 전체에서 고유한 이름을 쓴다.
-            const step = try uniqueStepName(self);
             // Labeled for-of lowering enters here without visitNode(source_idx),
             // so the traversal cursor can still be the enclosing scope.
             const loop_scope = if (self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0)
@@ -112,6 +108,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 self.nearestVarScope(loop_scope)
             else
                 loop_scope;
+            // The iterator step is read from the body, including by an extracted
+            // `_loop` function. Only standalone paths with a stable exact owner
+            // can defer its output spelling until all symbols are known.
+            const late_step_output_name = stable_scope and es_helpers.canUseLateStandaloneOutputName(self, loop_scope);
+            const step = try uniqueStepName(self, loop_scope, late_step_output_name);
             if (register_sm_temps) {
                 try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step });
             }
@@ -171,6 +172,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 null
             else
                 try self.declareSyntheticInScope(step_binding, span, .variable_var, loop_scope);
+            if (late_step_output_name) {
+                const symbol = step_symbol orelse std.debug.panic("late-named for-of step has no exact SymbolId", .{});
+                es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, self.ast.getText(step), .for_of_step_binding, "_step");
+            }
             if (register_sm_temps) try self.recordGeneratorStateTempSymbol(step, step_symbol);
             const for_init = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, iter_binding, values_call, span),
@@ -447,10 +452,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             return false;
         }
 
-        pub fn uniqueStepName(self: *Transformer) Transformer.Error!Span {
-            const prefix = "_step";
+        pub fn uniqueStepName(self: *Transformer, scope: @import("../semantic/scope.zig").ScopeId, late_output_name: bool) Transformer.Error!Span {
+            const prefix = if (late_output_name) "__zntc_step" else "_step";
             while (true) {
-                const name = try self.buildUniqueName(prefix, &self.forof_step_counter);
+                const name = if (late_output_name)
+                    try self.buildUniqueName(prefix, &self.forof_step_counter)
+                else
+                    try self.buildUniqueNameAvoidingDynamicEval(prefix, &self.forof_step_counter, scope);
                 if (es_helpers.nameAppearsInSource(self, name)) continue;
                 const span = try self.ast.addString(name);
                 try self.generated_temp_spans.append(self.allocator, span);

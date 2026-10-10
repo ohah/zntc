@@ -106,7 +106,9 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             self.runtime_helpers.async_values = true;
 
             const iter = try es_helpers.makeTempVarSpan(self);
-            const step = try ForOf.uniqueStepName(self);
+            const late_step_output_name = register_semantics and !register_sm_temps and
+                es_helpers.canUseLateStandaloneOutputName(self, var_scope);
+            const step = try ForOf.uniqueStepName(self, source_loop_scope, late_step_output_name);
             const ret = try es_helpers.makeTempVarSpan(self);
             const errobj = try es_helpers.makeTempVarSpan(self);
             if (register_sm_temps) {
@@ -123,6 +125,10 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const semantic_scope: ?ScopeId = if (register_semantics) var_scope else null;
             const iter_temp = try self.createSyntheticTempBinding(iter, span, semantic_scope);
             const step_temp = try self.createSyntheticTempBinding(step, span, semantic_scope);
+            if (late_step_output_name) {
+                const symbol = step_temp.symbol_id orelse std.debug.panic("late-named for-await step has no exact SymbolId", .{});
+                es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, self.ast.getText(step_temp.name_span), .for_of_step_binding, "_step");
+            }
             const ret_temp = try self.createSyntheticTempBinding(ret, span, semantic_scope);
             const errobj_temp = try self.createSyntheticTempBinding(errobj, span, semantic_scope);
             var pending_refs: std.ArrayListUnmanaged(PendingTempReference) = .empty;

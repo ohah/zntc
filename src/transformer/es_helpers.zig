@@ -1122,6 +1122,25 @@ pub fn markStandaloneLateSyntheticSymbol(self: anytype, symbol_id: symbol_mod.Sy
     editor.symbols.items[raw].synthetic_kind = kind;
 }
 
+/// Mark an exact standalone synthetic binding whose internal staging spelling
+/// differs from its readable output-name base.
+pub fn markStandaloneLateSyntheticOutputName(
+    self: anytype,
+    symbol_id: symbol_mod.SymbolId,
+    expected_staging_name: []const u8,
+    kind: symbol_mod.SyntheticKind,
+    output_name_hint: []const u8,
+) void {
+    const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late synthetic output name has no semantic editor", .{});
+    const raw = @intFromEnum(symbol_id);
+    if (raw >= editor.symbols.items.len) std.debug.panic("late synthetic output name has an invalid SymbolId", .{});
+    const generated = &editor.symbols.items[raw];
+    if (!std.mem.eql(u8, generated.synthetic_name, expected_staging_name))
+        std.debug.panic("late synthetic output name lost its staging spelling", .{});
+    generated.synthetic_kind = kind;
+    generated.output_name_hint = output_name_hint;
+}
+
 /// Resolve a codegen-created binding whose readable base name is not one of the
 /// underscore-prefixed transformer temps. Check the original source as well as
 /// other generated names so a parser-lowered Flow component helper cannot
