@@ -3526,6 +3526,20 @@ test "#4819 private field helper references retain their producer SymbolIds" {
         _ = try transformer.transform();
         const edited = (try transformer.finishSemanticEdit()).?;
 
+        if (target == .es2015) {
+            const outer_class_id: u32 = @intCast(analyzer.scope_maps.items[0].get("Fields") orelse return error.TestUnexpectedResult);
+            var static_block_class_refs: usize = 0;
+            for (edited.references) |reference| {
+                if (reference.node_index.isNone()) continue;
+                const node = transformer.ast.getNode(reference.node_index);
+                if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "Fields")) continue;
+                if (edited.scopes[reference.scope_id.toIndex()].kind != .block) continue;
+                try std.testing.expectEqual(outer_class_id, @intFromEnum(reference.symbol_id));
+                static_block_class_refs += 1;
+            }
+            try std.testing.expect(static_block_class_refs > 0);
+        }
+
         const helper_names = [_][]const u8{ "_value", "_count" };
         const nodes = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
         for (helper_names) |helper_name| {
