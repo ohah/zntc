@@ -297,16 +297,29 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 late_super_parameter = parameter_name.late;
                 const super_node = self.ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
+                    const source_super_symbol = self.getSymbolIdAt(super_idx);
+                    const is_class_self_tdz_read = self.current_class_self_symbol_id != null and
+                        source_super_symbol == self.current_class_self_symbol_id;
                     // 단순 식별자: IIFE 매개변수 _super로 전달.
                     // 원래 이름을 직접 사용하면 번들러에서 동일 이름의 다른 변수를 참조할 수 있으므로
                     // (예: EventEmitter가 eventemitter3과 react-native 양쪽에 존재),
                     // 항상 _super 매개변수를 통해 스코프를 격리한다.
-                    const super_name = if (self.renamedNameOf(super_idx)) |renamed|
-                        try self.ast.addString(renamed)
-                    else
-                        super_node.data.string_ref;
-                    super_expr_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
-                    try self.trackUserReadFromBinding(super_expr_node, super_idx, iife_parent);
+                    if (is_class_self_tdz_read) {
+                        // A class's own name is in TDZ while its heritage is
+                        // evaluated. The generated IIFE argument is outside
+                        // the moved class-self scope, so preserve the abrupt
+                        // ReferenceError explicitly instead of moving that
+                        // read to an invalid output scope.
+                        try es_helpers.rewriteTDZReferences(self, super_idx, &.{name_span});
+                        super_expr_node = super_idx;
+                    } else {
+                        const super_name = if (self.renamedNameOf(super_idx)) |renamed|
+                            try self.ast.addString(renamed)
+                        else
+                            super_node.data.string_ref;
+                        super_expr_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
+                        try self.trackUserReadFromBinding(super_expr_node, super_idx, iife_parent);
+                    }
                     super_span = try self.ast.addString(parameter_name.name);
                 } else {
                     // 표현식 (e.g. React.Component, eventTargetShim.EventTarget):
@@ -691,13 +704,24 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 late_super_parameter = parameter_name.late;
                 const super_node = self.ast.getNode(super_idx);
                 if (super_node.tag == .identifier_reference or super_node.tag == .binding_identifier) {
-                    // 단순 식별자도 IIFE 매개변수 _super로 전달 (스코프 격리)
-                    const super_name = if (self.renamedNameOf(super_idx)) |renamed|
-                        try self.ast.addString(renamed)
-                    else
-                        super_node.data.string_ref;
-                    expr_super_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
-                    try self.trackUserReadFromBinding(expr_super_node, super_idx, iife_parent);
+                    const source_super_symbol = self.getSymbolIdAt(super_idx);
+                    const is_class_self_tdz_read = self.current_class_self_symbol_id != null and
+                        source_super_symbol == self.current_class_self_symbol_id;
+                    if (is_class_self_tdz_read) {
+                        // A class expression's own name is also in TDZ while
+                        // its heritage is evaluated. The IIFE argument is
+                        // outside that moved binding scope.
+                        try es_helpers.rewriteTDZReferences(self, super_idx, &.{name_span});
+                        expr_super_node = super_idx;
+                    } else {
+                        // 단순 식별자도 IIFE 매개변수 _super로 전달 (스코프 격리)
+                        const super_name = if (self.renamedNameOf(super_idx)) |renamed|
+                            try self.ast.addString(renamed)
+                        else
+                            super_node.data.string_ref;
+                        expr_super_node = try self.makeIdentifierRefWithSymbol(super_name, super_idx);
+                        try self.trackUserReadFromBinding(expr_super_node, super_idx, iife_parent);
+                    }
                     super_span = try self.ast.addString(parameter_name.name);
                 } else {
                     expr_super_node = try self.visitNode(super_idx);
