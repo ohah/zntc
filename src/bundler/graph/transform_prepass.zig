@@ -469,6 +469,7 @@ fn hasOnlyRetainableArraySpreadOperands(
     node: ast_mod.Node,
 ) bool {
     const extras = ast.extra_data.items;
+    var direct_call_callee: ?ast_mod.NodeIndex = null;
     const start: u32, const len: u32 = switch (node.tag) {
         .array_expression => .{ node.data.list.start, node.data.list.len },
         .call_expression => blk: {
@@ -477,11 +478,19 @@ fn hasOnlyRetainableArraySpreadOperands(
             const callee: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
             if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len or
                 ast.nodes.items[@intFromEnum(callee)].tag != .identifier_reference) return false;
+            direct_call_callee = callee;
             break :blk .{ extras[extra + 1], extras[extra + 2] };
         },
         else => return false,
     };
     if (start > extras.len or len > extras.len - start) return false;
+    if (node.tag == .call_expression) {
+        const callee = direct_call_callee orelse return false;
+        if (!isBoundSourceIdentifierReference(ast, semantic, callee)) return false;
+        const call_extra = node.data.extra;
+        if (call_extra > extras.len or extras.len - call_extra <= 3 or
+            (extras[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    }
 
     for (extras[start .. start + len]) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len) return false;
@@ -491,11 +500,14 @@ fn hasOnlyRetainableArraySpreadOperands(
         if (operand.isNone() or @intFromEnum(operand) >= ast.nodes.items.len) return false;
         const operand_node = ast.nodes.items[@intFromEnum(operand)];
         if (operand_node.tag == .identifier_reference) {
-            // Array-literal spread lowering uses the exact tracked
-            // `__toConsumableArray` helper reference for a bound identifier.
-            // Call/new spread and unbound names stay on semantic reanalysis.
-            if (node.tag != .array_expression or
-                !isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
+            // Array literals need only the exact helper reference. Direct call
+            // spread also needs a bound, non-optional identifier callee so the
+            // retained graph covers both source references. Other callees,
+            // constructor spread, and unresolved operands stay on reanalysis.
+            if (!isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
+            if (node.tag != .array_expression and node.tag != .call_expression) {
+                return false;
+            }
             continue;
         }
         if (operand_node.tag != .array_expression) return false;
