@@ -13786,11 +13786,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 2 2 left,right true,true false false\n',
       },
       {
-        name: 'post-super else-if branch stays on reanalysis',
+        name: 'post-super simple else-if chain retains the graph',
         source:
           'var first = false, second = true; function Base() {} class Child extends Base { constructor() { super(); if (first) this.value = 1; else if (second) this.value = 2; else this.value = 3; } } console.log(new Child().value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '2\n',
+      },
+      {
+        name: 'post-super else-if chain preserves exact locals and Proxy getter/write order',
+        source:
+          'var mode = 1, reads = 0, writes = [], _this = 70; function Base() { return new Proxy({ mode: mode }, { get(target, key, receiver) { if (key === "mode") reads += 1; return Reflect.get(target, key, receiver); }, set(target, key, value, receiver) { if (key === "kind") writes.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var _this = 1; if (this.mode === 1) { _this++; this.kind = _this; } else if (this.mode === 2) { _this += 3; this.kind = _this; } else if (this.mode === 3) { _this += 5; this.kind = _this; } else { _this += 7; this.kind = _this; } } } var first = new Child(); mode = 2; var second = new Child(); mode = 3; var third = new Child(); mode = 4; var fourth = new Child(); console.log(first.kind, second.kind, third.kind, fourth.kind, _this, reads, writes.length, writes.join(","), first instanceof Child);',
+        graph: 'retained',
+        output: '2 4 6 8 70 9 4 kind:2,kind:4,kind:6,kind:8 false\n',
+      },
+      {
+        name: 'post-super else-if call condition stays on reanalysis',
+        source:
+          'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (false) this.value = 1; else if (selected()) this.value = 2; else this.value = 3; } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '2 1\n',
       },
       {
         name: 'post-super computed property branch stays on reanalysis',

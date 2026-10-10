@@ -1941,14 +1941,31 @@ fn isSafePostSuperConditionalStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
-    const statement = ast.getNode(statement_idx);
-    if (statement.tag != .if_statement) return false;
-    const branches = statement.data.ternary;
-    return isSafePostSuperCondition(ast, semantic, branches.a) and
-        isSafePostSuperConditionalBranch(ast, semantic, branches.b) and
-        (branches.c.isNone() or
-            isSafePostSuperConditionalBranch(ast, semantic, branches.c));
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len or
+        ast.getNode(statement_idx).tag != .if_statement) return false;
+
+    // An `else if` is represented as an if statement in the prior if's
+    // alternative. Walk that chain iteratively so source depth cannot grow
+    // this safety check's call stack.
+    var current_idx = statement_idx;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const statement = ast.getNode(current_idx);
+        if (statement.tag != .if_statement) return false;
+        const branches = statement.data.ternary;
+        if (!isSafePostSuperCondition(ast, semantic, branches.a) or
+            !isSafePostSuperConditionalBranch(ast, semantic, branches.b)) return false;
+
+        if (branches.c.isNone()) return true;
+        if (@intFromEnum(branches.c) >= ast.nodes.items.len) return false;
+        if (ast.getNode(branches.c).tag == .if_statement) {
+            current_idx = branches.c;
+            continue;
+        }
+        return isSafePostSuperConditionalBranch(ast, semantic, branches.c);
+    }
+    return false;
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
