@@ -75,12 +75,15 @@ console.log(${sourceNames.join(', ')}, new Example().value);
       'input.ts': `
 var _metadata = 11, _metadata2 = 12;
 var _classThis = 21, _classThis2 = 22;
+var _classDecorators = 31, _classDecorators2 = 32;
+var _classDescriptor = 41, _classDescriptor2 = 42;
+var _classExtraInitializers = 51, _classExtraInitializers2 = 52;
 function dec(value: any, context: any): any { return value; }
 @dec
 class Example { @dec method() { return 4; } }
 @dec
 class Another { @dec method() { return 5; } }
-console.log(_metadata, _metadata2, _classThis, _classThis2, new Example().method(), new Another().method());
+console.log(_metadata, _metadata2, _classThis, _classThis2, _classDecorators, _classDecorators2, _classDescriptor, _classDescriptor2, _classExtraInitializers, _classExtraInitializers2, new Example().method(), new Another().method());
 `,
     });
     cleanup = fixture.cleanup;
@@ -95,9 +98,15 @@ console.log(_metadata, _metadata2, _classThis, _classThis2, new Example().method
     expect(code).toMatch(/\b_metadata4\s*=/);
     expect(code).toMatch(/\b_classThis3\b/);
     expect(code).toMatch(/\b_classThis4\b/);
+    expect(code).toMatch(/\b_classDecorators3\b/);
+    expect(code).toMatch(/\b_classDecorators4\b/);
+    expect(code).toMatch(/\b_classDescriptor3\b/);
+    expect(code).toMatch(/\b_classDescriptor4\b/);
+    expect(code).toMatch(/\b_classExtraInitializers3\b/);
+    expect(code).toMatch(/\b_classExtraInitializers4\b/);
 
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
-    expect(runtime.stdout).toBe('11 12 21 22 4 5\n');
+    expect(runtime.stdout).toBe('11 12 21 22 31 32 41 42 51 52 4 5\n');
   });
 });
