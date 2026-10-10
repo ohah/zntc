@@ -13513,6 +13513,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'TypeError\n2\n',
       },
       {
+        name: 'post-super branch throw preserves the exact thrown object',
+        source:
+          'var selected = true, sentinel = { value: 9 }; function Base() {} class Child extends Base { constructor() { super(); if (selected) throw sentinel; else this.value = 2; } } try { new Child(); } catch (error) { console.log(error === sentinel, error.value); } selected = false; var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'retained',
+        output: 'true 9\n2 true\n',
+      },
+      {
+        name: 'post-super block branch writes once before throwing the exact object',
+        source:
+          'var selected = true, writes = [], sentinel = {}; function Base() { return new Proxy({}, { set(target, key, value) { writes.push(key + ":" + value); target[key] = value; return true; } }); } class Child extends Base { constructor() { super(); if (selected) { this.flag = 1; throw sentinel; } else { this.flag = 2; } } } try { new Child(); } catch (error) { console.log(error === sentinel, writes.join(",")); } selected = false; var child = new Child(); console.log(child.flag, writes.join(","), child instanceof Child);',
+        graph: 'retained',
+        output: 'true flag:1\n2 flag:1,flag:2 false\n',
+      },
+      {
         name: 'post-super return of a bound object preserves derived constructor return semantics',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
@@ -13602,6 +13616,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); if (true) { return replacement; this.value = 5; } else { this.value = 2; } } } var child = new Child(); console.log(child === replacement, child.value);',
         graph: 'reanalyzed',
         output: 'true 8\n',
+      },
+      {
+        name: 'post-super branch throw call stays on reanalysis',
+        source:
+          'var calls = 0, sentinel = {}; function failure() { calls += 1; return sentinel; } function Base() {} class Child extends Base { constructor() { super(); if (true) throw failure(); else this.value = 2; } } try { new Child(); } catch (error) { console.log(error === sentinel, calls); }',
+        graph: 'reanalyzed',
+        output: 'true 1\n',
+      },
+      {
+        name: 'post-super branch block with non-final throw stays on reanalysis',
+        source:
+          'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { throw sentinel; this.value = 5; } else { this.value = 2; } } } try { new Child(); } catch (error) { console.log(error === sentinel); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
       },
       {
         name: 'post-super constructor with a local declaration stays on reanalysis',

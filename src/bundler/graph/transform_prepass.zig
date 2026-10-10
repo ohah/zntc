@@ -1810,6 +1810,17 @@ fn isSafeDerivedConstructorReturnStatement(
     return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
 }
 
+fn isSafeDerivedConstructorThrowStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    return statement.tag == .throw_statement and
+        isSafeConstructorValue(ast, semantic, statement.data.unary.operand);
+}
+
 fn isSafePostSuperConditionalBranch(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1823,12 +1834,11 @@ fn isSafePostSuperConditionalBranch(
         if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
         for (extras[statements.start .. statements.start + statements.len], 0..) |raw_statement_idx, index| {
             if (raw_statement_idx >= ast.nodes.items.len) return false;
-            if (index + 1 == statements.len and
-                isSafeDerivedConstructorReturnStatement(
-                    ast,
-                    semantic,
-                    @enumFromInt(raw_statement_idx),
-                )) return true;
+            if (index + 1 == statements.len) {
+                const final_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
+                if (isSafeDerivedConstructorReturnStatement(ast, semantic, final_statement) or
+                    isSafeDerivedConstructorThrowStatement(ast, semantic, final_statement)) return true;
+            }
             const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
             if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
                 isSafeConstructorThisPropertyAssignmentStatement(
@@ -1842,6 +1852,8 @@ fn isSafePostSuperConditionalBranch(
     }
     if (statement.tag == .return_statement)
         return isSafeDerivedConstructorReturnStatement(ast, semantic, branch_idx);
+    if (statement.tag == .throw_statement)
+        return isSafeDerivedConstructorThrowStatement(ast, semantic, branch_idx);
     return isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branch_idx);
 }
 
