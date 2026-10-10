@@ -3041,6 +3041,7 @@ pub fn cloneGeneratedClassSelfReference(self: *Transformer, source: NodeIndex) T
         source_reference.stmt_idx,
         source_reference.scope_stmt_idx,
     ) catch |err| return editError(err);
+    try self.trackExactOutputReference(clone, target_id);
     return clone;
 }
 
