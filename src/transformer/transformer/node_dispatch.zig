@@ -722,7 +722,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .export_all_declaration => self.visitExportAllDeclaration(node),
         .catch_clause => {
             if (self.options.unsupported.optional_catch_binding) {
-                return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, node);
+                return es2019.ES2019(Transformer).lowerOptionalCatchBinding(self, idx, node);
             }
             return self.visitBinaryNode(idx);
         },

@@ -1131,9 +1131,9 @@ const StandaloneRuntimeHelperNameResolver = struct {
     }
 };
 
-/// Choose standalone helper names after lowering, from the exact helper
-/// SymbolIds and the complete output symbol set. Call references and both
-/// preamble declarations and AST imports consume this same map.
+/// Choose late standalone names after lowering, from exact SymbolIds and the
+/// complete output symbol set. Runtime helpers and optional catch bindings
+/// consume the same map for their emitted declaration and references.
 fn buildStandaloneRuntimeHelperNameOverrides(
     allocator: std.mem.Allocator,
     transformer: *const Transformer,
@@ -1143,7 +1143,7 @@ fn buildStandaloneRuntimeHelperNameOverrides(
     defer reserved.deinit(allocator);
 
     for (transformer.symbols) |symbol| {
-        if (isStandaloneLateHelperNameSymbol(symbol)) continue;
+        if (isStandaloneLateOutputNameSymbol(symbol)) continue;
         const raw_name = if (symbol.synthetic_name.len > 0)
             symbol.synthetic_name
         else
@@ -1156,7 +1156,7 @@ fn buildStandaloneRuntimeHelperNameOverrides(
     }
     var generated_names = transformer.synthetic_taken.keyIterator();
     while (generated_names.next()) |name| {
-        if (!isStandaloneLateHelperNameBase(transformer, name.*)) try reserved.put(allocator, name.*, {});
+        if (!isStandaloneLateOutputNameBase(transformer, name.*)) try reserved.put(allocator, name.*, {});
     }
     if (transformer.block_rename_map) |*renames| {
         var names = renames.valueIterator();
@@ -1164,7 +1164,7 @@ fn buildStandaloneRuntimeHelperNameOverrides(
     }
 
     for (transformer.symbols, 0..) |symbol, raw_id| {
-        if (!isStandaloneLateHelperNameSymbol(symbol)) continue;
+        if (!isStandaloneLateOutputNameSymbol(symbol)) continue;
         const base_name = symbol.synthetic_name;
         if (base_name.len == 0) return error.TransformError;
 
@@ -1179,13 +1179,15 @@ fn buildStandaloneRuntimeHelperNameOverrides(
     return overrides;
 }
 
-fn isStandaloneLateHelperNameSymbol(symbol: @import("semantic/symbol.zig").Symbol) bool {
-    return symbol.synthetic_kind == .runtime_helper_preamble or symbol.synthetic_kind == .runtime_helper_import;
+fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbol) bool {
+    return symbol.synthetic_kind == .runtime_helper_preamble or
+        symbol.synthetic_kind == .runtime_helper_import or
+        symbol.synthetic_kind == .optional_catch_binding;
 }
 
-fn isStandaloneLateHelperNameBase(transformer: *const Transformer, name: []const u8) bool {
+fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
     for (transformer.symbols) |symbol| {
-        if (isStandaloneLateHelperNameSymbol(symbol) and std.mem.eql(u8, symbol.synthetic_name, name)) return true;
+        if (isStandaloneLateOutputNameSymbol(symbol) and std.mem.eql(u8, symbol.synthetic_name, name)) return true;
     }
     return false;
 }
@@ -1201,7 +1203,7 @@ fn standaloneHelperNameIsUsed(
     defer allocator.free(decode_scratch);
 
     for (transformer.symbols) |symbol| {
-        if (isStandaloneLateHelperNameSymbol(symbol)) continue;
+        if (isStandaloneLateOutputNameSymbol(symbol)) continue;
         const raw_name = if (symbol.synthetic_name.len > 0)
             symbol.synthetic_name
         else
@@ -3132,7 +3134,7 @@ test "ES2019 optional catch binding: synthesized name avoids outer variable shad
     defer result.deinit(std.testing.allocator);
 
     // 외부 _a 를 피해 다른 이름을 써야 한다.
-    try std.testing.expect(std.mem.indexOf(u8, result.code, "catch (_b)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "catch (_unused)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "catch (_a)") == null);
     // catch 파라미터는 그 자체로 선언이므로 hoist 된 `var _` 누수가 없어야 한다.
     try std.testing.expect(std.mem.indexOf(u8, result.code, "var _") == null);

@@ -2943,6 +2943,7 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
@@ -2958,8 +2959,12 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     try std.testing.expect(edited.symbols.items[original_symbols].scope_id != edited.symbols.items[original_symbols + 1].scope_id);
     for (edited.symbols.items[original_symbols..]) |generated| {
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.catch_binding, generated.kind);
+        try std.testing.expectEqual(
+            @import("../semantic/symbol.zig").SyntheticKind.optional_catch_binding,
+            generated.synthetic_kind.?,
+        );
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.catch_clause, edited.scopes[generated.scope_id.toIndex()].kind);
-        try std.testing.expectEqualStrings("_c", transformer.ast.getText(generated.name));
+        try std.testing.expectEqualStrings("_unused", transformer.ast.getText(generated.name));
         try std.testing.expectEqual(@as(u32, 0), generated.reference_count);
     }
     var outer_b_reads: usize = 0;
