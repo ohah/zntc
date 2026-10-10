@@ -232,7 +232,10 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
     try std.testing.expect(expr_id != param_id);
     try std.testing.expect(decl_id != outer_id);
 
-    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
@@ -267,6 +270,43 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
     }
     try std.testing.expect(found_expr_storage and found_decl_storage and found_outer and found_param);
     try std.testing.expect(accessor_refs >= 2);
+
+    const late_kind = @import("../semantic/symbol.zig").SyntheticKind.class_self_write_binding;
+    var late_target_ids: [2]u32 = undefined;
+    var late_target_count: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != late_kind) continue;
+        try std.testing.expect(late_target_count < late_target_ids.len);
+        try std.testing.expectEqualStrings("_classSelfWrite", symbol.synthetic_name);
+        try std.testing.expect(!symbol.scope_id.isNone());
+        late_target_ids[late_target_count] = @intCast(raw_id);
+        late_target_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), late_target_count);
+    try std.testing.expect(late_target_ids[0] != late_target_ids[1]);
+
+    for (late_target_ids) |target_id| {
+        var declaration_count: usize = 0;
+        var exact_reference_count: usize = 0;
+        for (reachable) |raw| {
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .binding_identifier and node.tag != .identifier_reference) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_classSelfWrite")) continue;
+            const exact_id = edited.symbol_ids[raw] orelse continue;
+            if (exact_id != target_id) continue;
+            if (node.tag == .binding_identifier) {
+                declaration_count += 1;
+            } else {
+                exact_reference_count += 1;
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), declaration_count);
+        try std.testing.expect(exact_reference_count > 0);
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != target_id or reference.node_index.isNone()) continue;
+            try std.testing.expectEqual(@as(?u32, target_id), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+        }
+    }
 }
 
 test "#4819 ES5 class IIFE scopes enclose source class bodies" {

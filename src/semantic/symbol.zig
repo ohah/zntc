@@ -272,6 +272,9 @@ pub const SyntheticKind = enum(u8) {
     /// ES5 class and lexical `new.target` capture bindings. Standalone output
     /// selects their spellings from exact SymbolIds after generated names are known.
     new_target_capture_binding,
+    /// ES5 class-self write targets. Standalone output selects their spellings
+    /// from exact SymbolIds after generated names are known.
+    class_self_write_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
