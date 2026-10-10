@@ -13380,11 +13380,53 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true true Named 9\n',
       },
       {
-        name: 'explicit derived constructor with super stays on reanalysis',
+        name: 'explicit derived constructor with only super retains exact helper and capture identities',
         source:
-          'function Base() {} class Child extends Base { constructor() { super(); } } console.log(new Child() instanceof Base);',
+          'function Base() { this.base = 1; } var _this = 7, _newTarget = 8, __callSuper = 9, __assertThisInitialized = 10, __assertThisUninitialized = 11; class Child extends Base { constructor() { super(); } } var child = new Child(); console.log(child.base, child instanceof Base, child instanceof Child, _this, _newTarget, __callSuper, __assertThisInitialized, __assertThisUninitialized);',
+        graph: 'retained',
+        output: '1 true true 7 8 9 10 11\n',
+      },
+      {
+        name: 'nested explicit super constructor retains exact outer base and inner class identities',
+        source:
+          'function make(Base, Child) { function inner() { class Child extends Base { constructor() { super(); } self() { return Child; } } var child = new Child(); return [child.self() === Child, child instanceof Base, Child.name]; } return [inner().join(" "), Child]; } console.log(make(function Base() {}, 9).join("|"));',
+        graph: 'retained',
+        output: 'true true Child|9\n',
+      },
+      {
+        name: 'explicit super constructors preserve native base and multi-level new.target',
+        source:
+          'var NativeArray = Array; class Middle extends NativeArray { constructor() { super(); } } class Child extends Middle { constructor() { super(); } } var child = new Child(); child.push(3); console.log(Array.isArray(child), child[0], child instanceof Child, child instanceof Middle, child instanceof NativeArray);',
+        graph: 'retained',
+        output: 'true 3 true true true\n',
+      },
+      {
+        name: 'explicit derived constructor super argument with side effect stays on reanalysis',
+        source:
+          'var evaluations = 0; function value() { evaluations += 1; return 2; } function Base(argument) { this.argument = argument; } class Child extends Base { constructor() { super(value()); } } console.log(new Child().argument, evaluations);',
         graph: 'reanalyzed',
-        output: 'true\n',
+        output: '2 1\n',
+      },
+      {
+        name: 'explicit derived constructor conditional super stays on reanalysis',
+        source:
+          'function Base(value) { this.value = value; } class Child extends Base { constructor(flag) { if (flag) super(1); else super(2); this.seen = this.value; } } console.log(new Child(true).seen, new Child(false).seen);',
+        graph: 'reanalyzed',
+        output: '1 2\n',
+      },
+      {
+        name: 'explicit derived constructor this before super stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { this.value = 1; super(); } } try { new Child(); } catch (error) { console.log(error.name); }',
+        graph: 'reanalyzed',
+        output: 'ReferenceError\n',
+      },
+      {
+        name: 'explicit derived constructor duplicate super stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); super(); } } try { new Child(); } catch (error) { console.log(error.name); }',
+        graph: 'reanalyzed',
+        output: 'ReferenceError\n',
       },
       {
         name: 'anonymous class expression in a top-level var initializer retains its generated constructor identity',
