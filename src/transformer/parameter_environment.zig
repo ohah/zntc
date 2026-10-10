@@ -219,7 +219,9 @@ fn canonicalIdentifier(allocator: std.mem.Allocator, name: []const u8) std.mem.A
 pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
     var result: Table = .empty;
     errdefer result.deinit(self.allocator);
-    if (!self.options.unsupported.default_params) return result;
+    const lower_defaults = self.options.unsupported.default_params;
+    const lower_object_rest_only = !lower_defaults and self.options.unsupported.object_spread;
+    if (!lower_defaults and !lower_object_rest_only) return result;
     const params_mod = @import("es2015_params.zig").ES2015Params(@TypeOf(self.*));
     const symbols = symbolsOf(self);
     const scopes = scopesOf(self);
@@ -240,7 +242,12 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
         if (parameter_scope_raw >= scopes.len or parameter_scope_raw >= scope_maps.len) continue;
         const parameter_scope: ScopeId = @enumFromInt(parameter_scope_raw);
         if (scopes[parameter_scope_raw].blocksMangling()) continue;
-        for (self.ast.extra_data.items[params.start .. params.start + params.len]) |param| {
+        const first_affected_param = if (lower_object_rest_only)
+            (try params_mod.firstObjectRestParamIndex(self, params)) orelse continue
+        else
+            0;
+        const affected_params = self.ast.extra_data.items[params.start + first_affected_param .. params.start + params.len];
+        for (affected_params) |param| {
             var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, @enumFromInt(param), .{});
             defer bindings.deinit();
             while (try bindings.next()) |binding| {

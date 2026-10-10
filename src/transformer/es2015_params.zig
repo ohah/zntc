@@ -90,6 +90,17 @@ pub fn ES2015Params(comptime Transformer: type) type {
             return false;
         }
 
+        /// Return the first parameter whose binding pattern needs ES2018
+        /// object-rest lowering. Later parameter initializers are moved into
+        /// the body to preserve the pattern's evaluation order.
+        pub fn firstObjectRestParamIndex(self: *const Transformer, params: ast_mod.NodeList) Transformer.Error!?usize {
+            const old_params = self.ast.extra_data.items[params.start .. params.start + params.len];
+            for (old_params, 0..) |raw_idx, i| {
+                if (try parameterHasObjectRest(self, @enumFromInt(raw_idx))) return i;
+            }
+            return null;
+        }
+
         fn parameterHasObjectRest(self: *const Transformer, param_idx: NodeIndex) Transformer.Error!bool {
             if (param_idx.isNone() or @intFromEnum(param_idx) >= self.ast.nodes.items.len) return false;
             const param = self.ast.getNode(param_idx);
