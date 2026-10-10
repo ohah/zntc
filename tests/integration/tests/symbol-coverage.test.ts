@@ -13492,6 +13492,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 2 2 1 1\n',
       },
       {
+        name: 'post-super branch return of a bound object keeps derived return semantics',
+        source:
+          'var selected = true, replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); if (selected) return replacement; else this.value = 2; } } var first = new Child(); selected = false; var second = new Child(); console.log(first === replacement, first.value, second.value, second instanceof Child);',
+        graph: 'retained',
+        output: 'true 8 2 true\n',
+      },
+      {
+        name: 'post-super block branch writes once before returning a replacement object',
+        source:
+          'var selected = true, writes = [], replacement = { value: 8 }; function Base() { return new Proxy({}, { set(target, key, value) { writes.push(key + ":" + value); target[key] = value; return true; } }); } class Child extends Base { constructor() { super(); if (selected) { this.marker = 1; return replacement; } else { this.marker = 2; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first === replacement, second.marker, writes.join(","), second instanceof Child);',
+        graph: 'retained',
+        output: 'true 2 marker:1,marker:2 false\n',
+      },
+      {
+        name: 'post-super branch primitive return still throws TypeError',
+        source:
+          'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) return 1; else this.value = 2; } } try { new Child(); } catch (error) { console.log(error.name); } selected = false; console.log(new Child().value);',
+        graph: 'retained',
+        output: 'TypeError\n2\n',
+      },
+      {
         name: 'post-super return of a bound object preserves derived constructor return semantics',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
@@ -13569,6 +13590,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '8 1\n',
       },
       {
+        name: 'post-super branch return call stays on reanalysis',
+        source:
+          'var calls = 0; function replacement() { calls += 1; return { value: 8 }; } function Base() {} class Child extends Base { constructor() { super(); if (true) return replacement(); else this.value = 2; } } var child = new Child(); console.log(child.value, calls);',
+        graph: 'reanalyzed',
+        output: '8 1\n',
+      },
+      {
+        name: 'post-super branch block with non-final return stays on reanalysis',
+        source:
+          'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); if (true) { return replacement; this.value = 5; } else { this.value = 2; } } } var child = new Child(); console.log(child === replacement, child.value);',
+        graph: 'reanalyzed',
+        output: 'true 8\n',
+      },
+      {
         name: 'post-super constructor with a local declaration stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); this.value = 3; let other = 4; } } var child = new Child(); console.log(child.value);',
@@ -13625,10 +13660,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 1\n',
       },
       {
-        name: 'post-super block branch with an early return stays on reanalysis',
+        name: 'post-super block branch with a final bare return retains the graph',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { this.value = 3; return; } else { this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '3 true\n',
       },
       {
