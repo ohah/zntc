@@ -217,6 +217,9 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
 
     // arrow this/arguments 캡처: method도 자체 this 바인딩을 가짐 (visitFunction과 동일)
     const capture_frame = es_helpers.pushCaptureFrame(self);
+    const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+    self.native_parameter_list_retained_for_dynamic_lookup = false;
+    defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
     const saved_arrow_depth = self.arrow_this_depth;
     const saved_needs_this = self.needs_this_var;
     const saved_needs_args = self.needs_arguments_var;
@@ -225,6 +228,20 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     self.needs_this_var = false;
     self.needs_arguments_var = false;
     self.super_call_this_alias = false;
+    if (self.options.unsupported.arrow and self.options.unsupported.default_params and params_list_old.len > 0) {
+        const Params = @import("../es2015_params.zig").ES2015Params(Transformer);
+        if (Params.hasDefaultOrRest(self, params_list_old)) {
+            const parameter_environment = @import("../parameter_environment.zig");
+            const params_have_dynamic_lookup = try parameter_environment.parameterListHasDynamicLookup(self, params_list_old);
+            const body_has_dynamic_lookup = try parameter_environment.functionBodyHasDynamicLookup(
+                self,
+                self.current_scope,
+                self.readNodeIdx(e, ast_mod.MethodExtra.body),
+            );
+            self.native_parameter_list_retained_for_dynamic_lookup =
+                params_have_dynamic_lookup or body_has_dynamic_lookup;
+        }
+    }
     const param_capture_use_start = self.lexical_capture_uses.items.len;
     var pp = blk: {
         const saved_parameter_scope = self.current_scope;

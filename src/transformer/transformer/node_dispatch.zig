@@ -782,7 +782,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // The enclosing lowered arrow is wrapped with a generated capture
             // parameter when defaults remain native.
             if (node.data.none == 1 and self.options.unsupported.arrow and
-                !self.options.unsupported.default_params and self.arrow_this_depth > 0 and
+                (!self.options.unsupported.default_params or
+                    self.native_parameter_list_retained_for_dynamic_lookup) and self.arrow_this_depth > 0 and
                 self.native_parameter_initializer_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame)
             {

@@ -320,6 +320,10 @@ pub const Transformer = struct {
     /// the function body. Downleveled arrows there must capture lexical values
     /// at creation time instead of reading body aliases.
     native_parameter_initializer_frame: u32 = 0,
+    /// Pass 2 retains this function's native parameters when dynamic lookup
+    /// prevents safe lowering. Lowered arrows in that environment need lexical
+    /// capture wrappers because body aliases are out of scope.
+    native_parameter_list_retained_for_dynamic_lookup: bool = false,
     native_parameter_default_root: NodeIndex = .none,
     native_parameter_name_hint: ?[]const u8 = null,
     native_parameter_arrow_depth: u32 = 0,
