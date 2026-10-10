@@ -13450,6 +13450,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '7 true true 7\n',
       },
       {
+        name: 'post-super block branches retain simple vars with helper-colliding source bindings',
+        source:
+          'var selected = true, _this = 70, _newTarget = 8; function Base() {} class Child extends Base { constructor() { super(); if (selected) { var _this = 1; this.value = _this; } else { var rightValue = 2; this.value = rightValue + _newTarget; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, first instanceof Child, _this, _newTarget);',
+        graph: 'retained',
+        output: '1 10 true 70 8\n',
+      },
+      {
+        name: 'post-super block branches write in order to the base-returned object',
+        source:
+          'var selected = true, writes = []; function Base() { return new Proxy({}, { set(target, key, value) { writes.push(key + ":" + value); target[key] = value; return true; } }); } class Child extends Base { constructor() { super(); if (selected) { var leftMarker = 1; this.left = leftMarker; this.done = 2; } else { var rightMarker = 3; this.right = rightMarker; this.done = 4; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first.left, second.right, writes.join(","), first instanceof Child, second instanceof Child);',
+        graph: 'retained',
+        output: '1 3 left:1,done:2,right:3,done:4 false false\n',
+      },
+      {
         name: 'post-super return of a bound object preserves derived constructor return semantics',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
@@ -13548,11 +13562,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 1\n',
       },
       {
-        name: 'post-super if with block branches stays on reanalysis',
+        name: 'post-super block branch with a lexical declaration stays on reanalysis',
         source:
-          'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) { this.value = 1; } else { this.value = 2; } } } console.log(new Child().value);',
+          'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) { let local = 1; this.value = local; } else { this.value = 2; } } } console.log(new Child().value);',
         graph: 'reanalyzed',
         output: '1\n',
+      },
+      {
+        name: 'post-super block branch with a call initializer stays on reanalysis',
+        source:
+          'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); if (true) { var local = value(); this.value = local; } else { this.value = 2; } } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '3 1\n',
+      },
+      {
+        name: 'post-super block branch with an early return stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { this.value = 3; return; } else { this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '3 true\n',
+      },
+      {
+        name: 'post-super sibling blocks with same var binding retain the graph',
+        source:
+          'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) { var local = 1; this.value = local; } else { var local = 2; this.value = local; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, first instanceof Child);',
+        graph: 'retained',
+        output: '1 2 true\n',
       },
       {
         name: 'post-super else-if branch stays on reanalysis',
