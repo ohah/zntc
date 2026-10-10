@@ -1035,6 +1035,31 @@ pub fn resolveSyntheticName(self: anytype, name: []const u8) ![]const u8 {
     return resolved;
 }
 
+/// Resolve a generated local while reserving identifiers exposed by direct
+/// eval strings in its output scope. Generator state parameters are lowered
+/// into the function body where those strings execute, so an eval-visible
+/// spelling can shadow an otherwise unrelated global reference.
+pub fn resolveSyntheticNameAvoidingDynamicEval(self: anytype, name: []const u8, scope_id: ScopeId) ![]const u8 {
+    var resolved = try resolveSyntheticName(self, name);
+    if (!try nameAppearsInDynamicEvalString(self, scope_id, resolved)) return resolved;
+
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    const key = try arena.dupe(u8, name);
+    var suffix: u32 = 2;
+    while (true) : (suffix += 1) {
+        const candidate = try std.fmt.allocPrint(arena, "{s}{d}", .{ name, suffix });
+        if (try syntheticNameInUse(self, candidate) or self.synthetic_taken.contains(candidate) or
+            self.synthetic_names.contains(candidate) or
+            try nameAppearsInDynamicEvalString(self, scope_id, candidate)) continue;
+        resolved = candidate;
+        break;
+    }
+    try self.synthetic_names.put(self.allocator, key, resolved);
+    try self.synthetic_taken.put(self.allocator, resolved, {});
+    return resolved;
+}
+
 /// Keep a stable internal spelling for a generated name whose exact SymbolId
 /// will receive its emitted spelling in the standalone final-name pass.
 pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
