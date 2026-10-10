@@ -481,11 +481,14 @@ fn hasOnlyRetainableSpreadOperands(
             const callee_node = ast.nodes.items[@intFromEnum(callee)];
             if (callee_node.tag == .identifier_reference) {
                 direct_identifier_callee = callee;
-            } else if (node.tag == .call_expression and callee_node.tag == .static_member_expression) {
+            } else if (node.tag == .call_expression and
+                (callee_node.tag == .static_member_expression or callee_node.tag == .computed_member_expression))
+            {
                 // lowerSpreadCall clones a simple receiver identifier and
                 // registers that second reference with its exact source SID.
-                // Keep computed, optional, nested, and effectful receivers on
-                // reanalysis until their distinct graph edits are audited.
+                // Computed keys are read only once as part of the callee.
+                // Keep optional, nested, and effectful shapes on reanalysis
+                // until their distinct graph edits are audited.
                 const member_extra = callee_node.data.extra;
                 if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0)
                     return false;
@@ -494,8 +497,18 @@ fn hasOnlyRetainableSpreadOperands(
                 if (receiver.isNone() or @intFromEnum(receiver) >= ast.nodes.items.len or
                     ast.nodes.items[@intFromEnum(receiver)].tag != .identifier_reference or
                     !isBoundSourceIdentifierReference(ast, semantic, receiver) or
-                    property.isNone() or @intFromEnum(property) >= ast.nodes.items.len or
-                    ast.nodes.items[@intFromEnum(property)].tag != .identifier_reference) return false;
+                    property.isNone() or @intFromEnum(property) >= ast.nodes.items.len) return false;
+                const property_node = ast.nodes.items[@intFromEnum(property)];
+                const safe_property = switch (callee_node.tag) {
+                    .static_member_expression => property_node.tag == .identifier_reference,
+                    .computed_member_expression => switch (property_node.tag) {
+                        .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, property),
+                        .string_literal, .numeric_literal => true,
+                        else => false,
+                    },
+                    else => false,
+                };
+                if (!safe_property) return false;
                 simple_member_callee = callee;
             } else return false;
             break :blk .{ extras[extra + 1], extras[extra + 2] };
