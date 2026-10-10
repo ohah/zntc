@@ -170,6 +170,18 @@ pub fn buildUniqueName(self: *Transformer, prefix_in: []const u8, counter: *u32)
     return es_helpers.uniqueSyntheticName(self, prefix, counter) catch return Error.OutOfMemory;
 }
 
+/// Build a module-unique name for a generated binding that direct eval can
+/// observe from `scope`. Both the base and numbered candidates must avoid
+/// identifiers in eval strings.
+pub fn buildUniqueNameAvoidingDynamicEval(self: *Transformer, prefix_in: []const u8, counter: *u32, scope: @import("../../semantic/scope.zig").ScopeId) Error![]const u8 {
+    const prefix = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, prefix_in, scope);
+    if (counter.* == 0) {
+        counter.* = 1;
+        return prefix;
+    }
+    return es_helpers.uniqueSyntheticNameAvoidingDynamicEval(self, prefix, counter, scope) catch return Error.OutOfMemory;
+}
+
 pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex, span: Span) Error!NodeIndex {
     const name_span = try self.ast.addString(name);
     const binding = try es_helpers.makeSyntheticBinding(self, name_span);

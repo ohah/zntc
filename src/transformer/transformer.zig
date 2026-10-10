@@ -926,6 +926,7 @@ pub const Transformer = struct {
     pub const visitExtraList = lists_mod.visitExtraList;
     pub const stableName = lists_mod.stableName;
     pub const buildUniqueName = lists_mod.buildUniqueName;
+    pub const buildUniqueNameAvoidingDynamicEval = lists_mod.buildUniqueNameAvoidingDynamicEval;
     pub const buildVarDecl = lists_mod.buildVarDecl;
     pub const hoistTempVars = lists_mod.hoistTempVars;
     pub const hoistTempVarsInOriginalFunction = lists_mod.hoistTempVarsInOriginalFunction;

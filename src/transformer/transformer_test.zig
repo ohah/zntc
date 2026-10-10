@@ -10,6 +10,9 @@ const Ast = ast_mod.Ast;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const Scope = @import("../semantic/scope.zig").Scope;
+const Span = @import("../lexer/token.zig").Span;
 const es_helpers = @import("es_helpers.zig");
 
 test "#4819 distinct synthetic bases do not reuse a reserved fallback name" {
@@ -51,6 +54,48 @@ test "#4819 numbered synthetic names are reserved and carried exactly" {
     const reference = try es_helpers.makeExactSyntheticRef(&transformer, second_name);
     try std.testing.expectEqualStrings(second_name, transformer.ast.getText(transformer.ast.getNode(binding).data.string_ref));
     try std.testing.expectEqualStrings(second_name, transformer.ast.getText(transformer.ast.getNode(reference).data.string_ref));
+}
+
+test "#4819 numbered loop names avoid direct eval identifiers" {
+    const source = "function f(){ eval('typeof _loop2'); }";
+    var ast = Ast.init(std.testing.allocator, source);
+    defer ast.deinit();
+    const eval_text_start = std.mem.indexOf(u8, source, "'typeof _loop2'").?;
+    const eval_text_span = Span{
+        .start = @intCast(eval_text_start),
+        .end = @intCast(eval_text_start + "'typeof _loop2'".len),
+    };
+    _ = try ast.addNode(.{
+        .tag = .string_literal,
+        .span = eval_text_span,
+        .data = .{ .string_ref = eval_text_span },
+    });
+
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+    const symbol_name_start = std.mem.indexOf(u8, source, "f(").?;
+    var symbols = [_]@import("../semantic/symbol.zig").Symbol{.{
+        .name = .{ .start = @intCast(symbol_name_start), .end = @intCast(symbol_name_start + 1) },
+        .scope_id = .none,
+        .kind = .function_decl,
+        .declaration_span = .EMPTY,
+    }};
+    transformer.symbols = &symbols;
+    var scopes = [_]Scope{.{
+        .parent = .none,
+        .kind = .function,
+        .is_strict = false,
+        .subtree_has_direct_eval = true,
+    }};
+    transformer.scopes = &scopes;
+    var unresolved: std.StringHashMapUnmanaged(void) = .empty;
+    defer unresolved.deinit(std.testing.allocator);
+    transformer.unresolved_references = &unresolved;
+
+    var counter: u32 = 0;
+    const scope: ScopeId = @enumFromInt(0);
+    try std.testing.expectEqualStrings("_loop", try transformer.buildUniqueNameAvoidingDynamicEval("_loop", &counter, scope));
+    try std.testing.expectEqualStrings("_loop3", try transformer.buildUniqueNameAvoidingDynamicEval("_loop", &counter, scope));
 }
 
 test "Transformer: empty program" {

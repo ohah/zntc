@@ -1132,9 +1132,9 @@ const StandaloneRuntimeHelperNameResolver = struct {
 };
 
 /// Choose late standalone names after lowering, from exact SymbolIds and the
-/// complete output symbol set. Runtime helpers and optional catch bindings
-/// consume the same map for their emitted declaration and references.
-fn buildStandaloneRuntimeHelperNameOverrides(
+/// complete output symbol set. Runtime helpers and generated locals consume
+/// the same map for their emitted declarations and references.
+fn buildStandaloneLateOutputNameOverrides(
     allocator: std.mem.Allocator,
     transformer: *const Transformer,
 ) TranspileError!std.AutoHashMapUnmanaged(u32, []const u8) {
@@ -1165,7 +1165,7 @@ fn buildStandaloneRuntimeHelperNameOverrides(
 
     for (transformer.symbols, 0..) |symbol, raw_id| {
         if (!isStandaloneLateOutputNameSymbol(symbol)) continue;
-        const base_name = symbol.synthetic_name;
+        const base_name = if (symbol.output_name_hint.len > 0) symbol.output_name_hint else symbol.synthetic_name;
         if (base_name.len == 0) return error.TransformError;
 
         var candidate = base_name;
@@ -1192,12 +1192,14 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         symbol.synthetic_kind == .new_target_capture_binding or
         symbol.synthetic_kind == .class_self_write_binding or
         symbol.synthetic_kind == .class_self_alias_binding or
-        symbol.synthetic_kind == .anonymous_class_export_binding;
+        symbol.synthetic_kind == .anonymous_class_export_binding or
+        symbol.synthetic_kind == .block_scoping_loop_binding;
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
     for (transformer.symbols) |symbol| {
-        if (isStandaloneLateOutputNameSymbol(symbol) and std.mem.eql(u8, symbol.synthetic_name, name)) return true;
+        if (isStandaloneLateOutputNameSymbol(symbol) and
+            (std.mem.eql(u8, symbol.synthetic_name, name) or std.mem.eql(u8, symbol.output_name_hint, name))) return true;
     }
     return false;
 }
@@ -1800,13 +1802,13 @@ fn transpileWithCallbackInternal(
         break :blk transformer.symbol_ids.items;
     } else transformer.symbol_ids.items;
     const has_helpers = transformer.runtime_helpers.hasAny();
-    var standalone_helper_name_overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    var standalone_late_output_name_overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     const use_late_helper_names = transformer.options.defer_runtime_helper_name_resolution and
         transformer.semantic_edit_enabled and
         !transformer.options.emit_runtime_helper_imports;
     if (use_late_helper_names) {
-        standalone_helper_name_overrides = try buildStandaloneRuntimeHelperNameOverrides(arena_alloc, &transformer);
-        if ((has_helpers or transformer.jsx_import_info.hasImports()) and standalone_helper_name_overrides.count() == 0)
+        standalone_late_output_name_overrides = try buildStandaloneLateOutputNameOverrides(arena_alloc, &transformer);
+        if ((has_helpers or transformer.jsx_import_info.hasImports()) and standalone_late_output_name_overrides.count() == 0)
             return error.TransformError;
     }
     var helper_final_renames: ?*const std.AutoHashMapUnmanaged(u32, []const u8) = null;
@@ -1816,7 +1818,7 @@ fn transpileWithCallbackInternal(
     const helper_name_resolver: StandaloneRuntimeHelperNameResolver = .{
         .transformer = &transformer,
         .final_renames = helper_final_renames,
-        .final_output_names = if (use_late_helper_names) &standalone_helper_name_overrides else null,
+        .final_output_names = if (use_late_helper_names) &standalone_late_output_name_overrides else null,
     };
     // The block-scoping map is keyed by transform-graph SymbolIds. A
     // post-transform reanalysis builds unrelated IDs, so only expose these
@@ -1836,7 +1838,7 @@ fn transpileWithCallbackInternal(
         );
     }
     if (use_late_helper_names) {
-        var entries = standalone_helper_name_overrides.iterator();
+        var entries = standalone_late_output_name_overrides.iterator();
         while (entries.next()) |entry| {
             if (codegen_symbol_name_overrides_storage.get(entry.key_ptr.*)) |existing| {
                 if (!std.mem.eql(u8, existing, entry.value_ptr.*)) return error.TransformError;
@@ -4124,6 +4126,27 @@ test "#4760 es5 루프 캡처 `_loop` 의 매개변수·인자·끌어올린 var
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "index") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "latest") == null);
+}
+
+test "#4819 extracted loop names are finalized from their exact SymbolIds" {
+    const source =
+        \\function collect(limit) {
+        \\  const readers = [];
+        \\  for (let first = 0; first < limit; first++) readers.push(() => first);
+        \\  for (let second = 0; second < limit; second++) readers.push(() => second);
+        \\  return readers;
+        \\}
+    ;
+    const compat = @import("transformer/compat.zig");
+    var result = try transpile(std.testing.allocator, source, "/src/a.js", .{
+        .unsupported = compat.fromESTarget(.es5),
+        .es_target = .es5,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _loop = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _loop2 = function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_loop") == null);
 }
 
 test "#4759 이름 줄이기는 낮춘·접은 뒤 코드로 한다 — 새 노드도 같은 이름을 따른다" {

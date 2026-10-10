@@ -674,8 +674,16 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             std.debug.assert(lexical_bindings.len == lexical_names.len);
             std.debug.assert(hoist_bindings.len == hoist_vars.len);
             // --- _loop 함수명 생성 ---
-            const loop_prefix = "_loop";
-            const loop_name = try self.buildUniqueName(loop_prefix, &self.loop_counter);
+            // Standalone non-minified output chooses the emitted spelling after
+            // all generated bindings are known. Keep a collision-free working
+            // name during semantic edits; eval/with scopes use the existing
+            // early, dynamic-lookup-aware collision path.
+            const late_loop_output_name = es_helpers.canUseLateStandaloneOutputName(self, call_scope);
+            const loop_prefix = if (late_loop_output_name) "__zntc_loop" else "_loop";
+            const loop_name = if (late_loop_output_name)
+                try self.buildUniqueName(loop_prefix, &self.loop_counter)
+            else
+                try self.buildUniqueNameAvoidingDynamicEval(loop_prefix, &self.loop_counter, call_scope);
 
             const needs_ret_var = flow.needsRetVar();
 
@@ -787,6 +795,19 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const loop_name_span = try self.ast.addString(loop_name);
             const loop_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, loop_name_span);
             const loop_symbol = try self.declareSyntheticVar(loop_binding, span);
+            if (late_loop_output_name) {
+                const symbol = loop_symbol orelse
+                    std.debug.panic("late-named extracted loop has no exact SymbolId", .{});
+                const editor = if (self.semantic_editor) |*existing|
+                    existing
+                else
+                    std.debug.panic("late-named extracted loop has no semantic editor", .{});
+                const generated = &editor.symbols.items[@intFromEnum(symbol)];
+                if (!std.mem.eql(u8, generated.synthetic_name, loop_name))
+                    std.debug.panic("extracted loop binding lost its staging spelling", .{});
+                generated.synthetic_kind = .block_scoping_loop_binding;
+                generated.output_name_hint = "_loop";
+            }
             const loop_decl = try es_helpers.makeDeclarator(self, loop_binding, func_expr, span);
             var decls: std.ArrayList(NodeIndex) = .empty;
             defer decls.deinit(self.allocator);
