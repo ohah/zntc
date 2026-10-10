@@ -105,14 +105,53 @@ describe('ES5 class self storage (#4819)', () => {
     });
   }
 
-  test('source names cannot be captured by the class-self write binding', async () => {
+  for (const minify of [false, true]) {
+    test(`constructor class-name aliases resolve by SymbolId, ${minify ? 'minified' : 'plain'}`, async () => {
+      const input = `
+        class First { constructor(First) { this.arg = First; } static self() { return First; } }
+        class Second { constructor(Second) { this.arg = Second; } static self() { return Second; } }
+        const values = [new First(1), new Second(2)];
+        console.log(JSON.stringify(values.map((value) => [value.arg, value.constructor.self() === value.constructor])));
+      `;
+      const fixture = await createFixture({
+        'input.mjs': input,
+        'package.json': '{"type":"module"}',
+      });
+      cleanup = fixture.cleanup;
+      const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      const output = join(fixture.dir, 'out.mjs');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.mjs',
+        '--target=es5',
+        ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const code = readFileSync(output, 'utf8');
+      if (minify) {
+        expect(code).not.toContain('_classSelf');
+      } else {
+        expect(code).toContain('_classSelf');
+        expect(code).toContain('_classSelf2');
+      }
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe(native.stdout);
+    });
+  }
+
+  test('source names cannot be captured by class-self generated bindings', async () => {
     const input = `
       const _classSelfWrite = 'source';
       const _classSelfReadonly = 'readonly source';
       const _ignoredClassSelfWrite = 'ignored source';
+      const _classSelf = 'alias source';
       class CollisionTarget {
+        constructor(CollisionTarget) { this.value = CollisionTarget; }
         static write() { CollisionTarget = 3; }
-        static readSource() { return [_classSelfWrite, _classSelfReadonly, _ignoredClassSelfWrite]; }
+        static readSource() { return [_classSelfWrite, _classSelfReadonly, _ignoredClassSelfWrite, _classSelf]; }
       }
       let writeError = 'none';
       try { CollisionTarget.write(); } catch (error) { writeError = error.name; }
@@ -132,6 +171,7 @@ describe('ES5 class self storage (#4819)', () => {
     expect(code).toContain('_classSelfWrite2');
     expect(code).toContain('_classSelfReadonly2');
     expect(code).toContain('_ignoredClassSelfWrite2');
+    expect(code).toContain('_classSelf2');
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
     expect(runtime.stdout).toBe(native.stdout);
@@ -142,10 +182,12 @@ describe('ES5 class self storage (#4819)', () => {
       globalThis._classSelfWrite = 'global';
       globalThis._classSelfReadonly = 'readonly';
       globalThis._ignoredClassSelfWrite = 'ignored';
+      globalThis._classSelf = 'alias';
       class EvalTarget {
+        constructor(EvalTarget) { this.value = EvalTarget; }
         static write() { EvalTarget = 3; }
         static readGlobal() {
-          return eval('_classSelfWrite + ":" + _classSelfReadonly + ":" + _ignoredClassSelfWrite');
+          return eval('_classSelfWrite + ":" + _classSelfReadonly + ":" + _ignoredClassSelfWrite + ":" + _classSelf');
         }
       }
       console.log(JSON.stringify(EvalTarget.readGlobal()));
@@ -164,6 +206,7 @@ describe('ES5 class self storage (#4819)', () => {
     expect(code).toContain('_classSelfWrite2');
     expect(code).toContain('_classSelfReadonly2');
     expect(code).toContain('_ignoredClassSelfWrite2');
+    expect(code).toContain('_classSelf2');
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
     expect(runtime.stdout).toBe(native.stdout);

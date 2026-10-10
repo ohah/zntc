@@ -346,12 +346,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var write_context: Transformer.ClassSelfWriteTarget = undefined;
             const write_binding = try beginClassSelfWrite(self, inner, iife_scope, &write_context, span);
             const has_self_alias = if (inner) |id| try constructorShadowsClassSelf(self, cm.constructor_idx, name_span, id) else false;
-            const alias_text = if (has_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
+            const alias_output_name: es_helpers.ScopedSyntheticOutputName = if (has_self_alias)
+                try es_helpers.resolveScopedSyntheticOutputName(self, "_classSelf", iife_scope)
+            else
+                .{ .name = "", .late = false };
+            const alias_text = alias_output_name.name;
             const alias_binding = if (has_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
             const alias_id = if (has_self_alias)
                 try self.declareSyntheticInScope(alias_binding, span, .variable_var, iife_scope)
             else
                 null;
+            if (alias_output_name.late) {
+                es_helpers.markStandaloneLateSyntheticSymbol(self, alias_id orelse std.debug.panic("late class-self alias has no SymbolId", .{}), .class_self_alias_binding);
+            }
 
             // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
             // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
@@ -770,12 +777,19 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var write_context: Transformer.ClassSelfWriteTarget = undefined;
             const write_binding = if (!iife_scope.isNone()) try beginClassSelfWrite(self, inner, iife_scope, &write_context, span) else null;
 
-            const alias_text = if (has_self_alias) try es_helpers.resolveSyntheticName(self, "_classSelf") else "";
+            const alias_output_name: es_helpers.ScopedSyntheticOutputName = if (has_self_alias)
+                try es_helpers.resolveScopedSyntheticOutputName(self, "_classSelf", iife_scope)
+            else
+                .{ .name = "", .late = false };
+            const alias_text = alias_output_name.name;
             const alias_binding = if (has_self_alias) try es_helpers.makeExactSyntheticBinding(self, alias_text) else NodeIndex.none;
             const alias_id = if (has_self_alias)
                 try self.declareSyntheticInScope(alias_binding, span, .variable_var, iife_scope)
             else
                 null;
+            if (alias_output_name.late) {
+                es_helpers.markStandaloneLateSyntheticSymbol(self, alias_id orelse std.debug.panic("late class-self alias has no SymbolId", .{}), .class_self_alias_binding);
+            }
 
             // private method 초기화 → constructor body에 삽입
             for (cm.private_methods.items) |pm| {
