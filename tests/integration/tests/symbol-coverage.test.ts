@@ -13422,6 +13422,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4 true 9 10\n',
       },
       {
+        name: 'post-super direct if-else preserves both initialized-this branches',
+        source:
+          'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) this.value = 1; else this.value = 2; } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, first instanceof Child);',
+        graph: 'retained',
+        output: '1 2 true\n',
+      },
+      {
+        name: 'post-super direct if without else preserves the unassigned base value',
+        source:
+          'var selected = false; function Base() { this.value = 0; } class Child extends Base { constructor() { super(); if (selected) this.value = 1; } } console.log(new Child().value);',
+        graph: 'retained',
+        output: '0\n',
+      },
+      {
+        name: 'post-super branches write once to the object returned by the base constructor',
+        source:
+          'var selected = true; var writes = []; function Base() { return new Proxy({}, { set(target, key, value) { writes.push(key + ":" + value); target[key] = value; return true; } }); } class Child extends Base { constructor() { super(); if (selected) this.left = 1; else this.right = 2; } } var first = new Child(); selected = false; var second = new Child(); console.log(first.left, second.right, writes.join(","), first instanceof Child, second instanceof Child);',
+        graph: 'retained',
+        output: '1 2 left:1,right:2 false false\n',
+      },
+      {
+        name: 'post-super branches preserve exact helper-colliding source bindings',
+        source:
+          'var _this = true, _newTarget = 7; function Base() {} class Child extends Base { constructor() { super(); if (_this) this.value = _newTarget; else this.value = 8; } } var child = new Child(); console.log(child.value, child instanceof Child, _this, _newTarget);',
+        graph: 'retained',
+        output: '7 true true 7\n',
+      },
+      {
         name: 'post-super return of a bound object preserves derived constructor return semantics',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
@@ -13511,6 +13539,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); var local = value(); this.value = local; } } console.log(new Child().value, calls);',
         graph: 'reanalyzed',
         output: '3 1\n',
+      },
+      {
+        name: 'post-super if with a call condition stays on reanalysis',
+        source:
+          'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (selected()) this.value = 1; else this.value = 2; } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '1 1\n',
+      },
+      {
+        name: 'post-super if with block branches stays on reanalysis',
+        source:
+          'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) { this.value = 1; } else { this.value = 2; } } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'post-super else-if branch stays on reanalysis',
+        source:
+          'var first = false, second = true; function Base() {} class Child extends Base { constructor() { super(); if (first) this.value = 1; else if (second) this.value = 2; else this.value = 3; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'post-super computed property branch stays on reanalysis',
+        source:
+          'var key = "value"; function Base() {} class Child extends Base { constructor() { super(); if (true) this[key] = 1; else this[key] = 2; } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '1\n',
       },
       {
         name: 'post-super destructured var stays on reanalysis',

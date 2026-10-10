@@ -1810,6 +1810,21 @@ fn isSafeDerivedConstructorReturnStatement(
     return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
 }
 
+fn isSafePostSuperConditionalStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    if (statement.tag != .if_statement) return false;
+    const branches = statement.data.ternary;
+    return isSafeConstructorValue(ast, semantic, branches.a) and
+        isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branches.b) and
+        (branches.c.isNone() or
+            isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branches.c));
+}
+
 fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1843,8 +1858,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
         const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
         if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
             // Keep the initialization boundary explicit: simple `var`
-            // declarations and `this` property assignments may follow, with
-            // an optional final return.
+            // declarations, direct `this` property writes, and bounded
+            // conditionals may follow, with an optional final return.
             var return_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
@@ -1855,6 +1870,11 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                     ast.getNode(following_statement),
                 )) continue;
                 if (!return_seen and isSafeConstructorThisPropertyAssignmentStatement(
+                    ast,
+                    semantic,
+                    following_statement,
+                )) continue;
+                if (!return_seen and isSafePostSuperConditionalStatement(
                     ast,
                     semantic,
                     following_statement,
