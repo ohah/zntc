@@ -290,6 +290,24 @@ pub fn makePrivateMethodFunctionRef(self: anytype, mapping: anytype) !NodeIndex 
 /// the class-self value at descriptor creation, then bind its original name as
 /// an immutable lexical alias for the moved method. This preserves class
 /// identity after outer reassignment and the class binding's read-only rules.
+fn isParameterScopeOwnerTag(tag: Node.Tag) bool {
+    return switch (tag) {
+        .formal_parameters, .formal_parameter, .assignment_pattern, .assignment_expression, .assignment_target_with_default, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target, .parenthesized_expression, .sequence_expression => true,
+        else => false,
+    };
+}
+
+fn isParameterEnvironmentScope(self: anytype, scope: ScopeId) bool {
+    if (scope.isNone()) return false;
+    const owners = if (self.semantic_editor) |*editor| &editor.scope_owner_map else &self.scope_owner_map;
+    var iter = owners.iterator();
+    while (iter.next()) |entry| {
+        if (entry.value_ptr.* != @intFromEnum(scope) or entry.key_ptr.* >= self.ast.nodes.items.len) continue;
+        if (isParameterScopeOwnerTag(self.ast.nodes.items[entry.key_ptr.*].tag)) return true;
+    }
+    return false;
+}
+
 pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIndex, span: Span) !?NodeIndex {
     if (!self.semantic_edit_enabled) return null;
     const class_name_node = if (!pm.class_name_node.isNone()) pm.class_name_node else self.current_class_name_node;
@@ -348,7 +366,9 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
     const class_name = pm.class_name orelse self.ast.getText(class_name_span);
     if (!std.mem.eql(u8, self.ast.getText(class_name_span), class_name))
         std.debug.panic("static private method class name lost its source binding", .{});
-    const output_scope = self.outputScopeParent(function_scope);
+    const function_parent = self.outputScopeParent(function_scope);
+    const parameter_scope = if (isParameterEnvironmentScope(self, function_parent)) function_parent else ScopeId.none;
+    const output_scope = if (parameter_scope.isNone()) function_parent else self.outputScopeParent(parameter_scope);
     if (output_scope.isNone()) std.debug.panic("static private method has no emitted parent scope", .{});
     const factory_scope = pm.func_factory_scope;
     if (self.outputScopeParent(factory_scope) != output_scope)
@@ -379,7 +399,7 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
     );
     try self.ast.preserve_const_declaration_indices.append(self.allocator, @intFromEnum(class_alias_decl));
 
-    try self.reparentGeneratedScope(function_scope, factory_scope);
+    try self.reparentGeneratedScope(if (parameter_scope.isNone()) function_scope else parameter_scope, factory_scope);
     for (references.items) |reference| try self.rebindOutputReference(reference, @intFromEnum(class_alias_symbol));
 
     const function_ref = try makeDeferredExactSyntheticRef(self, pm.func_name, pm.func_symbol_id);
@@ -1077,6 +1097,11 @@ fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const S
         .identifier_reference => {
             if (tdzNameMatch(self, node.data.string_ref, tdz_names)) |name_span| {
                 const call = try makeTDZCall(self, name_span, node.span);
+                // This source read is replaced by a name-based runtime TDZ
+                // check. Do not leave its old parameter SymbolId on the new
+                // call expression after the output binding moves to the body
+                // function scope.
+                try self.removeSemanticReference(idx);
                 self.ast.nodes.items[raw_i] = self.ast.getNode(call);
             }
             return;
@@ -1108,6 +1133,7 @@ fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const S
                     if (right_node.tag == .identifier_reference) {
                         if (tdzNameMatch(self, right_node.data.string_ref, tdz_names)) |name_span| {
                             const call = try makeTDZCall(self, name_span, right_node.span);
+                            try self.removeSemanticReference(right);
                             self.ast.nodes.items[raw_i].data.binary.right = call;
                         }
                     }
@@ -2449,12 +2475,17 @@ fn reparentExtractedFunctionScope(self: anytype, owner: NodeIndex) !void {
     if (!self.semantic_edit_enabled) return;
     const function_scope = self.outputOwnedScope(owner) orelse
         std.debug.panic("extracted function has no exact output ScopeId", .{});
-    const class_scope = self.outputScopeParent(function_scope);
+    const function_parent = self.outputScopeParent(function_scope);
+    const parameter_scope = if (isParameterEnvironmentScope(self, function_parent)) function_parent else ScopeId.none;
+    const class_scope = if (parameter_scope.isNone()) function_parent else self.outputScopeParent(parameter_scope);
     if (class_scope.isNone()) std.debug.panic("extracted class method has no class scope", .{});
     const output_scope = self.outputScopeParent(class_scope);
     if (output_scope.isNone()) std.debug.panic("extracted class method has no emitted parent scope", .{});
-    if (self.outputScopeParent(function_scope) != output_scope)
-        try self.reparentGeneratedScope(function_scope, output_scope);
+    if (parameter_scope.isNone()) {
+        if (function_parent != output_scope) try self.reparentGeneratedScope(function_scope, output_scope);
+    } else if (self.outputScopeParent(parameter_scope) != output_scope) {
+        try self.reparentGeneratedScope(parameter_scope, output_scope);
+    }
 }
 
 /// method_definition → standalone function declaration으로 추출.

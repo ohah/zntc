@@ -272,6 +272,23 @@ pub const SemanticEditor = struct {
             if (!body_symbol.kind.isFunctionLike() or body_symbol.scope_id != symbol.scope_id) return error.InvalidSymbol;
             const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
             if (!std.mem.eql(u8, body_name, old_name)) return error.InvalidSymbol;
+        } else if (symbol.kind == .parameter) {
+            // Parameter expressions and a non-simple function body now have
+            // distinct source scopes. When the corresponding body map still
+            // contains this spelling, it is valid evidence only for the
+            // function declaration alias that used to share the map entry.
+            if (self.parameterBodyFunctionScope(symbol.scope_id)) |body_scope| {
+                if (self.scope_maps.items[body_scope.toIndex()].get(old_name)) |body_id| {
+                    if (body_id != @intFromEnum(id)) {
+                        if (body_id >= self.symbols.items.len) return error.InvalidSymbol;
+                        const body_symbol = self.symbols.items[body_id];
+                        if (!body_symbol.kind.isFunctionLike() or body_symbol.scope_id != body_scope)
+                            return error.InvalidSymbol;
+                        const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
+                        if (!std.mem.eql(u8, body_name, old_name)) return error.InvalidSymbol;
+                    }
+                }
+            }
         }
         if (map.contains(output_name)) return error.DuplicateBinding;
         const stable_name = try self.allocator.dupe(u8, output_name);
@@ -280,6 +297,27 @@ pub const SemanticEditor = struct {
         symbol.synthetic_name = stable_name;
         const declaration_node = self.bindingNodeForSymbol(id) orelse .none;
         try self.ensureDeclarationAtNode(id, symbol.scope_id, declaration_node);
+    }
+
+    fn parameterBodyFunctionScope(self: *const SemanticEditor, parameter_scope: ScopeId) ?ScopeId {
+        if (!self.validScope(parameter_scope)) return null;
+        for (self.ast.nodes.items, 0..) |function, raw| {
+            const slot: u32 = switch (function.tag) {
+                .arrow_function_expression => 0,
+                .function_declaration, .function_expression, .function, .method_definition => 1,
+                else => continue,
+            };
+            if (!self.ast.hasExtra(function.data.extra, slot)) continue;
+            const params_raw = self.ast.extra_data.items[function.data.extra + slot];
+            if (params_raw == @intFromEnum(NodeIndex.none) or
+                self.scope_owner_map.get(params_raw) != @as(?u32, @intFromEnum(parameter_scope))) continue;
+            const body_raw = self.scope_owner_map.get(@intCast(raw)) orelse continue;
+            if (body_raw >= self.scopes.items.len) continue;
+            const body_scope: ScopeId = @enumFromInt(body_raw);
+            if (self.scopes.items[body_raw].kind == .function and self.scopes.items[body_raw].parent == parameter_scope)
+                return body_scope;
+        }
+        return null;
     }
 
     pub fn attachExistingBinding(self: *SemanticEditor, node: NodeIndex, id: SymbolId) Error!void {
@@ -1055,6 +1093,7 @@ test "parameter rename preserves the body function binding and rejects inconsist
     }
     try std.testing.expect(!parameter_id.isNone() and !function_id.isNone());
     const scope = editor.symbols.items[@intFromEnum(parameter_id)].scope_id;
+    const body_scope = editor.parameterBodyFunctionScope(scope) orelse return error.TestUnexpectedResult;
     const count = editor.scopes.items[scope.toIndex()].symbol_count;
     const references = try allocator.dupe(Reference, editor.references.items);
     const node_ids = try allocator.dupe(?u32, editor.symbol_ids.items);
@@ -1070,7 +1109,8 @@ test "parameter rename preserves the body function binding and rejects inconsist
     try std.testing.expectError(error.InvalidScope, editor.renameParameterEnvironmentBinding(parameter_id, "x$1"));
     editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = false;
     try editor.renameParameterEnvironmentBinding(parameter_id, "x$1");
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(function_id)), editor.scope_maps.items[scope.toIndex()].get("x"));
+    try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[scope.toIndex()].get("x"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(function_id)), editor.scope_maps.items[body_scope.toIndex()].get("x"));
     try std.testing.expectEqual(@as(?usize, @intFromEnum(parameter_id)), editor.scope_maps.items[scope.toIndex()].get("x$1"));
     try std.testing.expectEqualStrings("x$1", editor.symbols.items[@intFromEnum(parameter_id)].synthetic_name);
     try std.testing.expectEqual(count, editor.scopes.items[scope.toIndex()].symbol_count);

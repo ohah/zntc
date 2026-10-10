@@ -786,13 +786,20 @@ test "#4819 async generator moves body scope frontier under inner function and k
     try analyzer.analyze();
 
     var source_scope: ?u32 = null;
+    var parameter_scope: ?u32 = null;
     var body_scope: ?u32 = null;
     var default_scope: ?u32 = null;
     var decorator_scope: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, i| {
         const scope = analyzer.scope_owner_map.get(@as(u32, @intCast(i))) orelse continue;
         switch (node.tag) {
-            .function_declaration => source_scope = scope,
+            .function_declaration => {
+                source_scope = scope;
+                if (parser.ast.hasExtra(node.data.extra, 1)) {
+                    const params: ast_mod.NodeIndex = parser.ast.readExtraNode(node.data.extra, 1);
+                    parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(params));
+                }
+            },
             .for_await_of_statement => body_scope = scope,
             .arrow_function_expression => {
                 if (default_scope == null) {
@@ -805,10 +812,11 @@ test "#4819 async generator moves body scope frontier under inner function and k
         }
     }
     const outer = source_scope orelse return error.TestUnexpectedResult;
+    const parameters = parameter_scope orelse return error.TestUnexpectedResult;
     const body = body_scope orelse return error.TestUnexpectedResult;
     const param = default_scope orelse return error.TestUnexpectedResult;
     const decorator = decorator_scope orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(outer, @intFromEnum(analyzer.scopes.items[param].parent));
+    try std.testing.expectEqual(parameters, @intFromEnum(analyzer.scopes.items[param].parent));
     try std.testing.expectEqual(outer, @intFromEnum(analyzer.scopes.items[decorator].parent));
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{

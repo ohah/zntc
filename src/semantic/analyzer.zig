@@ -1899,13 +1899,16 @@ pub const SemanticAnalyzer = struct {
                     try checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
 
                     const body_idx: NodeIndex = @enumFromInt(extras[extra_start + ast_mod.MethodExtra.body]);
-                    // 함수 본문을 function scope로 감싸서 순회
-                    const scope_saved = try self.enterScope(.function, self.is_strict_mode);
-                    try self.registerParams(params_list);
+                    const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
+                    const function_scopes = try self.enterFunctionScopesWithParams(
+                        functionParamsNode(self, node),
+                        params_list,
+                        has_parameter_expressions,
+                    );
                     // 메서드는 항상 UniqueFormalParameters — 중복 금지
                     try checker.checkDuplicateParams(self.ast, params_list, &self.errors, self.allocator);
                     try self.visitFunctionBodyInner(body_idx);
-                    self.exitScope(scope_saved);
+                    self.exitFunctionScopes(function_scopes);
                 }
             },
             .property_definition, .accessor_property => {
@@ -2833,6 +2836,11 @@ pub const SemanticAnalyzer = struct {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
+            .formal_parameter => {
+                const extra = node.data.extra;
+                if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.pattern)) return;
+                try self.predeclareBindingNames(@enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]), kind);
+            },
             .binding_identifier, .assignment_target_identifier => {
                 try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
             },
@@ -2851,7 +2859,7 @@ pub const SemanticAnalyzer = struct {
             .assignment_target_property_identifier => {
                 try self.predeclareBindingNames(node.data.binary.left, kind);
             },
-            .assignment_pattern, .assignment_target_with_default => {
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
                 // default value(right)는 순회하지 않고, 바인딩 이름(left)만 추출
                 try self.predeclareBindingNames(node.data.binary.left, kind);
             },
@@ -2866,6 +2874,16 @@ pub const SemanticAnalyzer = struct {
         if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
+            .formal_parameter => {
+                const extra = node.data.extra;
+                if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.default)) return;
+                const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]);
+                const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]);
+                // A whole-parameter default runs before the nested pattern's
+                // computed keys and defaults.
+                if (!default_value.isNone()) try self.visitNode(default_value);
+                try self.visitBindingPatternExpressions(pattern);
+            },
             .binding_identifier, .assignment_target_identifier => {
                 // 단순 식별자 — 표현식 없음
             },
@@ -2890,10 +2908,10 @@ pub const SemanticAnalyzer = struct {
                     try self.visitNode(node.data.binary.right);
                 }
             },
-            .assignment_pattern, .assignment_target_with_default => {
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
                 // default value(right)를 순회
-                try self.visitBindingPatternExpressions(node.data.binary.left);
                 try self.visitNode(node.data.binary.right);
+                try self.visitBindingPatternExpressions(node.data.binary.left);
             },
             else => {},
         }
@@ -3589,13 +3607,17 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
-        // 함수 본문 — 새 function 스코프 (부모의 strict mode 상속)
-        const saved = try self.enterScope(.function, self.is_strict_mode);
-        const saved_labels = self.saveLabelLen(); // label은 함수 경계를 넘지 못함
-
-        // 파라미터를 function 스코프에 등록
+        // Parameters and body share a scope only for simple lists. Parameter
+        // expressions get a parameter scope parented by the surrounding scope,
+        // with the body function scope nested beneath it.
         const params_list = self.ast.functionParamsList(node);
-        try self.registerParams(params_list);
+        const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
+        const function_scopes = try self.enterFunctionScopesWithParams(
+            functionParamsNode(self, node),
+            params_list,
+            has_parameter_expressions,
+        );
+        const saved_labels = self.saveLabelLen(); // label은 함수 경계를 넘지 못함
 
         // 중복 파라미터 검증: generator/async는 항상 UniqueFormalParameters,
         // 일반 함수는 strict mode에서만 (non-strict sloppy mode는 중복 허용)
@@ -3607,7 +3629,7 @@ pub const SemanticAnalyzer = struct {
         // 본문 순회
         try self.visitFunctionBodyInner(body_idx);
         self.restoreLabelLen(saved_labels);
-        self.exitScope(saved);
+        self.exitFunctionScopes(function_scopes);
     }
 
     /// Flow component syntax의 내부 function body를 방문한다.
@@ -3626,12 +3648,16 @@ pub const SemanticAnalyzer = struct {
         const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 2]);
         if (body_idx.isNone()) return;
 
-        // 1) Name_withRef 함수: 독립 function 스코프로 진입해 body 순회.
-        const saved = try self.enterScope(.function, self.is_strict_mode);
+        // 1) Name_withRef 함수: 독립 parameter/body 환경에서 순회.
         const params_list = self.ast.functionParamsList(func_node);
-        try self.registerParams(params_list);
+        const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
+        const function_scopes = try self.enterFunctionScopesWithParams(
+            functionParamsNode(self, func_node),
+            params_list,
+            has_parameter_expressions,
+        );
         try self.visitFunctionBodyInner(body_idx);
-        self.exitScope(saved);
+        self.exitFunctionScopes(function_scopes);
 
         // 2) `const Name = React.forwardRef(Name_withRef)` (const_decl): 외부 스코프에서 순회해야
         //    `React` / `Name_withRef` identifier_reference 의 `symbol_ids` 가 채워지고, bundler
@@ -3789,11 +3815,14 @@ pub const SemanticAnalyzer = struct {
         } else ScopeId.none;
         defer if (!name_saved.isNone()) self.exitScope(name_saved);
 
-        const saved = try self.enterScope(.function, self.is_strict_mode);
-        const saved_labels = self.saveLabelLen();
-
         const params_list = self.ast.functionParamsList(node);
-        try self.registerParams(params_list);
+        const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
+        const function_scopes = try self.enterFunctionScopesWithParams(
+            functionParamsNode(self, node),
+            params_list,
+            has_parameter_expressions,
+        );
+        const saved_labels = self.saveLabelLen();
 
         // 중복 파라미터 검증: flags에서 async/generator 판별
         const FnFlags = ast_mod.FunctionFlags;
@@ -3805,7 +3834,7 @@ pub const SemanticAnalyzer = struct {
 
         try self.visitFunctionBodyInner(body_idx);
         self.restoreLabelLen(saved_labels);
-        self.exitScope(saved);
+        self.exitFunctionScopes(function_scopes);
     }
 
     fn visitArrowFunction(self: *SemanticAnalyzer, node: Node) AllocError!void {
@@ -3813,34 +3842,23 @@ pub const SemanticAnalyzer = struct {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (e + 2 >= extras.len) return;
-        const saved = try self.enterScope(.function, self.is_strict_mode);
-        const saved_labels = self.saveLabelLen();
         const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
 
         // left가 단일 파라미터(binding_identifier) 또는 파라미터 리스트일 수 있음
         const param_idx: NodeIndex = @enumFromInt(extras[e]);
-        if (!param_idx.isNone()) {
-            try self.declareArrowParams(param_idx);
-
-            // arrow function은 항상 UniqueFormalParameters — 중복 금지
-            try checker.checkDuplicateArrowParams(self.ast, param_idx, &self.errors, self.allocator);
-        }
+        const has_parameter_expressions = if (param_idx.isNone())
+            false
+        else
+            try parameterHasExpressions(self, param_idx);
+        const function_scopes = try self.enterArrowFunctionScopes(param_idx, has_parameter_expressions);
+        const saved_labels = self.saveLabelLen();
 
         if (!body_idx.isNone()) {
-            const body_node = self.ast.getNode(body_idx);
-            if (body_node.tag == .block_statement) {
-                // block body — 일반 함수와 동일한 function-body 경로를 사용한다.
-                // `visitStmtList` 를 거쳐야 Reference.scope_stmt_idx 가 arrow body 기준
-                // per-statement index 로 기록되어 innerGraph dead-store 판정이 정확해진다.
-                try self.visitFunctionBodyInner(body_idx);
-            } else {
-                // expression body
-                try self.visitNode(body_idx);
-            }
+            try self.visitFunctionBodyInner(body_idx);
         }
 
         self.restoreLabelLen(saved_labels);
-        self.exitScope(saved);
+        self.exitFunctionScopes(function_scopes);
     }
 
     /// arrow function의 파라미터를 재귀적으로 추출하여 심볼로 등록한다.
@@ -3871,13 +3889,9 @@ pub const SemanticAnalyzer = struct {
             },
             .formal_parameter => {
                 const e = node.data.extra;
-                if (!self.ast.hasExtra(e, 2)) return;
+                if (!self.ast.hasExtra(e, ast_mod.FormalParameterExtra.pattern)) return;
                 const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-                const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
                 try self.declareArrowParams(pattern);
-                if (!default_value.isNone()) {
-                    try self.visitNode(default_value);
-                }
             },
             .parenthesized_expression => {
                 try self.declareArrowParams(node.data.unary.operand);
@@ -3893,22 +3907,68 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
-                // 기본값: x = 1 → left는 파라미터, right는 기본값 표현식
+                // Bind all parameters before visiting any initializer.
                 try self.declareArrowParams(node.data.binary.left);
-                try self.visitNode(node.data.binary.right);
             },
             .spread_element, .rest_element, .assignment_target_rest => {
                 // ...rest
                 try self.declareArrowParams(node.data.unary.operand);
             },
             .object_pattern, .array_pattern => {
-                // destructuring 패턴 — 내부의 binding_identifier를 재귀적으로 추출
-                try self.declareBindingPattern(idx);
+                try self.declareArrowBindingNames(idx);
             },
             .object_assignment_target, .array_assignment_target => {
-                // cover grammar 변환된 destructuring
-                try self.declareBindingPattern(idx);
+                try self.declareArrowBindingNames(idx);
             },
+            else => {},
+        }
+    }
+
+    fn declareArrowBindingNames(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier, .identifier_reference, .assignment_target_identifier => {
+                try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
+            },
+            .formal_parameter => {
+                const extra = node.data.extra;
+                if (self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.pattern))
+                    try self.declareArrowBindingNames(@enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]));
+            },
+            .formal_parameters, .sequence_expression, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target => {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw| try self.declareArrowBindingNames(@enumFromInt(raw));
+                if (split.rest_operand) |rest| try self.declareArrowBindingNames(rest);
+            },
+            .parenthesized_expression => try self.declareArrowBindingNames(node.data.unary.operand),
+            .binding_property, .assignment_target_property_property => try self.declareArrowBindingNames(node.data.binary.right),
+            .assignment_target_property_identifier => try self.declareArrowBindingNames(node.data.binary.left),
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => try self.declareArrowBindingNames(node.data.binary.left),
+            .spread_element, .rest_element, .binding_rest_element, .assignment_target_rest => try self.declareArrowBindingNames(node.data.unary.operand),
+            else => {},
+        }
+    }
+
+    fn visitArrowParameterExpressions(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .formal_parameters, .sequence_expression => {
+                const list = node.data.list;
+                if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) return;
+                for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                    try self.visitArrowParameterExpressions(@enumFromInt(raw));
+                }
+            },
+            .formal_parameter, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target => try self.visitBindingPatternExpressions(idx),
+            .parenthesized_expression => try self.visitArrowParameterExpressions(node.data.unary.operand),
+            .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
+                // The outer default executes before defaults inside its binding pattern.
+                try self.visitNode(node.data.binary.right);
+                try self.visitBindingPatternExpressions(node.data.binary.left);
+            },
+            .spread_element, .rest_element, .binding_rest_element, .assignment_target_rest => try self.visitArrowParameterExpressions(node.data.unary.operand),
             else => {},
         }
     }
@@ -5059,12 +5119,172 @@ pub const SemanticAnalyzer = struct {
     /// 함수 파라미터를 현재 스코프에 등록한다.
     fn registerParams(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!void {
         const split = self.ast.nodeListSplitRest(params);
+        // Parameter initializers can refer to later parameters (and must hit
+        // their TDZ binding), so install every parameter identity before
+        // resolving any initializer expression.
         for (split.elements) |raw_idx| {
-            try self.registerBinding(@enumFromInt(raw_idx), .parameter);
+            try self.predeclareBindingNames(@enumFromInt(raw_idx), .parameter);
         }
         if (split.rest_operand) |op| {
-            try self.registerBinding(op, .parameter);
+            try self.predeclareBindingNames(op, .parameter);
         }
+        for (split.elements) |raw_idx| {
+            try self.visitBindingPatternExpressions(@enumFromInt(raw_idx));
+        }
+        if (split.rest_operand) |op| {
+            try self.visitBindingPatternExpressions(op);
+        }
+    }
+
+    const FunctionScopeState = struct {
+        body_scope_saved: ScopeId,
+        parameter_scope_saved: ?ScopeId = null,
+    };
+
+    fn enterParameterScope(
+        self: *SemanticAnalyzer,
+        params_root: NodeIndex,
+        has_parameter_expressions: bool,
+    ) AllocError!?ScopeId {
+        if (!has_parameter_expressions) return null;
+        if (params_root.isNone() or @intFromEnum(params_root) >= self.ast.nodes.items.len)
+            std.debug.panic("parameter expressions require a parameter AST owner", .{});
+        const saved_visit_node = self.current_visit_node;
+        self.current_visit_node = params_root;
+        const saved = try self.enterScope(.function, self.is_strict_mode);
+        self.current_visit_node = saved_visit_node;
+        return saved;
+    }
+
+    fn enterFunctionScopesWithParams(
+        self: *SemanticAnalyzer,
+        params_root: NodeIndex,
+        params: ast_mod.NodeList,
+        has_parameter_expressions: bool,
+    ) AllocError!FunctionScopeState {
+        const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions);
+        if (parameter_scope_saved == null) {
+            const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+            try self.registerParams(params);
+            return .{ .body_scope_saved = body_scope_saved };
+        }
+        try self.registerParams(params);
+        const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+        return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
+    }
+
+    fn enterArrowFunctionScopes(
+        self: *SemanticAnalyzer,
+        params_root: NodeIndex,
+        has_parameter_expressions: bool,
+    ) AllocError!FunctionScopeState {
+        const parameter_scope_saved = try self.enterParameterScope(params_root, has_parameter_expressions);
+        if (parameter_scope_saved == null) {
+            const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+            try self.declareArrowParams(params_root);
+            try self.checkArrowParameterDuplicates(params_root);
+            try self.visitArrowParameterExpressions(params_root);
+            return .{ .body_scope_saved = body_scope_saved };
+        }
+        try self.declareArrowParams(params_root);
+        try self.checkArrowParameterDuplicates(params_root);
+        try self.visitArrowParameterExpressions(params_root);
+        const body_scope_saved = try self.enterScope(.function, self.is_strict_mode);
+        return .{ .body_scope_saved = body_scope_saved, .parameter_scope_saved = parameter_scope_saved };
+    }
+
+    fn checkArrowParameterDuplicates(self: *SemanticAnalyzer, params_root: NodeIndex) AllocError!void {
+        if (!params_root.isNone())
+            try checker.checkDuplicateArrowParams(self.ast, params_root, &self.errors, self.allocator);
+    }
+
+    fn exitFunctionScopes(self: *SemanticAnalyzer, scopes: FunctionScopeState) void {
+        self.exitScope(scopes.body_scope_saved);
+        if (scopes.parameter_scope_saved) |saved| self.exitScope(saved);
+    }
+
+    fn paramsHaveExpressions(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!bool {
+        const split = self.ast.nodeListSplitRest(params);
+        for (split.elements) |raw_idx| {
+            if (try parameterHasExpressions(self, @enumFromInt(raw_idx))) return true;
+        }
+        if (split.rest_operand) |rest| return parameterHasExpressions(self, rest);
+        return false;
+    }
+
+    fn functionParamsNode(self: *const SemanticAnalyzer, function: Node) NodeIndex {
+        const slot: u32 = switch (function.tag) {
+            .arrow_function_expression => 0,
+            .function_declaration, .function_expression, .function, .method_definition => 1,
+            else => return .none,
+        };
+        if (!self.ast.hasExtra(function.data.extra, slot)) return .none;
+        return self.ast.readExtraNode(function.data.extra, slot);
+    }
+
+    fn parameterHasExpressions(self: *SemanticAnalyzer, root: NodeIndex) AllocError!bool {
+        if (root.isNone() or @intFromEnum(root) >= self.ast.nodes.items.len) return false;
+        var pending: std.ArrayList(NodeIndex) = .empty;
+        defer pending.deinit(self.allocator);
+        try pending.append(self.allocator, root);
+        while (pending.pop()) |idx| {
+            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const node = self.ast.getNode(idx);
+            switch (node.tag) {
+                .formal_parameter => {
+                    const extra = node.data.extra;
+                    if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.default)) continue;
+                    const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]);
+                    if (!default_value.isNone()) return true;
+                    try pending.append(self.allocator, @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]));
+                },
+                .formal_parameters, .sequence_expression => {
+                    const list = node.data.list;
+                    if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) continue;
+                    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+                        try pending.append(self.allocator, @enumFromInt(raw));
+                    }
+                },
+                .parenthesized_expression => try pending.append(self.allocator, node.data.unary.operand),
+                .assignment_pattern, .assignment_expression, .assignment_target_with_default => return true,
+                .array_pattern, .array_assignment_target => {
+                    const split = self.ast.nodeListSplitRest(node.data.list);
+                    for (split.elements) |raw| try pending.append(self.allocator, @enumFromInt(raw));
+                    if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
+                },
+                .object_pattern, .object_assignment_target => {
+                    const split = self.ast.nodeListSplitRest(node.data.list);
+                    for (split.elements) |raw| {
+                        const child_idx: NodeIndex = @enumFromInt(raw);
+                        if (child_idx.isNone() or @intFromEnum(child_idx) >= self.ast.nodes.items.len) continue;
+                        const child = self.ast.getNode(child_idx);
+                        if (child.tag == .binding_property or child.tag == .assignment_target_property_property) {
+                            const key = child.data.binary.left;
+                            if (!key.isNone() and @intFromEnum(key) < self.ast.nodes.items.len and
+                                self.ast.getNode(key).tag == .computed_property_key) return true;
+                            try pending.append(self.allocator, child.data.binary.right);
+                        } else if (child.tag == .assignment_target_property_identifier) {
+                            if (!child.data.binary.right.isNone()) return true;
+                        } else {
+                            try pending.append(self.allocator, child_idx);
+                        }
+                    }
+                    if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
+                },
+                .rest_element, .spread_element, .binding_rest_element, .assignment_target_rest => try pending.append(self.allocator, node.data.unary.operand),
+                .binding_property, .assignment_target_property_property => {
+                    const key = node.data.binary.left;
+                    if (!key.isNone() and @intFromEnum(key) < self.ast.nodes.items.len and
+                        self.ast.getNode(key).tag == .computed_property_key) return true;
+                    try pending.append(self.allocator, node.data.binary.right);
+                },
+                .assignment_target_property_identifier => {
+                    if (!node.data.binary.right.isNone()) return true;
+                },
+                else => {},
+            }
+        }
+        return false;
     }
 
     /// 함수 본문 내부를 순회한다 (block_statement의 스코프 중복 생성 방지).
