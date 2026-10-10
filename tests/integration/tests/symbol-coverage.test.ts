@@ -13569,6 +13569,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'TypeError\n',
       },
       {
+        name: 'post-super final throw preserves exact thrown identity after one base call',
+        source:
+          'var baseCalls = 0, sentinel = { value: 9 }; function Base() { baseCalls += 1; } class Child extends Base { constructor() { super(); throw sentinel; } } var same = false; try { new Child(); } catch (error) { same = error === sentinel; } console.log(same, baseCalls);',
+        graph: 'retained',
+        output: 'true 1\n',
+      },
+      {
+        name: 'post-super final throw with a call value stays on reanalysis',
+        source:
+          'var calls = 0, sentinel = {}; function makeError() { calls += 1; return sentinel; } function Base() {} class Child extends Base { constructor() { super(); throw makeError(); } } var same = false; try { new Child(); } catch (error) { same = error === sentinel; } console.log(same, calls);',
+        graph: 'reanalyzed',
+        output: 'true 1\n',
+      },
+      {
+        name: 'post-super throw with following unreachable statement stays on reanalysis',
+        source:
+          'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); throw sentinel; this.value = 1; } } var same = false; try { new Child(); } catch (error) { same = error === sentinel; } console.log(same);',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
         name: 'nested explicit super constructor retains exact outer base and inner class identities',
         source:
           'function make(Base, Child) { function inner() { class Child extends Base { constructor() { super(); } self() { return Child; } } var child = new Child(); return [child.self() === Child, child instanceof Base, Child.name]; } return [inner().join(" "), Child]; } console.log(make(function Base() {}, 9).join("|"));',

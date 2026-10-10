@@ -2079,37 +2079,36 @@ fn isSimpleParamsConstructorBodyGraphSafe(
             // Keep the initialization boundary explicit: simple `var`
             // declarations, direct `this` property writes, and bounded
             // conditionals with simple branch blocks may follow, with an
-            // optional final return.
-            var return_seen = false;
+            // optional final return or throw.
+            var completion_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
                 const following_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
-                if (!return_seen and isSafeConstructorVarDeclaration(
+                if (!completion_seen and isSafeConstructorVarDeclaration(
                     ast,
                     semantic,
                     ast.getNode(following_statement),
                 )) continue;
-                if (!return_seen and isSafePostSuperExpressionStatement(
+                if (!completion_seen and isSafePostSuperExpressionStatement(
                     ast,
                     semantic,
                     following_statement,
                 )) continue;
-                if (!return_seen and isSafePostSuperConditionalStatement(
+                if (!completion_seen and isSafePostSuperConditionalStatement(
                     ast,
                     semantic,
                     following_statement,
                 )) continue;
-                if (!return_seen and isSafePostSuperSwitchStatement(
+                if (!completion_seen and isSafePostSuperSwitchStatement(
                     ast,
                     semantic,
                     following_statement,
                 )) continue;
-                if (!return_seen and isSafeDerivedConstructorReturnStatement(
-                    ast,
-                    semantic,
-                    following_statement,
-                )) {
-                    return_seen = true;
+                if (!completion_seen and
+                    (isSafeDerivedConstructorReturnStatement(ast, semantic, following_statement) or
+                        isSafeDerivedConstructorThrowStatement(ast, semantic, following_statement)))
+                {
+                    completion_seen = true;
                     continue;
                 }
                 return false;
