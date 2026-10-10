@@ -103,10 +103,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         fn beginClassSelfWrite(self: *Transformer, inner: ?u32, scope: @import("../semantic/scope.zig").ScopeId, context: *Transformer.ClassSelfWriteTarget, span: Span) Transformer.Error!?NodeIndex {
             if (!(try hasClassSelfWrite(self, inner))) return null;
-            const name = try es_helpers.resolveSyntheticName(self, "_classSelfWrite");
-            const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+            const output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_classSelfWrite", scope);
+            const binding = try es_helpers.makeExactSyntheticBinding(self, output_name.name);
             const target_id = try self.declareSyntheticInScope(binding, span, .variable_var, scope);
-            context.* = .{ .inner_id = inner.?, .target_name = name, .target_id = target_id, .previous = self.active_class_self_write_target };
+            if (output_name.late) {
+                es_helpers.markStandaloneLateSyntheticSymbol(self, target_id orelse std.debug.panic("late class-self write target has no SymbolId", .{}), .class_self_write_binding);
+            }
+            context.* = .{ .inner_id = inner.?, .target_name = output_name.name, .target_id = target_id, .previous = self.active_class_self_write_target };
             self.active_class_self_write_target = context;
             return binding;
         }

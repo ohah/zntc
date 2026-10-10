@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { createFixture, runZntcInDir } from './helpers';
@@ -54,4 +55,99 @@ describe('ES5 class self storage (#4819)', () => {
       });
     }
   }
+
+  for (const minify of [false, true]) {
+    test(`repeated class-self write targets keep exact names, ${minify ? 'minified' : 'plain'}`, async () => {
+      const input = `
+        class First { static write() { First = 3; } }
+        class Second { static write() { Second = 4; } }
+        const errors = [];
+        for (const value of [First, Second]) {
+          try { value.write(); errors.push('none'); }
+          catch (error) { errors.push(error.name); }
+        }
+        console.log(JSON.stringify(errors));
+      `;
+      const fixture = await createFixture({
+        'input.mjs': input,
+        'package.json': '{"type":"module"}',
+      });
+      cleanup = fixture.cleanup;
+      const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      const output = join(fixture.dir, 'out.mjs');
+      const result = await runZntcInDir(fixture.dir, [
+        'input.mjs',
+        '--target=es5',
+        ...(minify ? ['--minify-identifiers', '--minify-syntax'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const code = readFileSync(output, 'utf8');
+      if (minify) {
+        expect(code).not.toContain('_classSelfWrite');
+      } else {
+        expect(code).toContain('_classSelfWrite');
+        expect(code).toContain('_classSelfWrite2');
+      }
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe(native.stdout);
+    });
+  }
+
+  test('source names cannot be captured by the class-self write binding', async () => {
+    const input = `
+      const _classSelfWrite = 'source';
+      class CollisionTarget {
+        static write() { CollisionTarget = 3; }
+        static readSource() { return _classSelfWrite; }
+      }
+      let writeError = 'none';
+      try { CollisionTarget.write(); } catch (error) { writeError = error.name; }
+      console.log(JSON.stringify([CollisionTarget.readSource(), writeError]));
+    `;
+    const fixture = await createFixture({
+      'input.mjs': input,
+      'package.json': '{"type":"module"}',
+    });
+    cleanup = fixture.cleanup;
+    const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+    const output = join(fixture.dir, 'out.mjs');
+    const result = await runZntcInDir(fixture.dir, ['input.mjs', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const code = readFileSync(output, 'utf8');
+    expect(code).toContain('_classSelfWrite2');
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe(native.stdout);
+  });
+
+  test('direct eval keeps the class-self write name away from eval-visible globals', async () => {
+    const input = `
+      globalThis._classSelfWrite = 'global';
+      class EvalTarget {
+        static write() { EvalTarget = 3; }
+        static readGlobal() { return eval('_classSelfWrite'); }
+      }
+      console.log(JSON.stringify(EvalTarget.readGlobal()));
+    `;
+    const fixture = await createFixture({
+      'input.mjs': input,
+      'package.json': '{"type":"module"}',
+    });
+    cleanup = fixture.cleanup;
+    const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+    const output = join(fixture.dir, 'out.mjs');
+    const result = await runZntcInDir(fixture.dir, ['input.mjs', '--target=es5', '-o', output]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const code = readFileSync(output, 'utf8');
+    expect(code).toContain('_classSelfWrite2');
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe(native.stdout);
+  });
 });
