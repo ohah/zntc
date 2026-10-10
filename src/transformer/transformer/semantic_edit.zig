@@ -2267,8 +2267,18 @@ pub fn declareSyntheticVar(self: *Transformer, binding: NodeIndex, declaration_s
 }
 
 /// `catch {}` lowering이 만든 미사용 파라미터를 catch 스코프에 등록한다.
-pub fn declareSyntheticCatch(self: *Transformer, binding: NodeIndex, declaration_span: Span) Transformer.Error!void {
-    _ = try declareSynthetic(self, binding, declaration_span, .catch_binding);
+pub fn declareSyntheticCatch(
+    self: *Transformer,
+    binding: NodeIndex,
+    declaration_span: Span,
+    late_output_name: bool,
+) Transformer.Error!void {
+    const id = try declareSynthetic(self, binding, declaration_span, .catch_binding);
+    if (late_output_name) {
+        const symbol_id = id orelse std.debug.panic("late-named catch binding has no SymbolId", .{});
+        const editor = try editorFor(self);
+        editor.symbols.items[@intFromEnum(symbol_id)].synthetic_kind = .optional_catch_binding;
+    }
 }
 
 /// 생성자가 받은 SymbolId를 그대로 참조에 연결한다. 이름 재검색은 하지 않는다.

@@ -15,6 +15,8 @@ const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const Scanner = @import("../lexer/scanner.zig").Scanner;
+const string_escape = @import("../string_escape.zig");
 
 /// static private field descriptor 선언 생성: `var _x = { writable: true, value: initValue };`
 /// __classStaticPrivateFieldSpecGet/Set 헬퍼가 descriptor 객체의 value/get/set 슬롯을 읽는다.
@@ -563,6 +565,54 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
     // semantic 정보가 없는 경로에서는 전역 참조를 판별할 수 없으므로 소스에서
     // 식별자 경계를 확인한다. 속성/주석의 오탐은 이름을 하나 더 건너뛰게 할 뿐이다.
     return nameAppearsInSource(self, name);
+}
+
+/// A generated catch parameter is visible to direct eval in its catch body.
+/// Also reserve names written inside string literals that eval can parse as
+/// identifiers. This is intentionally conservative: a matching token in an
+/// unrelated string can only skip one candidate.
+pub fn nameAppearsInDynamicEvalString(self: anytype, scope_id: ScopeId, name: []const u8) !bool {
+    if (scope_id.isNone()) return false;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var scope = scope_id;
+    var hops: usize = 0;
+    var has_direct_eval = false;
+    while (!scope.isNone() and hops < scopes.len) : (hops += 1) {
+        const raw = scope.toIndex();
+        if (raw >= scopes.len) return true;
+        if (scopes[raw].subtree_has_direct_eval) {
+            has_direct_eval = true;
+            break;
+        }
+        scope = scopes[raw].parent;
+    }
+    if (!has_direct_eval) return false;
+
+    for (self.ast.nodes.items) |node| {
+        if (node.tag != .string_literal) continue;
+        const raw = self.ast.getText(node.span);
+        const decoded = string_escape.decodeJsStringLiteral(self.allocator, raw) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
+        defer self.allocator.free(decoded);
+        if (try jsSourceContainsIdentifier(self.allocator, decoded, name)) return true;
+    }
+    return false;
+}
+
+fn jsSourceContainsIdentifier(allocator: std.mem.Allocator, source: []const u8, name: []const u8) !bool {
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    const decode_scratch = try allocator.alloc(u8, name.len);
+    defer allocator.free(decode_scratch);
+    while (true) {
+        try scanner.next();
+        const token = scanner.token;
+        if (token.kind == .eof) return false;
+        if (token.kind != .identifier or token.span.end > source.len or token.span.start > token.span.end) continue;
+        if (Scanner.identifierTextEqualsAscii(source[token.span.start..token.span.end], name, decode_scratch)) return true;
+    }
 }
 
 /// 소스 텍스트에 `name` 이 식별자로 나오는지 (#4729 후속).

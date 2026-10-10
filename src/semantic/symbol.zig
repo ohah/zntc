@@ -247,6 +247,10 @@ pub const SyntheticKind = enum(u8) {
     /// Graph-level runtime helper declaration emitted outside module ASTs.
     /// Asset callsites and the raw preamble share this output-owned binding.
     bundler_runtime_helper,
+    /// Optional catch binding synthesized by ES2019 lowering. Standalone
+    /// non-minified output selects its spelling from this exact SymbolId after
+    /// the transformed symbol set is complete.
+    optional_catch_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
