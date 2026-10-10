@@ -1196,7 +1196,8 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         symbol.synthetic_kind == .block_scoping_loop_binding or
         symbol.synthetic_kind == .for_of_step_binding or
         symbol.synthetic_kind == .object_super_home_binding or
-        symbol.synthetic_kind == .block_scoping_loop_ret_binding;
+        symbol.synthetic_kind == .block_scoping_loop_ret_binding or
+        symbol.synthetic_kind == .tagged_template_function_binding;
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
@@ -4231,6 +4232,27 @@ test "#4819 standalone extracted-loop control-flow results are finalized from ex
 
     try std.testing.expect(std.mem.indexOf(u8, result.code, "_ret3") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_loop_ret") == null);
+}
+
+test "#4819 standalone tagged-template cache names are finalized from exact SymbolIds" {
+    const source =
+        \\const _templateObject = "source one";
+        \\const _templateObject2 = "source two";
+        \\function tag(strings, value) { return strings[0] + value + strings[1]; }
+        \\function first() { return tag`a${1}b`; }
+        \\function second() { return tag`c${2}d`; }
+        \\console.log(first(), second(), _templateObject, _templateObject2);
+    ;
+    const compat = @import("transformer/compat.zig");
+    var result = try transpile(std.testing.allocator, source, "/src/a.js", .{
+        .unsupported = compat.fromESTarget(.es5),
+        .es_target = .es5,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_templateObject3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_templateObject4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_template_object") == null);
 }
 
 test "#4759 이름 줄이기는 낮춘·접은 뒤 코드로 한다 — 새 노드도 같은 이름을 따른다" {

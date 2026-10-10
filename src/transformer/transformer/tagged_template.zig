@@ -131,7 +131,15 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     const expr_slice = self.scratch.items[expr_start .. expr_start + expr_count];
 
     // --- _templateObject 함수명 생성 ---
-    const fn_name = try es_helpers.uniqueSyntheticName(self, "_templateObject", &self.tagged_template_counter);
+    const program_scope = if (self.semantic_edit_enabled) self.programScope() else .none;
+    const dynamic_scope = if (program_scope.isNone()) self.current_scope else program_scope;
+    const late_template_output_name = self.semantic_edit_enabled and
+        es_helpers.canUseLateStandaloneOutputName(self, program_scope);
+    const fn_prefix = if (late_template_output_name) "__zntc_template_object" else "_templateObject";
+    const fn_name = if (late_template_output_name)
+        try es_helpers.uniqueSyntheticName(self, fn_prefix, &self.tagged_template_counter)
+    else
+        try es_helpers.uniqueSyntheticNameAvoidingDynamicEval(self, fn_prefix, &self.tagged_template_counter, dynamic_scope);
 
     // --- cooked 배열 노드 ---
     const cooked_list = try self.ast.addNodeList(cooked_slice);
@@ -244,10 +252,13 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     const new_tag = try self.visitNode(tag_idx);
     const fn_call_ref = try es_helpers.makeExactSyntheticRef(self, fn_name);
     if (self.semantic_edit_enabled) {
-        const program_scope = self.programScope();
         const outer_scope = try self.addGeneratedFunctionScope(program_scope, fn_decl);
         const inner_scope = try self.addGeneratedFunctionScope(outer_scope, inner_func);
         const fn_id = try self.declareSyntheticInScope(fn_name_binding, span, .function_decl, program_scope);
+        if (late_template_output_name) {
+            const symbol = fn_id orelse std.debug.panic("late-named tagged-template cache has no exact SymbolId", .{});
+            es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, fn_name, .tagged_template_function_binding, "_templateObject");
+        }
         const data_declarator_start = self.ast.extra_data.items[self.ast.getNode(data_decl).data.extra + 1];
         const data_declarator: NodeIndex = @enumFromInt(self.ast.extra_data.items[data_declarator_start]);
         const data_binding: NodeIndex = @enumFromInt(self.ast.extra_data.items[self.ast.getNode(data_declarator).data.extra]);
