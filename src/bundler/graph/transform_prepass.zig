@@ -2044,6 +2044,26 @@ fn isSafePostSuperSwitchStatement(
     return true;
 }
 
+fn isSafePostSuperTryStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len or
+        ast.getNode(statement_idx).tag != .try_statement or
+        !isSafeConstructorBodyStatement(ast, semantic, statement_idx)) return false;
+
+    // A try/catch clause introduces nested scopes. Until generated `this`
+    // references in those scopes have an exact owner mapping, keep such
+    // statements on semantic reanalysis.
+    const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, statement_idx) catch return false;
+    defer ast.allocator.free(descendants);
+    for (descendants) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .this_expression) return false;
+    }
+    return true;
+}
+
 fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -2100,6 +2120,11 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                     following_statement,
                 )) continue;
                 if (!completion_seen and isSafePostSuperSwitchStatement(
+                    ast,
+                    semantic,
+                    following_statement,
+                )) continue;
+                if (!completion_seen and isSafePostSuperTryStatement(
                     ast,
                     semantic,
                     following_statement,
