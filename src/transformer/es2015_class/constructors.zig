@@ -55,7 +55,11 @@ pub fn Constructors(comptime Transformer: type) type {
             defer self.current_scope = saved_scope;
             const saved_derived_new_target = self.active_derived_constructor_new_target;
             if (is_derived) {
-                const new_target_name = try es_helpers.resolveSyntheticName(self, "_newTarget");
+                const late_new_target_name = es_helpers.canUseLateStandaloneOutputName(self, self.current_scope);
+                const new_target_name = if (late_new_target_name)
+                    try es_helpers.deferSyntheticOutputName(self, "_newTarget")
+                else
+                    try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "_newTarget", self.current_scope);
                 const new_target_binding = try es_helpers.makeExactSyntheticBinding(self, new_target_name);
                 const new_target_symbol = try self.declareSyntheticInScope(
                     new_target_binding,
@@ -63,6 +67,10 @@ pub fn Constructors(comptime Transformer: type) type {
                     .variable_var,
                     self.current_scope,
                 );
+                if (late_new_target_name) {
+                    const symbol_id = new_target_symbol orelse std.debug.panic("late class _newTarget binding has no SymbolId", .{});
+                    es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .class_new_target_binding);
+                }
                 self.active_derived_constructor_new_target = .{
                     .binding = new_target_binding,
                     .name_span = self.ast.getNode(new_target_binding).data.string_ref,
