@@ -13464,6 +13464,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 3 left:1,done:2,right:3,done:4 false false\n',
       },
       {
+        name: 'post-super this-property condition reads a Proxy getter once per construction',
+        source:
+          'var selected = true, reads = 0; function Base() { return new Proxy({ selected: selected }, { get(target, key, receiver) { if (key === "selected") reads += 1; return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (this.selected) { this.value = 1; } else { this.value = 2; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, reads, first instanceof Child, second instanceof Child);',
+        graph: 'retained',
+        output: '1 2 2 false false\n',
+      },
+      {
         name: 'post-super return of a bound object preserves derived constructor return semantics',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
@@ -13558,6 +13565,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'post-super if with a call condition stays on reanalysis',
         source:
           'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (selected()) this.value = 1; else this.value = 2; } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '1 1\n',
+      },
+      {
+        name: 'post-super method call through this in the condition stays on reanalysis',
+        source:
+          'var calls = 0; function Base() { this.selected = function() { calls += 1; return true; }; } class Child extends Base { constructor() { super(); if (this.selected()) this.value = 1; else this.value = 2; } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '1 1\n',
+      },
+      {
+        name: 'post-super computed this-property condition stays on reanalysis',
+        source:
+          'var reads = 0, key = "selected"; function Base() { return new Proxy({ selected: true }, { get(target, property, receiver) { if (property === "selected") reads += 1; return Reflect.get(target, property, receiver); } }); } class Child extends Base { constructor() { super(); if (this[key]) this.value = 1; else this.value = 2; } } var child = new Child(); console.log(child.value, reads);',
         graph: 'reanalyzed',
         output: '1 1\n',
       },
