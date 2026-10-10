@@ -1397,7 +1397,18 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // Use a per-loop exact name/span so deferred generator callback
             // references cannot merge with another loop's `_ret` chain.
-            const ret_name = try es_helpers.uniqueSyntheticName(self, "_ret", &self.control_flow_ret_counter);
+            const binding_scope: @import("../semantic/scope.zig").ScopeId = if (self.semantic_edit_enabled)
+                if (call_scope.isNone()) self.programScope() else self.nearestVarScope(call_scope)
+            else
+                .none;
+            const dynamic_scope = if (call_scope.isNone()) self.current_scope else call_scope;
+            const late_ret_output_name = self.semantic_edit_enabled and self.state_machine_depth == 0 and
+                es_helpers.canUseLateStandaloneOutputName(self, binding_scope);
+            const ret_prefix = if (late_ret_output_name) "__zntc_loop_ret" else "_ret";
+            const ret_name = if (late_ret_output_name)
+                try es_helpers.uniqueSyntheticName(self, ret_prefix, &self.control_flow_ret_counter)
+            else
+                try es_helpers.uniqueSyntheticNameAvoidingDynamicEval(self, ret_prefix, &self.control_flow_ret_counter, dynamic_scope);
             const ret_name_span = try self.ast.addString(ret_name);
             const ret_binding = try es_helpers.makeExactSyntheticBinding(self, ret_name);
             const ret_declarator = try es_helpers.makeDeclarator(self, ret_binding, loop_call, span);
@@ -1408,9 +1419,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 try self.bindHoistedTemp(ret_binding, ret_name_span, span, .none);
                 break :blk null;
             } else blk: {
-                const binding_scope = if (call_scope.isNone()) self.programScope() else self.nearestVarScope(call_scope);
                 break :blk try self.declareSyntheticTempInScope(ret_binding, span, binding_scope);
             };
+            if (late_ret_output_name) {
+                const symbol = ret_symbol orelse std.debug.panic("late-named loop control-flow result has no exact SymbolId", .{});
+                es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, self.ast.getText(ret_name_span), .block_scoping_loop_ret_binding, "_ret");
+            }
             try self.scratch.append(self.allocator, ret_decl);
 
             // if (typeof _ret === "object") return _ret.v;

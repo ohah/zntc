@@ -290,6 +290,9 @@ pub const SyntheticKind = enum(u8) {
     /// Home-object parameter synthesized for object-literal method `super`.
     /// Standalone output selects its spelling from the exact SymbolId.
     object_super_home_binding,
+    /// Control-flow result binding used by an extracted ES5 loop closure.
+    /// Standalone output selects its spelling from the exact SymbolId.
+    block_scoping_loop_ret_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
