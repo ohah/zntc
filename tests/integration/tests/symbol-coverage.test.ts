@@ -35,6 +35,12 @@ const TARGETS = [
   { name: 'esnext', arg: '--target=esnext' },
   { name: 'hermes', arg: '--platform=react-native' },
 ];
+const MINIFY_TARGETS = TARGETS;
+const MINIFY_MODES = [
+  ['--minify-syntax'],
+  ['--minify-identifiers'],
+  ['--minify-syntax', '--minify-identifiers'],
+] as const;
 const EXACT_ZERO_COUNTERS = [
   'invalid_id',
   'invalid_reference_node',
@@ -475,6 +481,12 @@ describe('symbol identity coverage gate (#4819)', () => {
       { name: 'es2022', arg: '--target=es2022' },
       { name: 'esnext', arg: '--target=esnext' },
       { name: 'hermes', arg: '--platform=react-native' },
+    ]);
+    expect(MINIFY_TARGETS).toEqual(TARGETS);
+    expect(MINIFY_MODES).toEqual([
+      ['--minify-syntax'],
+      ['--minify-identifiers'],
+      ['--minify-syntax', '--minify-identifiers'],
     ]);
   });
 
@@ -12835,21 +12847,15 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 30_000);
 
-  test('ES5와 ESNext minify 출력에서 전체 oracle의 살아 있는 심볼 연결이 정확하다', () => {
+  test('모든 target의 minify 출력에서 전체 oracle 심볼 연결이 정확하다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));
     try {
-      const minifyTargets = [TARGETS[0], TARGETS[4]];
-      const minifyModes = [
-        ['--minify-syntax'],
-        ['--minify-identifiers'],
-        ['--minify-syntax', '--minify-identifiers'],
-      ];
       const problems: string[] = [];
       let runs = 0;
       for (const file of fixtures) {
         const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
-        for (const target of minifyTargets) {
-          for (const mode of minifyModes) {
+        for (const target of MINIFY_TARGETS) {
+          for (const mode of MINIFY_MODES) {
             const output = join(dir, `${runs}.js`);
             const proc = spawnSync(
               ZNTC_BIN,
@@ -12879,7 +12885,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         }
       }
       expect(fixtures.length).toBeGreaterThan(0);
-      expect(runs).toBe(fixtures.length * minifyTargets.length * minifyModes.length);
+      expect(runs).toBe(fixtures.length * MINIFY_TARGETS.length * MINIFY_MODES.length);
       expect(problems).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
