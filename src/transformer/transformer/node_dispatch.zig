@@ -802,7 +802,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (node.data.none == 1 and
                 ((self.options.unsupported.arrow and self.arrow_this_depth > 0) or self.in_extracted_fn_body))
             {
-                const ref = try es_helpers.makeSyntheticRef(self, "_newTarget");
+                const output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_newTarget", self.capture_scope);
+                const ref = try es_helpers.makeExactSyntheticRef(self, output_name.name);
                 try self.trackLexicalCaptureRef(ref, idx, .new_target_value);
                 return ref;
             }

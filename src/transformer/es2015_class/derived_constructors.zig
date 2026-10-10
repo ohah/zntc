@@ -610,7 +610,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             );
             if (late_new_target_name) {
                 const symbol_id = new_target_symbol orelse std.debug.panic("late default class _newTarget binding has no SymbolId", .{});
-                es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .class_new_target_binding);
+                es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .new_target_capture_binding);
             }
             const call_super_ref = try es_helpers.makeRuntimeHelperRef(self, "__callSuper");
             const parent_ref = try self.makeCurrentClassSuperRef(super_class_span, self.current_super_class_old_idx, function_scope);

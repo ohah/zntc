@@ -10,6 +10,7 @@ const Span = @import("../../lexer/token.zig").Span;
 const token_mod = @import("../../lexer/token.zig");
 const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const SyntheticKind = @import("../../semantic/symbol.zig").SyntheticKind;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../../semantic/scope.zig").ScopeKind;
 const Symbol = @import("../../semantic/symbol.zig").Symbol;
@@ -2449,6 +2450,17 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
 /// Called at the actual capture declaration producer. A frame and role select
 /// the binding; emitted text is never used to recover a symbol.
 pub fn bindLexicalCapture(self: *Transformer, declaration: NodeIndex, kind: LexicalCaptureKind) Transformer.Error!void {
+    try bindLexicalCaptureWithSyntheticKind(self, declaration, kind, null);
+}
+
+/// Bind a lexical-capture declaration and optionally make its output spelling
+/// part of the standalone exact-SymbolId final-name pass.
+pub fn bindLexicalCaptureWithSyntheticKind(
+    self: *Transformer,
+    declaration: NodeIndex,
+    kind: LexicalCaptureKind,
+    synthetic_kind: ?SyntheticKind,
+) Transformer.Error!void {
     if (!self.semantic_edit_enabled or self.capture_frame == 0) return;
     const decl = self.ast.getNode(declaration);
     if (decl.tag != .variable_declaration) std.debug.panic("lexical capture is not a variable declaration", .{});
@@ -2458,6 +2470,10 @@ pub fn bindLexicalCapture(self: *Transformer, declaration: NodeIndex, kind: Lexi
     const item: NodeIndex = @enumFromInt(self.ast.extra_data.items[start]);
     const binding = self.readNodeIdx(self.ast.getNode(item).data.extra, 0);
     const id = (try declareSyntheticInScope(self, binding, decl.span, .variable_var, self.capture_scope)).?;
+    if (synthetic_kind) |synthetic| {
+        const editor = try editorFor(self);
+        editor.symbols.items[@intFromEnum(id)].synthetic_kind = synthetic;
+    }
     const key = captureKey(self.capture_frame, kind);
     if (self.capture_binding_ids.contains(key)) std.debug.panic("duplicate lexical capture binding", .{});
     try self.capture_binding_ids.put(self.allocator, key, @intFromEnum(id));
