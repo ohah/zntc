@@ -2056,10 +2056,48 @@ fn isSafePostSuperTryStatement(
     // A try/catch clause introduces nested scopes. Until generated `this`
     // references in those scopes have an exact owner mapping, keep such
     // statements on semantic reanalysis.
+    return !hasThisExpressionInSubtree(ast, statement_idx);
+}
+
+fn hasThisExpressionInSubtree(ast: *const ast_mod.Ast, root_idx: ast_mod.NodeIndex) bool {
+    const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return true;
+    defer ast.allocator.free(descendants);
+    for (descendants) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .this_expression) return true;
+    }
+    return false;
+}
+
+fn isSafePostSuperLoopStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    switch (statement.tag) {
+        .for_statement, .while_statement, .do_while_statement, .for_in_statement, .for_of_statement => {},
+        else => return false,
+    }
+    if (!isSafeConstructorBodyStatement(ast, semantic, statement_idx)) return false;
+
+    // Validate nested constructs with their post-super-specific scope gates.
+    // Keep nested loops separate so their binding and iteration semantics can
+    // be audited in their own admission step.
     const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, statement_idx) catch return false;
     defer ast.allocator.free(descendants);
     for (descendants) |raw_idx| {
-        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .this_expression) return false;
+        if (raw_idx >= ast.nodes.items.len) return false;
+        const descendant_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
+        const descendant = ast.nodes.items[raw_idx];
+        switch (descendant.tag) {
+            .switch_statement => if (!isSafePostSuperSwitchStatement(ast, semantic, descendant_idx)) return false,
+            .try_statement => if (!isSafePostSuperTryStatement(ast, semantic, descendant_idx)) return false,
+            .for_statement, .while_statement, .do_while_statement, .for_in_statement, .for_of_statement => {
+                if (descendant_idx != statement_idx) return false;
+            },
+            else => {},
+        }
     }
     return true;
 }
@@ -2125,6 +2163,11 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                     following_statement,
                 )) continue;
                 if (!completion_seen and isSafePostSuperTryStatement(
+                    ast,
+                    semantic,
+                    following_statement,
+                )) continue;
+                if (!completion_seen and isSafePostSuperLoopStatement(
                     ast,
                     semantic,
                     following_statement,
