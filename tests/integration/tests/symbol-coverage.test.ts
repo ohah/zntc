@@ -13800,6 +13800,63 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 4 6 8 70 9 4 kind:2,kind:4,kind:6,kind:8 false\n',
       },
       {
+        name: 'post-super switch preserves Proxy reads, exact locals, calls, and fallthrough order',
+        source:
+          'var mode = 1, events = [], _this = 70; function Base() { return new Proxy({}, { set(target, key, value, receiver) { if (key === "kind") events.push("set:" + key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } function record(value) { events.push("call:" + value); } class Child extends Base { constructor() { super(); var _this = 10; switch (mode) { case 1: record("one"); _this++; break; case 2: record("two"); _this += 3; case 3: _this++; break; default: record("other"); _this = 4; } this.kind = _this; } } var first = new Child(); mode = 2; var second = new Child(); mode = 3; var third = new Child(); mode = 4; var fourth = new Child(); console.log(first.kind, second.kind, third.kind, fourth.kind, _this, events.join("|"), first instanceof Child);',
+        graph: 'retained',
+        output:
+          '11 14 11 4 70 call:one|set:kind:11|call:two|set:kind:14|set:kind:11|call:other|set:kind:4 false\n',
+      },
+      {
+        name: 'post-super switch this-property discriminant stays on reanalysis',
+        source:
+          'function Base() { this.mode = 1; } class Child extends Base { constructor() { super(); switch (this.mode) { case 1: this.value = 1; break; default: this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
+      },
+      {
+        name: 'post-super switch this-property case test stays on reanalysis',
+        source:
+          'function Base() { this.first = 1; } class Child extends Base { constructor() { super(); switch (1) { case this.first: this.value = 1; break; default: this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
+      },
+      {
+        name: 'post-super switch this-property case body stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); switch (1) { case 1: this.value = 1; break; default: this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
+      },
+      {
+        name: 'post-super switch with call discriminant stays on reanalysis',
+        source:
+          'var calls = 0; function readMode() { calls += 1; return 1; } function Base() {} class Child extends Base { constructor() { super(); switch (readMode()) { case 1: this.value = 1; break; default: this.value = 2; } } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '1 1\n',
+      },
+      {
+        name: 'post-super switch with call case test stays on reanalysis',
+        source:
+          'var calls = 0; function readCase() { calls += 1; return 1; } function Base() {} class Child extends Base { constructor() { super(); switch (1) { case readCase(): this.value = 1; break; default: this.value = 2; } } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '1 1\n',
+      },
+      {
+        name: 'post-super switch with lexical case binding stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); switch (1) { case 1: let value = 3; this.value = value; break; default: this.value = 0; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '3 true\n',
+      },
+      {
+        name: 'post-super switch var call initializer stays on reanalysis',
+        source:
+          'var calls = 0; function readValue() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); switch (1) { case 1: var value = readValue(); this.value = value; break; default: this.value = 0; } } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '3 1\n',
+      },
+      {
         name: 'post-super else-if call condition stays on reanalysis',
         source:
           'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (false) this.value = 1; else if (selected()) this.value = 2; else this.value = 3; } } console.log(new Child().value, calls);',
