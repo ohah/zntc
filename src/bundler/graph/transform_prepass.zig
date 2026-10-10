@@ -1821,8 +1821,14 @@ fn isSafePostSuperConditionalBranch(
         const statements = statement.data.list;
         const extras = ast.extra_data.items;
         if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
-        for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
+        for (extras[statements.start .. statements.start + statements.len], 0..) |raw_statement_idx, index| {
             if (raw_statement_idx >= ast.nodes.items.len) return false;
+            if (index + 1 == statements.len and
+                isSafeDerivedConstructorReturnStatement(
+                    ast,
+                    semantic,
+                    @enumFromInt(raw_statement_idx),
+                )) return true;
             const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
             if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
                 isSafeConstructorThisPropertyAssignmentStatement(
@@ -1834,6 +1840,8 @@ fn isSafePostSuperConditionalBranch(
         }
         return true;
     }
+    if (statement.tag == .return_statement)
+        return isSafeDerivedConstructorReturnStatement(ast, semantic, branch_idx);
     return isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branch_idx);
 }
 
