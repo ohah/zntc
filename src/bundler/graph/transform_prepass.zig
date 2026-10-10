@@ -1841,11 +1841,7 @@ fn isSafePostSuperConditionalBranch(
             }
             const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
             if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
-                isSafeConstructorThisPropertyAssignmentStatement(
-                    ast,
-                    semantic,
-                    @enumFromInt(raw_statement_idx),
-                )) continue;
+                isSafePostSuperExpressionStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
             return false;
         }
         return true;
