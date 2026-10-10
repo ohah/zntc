@@ -13730,6 +13730,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 1\n',
       },
       {
+        name: 'post-super branch receiver call with spread arguments stays on reanalysis',
+        source:
+          'var reads = 0, calls = 0, values = [4]; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { this.setValue(...values); } else { this.value = 2; } } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '4 1 1 false\n',
+      },
+      {
+        name: 'post-super branch optional receiver call stays on reanalysis',
+        source:
+          'var reads = 0, calls = 0; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { this.setValue?.(4); } else { this.value = 2; } } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '4 1 1 false\n',
+      },
+      {
+        name: 'post-super branch computed receiver call stays on reanalysis',
+        source:
+          'var reads = 0, calls = 0, key = "setValue"; function Base() { return new Proxy({}, { get(target, property, receiver) { if (property === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, property, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { this[key](4); } else { this.value = 2; } } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '4 1 1 false\n',
+      },
+      {
         name: 'post-super block branch with a final bare return retains the graph',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { this.value = 3; return; } else { this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
@@ -13742,6 +13763,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) { var local = 1; this.value = local; } else { var local = 2; this.value = local; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, first instanceof Child);',
         graph: 'retained',
         output: '1 2 true\n',
+      },
+      {
+        name: 'post-super branch expressions preserve local identity and side-effect order',
+        source:
+          'var selected = true, trace = [], _this = 40; function Base() { return new Proxy({}, { set(target, key, value) { trace.push("set:" + key + ":" + value); target[key] = value; return true; } }); } function record(value) { trace.push("call:" + value); } class Child extends Base { constructor() { super(); var _this = 1; if (selected) { record("left"); _this++; this.value = _this; } else { record("right"); _this += 2; this.value = _this; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, _this, trace.join(","));',
+        graph: 'retained',
+        output: '2 3 40 call:left,set:value:2,call:right,set:value:3\n',
+      },
+      {
+        name: 'post-super branch Proxy property updates preserve getter and setter counts',
+        source:
+          'var selected = true, reads = 0, writes = 0; function Base() { return new Proxy({ count: 1 }, { get(target, key, receiver) { if (key === "count") reads += 1; return Reflect.get(target, key, receiver); }, set(target, key, value, receiver) { if (key === "count") writes += 1; return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); if (selected) { this.count++; this.count += 2; } else { this.count++; } } } var first = new Child(); selected = false; var second = new Child(); var firstValue = first.count, secondValue = second.count; console.log(firstValue, secondValue, reads, writes);',
+        graph: 'retained',
+        output: '4 2 5 3\n',
+      },
+      {
+        name: 'post-super branch receiver calls preserve Proxy receiver and getter count',
+        source:
+          'var selected = true, reads = 0, calls = [], receiverOk = []; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "record") { reads += 1; return function(label) { calls.push(label); receiverOk.push(this === receiver); }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); if (selected) { this.record("left"); this.value = 1; } else { this.record("right"); this.value = 2; } } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, reads, calls.join(","), receiverOk.join(","), first instanceof Child, second instanceof Child);',
+        graph: 'retained',
+        output: '1 2 2 left,right true,true false false\n',
       },
       {
         name: 'post-super else-if branch stays on reanalysis',
