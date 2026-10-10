@@ -574,6 +574,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     else
         try es_helpers.resolveSyntheticName(self, "_classThis");
     const classThis_span = try self.ast.addString(class_this_name);
+    if (class_this_late_output_name and class_deco_len > 0) {
+        inline for (.{ "_classDecorators", "_classDescriptor", "_classExtraInitializers" }) |name| {
+            _ = try es_helpers.deferSyntheticOutputName(self, name);
+        }
+    }
 
     // static { _classThis = this; }
     {
@@ -1037,6 +1042,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class decorators binding has no SymbolId", .{});
+        if (class_this_late_output_name) {
+            const editor = if (self.semantic_editor) |*semantic_editor|
+                semantic_editor
+            else
+                std.debug.panic("late-named Stage 3 class decorators have no semantic editor", .{});
+            editor.symbols.items[@intFromEnum(class_decorators_symbol)].synthetic_kind = .stage3_class_decorator_binding;
+        }
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class decorator has no output static block scope", .{});
         for (class_decorator_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_decorators_symbol, metadata_block_scope, .{ .read = true });
@@ -1049,6 +1061,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class descriptor binding has no SymbolId", .{});
+        if (class_this_late_output_name) {
+            const editor = if (self.semantic_editor) |*semantic_editor|
+                semantic_editor
+            else
+                std.debug.panic("late-named Stage 3 class descriptor has no semantic editor", .{});
+            editor.symbols.items[@intFromEnum(class_descriptor_symbol)].synthetic_kind = .stage3_class_decorator_binding;
+        }
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class descriptor has no output static block scope", .{});
         for (class_descriptor_write_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_descriptor_symbol, metadata_block_scope, .{ .write = true });
@@ -1064,6 +1083,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class extra initializers binding has no SymbolId", .{});
+        if (class_this_late_output_name) {
+            const editor = if (self.semantic_editor) |*semantic_editor|
+                semantic_editor
+            else
+                std.debug.panic("late-named Stage 3 class extra initializers have no semantic editor", .{});
+            editor.symbols.items[@intFromEnum(class_extra_initializers_symbol)].synthetic_kind = .stage3_class_decorator_binding;
+        }
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class extra initializers has no output static block scope", .{});
         for (class_extra_initializers_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_extra_initializers_symbol, metadata_block_scope, .{ .read = true });

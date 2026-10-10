@@ -898,6 +898,11 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     }
     try std.testing.expectEqual(@as(usize, 1), class_decorators_bindings);
     const exact_class_decorators_id = class_decorators_id orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        @import("../semantic/symbol.zig").SyntheticKind.stage3_class_decorator_binding,
+        edited.symbols.items[exact_class_decorators_id].synthetic_kind.?,
+    );
+    try std.testing.expectEqualStrings("_classDecorators", edited.symbols.items[exact_class_decorators_id].synthetic_name);
     const class_decorators_scope = edited.symbols.items[exact_class_decorators_id].scope_id;
     try std.testing.expectEqual(decorator_iife, class_decorators_scope);
     try std.testing.expectEqual(
@@ -940,6 +945,11 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     }
     try std.testing.expectEqual(@as(usize, 1), class_descriptor_bindings);
     const exact_class_descriptor_id = class_descriptor_id orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        @import("../semantic/symbol.zig").SyntheticKind.stage3_class_decorator_binding,
+        edited.symbols.items[exact_class_descriptor_id].synthetic_kind.?,
+    );
+    try std.testing.expectEqualStrings("_classDescriptor", edited.symbols.items[exact_class_descriptor_id].synthetic_name);
     const class_descriptor_scope = edited.symbols.items[exact_class_descriptor_id].scope_id;
     try std.testing.expectEqual(decorator_iife, class_descriptor_scope);
     try std.testing.expectEqual(
@@ -994,6 +1004,11 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     }
     try std.testing.expectEqual(@as(usize, 1), class_extra_initializers_bindings);
     const exact_class_extra_initializers_id = class_extra_initializers_id orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        @import("../semantic/symbol.zig").SyntheticKind.stage3_class_decorator_binding,
+        edited.symbols.items[exact_class_extra_initializers_id].synthetic_kind.?,
+    );
+    try std.testing.expectEqualStrings("_classExtraInitializers", edited.symbols.items[exact_class_extra_initializers_id].synthetic_name);
     const class_extra_initializers_scope = edited.symbols.items[exact_class_extra_initializers_id].scope_id;
     try std.testing.expectEqual(decorator_iife, class_extra_initializers_scope);
     try std.testing.expectEqual(
