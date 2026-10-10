@@ -1882,24 +1882,26 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
     return false;
 }
 
-/// An ES5 class without a base preserves its graph when empty, when all members
-/// are plain methods, or when plain methods are followed by one accessor or a
-/// compatible getter/setter pair. One explicit constructor with only simple
-/// identifier parameters or identifier parameters with literal defaults may
-/// accompany plain methods and a terminal accessor group when its body contains
-/// only audited declarations, expressions, control flow, and loops. Named or
-/// anonymous class expressions are admitted only as direct initializers of a
-/// `var` declarator; other expression positions stay on reanalysis.
+/// A downleveled class preserves its graph when it has no base or a simple
+/// bound identifier base, and is empty, contains only plain methods, or has
+/// plain methods followed by one accessor or a compatible getter/setter pair.
+/// One explicit constructor with only simple identifier parameters or
+/// identifier parameters with literal defaults may accompany those members
+/// when its body contains only audited declarations, expressions, control
+/// flow, and loops. Named or anonymous class expressions are admitted only as
+/// direct initializers of a `var` declarator; other expression positions stay
+/// on reanalysis.
 /// Anonymous expressions are safe because lowering registers the generated
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass
-/// `isRetainableSimpleStaticClassField`; computed/escaped keys and `super` stay
-/// excluded.
+/// `isRetainableSimpleStaticClassField`; computed/escaped keys, class-self
+/// heritage reads, and `super` methods stay excluded.
 fn isSimpleClass(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
+    raw_node: usize,
     source_binds_object: bool,
 ) bool {
     if (node.tag != .class_declaration and node.tag != .class_expression) return false;
@@ -1912,8 +1914,21 @@ fn isSimpleClass(
     const body: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.body]);
     if ((!name.isNone() and (@intFromEnum(name) >= ast.nodes.items.len or
         ast.getNode(name).tag != .binding_identifier)) or
-        (name.isNone() and node.tag != .class_expression) or !super.isNone() or
+        (name.isNone() and node.tag != .class_expression) or
+        (!super.isNone() and !isBoundSourceIdentifierReference(ast, semantic, super)) or
         body.isNone() or @intFromEnum(body) >= ast.nodes.items.len) return false;
+    if (!name.isNone() and !super.isNone()) {
+        if (!isBoundSourceIdentifierBinding(ast, semantic, name)) return false;
+        const name_symbol = semantic.symbol_ids[@intFromEnum(name)] orelse return false;
+        const super_symbol = semantic.symbol_ids[@intFromEnum(super)] orelse return false;
+        const class_self_symbol = semantic.class_self_symbol_map.get(@intCast(raw_node));
+        // A declaration can resolve its own name in the heritage clause while
+        // that lexical binding is still in the TDZ. Lowering it through the
+        // generated constructor would change the thrown error and can detach
+        // the read from its valid source scope.
+        if (name_symbol == super_symbol or
+            (class_self_symbol != null and class_self_symbol.? == super_symbol)) return false;
+    }
     const body_node = ast.getNode(body);
     if (body_node.tag != .class_body) return false;
     const members = body_node.data.list;
@@ -2066,7 +2081,7 @@ fn isRetainableGraphClass(
         .class_expression => direct_var_class_expressions.contains(raw),
         else => false,
     };
-    return has_safe_owner and isSimpleClass(allocator, ast, semantic, node, source_binds_object);
+    return has_safe_owner and isSimpleClass(allocator, ast, semantic, node, raw_node, source_binds_object);
 }
 
 fn collectSimpleConstructorDefaultParameterNodes(
@@ -2994,10 +3009,40 @@ fn canRetainGraphForAuditedSyntaxSubset(
 /// iterator, array-spread, destructuring, tagged-template, inferred class-name,
 /// and bounded class lowering. Any other runtime helper can indicate an
 /// independently lowered construct, so keep that module on semantic resync.
+/// `__extends` and `__callSuper` are admitted only when the retained-graph
+/// preflight proved every lowered class safe.
+fn hasReachableDerivedClass(ast: *const ast_mod.Ast) bool {
+    if (ast.nodes.items.len == 0) return false;
+    const root_idx = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+    );
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len or
+        ast.getNode(root_idx).tag != .program) return false;
+    const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
+    defer ast.allocator.free(reachable_nodes);
+    for (reachable_nodes) |raw| {
+        if (raw >= ast.nodes.items.len) return false;
+        const node = ast.nodes.items[raw];
+        if (node.tag != .class_declaration and node.tag != .class_expression) continue;
+        const extra = node.data.extra;
+        if (extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - extra <= ast_mod.ClassExtra.super) return false;
+        const super_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.ClassExtra.super]);
+        if (!super_idx.isNone()) return true;
+    }
+    return false;
+}
+
 fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
+    allow_derived_class_helpers: bool,
 ) bool {
     var other_helpers = helpers;
+    if (allow_derived_class_helpers) {
+        other_helpers.extends = false;
+        other_helpers.call_super = false;
+    }
     other_helpers.generator = false;
     other_helpers.values = false;
     other_helpers.async_values = false;
@@ -3394,6 +3439,11 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     const can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         canKeepPrepassSemanticGraph(self, module, opts, merged_plugins);
+    // Class lowering removes source class nodes. Cache the derived-class
+    // evidence before transforming so its helper imports can be admitted only
+    // for modules that passed the full retained-graph preflight.
+    const allow_derived_class_helpers = can_keep_semantic_graph and opts.unsupported.class and
+        hasReachableDerivedClass(ast_ptr);
     const lowered_simple_static_class_field_global = can_keep_semantic_graph and
         (downlevel_static_public_class_field_scan orelse
             (opts.unsupported.class or opts.unsupported.class_field));
@@ -3581,7 +3631,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // subsets preserve the edited semantic graph. JSX and syntax lowering may
     // add synthetic helper imports, so refresh module graph metadata without
     // replacing that graph.
-    if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(transformer.runtime_helpers)) {
+    if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(
+        transformer.runtime_helpers,
+        allow_derived_class_helpers,
+    )) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
         // runs out of memory, use the normal analyzer refresh below.

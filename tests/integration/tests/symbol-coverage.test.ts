@@ -13331,16 +13331,58 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'class with a base class',
+        name: 'function-body derived class retains its exact self and base identities',
+        source:
+          'function make(Base, Child) { function inner() { class Child extends Base { self() { return Child; } } var child = new Child(); return [child.self() === Child, child instanceof Base, Child.name]; } return [inner().join(" "), Child]; } console.log(make(function Base() {}, 9).join("|"));',
+        graph: 'retained',
+        output: 'true true Child|9\n',
+      },
+      {
+        name: 'simple class declaration with a bound base retains its graph',
         source:
           'function Base() {}\nclass Derived extends Base {}\nconsole.log(new Derived() instanceof Base);\n',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'true\n',
       },
       {
-        name: 'named class expression with a base class stays on reanalysis',
+        name: 'class expression with an effectful base stays on reanalysis and evaluates the base once',
         source:
-          'function Base() {} var Derived = class Named extends Base {}; console.log(new Derived() instanceof Base);',
+          'var calls = 0; function getBase() { calls += 1; return function Base() {}; } var Child = class extends getBase() {}; new Child(); console.log(calls);',
+        graph: 'reanalyzed',
+        output: '1\n',
+      },
+      {
+        name: 'class declaration extending its own TDZ binding stays on reanalysis',
+        source:
+          'function make(ReferenceError) { class Child extends Child {} return new Child(); } try { make(0); } catch (error) { console.log(error.name); }',
+        graph: 'reanalyzed',
+        output: 'ReferenceError\n',
+      },
+      {
+        name: 'named class expression extending its own TDZ binding stays on reanalysis',
+        source:
+          'function make(ReferenceError) { var Holder = class Inner extends Inner {}; return Holder; } try { make(0); } catch (error) { console.log(error.name); }',
+        graph: 'reanalyzed',
+        output: 'ReferenceError\n',
+      },
+      {
+        name: 'derived class with a super method stays on reanalysis',
+        source:
+          'function Base() {} Base.prototype.value = 4; class Child extends Base { read() { return super.value; } } console.log(new Child().read());',
+        graph: 'reanalyzed',
+        output: '4\n',
+      },
+      {
+        name: 'named class expression with a bound base retains exact self and base identities',
+        source:
+          'function make(Base, Named) { var Derived = class Named extends Base { self() { return Named; } }; var child = new Derived(); return [child instanceof Base, child.self() === Derived, Derived.name, Named]; } console.log(make(function Base() {}, 9).join(" "));',
+        graph: 'retained',
+        output: 'true true Named 9\n',
+      },
+      {
+        name: 'explicit derived constructor with super stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); } } console.log(new Child() instanceof Base);',
         graph: 'reanalyzed',
         output: 'true\n',
       },
@@ -13377,11 +13419,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'anonymous class expression with a base class stays on reanalysis',
+        name: 'anonymous class expression with a bound base retains generated self and inferred name',
         source:
-          'function Base() {} var Derived = class extends Base {}; console.log(new Derived() instanceof Base);',
-        graph: 'reanalyzed',
-        output: 'true\n',
+          'function make(Base) { var Holder = class extends Base { self() { return Holder; } }; var child = new Holder(); return [child instanceof Base, child.self() === Holder, Holder.name]; } console.log(make(function Base() {}).join(" "));',
+        graph: 'retained',
+        output: 'true true Holder\n',
       },
       {
         name: 'named class expression in a nested var initializer retains its exact inner identity',
