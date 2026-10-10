@@ -9427,7 +9427,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('array and call spread lowering retain only helper-free literal graphs', () => {
+  test('array and call spread lowering retain audited helper and literal graphs', () => {
     const cases = [
       {
         name: 'native array call and constructor spread on node5',
@@ -9489,9 +9489,48 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'iterable array spread helper on node4',
         target: 'node4',
+        graph: 'retained',
+        source: [
+          'var iteratorCalls = 0;',
+          'var values = {};',
+          'values[Symbol.iterator] = function () {',
+          '  iteratorCalls++;',
+          '  var item = 0;',
+          '  return { next: function () { item++; return item <= 2 ? { value: item, done: false } : { done: true }; } };',
+          '};',
+          'function list(values) { return (() => [...values, 3])(); }',
+          "console.log(list(values).join(','), iteratorCalls);",
+        ].join('\n'),
+        output: '1,2,3 1\n',
+      },
+      {
+        name: 'unbound member array spread operand on node4',
+        target: 'node4',
         graph: 'reanalyzed',
         source: [
-          'function list(values) { return (() => [...values, 3])(); }',
+          'globalThis.values = [1, 2];',
+          'function list() { return [...globalThis.values, 3]; }',
+          "console.log(list().join(','));",
+        ].join('\n'),
+        output: '1,2,3\n',
+      },
+      {
+        name: 'unbound identifier array spread operand on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.remoteValues = [1, 2];',
+          'function list() { return [...remoteValues, 3]; }',
+          "console.log(list().join(','));",
+        ].join('\n'),
+        output: '1,2,3\n',
+      },
+      {
+        name: 'direct eval beside helper array spread on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function list(values) { eval("var observed = 1"); return [...values, 3]; }',
           "console.log(list([1, 2]).join(','));",
         ].join('\n'),
         output: '1,2,3\n',

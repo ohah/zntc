@@ -463,7 +463,11 @@ fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     return false;
 }
 
-fn hasOnlyArrayLiteralSpreadOperands(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
+fn hasOnlyRetainableArraySpreadOperands(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node: ast_mod.Node,
+) bool {
     const extras = ast.extra_data.items;
     const start: u32, const len: u32 = switch (node.tag) {
         .array_expression => .{ node.data.list.start, node.data.list.len },
@@ -486,6 +490,14 @@ fn hasOnlyArrayLiteralSpreadOperands(ast: *const ast_mod.Ast, node: ast_mod.Node
         const operand = element.data.unary.operand;
         if (operand.isNone() or @intFromEnum(operand) >= ast.nodes.items.len) return false;
         const operand_node = ast.nodes.items[@intFromEnum(operand)];
+        if (operand_node.tag == .identifier_reference) {
+            // Array-literal spread lowering uses the exact tracked
+            // `__toConsumableArray` helper reference for a bound identifier.
+            // Call/new spread and unbound names stay on semantic reanalysis.
+            if (node.tag != .array_expression or
+                !isBoundSourceIdentifierReference(ast, semantic, operand)) return false;
+            continue;
+        }
         if (operand_node.tag != .array_expression) return false;
         const members = operand_node.data.list;
         if (members.start > extras.len or members.len > extras.len - members.start) return false;
@@ -2605,7 +2617,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     found_lowered_optional_chaining = true;
                 }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
-                    if (!hasOnlyArrayLiteralSpreadOperands(ast, node)) return false;
+                    if (!hasOnlyRetainableArraySpreadOperands(ast, semantic, node)) return false;
                     found_lowered_array_spread = true;
                 }
             },
@@ -2801,9 +2813,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .template_element,
             .unary_expression,
             .update_expression,
-            // Parent-specific checks above admit only audited, helper-free
-            // array-literal spread lowering; other downlevel spread stays on
-            // semantic reanalysis.
+            // Parent-specific checks above admit only audited array-literal
+            // spread lowering. Bound identifier operands use an exact helper
+            // reference; other downlevel spread stays on semantic reanalysis.
             .spread_element,
             .parenthesized_expression,
             .block_statement,
@@ -2893,9 +2905,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
 }
 
 /// A retained prepass graph may absorb imports introduced by audited generator,
-/// iterator, destructuring, tagged-template, inferred class-name, and bounded
-/// class lowering. Any other runtime helper can indicate an independently
-/// lowered construct, so keep that module on semantic resync.
+/// iterator, array-spread, destructuring, tagged-template, inferred class-name,
+/// and bounded class lowering. Any other runtime helper can indicate an
+/// independently lowered construct, so keep that module on semantic resync.
 fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
 ) bool {
@@ -2906,6 +2918,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.read = false;
     other_helpers.rest = false;
     other_helpers.class_call_check = false;
+    other_helpers.spread_array = false;
     other_helpers.tagged_template_literal = false;
     other_helpers.keep_names = false;
     return !other_helpers.hasAny();
