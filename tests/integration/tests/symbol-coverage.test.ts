@@ -13370,6 +13370,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
+        name: 'anonymous class expression in a nested const initializer stays on reanalysis',
+        source:
+          'function make() { const Holder = class {}; return new Holder() instanceof Holder; } console.log(make());',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
         name: 'anonymous class expression with a base class stays on reanalysis',
         source:
           'function Base() {} var Derived = class extends Base {}; console.log(new Derived() instanceof Base);',
@@ -13377,10 +13384,17 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true\n',
       },
       {
-        name: 'named class expression nested in a function stays on reanalysis',
+        name: 'named class expression in a nested var initializer retains its exact inner identity',
         source:
-          'function make() { var Holder = class Inner {}; return new Holder() instanceof Holder && Holder.name === "Inner"; } console.log(make());',
-        graph: 'reanalyzed',
+          'function make(Inner) { var Holder = class Inner { self() { return Inner; } }; return [Holder.name, new Holder().self() === Holder, Inner]; } console.log(make(9).join(" "));',
+        graph: 'retained',
+        output: 'Inner true 9\n',
+      },
+      {
+        name: 'anonymous class expression in a nested var initializer retains its exact outer binding',
+        source:
+          'function make() { var Holder = class { read() { return Holder; } }; return new Holder().read() === Holder; } console.log(make());',
+        graph: 'retained',
         output: 'true\n',
       },
       {
