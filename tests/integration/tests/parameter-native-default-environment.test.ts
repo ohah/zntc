@@ -61,6 +61,46 @@ const cases = [
       ]));`,
   },
   {
+    name: 'parameter direct eval cannot see body var after object-rest lowering',
+    source: `let outside = 3;
+      function run({ a, ...rest }, value = (eval('var injected = 7'), outside), seen = typeof injected) {
+        var outside = 4;
+        var injected = 99;
+        return [a, value, seen, outside, injected, Object.keys(rest).join(',')];
+      }
+      console.log(JSON.stringify(run({ a: 1, b: 2 }, undefined, undefined)));`,
+    singleOnly: true,
+  },
+  {
+    name: 'parameter direct eval string cannot see body var after object-rest lowering',
+    source: `let outside = 3;
+      function run({ a, ...rest }, value = eval('outside')) {
+        var outside = 4;
+        return [a, value, outside, Object.keys(rest).join(',')];
+      }
+      console.log(JSON.stringify(run({ a: 1, b: 2 }, undefined)));`,
+    singleOnly: true,
+  },
+  {
+    name: 'parameter direct eval string cannot see body function after object-rest lowering',
+    source: `function run({ a, ...rest }, value = eval('typeof hidden')) {
+        function hidden() {}
+        return [a, value, hidden.name, Object.keys(rest).join(',')];
+      }
+      console.log(JSON.stringify(run({ a: 1, b: 2 }, undefined)));`,
+    singleOnly: true,
+  },
+  {
+    name: 'parameter with cannot see body var after object-rest lowering',
+    source: `let outside = 3;
+      function run({ a, ...rest }, value = (function() { with ({}) return outside; })()) {
+        var outside = 4;
+        return [a, value, outside, Object.keys(rest).join(',')];
+      }
+      console.log(JSON.stringify(run({ a: 1, b: 2 }, undefined)));`,
+    singleOnly: true,
+  },
+  {
     name: 'sloppy direct eval reaches later parameter',
     source: `function get() { return { value: 2 }; }
       async function* run(
