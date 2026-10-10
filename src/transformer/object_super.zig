@@ -82,6 +82,7 @@ fn superVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
 pub const Home = struct {
     span: Span,
     wrap: Wrap,
+    late_output_name: bool = false,
 
     pub const Wrap = enum {
         /// `_a = obj` — 함수 단위 `var` 임시 변수.
@@ -151,18 +152,23 @@ fn valuesYieldOrAwait(self: *Transformer, node: Node) bool {
     return false;
 }
 
-fn allocHome(self: *Transformer, node: Node) Transformer.Error!Home {
+fn allocHome(self: *Transformer, node: Node, allow_late_output_name: bool) Transformer.Error!Home {
     const wrap: Home.Wrap = if (!self.options.unsupported.arrow)
         (if (valuesYieldOrAwait(self, node)) .assign else .arrow)
     else if (valuesUseFunctionContext(self, node)) .assign else .function;
     if (wrap != .assign) {
         // 함수 파라미터 — 함수 단위 temp 카운터를 쓰지 않는다(var 로 호이스팅되면 안 됨).
-        const prefix = "_obj";
+        const late_output_name = allow_late_output_name and
+            es_helpers.canUseLateStandaloneOutputName(self, self.current_scope);
+        const prefix = if (late_output_name) "__zntc_object_home" else "_obj";
         while (true) {
-            const name = try self.buildUniqueName(prefix, &self.object_home_counter);
+            const name = if (late_output_name)
+                try self.buildUniqueName(prefix, &self.object_home_counter)
+            else
+                try self.buildUniqueNameAvoidingDynamicEval(prefix, &self.object_home_counter, self.current_scope);
             // 사용자 식별자를 가리면 값 자리의 `_obj` 참조가 파라미터로 바뀐다.
             if (es_helpers.nameAppearsInSource(self, name)) continue;
-            return .{ .span = try self.ast.addString(name), .wrap = wrap };
+            return .{ .span = try self.ast.addString(name), .wrap = wrap, .late_output_name = late_output_name };
         }
     }
     return .{ .span = try es_helpers.makeTempVarSpan(self), .wrap = .assign };
@@ -171,7 +177,7 @@ fn allocHome(self: *Transformer, node: Node) Transformer.Error!Home {
 /// 객체 리터럴 방문 전에 호출. home 이 필요한 메서드가 있으면 임시 변수를 만들어
 /// 그 메서드들을 등록하고 돌려준다. 호출자는 방문 결과를 `wrapWithHome` 으로 감싸고,
 /// 끝나면 `release(mark)` 로 등록을 되돌린다.
-pub fn prepareHome(self: *Transformer, node: Node) Transformer.Error!?Home {
+pub fn prepareHome(self: *Transformer, node: Node, allow_late_output_name: bool) Transformer.Error!?Home {
     const list = node.data.list;
     var home: ?Home = null;
     var i: u32 = 0;
@@ -183,7 +189,7 @@ pub fn prepareHome(self: *Transformer, node: Node) Transformer.Error!?Home {
         const flags = self.readU32(m.data.extra, ast_mod.MethodExtra.flags);
         if (!superMustBeLowered(self, flags)) continue;
         if (!methodUsesSuper(self, m)) continue;
-        if (home == null) home = try allocHome(self, node);
+        if (home == null) home = try allocHome(self, node, allow_late_output_name);
         try self.object_super_homes.append(self.allocator, .{ .method_extra = m.data.extra, .home = home.?.span });
     }
     return home;
@@ -240,7 +246,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         },
     };
     const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
-    try bindWrappedHomeParameter(self, callee, param_binding, assign, home.span, parent_scope);
+    try bindWrappedHomeParameter(self, callee, param_binding, assign, home.span, parent_scope, home.late_output_name);
     return es_helpers.makeCallExpr(self, callee, &.{}, span);
 }
 
@@ -322,11 +328,15 @@ fn bindWrappedHomeParameter(
     assignment: NodeIndex,
     name_span: Span,
     parent_scope: ScopeId,
+    late_output_name: bool,
 ) Transformer.Error!void {
     if (!self.semantic_edit_enabled or parent_scope.isNone()) return;
     const wrapper_scope = try self.addGeneratedFunctionScope(parent_scope, wrapper);
     if (wrapper_scope.isNone()) return;
     const id = (try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, .parameter, wrapper_scope)) orelse return;
+    if (late_output_name) {
+        es_helpers.markStandaloneLateSyntheticOutputName(self, id, self.ast.getText(name_span), .object_super_home_binding, "_obj");
+    }
     const write_ref = self.ast.getNode(assignment).data.binary.left;
     const name = self.ast.getText(name_span);
     const Work = struct { node: NodeIndex, scope: ScopeId };

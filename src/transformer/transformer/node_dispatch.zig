@@ -204,7 +204,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // 객체 리터럴 메서드의 `super` 가 낮춰져야 하면 객체를 home 임시 변수에 담는다 (#4729).
             const home_mark = self.object_super_homes.items.len;
             defer object_super.release(self, home_mark);
-            const home = try object_super.prepareHome(self, node);
+            const home = try object_super.prepareHome(self, node, true);
             const lowered = try visitObjectExpressionLowering(self, idx, node);
             if (home) |h| return object_super.wrapWithHome(self, h, lowered, node.span);
             return lowered;

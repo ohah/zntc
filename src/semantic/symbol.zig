@@ -287,6 +287,9 @@ pub const SyntheticKind = enum(u8) {
     /// Iterator-step binding synthesized by ES5 for-of/for-await lowering.
     /// Standalone output selects its spelling from the exact SymbolId.
     for_of_step_binding,
+    /// Home-object parameter synthesized for object-literal method `super`.
+    /// Standalone output selects its spelling from the exact SymbolId.
+    object_super_home_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
