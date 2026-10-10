@@ -278,7 +278,12 @@ fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
-fn appendParameterBodyVarCopies(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, statements: *std.ArrayList(NodeIndex)) Error!void {
+fn appendParameterBodyVarCopies(
+    self: anytype,
+    function_scope: @import("../../semantic/scope.zig").ScopeId,
+    reference_scope: @import("../../semantic/scope.zig").ScopeId,
+    statements: *std.ArrayList(NodeIndex),
+) Error!void {
     if (function_scope.isNone() or self.parameter_body_var_copies.items.len == 0) return;
     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
     const rename_map = self.block_rename_map orelse return;
@@ -301,17 +306,143 @@ fn appendParameterBodyVarCopies(self: anytype, function_scope: @import("../../se
         try self.addSyntheticRefInScope(
             target,
             @enumFromInt(copy.body_var_symbol_id),
-            function_scope,
+            reference_scope,
             .{ .write = true },
         );
         try self.addSyntheticRefInScope(
             value,
             @enumFromInt(copy.parameter_symbol_id),
-            function_scope,
+            reference_scope,
             .{ .read = true },
         );
         try statements.append(self.allocator, try es_helpers.makeAssignStmt(self, target, value, copy.source_span, 0));
     }
+}
+
+fn hasParameterBodyBindingConflict(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, params: ast_mod.NodeList) Error!bool {
+    if (function_scope.isNone()) return true;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
+    const scope_raw = function_scope.toIndex();
+    if (scope_raw >= scopes.len or scope_raw >= scope_maps.len) return true;
+
+    for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
+        var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, @enumFromInt(raw_param), .{});
+        defer bindings.deinit();
+        while (try bindings.next()) |binding| {
+            const raw_id = self.getSymbolIdAt(binding) orelse continue;
+            if (raw_id >= symbols.len) continue;
+            const parameter = symbols[raw_id];
+            const name = self.ast.getText(parameter.name);
+            const body_id = scope_maps[scope_raw].get(name) orelse continue;
+            if (body_id >= symbols.len or body_id == raw_id) continue;
+            if (symbols[body_id].scope_id == function_scope) return true;
+        }
+    }
+    return false;
+}
+
+/// A moved parameter initializer must run before body `var`/function bindings
+/// exist. If the body contains dynamic lookup, keep its original declarations
+/// and direct eval together in a nested arrow function so the prologue cannot
+/// see body-only names. Same-named parameter/body declarations are left on the
+/// established path until their value-copy semantics can be represented here.
+fn reserveDynamicBodyWrapperScope(
+    self: anytype,
+    function_scope: @import("../../semantic/scope.zig").ScopeId,
+    params: ast_mod.NodeList,
+    function_flags: u32,
+) Error!?@import("../../semantic/scope.zig").ScopeId {
+    if (!self.semantic_edit_enabled or function_scope.isNone() or
+        self.options.unsupported.arrow or
+        ((function_flags & ast_mod.FunctionFlags.is_async) != 0 and self.options.unsupported.async_await) or
+        (function_flags & ast_mod.FunctionFlags.is_generator) != 0) return null;
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    const scope_raw = function_scope.toIndex();
+    if (scope_raw >= scopes.len or !scopes[scope_raw].blocksMangling()) return null;
+    if (try hasParameterBodyBindingConflict(self, function_scope, params)) return null;
+    return try self.reserveGeneratedFunctionScope(function_scope);
+}
+
+fn wrapFunctionBodyForParameterInitializers(
+    self: anytype,
+    body_idx: NodeIndex,
+    parameter_initializers: []const NodeIndex,
+    body_var_copies: []const NodeIndex,
+    function_scope: @import("../../semantic/scope.zig").ScopeId,
+    wrapper_scope: @import("../../semantic/scope.zig").ScopeId,
+    is_async: bool,
+    span: Span,
+) Error!NodeIndex {
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .block_statement and body.tag != .function_body)
+        std.debug.panic("dynamic parameter wrapper requires a block function body", .{});
+    const list = body.data.list;
+    const extra = self.ast.extra_data.items;
+    if (list.start > extra.len or list.len > extra.len - list.start)
+        std.debug.panic("dynamic parameter wrapper received an invalid function body list", .{});
+    const old = extra[list.start .. list.start + list.len];
+
+    // Parameter captures must stay outside the source body wrapper so the
+    // moved initializers can read this/arguments/new.target before they run.
+    var outer_prefix_len: usize = 0;
+    for (old, 0..) |raw, i| {
+        if (!self.parameter_capture_statements.contains(raw)) break;
+        outer_prefix_len = i + 1;
+    }
+
+    const inner_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(inner_top);
+    try self.scratch.appendSlice(self.allocator, body_var_copies);
+    for (old[outer_prefix_len..]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    const inner_list = try self.ast.addNodeList(self.scratch.items[inner_top..]);
+    const inner_body = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = body.span,
+        .data = .{ .list = inner_list },
+    });
+    const arrow_flags: u32 = if (is_async) ast_mod.ArrowFlags.is_async else 0;
+    const arrow_extra = try self.ast.addExtras(&.{
+        @intFromEnum(NodeIndex.none),
+        @intFromEnum(inner_body),
+        arrow_flags,
+    });
+    const arrow = try self.ast.addNode(.{
+        .tag = .arrow_function_expression,
+        .span = span,
+        .data = .{ .extra = arrow_extra },
+    });
+    try self.bindReservedFunctionOwner(wrapper_scope, arrow);
+
+    if (self.semantic_edit_enabled) {
+        const editor = if (self.semantic_editor) |*value| value else unreachable;
+        if (function_scope.isNone() or wrapper_scope.isNone() or wrapper_scope.toIndex() >= editor.scopes.items.len)
+            std.debug.panic("dynamic parameter wrapper lost its generated scope", .{});
+        const source_scope = editor.scopes.items[function_scope.toIndex()];
+        editor.scopes.items[wrapper_scope.toIndex()].subtree_has_direct_eval = source_scope.subtree_has_direct_eval;
+        editor.scopes.items[wrapper_scope.toIndex()].subtree_has_with = source_scope.subtree_has_with;
+        try self.reparentGeneratedBodyScopes(function_scope, wrapper_scope, inner_body);
+        try self.moveGeneratedFunctionBodyBindings(function_scope, wrapper_scope, inner_body);
+    }
+
+    const call = try es_helpers.makeCallExpr(self, arrow, &.{}, span);
+    const return_stmt = try self.ast.addNode(.{
+        .tag = .return_statement,
+        .span = span,
+        .data = .{ .unary = .{ .operand = call, .flags = 0 } },
+    });
+    const outer_top = self.scratch.items.len;
+    defer self.scratch.shrinkRetainingCapacity(outer_top);
+    for (old[0..outer_prefix_len]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    try self.scratch.appendSlice(self.allocator, parameter_initializers);
+    try self.scratch.append(self.allocator, return_stmt);
+    const outer_list = try self.ast.addNodeList(self.scratch.items[outer_top..]);
+    return self.ast.addNode(.{
+        .tag = body.tag,
+        .span = body.span,
+        .data = .{ .list = outer_list },
+    });
 }
 
 fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
@@ -343,10 +474,13 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 // #4251: default_params 미지원(es5..es2015)이면 전체(default/rest/
                 // destructuring) lowering. object_spread 만 미지원(es2016/es2017)이면
                 // object rest 든 param 만 — default-param-only 함수 불필요 lowering 회피.
-                // TODO(#4819): defaults after the first lowered object-rest
+                // #4819: defaults after the first lowered object-rest
                 // parameter still move into the body to preserve evaluation
-                // order; preserving their parameter/body environment needs a
-                // separate exact-identity lowering (including dynamic-eval fallback).
+                // order. When body dynamic lookup would expose body vars to
+                // those defaults, a lexical arrow wrapper isolates the source
+                // body for supported sync/async functions. Generators, targets
+                // without arrows, and same-name parameter/body declarations
+                // stay on the conservative path pending exact value-copying.
                 const needs_lowering = if (self.options.unsupported.default_params)
                     es2015_params.ES2015Params(Self).hasDefaultOrRest(self, params_list)
                 else
@@ -354,7 +488,22 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (!needs_lowering) continue;
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
-                try appendParameterBodyVarCopies(self, self.current_scope, &lr.body_stmts);
+                const parameter_initializer_len = lr.body_stmts.items.len;
+
+                const raw_flags = if (e + ast_mod.FunctionExtra.flags < self.ast.extra_data.items.len)
+                    self.ast.extra_data.items[e + ast_mod.FunctionExtra.flags]
+                else
+                    0;
+                const function_flags = if (node.tag == .method_definition)
+                    ast_mod.methodFlagsToFunctionFlags(raw_flags)
+                else
+                    raw_flags;
+                const body_wrapper_scope = if (lr.body_stmts.items.len > 0)
+                    try reserveDynamicBodyWrapperScope(self, self.current_scope, params_list, function_flags)
+                else
+                    null;
+                const copy_scope = body_wrapper_scope orelse self.current_scope;
+                try appendParameterBodyVarCopies(self, self.current_scope, copy_scope, &lr.body_stmts);
 
                 // formal_parameters 노드를 새로 만들어 extras[e+1]에 연결.
                 // (여러 function 노드가 동일 params_idx를 공유할 수 있으므로 in-place mutation 금지:
@@ -365,7 +514,19 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (lr.body_stmts.items.len > 0) {
                     const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
                     if (!body_idx.isNone()) {
-                        const new_body = try prependParameterInitializers(self, body_idx, lr.body_stmts.items);
+                        const new_body = if (body_wrapper_scope) |wrapper_scope|
+                            try wrapFunctionBodyForParameterInitializers(
+                                self,
+                                body_idx,
+                                lr.body_stmts.items[0..parameter_initializer_len],
+                                lr.body_stmts.items[parameter_initializer_len..],
+                                self.current_scope,
+                                wrapper_scope,
+                                (function_flags & ast_mod.FunctionFlags.is_async) != 0,
+                                node.span,
+                            )
+                        else
+                            try prependParameterInitializers(self, body_idx, lr.body_stmts.items);
                         self.ast.extra_data.items[e + 2] = @intFromEnum(new_body);
                     }
                 }
