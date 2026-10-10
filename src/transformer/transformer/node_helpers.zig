@@ -238,6 +238,17 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     // never inherited from the replaced source identifier.
     if (self.capture_ref_by_origin.contains(new_i)) return;
 
+    // Some producers deliberately remap a copied reference to a different
+    // output identity, such as a Worklet class-self reference copied into its
+    // reconstructed class. Preserve that exact handoff across this generic
+    // source-to-output propagation step.
+    if (self.exact_output_ref_symbol_ids.get(new_i)) |exact_symbol_id| {
+        try ensureSymbolIds(self, new_i);
+        self.symbol_ids.items[new_i] = exact_symbol_id;
+        try recordReferenceOrigin(self, old_idx, new_idx);
+        return;
+    }
+
     // A helper node has an exact helper SymbolId already. Cloning it must be
     // rebound to that identity instead of copying a same-spelled user binding.
     if (self.tracked_runtime_helper_ref_index.contains(old_i)) {

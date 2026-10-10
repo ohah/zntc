@@ -16,6 +16,38 @@ const Span = @import("../lexer/token.zig").Span;
 const es_helpers = @import("es_helpers.zig");
 const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
 
+test "#4819 exact output reference identity overrides copied source identity" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+    transformer.semantic_edit_enabled = true;
+
+    const source_span = try transformer.ast.addString("source");
+    const source = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = source_span,
+        .data = .{ .string_ref = source_span },
+    });
+    const output_span = try transformer.ast.addString("output");
+    const output = try transformer.ast.addNode(.{
+        .tag = .identifier_reference,
+        .span = output_span,
+        .data = .{ .string_ref = output_span },
+    });
+    try transformer.symbol_ids.append(transformer.allocator, 3);
+    try transformer.exact_output_ref_symbol_ids.put(
+        transformer.allocator,
+        @intFromEnum(output),
+        7,
+    );
+
+    try transformer.propagateSymbolId(source, output);
+
+    try std.testing.expectEqual(@as(?u32, 7), transformer.getSymbolIdAt(output));
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(source)), transformer.reference_origin_map.get(@intFromEnum(output)));
+}
+
 test "#4819 distinct synthetic bases do not reuse a reserved fallback name" {
     var ast = Ast.init(std.testing.allocator, "var _loop;");
     defer ast.deinit();
