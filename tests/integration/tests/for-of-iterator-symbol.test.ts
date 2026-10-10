@@ -74,6 +74,64 @@ describe('ES5 for-of iterator symbol (#4819)', () => {
     }
   }
 
+  test('escaped direct eval identifiers reserve the early iterator-step name', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `function run() {
+  let observed;
+  for (const value of [1]) observed = eval('typeof \\u005fstep');
+  return observed;
+}
+console.log(run());`,
+      'package.json': '{"type":"module"}',
+    });
+    cleanup = fixture.cleanup;
+    const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+
+    const transformed = await runZntcInDir(fixture.dir, [
+      'input.mjs',
+      '--target=es5',
+      '-o',
+      'out.mjs',
+    ]);
+    expect(transformed.exitCode, transformed.stderr).toBe(0);
+    const actual = spawnSync('node', [join(fixture.dir, 'out.mjs')], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+    expect(actual.stdout.trim()).toBe('undefined');
+  });
+
+  test('standalone for-await final step names preserve exact bindings', async () => {
+    const fixture = await createFixture({
+      'input.mjs': `async function run(_step, _step2) {
+  let total = 0;
+  for await (const first of [1]) total += first;
+  for await (const second of [2]) total += second;
+  return total;
+}
+run().then((value) => console.log(value));`,
+      'package.json': '{"type":"module"}',
+    });
+    cleanup = fixture.cleanup;
+    const native = spawnSync('node', [join(fixture.dir, 'input.mjs')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+
+    const transformed = await runZntcInDir(fixture.dir, [
+      'input.mjs',
+      '--target=es2017',
+      '-o',
+      'out.mjs',
+    ]);
+    expect(transformed.exitCode, transformed.stderr).toBe(0);
+    const emitted = await Bun.file(join(fixture.dir, 'out.mjs')).text();
+    expect(emitted).toContain('_step3');
+    expect(emitted).toContain('_step4');
+    expect(emitted).not.toContain('__zntc_step');
+    const actual = spawnSync('node', [join(fixture.dir, 'out.mjs')], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+  });
+
   test('explicit iterator and catch bindings have exact SymbolId and ScopeId coverage', async () => {
     const fixture = await createFixture({
       'input.mjs': `function collect(xs) {

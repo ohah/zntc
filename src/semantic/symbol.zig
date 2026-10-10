@@ -284,6 +284,9 @@ pub const SyntheticKind = enum(u8) {
     /// Binding for an extracted ES5 loop closure. Standalone output selects
     /// its final spelling from this exact SymbolId after lowering completes.
     block_scoping_loop_binding,
+    /// Iterator-step binding synthesized by ES5 for-of/for-await lowering.
+    /// Standalone output selects its spelling from the exact SymbolId.
+    for_of_step_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

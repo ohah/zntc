@@ -1193,7 +1193,8 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         symbol.synthetic_kind == .class_self_write_binding or
         symbol.synthetic_kind == .class_self_alias_binding or
         symbol.synthetic_kind == .anonymous_class_export_binding or
-        symbol.synthetic_kind == .block_scoping_loop_binding;
+        symbol.synthetic_kind == .block_scoping_loop_binding or
+        symbol.synthetic_kind == .for_of_step_binding;
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
@@ -4147,6 +4148,44 @@ test "#4819 extracted loop names are finalized from their exact SymbolIds" {
     try std.testing.expect(std.mem.indexOf(u8, result.code, "var _loop = function") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "var _loop2 = function") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_loop") == null);
+}
+
+test "#4819 standalone for-of step names are finalized from their exact SymbolIds" {
+    const source =
+        \\function collect(_step, _step2) {
+        \\  for (const first of [1]) void first;
+        \\  for (const second of [2]) void second;
+        \\}
+    ;
+    const compat = @import("transformer/compat.zig");
+    var result = try transpile(std.testing.allocator, source, "/src/a.js", .{
+        .unsupported = compat.fromESTarget(.es5),
+        .es_target = .es5,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_step3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_step4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_step") == null);
+}
+
+test "#4819 standalone for-await step names are finalized from their exact SymbolIds" {
+    const source =
+        \\async function collect(_step, _step2) {
+        \\  for await (const first of [1]) void first;
+        \\  for await (const second of [2]) void second;
+        \\}
+    ;
+    const compat = @import("transformer/compat.zig");
+    var result = try transpile(std.testing.allocator, source, "/src/a.js", .{
+        .unsupported = compat.fromESTarget(.es2017),
+        .es_target = .es2017,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_step3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_step4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__zntc_step") == null);
 }
 
 test "#4759 이름 줄이기는 낮춘·접은 뒤 코드로 한다 — 새 노드도 같은 이름을 따른다" {
