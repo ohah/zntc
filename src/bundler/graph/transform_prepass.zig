@@ -1781,6 +1781,23 @@ fn isSafeSuperConstructorStatement(
     return true;
 }
 
+fn isSafeConstructorThisPropertyAssignmentStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    if (statement.tag != .expression_statement) return false;
+    const expression_idx = statement.data.unary.operand;
+    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    const assignment = ast.getNode(expression_idx);
+    if (assignment.tag != .assignment_expression or
+        assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq) or
+        !isSafeConstructorThisPropertyTarget(ast, assignment.data.binary.left)) return false;
+    return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
+}
+
 fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1813,6 +1830,14 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (statements.len == 1 and params.data.list.len == 0) {
         const only_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
         if (isSafeSuperConstructorStatement(ast, semantic, only_statement)) return true;
+    }
+    // Keep the initialization boundary explicit: only one direct assignment to
+    // a named `this` property may follow the single super call.
+    if (statements.len == 2 and params.data.list.len == 0) {
+        const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
+        const assignment_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start + 1]);
+        if (isSafeSuperConstructorStatement(ast, semantic, super_statement) and
+            isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, assignment_statement)) return true;
     }
     for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
         if (raw_statement_idx >= ast.nodes.items.len or
