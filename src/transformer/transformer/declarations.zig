@@ -178,7 +178,6 @@ pub fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
 ///   constructor(public x: number) {} →
 ///   constructor(x) { this.x = x; }
 pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Error!NodeIndex {
-    _ = source_idx;
     const e = node.data.extra;
 
     // TS function overload signature: body가 없으면 제거
@@ -205,6 +204,9 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     // ES2015 arrow this/arguments 캡처: 일반 함수는 자체 this/arguments 바인딩을 가짐.
     const capture_frame = es_helpers.pushCaptureFrame(self);
+    const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+    self.native_parameter_list_retained_for_dynamic_lookup = false;
+    defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
     const saved_arrow_depth = self.arrow_this_depth;
     const saved_needs_this = self.needs_this_var;
     const saved_needs_args = self.needs_arguments_var;
@@ -241,6 +243,21 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         if (pnode.tag == .formal_parameters) {
             params_list_old = pnode.data.list;
             params_span = pnode.span;
+        }
+    }
+    if (self.options.unsupported.arrow and self.options.unsupported.default_params and params_list_old.len > 0) {
+        const Params = @import("../es2015_params.zig").ES2015Params(Transformer);
+        if (Params.hasDefaultOrRest(self, params_list_old)) {
+            const parameter_environment = @import("../parameter_environment.zig");
+            const function_scope = self.outputOwnedScope(source_idx) orelse self.current_scope;
+            const params_have_dynamic_lookup = try parameter_environment.parameterListHasDynamicLookup(self, params_list_old);
+            const body_has_dynamic_lookup = try parameter_environment.functionBodyHasDynamicLookup(
+                self,
+                function_scope,
+                self.readNodeIdx(e, 2),
+            );
+            self.native_parameter_list_retained_for_dynamic_lookup =
+                params_have_dynamic_lookup or body_has_dynamic_lookup;
         }
     }
     const scratch_top = self.scratch.items.len;

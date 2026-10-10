@@ -43,7 +43,8 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
 
             const native_parameter_capture = self.options.unsupported.arrow and
-                !self.options.unsupported.default_params and self.capture_frame != 0 and
+                (!self.options.unsupported.default_params or
+                    self.native_parameter_list_retained_for_dynamic_lookup) and self.capture_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame;
             const native_parameter_arrow_depth = self.native_parameter_arrow_depth;
             const parent_native_parameter_arrow_owner = self.native_parameter_arrow_owner;
