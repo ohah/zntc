@@ -1036,6 +1036,11 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     }
     try std.testing.expectEqual(@as(usize, 1), class_this_bindings);
     const exact_class_this_id = class_this_id orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        @import("../semantic/symbol.zig").SyntheticKind.stage3_class_this_binding,
+        edited.symbols.items[exact_class_this_id].synthetic_kind.?,
+    );
+    try std.testing.expectEqualStrings("_classThis", edited.symbols.items[exact_class_this_id].synthetic_name);
     const class_this_scope = edited.symbols.items[exact_class_this_id].scope_id;
     try std.testing.expectEqual(decorator_iife, class_this_scope);
     try std.testing.expectEqual(

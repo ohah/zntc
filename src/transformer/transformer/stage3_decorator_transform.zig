@@ -568,7 +568,12 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer iife_stmts.deinit(self.allocator);
 
     // _classThis 변수
-    const classThis_span = try self.ast.addString(try es_helpers.resolveSyntheticName(self, "_classThis"));
+    const class_this_late_output_name = es_helpers.canUseLateStandaloneOutputName(self, class_parent_scope);
+    const class_this_name = if (class_this_late_output_name)
+        try es_helpers.deferSyntheticOutputName(self, "_classThis")
+    else
+        try es_helpers.resolveSyntheticName(self, "_classThis");
+    const classThis_span = try self.ast.addString(class_this_name);
 
     // static { _classThis = this; }
     {
@@ -1071,6 +1076,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class this binding has no SymbolId", .{});
+        if (class_this_late_output_name) {
+            const editor = if (self.semantic_editor) |*semantic_editor|
+                semantic_editor
+            else
+                std.debug.panic("late-named Stage 3 class this has no semantic editor", .{});
+            editor.symbols.items[@intFromEnum(class_this_symbol)].synthetic_kind = .stage3_class_this_binding;
+        }
         if (class_this_initialization_scope.isNone()) std.debug.panic("Stage 3 class this has no initialization block scope", .{});
         for (class_this_initialization_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_this_symbol, class_this_initialization_scope, .{ .write = true });
