@@ -69,9 +69,19 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                 new_callee_node.tag == .computed_member_expression;
 
             const this_arg = if (is_member) blk: {
-                // 이미 visit된 new_callee에서 obj를 추출 (이중 visit 방지)
+                // Already-visited receiver from new_callee. A simple identifier
+                // needs a distinct AST reference; an effectful receiver must
+                // be captured so `.apply` does not evaluate it a second time.
                 const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[new_callee_node.data.extra]);
-                break :blk obj_idx;
+                if (es_helpers.isSimpleIdentifier(self, obj_idx)) {
+                    const receiver_ref = try es_helpers.cloneNode(self, obj_idx);
+                    try self.duplicateUserReference(obj_idx, receiver_ref);
+                    break :blk receiver_ref;
+                }
+
+                const receiver_capture = try es_helpers.captureToTrackedTemp(self, obj_idx, span);
+                self.ast.extra_data.items[new_callee_node.data.extra] = @intFromEnum(receiver_capture.paren_assign);
+                break :blk try es_helpers.makeTrackedTempRef(self, receiver_capture.span, span, .{ .read = true });
             } else try es_helpers.makeVoidZero(self, span);
 
             // args를 하나의 배열로 조합

@@ -9465,6 +9465,85 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: '11\n',
       },
       {
+        name: 'direct bound identifier call dynamic spread lowering on node4',
+        target: 'node4',
+        graph: 'retained',
+        source: [
+          'function add(left, right) { return left + right; }',
+          'function total(values) { return (() => add(...values))(); }',
+          'console.log(total([4, 7]));',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'unbound direct call dynamic spread stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.remoteAdd = function (left, right) { return left + right; };',
+          'function total(values) { return remoteAdd(...values); }',
+          'console.log(total([4, 7]));',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'member call dynamic spread stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'var operations = { add: function (left, right) { return left + right; } };',
+          'function total(values) { return operations.add(...values); }',
+          'console.log(total([4, 7]));',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'effectful member receiver dynamic spread is evaluated once on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'var receiverCalls = 0;',
+          'var operations = { add: function (left, right) { return left + right; } };',
+          'function getOperations() { receiverCalls++; return operations; }',
+          'function total(values) { return getOperations().add(...values); }',
+          'console.log(total([4, 7]), receiverCalls);',
+        ].join('\n'),
+        output: '11 1\n',
+      },
+      {
+        name: 'optional direct call dynamic spread stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function add(left, right) { return left + right; }',
+          'function total(values) { return add?.(...values); }',
+          'console.log(total([4, 7]));',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'optional direct call literal spread stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function add(left, right) { return left + right; }',
+          'function total() { return add?.(...[4, 7]); }',
+          'console.log(total());',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
+        name: 'constructor dynamic spread stays on reanalysis on node4',
+        target: 'node4',
+        graph: 'reanalyzed',
+        source: [
+          'function Pair(left, right) { this.total = left + right; }',
+          'function pair(values) { return new Pair(...values); }',
+          'console.log(pair([4, 7]).total);',
+        ].join('\n'),
+        output: '11\n',
+      },
+      {
         name: 'call spread literal lowering on node4',
         target: 'node4',
         graph: 'reanalyzed',
@@ -9623,6 +9702,60 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
+    }
+  });
+
+  test('ES5 member spread lowering registers a distinct exact receiver reference', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-member-spread-symbols-'));
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-member-spread-output-'));
+    const file = join(dir, 'entry.mjs');
+    writeFileSync(
+      file,
+      [
+        'var operations = { add: function (left, right) { return left + right; } };',
+        'function total(values) { return operations.add(...values); }',
+        'console.log(total([4, 7]));',
+      ].join('\n'),
+    );
+    try {
+      const { stderr, exitCode } = runCoverage(file, TARGETS[0], outDir);
+      expect(exitCode, stderr).toBe(0);
+      expect(transformIdentityAuditProblems(stderr), stderr).toEqual([]);
+
+      const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('11\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 member spread evaluates an effectful receiver only once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-member-spread-evaluation-'));
+    const file = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.js');
+    writeFileSync(
+      file,
+      [
+        'var receiverCalls = 0;',
+        'var operations = { add: function (left, right) { return left + right; } };',
+        'function getOperations() { receiverCalls++; return operations; }',
+        'function total(values) { return getOperations().add(...values); }',
+        'console.log(total([4, 7]), receiverCalls);',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(ZNTC_BIN, [file, '--target=es5', '-o', output], {
+        encoding: 'utf8',
+      });
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('11 1\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
