@@ -249,7 +249,7 @@ test "#4819 generated state binding stays separate from user _state parameter" {
     );
 }
 
-test "#4819 generated function name binds its exact output function scope" {
+test "#4819 generated function names require producer SymbolIds in exact output scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -284,6 +284,10 @@ test "#4819 generated function name binds its exact output function scope" {
         .span = .EMPTY,
         .data = .{ .extra = extra },
     });
+    const function_scope = try transformer.addGeneratedFunctionScope(transformer.programScope(), generated_function);
+    const id = (try transformer.declareSyntheticInScope(name, name_span, .function_decl, function_scope)) orelse
+        return error.TestUnexpectedResult;
+
     const declaration_name_span = try transformer.ast.addString("_generatedDeclaration");
     const declaration_name = try es_helpers.makeSyntheticBinding(&transformer, declaration_name_span);
     const declaration_empty_list = try transformer.ast.addNodeList(&.{});
@@ -301,20 +305,29 @@ test "#4819 generated function name binds its exact output function scope" {
         .span = .EMPTY,
         .data = .{ .extra = declaration_extra },
     });
+    const declaration_scope = try transformer.addGeneratedFunctionScope(transformer.programScope(), generated_declaration);
+    const declaration_id = (try transformer.declareSyntheticInScope(
+        declaration_name,
+        declaration_name_span,
+        .function_decl,
+        transformer.programScope(),
+    )) orelse return error.TestUnexpectedResult;
 
     try transformer.completeGeneratedStateSymbols(generated_function, transformer.programScope());
     try transformer.completeGeneratedStateSymbols(generated_declaration, transformer.programScope());
-    const id = transformer.getSymbolIdAt(name) orelse return error.TestUnexpectedResult;
     const owner = transformer.outputOwnedScope(generated_function) orelse return error.TestUnexpectedResult;
-    const declaration_id = transformer.getSymbolIdAt(declaration_name) orelse return error.TestUnexpectedResult;
     const editor = &transformer.semantic_editor.?;
-    const symbol = editor.symbols.items[id];
+    const symbol = editor.symbols.items[@intFromEnum(id)];
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(name));
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(declaration_id)), transformer.getSymbolIdAt(declaration_name));
+    try std.testing.expectEqual(function_scope, owner);
+    try std.testing.expectEqual(declaration_scope, transformer.outputOwnedScope(generated_declaration).?);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, symbol.kind);
     try std.testing.expectEqual(owner, symbol.scope_id);
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[owner.toIndex()].kind);
-    try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[owner.toIndex()].get("_generatedFunction"));
-    try std.testing.expectEqual(transformer.programScope(), editor.symbols.items[declaration_id].scope_id);
-    try std.testing.expectEqual(@as(?usize, declaration_id), editor.scope_maps.items[transformer.programScope().toIndex()].get("_generatedDeclaration"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[owner.toIndex()].get("_generatedFunction"));
+    try std.testing.expectEqual(transformer.programScope(), editor.symbols.items[@intFromEnum(declaration_id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(declaration_id)), editor.scope_maps.items[transformer.programScope().toIndex()].get("_generatedDeclaration"));
 }
 
 test "#4819 async function state callback and helper use real wrapper scope" {

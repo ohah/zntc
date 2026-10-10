@@ -1592,15 +1592,7 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
                     const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra]);
                     if (!name.isNone() and @intFromEnum(name) >= self.parser_node_count and
                         self.ast.getNode(name).tag == .binding_identifier and self.getSymbolIdAt(name) == null)
-                    {
-                        const name_span = self.ast.getNode(name).data.string_ref;
-                        if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0) {
-                            const flags = self.ast.extra_data.items[extra + 3];
-                            const binding_scope = if (node.tag == .function_expression) scope else work.scope;
-                            _ = (try self.declareSyntheticInScope(name, name_span, generatedFunctionNameKind(flags), binding_scope)) orelse
-                                std.debug.panic("generated function name has no direct SymbolId", .{});
-                        }
-                    }
+                        std.debug.panic("generated function name has no producer SymbolId", .{});
                 }
             }
             if (self.deferred_generator_helper_refs.fetchRemove(raw)) |deferred| {
@@ -1614,19 +1606,6 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
         }
     }
     self.deferred_generator_helper_refs.clearRetainingCapacity();
-}
-
-fn generatedFunctionNameKind(flags: u32) SymbolKind {
-    const is_async = (flags & ast_mod.FunctionFlags.is_async) != 0;
-    const is_generator = (flags & ast_mod.FunctionFlags.is_generator) != 0;
-    return if (is_async and is_generator)
-        .async_generator_decl
-    else if (is_async)
-        .async_function_decl
-    else if (is_generator)
-        .generator_decl
-    else
-        .function_decl;
 }
 
 fn isFunctionBoundary(tag: @import("../../parser/ast.zig").Node.Tag) bool {
