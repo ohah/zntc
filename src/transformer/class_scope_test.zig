@@ -1962,6 +1962,109 @@ test "#4819 anonymous default ES5 class export marks its late output name by Sym
     try std.testing.expectEqual(@as(usize, 1), outer_class_symbols);
 }
 
+test "#4819 Stage 3 decorated anonymous default class preserves exact generated names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function tag(value, context) { return value; }
+        \\@tag
+        \\export default class { static value = 1; }
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var wrapper_symbol: ?usize = null;
+    var constructor_symbol: ?usize = null;
+    for (edited.symbols.items, 0..) |symbol, id| {
+        if (!std.mem.eql(u8, symbol.synthetic_name, "_Class") or symbol.synthetic_kind != null) continue;
+        if (symbol.kind == .variable_var) wrapper_symbol = id;
+        if (symbol.kind == .function_decl) constructor_symbol = id;
+    }
+    const wrapper_id = wrapper_symbol orelse return error.TestUnexpectedResult;
+    const constructor_id = constructor_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expect(wrapper_id != constructor_id);
+    try std.testing.expect(edited.symbols.items[wrapper_id].scope_id != edited.symbols.items[constructor_id].scope_id);
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    var wrapper_binding_count: usize = 0;
+    var wrapper_write_count: usize = 0;
+    var constructor_binding_count: usize = 0;
+    var wrapper_reference_node_count: usize = 0;
+    for (reachable) |reachable_node| {
+        const raw = reachable_node;
+        const node = transformer.ast.getNode(@enumFromInt(raw));
+        const name_span = switch (node.tag) {
+            .binding_identifier, .identifier_reference, .assignment_target_identifier => node.data.string_ref,
+            else => continue,
+        };
+        if (!std.mem.eql(u8, transformer.ast.getText(name_span), "_Class")) continue;
+        const symbol_id = if (raw < edited.symbol_ids.len) edited.symbol_ids[raw] else null;
+        const exact_id = symbol_id orelse continue;
+        if (exact_id == wrapper_id and node.tag == .binding_identifier) wrapper_binding_count += 1;
+        if (exact_id == constructor_id and node.tag == .binding_identifier) constructor_binding_count += 1;
+        if (exact_id == wrapper_id and (node.tag == .identifier_reference or node.tag == .assignment_target_identifier)) {
+            wrapper_reference_node_count += 1;
+            var found_reference = false;
+            for (edited.references) |reference| {
+                if (reference.node_index != @as(NodeIndex, @enumFromInt(raw))) continue;
+                found_reference = true;
+            }
+            try std.testing.expect(found_reference);
+        }
+    }
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != wrapper_id or reference.node_index.isNone()) continue;
+        const node = transformer.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        try std.testing.expect(reference.flags.write);
+        try std.testing.expect(!reference.flags.read);
+        wrapper_write_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), wrapper_binding_count);
+    try std.testing.expectEqual(@as(usize, 1), constructor_binding_count);
+    try std.testing.expectEqual(@as(usize, 2), wrapper_reference_node_count);
+    try std.testing.expectEqual(@as(usize, 2), wrapper_write_count);
+    var report = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    if (!report.hasCompleteExactCoverage()) coverage.printStrict("stage3-anonymous-default-class-es5.ts", &report);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+}
+
 test "#4819 inferred anonymous class does not gain a named-class wrapper" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

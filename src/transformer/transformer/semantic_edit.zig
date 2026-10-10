@@ -344,7 +344,13 @@ const OutputScopeWork = struct {
     parent: NodeIndex = .none,
     grandparent: NodeIndex = .none,
 };
-const OutputReferenceScope = struct { node: NodeIndex, scope: ScopeId, raw_id: u32, exact: bool = false };
+const OutputReferenceScope = struct {
+    node: NodeIndex,
+    scope: ScopeId,
+    raw_id: u32,
+    exact: bool = false,
+    flags: ReferenceFlags = .{},
+};
 const OutputBindingCandidate = struct {
     node: NodeIndex,
     raw_id: u32,
@@ -708,7 +714,8 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             } else if (self.exact_output_ref_symbol_ids.get(raw)) |exact_id| {
                 if (scope.isNone() or exact_id >= editor.symbols.items.len)
                     std.debug.panic("generated reference has no exact output owner", .{});
-                try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = exact_id, .exact = true });
+                const flags: ReferenceFlags = if (work.parent.isNone()) .{ .read = true } else generatedReferenceFlags(self.ast.getNode(work.parent), work.node, node.tag);
+                try output_refs.append(self.allocator, .{ .node = work.node, .scope = scope, .raw_id = exact_id, .exact = true, .flags = flags });
             } else {
                 var raw_id = outputSymbolIdAt(self, editor, work.node);
                 if (raw_id == null) {
@@ -861,8 +868,49 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         if (reference.exact) {
             if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[reference.raw_id].scope_id, reference.scope))
                 std.debug.panic("exact generated SymbolId is not visible from its output scope", .{});
-            try addSyntheticRefInScope(self, reference.node, @enumFromInt(reference.raw_id), reference.scope, .{ .read = true });
-            _ = self.exact_output_ref_symbol_ids.remove(@intFromEnum(reference.node));
+            const symbol: SymbolId = @enumFromInt(reference.raw_id);
+            const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
+            if (maybe_reference != null) {
+                editor.relocateReference(
+                    reference.node,
+                    reference.scope,
+                    symbol,
+                    Reference.NO_STMT,
+                    Reference.NO_STMT,
+                ) catch |err| return editError(err);
+                editor.updateReferenceFlags(reference.node, reference.flags) catch |err| return editError(err);
+            } else {
+                const raw = @intFromEnum(reference.node);
+                if (raw < editor.symbol_ids.items.len and editor.symbol_ids.items[raw] != null and
+                    editor.symbol_ids.items[raw] != reference.raw_id)
+                {
+                    editor.symbol_ids.items[raw] = null;
+                }
+                if (raw < editor.symbol_ids.items.len and editor.symbol_ids.items[raw] == reference.raw_id) {
+                    editor.addCopiedReference(
+                        reference.node,
+                        symbol,
+                        reference.scope,
+                        reference.flags,
+                        Reference.NO_STMT,
+                        Reference.NO_STMT,
+                    ) catch |err| return editError(err);
+                } else {
+                    editor.addReference(
+                        reference.node,
+                        symbol,
+                        reference.scope,
+                        reference.flags,
+                        Reference.NO_STMT,
+                        Reference.NO_STMT,
+                    ) catch |err| return editError(err);
+                }
+            }
+            const raw = @intFromEnum(reference.node);
+            if (self.symbol_ids.items.len <= raw)
+                try self.symbol_ids.appendNTimes(self.allocator, null, raw + 1 - self.symbol_ids.items.len);
+            self.symbol_ids.items[raw] = reference.raw_id;
+            _ = self.exact_output_ref_symbol_ids.remove(raw);
             continue;
         }
         var only_group: ?OutputBindingGroup = null;
@@ -3093,6 +3141,12 @@ pub fn trackUserReadFromBinding(self: *Transformer, target: NodeIndex, binding: 
 /// actual output ScopeId. The producer has already selected the exact binding,
 /// so lexical name lookup must not replace that SymbolId later.
 pub fn trackExactOutputRead(self: *Transformer, target: NodeIndex, symbol_id: u32) Transformer.Error!void {
+    return trackExactOutputReference(self, target, symbol_id);
+}
+
+/// Keep a producer-selected SymbolId on a generated reference whose final
+/// output scope and read/write role are known only during the final AST walk.
+pub fn trackExactOutputReference(self: *Transformer, target: NodeIndex, symbol_id: u32) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     if (target.isNone() or @intFromEnum(target) >= self.ast.nodes.items.len)
         std.debug.panic("exact generated reference has an invalid AST node", .{});

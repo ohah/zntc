@@ -145,10 +145,22 @@ console.log(_metadata, _metadata2, _classThis, _classThis2, _classDecorators, _c
     const fixture = await createFixture({
       'input.ts': `
 var _private_secret_descriptor = 131, _private_secret_descriptor2 = 132;
-function dec(value: any, context: any): any { return value; }
+const accesses: any[] = [];
+function dec(value: any, context: any): any {
+  if (context.private) accesses.push(context.access);
+  return value;
+}
 @dec class Example { @dec #secret() { return 10; } }
 @dec class Another { @dec #secret() { return 11; } }
-console.log(_private_secret_descriptor, _private_secret_descriptor2);
+const example = new Example(), another = new Another();
+console.log(
+  _private_secret_descriptor,
+  _private_secret_descriptor2,
+  accesses[0].has(example),
+  accesses[0].get(example).call(example),
+  accesses[1].has(another),
+  accesses[1].get(another).call(another),
+);
 `,
     });
     cleanup = fixture.cleanup;
@@ -161,6 +173,11 @@ console.log(_private_secret_descriptor, _private_secret_descriptor2);
     expect(code).toContain('_private_secret_descriptor2 = 132');
     expect(code).toMatch(/\b_private_secret_descriptor3\s*=/);
     expect(code).toMatch(/\b_private_secret_descriptor4\s*=/);
+    expect(code).not.toContain('obj.#secret');
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('131 132 true 10 true 11\n');
   });
 
   test('direct eval outside the Stage 3 wrapper cannot observe its member locals', async () => {
