@@ -2560,6 +2560,62 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('[[1,3,4,"b"],[4,1,"b"]]');
     });
 
+    test('moved defaults stay outside dynamic body var scope (#4819)', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let outside = 3;',
+            'function direct({ a, ...rest }, value = outside) {',
+            '  var outside = 4;',
+            '  eval("outside");',
+            '  return [a, value, outside, Object.keys(rest).join(","), this.tag, arguments.length, new.target === direct];',
+            '}',
+            'function constructed({ a, ...rest }, value = outside) {',
+            '  var outside = 4;',
+            '  eval("outside");',
+            '  return [value, new.target === constructed];',
+            '}',
+            'function evalVar({ a, ...rest }, value = outside) {',
+            '  var outside = 4;',
+            '  eval("outside = 7");',
+            '  return [value, outside];',
+            '}',
+            'function sameName({ a, ...rest }, value = a) {',
+            '  var a;',
+            '  eval("a");',
+            '  return [a, value];',
+            '}',
+            'const proto = { base: 9 };',
+            'const object = { __proto__: proto, method({ a, ...rest }, value = outside) {',
+            '  var outside = 4;',
+            '  eval("outside");',
+            '  return [this.tag, super.base, value, outside];',
+            '} };',
+            'async function asyncDirect({ a, ...rest }, value = outside) {',
+            '  var outside = 4;',
+            '  await Promise.resolve();',
+            '  eval("outside");',
+            '  return [value, outside];',
+            '}',
+            '(async () => {',
+            '  const asyncValue = await asyncDirect({ a: 5, b: 6 });',
+            '  const directValue = direct.call({ tag: "this-ok" }, { a: 1, b: 2 });',
+            '  const constructedValue = new constructed({ a: 6, b: 7 });',
+            '  const methodValue = object.method.call({ tag: "method-this" }, { a: 3, b: 4 });',
+            '  console.log(JSON.stringify([directValue, constructedValue, evalVar({ a: 2, b: 3 }), sameName({ a: 5 }), methodValue, asyncValue]));',
+            '})();',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe(
+        '[[1,3,4,"b","this-ok",1,false],[3,true],[3,7],[5,5],["method-this",9,3,4],[3,4]]',
+      );
+    });
+
     test('nested parameter object-rest is detected without lowering surrounding defaults', async () => {
       const result = await bundleAndRun(
         {

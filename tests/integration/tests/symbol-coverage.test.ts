@@ -585,6 +585,55 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('dynamic body wrapper keeps exact scopes after moving object-rest defaults (#4819)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-dynamic-param-body-scope-'));
+    const file = join(dir, 'input.mjs');
+    const outDir = join(dir, 'out');
+    mkdirSync(outDir);
+    try {
+      writeFileSync(
+        file,
+        [
+          'let outside = 3;',
+          'function run({ a, ...rest }, value = outside) {',
+          '  var outside = 4;',
+          '  eval("outside");',
+          '  return [a, value, outside, rest.b];',
+          '}',
+          'console.log(JSON.stringify(run({ a: 1, b: 2 })));',
+        ].join('\n'),
+      );
+      const baseline = spawnSync('node', [file], { encoding: 'utf8' });
+      expect(baseline.status, baseline.stderr).toBe(0);
+
+      const { stderr, exitCode } = runCoverage(file, TARGETS[2], outDir);
+      expect(exitCode, stderr).toBe(0);
+      const exact = stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(exact, stderr).toBeDefined();
+      expect(exactSchemaProblems(exact ?? ''), stderr).toEqual([]);
+      expect(exact, stderr).toMatch(/clean=1(?:\s|$)/);
+
+      const owner = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+      expect(owner, stderr).toBeDefined();
+      expect(scopeOwnerAuditProblems(owner ?? ''), stderr).toEqual([]);
+
+      const synthetic = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: synthetic-coverage '));
+      expect(synthetic, stderr).toBeDefined();
+      expect(strictSchemaProblems(synthetic ?? ''), stderr).toEqual([]);
+      expect(synthetic, stderr).toMatch(/consistent=1(?:\s|$).*symbol_identity_complete=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(baseline.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('classic JSX pragma factory and fragment preserve nested lexical identities', () => {
     const fixtures = [
       '4819-classic-jsx-shadowed-factory.tsx',
