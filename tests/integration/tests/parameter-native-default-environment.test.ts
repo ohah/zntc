@@ -45,6 +45,22 @@ const cases = [
       run().next().then(result => console.log(result.value));`,
   },
   {
+    name: 'later default after lowered object rest ignores body var shadow',
+    source: `let outside = 3;
+      function external({ a, ...rest }, value = outside) {
+        var outside = 4;
+        return [a, value, outside, Object.keys(rest).join(',')];
+      }
+      function parameter({ a, ...rest }, value = a) {
+        var a = 4;
+        return [a, value, Object.keys(rest).join(',')];
+      }
+      console.log(JSON.stringify([
+        external({ a: 1, b: 2 }, undefined),
+        parameter({ a: 1, b: 2 }, undefined),
+      ]));`,
+  },
+  {
     name: 'sloppy direct eval reaches later parameter',
     source: `function get() { return { value: 2 }; }
       async function* run(

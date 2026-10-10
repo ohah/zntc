@@ -226,7 +226,14 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     self.needs_arguments_var = false;
     self.super_call_this_alias = false;
     const param_capture_use_start = self.lexical_capture_uses.items.len;
-    var pp = try self.visitParamsCollectProperties(params_list_old);
+    var pp = blk: {
+        const saved_parameter_scope = self.current_scope;
+        defer self.current_scope = saved_parameter_scope;
+        if (!params_idx_old.isNone()) {
+            if (self.outputOwnedScope(params_idx_old)) |parameter_scope| self.current_scope = parameter_scope;
+        }
+        break :blk try self.visitParamsCollectProperties(params_list_old);
+    };
     defer pp.prop_names.deinit(self.allocator);
     const param_needs_this = self.needs_this_var;
     const param_needs_arguments = self.needs_arguments_var;

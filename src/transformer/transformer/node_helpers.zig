@@ -40,7 +40,7 @@ pub fn tryRenameIdentifierLike(
     idx: NodeIndex,
     comptime tag: Tag,
 ) Error!?NodeIndex {
-    if (!self.options.unsupported.block_scoping) return null;
+    if (!self.options.unsupported.block_scoping and !self.options.unsupported.object_spread) return null;
     const new_name = renamedNameOf(self, idx) orelse return null;
     // 생성된 참조를 generator 등이 다시 방문해도 이름이 같으면 정체성을 유지한다.
     // 새 노드가 필요하지 않은데 복사하면 기존 Reference와 사용 횟수가 끊긴다.
@@ -77,16 +77,17 @@ pub fn renamedNameOf(self: anytype, idx: NodeIndex) ?[]const u8 {
 
 /// 변환 시작에 심볼 표를 만든다. es5 블록 스코핑을 낮추고 분석기 스코프가 있을 때만.
 pub fn buildBlockRenameMap(self: anytype) Error!void {
-    if (!self.options.unsupported.block_scoping) return;
+    const lower_block_scoping = self.options.unsupported.block_scoping;
+    const lower_parameter_object_rest = self.options.unsupported.object_spread;
+    if (!lower_block_scoping and !lower_parameter_object_rest) return;
     if (self.scopes.len == 0) return;
-    const unresolved = self.unresolved_references orelse return;
     var parameter_renames = try @import("../parameter_environment.zig").splitMergedParameterBodyVars(self);
     defer parameter_renames.deinit(self.allocator);
     var existing_parameter_renames = try @import("../parameter_environment.zig").collectRenames(self);
     defer existing_parameter_renames.deinit(self.allocator);
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
     var existing_renames = existing_parameter_renames.keyIterator();
     while (existing_renames.next()) |id| try parameter_renames.put(self.allocator, id.*, {});
-    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
     const references = if (self.semantic_editor) |*editor| editor.references.items else self.references;
@@ -96,16 +97,20 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
             return ast.getText(s.name);
         }
     };
-    var table = try @import("../block_rename_table.zig").build(self.allocator, .{
-        .scopes = scopes,
-        .symbols = symbols,
-        .scope_maps = scope_maps,
-        .references = references,
-        .unresolved = unresolved,
-        .ctx = self.ast,
-        .nameOf = Ctx.nameOf,
-    });
+    var table: @import("../block_rename_table.zig").Table = .empty;
     defer table.deinit(self.allocator);
+    if (lower_block_scoping) {
+        const unresolved = self.unresolved_references orelse return;
+        table = try @import("../block_rename_table.zig").build(self.allocator, .{
+            .scopes = scopes,
+            .symbols = symbols,
+            .scope_maps = scope_maps,
+            .references = references,
+            .unresolved = unresolved,
+            .ctx = self.ast,
+            .nameOf = Ctx.nameOf,
+        });
+    }
     var map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     errdefer map.deinit(self.allocator);
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -113,12 +118,15 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     var reserved: std.StringHashMapUnmanaged(void) = .empty;
     defer reserved.deinit(self.allocator);
     for (symbols) |sym| try reserved.put(self.allocator, try canonicalIdentifier(arena, self.ast.getText(sym.name)), {});
-    var globals = unresolved.keyIterator();
-    while (globals.next()) |name| try reserved.put(self.allocator, try canonicalIdentifier(arena, name.*), {});
+    if (self.unresolved_references) |unresolved| {
+        var globals = unresolved.keyIterator();
+        while (globals.next()) |name| try reserved.put(self.allocator, try canonicalIdentifier(arena, name.*), {});
+    }
     // 심볼 번호 순서로 이름을 매겨 결정적으로 만든다.
     for (symbols, 0..) |sym, i| {
         const parameter_rename = parameter_renames.contains(@intCast(i));
-        if (!table.contains(@intCast(i)) and !parameter_rename) continue;
+        const block_rename = lower_block_scoping and table.contains(@intCast(i));
+        if (!block_rename and !parameter_rename) continue;
         const base_name = try canonicalIdentifier(arena, self.ast.getText(sym.name));
         const name = while (true) {
             self.block_rename_counter += 1;
@@ -127,8 +135,9 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
         };
         try reserved.put(self.allocator, name, {});
         try map.put(self.allocator, @intCast(i), name);
-        if (parameter_rename)
+        if (parameter_rename) {
             try @import("semantic_edit.zig").renameParameterEnvironmentBinding(self, @intCast(i), name);
+        }
     }
     self.block_rename_map = map;
     try @import("../parameter_environment.zig").collectInferredNames(self, &parameter_renames);

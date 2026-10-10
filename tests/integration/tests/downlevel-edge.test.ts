@@ -2536,6 +2536,30 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       expect(result.runOutput).toBe('[1,"b","a|b|default"]');
     });
 
+    test('defaults after object rest keep parameter bindings separate from body vars', async () => {
+      const result = await bundleAndRun(
+        {
+          'index.ts': [
+            'let outside = 3;',
+            'function outer({ a, ...rest }: any, value = outside) {',
+            '  var outside = 4;',
+            '  return [a, value, outside, Object.keys(rest).join(",")];',
+            '}',
+            'function parameter({ a, ...rest }: any, value = a) {',
+            '  var a = 4;',
+            '  return [a, value, Object.keys(rest).join(",")];',
+            '}',
+            'console.log(JSON.stringify([outer({ a: 1, b: 2 }, undefined), parameter({ a: 1, b: 2 }, undefined)]));',
+          ].join('\n'),
+        },
+        'index.ts',
+        ['--target=es2017'],
+      );
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe('[[1,3,4,"b"],[4,1,"b"]]');
+    });
+
     test('nested parameter object-rest is detected without lowering surrounding defaults', async () => {
       const result = await bundleAndRun(
         {
