@@ -1238,7 +1238,8 @@ fn visitBindingProperty(self: *Transformer, idx: NodeIndex, node: ast_mod.Node) 
         break :blk vn.tag == .assignment_pattern and vn.data.binary.left == key;
     });
     if (shorthand) {
-        const renamed = key_node.tag == .binding_identifier and self.options.unsupported.block_scoping and
+        const renamed = key_node.tag == .binding_identifier and
+            (self.options.unsupported.block_scoping or self.options.unsupported.object_spread) and
             self.renamedNameOf(key) != null;
         if (!renamed) return self.visitBinaryNode(idx);
     }

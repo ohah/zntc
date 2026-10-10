@@ -309,45 +309,18 @@ fn appendParameterBodyVarCopies(
             reference_scope,
             .{ .write = true },
         );
-        try self.addSyntheticRefInScope(
-            value,
-            @enumFromInt(copy.parameter_symbol_id),
-            reference_scope,
-            .{ .read = true },
-        );
+        // The final output walk must preserve this producer-selected parameter
+        // identity even when a same-named body `var` is visible in the wrapper.
+        try self.trackExactOutputRead(value, copy.parameter_symbol_id);
         try statements.append(self.allocator, try es_helpers.makeAssignStmt(self, target, value, copy.source_span, 0));
     }
-}
-
-fn hasParameterBodyBindingConflict(self: anytype, function_scope: @import("../../semantic/scope.zig").ScopeId, params: ast_mod.NodeList) Error!bool {
-    if (function_scope.isNone()) return true;
-    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
-    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-    const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
-    const scope_raw = function_scope.toIndex();
-    if (scope_raw >= scopes.len or scope_raw >= scope_maps.len) return true;
-
-    for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
-        var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, @enumFromInt(raw_param), .{});
-        defer bindings.deinit();
-        while (try bindings.next()) |binding| {
-            const raw_id = self.getSymbolIdAt(binding) orelse continue;
-            if (raw_id >= symbols.len) continue;
-            const parameter = symbols[raw_id];
-            const name = self.ast.getText(parameter.name);
-            const body_id = scope_maps[scope_raw].get(name) orelse continue;
-            if (body_id >= symbols.len or body_id == raw_id) continue;
-            if (symbols[body_id].scope_id == function_scope) return true;
-        }
-    }
-    return false;
 }
 
 /// A moved parameter initializer must run before body `var`/function bindings
 /// exist. If the body contains dynamic lookup, keep its original declarations
 /// and direct eval together in a nested arrow function so the prologue cannot
-/// see body-only names. Same-named parameter/body declarations are left on the
-/// established path until their value-copy semantics can be represented here.
+/// see body-only names. Split parameter/body var identities before this step so
+/// the arrow keeps a local copy while parameter expressions retain their binding.
 fn reserveDynamicBodyWrapperScope(
     self: anytype,
     function_scope: @import("../../semantic/scope.zig").ScopeId,
@@ -361,7 +334,7 @@ fn reserveDynamicBodyWrapperScope(
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_raw = function_scope.toIndex();
     if (scope_raw >= scopes.len or !scopes[scope_raw].blocksMangling()) return null;
-    if (try hasParameterBodyBindingConflict(self, function_scope, params)) return null;
+    if (try @import("../parameter_environment.zig").parameterListHasDynamicLookup(self, params)) return null;
     return try self.reserveGeneratedFunctionScope(function_scope);
 }
 

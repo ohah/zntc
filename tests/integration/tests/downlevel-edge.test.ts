@@ -2585,6 +2585,21 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
             '  eval("a");',
             '  return [a, value];',
             '}',
+            'function sameNameUnmodified({ a, ...rest }, value = outside) {',
+            '  var outside = 4, a;',
+            '  eval("a");',
+            '  return [a, value, outside, rest.b];',
+            '}',
+            'function sameNameClosure({ a, ...rest }, read = () => a) {',
+            '  var a;',
+            '  eval("a = 11");',
+            '  return [a, read(), rest.b];',
+            '}',
+            'function sameNameAndHiddenVar({ a, ...rest }, value = outside) {',
+            '  var outside = 4, a;',
+            '  eval("a = 8; outside");',
+            '  return [a, value, outside, rest.b];',
+            '}',
             'const proto = { base: 9 };',
             'const object = { __proto__: proto, method({ a, ...rest }, value = outside) {',
             '  var outside = 4;',
@@ -2602,7 +2617,7 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
             '  const directValue = direct.call({ tag: "this-ok" }, { a: 1, b: 2 });',
             '  const constructedValue = new constructed({ a: 6, b: 7 });',
             '  const methodValue = object.method.call({ tag: "method-this" }, { a: 3, b: 4 });',
-            '  console.log(JSON.stringify([directValue, constructedValue, evalVar({ a: 2, b: 3 }), sameName({ a: 5 }), methodValue, asyncValue]));',
+            '  console.log(JSON.stringify([directValue, constructedValue, evalVar({ a: 2, b: 3 }), sameName({ a: 5 }), sameNameUnmodified({ a: 9, b: 10 }), sameNameClosure({ a: 12, b: 13 }), sameNameAndHiddenVar({ a: 7, b: 8 }), methodValue, asyncValue]));',
             '})();',
           ].join('\n'),
         },
@@ -2612,7 +2627,7 @@ describe('ES 다운레벨링 엣지케이스 (복합 조합)', () => {
       cleanup = result.cleanup;
       expect(result.exitCode).toBe(0);
       expect(result.runOutput).toBe(
-        '[[1,3,4,"b","this-ok",1,false],[3,true],[3,7],[5,5],["method-this",9,3,4],[3,4]]',
+        '[[1,3,4,"b","this-ok",1,false],[3,true],[3,7],[5,5],[9,3,4,10],[11,12,13],[8,3,4,8],["method-this",9,3,4],[3,4]]',
       );
     });
 

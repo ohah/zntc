@@ -879,16 +879,23 @@ fn resolveInScopes(
     use_scope: ScopeId,
 ) ?u32 {
     if (!exactValidScope(scopes, use_scope)) return null;
+    if (resolveInScopesByName(scopes, scope_maps, name, use_scope)) |symbol_id| return symbol_id;
     const normalized = baseName(name);
+    if (std.mem.eql(u8, name, normalized)) return null;
+    return resolveInScopesByName(scopes, scope_maps, normalized, use_scope);
+}
+
+fn resolveInScopesByName(
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    name: []const u8,
+    use_scope: ScopeId,
+) ?u32 {
     var current = use_scope;
     var hops: usize = 0;
     while (exactValidScope(scopes, current) and hops < scopes.len) : (hops += 1) {
         if (current.toIndex() < scope_maps.len) {
-            const map = scope_maps[current.toIndex()];
-            if (map.get(name)) |sid| return @intCast(sid);
-            if (!std.mem.eql(u8, name, normalized)) {
-                if (map.get(normalized)) |sid| return @intCast(sid);
-            }
+            if (scope_maps[current.toIndex()].get(name)) |sid| return @intCast(sid);
         }
         current = scopes[current.toIndex()].parent;
     }
@@ -921,17 +928,19 @@ fn hasNamespaceMemberNamed(ctx: *const ExactCtx, name: []const u8) bool {
 /// moving to the parent scope. Proxies intentionally do not live in scope_maps.
 fn resolveInExactScopes(ctx: *const ExactCtx, name: []const u8, use_scope: ScopeId) ?u32 {
     if (!exactValidScope(ctx.scopes, use_scope)) return null;
+    if (resolveInExactScopesByName(ctx, name, use_scope)) |symbol_id| return symbol_id;
     const normalized = baseName(name);
+    if (std.mem.eql(u8, name, normalized)) return null;
+    return resolveInExactScopesByName(ctx, normalized, use_scope);
+}
+
+fn resolveInExactScopesByName(ctx: *const ExactCtx, name: []const u8, use_scope: ScopeId) ?u32 {
     var current = use_scope;
     var hops: usize = 0;
     while (exactValidScope(ctx.scopes, current) and hops < ctx.scopes.len) : (hops += 1) {
         const scope_index = current.toIndex();
         if (scope_index < ctx.scope_maps.len) {
-            const map = ctx.scope_maps[scope_index];
-            if (map.get(name)) |sid| return @intCast(sid);
-            if (!std.mem.eql(u8, name, normalized)) {
-                if (map.get(normalized)) |sid| return @intCast(sid);
-            }
+            if (ctx.scope_maps[scope_index].get(name)) |sid| return @intCast(sid);
         }
         if (ctx.namespace_scope_owners) |namespace_owners| {
             if (namespace_owners.get(scope_index)) |owner_id| {

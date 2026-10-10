@@ -600,7 +600,17 @@ describe('symbol identity coverage gate (#4819)', () => {
           '  eval("outside");',
           '  return [a, value, outside, rest.b];',
           '}',
-          'console.log(JSON.stringify(run({ a: 1, b: 2 })));',
+          'function sameName({ a, ...rest }, value = outside) {',
+          '  var outside = 4, a;',
+          '  eval("a");',
+          '  return [a, value, outside, rest.b];',
+          '}',
+          'function sameNameClosure({ a, ...rest }, read = () => a) {',
+          '  var a;',
+          '  eval("a = 11");',
+          '  return [a, read(), rest.b];',
+          '}',
+          'console.log(JSON.stringify([run({ a: 1, b: 2 }), sameName({ a: 7, b: 8 }), sameNameClosure({ a: 12, b: 13 })]));',
         ].join('\n'),
       );
       const baseline = spawnSync('node', [file], { encoding: 'utf8' });
