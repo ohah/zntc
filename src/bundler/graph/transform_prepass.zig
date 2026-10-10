@@ -1798,6 +1798,18 @@ fn isSafeConstructorThisPropertyAssignmentStatement(
     return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
 }
 
+fn isSafeDerivedConstructorReturnStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    if (statement.tag != .return_statement) return false;
+    const value_idx = statement.data.unary.operand;
+    return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
+}
+
 fn isSimpleParamsConstructorBodyGraphSafe(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1830,15 +1842,26 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (statements.len > 0 and params.data.list.len == 0) {
         const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
         if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
-            // Keep the initialization boundary explicit: every following
-            // statement must be a named `this` property assignment.
+            // Keep the initialization boundary explicit: simple `this`
+            // property assignments may follow, with an optional final return.
+            var return_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
-                if (raw_statement_idx >= ast.nodes.items.len or
-                    !isSafeConstructorThisPropertyAssignmentStatement(
-                        ast,
-                        semantic,
-                        @enumFromInt(raw_statement_idx),
-                    )) return false;
+                if (raw_statement_idx >= ast.nodes.items.len) return false;
+                const following_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
+                if (!return_seen and isSafeConstructorThisPropertyAssignmentStatement(
+                    ast,
+                    semantic,
+                    following_statement,
+                )) continue;
+                if (!return_seen and isSafeDerivedConstructorReturnStatement(
+                    ast,
+                    semantic,
+                    following_statement,
+                )) {
+                    return_seen = true;
+                    continue;
+                }
+                return false;
             }
             return true;
         }

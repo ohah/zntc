@@ -13415,6 +13415,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 4 value:3,other:4 false\n',
       },
       {
+        name: 'post-super return of a bound object preserves derived constructor return semantics',
+        source:
+          'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
+        graph: 'retained',
+        output: 'true 8 false\n',
+      },
+      {
+        name: 'post-super bare return preserves the initialized this value',
+        source:
+          'function Base() { this.value = 4; } class Child extends Base { constructor() { super(); return; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'retained',
+        output: '4 true\n',
+      },
+      {
+        name: 'post-super primitive return still throws TypeError',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); return 1; } } try { new Child(); } catch (error) { console.log(error.name); }',
+        graph: 'retained',
+        output: 'TypeError\n',
+      },
+      {
         name: 'nested explicit super constructor retains exact outer base and inner class identities',
         source:
           'function make(Base, Child) { function inner() { class Child extends Base { constructor() { super(); } self() { return Child; } } var child = new Child(); return [child.self() === Child, child instanceof Base, Child.name]; } return [inner().join(" "), Child]; } console.log(make(function Base() {}, 9).join("|"));',
@@ -13462,6 +13483,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); this.value = value(); } } console.log(new Child().value, calls);',
         graph: 'reanalyzed',
         output: '3 1\n',
+      },
+      {
+        name: 'post-super return call stays on reanalysis',
+        source:
+          'var calls = 0; function replacement() { calls += 1; return { value: 8 }; } function Base() {} class Child extends Base { constructor() { super(); return replacement(); } } var child = new Child(); console.log(child.value, calls);',
+        graph: 'reanalyzed',
+        output: '8 1\n',
       },
       {
         name: 'post-super constructor with a local declaration stays on reanalysis',
