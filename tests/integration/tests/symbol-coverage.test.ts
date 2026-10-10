@@ -1342,33 +1342,128 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('styled-components CSS-prop import keeps semantic reanalysis enabled', () => {
+  test('styled-components CSS-prop import retains exact identity and module metadata', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-styled-css-prop-prepass-'));
-    const output = join(dir, 'out.cjs');
+    const packageDir = join(dir, 'node_modules', 'styled-components');
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(
+      join(packageDir, 'package.json'),
+      JSON.stringify({ name: 'styled-components', version: '0.0.0-test', main: 'index.js' }),
+    );
+    writeFileSync(
+      join(packageDir, 'index.js'),
+      [
+        'const styled = (tag) => (style) => (props) => ({ tag, style, props });',
+        "styled.main = (style) => (props) => ({ tag: 'main', style, props });",
+        'module.exports = styled;',
+        'module.exports.default = styled;',
+        'module.exports.__esModule = true;',
+        '',
+      ].join('\n'),
+    );
     writeFileSync(
       join(dir, 'index.tsx'),
-      'export const App = () => <main css={{ color: "red" }} />;',
+      [
+        "const _styled = 'root collision';",
+        "const _styled_0 = 'component collision';",
+        'function h(Component, props) { return Component(props); }',
+        'export function App(_styled2, _styled_0) {',
+        '  return <main css={{ color: "red" }} title={_styled2} data-user={_styled_0} />;',
+        '}',
+        '',
+      ].join('\n'),
     );
     writeFileSync(
       join(dir, 'zntc.config.json'),
       JSON.stringify({ compiler: { styledComponents: { cssProp: true, namespace: 'audit' } } }),
     );
-    writeFileSync(
-      join(dir, 'tsconfig.json'),
-      JSON.stringify({ compilerOptions: { verbatimModuleSyntax: true } }),
-    );
     try {
-      const proc = spawnSync(
+      for (const minify of [false, true]) {
+        const output = join(dir, `out-${minify ? 'minified' : 'plain'}.cjs`);
+        const proc = spawnSync(
+          'bun',
+          [
+            ZNTC_JS_CLI,
+            '--bundle',
+            'index.tsx',
+            '--target=esnext',
+            '--platform=node',
+            '--format=cjs',
+            '--jsx=classic',
+            '--jsx-factory=h',
+            '--external',
+            'styled-components',
+            ...(minify ? ['--minify-identifiers'] : []),
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: {
+              ...process.env,
+              ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+              ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+            },
+            encoding: 'utf8',
+          },
+        );
+        const stderr = proc.stderr ?? '';
+        expect(proc.status, stderr).toBe(0);
+
+        const report = stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+        expect(report, stderr).toBeDefined();
+        expect(exactSchemaProblems(report!), stderr).toEqual([]);
+        expect(report, stderr).toMatch(/clean=1(?:\s|$)/);
+
+        const mode = stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, stderr).toContain('semantic_graph=retained');
+
+        const bundle = readFileSync(output, 'utf8');
+        expect(bundle).toContain('styled-components');
+        const runner = join(dir, `run-${minify ? 'minified' : 'plain'}.cjs`);
+        writeFileSync(
+          runner,
+          `const { App } = require(${JSON.stringify(output)});\n` +
+            "console.log(JSON.stringify(App('parameter', 'nested collision')));\n",
+        );
+        const actual = spawnSync('node', [runner], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(
+          '{"tag":"main","style":{"color":"red"},"props":{"title":"parameter","data-user":"nested collision"}}\n',
+        );
+      }
+
+      writeFileSync(
+        join(dir, 'eval.tsx'),
+        [
+          'function h(Component, props) { return Component(props); }',
+          'export function App() {',
+          '  eval("0");',
+          '  return <main css={{ color: "blue" }} />;',
+          '}',
+          '',
+        ].join('\n'),
+      );
+      const evalOutput = join(dir, 'eval.cjs');
+      const evalProc = spawnSync(
         'bun',
         [
           ZNTC_JS_CLI,
           '--bundle',
-          'index.tsx',
+          'eval.tsx',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--jsx=classic',
+          '--jsx-factory=h',
           '--external',
           'styled-components',
-          '--verbatim-module-syntax',
           '-o',
-          output,
+          evalOutput,
         ],
         {
           cwd: dir,
@@ -1376,23 +1471,25 @@ describe('symbol identity coverage gate (#4819)', () => {
           encoding: 'utf8',
         },
       );
-      expect(proc.status, proc.stderr).toBe(0);
-
-      const reports = (proc.stderr ?? '')
+      const evalStderr = evalProc.stderr ?? '';
+      expect(evalProc.status, evalStderr).toBe(0);
+      const evalMode = evalStderr
         .split(/\r?\n/)
-        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
-      expect(reports, proc.stderr).toHaveLength(1);
-      expect(exactSchemaProblems(reports[0]), proc.stderr).toEqual([]);
-
-      const modes = (proc.stderr ?? '')
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(evalMode, evalStderr).toContain('semantic_graph=reanalyzed');
+      const evalReport = evalStderr
         .split(/\r?\n/)
-        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
-      expect(modes, proc.stderr).toHaveLength(1);
-      expect(modes[0], proc.stderr).toContain('semantic_graph=reanalyzed');
-
-      const bundle = readFileSync(output, 'utf8');
-      expect(bundle).toContain('styled-components');
-      expect(bundle).toContain('styled.main');
+        .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(evalReport, evalStderr).toMatch(/clean=1(?:\s|$)/);
+      const evalRunner = join(dir, 'run-eval.cjs');
+      writeFileSync(
+        evalRunner,
+        `const { App } = require(${JSON.stringify(evalOutput)});\n` +
+          'console.log(JSON.stringify(App()));\n',
+      );
+      const evalActual = spawnSync('node', [evalRunner], { encoding: 'utf8' });
+      expect(evalActual.status, evalActual.stderr).toBe(0);
+      expect(evalActual.stdout).toBe('{"tag":"main","style":{"color":"blue"},"props":null}\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
