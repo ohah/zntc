@@ -638,6 +638,153 @@ test "exact declaration coverage rejects missing and duplicate declaration ancho
     try std.testing.expect(!duplicated.isClean());
 }
 
+test "exact source scope audit separates parameter expressions from body var bindings" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "let outside = 3; function f({ a, ...rest }, value = outside) { var outside = 4; return [value, rest.x]; }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+
+    var function_node: ?AstNodeIndex = null;
+    var outer_symbol: ?u32 = null;
+    var body_var_symbol: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_declaration) function_node = @enumFromInt(@as(u32, @intCast(raw)));
+    }
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (!std.mem.eql(u8, symbol.nameText(parser.ast.source), "outside")) continue;
+        if (symbol.scope_id.toIndex() == 0 and symbol.kind == .variable_let) outer_symbol = @intCast(raw);
+    }
+    const function_idx = function_node orelse return error.TestUnexpectedResult;
+    const function_raw = @intFromEnum(function_idx);
+    const function_node_value = parser.ast.getNode(function_idx);
+    const params_idx: AstNodeIndex = @enumFromInt(parser.ast.extra_data.items[function_node_value.data.extra + 1]);
+    const parameter_scope_raw = analyzer.scope_owner_map.get(@intFromEnum(params_idx)) orelse return error.TestUnexpectedResult;
+    const body_scope_raw = analyzer.scope_owner_map.get(function_raw) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(parameter_scope_raw < analyzer.scopes.items.len);
+    try std.testing.expect(body_scope_raw < analyzer.scopes.items.len);
+    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(analyzer.scopes.items[parameter_scope_raw].parent));
+    try std.testing.expectEqual(@as(u32, @intCast(parameter_scope_raw)), @intFromEnum(analyzer.scopes.items[body_scope_raw].parent));
+
+    const expected_outer_symbol = outer_symbol orelse return error.TestUnexpectedResult;
+    var parameter_default_reference: ?Reference = null;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or !reference.flags.read or reference.node_index.isNone()) continue;
+        const raw = @intFromEnum(reference.node_index);
+        if (raw >= parser.ast.nodes.items.len) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "outside")) continue;
+        if (@intFromEnum(reference.symbol_id) == expected_outer_symbol and @intFromEnum(reference.scope_id) == parameter_scope_raw)
+            parameter_default_reference = reference;
+    }
+    const default_reference = parameter_default_reference orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(expected_outer_symbol, @intFromEnum(default_reference.symbol_id));
+    try std.testing.expectEqual(parameter_scope_raw, @intFromEnum(default_reference.scope_id));
+
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or raw >= analyzer.symbol_ids.items.len) continue;
+        if (!std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "outside")) continue;
+        const id = analyzer.symbol_ids.items[raw] orelse continue;
+        if (id < analyzer.symbols.items.len and analyzer.symbols.items[id].scope_id.toIndex() == body_scope_raw)
+            body_var_symbol = id;
+    }
+    try std.testing.expect(body_var_symbol != null);
+    try std.testing.expect(body_var_symbol.? != expected_outer_symbol);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.scope_resolution_mismatch);
+    try std.testing.expect(report.isClean());
+}
+
+test "parameter default import reference keeps its exact parameter-environment scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { DEFAULT_VALUE } from 'values'; const read = (value = DEFAULT_VALUE) => value; const legacy = function(other = DEFAULT_VALUE) { return other; };";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = parser.is_module;
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+
+    var arrow_raw: ?u32 = null;
+    var function_raw: ?u32 = null;
+    var import_symbol: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .arrow_function_expression) arrow_raw = @intCast(raw);
+        if (node.tag == .function_expression) function_raw = @intCast(raw);
+    }
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .import_binding and std.mem.eql(u8, symbol.nameText(parser.ast.source), "DEFAULT_VALUE"))
+            import_symbol = @intCast(raw);
+    }
+    const arrow = arrow_raw orelse return error.TestUnexpectedResult;
+    const params = parser.ast.readExtraNode(parser.ast.getNode(@enumFromInt(arrow)).data.extra, 0);
+    const parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(params)) orelse return error.TestUnexpectedResult;
+    const function = function_raw orelse return error.TestUnexpectedResult;
+    const function_params = parser.ast.readExtraNode(parser.ast.getNode(@enumFromInt(function)).data.extra, 1);
+    const function_parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(function_params)) orelse return error.TestUnexpectedResult;
+    const expected_import = import_symbol orelse return error.TestUnexpectedResult;
+    var found_references: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (reference.flags.declare or reference.node_index.isNone()) continue;
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "DEFAULT_VALUE")) continue;
+        try std.testing.expectEqual(expected_import, @intFromEnum(reference.symbol_id));
+        const actual_scope = @intFromEnum(reference.scope_id);
+        try std.testing.expect(actual_scope == parameter_scope or actual_scope == function_parameter_scope);
+        found_references += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), found_references);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const report = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), report.scope_resolution_mismatch);
+    try std.testing.expect(report.isClean());
+}
+
 test "exact identity audit catches same-name binding IDs swapped across scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

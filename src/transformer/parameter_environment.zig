@@ -33,6 +33,25 @@ fn scopeMapsOf(self: anytype) []const std.StringHashMapUnmanaged(usize) {
     return self.scope_maps;
 }
 
+fn scopeOwnersOf(self: anytype) *const std.AutoHashMapUnmanaged(u32, u32) {
+    if (self.semantic_editor) |*editor| return &editor.scope_owner_map;
+    return &self.scope_owner_map;
+}
+
+fn functionParamsNode(self: anytype, function_raw: u32) ?u32 {
+    if (function_raw >= self.ast.nodes.items.len) return null;
+    const function = self.ast.nodes.items[function_raw];
+    const slot: u32 = switch (function.tag) {
+        .arrow_function_expression => 0,
+        .function_declaration, .function_expression, .function, .method_definition => 1,
+        else => return null,
+    };
+    if (!self.ast.hasExtra(function.data.extra, slot)) return null;
+    const raw = self.ast.extra_data.items[function.data.extra + slot];
+    if (raw == @intFromEnum(ast_mod.NodeIndex.none) or raw >= self.ast.nodes.items.len) return null;
+    return raw;
+}
+
 /// The analyzer intentionally unifies a simple parameter with a body `var`.
 /// For a non-simple parameter list that is lowered to ES5, however, parameter
 /// initializers and the body have separate environments. Split only identities
@@ -205,14 +224,22 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
     const symbols = symbolsOf(self);
     const scopes = scopesOf(self);
     const scope_maps = scopeMapsOf(self);
+    const scope_owners = scopeOwnersOf(self);
     for (self.ast.nodes.items, 0..) |node, raw| {
         const params = self.ast.functionParamsList(node);
         if (params.len == 0 or !params_mod.hasDefaultOrRest(self, params)) continue;
-        const scope_raw = self.scope_owner_map.get(@intCast(raw)) orelse continue;
+        const scope_raw = scope_owners.get(@intCast(raw)) orelse continue;
         if (scope_raw >= scopes.len or scope_raw >= scope_maps.len) continue;
         const scope = scopes[scope_raw];
         if (scope.kind != .function or scope.blocksMangling()) continue;
         const scope_id: ScopeId = @enumFromInt(scope_raw);
+        const parameter_scope_raw = if (functionParamsNode(self, @intCast(raw))) |params_raw|
+            scope_owners.get(params_raw) orelse scope_raw
+        else
+            scope_raw;
+        if (parameter_scope_raw >= scopes.len or parameter_scope_raw >= scope_maps.len) continue;
+        const parameter_scope: ScopeId = @enumFromInt(parameter_scope_raw);
+        if (scopes[parameter_scope_raw].blocksMangling()) continue;
         for (self.ast.extra_data.items[params.start .. params.start + params.len]) |param| {
             var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, @enumFromInt(param), .{});
             defer bindings.deinit();
@@ -220,7 +247,7 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
                 const parameter_id = self.getSymbolIdAt(binding) orelse continue;
                 if (parameter_id >= symbols.len) continue;
                 const parameter = symbols[parameter_id];
-                if (parameter.kind != .parameter or parameter.scope_id != scope_id) continue;
+                if (parameter.kind != .parameter or parameter.scope_id != parameter_scope) continue;
                 const name = self.ast.getText(parameter.name);
                 if (scope_maps[scope_raw].get(name)) |body_id| {
                     if (body_id < symbols.len and body_id != parameter_id and symbols[body_id].kind.isFunctionLike())

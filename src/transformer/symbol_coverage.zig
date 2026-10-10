@@ -641,6 +641,12 @@ fn ownerParentMatchesAst(
             parent = scopes[parent_id].parent;
             continue;
         }
+        if (functionParameterNode(ast, owner_node)) |params_node| {
+            if (scope_owner_map.get(params_node) == @as(?u32, parent_id)) {
+                parent = scopes[parent_id].parent;
+                continue;
+            }
+        }
         if (pre_transform_scope_count) |source_scope_count| {
             if (parent_id < source_scope_count and scopeOwnerNode(scope_owner_map, parent_id) != null) {
                 parent = scopes[parent_id].parent;
@@ -650,6 +656,30 @@ fn ownerParentMatchesAst(
         return false;
     }
     return false;
+}
+
+fn functionParameterNode(ast: *const Ast, function_raw: u32) ?u32 {
+    if (function_raw >= ast.nodes.items.len) return null;
+    const function = ast.nodes.items[function_raw];
+    const slot: u32 = switch (function.tag) {
+        .arrow_function_expression => 0,
+        .function_declaration, .function_expression, .function, .method_definition => 1,
+        else => return null,
+    };
+    if (!ast.hasExtra(function.data.extra, slot)) return null;
+    const raw = ast.extra_data.items[function.data.extra + slot];
+    if (raw == @intFromEnum(NodeIndex.none) or raw >= ast.nodes.items.len) return null;
+    return raw;
+}
+
+fn parameterScopeFunctionOwner(
+    ast: *const Ast,
+    parent_by_node: *const std.AutoHashMapUnmanaged(u32, u32),
+    params_raw: u32,
+) ?u32 {
+    const function_raw = parent_by_node.get(params_raw) orelse return null;
+    if (functionParameterNode(ast, function_raw) == params_raw) return function_raw;
+    return null;
 }
 
 fn recordScopeMapMismatch(
@@ -1039,7 +1069,14 @@ fn functionExpressionNameScope(
     if (extra >= ast.extra_data.items.len or ast.extra_data.items[extra] != child_raw) return null;
     const function_scope = scope_owner_map.get(parent_raw) orelse return null;
     if (function_scope >= scopes.len) return null;
-    const name_scope = scopes[function_scope].parent;
+    var name_scope = scopes[function_scope].parent;
+    if (ast.hasExtra(extra, 1)) {
+        const params = ast.readExtraNode(extra, 1);
+        if (!params.isNone() and scope_owner_map.get(@intFromEnum(params)) == @as(?u32, @intFromEnum(name_scope))) {
+            if (name_scope.isNone() or name_scope.toIndex() >= scopes.len) return null;
+            name_scope = scopes[name_scope.toIndex()].parent;
+        }
+    }
     if (name_scope.isNone() or name_scope.toIndex() >= scopes.len) return null;
     return name_scope.toIndex();
 }
@@ -1221,7 +1258,7 @@ fn scopeOwnerKindMatches(tag: Node.Tag, kind: ScopeKind) bool {
         .switch_statement => kind == .switch_block,
         .catch_clause => kind == .catch_clause or kind == .block,
         .class_declaration, .class_expression => kind == .class_body,
-        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => kind == .function,
+        .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .formal_parameters, .formal_parameter, .assignment_pattern, .assignment_expression, .assignment_target_with_default, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target, .parenthesized_expression, .sequence_expression => kind == .function,
         // Namespace and enum lowering attach their generated IIFE scope to
         // the surviving declaration node instead of a generated function node.
         .ts_module_declaration, .ts_enum_declaration, .flow_component_wrapper => kind == .function,
@@ -2808,6 +2845,73 @@ fn checkExactImpl(
                 );
             continue;
         }
+        if (parameterScopeFunctionOwner(ast, &parent_by_node, raw)) |function_raw| {
+            const function_scope = scope_owner_map.get(function_raw) orelse {
+                recordScopeOwnerParentMismatch(
+                    &report,
+                    raw,
+                    ast.nodes.items[raw].tag,
+                    scope_raw,
+                    null,
+                    if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                );
+                continue;
+            };
+            if (function_scope >= scopes.len or
+                scopes[function_scope].parent != @as(ScopeId, @enumFromInt(scope_raw)))
+            {
+                recordScopeOwnerParentMismatch(
+                    &report,
+                    function_raw,
+                    ast.nodes.items[function_raw].tag,
+                    function_scope,
+                    scope_raw,
+                    if (function_scope < scopes.len and exactValidScope(scopes, scopes[function_scope].parent))
+                        @intFromEnum(scopes[function_scope].parent)
+                    else
+                        null,
+                );
+                continue;
+            }
+            const expected_parent = expectedReferenceScope(
+                ast,
+                root,
+                &parent_by_node,
+                scope_owner_map,
+                function_raw,
+            ) orelse {
+                recordScopeOwnerParentMismatch(
+                    &report,
+                    raw,
+                    ast.nodes.items[raw].tag,
+                    scope_raw,
+                    null,
+                    if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                );
+                continue;
+            };
+            if (ownerParentMatchesAst(
+                ast,
+                symbol_ids,
+                symbols,
+                scopes,
+                scope_maps,
+                scope_owner_map,
+                function_raw,
+                scope_raw,
+                expected_parent.scope,
+                pre_transform_scope_count,
+            )) continue;
+            recordScopeOwnerParentMismatch(
+                &report,
+                raw,
+                ast.nodes.items[raw].tag,
+                scope_raw,
+                expected_parent.scope,
+                if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+            );
+            continue;
+        }
         const expected_parent = expectedReferenceScope(ast, root, &parent_by_node, scope_owner_map, raw) orelse {
             recordScopeOwnerParentMismatch(
                 &report,
@@ -3751,7 +3855,12 @@ fn printExactNamed(name: []const u8, file_path: []const u8, report: ExactReport)
 pub fn printSourceScopeOwnerAudit(file_path: []const u8, report: ExactReport) void {
     std.debug.print(
         "zntc: symbol-source-scope-owner {s}: scope_owner_mismatch={d} scope_owner_parent_mismatch={d} duplicate_scope_owner={d}\n",
-        .{ file_path, report.scope_owner_mismatch, report.scope_owner_parent_mismatch, report.duplicate_scope_owner },
+        .{
+            file_path,
+            report.scope_owner_mismatch,
+            report.scope_owner_parent_mismatch,
+            report.duplicate_scope_owner,
+        },
     );
     if (report.first_scope_owner_mismatch) |finding| printScopeOwnerMismatch(file_path, finding);
     if (report.first_duplicate_scope_owner) |finding| printDuplicateScopeOwner(file_path, finding);
