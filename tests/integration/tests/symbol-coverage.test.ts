@@ -866,6 +866,16 @@ describe('symbol identity coverage gate (#4819)', () => {
       .concat(EXACT_ZERO_COUNTERS.map((counter) => counter + '=0'))
       .join(' ');
     expect(exactSchemaProblems(complete)).toEqual([]);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      const corrupted = complete.replace(`${counter}=0`, `${counter}=1`);
+      expect(corrupted, `exact invariant ${counter} was not present exactly as expected`).not.toBe(
+        complete,
+      );
+      expect(
+        exactSchemaProblems(corrupted),
+        `exact invariant ${counter} must fail closed`,
+      ).toContain(`${counter}=1, expected 0`);
+    }
     expect(
       exactSchemaProblems(
         complete.replace(
@@ -1000,6 +1010,16 @@ describe('symbol identity coverage gate (#4819)', () => {
     const report = `zntc: synthetic-coverage fixture.mjs: ${complete}`;
 
     expect(strictSchemaProblems(report)).toEqual([]);
+    for (const counter of STRICT_ZERO_COUNTERS) {
+      const corrupted = report.replace(`${counter}=0`, `${counter}=1`);
+      expect(corrupted, `strict invariant ${counter} was not present exactly as expected`).not.toBe(
+        report,
+      );
+      expect(
+        strictSchemaProblems(corrupted),
+        `strict invariant ${counter} must fail closed`,
+      ).toContain(`${counter}=1, expected 0`);
+    }
     expect(
       strictSchemaProblems(`zntc: synthetic-coverage /tmp/zntc: bound=7.js: ${complete}`),
     ).toEqual([]);
@@ -1043,6 +1063,17 @@ describe('symbol identity coverage gate (#4819)', () => {
     const report = `zntc: symbol-identity-post-minify fixture.mjs: ${complete}`;
 
     expect(postMinifySchemaProblems(report)).toEqual([]);
+    for (const counter of POST_MINIFY_ZERO_COUNTERS) {
+      const corrupted = report.replace(`${counter}=0`, `${counter}=1`);
+      expect(
+        corrupted,
+        `post-minify invariant ${counter} was not present exactly as expected`,
+      ).not.toBe(report);
+      expect(
+        postMinifySchemaProblems(corrupted),
+        `post-minify invariant ${counter} must fail closed`,
+      ).toContain(`${counter}=1, expected 0`);
+    }
     expect(postMinifySchemaProblems(report.replace(' references=1', ''))).toContain(
       'references occurrences=0, expected 1',
     );
