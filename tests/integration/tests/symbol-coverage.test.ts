@@ -13415,6 +13415,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 4 value:3,other:4 false\n',
       },
       {
+        name: 'post-super simple var declarations retain exact constructor-local symbols',
+        source:
+          'var _this = 9, _newTarget = 10, seed = 3; function Base() {} class Child extends Base { constructor() { super(); var _this = seed; var _newTarget = _this + 1; this.value = _newTarget; } } var child = new Child(); console.log(child.value, child instanceof Base, _this, _newTarget);',
+        graph: 'retained',
+        output: '4 true 9 10\n',
+      },
+      {
         name: 'post-super return of a bound object preserves derived constructor return semantics',
         source:
           'var replacement = { value: 8 }; function Base() {} class Child extends Base { constructor() { super(); return replacement; } } var child = new Child(); console.log(child === replacement, child.value, child instanceof Child);',
@@ -13494,7 +13501,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       {
         name: 'post-super constructor with a local declaration stays on reanalysis',
         source:
-          'function Base() {} class Child extends Base { constructor() { super(); this.value = 3; var other = 4; } } var child = new Child(); console.log(child.value);',
+          'function Base() {} class Child extends Base { constructor() { super(); this.value = 3; let other = 4; } } var child = new Child(); console.log(child.value);',
+        graph: 'reanalyzed',
+        output: '3\n',
+      },
+      {
+        name: 'post-super var call initializer stays on reanalysis',
+        source:
+          'var calls = 0; function value() { calls += 1; return 3; } function Base() {} class Child extends Base { constructor() { super(); var local = value(); this.value = local; } } console.log(new Child().value, calls);',
+        graph: 'reanalyzed',
+        output: '3 1\n',
+      },
+      {
+        name: 'post-super destructured var stays on reanalysis',
+        source:
+          'var source = { value: 3 }; function Base() {} class Child extends Base { constructor() { super(); var { value } = source; this.value = value; } } console.log(new Child().value);',
         graph: 'reanalyzed',
         output: '3\n',
       },

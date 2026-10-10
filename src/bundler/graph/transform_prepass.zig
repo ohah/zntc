@@ -1842,12 +1842,18 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (statements.len > 0 and params.data.list.len == 0) {
         const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
         if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
-            // Keep the initialization boundary explicit: simple `this`
-            // property assignments may follow, with an optional final return.
+            // Keep the initialization boundary explicit: simple `var`
+            // declarations and `this` property assignments may follow, with
+            // an optional final return.
             var return_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
                 const following_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
+                if (!return_seen and isSafeConstructorVarDeclaration(
+                    ast,
+                    semantic,
+                    ast.getNode(following_statement),
+                )) continue;
                 if (!return_seen and isSafeConstructorThisPropertyAssignmentStatement(
                     ast,
                     semantic,
