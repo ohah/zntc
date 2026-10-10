@@ -13422,6 +13422,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4 true 9 10\n',
       },
       {
+        name: 'post-super local updates retain their exact helper-colliding binding',
+        source:
+          'var _this = 50, _newTarget = 60; function Base() {} class Child extends Base { constructor() { super(); var _this = 1; _this++; _this += 2; this.value = _this; } } var child = new Child(); console.log(child.value, child instanceof Child, _this, _newTarget);',
+        graph: 'retained',
+        output: '4 true 50 60\n',
+      },
+      {
+        name: 'post-super direct function call executes once on the retained graph',
+        source:
+          'var calls = 0, seen = 0; function record(value) { calls += 1; seen = value; } function Base() {} class Child extends Base { constructor() { super(); record(7); this.value = seen; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
+        graph: 'retained',
+        output: '7 1 true\n',
+      },
+      {
+        name: 'post-super receiver call preserves Proxy receiver and getter count',
+        source:
+          'var reads = 0, calls = 0, receiverOk = false; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "setValue") { reads += 1; return function(value) { calls += 1; receiverOk = this === receiver; this.value = value; }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); this.setValue(4); } } var child = new Child(); console.log(child.value, reads, calls, receiverOk, child instanceof Child);',
+        graph: 'retained',
+        output: '4 1 1 true false\n',
+      },
+      {
         name: 'post-super direct if-else preserves both initialized-this branches',
         source:
           'var selected = true; function Base() {} class Child extends Base { constructor() { super(); if (selected) this.value = 1; else this.value = 2; } } var first = new Child(); selected = false; var second = new Child(); console.log(first.value, second.value, first instanceof Child);',
@@ -13651,6 +13672,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'var calls = 0; function selected() { calls += 1; return true; } function Base() {} class Child extends Base { constructor() { super(); if (selected()) this.value = 1; else this.value = 2; } } console.log(new Child().value, calls);',
         graph: 'reanalyzed',
         output: '1 1\n',
+      },
+      {
+        name: 'post-super direct eval expression stays on reanalysis',
+        source:
+          'var calls = 0; function Base() {} class Child extends Base { constructor() { super(); eval("calls += 1"); this.value = calls; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 1 true\n',
+      },
+      {
+        name: 'post-super receiver call with spread arguments stays on reanalysis',
+        source:
+          'var reads = 0, calls = 0, values = [4]; function Base() { return new Proxy({}, { get(target, key, receiver) { if (key === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, key, receiver); } }); } class Child extends Base { constructor() { super(); this.setValue(...values); } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '4 1 1 false\n',
+      },
+      {
+        name: 'post-super computed receiver call stays on reanalysis',
+        source:
+          'var reads = 0, calls = 0, key = "setValue"; function Base() { return new Proxy({}, { get(target, property, receiver) { if (property === "setValue") { reads += 1; return function(value) { calls += 1; this.value = value; }; } return Reflect.get(target, property, receiver); } }); } class Child extends Base { constructor() { super(); this[key](4); } } var child = new Child(); console.log(child.value, reads, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '4 1 1 false\n',
       },
       {
         name: 'post-super method call through this in the condition stays on reanalysis',
