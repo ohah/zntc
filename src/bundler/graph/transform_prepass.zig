@@ -2984,11 +2984,9 @@ fn canKeepPrepassSemanticGraph(
     if ((self.worklet_transform and !safe_builtin_worklet) or self.plugins.len != 0 or
         (plugins.len != 0 and !safe_builtin_worklet) or
         (options.plugins.len != 0 and !safe_builtin_worklet)) return false;
-    // The displayName/namespace styled-components visitor only wraps existing
-    // expressions and preserves every source binding/reference. CSS-prop mode
-    // injects a new package import, whose module-graph edge must still be
-    // reconciled by the full prepass.
-    if (options.styled_components_css_prop) return false;
+    // The styled-components CSS-prop visitor adds a real AST import and exact
+    // helper SymbolId. The retained-graph path rescans import/export metadata
+    // from that edited AST without replacing its semantic graph.
     if (!options.strip_types) return false;
     const classic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .classic;
     const automatic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic;
@@ -3012,7 +3010,7 @@ fn canKeepPrepassSemanticGraph(
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
     if (!hasStableRuntimeImports(ast, options)) return false;
 
-    const safe_styled_components = options.styled_components and !options.styled_components_css_prop;
+    const safe_styled_components = options.styled_components;
     var found_transform = graph_editable_jsx or safe_graph_subset or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
