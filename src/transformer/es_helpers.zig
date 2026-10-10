@@ -2641,7 +2641,24 @@ fn reparentExtractedFunctionScope(self: anytype, owner: NodeIndex) !void {
 /// SyntaxError. params/body visit 동안 `current_super_in_extracted_fn` 을 켜서
 /// `super.x` 등을 `__superGet(Parent.prototype, "x", this)` 로 lowering 한다.
 /// nested class body 진입 시 visitClass 가 다시 false 로 reset.
-pub fn buildStandaloneFunc(self: anytype, name: []const u8, method_idx: NodeIndex, source_owner: NodeIndex, span: Span, binding_node: NodeIndex) !NodeIndex {
+pub fn buildStandaloneFunc(
+    self: anytype,
+    name: []const u8,
+    method_idx: NodeIndex,
+    source_owner: NodeIndex,
+    span: Span,
+    binding_node: NodeIndex,
+    expected_symbol_id: ?u32,
+) !NodeIndex {
+    if (self.semantic_edit_enabled) {
+        if (binding_node.isNone())
+            std.debug.panic("extracted private function has no producer binding NodeIndex", .{});
+        const actual_symbol_id = self.getSymbolIdAt(binding_node) orelse
+            std.debug.panic("extracted private function binding has no producer SymbolId", .{});
+        if (expected_symbol_id == null or expected_symbol_id.? != actual_symbol_id)
+            std.debug.panic("extracted private function binding SymbolId does not match its mapping", .{});
+    }
+
     const method_node = self.ast.getNode(method_idx);
     const params_list_old = self.ast.functionParamsList(method_node);
     const params_start = params_list_old.start;

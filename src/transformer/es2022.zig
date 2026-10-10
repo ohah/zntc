@@ -443,7 +443,15 @@ pub fn ES2022(comptime Transformer: type) type {
             const emit_method_standalone = try self.allocator.alloc(bool, method_mappings.items.len);
             defer self.allocator.free(emit_method_standalone);
             for (method_mappings.items, 0..) |m, i| {
-                const fn_decl = try es_helpers.buildStandaloneFunc(self, m.func_name, m.member_idx, m.source_member_idx, m.member_span, m.func_binding_node);
+                const fn_decl = try es_helpers.buildStandaloneFunc(
+                    self,
+                    m.func_name,
+                    m.member_idx,
+                    m.source_member_idx,
+                    m.member_span,
+                    m.func_binding_node,
+                    m.func_symbol_id,
+                );
                 if (try es_helpers.capturePrivateClassSelf(self, m, fn_decl, span)) |factory_call| {
                     method_function_values[i] = factory_call;
                     emit_method_standalone[i] = false;

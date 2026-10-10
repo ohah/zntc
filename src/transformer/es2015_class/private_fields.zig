@@ -153,7 +153,15 @@ pub fn PrivateFields(comptime Transformer: type) type {
             defer self.allocator.free(emit_standalone);
 
             for (pms, 0..) |pm, i| {
-                const function_node = try es_helpers.buildStandaloneFunc(self, pm.func_name, pm.member_idx, pm.source_member_idx, pm.member_span, pm.func_binding_node);
+                const function_node = try es_helpers.buildStandaloneFunc(
+                    self,
+                    pm.func_name,
+                    pm.member_idx,
+                    pm.source_member_idx,
+                    pm.member_span,
+                    pm.func_binding_node,
+                    pm.func_symbol_id,
+                );
                 if (try es_helpers.capturePrivateClassSelf(self, pm, function_node, span)) |factory_call| {
                     function_values[i] = factory_call;
                     emit_standalone[i] = false;
