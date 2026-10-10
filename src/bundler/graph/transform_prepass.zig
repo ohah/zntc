@@ -1837,6 +1837,17 @@ fn isSafePostSuperConditionalBranch(
     return isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branch_idx);
 }
 
+fn isSafePostSuperCondition(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    condition_idx: ast_mod.NodeIndex,
+) bool {
+    // A direct read may invoke a getter or Proxy trap, but the retained AST
+    // evaluates this one source expression once through the initialized this.
+    return isSafeConstructorValue(ast, semantic, condition_idx) or
+        isSafeConstructorThisPropertyTarget(ast, condition_idx);
+}
+
 fn isSafePostSuperConditionalStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1846,7 +1857,7 @@ fn isSafePostSuperConditionalStatement(
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .if_statement) return false;
     const branches = statement.data.ternary;
-    return isSafeConstructorValue(ast, semantic, branches.a) and
+    return isSafePostSuperCondition(ast, semantic, branches.a) and
         isSafePostSuperConditionalBranch(ast, semantic, branches.b) and
         (branches.c.isNone() or
             isSafePostSuperConditionalBranch(ast, semantic, branches.c));
