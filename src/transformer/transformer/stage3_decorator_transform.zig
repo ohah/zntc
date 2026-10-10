@@ -141,17 +141,15 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // 주의: getText 반환값은 string table 내부 포인터이므로 addString 후 무효화될 수 있음.
     // allocator로 복사하여 안전하게 보관한다.
     // makeTempVarSpan을 사용하지 않음 — hoistTempVars가 불필요한 var 선언을 추가하므로.
-    const class_name_text = if (!name_idx.isNone()) blk: {
-        const name_node = self.ast.getNode(name_idx);
-        const name_text = self.ast.getText(name_node.data.string_ref);
-        if (std.mem.eql(u8, name_text, "default")) {
-            break :blk try self.allocator.dupe(u8, ANON_CLASS_NAME);
-        }
-        break :blk try self.allocator.dupe(u8, name_text);
-    } else blk: {
-        break :blk try self.allocator.dupe(u8, ANON_CLASS_NAME);
-    };
+    const class_name_origin: NodeIndex = if (name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default")) .none else name_idx;
+    const class_name_base = if (class_name_origin.isNone())
+        try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, ANON_CLASS_NAME, class_parent_scope)
+    else
+        self.ast.getText(self.ast.getNode(name_idx).data.string_ref);
+    const class_name_text = try self.allocator.dupe(u8, class_name_base);
     defer self.allocator.free(class_name_text);
+    const inner_name_span = try self.ast.addString(class_name_text);
+    const inner_binding = try self.makeUserBinding(inner_name_span, class_name_origin);
 
     // body 멤버 순회: member decorator 수집
     var member_infos: std.ArrayList(Stage3MemberInfo) = .empty;
@@ -607,6 +605,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer class_this_static_read_refs.deinit(self.allocator);
     var class_this_return_refs: std.ArrayList(NodeIndex) = .empty;
     defer class_this_return_refs.deinit(self.allocator);
+    var class_name_write_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_name_write_refs.deinit(self.allocator);
     var class_this_initialization_scope: ScopeId = .none;
 
     // IIFE 내부 let 선언 목록
@@ -741,13 +741,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         try static_block_stmts.append(self.allocator, class_call_stmt);
 
         // Foo = _classThis = _classDescriptor.value;
-        const name_is_anon = name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default");
         const reassign = try self.buildClassReassign(
             class_name_text,
-            if (name_is_anon) .none else name_idx,
+            inner_binding,
             classThis_span,
             &class_descriptor_read_refs,
             &class_this_static_write_refs,
+            &class_name_write_refs,
         );
         try static_block_stmts.append(self.allocator, reassign);
     }
@@ -947,7 +947,6 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // var Foo = class [extends Super] { ... } (decorator 없이, 이름 제거)
     // class body 내의 이름 바인딩은 const이므로, static { } 블록에서 Foo = ... 재대입이 불가.
     // TypeScript와 동일하게 class expression에 이름을 제거하여 외부 var Foo를 참조하게 한다.
-    const class_name_origin: NodeIndex = if (name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default")) .none else name_idx;
     const new_super = try self.visitNode(super_idx);
     const empty_decos = try self.ast.addNodeList(&.{});
     const inner_class = try self.addExtraNode(.class_expression, node.span, &.{
@@ -960,20 +959,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // symbol belongs to the wrapper's `var Foo`, not the ES5 `_Class` helper.
     if (self.semantic_edit_enabled and !class_name_origin.isNone())
         try self.generated_class_self_relocated_to_wrapper.put(self.allocator, @intFromEnum(inner_class), {});
-
-    // IIFE 내부: var Foo = class { ... };
-    // 클래스 이름 바인딩 — 익명·`default` 면 임시 이름이라 심볼이 없다.
-    const inner_name_span = try self.ast.addString(class_name_text);
-    const inner_binding = try self.makeUserBinding(inner_name_span, class_name_origin);
-    // Class declarations have distinct outer and inner names in the analyzer:
-    // the source name node owns the outer binding, while class-body references
-    // resolve to the class-self SymbolId. Keep the outer identity for the
-    // emitted declaration below and bind this IIFE-local storage to class self.
     if (!class_name_origin.isNone()) {
         if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |class_self_id| {
             try self.rebindOutputBinding(inner_binding, class_self_id);
         }
     }
+
+    // IIFE 내부: var Foo = class { ... }; 선언과 재대입은 위에서 만든 exact binding을 공유한다.
     const inner_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
         @intFromEnum(inner_binding), none, @intFromEnum(inner_class),
     });
@@ -1077,7 +1069,24 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const arrow_scope = try self.addGeneratedFunctionScope(self.outputScopeParent(source_class_scope), arrow);
     try self.reparentGeneratedScope(source_class_scope, arrow_scope);
     try self.moveBindingToOutputScope(inner_binding, arrow_scope);
-    try self.trackUserReadFromBinding(return_name, inner_binding, arrow_scope);
+    if (self.semantic_edit_enabled) {
+        // Anonymous/default decorated classes have a wrapper-local `var` in
+        // addition to the distinct ES5 constructor self binding. Register the
+        // wrapper storage at its actual output scope before attaching writes.
+        if (class_name_origin.isNone()) {
+            _ = try self.declareSyntheticInScope(inner_binding, node.span, .variable_var, arrow_scope) orelse
+                std.debug.panic("Stage 3 anonymous class wrapper binding has no SymbolId", .{});
+        }
+        const inner_symbol_id = self.getSymbolIdAt(inner_binding) orelse
+            std.debug.panic("Stage 3 class wrapper binding has no exact SymbolId", .{});
+        try self.trackExactOutputReference(return_name, inner_symbol_id);
+        if (class_name_write_refs.items.len > 0) {
+            if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 class reassign has no output scope", .{});
+            for (class_name_write_refs.items) |reference| {
+                try self.trackExactOutputReference(reference, inner_symbol_id);
+            }
+        }
+    }
 
     // `_classDecorators` is bound in the class decorator wrapper IIFE and read
     // by its generated static-block call. Keep its exact handles.

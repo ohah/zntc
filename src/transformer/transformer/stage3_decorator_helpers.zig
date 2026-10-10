@@ -466,6 +466,13 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
                 })
             else
                 try es_helpers.makePropertyNameFromSpan(self, member_key_span);
+            if (info.is_private) {
+                // Private lowering dispatches on this tag; a generic member
+                // expression can leave raw `obj.#name` syntax in ES5 output.
+                break :blk try self.addExtraNode(.private_field_expression, zero_span, &.{
+                    @intFromEnum(obj_ref), @intFromEnum(member_key_node), 0,
+                });
+            }
             break :blk try es_helpers.makeStaticMember(self, obj_ref, member_key_node, zero_span);
         };
 
@@ -505,6 +512,12 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
                 })
             else
                 try es_helpers.makePropertyNameFromSpan(self, set_key_span);
+            if (info.is_private) {
+                // Keep private writes visible to the same downleveling path.
+                break :blk try self.addExtraNode(.private_field_expression, zero_span, &.{
+                    @intFromEnum(obj_ref), @intFromEnum(set_key_node), 0,
+                });
+            }
             break :blk try es_helpers.makeStaticMember(self, obj_ref, set_key_node, zero_span);
         };
         const val_ref = try es_helpers.makeSyntheticRefFromSpan(self, val_param_span);
@@ -612,10 +625,11 @@ pub fn buildMetadataDecl(self: anytype, metadata_name: []const u8) Error!NodeInd
 pub fn buildClassReassign(
     self: anytype,
     class_name: []const u8,
-    class_name_node: NodeIndex,
+    exact_class_name_binding: NodeIndex,
     classThis_span: Span,
     class_descriptor_read_refs: *std.ArrayList(NodeIndex),
     class_this_write_refs: *std.ArrayList(NodeIndex),
+    class_name_write_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
 
@@ -637,7 +651,8 @@ pub fn buildClassReassign(
     });
 
     // Foo = _classThis = ...
-    const foo_ref = try self.makeUserRefNamed(class_name, class_name_node);
+    const foo_ref = try self.makeIdentifierRefWithSymbol(try self.ast.addString(class_name), exact_class_name_binding);
+    try class_name_write_refs.append(self.allocator, foo_ref);
     const outer_assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
@@ -662,7 +677,10 @@ pub fn buildRunInitializersCall(
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
-    const target = try es_helpers.makeSyntheticRefFromSpan(self, target_span);
+    // The producer has already resolved this helper name for the binding.
+    // Re-running synthetic-name collision checks can turn `_classThis2`
+    // into `_classThis22`, leaving one generated use disconnected.
+    const target = try es_helpers.makeExactSyntheticRefFromSpan(self, target_span);
     try class_this_read_refs.append(self.allocator, target);
     const init_ref = try es_helpers.makeSyntheticRef(self, init_name);
     try init_refs.append(self.allocator, init_ref);

@@ -76,6 +76,30 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toContain('42,true');
   });
 
+  it('ES5 decorated anonymous default class keeps its generated binding separate from colliding names', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+          import DefaultClass, { sentinels } from './default.ts';
+          console.log(sentinels.join(','), DefaultClass.observed.join(','));
+        `,
+        'default.ts': `
+          const _Class = 17, _Class2 = 19;
+          export const sentinels = [_Class, _Class2];
+          function mark(value: any, context: any) { return value; }
+          @mark export default class {
+            static observed = [eval('_Class'), eval('_Class2')];
+          }
+        `,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+    expect(result.exitCode, result.runStderr).toBe(0);
+    expect(result.runOutput).toBe('17,19 17,19');
+  });
+
   it('multiple class decorators apply right to left', async () => {
     const result = await bundleAndRun({
       'index.ts': `
@@ -415,7 +439,7 @@ describe('Stage 3 Decorators', () => {
       ['--target=es5'],
     );
     cleanup = result.cleanup;
-    expect(result.exitCode).toBe(0);
+    expect(result.exitCode, result.runStderr || result.runOutput).toBe(0);
     expect(result.runOutput).toBe('42 11');
   });
 
