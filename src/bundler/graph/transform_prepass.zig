@@ -1897,6 +1897,49 @@ fn isSafePostSuperCondition(
     return false;
 }
 
+fn isSafePostSuperCallExpression(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    const call = ast.getNode(call_idx);
+    if (call.tag != .call_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = call.data.extra;
+    if (extra > extras.len or extras.len - extra < 4 or extras[extra + 3] != 0) return false;
+    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.getNode(callee_idx);
+    if (callee.tag == .identifier_reference) {
+        const name = ast.getText(callee.span);
+        if (std.mem.eql(u8, name, "eval") or std.mem.indexOfScalar(u8, name, '\\') != null or
+            !isBoundSourceIdentifierReference(ast, semantic, callee_idx)) return false;
+    } else if (!isSafeConstructorThisPropertyTarget(ast, callee_idx)) return false;
+
+    const args_start = extras[extra + 1];
+    const args_len = extras[extra + 2];
+    if (args_start > extras.len or args_len > extras.len - args_start) return false;
+    for (extras[args_start .. args_start + args_len]) |raw_arg_idx| {
+        if (raw_arg_idx >= ast.nodes.items.len or
+            !isSafeConstructorValue(ast, semantic, @enumFromInt(raw_arg_idx))) return false;
+    }
+    return true;
+}
+
+fn isSafePostSuperExpressionStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    const statement = ast.getNode(statement_idx);
+    if (statement.tag != .expression_statement) return false;
+    const expression_idx = statement.data.unary.operand;
+    return isSafeConstructorExpressionStatement(ast, semantic, statement) or
+        isSafePostSuperCallExpression(ast, semantic, expression_idx);
+}
+
 fn isSafePostSuperConditionalStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1957,7 +2000,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                     semantic,
                     ast.getNode(following_statement),
                 )) continue;
-                if (!return_seen and isSafeConstructorThisPropertyAssignmentStatement(
+                if (!return_seen and isSafePostSuperExpressionStatement(
                     ast,
                     semantic,
                     following_statement,
