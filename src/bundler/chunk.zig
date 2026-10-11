@@ -1733,6 +1733,22 @@ pub fn computeCrossChunkGlobalNames(
     // 3. 전역 deconflict — preferred(원본 local 명)로 시도, 충돌/예약이면 `$N`.
     var used: std.StringHashMapUnmanaged(void) = .empty;
     defer used.deinit(allocator);
+    // (#5456) 소비자 청크는 cross-chunk import 를 이 이름의 top-level 바인딩으로 받는다.
+    // 어떤 모듈의 미해결 전역 참조(`typeof f`)와 같은 이름이면 그 참조를 가로챈다.
+    // 단일 번들 경로의 `isReservedOrGlobal` 과 같은 기준으로 미해결 전역을 피한다
+    // (esbuild 는 소비자 쪽 import 를 `f as f2` 로 받아 같은 충돌을 피한다).
+    var free_globals: std.StringHashMapUnmanaged(void) = .empty;
+    defer free_globals.deinit(allocator);
+    {
+        var mit = lnk.graph.modulesIterator();
+        while (mit.next()) |m| {
+            if (lnk.tree_shaker_active and !m.is_included) continue;
+            const sem = m.semantic orelse continue;
+            var it = sem.unresolved_references.keyIterator();
+            while (it.next()) |name| try free_globals.put(allocator, name.*, {});
+        }
+        for (lnk.global_identifiers) |name| try free_globals.put(allocator, name, {});
+    }
     for (syms.items) |s| {
         // (#4532 증상1) preserve-modules 는 전역명을 **ESM-wrap owner 로 한정**한다.
         // preserve-modules 는 모든 모듈이 자기 청크라 모든 import 가 cross-chunk 로 잡히는데:
@@ -1796,7 +1812,7 @@ pub fn computeCrossChunkGlobalNames(
             synth = b;
             break :blk b;
         };
-        const candidate = try deconflictGlobalName(allocator, &used, preferred);
+        const candidate = try deconflictGlobalNameAvoiding(allocator, &used, &free_globals, preferred);
         // candidate 소유권을 맵으로 이전. used 는 맵의 저장본을 borrow(used.deinit 가 키 미해제).
         try lnk.putCrossChunkGlobalName(s.mod, s.name, candidate);
         try used.put(allocator, lnk.getCrossChunkGlobalName(s.mod, s.name).?, {});
@@ -1832,9 +1848,22 @@ pub fn deconflictGlobalName(
     used: *const std.StringHashMapUnmanaged(void),
     preferred: []const u8,
 ) ![]const u8 {
+    return deconflictGlobalNameAvoiding(allocator, used, null, preferred);
+}
+
+/// `deconflictGlobalName` that also avoids names referenced as unresolved
+/// globals somewhere in the bundle (#5456).
+pub fn deconflictGlobalNameAvoiding(
+    allocator: std.mem.Allocator,
+    used: *const std.StringHashMapUnmanaged(void),
+    free_globals: ?*const std.StringHashMapUnmanaged(void),
+    preferred: []const u8,
+) ![]const u8 {
     var candidate = try allocator.dupe(u8, preferred);
     var suffix: u32 = 0;
-    while (used.contains(candidate) or Linker.isReservedName(candidate)) {
+    while (used.contains(candidate) or Linker.isReservedName(candidate) or
+        (if (free_globals) |g| g.contains(candidate) else false))
+    {
         allocator.free(candidate);
         suffix += 1;
         candidate = try std.fmt.allocPrint(allocator, "{s}${d}", .{ preferred, suffix });

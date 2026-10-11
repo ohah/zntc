@@ -292,6 +292,30 @@ fn moduleHasAnyNamedExport(
     return false;
 }
 
+/// (#5456) ESM entry 청크(래핑 안 된 entry 모듈)는 entry 모듈의 공개 export 를 codegen 의
+/// `export {}` 로만 내고, 중복 export 를 피하려 cross-chunk export 블록에서 그 이름을 뺀다.
+/// 그래서 전역명이 공개명과 달라도(`v$1`) 전역명으로는 노출되지 않는다. 소비자는 공개명을
+/// key 로 import 하고 전역명을 로컬로 받는다(`import { v as v$1 }`, esbuild 와 같은 형태).
+/// 조건은 provider 쪽 필터(xchunk_exports 의 entry_exported 제거)와 정확히 같아야 한다.
+fn entryChunkExportsPublicName(
+    graph: *const ModuleGraph,
+    dep_chunk: *const Chunk,
+    name: []const u8,
+    options: anytype,
+) bool {
+    if (options.format != .esm or options.preserve_modules) return false;
+    const entry_module = switch (dep_chunk.kind) {
+        .entry_point => |info| info.module,
+        else => return false,
+    };
+    const em = graph.getModule(entry_module) orelse return false;
+    if (em.wrap_kind.isWrapped()) return false;
+    for (em.export_bindings) |eb| {
+        if (std.mem.eql(u8, eb.exported_name, name)) return true;
+    }
+    return false;
+}
+
 /// (#4587 target a) dep 청크가 나타내는 단일 모듈 인덱스 (preserve-modules: 1 청크 = 1 모듈).
 /// entry_point(비-import-call) 만 — common/manual/dynamic 은 null.
 fn depChunkModuleIndex(dep_chunk: *const Chunk) ?ModuleIndex {
@@ -1255,7 +1279,10 @@ pub fn emitChunks(
                     // 동명 다른 모듈(`v`/`v$1`)을 구별한다. lazy 는 항상 binding-key. 전역명
                     // 없으면(map 미populate/비-cross-chunk) export 명 키(기존).
                     const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
-                    const key = if (lazy_local_keys or has_global) binding else name;
+                    const key = if (lazy_local_keys or (has_global and !entryChunkExportsPublicName(graph, dep_chunk, name, options)))
+                        binding
+                    else
+                        name;
 
                     // (#4572/#4576) 선언 로컬은 항상 binding. has_global/lazy 는 고정, 그 외 유일 발급 +
                     // deconflict 시 body 정합(deconflictedConsumerLocal, #4580 전체바인딩 site 와 공용).
