@@ -112,6 +112,14 @@ test "#4819 parameter optional-chain temp uses exact emitted storage scope" {
     );
 }
 
+test "#4819 nullish-assignment parameter temp uses exact emitted storage scope" {
+    try checkParameterTempScope(
+        "function get(){return {value:null}} function read(value=get().value ??=5){return value} read();",
+        .es5,
+        false,
+    );
+}
+
 fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

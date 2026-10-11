@@ -2970,7 +2970,17 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
         while (i) |index| {
             const ref = self.pending_temp_refs.items[index];
             std.debug.assert(ref.name_start == name_span.start);
-            editor.addReference(ref.node, id, ref.scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+            const reference_scope = blk: {
+                if (!self.options.unsupported.default_params or ref.scope.isNone() or
+                    expected_scope.isNone() or expected_scope.toIndex() >= editor.scopes.items.len) break :blk ref.scope;
+                // Pass 2 moves lowered default expressions from their separate
+                // parameter environment into the function body. Their temp refs
+                // must follow that emitted scope so the body var is visible.
+                if (editor.scopes.items[expected_scope.toIndex()].parent == ref.scope)
+                    break :blk expected_scope;
+                break :blk ref.scope;
+            };
+            editor.addReference(ref.node, id, reference_scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
             try setSymbolId(self, ref.node, id);
             i = ref.next;
         }
