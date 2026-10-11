@@ -1324,7 +1324,7 @@ test "optional chain duplicates exact local reads after block renaming" {
     }, true);
 }
 
-test "optional chain keeps unresolved globals external with exact clone provenance" {
+test "optional chain captures unresolved globals once and tracks exact temp provenance" {
     for ([_][]const u8{ "external?.field;", "external?.();", "delete external?.field;" }) |source| {
         // Production does not collect per-node audit evidence; both modes
         // must distinguish external reads from missing local References.
@@ -1365,7 +1365,11 @@ test "optional chain keeps unresolved globals external with exact clone provenan
             }
             const root = try transformer.transform();
             const edited = (try transformer.finishSemanticEdit()).?;
-            try std.testing.expectEqual(@as(usize, 0), edited.references.len);
+            for (edited.references) |reference| {
+                const symbol = edited.symbols.items[@intFromEnum(reference.symbol_id)];
+                try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+                try std.testing.expect(symbol.synthetic_name.len > 0);
+            }
 
             const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
             var external_reads: usize = 0;
@@ -1377,7 +1381,7 @@ test "optional chain keeps unresolved globals external with exact clone provenan
                     try std.testing.expectEqual(original, transformer.reference_origin_map.get(raw));
                 external_reads += 1;
             }
-            try std.testing.expectEqual(@as(usize, 2), external_reads);
+            try std.testing.expectEqual(@as(usize, 1), external_reads);
             if (audit) {
                 const exact = try coverage.checkExact(
                     allocator,

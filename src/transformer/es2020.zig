@@ -46,6 +46,20 @@ pub fn ES2020(comptime Transformer: type) type {
         }
 
         /// `a ?? b` → `a != null ? a : b`
+        fn isUnresolvedSourceIdentifierReference(self: *const Transformer, node_idx: NodeIndex) bool {
+            if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+            const raw_idx = @intFromEnum(node_idx);
+            const node = self.ast.getNode(node_idx);
+            if (node.tag != .identifier_reference) return false;
+            if (self.unresolved_reference_nodes) |nodes| return nodes.contains(raw_idx);
+            if (raw_idx >= self.parser_node_count) return false;
+            const symbol_index: usize = @intCast(raw_idx);
+            if (symbol_index >= self.symbol_ids.items.len or self.symbol_ids.items[symbol_index] != null)
+                return false;
+            const unresolved = self.unresolved_references orelse return false;
+            return unresolved.contains(self.ast.getText(node.span));
+        }
+
         pub fn lowerNullishCoalescing(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const old_left_idx = node.data.binary.left;
             const simple = helpers.isSimpleIdentifier(self, old_left_idx);
@@ -172,7 +186,11 @@ pub fn ES2020(comptime Transformer: type) type {
                 if (mc.full_result) |result| return result;
             }
 
-            const simple = optional_member_call == null and helpers.isSimpleIdentifier(self, effective_base_idx);
+            // An unresolved source name can invoke a global accessor. Capture
+            // that root once so the null check and property read share one value.
+            const simple = optional_member_call == null and
+                helpers.isSimpleIdentifier(self, effective_base_idx) and
+                !isUnresolvedSourceIdentifierReference(self, effective_base_idx);
             const visited_base = if (optional_member_call) |mc| mc.null_check_base else try self.visitNode(effective_base_idx);
 
             var null_check_base: NodeIndex = undefined;
@@ -258,7 +276,8 @@ pub fn ES2020(comptime Transformer: type) type {
                 };
             }
 
-            const obj_simple = helpers.isSimpleIdentifier(self, old_obj);
+            const obj_simple = helpers.isSimpleIdentifier(self, old_obj) and
+                !isUnresolvedSourceIdentifierReference(self, old_obj);
             const visited_obj = try self.visitNode(old_obj);
 
             var member_obj: NodeIndex = undefined;
@@ -308,7 +327,8 @@ pub fn ES2020(comptime Transformer: type) type {
                 return try lowerOptionalSuperMethodCall(self, root, base_idx, old_prop, member_flags);
             }
 
-            const obj_simple = helpers.isSimpleIdentifier(self, old_obj);
+            const obj_simple = helpers.isSimpleIdentifier(self, old_obj) and
+                !isUnresolvedSourceIdentifierReference(self, old_obj);
             const visited_obj = try self.visitNode(old_obj);
 
             var receiver_check: NodeIndex = undefined;

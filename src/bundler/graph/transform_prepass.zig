@@ -690,13 +690,15 @@ fn isRetainableOptionalReceiverCallCallee(
     }
 }
 
-/// A direct or nested ordinary source call is evaluated once into a tracked
-/// temp by optional lowering. Computed optional member segments are traversed
-/// only as part of this chain; computed non-optional tails remain outside it.
+/// Optional-member chains can use an exact bound source identifier or an
+/// unresolved external identifier as their root. Call receivers use the
+/// separate exact-callee checks below; computed optional member segments are
+/// traversed only as part of this chain.
 fn isRetainableOptionalMemberReceiver(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     receiver_idx: ast_mod.NodeIndex,
+    allow_unresolved_root: bool,
 ) bool {
     if (ast.has_jsx) return false;
     var current = receiver_idx;
@@ -704,7 +706,8 @@ fn isRetainableOptionalMemberReceiver(
         if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
         const receiver = ast.getNode(current);
         switch (receiver.tag) {
-            .identifier_reference => return isBoundSourceIdentifierReference(ast, semantic, current),
+            .identifier_reference => return isBoundSourceIdentifierReference(ast, semantic, current) or
+                (allow_unresolved_root and isUnresolvedSourceIdentifierReference(ast, semantic, current)),
             .static_member_expression, .computed_member_expression => {
                 const extra = receiver.data.extra;
                 if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2)
@@ -739,7 +742,9 @@ fn isRetainableOptionalMemberAccess(
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
     if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0) return false;
     const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
+    // Optional member calls still require an exact bound receiver. The edited
+    // graph does not yet preserve the full scope shape for unresolved roots.
+    return isRetainableOptionalMemberReceiver(ast, semantic, receiver, false);
 }
 
 /// An ordinary member/call tail can follow one audited optional member access
@@ -761,7 +766,7 @@ fn isRetainableOptionalMemberChainTail(
                     return false;
                 const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
                 const optional = (ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0;
-                if (optional) return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
+                if (optional) return isRetainableOptionalMemberReceiver(ast, semantic, receiver, true);
                 current = receiver;
             },
             .call_expression => {
@@ -794,7 +799,7 @@ fn isRetainableOptionalChainMemberAccess(
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
     const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
     if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0)
-        return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
+        return isRetainableOptionalMemberReceiver(ast, semantic, receiver, true);
     return isRetainableOptionalMemberChainTail(ast, semantic, receiver);
 }
 
@@ -858,7 +863,7 @@ fn isRetainableOptionalCall(
     }
     const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
     if (!optional_call) return isRetainableOptionalMemberChainTail(ast, semantic, callee);
-    return isRetainableOptionalMemberReceiver(ast, semantic, receiver);
+    return isRetainableOptionalMemberReceiver(ast, semantic, receiver, false);
 }
 
 /// Compound/logical assignment lowering already records member receiver/key
@@ -1033,15 +1038,16 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
     return false;
 }
 
-/// Optional member chains rooted directly at an exact source binding can stay
-/// on the edited graph when their segments are dot reads or optional computed
-/// reads with safe values or call keys admitted by the shared validator.
-/// Optional calls and external-root optional chains remain on reanalysis.
-fn isRetainableBoundStaticFieldOptionalMemberChain(
+/// Optional static-field member chains can stay on the edited graph when
+/// their segments are dot reads or optional computed reads with safe values or
+/// call keys admitted by the shared validator. Callers control whether an
+/// unresolved source identifier may be the root.
+fn isRetainableStaticFieldOptionalMemberChain(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
+    allow_unresolved_root: bool,
 ) bool {
     const extras = ast.extra_data.items;
     var current_idx = member_idx;
@@ -1051,7 +1057,9 @@ fn isRetainableBoundStaticFieldOptionalMemberChain(
         if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(current_idx);
         if (member.tag == .identifier_reference)
-            return saw_optional and isBoundSourceIdentifierReference(ast, semantic, current_idx);
+            return saw_optional and (isBoundSourceIdentifierReference(ast, semantic, current_idx) or
+                (allow_unresolved_root and
+                    isUnresolvedSourceIdentifierReference(ast, semantic, current_idx)));
         if (member.tag != .static_member_expression and member.tag != .computed_member_expression)
             return false;
         const extra = member.data.extra;
@@ -1190,7 +1198,7 @@ fn isRetainableStaticFieldInitializerMemberAccess(
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
 ) bool {
-    return isRetainableBoundStaticFieldOptionalMemberChain(allocator, ast, semantic, member_idx) or
+    return isRetainableStaticFieldOptionalMemberChain(allocator, ast, semantic, member_idx, false) or
         isRetainableStaticFieldMemberAccess(allocator, ast, semantic, member_idx);
 }
 
@@ -2366,6 +2374,13 @@ fn isRetainableSimpleStaticClassField(
                 hasClassSelfReference(ast, semantic, key_value_idx) or
                 (!isSafeConstructorValue(ast, semantic, key_value_idx) and
                     !isUnresolvedSourceIdentifierReference(ast, semantic, key_value_idx) and
+                    !isRetainableStaticFieldOptionalMemberChain(
+                        allocator,
+                        ast,
+                        semantic,
+                        key_value_idx,
+                        true,
+                    ) and
                     !isRetainableStaticFieldMemberAccess(allocator, ast, semantic, key_value_idx) and
                     !isRetainableStaticFieldCall(allocator, ast, semantic, key_value_idx))) return false;
         },
