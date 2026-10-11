@@ -12302,11 +12302,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unbound computed member receiver key calls stay on semantic reanalysis',
+        name: 'unresolved computed member receiver key calls retain order and external identity',
         source:
-          'globalThis.__zntcComputedReceiverKeyFn = () => "outer"; var holder = { outer: { value: 9 } }; class UnboundComputedMemberReceiverCallField { static value = holder[__zntcComputedReceiverKeyFn()].value; } console.log(UnboundComputedMemberReceiverCallField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; globalThis.__zntcComputedReceiverKeyFn = () => { order.push("key"); return "outer"; }; var holder = { get outer() { order.push("outer"); return { get value() { order.push("value"); return 9; } }; } }; class UnboundComputedMemberReceiverCallField { static value = holder[__zntcComputedReceiverKeyFn()].value; } console.log(UnboundComputedMemberReceiverCallField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 key,outer,value\n',
       },
       {
         name: 'optional computed member receiver with exact-bound key retains getter order',
@@ -12330,18 +12330,18 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unbound computed static member call key stays on semantic reanalysis',
+        name: 'unresolved computed static member call key retains its external reference',
         source:
           'globalThis.__zntcComputedStaticCallKey = "value"; var holder = { value() { return 9; } }; class UnboundComputedStaticMemberCallField { static value = holder[__zntcComputedStaticCallKey](); } console.log(UnboundComputedStaticMemberCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
-        name: 'unbound computed static member call key function stays on semantic reanalysis',
+        name: 'unresolved computed static member call key function retains order and its external reference',
         source:
-          'globalThis.__zntcComputedStaticCallKeyFn = () => "value"; var holder = { value() { return 9; } }; class UnboundComputedStaticMemberCallKeyFunctionField { static value = holder[__zntcComputedStaticCallKeyFn()](); } console.log(UnboundComputedStaticMemberCallKeyFunctionField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; globalThis.__zntcComputedStaticCallKeyFn = () => { order.push("key"); return "value"; }; var holder = { value() { order.push(this === holder ? "this" : "wrong-this"); return 9; } }; class UnboundComputedStaticMemberCallKeyFunctionField { static value = holder[__zntcComputedStaticCallKeyFn()](); } console.log(UnboundComputedStaticMemberCallKeyFunctionField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 key,this\n',
       },
       {
         name: 'optional computed static member call key function stays on semantic reanalysis',
@@ -12372,11 +12372,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unbound computed static member key call stays on semantic reanalysis',
+        name: 'unresolved computed static member key calls retain order and their external reference',
         source:
-          'globalThis.__zntcStaticMemberKeyFn = () => "value"; var holder = { value: 9 }; class UnboundComputedStaticMemberKeyCallField { static value = holder[__zntcStaticMemberKeyFn()]; } console.log(UnboundComputedStaticMemberKeyCallField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; globalThis.__zntcStaticMemberKeyFn = () => { order.push("key"); return "value"; }; var holder = { get value() { order.push("get"); return 9; } }; class UnboundComputedStaticMemberKeyCallField { static value = holder[__zntcStaticMemberKeyFn()]; } console.log(UnboundComputedStaticMemberKeyCallField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 key,get\n',
       },
       {
         name: 'optional computed static member key call stays on semantic reanalysis',
@@ -12414,11 +12414,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 undefined call,coerce,get\n',
       },
       {
-        name: 'unbound optional computed static-member key call stays on semantic reanalysis',
+        name: 'unresolved optional computed static-member key calls retain null short-circuit and order',
         source:
-          'globalThis.__zntcOptionalStaticMemberKeyFn = function() { return "value"; }; var holder = { value: 9 }; class UnboundOptionalComputedStaticMemberKeyCall { static value = holder?.[__zntcOptionalStaticMemberKeyFn()]; } console.log(UnboundOptionalComputedStaticMemberKeyCall.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; globalThis.__zntcOptionalStaticMemberKeyFn = function() { order.push("key"); return "value"; }; var holder = { get value() { order.push("get"); return 9; } }; var missing = null; class UnboundOptionalComputedStaticMemberKeyCall { static value = holder?.[__zntcOptionalStaticMemberKeyFn()]; static absent = missing?.[__zntcOptionalStaticMemberKeyFn()]; } console.log(UnboundOptionalComputedStaticMemberKeyCall.value, UnboundOptionalComputedStaticMemberKeyCall.absent, order.join(","));',
+        graph: 'retained',
+        output: '9 undefined key,get\n',
       },
       {
         name: 'optional-call key stays on semantic reanalysis inside optional computed access',
@@ -12512,11 +12512,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unbound computed static field name call stays on semantic reanalysis',
+        name: 'unresolved computed static field name calls retain key evaluation exactly once',
         source:
-          'globalThis.__zntcComputedStaticFieldNameFn = () => "value"; class UnboundComputedStaticFieldNameCall { static [__zntcComputedStaticFieldNameFn()] = 9; } console.log(UnboundComputedStaticFieldNameCall.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; globalThis.__zntcComputedStaticFieldNameFn = () => { order.push("key"); return "value"; }; class UnboundComputedStaticFieldNameCall { static [__zntcComputedStaticFieldNameFn()] = 9; } console.log(UnboundComputedStaticFieldNameCall.value, order.join(","));',
+        graph: 'retained',
+        output: '9 key\n',
       },
       {
         name: 'optional computed static field name call stays on semantic reanalysis',
@@ -12533,11 +12533,18 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1\n',
       },
       {
-        name: 'unbound receiver in computed static field member-read key stays on semantic reanalysis',
+        name: 'unresolved member read in computed static field key retains external identity',
         source:
           'globalThis.__zntcComputedStaticFieldKeyHolder = { key: "value" }; class UnboundComputedStaticFieldMemberKey { static [__zntcComputedStaticFieldKeyHolder.key] = 9; } console.log(UnboundComputedStaticFieldMemberKey.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
+      },
+      {
+        name: 'unresolved member call in computed static field key retains receiver this and order',
+        source:
+          'var order = []; globalThis.__zntcComputedStaticMemberCallKey = { fieldKey() { order.push(this === globalThis.__zntcComputedStaticMemberCallKey ? "this" : "wrong-this"); return "value"; } }; class UnresolvedComputedStaticMemberCallKey { static [__zntcComputedStaticMemberCallKey.fieldKey()] = 9; } console.log(UnresolvedComputedStaticMemberCallKey.value, order.join(","));',
+        graph: 'retained',
+        output: '9 this\n',
       },
       {
         name: 'optional computed static field member-read key stays on semantic reanalysis',
@@ -12589,11 +12596,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unresolved member receiver static field initializers stay on semantic reanalysis',
+        name: 'unresolved member-call receiver chains retain computed-key order and method this',
         source:
-          'globalThis.__zntcFieldReceiver = { fieldValue(input) { return input + 1; } }; class ExternalReceiverMemberCallField { static value = __zntcFieldReceiver.fieldValue(8); } console.log(ExternalReceiverMemberCallField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; var inner = { base: 5, fieldValue(input) { order.push(this === inner ? "this" : "wrong-this"); return this.base + input; } }; globalThis.__zntcFieldReceiver = { get outer() { order.push("outer"); return inner; } }; globalThis.__zntcFieldReceiverKey = () => { order.push("key"); return "outer"; }; class ExternalReceiverMemberCallField { static value = __zntcFieldReceiver[__zntcFieldReceiverKey()].fieldValue(4); } console.log(ExternalReceiverMemberCallField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 key,outer,this\n',
       },
       {
         name: 'one level of bound nested member receiver retains getter order and method this',
@@ -12624,10 +12631,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unresolved nested member receiver static fields stay on semantic reanalysis',
+        name: 'unresolved nested member-call receiver chains retain their exact graph',
         source:
           'globalThis.__zntcNestedFieldHolder = { receiver: { fieldValue(input) { return input + 1; } } }; class UnresolvedNestedMemberReceiverField { static value = __zntcNestedFieldHolder.receiver.fieldValue(8); } console.log(UnresolvedNestedMemberReceiverField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -12652,10 +12659,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unresolved deep member receiver static fields stay on semantic reanalysis',
+        name: 'unresolved deep member-call receiver chains retain their exact graph',
         source:
           'globalThis.__zntcDeepFieldHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class UnresolvedDeepMemberReceiverField { static value = __zntcDeepFieldHolder.outer.receiver.fieldValue(8); } console.log(UnresolvedDeepMemberReceiverField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -12666,11 +12673,32 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unresolved direct static initializer calls stay on semantic reanalysis',
+        name: 'unresolved direct static initializer calls retain exact external identity and order',
         source:
-          'globalThis.__zntcUnresolvedFieldCall = function (input) { return input + 1; }; class UnresolvedCallField { static value = __zntcUnresolvedFieldCall(8); } console.log(UnresolvedCallField.value);',
+          'var order = []; globalThis.__zntcUnresolvedFieldCall = function (input) { order.push("call:" + input); return input + 1; }; class UnresolvedCallField { static value = __zntcUnresolvedFieldCall(8); } console.log(UnresolvedCallField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 call:8\n',
+      },
+      {
+        name: 'unresolved direct call name collision with generated static-field temps stays exact',
+        source:
+          'var order = []; globalThis._a = function (input) { order.push("call"); return input + 1; }; function fieldKey() { order.push("key"); return "value"; } class ExternalStaticCallCollision { static [fieldKey()] = _a(8); } console.log(ExternalStaticCallCollision.value, order.join(","));',
+        graph: 'retained',
+        output: '9 key,call\n',
+      },
+      {
+        name: 'optional unresolved direct static initializer calls stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcOptionalUnresolvedFieldCall = function (input) { return input + 1; }; class OptionalUnresolvedCallField { static value = __zntcOptionalUnresolvedFieldCall?.(8); } console.log(OptionalUnresolvedCallField.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'unresolved require calls keep import scanning on semantic reanalysis',
+        source:
+          'class UnresolvedRequireCallField { static value = require("node:path"); } console.log(typeof UnresolvedRequireCallField.value.join);',
+        graph: 'reanalyzed',
+        output: 'function\n',
       },
       {
         name: 'one level of bound nested static-field calls retains graph and evaluation order',
@@ -12680,11 +12708,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '10 12 arg:8,field:9,arg:10,member:11\n',
       },
       {
-        name: 'unresolved nested static-field call arguments stay on semantic reanalysis',
+        name: 'unresolved nested static-field call arguments retain their order and external identity',
         source:
-          'globalThis.__zntcNestedFieldArgument = function (input) { return input + 1; }; function fieldValue(input) { return input + 1; } class UnresolvedNestedCallField { static value = fieldValue(__zntcNestedFieldArgument(8)); } console.log(UnresolvedNestedCallField.value);',
-        graph: 'reanalyzed',
-        output: '10\n',
+          'var order = []; globalThis.__zntcNestedFieldArgument = function (input) { order.push("argument:" + input); return input + 1; }; function fieldValue(input) { order.push("field:" + input); return input + 1; } class UnresolvedNestedCallField { static value = fieldValue(__zntcNestedFieldArgument(8)); } console.log(UnresolvedNestedCallField.value, order.join(","));',
+        graph: 'retained',
+        output: '10 argument:8,field:9\n',
       },
       {
         name: 'optional nested static-field call arguments stay on semantic reanalysis',
@@ -12708,11 +12736,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '11 13 middle:8,inner:9,field:10,middle:10,inner:11,member:12\n',
       },
       {
-        name: 'deep unresolved static-field call arguments stay on semantic reanalysis',
+        name: 'deep unresolved static-field call arguments retain exact identity and evaluation order',
         source:
-          'globalThis.__zntcDeepFieldArgument = function (input) { return input + 1; }; function inner(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepUnresolvedCallField { static value = fieldValue(inner(__zntcDeepFieldArgument(8))); } console.log(DeepUnresolvedCallField.value);',
-        graph: 'reanalyzed',
-        output: '11\n',
+          'var order = []; globalThis.__zntcDeepFieldArgument = function (input) { order.push("external:" + input); return input + 1; }; function inner(input) { order.push("inner:" + input); return input + 1; } function fieldValue(input) { order.push("field:" + input); return input + 1; } class DeepUnresolvedCallField { static value = fieldValue(inner(__zntcDeepFieldArgument(8))); } console.log(DeepUnresolvedCallField.value, order.join(","));',
+        graph: 'retained',
+        output: '11 external:8,inner:9,field:10\n',
       },
       {
         name: 'deep optional static-field call arguments stay on semantic reanalysis',
@@ -12734,6 +12762,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'function fieldValue(input) { return input + 1; } class OptionalCallField { static value = fieldValue?.(8); } console.log(OptionalCallField.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'optional unresolved member receiver calls stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcOptionalExternalReceiver = { fieldValue(input) { return input + 1; } }; class OptionalExternalReceiverCallField { static value = __zntcOptionalExternalReceiver?.fieldValue(8); } console.log(OptionalExternalReceiverCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'effectful non-call static initializer arguments stay on semantic reanalysis',
+        source:
+          'var order = []; function fieldValue(input) { return input + 1; } class EffectfulArgumentField { static value = fieldValue((order.push("argument"), 8)); } console.log(EffectfulArgumentField.value, order.join(","));',
+        graph: 'reanalyzed',
+        output: '9 argument\n',
       },
       {
         name: 'escaped direct eval in a static initializer stays on semantic reanalysis',
