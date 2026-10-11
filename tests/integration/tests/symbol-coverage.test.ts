@@ -967,6 +967,56 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   }, 60_000);
 
+  test('ES5 computed auto-accessor keys keep exact identity through minification', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-computed-auto-accessor-symbol-'));
+    const file = join(dir, 'input.ts');
+    const outDir = join(dir, 'out');
+    mkdirSync(outDir);
+    const source = [
+      'const _acc_key_0 = "source";',
+      'let keyEvaluations = 0;',
+      'function makeInstanceKey() { keyEvaluations++; return "instanceValue"; }',
+      'function makeStaticKey() { keyEvaluations++; return "staticValue"; }',
+      'class ComputedAccessor {',
+      '  accessor [makeInstanceKey()] = 5;',
+      '  static accessor [makeStaticKey()] = 7;',
+      '  write(value: number) { this["instanceValue"] = value; return this["instanceValue"]; }',
+      '}',
+      'console.log(new ComputedAccessor().write(11), ComputedAccessor["staticValue"], keyEvaluations, _acc_key_0);',
+    ].join('\n');
+    try {
+      writeFileSync(file, source);
+      const baselineCode = ts.transpileModule(source, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }).outputText;
+      const baselineFile = join(dir, 'baseline.js');
+      writeFileSync(baselineFile, baselineCode);
+      const baseline = spawnSync('node', [baselineFile], { encoding: 'utf8' });
+      expect(baseline.status, baseline.stderr).toBe(0);
+
+      const { stderr, exitCode } = runCoverage(file, TARGETS[0], outDir, true);
+      expect(exitCode, stderr).toBe(0);
+      const exact = stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(exact, stderr).toBeDefined();
+      expect(exactSchemaProblems(exact ?? ''), stderr).toEqual([]);
+      expect(exact, stderr).toMatch(/clean=1(?:\s|$)/);
+      expect(postMinifyAuditProblems(stderr), stderr).toEqual([]);
+
+      const synthetic = stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: synthetic-coverage '));
+      expect(synthetic, stderr).toBeDefined();
+      expect(strictSchemaProblems(synthetic ?? ''), stderr).toEqual([]);
+      expect(synthetic, stderr).toMatch(/consistent=1(?:\s|$).*symbol_identity_complete=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(baseline.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('지원하지 않는 오라클 fixture 확장자는 조용히 건너뛰지 않는다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-symcov-unknown-extension-'));
     try {
