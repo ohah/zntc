@@ -45,6 +45,42 @@ const cases = [
         console.log(x.name, outer(0).join(), outer(2).join(), { m: function mm() {} }.m.name);`,
     },
   },
+  {
+    // The helper is raw preamble text: a source binding of the same spelling
+    // must be renamed instead of shadowing or replacing it.
+    name: 'source bindings named like the helper',
+    files: {
+      'entry.js': `function __name(a, b) { return 'user:' + b; }
+        var $nm = (a, b) => 'user-min';
+        function outer() { function inner() {} return inner.name; }
+        console.log(__name(0, 'x'), $nm(), outer(), outer.name);`,
+    },
+  },
+  {
+    // A static `name` member defines the class's own name (esbuild skips these).
+    name: 'classes with a static name member',
+    files: {
+      'a.js': `export class A {} export class B {} export class C {}`,
+      'entry.js': `import * as m from './a.js';
+        class A { static name() { return 'method'; } }
+        class B { static get name() { return 'getter'; } }
+        class C { static name = 'field'; }
+        function wrap() { class D { static name() { return 'm2'; } } return typeof D.name; }
+        console.log(Object.keys(m).length, typeof A.name, A.name(), B.name, C.name, wrap());`,
+    },
+  },
+  {
+    // ES5 block renames name through the transformer helper import while
+    // --keep-names emits the preamble helper: both must coexist.
+    name: 'ES5 block function renames next to keep-names',
+    files: {
+      'a.js': `export function f() { return 'a'; }`,
+      'entry.js': `import { f } from './a.js';
+        const r = f();
+        { function f() { return 'inner'; } globalThis.n = f.name + ':' + f(); }
+        console.log(r, globalThis.n);`,
+    },
+  },
 ] as const;
 
 describe('--keep-names in bundles (#5512)', () => {

@@ -1127,6 +1127,7 @@ pub const Bundler = struct {
         var worker_linker = Linker.init(arena_alloc, &worker_graph, format);
         // #1621: worker 청크도 minify 시 preamble 축약 이름 사용.
         worker_linker.minify_whitespace = self.options.minify_whitespace;
+        worker_linker.keep_names = self.options.keep_names;
         worker_linker.configurable_exports = self.options.configurable_exports;
         worker_linker.inline_requires = self.options.platform == .react_native;
         if (self.options.mf) |*m| worker_linker.mf_remotes = m.remotes; // PR-1 (#3459) 일관
@@ -1607,6 +1608,7 @@ pub const Bundler = struct {
             l.strict_execution_order = self.options.strict_execution_order;
             // #1621: preamble/metadata 가 __toESM/__toCommonJS 를 축약 이름으로 emit.
             l.minify_whitespace = self.options.minify_whitespace;
+            l.keep_names = self.options.keep_names;
             l.configurable_exports = self.options.configurable_exports;
             // #1791 Phase D: value-ref 0 binding elision 정책을 transformer 와 동기화.
             l.verbatim_module_syntax = self.options.verbatim_module_syntax;

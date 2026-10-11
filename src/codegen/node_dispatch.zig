@@ -467,7 +467,8 @@ fn keepNameWrap(self: anytype, node: ast_mod.Node, hint: ?[]const u8) ?[]const u
         else => return null,
     }
     const is_class = node.tag == .class_expression or node.tag == .class_declaration;
-    if (is_class and self.options.keep_names_static_block) return null;
+    if (is_class and (self.options.keep_names_static_block or
+        keep_names.classHasStaticName(self, self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.body)))) return null;
     const name = self.ast.readExtraNode(node.data.extra, 0);
     // Named declarations are statements; keep_names hoists or appends them.
     if (node.tag == .function_declaration or node.tag == .class_declaration)
