@@ -4641,6 +4641,16 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: 'undefined 0 0\n42 1 1\n',
       },
       {
+        name: 'unresolved direct optional call outside static initializers stays on semantic reanalysis',
+        graph: 'reanalyzed',
+        source: [
+          'globalThis.__zntcUnresolvedOptionalCallOutside = function () { return 42; };',
+          'function read() { return __zntcUnresolvedOptionalCallOutside?.(); }',
+          'console.log(read());',
+        ].join('\n'),
+        output: '42\n',
+      },
+      {
         name: 'optional call on an ordinary source call result',
         graph: 'retained',
         source: [
@@ -12755,16 +12765,31 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 key,call\n',
       },
       {
-        name: 'optional unresolved direct static initializer calls stay on semantic reanalysis',
-        source:
-          'globalThis.__zntcOptionalUnresolvedFieldCall = function (input) { return input + 1; }; class OptionalUnresolvedCallField { static value = __zntcOptionalUnresolvedFieldCall?.(8); } console.log(OptionalUnresolvedCallField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+        name: 'unresolved optional direct static initializer calls retain root, temp collision, and short-circuit order',
+        source: [
+          'var order = [];',
+          'Object.defineProperty(globalThis, "_a", { configurable: true, get() { order.push("root"); return function (input) { "use strict"; order.push(this === undefined ? "this:undefined" : "this:bound"); order.push("call:" + input); return input + 1; }; } });',
+          'Object.defineProperty(globalThis, "_missingOptionalCall", { configurable: true, get() { order.push("missing"); return null; } });',
+          'function argument() { order.push("argument"); return 4; }',
+          'function wrap(value) { order.push("wrap:" + String(value)); return value; }',
+          'class UnresolvedOptionalCallField { static direct = _a?.(argument()); static absent = _missingOptionalCall?.(argument()); static nested = wrap(_a?.(argument())); static nestedAbsent = wrap(_missingOptionalCall?.(argument())); }',
+          'console.log(UnresolvedOptionalCallField.direct, UnresolvedOptionalCallField.absent, UnresolvedOptionalCallField.nested, UnresolvedOptionalCallField.nestedAbsent, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '5 undefined 5 undefined root,argument,this:undefined,call:4,missing,root,argument,this:undefined,call:4,wrap:5,missing,wrap:undefined\n',
       },
       {
         name: 'unresolved require calls keep import scanning on semantic reanalysis',
         source:
           'class UnresolvedRequireCallField { static value = require("node:path"); } console.log(typeof UnresolvedRequireCallField.value.join);',
+        graph: 'reanalyzed',
+        output: 'function\n',
+      },
+      {
+        name: 'unresolved optional require calls keep import scanning on semantic reanalysis',
+        source:
+          'class OptionalUnresolvedRequireCallField { static value = require?.("node:path"); } console.log(typeof OptionalUnresolvedRequireCallField.value.join);',
         graph: 'reanalyzed',
         output: 'function\n',
       },
