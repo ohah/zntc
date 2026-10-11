@@ -13038,11 +13038,40 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           '9 undefined outer,key,coerce,receiver,method,argument,this,missing-outer,null-outer,key,coerce,null-receiver,type-error\n',
       },
       {
-        name: 'unresolved deep optional member receiver calls stay on semantic reanalysis',
-        source:
-          'globalThis.__zntcUnresolvedDeepOptionalFieldHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class UnresolvedDeepOptionalMemberReceiverField { static value = __zntcUnresolvedDeepOptionalFieldHolder.outer?.receiver.fieldValue(8); } console.log(UnresolvedDeepOptionalMemberReceiverField.value);',
+        name: 'unresolved deep optional member receiver calls retain exact identity and short-circuit order',
+        source: [
+          'var events = [];',
+          'var calls = 0;',
+          'globalThis.__zntcUnresolvedDeepOptionalFieldHolder = { get outer() { events.push("outer"); return { get receiver() { events.push("receiver"); return { base: 1, get fieldValue() { events.push("method"); return function (input) { events.push(this.base === 1 ? "this" : "wrong-this"); return this.base + input; }; } }; } }; } };',
+          'globalThis.__zntcUnresolvedNullDeepOptionalFieldHolder = { get outer() { events.push("missing"); return null; } };',
+          'function argument() { calls++; events.push("argument"); return 8; }',
+          'class UnresolvedDeepOptionalMemberReceiverField { static value = __zntcUnresolvedDeepOptionalFieldHolder.outer?.receiver.fieldValue(argument()); static missing = __zntcUnresolvedNullDeepOptionalFieldHolder.outer?.receiver.fieldValue(argument()); }',
+          'console.log(UnresolvedDeepOptionalMemberReceiverField.value, UnresolvedDeepOptionalMemberReceiverField.missing, calls, events.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 undefined 1 outer,receiver,method,argument,this,missing\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with effectful computed keys stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'globalThis.__zntcUnresolvedEffectfulDeepOptionalFieldHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class UnresolvedEffectfulDeepOptionalMemberReceiverField { static value = __zntcUnresolvedEffectfulDeepOptionalFieldHolder.outer?.[(events.push("key"), "receiver")].fieldValue(8); }',
+          'console.log(UnresolvedEffectfulDeepOptionalMemberReceiverField.value, events.join(","));',
+        ].join('\n'),
         graph: 'reanalyzed',
-        output: '9\n',
+        output: '9 key\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with effectful non-call arguments stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'globalThis.__zntcUnresolvedEffectfulDeepOptionalArgumentHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class UnresolvedEffectfulDeepOptionalArgumentField { static value = __zntcUnresolvedEffectfulDeepOptionalArgumentHolder.outer?.receiver.fieldValue((events.push("argument"), 8)); }',
+          'console.log(UnresolvedEffectfulDeepOptionalArgumentField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 argument\n',
       },
       {
         name: 'optional invocation after a deep optional member receiver keeps short-circuit and exact identity',

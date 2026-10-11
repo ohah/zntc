@@ -1335,6 +1335,34 @@ fn hasUnresolvedStaticFieldMemberChainRoot(
     return false;
 }
 
+/// Ordinary calls through an optional-member chain can retain the edited
+/// graph when the chain ends at an explicitly unresolved external root. Keep
+/// this limited to safe member segments and a non-optional call; the caller's
+/// expression validator still checks every argument.
+fn isRetainableUnresolvedStaticFieldOptionalMemberCall(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    const call = ast.getNode(call_idx);
+    if (call.tag != .call_expression) return false;
+    const extra = call.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
+        (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    return hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, callee_idx) and
+        isRetainableStaticFieldOptionalMemberChain(
+            allocator,
+            ast,
+            semantic,
+            callee_idx,
+            true,
+            false,
+        );
+}
+
 fn collectRetainableStaticFieldOptionalInvocations(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -1357,6 +1385,7 @@ fn collectRetainableStaticFieldOptionalInvocations(
         for (initializer_nodes) |call_raw_idx| {
             const call_idx: ast_mod.NodeIndex = @enumFromInt(call_raw_idx);
             if (isRetainableBoundStaticFieldOptionalMemberCall(allocator, ast, semantic, call_idx) or
+                isRetainableUnresolvedStaticFieldOptionalMemberCall(allocator, ast, semantic, call_idx) or
                 isRetainableStaticFieldOptionalMemberCall(allocator, ast, semantic, call_idx))
             {
                 allowed_nodes.put(ast.allocator, call_raw_idx, {}) catch return false;
