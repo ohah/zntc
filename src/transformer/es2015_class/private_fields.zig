@@ -14,6 +14,40 @@ const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
 pub fn PrivateFields(comptime Transformer: type) type {
     return struct {
+        const PrivateTemp = struct {
+            name_span: Span,
+            binding: ?Transformer.SyntheticBinding,
+        };
+
+        fn beginPrivateTemp(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!PrivateTemp {
+            const binding = if (self.semantic_edit_enabled and self.state_machine_depth == 0)
+                try self.createSyntheticTempBinding(name_span, declaration_span, self.nearestVarScope(self.current_scope))
+            else
+                null;
+            return .{ .name_span = name_span, .binding = binding };
+        }
+
+        fn registerPrivateTempRef(self: *Transformer, temp: PrivateTemp, ref: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            if (temp.binding) |binding| {
+                const symbol_id = binding.symbol_id orelse std.debug.panic("private-field temp has no exact SymbolId", .{});
+                try self.addSyntheticRefInScope(ref, symbol_id, self.current_scope, flags);
+            } else {
+                // State-machine callback scope is created after this expression
+                // is lowered, so the exact name span is linked when that scope exists.
+                try self.trackHoistedTempRefInScope(temp.name_span, ref, self.current_scope, flags);
+            }
+        }
+
+        fn makePrivateTempRef(self: *Transformer, temp: PrivateTemp, node_span: Span, flags: ReferenceFlags) Transformer.Error!NodeIndex {
+            const ref = if (temp.binding) |binding|
+                try es_helpers.makeExactSyntheticRefAt(self, binding.name_span, node_span)
+            else
+                try es_helpers.makeTempVarRef(self, temp.name_span, node_span);
+            try registerPrivateTempRef(self, temp, ref, flags);
+            return ref;
+        }
+
         /// this.#x → instance: _x.get(this), static: __classStaticPrivateFieldSpecGet(receiver, ClassName, _x)
         /// optional flag가 설정된 노드는 null 반환 — optional chain lowering이 short-circuit과
         /// 함께 처리해야 함 (es2020.lowerOptionalChain 내부 rebuildChainNode에서 get 변환).
@@ -527,9 +561,10 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
                 const temp_span = try es_helpers.makeTempVarSpan(self);
+                const temp = try beginPrivateTemp(self, temp_span, span);
                 // _t = get()
                 const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
-                const tmp_ref_lhs = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const tmp_ref_lhs = try makePrivateTempRef(self, temp, temp_span, .{ .write = true });
                 const init_assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = span,
@@ -537,7 +572,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 });
                 try self.scratch.append(self.allocator, init_assign);
                 // set(_t + 1)
-                const tmp_ref_read = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
+                const tmp_ref_read = try makePrivateTempRef(self, temp, temp_span, .{ .read = true });
                 const one = try es_helpers.makeNumericLiteral(self, 1);
                 const computed = try self.ast.addNode(.{
                     .tag = .binary_expression,
@@ -547,7 +582,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 const set_call = try buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, span);
                 try self.scratch.append(self.allocator, set_call);
                 // _t (최종 expression 값)
-                try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, temp_span));
+                try self.scratch.append(self.allocator, try makePrivateTempRef(self, temp, temp_span, .{ .read = true }));
 
                 const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 const seq = try self.ast.addNode(.{
