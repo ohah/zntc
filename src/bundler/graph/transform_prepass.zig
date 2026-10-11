@@ -998,7 +998,7 @@ fn isSafeConstructorValue(
 
 const RetainableStaticFieldExpressionWorkItem = struct {
     expression_idx: ast_mod.NodeIndex,
-    allow_bound_optional_calls: bool,
+    allow_direct_optional_calls: bool,
 };
 
 /// A non-optional member chain can be retained when it starts at an exact
@@ -1039,7 +1039,7 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
             if (ast.getNode(property_idx).tag != .call_expression) return false;
             pending.append(allocator, .{
                 .expression_idx = property_idx,
-                .allow_bound_optional_calls = false,
+                .allow_direct_optional_calls = false,
             }) catch return false;
         }
         saw_member = true;
@@ -1106,10 +1106,10 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// iterative worklist. This keeps deeply nested calls out of recursive helper
 /// chains, rejects repeated nodes/cycles, and leaves the original AST intact so
 /// evaluation order and a computed member callee's receiver (`this`) survive.
-/// Bound direct optional calls are admitted only for static initializer call
-/// trees. Optional calls in computed keys, unresolved optional calls,
-/// unresolved `require` calls, call-result receivers, and effectful non-call
-/// arguments stay on semantic reanalysis.
+/// Direct optional calls are admitted for static initializer call trees only
+/// when their identifier is bound or is an unresolved non-`require` source
+/// name. Computed keys, unresolved calls elsewhere, unresolved `require`,
+/// call-result receivers, and effectful non-call arguments stay on reanalysis.
 fn isRetainableUnresolvedStaticFieldCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1119,13 +1119,67 @@ fn isRetainableUnresolvedStaticFieldCallCallee(
     return !std.mem.eql(u8, ast.getText(ast.getNode(callee_idx).span), "require");
 }
 
+fn isRetainableUnresolvedOptionalStaticFieldCall(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    const call = ast.getNode(call_idx);
+    if (call.tag != .call_expression) return false;
+    const extra = call.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
+        (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) == 0) return false;
+    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx);
+}
+
+fn isRetainableStaticFieldDirectOptionalCall(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    callee_idx: ast_mod.NodeIndex,
+) bool {
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len or
+        ast.getNode(callee_idx).tag != .identifier_reference) return false;
+    return isBoundSourceIdentifierReference(ast, semantic, callee_idx) or
+        isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx);
+}
+
+fn collectRetainableStaticFieldUnresolvedOptionalCalls(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    reachable_nodes: []const u32,
+    allowed_calls: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    for (reachable_nodes) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return false;
+        const property = ast.nodes.items[raw_idx];
+        if (property.tag != .property_definition or
+            !isRetainableSimpleStaticClassField(allocator, ast, semantic, property)) continue;
+        const extra = property.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.PropertyExtra.init)
+            return false;
+        const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.PropertyExtra.init]);
+        if (init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) return false;
+        const initializer_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, init_idx) catch return false;
+        defer ast.allocator.free(initializer_nodes);
+        for (initializer_nodes) |call_raw_idx| {
+            const call_idx: ast_mod.NodeIndex = @enumFromInt(call_raw_idx);
+            if (!isRetainableUnresolvedOptionalStaticFieldCall(ast, semantic, call_idx)) continue;
+            allowed_calls.put(ast.allocator, call_raw_idx, {}) catch return false;
+        }
+    }
+    return true;
+}
+
 fn isRetainableStaticFieldExpression(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     expression_idx: ast_mod.NodeIndex,
     allow_optional_member_calls: bool,
-    allow_bound_optional_calls: bool,
+    allow_direct_optional_calls: bool,
 ) bool {
     if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
@@ -1135,7 +1189,7 @@ fn isRetainableStaticFieldExpression(
     defer visited.deinit(allocator);
     pending.append(allocator, .{
         .expression_idx = expression_idx,
-        .allow_bound_optional_calls = allow_bound_optional_calls,
+        .allow_direct_optional_calls = allow_direct_optional_calls,
     }) catch return false;
     var remaining_nodes = ast.nodes.items.len;
 
@@ -1159,8 +1213,8 @@ fn isRetainableStaticFieldExpression(
                 const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
                 if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
                 const callee = ast.getNode(callee_idx);
-                if (optional_call and (!work_item.allow_bound_optional_calls or callee.tag != .identifier_reference or
-                    !isBoundSourceIdentifierReference(ast, semantic, callee_idx))) return false;
+                if (optional_call and (!work_item.allow_direct_optional_calls or
+                    !isRetainableStaticFieldDirectOptionalCall(ast, semantic, callee_idx))) return false;
                 switch (callee.tag) {
                     .identifier_reference => {
                         if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx) and
@@ -1194,7 +1248,7 @@ fn isRetainableStaticFieldExpression(
                     if (ast.getNode(argument_idx).tag != .call_expression) return false;
                     pending.append(allocator, .{
                         .expression_idx = argument_idx,
-                        .allow_bound_optional_calls = work_item.allow_bound_optional_calls,
+                        .allow_direct_optional_calls = work_item.allow_direct_optional_calls,
                     }) catch return false;
                 }
             },
@@ -1238,7 +1292,7 @@ fn isRetainableStaticFieldCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
     allow_optional_member_calls: bool,
-    allow_bound_optional_calls: bool,
+    allow_direct_optional_calls: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
         ast.getNode(call_idx).tag != .call_expression) return false;
@@ -1248,7 +1302,7 @@ fn isRetainableStaticFieldCall(
         semantic,
         call_idx,
         allow_optional_member_calls,
-        allow_bound_optional_calls,
+        allow_direct_optional_calls,
     );
 }
 
@@ -2725,6 +2779,16 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer ast.allocator.free(reachable_nodes);
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
+    var retained_static_field_unresolved_optional_calls: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_static_field_unresolved_optional_calls.deinit(ast.allocator);
+    if (options.unsupported.optional_chaining and
+        !collectRetainableStaticFieldUnresolvedOptionalCalls(
+            allocator,
+            ast,
+            semantic,
+            reachable_nodes,
+            &retained_static_field_unresolved_optional_calls,
+        )) return false;
 
     // ES5 for-in/of block-scoping lowering edits the original loop-head
     // SymbolIds and records generated loop/catch bindings in their output
@@ -3292,7 +3356,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
                 {
                     if (node.tag != .call_expression or
-                        !isRetainableOptionalCall(ast, semantic, @enumFromInt(raw_idx))) return false;
+                        (!isRetainableOptionalCall(ast, semantic, @enumFromInt(raw_idx)) and
+                            !retained_static_field_unresolved_optional_calls.contains(raw_idx))) return false;
                     found_lowered_optional_chaining = true;
                 }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
