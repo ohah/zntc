@@ -13221,6 +13221,76 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           '9 undefined outer,receiver,method,before-call,argument-receiver:this,value-call-getter,value-call:this,this,missing,type-outer,type-receiver,before-missing,argument-receiver:this,value-call-getter,value-call:this,type-error\n',
       },
       {
+        name: 'unresolved deep optional member calls retain a sequence ending in an exact-bound safe computed call',
+        source: [
+          'var events = [];',
+          'var argumentKey = { [Symbol.toPrimitive]() { events.push("key"); return "valueCall"; } };',
+          'var argumentSource = { get receiver() { events.push(this === argumentSource ? "argument-receiver:this" : "argument-receiver:wrong-this"); return { base: 7, get valueCall() { events.push("value-call-getter"); return function (input) { events.push(this.base === 7 ? "value-call:this" : "value-call:wrong-this"); return this.base + input; }; } }; } };',
+          'globalThis.__zntcComputedBoundCallSequenceHolder = { get outer() { events.push("outer"); return { get receiver() { events.push("receiver"); return { base: 1, get fieldValue() { events.push("method"); return function (input) { events.push(this.base === 1 ? "this" : "wrong-this"); return this.base + input; }; } }; } }; } };',
+          'globalThis.__zntcNullComputedBoundCallSequenceHolder = { get outer() { events.push("missing"); return null; } };',
+          'globalThis.__zntcMissingComputedBoundCallSequenceHolder = { get outer() { events.push("type-outer"); return { get receiver() { events.push("type-receiver"); return {}; } }; } };',
+          'class ComputedBoundCallSequenceField { static value = __zntcComputedBoundCallSequenceHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey](1))); static absent = __zntcNullComputedBoundCallSequenceHolder.outer?.receiver.fieldValue((events.push("null-before"), argumentSource.receiver[argumentKey](1))); }',
+          'function failAtMissingComputedBoundCallSequenceMethod() { class MissingComputedBoundCallSequenceField { static value = __zntcMissingComputedBoundCallSequenceHolder.outer?.receiver.fieldValue((events.push("before-missing"), argumentSource.receiver[argumentKey](1))); } }',
+          'try { failAtMissingComputedBoundCallSequenceMethod(); } catch (error) { events.push(error instanceof TypeError ? "type-error" : "wrong-error"); }',
+          'console.log(ComputedBoundCallSequenceField.value, ComputedBoundCallSequenceField.absent, events.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 undefined outer,receiver,method,before,argument-receiver:this,key,value-call-getter,value-call:this,this,missing,type-outer,type-receiver,before-missing,argument-receiver:this,key,value-call-getter,value-call:this,type-error\n',
+      },
+      {
+        name: 'bound-root deep optional member calls with safe computed final-call sequences stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentKey = "valueCall";',
+          'var argumentSource = { receiver: { valueCall(input) { return input + 7; } } };',
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class BoundRootComputedCallSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey](1))); }',
+          'console.log(BoundRootComputedCallSequenceField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an unbound computed final-call key stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { receiver: { valueCall(input) { return input + 7; } } };',
+          'globalThis.__zntcUnboundComputedFinalCallKey = "valueCall";',
+          'globalThis.__zntcUnboundComputedFinalCallKeyHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class UnboundComputedFinalCallKeyField { static value = __zntcUnboundComputedFinalCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[__zntcUnboundComputedFinalCallKey](1))); }',
+          'console.log(UnboundComputedFinalCallKeyField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an effectful computed final-call key stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { receiver: { valueCall(input) { return input + 7; } } };',
+          'function argumentKey() { events.push("key"); return "valueCall"; }',
+          'globalThis.__zntcEffectfulComputedFinalCallKeyHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class EffectfulComputedFinalCallKeyField { static value = __zntcEffectfulComputedFinalCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey()](1))); }',
+          'console.log(EffectfulComputedFinalCallKeyField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,key\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an optional computed final-call callee stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentKey = "valueCall";',
+          'var argumentSource = { receiver: { valueCall(input) { return input + 7; } } };',
+          'globalThis.__zntcOptionalComputedFinalCallKeyHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class OptionalComputedFinalCallKeyField { static value = __zntcOptionalComputedFinalCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver?.[argumentKey](1))); }',
+          'console.log(OptionalComputedFinalCallKeyField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before\n',
+      },
+      {
         name: 'bound-root deep optional member calls with exact-bound call argument sequences stay on semantic reanalysis',
         source: [
           'var events = [];',
@@ -13258,7 +13328,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 before,argument\n',
       },
       {
-        name: 'unresolved deep optional member calls with a computed final sequence call stay on semantic reanalysis',
+        name: 'unresolved deep optional member calls retain a safe computed final sequence call',
         source: [
           'var events = [];',
           'var argumentSource = { valueCall(input) { events.push(this === argumentSource ? "argument-this" : "argument-wrong-this"); return input + 7; } };',
@@ -13266,7 +13336,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class ComputedFinalSequenceCallField { static value = __zntcComputedFinalSequenceCallHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource["valueCall"](1))); }',
           'console.log(ComputedFinalSequenceCallField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,argument-this\n',
       },
       {
