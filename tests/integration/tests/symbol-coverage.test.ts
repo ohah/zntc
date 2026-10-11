@@ -540,6 +540,50 @@ function transformIdentityAuditProblems(stderr: string): string[] {
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
 
+  test('ES5 computed instance-field key temp keeps exact identity and evaluates once', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-computed-field-key-symbol-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.js');
+    writeFileSync(
+      input,
+      [
+        "var _a = 'outer-a';",
+        "var _b = 'outer-b';",
+        'var evaluations = 0;',
+        "function computedKey() { evaluations++; return 'value'; }",
+        'class Box { [computedKey()] = 5; }',
+        'var first = new Box();',
+        'var second = new Box();',
+        "console.log([first.value, second.value, evaluations, _a, _b].join('|'));",
+      ].join('\n'),
+    );
+
+    try {
+      const baseline = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(baseline.status, baseline.stderr).toBe(0);
+
+      const { stderr, exitCode } = runCoverage(input, TARGETS[0], dir);
+      expect(exitCode, stderr).toBe(0);
+      expect(transformIdentityAuditProblems(stderr), stderr).toEqual([]);
+
+      const exact = stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(exact, stderr).toBeDefined();
+      expect(
+        Number(exact?.match(/(?:^| )generated_bindings=(\d+)(?: |$)/)?.[1] ?? 0),
+      ).toBeGreaterThan(0);
+      expect(
+        Number(exact?.match(/(?:^| )generated_references=(\d+)(?: |$)/)?.[1] ?? 0),
+      ).toBeGreaterThan(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(baseline.stdout);
+      expect(actual.stdout).toBe('5|5|1|outer-a|outer-b\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 private-field postfix temp keeps exact identity and the old value', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-private-field-postfix-symbol-'));
     const input = join(dir, 'entry.js');
