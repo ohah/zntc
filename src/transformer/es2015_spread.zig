@@ -141,9 +141,9 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     const cap = try es_helpers.captureToTemp(self, new_callee, span);
                     const assignment = self.ast.getNode(cap.paren_assign);
                     std.debug.assert(assignment.tag == .assignment_expression);
-                    try self.trackHoistedTempRef(cap.span, assignment.data.binary.left, .{ .write = true });
+                    try self.trackSyntheticTempReference(cap.span, span, assignment.data.binary.left, .{ .write = true });
                     const ref = try es_helpers.makeTempVarRef(self, cap.span, span);
-                    try self.trackHoistedTempRef(cap.span, ref, .{ .read = true });
+                    try self.trackSyntheticTempReference(cap.span, span, ref, .{ .read = true });
                     break :blk .{ cap.paren_assign, ref };
                 };
 
