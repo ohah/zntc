@@ -540,6 +540,49 @@ function transformIdentityAuditProblems(stderr: string): string[] {
 describe('symbol identity coverage gate (#4819)', () => {
   const fixtures = collectFixtures(FIXTURE_DIR);
 
+  test('ES5 private-field postfix temp keeps exact identity and the old value', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-private-field-postfix-symbol-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.js');
+    writeFileSync(
+      input,
+      [
+        "var _a = 'outer-a';",
+        "var _b = 'outer-b';",
+        'class Box { #value = 10; update() { return this.#value++; } *sequence() { yield this.#value++; yield this.#value++; } }',
+        'var box = new Box();',
+        'var iterator = box.sequence();',
+        'console.log(box.update(), box.update(), [iterator.next().value, iterator.next().value].join(","), _a, _b);',
+      ].join('\n'),
+    );
+
+    try {
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      const transformed = spawnSync(ZNTC_BIN, [input, '--target=es5', '-o', output], {
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      });
+      expect(transformed.status, transformed.stderr).toBe(0);
+
+      const report = (transformed.stderr ?? '')
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('entry.js'));
+      expect(report, transformed.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+      expect(actual.stdout).toBe('10 11 12,13 outer-a outer-b\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   // Pin the matrix surface; deriving the expected run count only from these
   // arrays would let a removed fixture or target silently shrink the gate.
   test('oracle fixture and target inventory cannot shrink silently', () => {
