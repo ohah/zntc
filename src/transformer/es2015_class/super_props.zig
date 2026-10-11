@@ -377,7 +377,14 @@ pub fn SuperProps(comptime Transformer: type) type {
         /// outer scope 의 unique binding 이라 영향 받지 않는다 (raw `D.prototype` reference 회피).
         fn buildSuperBaseViaProtoChain(self: *Transformer, alias_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             _ = span;
-            return es_helpers.makeSyntheticRefFromSpan(self, alias_name_span);
+            const reference = try es_helpers.makeSyntheticRefFromSpan(self, alias_name_span);
+            if (self.semantic_edit_enabled and !try self.trackVisibleDeclaredSyntheticTempReferenceInScope(
+                alias_name_span,
+                reference,
+                self.current_scope,
+                .{ .read = true },
+            )) std.debug.panic("super proto-chain alias read has no exact temp identity", .{});
+            return reference;
         }
 
         /// V_OPT fix: es2020.zig (optional chain super lowering) 도 이 helper 를 호출해
