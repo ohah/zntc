@@ -2794,11 +2794,11 @@ pub const SemanticAnalyzer = struct {
                         .ts_enum_declaration,
                         .flow_enum_declaration,
                         => continue,
-                        else => try self.predeclareVarDeclsRecursive(decl_idx),
+                        else => try self.predeclareVarDeclsRecursive(decl_idx, false),
                     }
                 },
                 .export_default_declaration => continue,
-                else => try self.predeclareVarDeclsRecursive(idx),
+                else => try self.predeclareVarDeclsRecursive(idx, false),
             }
         }
     }
@@ -5314,7 +5314,7 @@ pub const SemanticAnalyzer = struct {
         defer self.current_stmt_idx = saved;
         for (indices, 0..) |raw_idx, i| {
             if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
-            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx));
+            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx), true);
         }
     }
 
@@ -5323,11 +5323,15 @@ pub const SemanticAnalyzer = struct {
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx));
+            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx), false);
         }
     }
 
-    fn predeclareVarDeclsRecursive(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
+    fn predeclareVarDeclsRecursive(
+        self: *SemanticAnalyzer,
+        idx: NodeIndex,
+        is_direct_function_body_statement: bool,
+    ) AllocError!void {
         if (idx.isNone()) return;
         if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
@@ -5341,6 +5345,10 @@ pub const SemanticAnalyzer = struct {
             // Annex B B.3.3.1: outer var scope 에 같은 이름의 lexical 이 있으면
             // hoist skip (var binding 이 early error 를 만들 상황엔 extension 미적용).
             .function_declaration => {
+                // Strict code gives nested block functions only their lexical block binding.
+                // Only declarations directly in a function body's statement list are
+                // predeclared in its var scope; recursive Annex B hoisting is sloppy-only.
+                if (!is_direct_function_body_statement and self.isCurrentStrict()) return;
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + ast_mod.FunctionExtra.flags >= extras.len) return;
@@ -5364,31 +5372,31 @@ pub const SemanticAnalyzer = struct {
                 try self.predeclareVarDeclsPreservingStmtIdx(node.data.list);
             },
             .if_statement => {
-                try self.predeclareVarDeclsRecursive(node.data.ternary.a);
-                try self.predeclareVarDeclsRecursive(node.data.ternary.b);
-                try self.predeclareVarDeclsRecursive(node.data.ternary.c);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.a, false);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.b, false);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.c, false);
             },
             .for_statement => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra + 3 < extras.len) {
-                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra])); // init
-                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra + 3])); // body
+                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra]), false); // init
+                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra + 3]), false); // body
                 }
             },
             .for_in_statement, .for_of_statement, .for_await_of_statement => {
-                try self.predeclareVarDeclsRecursive(node.data.ternary.a);
-                try self.predeclareVarDeclsRecursive(node.data.ternary.c);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.a, false);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.c, false);
             },
             .while_statement, .do_while_statement => {
-                try self.predeclareVarDeclsRecursive(node.data.binary.right);
+                try self.predeclareVarDeclsRecursive(node.data.binary.right, false);
             },
             .labeled_statement, .with_statement => {
-                try self.predeclareVarDeclsRecursive(node.data.binary.right);
+                try self.predeclareVarDeclsRecursive(node.data.binary.right, false);
             },
             .try_statement => {
-                try self.predeclareVarDeclsRecursive(node.data.ternary.a);
-                try self.predeclareVarDeclsRecursive(node.data.ternary.b);
-                try self.predeclareVarDeclsRecursive(node.data.ternary.c);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.a, false);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.b, false);
+                try self.predeclareVarDeclsRecursive(node.data.ternary.c, false);
             },
             .switch_case => {
                 try self.predeclareVarDeclsPreservingStmtIdx(node.data.list);

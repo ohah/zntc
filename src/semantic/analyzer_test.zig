@@ -5,6 +5,7 @@ const Diagnostic = analyzer_mod.Diagnostic;
 const symbol_mod = @import("symbol.zig");
 const SymbolKind = symbol_mod.SymbolKind;
 const ScopeId = @import("scope.zig").ScopeId;
+const SemanticScopeKind = @import("scope.zig").ScopeKind;
 const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
@@ -2569,6 +2570,110 @@ test "block function predeclare maps declaration node to var-scope symbol" {
 
     try std.testing.expect(decl_sym != null);
     try std.testing.expect(seen_ref_count >= 1);
+}
+
+test "strict module block functions keep exact block scope bindings" {
+    const source =
+        \\function outer() {
+        \\  function direct() {}
+        \\  direct();
+        \\  if (true) { function nested() { return 2; } nested(); }
+        \\}
+        \\if (true) { function topLevel() {} topLevel(); }
+    ;
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    ana.is_module = true;
+    try ana.analyze();
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+
+    const names = [_][]const u8{ "direct", "nested", "topLevel" };
+    const expected_scopes = [_]SemanticScopeKind{ .function, .block, .block };
+    var declaration_ids = [_]?u32{ null, null, null };
+    var reference_ids = [_]?u32{ null, null, null };
+    var declaration_counts = [_]usize{ 0, 0, 0 };
+    var reference_counts = [_]usize{ 0, 0, 0 };
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_declaration) {
+            const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
+            if (name_idx.isNone() or @intFromEnum(name_idx) >= parser.ast.nodes.items.len) continue;
+            const name_node = parser.ast.getNode(name_idx);
+            const name = parser.ast.getText(name_node.span);
+            for (names, 0..) |expected, name_index| {
+                if (!std.mem.eql(u8, name, expected)) continue;
+                const symbol_id = ana.symbol_ids.items[@intFromEnum(name_idx)] orelse return error.MissingFunctionSymbol;
+                declaration_ids[name_index] = symbol_id;
+                declaration_counts[name_index] += 1;
+                const scope_id = ana.symbols.items[symbol_id].scope_id;
+                try std.testing.expect(!scope_id.isNone());
+                try std.testing.expect(@intFromEnum(scope_id) < ana.scopes.items.len);
+                try std.testing.expectEqual(expected_scopes[name_index], ana.scopes.items[@intFromEnum(scope_id)].kind);
+            }
+        } else if (node.tag == .identifier_reference) {
+            const name = parser.ast.getText(node.span);
+            for (names, 0..) |expected, name_index| {
+                if (!std.mem.eql(u8, name, expected)) continue;
+                const symbol_id = ana.symbol_ids.items[raw] orelse return error.MissingFunctionReference;
+                if (reference_ids[name_index]) |existing| {
+                    try std.testing.expectEqual(existing, symbol_id);
+                } else {
+                    reference_ids[name_index] = symbol_id;
+                }
+                reference_counts[name_index] += 1;
+            }
+        }
+    }
+    for (names, 0..) |_, i| {
+        try std.testing.expectEqual(@as(usize, 1), declaration_counts[i]);
+        try std.testing.expectEqual(@as(usize, 1), reference_counts[i]);
+        try std.testing.expectEqual(declaration_ids[i], reference_ids[i]);
+    }
+    var symbol_counts = [_]usize{ 0, 0, 0 };
+    for (ana.symbols.items) |symbol| {
+        for (names, 0..) |name, i| {
+            if (std.mem.eql(u8, symbol.nameText(source), name)) symbol_counts[i] += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), symbol_counts[0]);
+    try std.testing.expectEqual(@as(usize, 1), symbol_counts[1]);
+    try std.testing.expectEqual(@as(usize, 1), symbol_counts[2]);
+}
+
+test "strict class method nested function keeps its block scope" {
+    const source = "class C { method() { if (true) { function local() { return 2; } return local(); } return 0; } }";
+    var scanner = try Scanner.init(std.testing.allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(std.testing.allocator, &scanner);
+    defer parser.deinit();
+    _ = try parser.parse();
+    var ana = SemanticAnalyzer.init(std.testing.allocator, &parser.ast);
+    defer ana.deinit();
+    try ana.analyze();
+    try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
+
+    var function_symbol_id: ?u32 = null;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .function_declaration) continue;
+        const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
+        const name = parser.ast.getText(parser.ast.getNode(name_idx).span);
+        if (!std.mem.eql(u8, name, "local")) continue;
+        function_symbol_id = ana.symbol_ids.items[@intFromEnum(name_idx)];
+        break;
+    }
+    const symbol_id = function_symbol_id orelse return error.MissingFunctionSymbol;
+    const scope_id = ana.symbols.items[symbol_id].scope_id;
+    try std.testing.expect(!scope_id.isNone());
+    try std.testing.expect(@intFromEnum(scope_id) < ana.scopes.items.len);
+    try std.testing.expectEqual(SemanticScopeKind.block, ana.scopes.items[@intFromEnum(scope_id)].kind);
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.span), "local")) continue;
+        try std.testing.expectEqual(@as(?u32, symbol_id), ana.symbol_ids.items[raw]);
+    }
 }
 
 test "#2023: predeclared lexical bindings record declare ref once" {
