@@ -4933,6 +4933,11 @@ pub fn resyncAfterAstMutation(
     defer resync_scope.end();
 
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
+    // The fresh analysis counts references in the current AST, which already
+    // reflects prepass minify edits (inlined constants, folded dead branches).
+    // Deltas recorded against the previous symbol table would subtract those
+    // edits a second time and let the emitter drop live declarations.
+    if (module.transform_cache) |*cache| cache.ref_deltas = &.{};
     try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
