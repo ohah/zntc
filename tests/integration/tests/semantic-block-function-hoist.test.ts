@@ -1,5 +1,6 @@
 import { describe, test, expect } from 'bun:test';
-import { createFixture, runZntc } from './helpers';
+import { createFixture, runNode, runZntc } from './helpers';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -19,11 +20,13 @@ describe('bundle: block function declaration keeps canonical rename', () => {
       'entry.js': `
         import Box from './box.js';
         import { run } from './notification.js';
-        console.log(Box, run);
+        Box.install();
+        Box.addException({ message: 'direct' });
+        run(2);
       `,
       'data.js': `
-        export function addException(error) { console.log(error); }
-        export function setSelectedLog(index) { console.log(index); }
+        export function addException(error) { console.log('exception:' + error.message); }
+        export function setSelectedLog(index) { console.log('selected:' + index); }
       `,
       'box.js': `
         // @flow strict
@@ -54,18 +57,32 @@ describe('bundle: block function declaration keeps canonical rename', () => {
     });
 
     try {
+      const out = join(fixture.dir, 'out.js');
       const result = await runZntc([
         '--bundle',
         '--platform=react-native',
         '--rn-platform=ios',
         join(fixture.dir, 'entry.js'),
+        '-o',
+        out,
       ]);
-      expect(result.exitCode).toBe(0);
+      expect(result.exitCode, result.stderr).toBe(0);
 
-      const output = result.stdout;
-      expect(output).toContain('addException: addException$1');
-      expect(output).toContain('function addException$1');
-      expect(output).not.toContain('function addException(error)');
+      // The block function's declaration and both of its references (the
+      // listener call and the object property) must agree on one final name,
+      // and must not capture data.js's same-named export.
+      const driver = join(fixture.dir, 'run.cjs');
+      writeFileSync(
+        driver,
+        `globalThis.RN$registerExceptionListener = (cb) => cb({ message: 'listener', preventDefault() {} });\n` +
+          `require(${JSON.stringify(out)});\n`,
+      );
+      const run = await runNode(driver);
+      expect(run.stdout.trim().split('\n')).toEqual([
+        'exception:listener',
+        'exception:direct',
+        'selected:2',
+      ]);
     } finally {
       await fixture.cleanup();
     }

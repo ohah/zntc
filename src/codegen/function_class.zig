@@ -17,7 +17,9 @@ fn emitNestedExecutionBody(self: anytype, body: NodeIndex) !void {
     defer {
         self.in_for_init = saved_for_init;
         self.skip_var_init = saved_skip_var_init;
+        self.next_block_is_function_body = false;
     }
+    self.next_block_is_function_body = true;
     try self.emitNode(body);
 }
 
@@ -132,6 +134,8 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     const convert_fn_to_assign = self.options.esm_var_assign_only and
         node.tag == .function_declaration and !name.isNone() and
         self.indent_level == 0;
+    const suppress_name = self.suppress_next_function_name;
+    self.suppress_next_function_name = false;
 
     if (convert_fn_to_assign) {
         try self.emitNode(name);
@@ -141,7 +145,7 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     if (flags & ast_mod.FunctionFlags.is_async != 0) try self.write("async ");
     try self.write("function");
     if (flags & ast_mod.FunctionFlags.is_generator != 0) try self.writeByte('*');
-    if (!name.isNone() and !convert_fn_to_assign) {
+    if (!name.isNone() and !convert_fn_to_assign and !suppress_name) {
         try self.writeByte(' ');
         try self.emitNode(name);
     }
