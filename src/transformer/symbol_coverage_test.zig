@@ -1673,6 +1673,65 @@ test "#4819 assignment target temps exclude unused candidate references" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+test "#4819 tracked temp references reserve exact symbols in known scopes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(
+        allocator,
+        "const _a = 0; const key = 'value'; function build(key) { return { before: 0, [key]: 1 }; } const nested = build(key); const top = { before: 2, [key]: 3 }; console.log(nested.value, top.value, _a);",
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 2), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
+    var temp_scopes = [_]u32{ std.math.maxInt(u32), std.math.maxInt(u32) };
+    var temp_names: [2][]const u8 = undefined;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |generated, symbol_index| {
+        try std.testing.expectEqual(@as(u32, 3), generated.reference_count);
+        try std.testing.expectEqual(@as(u32, 1), generated.write_count);
+        var bindings: usize = 0;
+        var references: usize = 0;
+        for (edited.symbol_ids, 0..) |maybe_id, node_index| {
+            const id = maybe_id orelse continue;
+            if (@as(usize, @intCast(id)) != symbol_index) continue;
+            switch (transformer.ast.nodes.items[node_index].tag) {
+                .binding_identifier => bindings += 1,
+                .identifier_reference, .assignment_target_identifier => references += 1,
+                else => {},
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expectEqual(@as(usize, 3), references);
+        temp_scopes[symbol_index - original_symbols] = generated.scope_id.toIndex();
+        temp_names[symbol_index - original_symbols] = transformer.ast.getText(generated.name);
+    }
+    try std.testing.expect(temp_scopes[0] != temp_scopes[1]);
+    try std.testing.expectEqualStrings(temp_names[0], temp_names[1]);
+    try std.testing.expectEqualStrings("_b", temp_names[0]);
+}
+
 test "#4819 transformed scope owners retain their original ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
