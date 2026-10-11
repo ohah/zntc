@@ -105,4 +105,82 @@ run().then((asyncValue) => console.log(generatorValue, asyncValue, calls));`,
     expect(actual.stdout).toBe(native.stdout);
     expect(actual.stdout).toBe('6 7 2\n');
   });
+
+  test('lowered parameter-default captures use the emitted function scope', async () => {
+    const fixture = await createFixture({
+      'input.js': `var calls = 0;
+var box = { value: null };
+function getBox() { calls++; return box; }
+function read(value = getBox().value ??= 5) { return value; }
+console.log(read(), box.value, calls);`,
+    });
+    cleanup = fixture.cleanup;
+    const native = spawnSync('node', [join(fixture.dir, 'input.js')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+    const output = join(fixture.dir, 'out.js');
+    const transformed = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+      cwd: fixture.dir,
+      env: {
+        ...process.env,
+        ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+        ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+      },
+      encoding: 'utf8',
+    });
+    expect(transformed.status, transformed.stderr).toBe(0);
+    const lines = transformed.stderr.split(/\r?\n/);
+    const report = lines.find(
+      (line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'),
+    );
+    expect(report, transformed.stderr).toMatch(/unclassified_reference=0(?:\s|$)/);
+    expect(report, transformed.stderr).toMatch(/clean=1(?:\s|$)/);
+    const strict = lines.find(
+      (line) => line.startsWith('zntc: synthetic-coverage ') && line.includes('input.js'),
+    );
+    expect(strict, transformed.stderr).toMatch(/orphan_symbols=0(?:\s|$)/);
+    expect(strict, transformed.stderr).toMatch(/symbol_identity_complete=1(?:\s|$)/);
+
+    const actual = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+    expect(actual.stdout).toBe('5 5 1\n');
+  });
+
+  test('parameter-default captures stay valid when direct eval retains native defaults', async () => {
+    const fixture = await createFixture({
+      'input.js': `var calls = 0;
+var box = { value: null };
+function getBox() { calls++; return box; }
+function read(value = getBox().value ??= 5) { eval(''); return value; }
+console.log(read(), box.value, calls);`,
+    });
+    cleanup = fixture.cleanup;
+    const native = spawnSync('node', [join(fixture.dir, 'input.js')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+    const output = join(fixture.dir, 'out.js');
+    const transformed = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+      cwd: fixture.dir,
+      env: {
+        ...process.env,
+        ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+        ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+      },
+      encoding: 'utf8',
+    });
+    expect(transformed.status, transformed.stderr).toBe(0);
+    const report = transformed.stderr
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'));
+    expect(report, transformed.stderr).toMatch(/clean=1(?:\s|$)/);
+    const strict = transformed.stderr
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('zntc: synthetic-coverage ') && line.includes('input.js'));
+    expect(strict, transformed.stderr).toMatch(/orphan_symbols=0(?:\s|$)/);
+    expect(strict, transformed.stderr).toMatch(/symbol_identity_complete=1(?:\s|$)/);
+
+    const actual = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+    expect(actual.stdout).toBe('5 5 1\n');
+  });
 });
