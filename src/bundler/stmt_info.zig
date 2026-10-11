@@ -21,6 +21,7 @@ const scope_mod = @import("../semantic/scope.zig");
 const ScopeId = scope_mod.ScopeId;
 const Scope = scope_mod.Scope;
 const purity = @import("purity.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 
 pub const StmtInfo = struct {
     node_idx: u32,
@@ -1195,6 +1196,36 @@ fn refersToCjsObject(
     return false;
 }
 
+const no_stmt = std.math.maxInt(u32);
+
+/// node index -> owning top-level statement index, following AST child edges
+/// from each statement. Unreached nodes keep `no_stmt`. A node shared by
+/// several statements keeps the first owner, which matches source order.
+fn mapReachableNodesToStmts(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    stmt_raw_indices: []const u32,
+) ![]u32 {
+    const node_stmt = try allocator.alloc(u32, ast.nodes.items.len);
+    errdefer allocator.free(node_stmt);
+    @memset(node_stmt, no_stmt);
+
+    var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer stack.deinit(allocator);
+    for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
+        try stack.append(allocator, @enumFromInt(raw_idx));
+        while (stack.pop()) |idx| {
+            if (idx.isNone()) continue;
+            const ni: u32 = @intFromEnum(idx);
+            if (ni >= node_stmt.len or node_stmt[ni] != no_stmt) continue;
+            node_stmt[ni] = @intCast(stmt_i);
+            var it = ast_walk.children(ast, ast.nodes.items[ni]);
+            while (it.next()) |child| try stack.append(allocator, child);
+        }
+    }
+    return node_stmt;
+}
+
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
 /// statement span은 소스 순서로 비중첩.
 pub fn findStmtForPos(stmt_spans: []const Span, pos: u32) ?u32 {
@@ -1932,8 +1963,18 @@ pub fn build(
     }
     for (writer_bufs) |*b| b.* = .empty;
 
+    // Transforms create nodes (e.g. a classic JSX factory reference) whose spans
+    // are not source positions. Attribute nodes reachable from a top-level
+    // statement to that statement; position lookup remains the fallback for
+    // nodes no statement reaches (#5446).
+    const reachable_stmt = try mapReachableNodesToStmts(allocator, ast, stmt_raw_indices);
+    defer allocator.free(reachable_stmt);
+
     for (ast.nodes.items, 0..) |n, node_i| {
-        const stmt_i = findStmtForPos(stmt_spans, n.span.start) orelse continue;
+        const stmt_i = if (reachable_stmt[node_i] != no_stmt)
+            reachable_stmt[node_i]
+        else
+            findStmtForPos(stmt_spans, n.span.start) orelse continue;
         if (node_i >= symbol_ids.len) continue;
         const sym_idx = symbol_ids[node_i] orelse continue;
         if (sym_idx >= symbols.len) continue;

@@ -1234,3 +1234,31 @@ test "JSX: classic 런타임에서는 namespace 변수명을 바꾸지 않는다
     try std.testing.expect(std.mem.indexOf(u8, result.output, "ns_ns") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Ns_ns") == null);
 }
+
+// #5446: classic JSX factory 가 비-entry 모듈의 로컬 바인딩이면, JSX 낮추기가 만든
+// factory 참조(소스 위치 없음)도 그 문장의 참조로 집계돼야 로컬 선언이 tree-shaking 에서
+// 살아남는다. 위치로만 문장을 찾으면 생성된 참조가 빠져 `const h` 가 지워진다.
+test "JSX: classic local factory in a non-entry module survives tree shaking (#5446)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { value } from './view.tsx';\nconsole.log(value);");
+    try writeFile(tmp.dir, "view.tsx",
+        \\const h = (tag: string) => "LOCAL_FACTORY_" + tag;
+        \\export const value: string = <div />;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .jsx_runtime = .classic,
+        .jsx_factory = "h",
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "LOCAL_FACTORY_") != null);
+}
