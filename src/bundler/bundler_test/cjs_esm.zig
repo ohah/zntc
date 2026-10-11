@@ -3496,3 +3496,40 @@ test "type:module — 깨진 하위 package.json 이 상위 설정에 가려지�
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep())") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__toESM(require_dep(), 1)") == null);
 }
+
+// #5447: CJS export fact 가드는 함수 안의 `exports`/`module` 참조를 CJS 래퍼
+// 파라미터 심볼에 바인딩한 뒤에도 인식해야 한다. 함수 안에서만 읽히는
+// `exports.X = <순수 값>` 대입을 지우면 mime-types 처럼 실행 시 깨진다.
+fn expectNestedCjsExportRead(lib_source: []const u8) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import { lookup } from './lib.js';\nconsole.log(lookup());");
+    try writeFile(tmp.dir, "lib.js", lib_source);
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .platform = .node });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.c = [1]") != null);
+}
+
+test "#5447 CJS export read only inside a function keeps its assignment" {
+    try expectNestedCjsExportRead(
+        \\exports.lookup = lookup
+        \\exports.c = [1]
+        \\function lookup () { return exports.c.length }
+    );
+}
+
+test "#5447 CJS module.exports read only inside a function keeps its assignment" {
+    try expectNestedCjsExportRead(
+        \\exports.lookup = lookup
+        \\exports.c = [1]
+        \\function lookup () { return module.exports.c.length }
+    );
+}

@@ -15,6 +15,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const TokenKind = @import("../lexer/token.zig").Kind;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const scope_mod = @import("../semantic/scope.zig");
 const ScopeId = scope_mod.ScopeId;
@@ -1118,20 +1119,22 @@ fn invalidateConflictingCjsExportFacts(facts: []CjsExportFact, stmts: []StmtInfo
 /// 모든 fact invalidate (esbuild/rolldown 의 CJS black-box 정책). top-level 의 `exports.X = ...`
 /// 나 `Object.defineProperty(exports, ...)` 같은 패턴은 함수 밖이라 영향 없음.
 ///
-/// `unresolved_globals` 가 `exports` 를 포함 안 하면 ESM 모듈이거나 user 가 `var exports = ...`
-/// 한 케이스라 작업 자체가 의미 없어 즉시 종료. 함수 이름 식별자는 `binding_identifier` 라
+/// `exports`/`module` 이 CJS 객체를 가리키지 않으면(ESM 모듈이거나 user 가 `var exports = ...`
+/// 한 케이스) 작업 자체가 의미 없어 즉시 종료. 함수 이름 식별자는 `binding_identifier` 라
 /// 여기 outer loop 의 `identifier_reference` 검사를 거치지 않으므로 false-positive 안 일어남.
+/// `module.exports.X.push(...)` 도 같은 mutate 경로라 `module` 참조도 함께 본다.
 fn invalidateFactsForNestedExportsAccess(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     facts: []CjsExportFact,
     stmts: []StmtInfo,
+    symbols: []const Symbol,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) void {
     if (facts.len == 0) return;
-    if (unresolved_globals) |g| {
-        if (!g.contains("exports")) return;
-    }
+    const watch_exports = refersToCjsObject(symbols, unresolved_globals, "exports", .cjs_wrapper_exports_parameter);
+    const watch_module = refersToCjsObject(symbols, unresolved_globals, "module", .cjs_wrapper_module_parameter);
+    if (!watch_exports and !watch_module) return;
 
     var fn_spans: std.ArrayListUnmanaged(Span) = .empty;
     defer fn_spans.deinit(allocator);
@@ -1151,8 +1154,10 @@ fn invalidateFactsForNestedExportsAccess(
     var has_nested = false;
     outer: for (ast.nodes.items) |node| {
         if (node.tag != .identifier_reference) continue;
-        if (node.span.end - node.span.start != "exports".len) continue;
-        if (!std.mem.eql(u8, ast.getText(node.span), "exports")) continue;
+        const text = ast.getText(node.span);
+        const watched = (watch_exports and std.mem.eql(u8, text, "exports")) or
+            (watch_module and std.mem.eql(u8, text, "module"));
+        if (!watched) continue;
         for (fn_spans.items) |fs| {
             if (node.span.start >= fs.start and node.span.end <= fs.end and
                 (node.span.start != fs.start or node.span.end != fs.end))
@@ -1171,6 +1176,23 @@ fn invalidateFactsForNestedExportsAccess(
             stmts[f.statement_index].has_side_effects = true;
         }
     }
+}
+
+/// `name` 참조가 CJS 환경 객체를 가리키는가. 래퍼 파라미터가 생성되기 전에는 미해결
+/// 전역으로 남고, 생성된 뒤에는 finalize 가 그 참조를 래퍼 파라미터 심볼에 바인딩하고
+/// unresolved 집합에서 지운다(#5447). 두 상태를 모두 CJS 객체로 본다.
+fn refersToCjsObject(
+    symbols: []const Symbol,
+    unresolved_globals: ?*const purity.GlobalRefSet,
+    name: []const u8,
+    wrapper_kind: SyntheticKind,
+) bool {
+    const g = unresolved_globals orelse return true;
+    if (g.contains(name)) return true;
+    for (symbols) |sym| {
+        if (sym.synthetic_kind == wrapper_kind) return true;
+    }
+    return false;
 }
 
 /// statement span 배열에서 pos를 포함하는 statement를 binary search.
@@ -1741,7 +1763,7 @@ pub fn buildFromSemantic(
     }
 
     invalidateConflictingCjsExportFacts(cjs_export_facts_buf.items, stmts);
-    invalidateFactsForNestedExportsAccess(allocator, ast, cjs_export_facts_buf.items, stmts, unresolved_globals);
+    invalidateFactsForNestedExportsAccess(allocator, ast, cjs_export_facts_buf.items, stmts, symbols, unresolved_globals);
 
     const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_buckets, sym_to_stmt);
 
@@ -1975,7 +1997,7 @@ pub fn build(
     }
 
     invalidateConflictingCjsExportFacts(cjs_export_facts_buf.items, stmts);
-    invalidateFactsForNestedExportsAccess(allocator, ast, cjs_export_facts_buf.items, stmts, unresolved_globals);
+    invalidateFactsForNestedExportsAccess(allocator, ast, cjs_export_facts_buf.items, stmts, symbols, unresolved_globals);
 
     const sym_to_writer_stmts = try finalizeWriterBuckets(allocator, writer_bufs, sym_to_stmt);
 
