@@ -278,6 +278,58 @@ fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
     return false;
 }
 
+/// With parameter expressions, parameters live in their own scope. Lowering
+/// emits destructured parameter bindings as body `var` declarations, so their
+/// symbols move to the function body scope with them (#5452).
+fn moveLoweredPatternParameterBindings(
+    self: anytype,
+    params_list: ast_mod.NodeList,
+    body_scope: @import("../../semantic/scope.zig").ScopeId,
+) Error!void {
+    if (!self.semantic_edit_enabled or body_scope.isNone()) return;
+    const editor = if (self.semantic_editor) |*existing| existing else return;
+    if (body_scope.toIndex() >= editor.scopes.items.len) return;
+    // The parameter environment is the body scope's parent function scope.
+    // Simple parameter lists bind patterns in the body scope itself, so no
+    // symbol matches this parent there.
+    const parameter_scope = editor.scopes.items[body_scope.toIndex()].parent;
+    if (parameter_scope.isNone() or parameter_scope.toIndex() >= editor.scopes.items.len or
+        editor.scopes.items[parameter_scope.toIndex()].kind != .function) return;
+    const parameter_scope_raw = @intFromEnum(parameter_scope);
+    for (self.ast.extra_data.items[params_list.start .. params_list.start + params_list.len]) |raw_param| {
+        const pattern = loweredParameterPattern(self, @enumFromInt(raw_param)) orelse continue;
+        var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, pattern, .{});
+        defer bindings.deinit();
+        while (try bindings.next()) |binding| {
+            const id = self.getSymbolIdAt(binding) orelse continue;
+            if (id >= editor.symbols.items.len) continue;
+            if (@intFromEnum(editor.symbols.items[id].scope_id) != parameter_scope_raw) continue;
+            try self.moveSymbolToOutputScope(id, body_scope);
+        }
+    }
+}
+
+/// The object/array pattern of a parameter, if it has one.
+fn loweredParameterPattern(self: anytype, param_idx: NodeIndex) ?NodeIndex {
+    if (param_idx.isNone() or @intFromEnum(param_idx) >= self.ast.nodes.items.len) return null;
+    const param = self.ast.getNode(param_idx);
+    var target: NodeIndex = switch (param.tag) {
+        .formal_parameter => blk: {
+            const slot = param.data.extra + ast_mod.FormalParameterExtra.pattern;
+            if (slot >= self.ast.extra_data.items.len) return null;
+            break :blk @enumFromInt(self.ast.extra_data.items[slot]);
+        },
+        else => param_idx,
+    };
+    if (target.isNone() or @intFromEnum(target) >= self.ast.nodes.items.len) return null;
+    if (self.ast.getNode(target).tag == .assignment_pattern) target = self.ast.getNode(target).data.binary.left;
+    if (target.isNone() or @intFromEnum(target) >= self.ast.nodes.items.len) return null;
+    return switch (self.ast.getNode(target).tag) {
+        .object_pattern, .array_pattern => target,
+        else => null,
+    };
+}
+
 fn appendParameterBodyVarCopies(
     self: anytype,
     function_scope: @import("../../semantic/scope.zig").ScopeId,
@@ -491,6 +543,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
 
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
                 defer lr.body_stmts.deinit(self.allocator);
+                try moveLoweredPatternParameterBindings(self, params_list, self.current_scope);
                 const parameter_initializer_len = lr.body_stmts.items.len;
                 const body_wrapper_scope = if (lr.body_stmts.items.len > 0)
                     if (body_has_dynamic_lookup)

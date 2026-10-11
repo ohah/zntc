@@ -661,7 +661,12 @@ pub const SemanticEditor = struct {
         const old_scope = self.symbols.items[symbol_index].scope_id;
         if (old_scope == new_scope) return;
         if (!self.validScope(old_scope)) return error.InvalidScope;
-        const name = try self.ast.getTextStable(self.allocator, self.symbols.items[symbol_index].name);
+        // A renamed symbol (e.g. a split parameter) is keyed by its emitted spelling.
+        const synthetic_name = self.symbols.items[symbol_index].synthetic_name;
+        const name = if (synthetic_name.len > 0)
+            synthetic_name
+        else
+            try self.ast.getTextStable(self.allocator, self.symbols.items[symbol_index].name);
         if (self.scope_maps.items[old_scope.toIndex()].get(name) != symbol_index) return error.InvalidScope;
         if (self.scope_maps.items[new_scope.toIndex()].get(name)) |existing| {
             if (existing != symbol_index) return error.DuplicateBinding;
