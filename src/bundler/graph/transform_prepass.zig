@@ -1174,6 +1174,7 @@ fn isRetainableBoundStaticFieldEffectCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
+    allow_computed_member_callee: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
@@ -1188,6 +1189,8 @@ fn isRetainableBoundStaticFieldEffectCall(
     const bound_callee = switch (callee.tag) {
         .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, callee_idx),
         .static_member_expression => hasBoundStaticFieldDotCallCalleeRoot(ast, semantic, callee_idx),
+        .computed_member_expression => allow_computed_member_callee and
+            isRetainableBoundStaticFieldMemberRead(ast, semantic, callee_idx),
         else => false,
     };
     if (!bound_callee) return false;
@@ -1230,7 +1233,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     if (list.len < 2 or list.start > extras.len or list.len > extras.len - list.start) return false;
     for (extras[list.start .. list.start + list.len - 1]) |raw_item| {
         if (raw_item >= ast.nodes.items.len or
-            !isRetainableBoundStaticFieldEffectCall(ast, semantic, @enumFromInt(raw_item))) return false;
+            !isRetainableBoundStaticFieldEffectCall(ast, semantic, @enumFromInt(raw_item), false)) return false;
     }
     const last_raw = extras[list.start + list.len - 1];
     if (last_raw >= ast.nodes.items.len) return false;
@@ -1239,7 +1242,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
         (allow_bound_member_read_last_value and
             isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx)) or
         (allow_bound_call_last_value and
-            isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx)) or
+            isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx, true)) or
         (allow_unresolved_last_value and
             isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx));
 }
