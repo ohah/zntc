@@ -14166,6 +14166,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 true\n',
       },
       {
+        name: 'post-super conditional branch function declaration retains exact block scope identity',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { function local() { return 2; } this.value = local(); } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
         name: 'post-super conditional branch while this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { while (this.keepGoing) this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
@@ -14459,6 +14466,52 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       }
     }
   }, 30_000);
+
+  test('native strict block function declarations keep exact scope identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-strict-block-function-'));
+    const entry = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      entry,
+      'function outer() { if (true) { function local() { return 2; } return local(); } return 0; } console.log(outer());',
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').replaceAll('\0', '\n').split(/\r?\n/);
+      const report = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+      );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const graphMode = lines.find((line) => line.includes('symbol-identity-prepass-mode '));
+      expect(graphMode).toMatch(/semantic_graph=(?:retained|reanalyzed)/);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('2\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 
   test('모든 target의 minify 출력에서 전체 oracle 심볼 연결이 정확하다', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-post-minify-matrix-'));
