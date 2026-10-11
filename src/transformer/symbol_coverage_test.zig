@@ -2775,7 +2775,9 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const NodeIndex = @import("../parser/ast.zig").NodeIndex;
-    const source = "for (const value in source) use(value);";
+    // Occupy the usual generated spellings so this also checks that the
+    // generated binding handle, not a repeated spelling lookup, owns refs.
+    const source = "const _a = 0, _b = 0, _keys = 0, _idx = 0; for (const value in source) use(value);";
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
@@ -2800,24 +2802,40 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @enumFromInt(loop_scope);
+    // Model generator operation collection: the wrapper binding identity is
+    // known, but references must wait for their final output ScopeIds.
+    transformer.state_machine_depth = 1;
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForIn(&transformer, loop, parser.ast.getNode(loop));
 
-    const expected_names = [_][]const u8{ "_a", "_b", "_keys", "_idx" };
-    var found: usize = 0;
+    const expected_names = [_][]const u8{ "_c", "_d", "_keys2", "_idx2" };
+    var binding_ids: [expected_names.len]?u32 = @splat(null);
+    var reference_counts: [expected_names.len]usize = @splat(0);
     for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
         if (node.tag != .binding_identifier) continue;
         const name = transformer.ast.getText(node.data.string_ref);
-        var expected = false;
-        for (expected_names) |expected_name| {
-            if (std.mem.eql(u8, name, expected_name)) expected = true;
+        for (expected_names, 0..) |expected_name, expected_index| {
+            if (!std.mem.eql(u8, name, expected_name)) continue;
+            try std.testing.expect(binding_ids[expected_index] == null);
+            const symbol_id = if (raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[raw] else null;
+            binding_ids[expected_index] = symbol_id orelse return error.MissingGeneratedTempSymbol;
         }
-        if (!expected) continue;
-        found += 1;
-        const symbol_id = if (raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[raw] else null;
-        try std.testing.expect(symbol_id != null);
     }
-    try std.testing.expectEqual(expected_names.len, found);
+    for (binding_ids) |symbol_id| try std.testing.expect(symbol_id != null);
+
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .identifier_reference) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        for (expected_names, 0..) |expected_name, expected_index| {
+            if (!std.mem.eql(u8, name, expected_name)) continue;
+            const exact_id = transformer.exact_output_ref_symbol_ids.get(@intCast(raw)) orelse
+                return error.MissingDeferredSyntheticTempReference;
+            try std.testing.expectEqual(binding_ids[expected_index].?, exact_id);
+            reference_counts[expected_index] += 1;
+        }
+    }
+    for (reference_counts) |count| try std.testing.expect(count > 0);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
 test "#4819 generator for-of temporaries bind symbols during lowering" {
