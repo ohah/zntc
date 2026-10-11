@@ -14131,6 +14131,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 true\n',
       },
       {
+        name: 'post-super conditional branch try preserves catch identity and finally write order',
+        source:
+          'var events = [], sentinel = {}, baseCalls = 0; function Base() { baseCalls++; return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var caught, finalized = false; if (true) { try { throw sentinel; } catch (error) { caught = error; } finally { finalized = true; } } this.same = caught === sentinel; this.finalized = finalized; } } var child = new Child(); console.log(child.same, child.finalized, baseCalls, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: 'true true 1 same:true|finalized:true false\n',
+      },
+      {
+        name: 'post-super conditional branch try this access stays on reanalysis',
+        source:
+          'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { try { throw sentinel; } catch (error) { this.value = error; } } } } var child = new Child(); console.log(child.value === sentinel, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: 'true true\n',
+      },
+      {
+        name: 'post-super conditional branch try call initializer stays on reanalysis',
+        source:
+          'var calls = 0; function readValue() { calls++; return 3; } function Base() {} class Child extends Base { constructor() { super(); var value; if (true) { try { value = readValue(); } catch (error) { value = 0; } } this.value = value; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '3 1 true\n',
+      },
+      {
         name: 'post-super conditional branch while this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { while (this.keepGoing) this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
