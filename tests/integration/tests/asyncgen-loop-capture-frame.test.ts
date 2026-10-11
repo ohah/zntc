@@ -24,6 +24,16 @@ const cases = [
     name: 'real nested generator keeps its own arguments',
     body: 'function* own(a, b) { yield arguments.length; } yield own(1, 2).next().value + (() => item)();',
   },
+  // #5453: strict 블록 함수 선언의 이름은 함수 자신의 스코프가 아니라 선언된 블록에
+  // 묶인다. 추출된 루프 본문에서 바깥 참조가 그 블록 스코프를 볼 수 있어야 한다.
+  {
+    name: 'block function referenced before and after its block',
+    body: 'if (item) { function own() { return item; } yield own() + (() => item)(); }',
+  },
+  {
+    name: 'nested block function used only by value',
+    body: '{ function own() { return 1; } const f = own; yield f() + (() => item)(); }',
+  },
 ] as const;
 
 describe('async generator extracted loop lexical captures (#4819)', () => {
