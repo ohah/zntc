@@ -1112,7 +1112,7 @@ fn isRetainableStaticFieldOptionalMemberChain(
             const unresolved_external_key = unresolved_external_root and
                 isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx);
             const retained_effectful_sequence_key = unresolved_external_root and
-                isRetainableBoundStaticFieldSequenceExpression(ast, semantic, property_idx, true, false);
+                isRetainableBoundStaticFieldSequenceExpression(ast, semantic, property_idx, true, false, false);
             if (!unresolved_external_key and !retained_effectful_sequence_key and
                 (property.tag != .call_expression or
                     !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false))) return false;
@@ -1202,14 +1202,16 @@ fn isRetainableBoundStaticFieldEffectCall(
 }
 
 /// Keep sequence expressions only when their non-final calls have exact-bound
-/// callees and safe arguments. The final value is safe, or may be unresolved
-/// when the caller has independently proved the external-root context.
+/// callees and safe arguments. The final value is safe, a bounded exact-bound
+/// member read/call, or may be unresolved when the caller has independently
+/// proved the external-root context.
 fn isRetainableBoundStaticFieldSequenceExpression(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     expression_idx: ast_mod.NodeIndex,
     allow_unresolved_last_value: bool,
     allow_bound_member_read_last_value: bool,
+    allow_bound_call_last_value: bool,
 ) bool {
     if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
     var current_idx = expression_idx;
@@ -1236,6 +1238,8 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     return isSafeConstructorValue(ast, semantic, last_idx) or
         (allow_bound_member_read_last_value and
             isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx)) or
+        (allow_bound_call_last_value and
+            isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx)) or
         (allow_unresolved_last_value and
             isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx));
 }
@@ -1700,6 +1704,7 @@ fn isRetainableStaticFieldExpression(
                             semantic,
                             argument_idx,
                             false,
+                            true,
                             true,
                         )) continue;
                     if (ast.getNode(argument_idx).tag != .call_expression) return false;
