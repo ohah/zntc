@@ -14096,6 +14096,41 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '4 1 1 1 70 80 value:4|iterator:return|after:1 false\n',
       },
       {
+        name: 'post-super conditional branch switch preserves fallthrough and local identity',
+        source:
+          'var events = [], _this = 90; function record(value) { events.push(value); } function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push("set:" + key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var result = 0, selector = 1; if (true) { switch (selector) { case 1: result = 2; record("case1:" + result); case 2: result++; record("case2:" + result); break; default: record("default"); } } this.value = result; } } var child = new Child(); console.log(child.value, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '3 90 case1:2|case2:3|set:value:3 false\n',
+      },
+      {
+        name: 'post-super conditional branch switch this access stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: this.value = 2; break; } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super conditional branch switch call discriminant stays on reanalysis',
+        source:
+          'var calls = 0; function select() { calls++; return 1; } function Base() {} class Child extends Base { constructor() { super(); var result = 0; if (true) { switch (select()) { case 1: result = 3; break; default: result = 0; } } this.value = result; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '3 1 true\n',
+      },
+      {
+        name: 'post-super conditional branch switch call case test stays on reanalysis',
+        source:
+          'var calls = 0; function select() { calls++; return 1; } function Base() {} class Child extends Base { constructor() { super(); var result = 0; if (true) { switch (0) { case select(): result = 3; break; default: result = 0; } } this.value = result; } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '0 1 true\n',
+      },
+      {
+        name: 'post-super conditional branch switch lexical case binding stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); var result = 0; if (true) { switch (1) { case 1: let local = 2; result = local; break; default: result = 0; } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
         name: 'post-super conditional branch while this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { while (this.keepGoing) this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
