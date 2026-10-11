@@ -1230,6 +1230,9 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
         const prior = try visited.getOrPut(self.allocator, key);
         if (prior.found_existing) continue;
         const parent = self.ast.getNode(visit.node);
+        // A function declaration owns its own scope, but its name binds in the
+        // scope the declaration was reached from (#5453).
+        const declaration_name = functionDeclarationName(self, parent);
         var children = ast_walk.children(self.ast, parent);
         while (children.next()) |child| {
             if (child.isNone() or @intFromEnum(child) >= self.ast.nodes.items.len) continue;
@@ -1238,10 +1241,18 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
                 generatedReferenceFlags(parent, child, child_node.tag)
             else
                 ReferenceFlags{};
-            try stack.append(self.allocator, .{ .node = child, .incoming = scope, .flags = flags });
+            const child_scope = if (child == declaration_name) visit.incoming else scope;
+            try stack.append(self.allocator, .{ .node = child, .incoming = child_scope, .flags = flags });
         }
     }
     return traces;
+}
+
+fn functionDeclarationName(self: *Transformer, node: Node) NodeIndex {
+    if (node.tag != .function_declaration) return .none;
+    const slot = node.data.extra + ast_mod.FunctionExtra.name;
+    if (slot >= self.ast.extra_data.items.len) return .none;
+    return @enumFromInt(self.ast.extra_data.items[slot]);
 }
 
 const GeneratedLoopNodeSet = std.AutoHashMapUnmanaged(u32, void);
