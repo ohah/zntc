@@ -14082,6 +14082,48 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 1 true\n',
       },
       {
+        name: 'post-super conditional branch while preserves continue and Proxy write order',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var i = 0; if (true) { while (i < 3) { i++; if (i === 2) continue; this.value = i; } } this.after = i; } } var child = new Child(); console.log(child.value, child.after, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '3 3 90 value:1|value:3|after:3 false\n',
+      },
+      {
+        name: 'post-super conditional branch lexical for of closes iterator and preserves temp identity',
+        source:
+          'var events = [], iteratorReads = 0, nextCalls = 0, closes = 0, _iterator = 70, _step = 80; var values = { [Symbol.iterator]() { iteratorReads++; return { next() { nextCalls++; return { value: 4, done: false }; }, return() { closes++; events.push("iterator:return"); return {}; } }; } }; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var _iterator = 1, _step = 2; if (true) { for (const value of values) { this.value = value; break; } } this.after = iteratorReads; } } var child = new Child(); console.log(child.value, iteratorReads, nextCalls, closes, _iterator, _step, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '4 1 1 1 70 80 value:4|iterator:return|after:1 false\n',
+      },
+      {
+        name: 'post-super conditional branch while this condition stays on reanalysis',
+        source:
+          'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { while (this.keepGoing) this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: 'false undefined true\n',
+      },
+      {
+        name: 'post-super conditional branch for of call iterable stays on reanalysis',
+        source:
+          'var calls = 0; function values() { calls++; return [1, 2]; } function Base() {} class Child extends Base { constructor() { super(); if (true) { for (var value of values()) this.value = value; } } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 1 true\n',
+      },
+      {
+        name: 'post-super conditional branch loop nested switch this stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { for (var i = 0; i < 1; i++) { switch (i) { case 0: this.value = 1; break; } } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
+      },
+      {
+        name: 'post-super conditional branch lexical for of closure capture stays on reanalysis',
+        source:
+          'var values = [1, 2], readers = []; function Base() {} class Child extends Base { constructor() { super(); if (true) { for (let value of values) readers.push(function() { return value; }); } this.total = readers[0]() + readers[1](); } } var child = new Child(); console.log(child.total, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '3 true\n',
+      },
+      {
         name: 'post-super conditional branch nested computed this condition stays on reanalysis',
         source:
           'var key = "ready"; function Base() { this.ready = true; } class Child extends Base { constructor() { super(); if (true) { if (this[key]) this.value = 1; else this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
