@@ -13186,6 +13186,73 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 9 before-argument\n',
       },
       {
+        name: 'unresolved deep optional member calls retain a sequence ending in a bound member read',
+        source: [
+          'var events = [];',
+          'var argumentSource = { get receiver() { events.push(this === argumentSource ? "argument-receiver:this" : "argument-receiver:wrong-this"); return { base: 8, get value() { events.push(this.base === 8 ? "value:this" : "value:wrong-this"); return this.base; } }; } };',
+          'var argumentKey = { [Symbol.toPrimitive]() { events.push("key"); return "value"; } };',
+          'globalThis.__zntcBoundMemberSequenceHolder = { get outer() { events.push("outer"); return { get receiver() { events.push("receiver"); return { base: 1, get fieldValue() { events.push("method"); return function (input) { events.push(this.base === 1 ? "this" : "wrong-this"); return this.base + input; }; } }; } }; } };',
+          'globalThis.__zntcNullBoundMemberSequenceHolder = { get outer() { events.push("missing"); return null; } };',
+          'globalThis.__zntcMissingBoundMemberSequenceHolder = { get outer() { events.push("type-outer"); return { get receiver() { events.push("type-receiver"); return {}; } }; } };',
+          'class BoundMemberSequenceField { static value = __zntcBoundMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource.receiver.value)); static computed = __zntcBoundMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-computed"), argumentSource.receiver[argumentKey])); static absent = __zntcNullBoundMemberSequenceHolder.outer?.receiver.fieldValue((events.push("null-before"), argumentSource.receiver[argumentKey])); }',
+          'function failAtMissingBoundMemberSequenceMethod() { class MissingBoundMemberSequenceField { static value = __zntcMissingBoundMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-missing"), argumentSource.receiver[argumentKey])); } }',
+          'try { failAtMissingBoundMemberSequenceMethod(); } catch (error) { events.push(error instanceof TypeError ? "type-error" : "wrong-error"); }',
+          'console.log(BoundMemberSequenceField.value, BoundMemberSequenceField.computed, BoundMemberSequenceField.absent, events.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 9 undefined outer,receiver,method,before-argument,argument-receiver:this,value:this,this,outer,receiver,method,before-computed,argument-receiver:this,key,value:this,this,missing,type-outer,type-receiver,before-missing,argument-receiver:this,key,value:this,type-error\n',
+      },
+      {
+        name: 'bound-root deep optional member calls with member-read argument sequences stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { get value() { events.push("value"); return 8; } };',
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class BoundRootMemberSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource.value)); }',
+          'console.log(BoundRootMemberSequenceField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before-argument,value\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an unbound member-read sequence value stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'globalThis.__zntcUnboundMemberSequenceSource = { get value() { events.push("value"); return 8; } };',
+          'globalThis.__zntcUnboundMemberSequenceHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class UnboundMemberSequenceField { static value = __zntcUnboundMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), __zntcUnboundMemberSequenceSource.value)); }',
+          'console.log(UnboundMemberSequenceField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before-argument,value\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an optional member-read sequence value stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { get value() { events.push("value"); return 8; } };',
+          'globalThis.__zntcOptionalMemberSequenceHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class OptionalMemberSequenceField { static value = __zntcOptionalMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource?.value)); }',
+          'console.log(OptionalMemberSequenceField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before-argument,value\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an effectful computed member-read sequence value stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { get value() { events.push("value"); return 8; } };',
+          'function argumentKey() { events.push("key"); return "value"; }',
+          'globalThis.__zntcComputedMemberSequenceHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class ComputedMemberSequenceField { static value = __zntcComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource[argumentKey()])); }',
+          'console.log(ComputedMemberSequenceField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before-argument,key,value\n',
+      },
+      {
         name: 'optional invocation after a deep optional member receiver keeps short-circuit and exact identity',
         source: [
           'var events = [];',

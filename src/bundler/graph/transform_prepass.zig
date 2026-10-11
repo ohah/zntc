@@ -1112,7 +1112,7 @@ fn isRetainableStaticFieldOptionalMemberChain(
             const unresolved_external_key = unresolved_external_root and
                 isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx);
             const retained_effectful_sequence_key = unresolved_external_root and
-                isRetainableBoundStaticFieldSequenceExpression(ast, semantic, property_idx, true);
+                isRetainableBoundStaticFieldSequenceExpression(ast, semantic, property_idx, true, false);
             if (!unresolved_external_key and !retained_effectful_sequence_key and
                 (property.tag != .call_expression or
                     !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false))) return false;
@@ -1133,7 +1133,8 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// admitted only when the optional-call lowering can keep its null guard around
 /// the complete method read and invocation. Unresolved optional receiver chains,
 /// unbound receiver expressions or call-result callees, optional calls inside
-/// computed keys, and effectful non-call arguments also stay on reanalysis.
+/// computed keys and effectful arguments other than the bounded sequence form
+/// admitted for unresolved-root optional member calls also stay on reanalysis.
 fn isRetainableUnresolvedStaticFieldIdentifier(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1208,6 +1209,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     semantic: *const ModuleSemanticData,
     expression_idx: ast_mod.NodeIndex,
     allow_unresolved_last_value: bool,
+    allow_bound_member_read_last_value: bool,
 ) bool {
     if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
     var current_idx = expression_idx;
@@ -1232,8 +1234,46 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     if (last_raw >= ast.nodes.items.len) return false;
     const last_idx: ast_mod.NodeIndex = @enumFromInt(last_raw);
     return isSafeConstructorValue(ast, semantic, last_idx) or
+        (allow_bound_member_read_last_value and
+            isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx)) or
         (allow_unresolved_last_value and
             isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx));
+}
+
+/// A sequence argument may end in a non-optional member read only when every
+/// segment uses a safe key and the chain starts at an exact-bound source name.
+fn isRetainableBoundStaticFieldMemberRead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    member_idx: ast_mod.NodeIndex,
+) bool {
+    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+    const extras = ast.extra_data.items;
+    var current_idx = member_idx;
+    var saw_member = false;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const current = ast.getNode(current_idx);
+        if (current.tag == .identifier_reference)
+            return saw_member and isBoundSourceIdentifierReference(ast, semantic, current_idx);
+        if (current.tag != .static_member_expression and current.tag != .computed_member_expression)
+            return false;
+        const extra = current.data.extra;
+        if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
+        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+        if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+        if (current.tag == .static_member_expression) {
+            if (ast.getNode(property_idx).tag != .identifier_reference) return false;
+        } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
+            return false;
+        }
+        saw_member = true;
+        current_idx = receiver_idx;
+    }
+    return false;
 }
 
 fn isRetainableUnresolvedStaticFieldCallCallee(
@@ -1660,6 +1700,7 @@ fn isRetainableStaticFieldExpression(
                             semantic,
                             argument_idx,
                             false,
+                            true,
                         )) continue;
                     if (ast.getNode(argument_idx).tag != .call_expression) return false;
                     pending.append(allocator, .{
