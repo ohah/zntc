@@ -10092,7 +10092,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         'var constructorCalls = 0;',
         'function getPair() { constructorCalls++; return Pair; }',
         'function makeIndirect(values) { return new (getPair())(...values); }',
-        'console.log(make([4, 7]).total, makeIndirect([5, 6]).total, constructorCalls);',
+        'var topLevel = new (getPair())(...[6, 7]);',
+        'console.log(make([4, 7]).total, makeIndirect([5, 6]).total, topLevel.total, constructorCalls);',
       ].join('\n'),
     );
     try {
@@ -10102,7 +10103,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
 
       const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe('11 11 1\n');
+      expect(actual.stdout).toBe('11 11 13 2\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(outDir, { recursive: true, force: true });

@@ -1775,6 +1775,54 @@ test "#4819 tracked captures attach the write SymbolId before reads" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+test "#4819 constructor spread capture refs reserve one immediate SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const spread = @import("es2015_spread.zig").ES2015Spread(Transformer);
+    var scanner = try Scanner.init(
+        allocator,
+        "function Pair(left, right) {} function getPair() { return Pair; } new (getPair())(...[1, 2]);",
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+        return error.MissingProgramScope;
+    var source_new: ?AstNodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .new_expression) source_new = @enumFromInt(index);
+    }
+    const new_idx = source_new orelse return error.MissingSpreadConstructor;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @enumFromInt(program_scope);
+
+    _ = try spread.lowerSpreadNew(&transformer, parser.ast.getNode(new_idx));
+    try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    var temp_ids = transformer.synthetic_temp_symbol_ids.valueIterator();
+    const temp_id = temp_ids.next() orelse return error.MissingSpreadTempSymbol;
+    var exact_refs: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, index| {
+        if (node.tag != .identifier_reference) continue;
+        const id = transformer.getSymbolIdAt(@enumFromInt(index)) orelse continue;
+        if (id == temp_id.*) exact_refs += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), exact_refs);
+}
+
 test "#4819 transformed scope owners retain their original ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
