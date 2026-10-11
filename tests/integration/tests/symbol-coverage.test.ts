@@ -14152,6 +14152,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 1 true\n',
       },
       {
+        name: 'post-super conditional branch empty and debugger statements retain the graph',
+        source:
+          'var events = [], baseCalls = 0; function Base() { baseCalls++; return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { ; debugger; this.value = 1; } else { ; debugger; this.value = 2; } } } var child = new Child(); console.log(child.value, baseCalls, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '1 1 value:1 false\n',
+      },
+      {
+        name: 'post-super conditional branch no-ops do not admit call initializers',
+        source:
+          'function value() { return 2; } function Base() {} class Child extends Base { constructor() { super(); if (true) { ; debugger; this.value = value(); } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
         name: 'post-super conditional branch while this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { while (this.keepGoing) this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',

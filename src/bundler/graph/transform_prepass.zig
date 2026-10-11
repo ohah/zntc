@@ -1876,6 +1876,7 @@ fn isSafePostSuperConditionalBranch(
                     isSafeDerivedConstructorThrowStatement(ast, semantic, final_statement)) return true;
             }
             const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
+            if (nested_statement.tag == .empty_statement or nested_statement.tag == .debugger_statement) continue;
             if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
                 isSafePostSuperExpressionStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
             if (isSafePostSuperNonCompletingBlockOrLabelStatement(
