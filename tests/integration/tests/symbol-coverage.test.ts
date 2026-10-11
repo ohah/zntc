@@ -132,6 +132,7 @@ const EXACT_SINGLETON_FIELDS = [
   ['schema_fingerprint', '[0-9a-fA-F]+'],
 ] as const;
 const EXACT_REPORT_SCHEMA_FINGERPRINT = 'eb9b778e9933c134';
+const EXACT_NO_DEBT_FINGERPRINT = 'cbf29ce484222325';
 const EXACT_OBSERVATION_FIELD_COUNT = 7;
 const EXACT_DIAGNOSTIC_FIELD_COUNT = 16;
 const EXACT_SCHEMA_FIELDS = new Set<string>([
@@ -198,6 +199,14 @@ function exactKnownValueProblems(identity: string): string[] {
   if (schemaFingerprint !== EXACT_REPORT_SCHEMA_FINGERPRINT) {
     problems.push(
       `schema_fingerprint=${schemaFingerprint ?? 'missing'}, expected ${EXACT_REPORT_SCHEMA_FINGERPRINT}`,
+    );
+  }
+  const debtFingerprint = identity
+    .match(/(?:^| )legacy_debt_fingerprint=([0-9a-fA-F]+)(?: |$)/)?.[1]
+    ?.toLowerCase();
+  if (debtFingerprint !== EXACT_NO_DEBT_FINGERPRINT) {
+    problems.push(
+      `legacy_debt_fingerprint=${debtFingerprint ?? 'missing'}, expected ${EXACT_NO_DEBT_FINGERPRINT}`,
     );
   }
   for (const [field, valuePattern] of EXACT_SINGLETON_FIELDS) {
@@ -1039,7 +1048,7 @@ describe('symbol identity coverage gate (#4819)', () => {
       'namespace_iife_params=4',
       'enum_iife_params=5',
       'clean=1',
-      'legacy_debt_fingerprint=cbf29ce484222325',
+      `legacy_debt_fingerprint=${EXACT_NO_DEBT_FINGERPRINT}`,
       `schema_fingerprint=${EXACT_REPORT_SCHEMA_FINGERPRINT}`,
     ]
       .concat(EXACT_ZERO_COUNTERS.map((counter) => counter + '=0'))
@@ -1066,6 +1075,14 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(exactSchemaProblems(complete.replace(' clean=1', ' clean=0'))).toContain(
       'clean=0, expected 1',
     );
+    expect(
+      exactSchemaProblems(
+        complete.replace(
+          `legacy_debt_fingerprint=${EXACT_NO_DEBT_FINGERPRINT}`,
+          'legacy_debt_fingerprint=0123456789abcdef',
+        ),
+      ),
+    ).toContain('legacy_debt_fingerprint=0123456789abcdef, expected ' + EXACT_NO_DEBT_FINGERPRINT);
     expect(exactSchemaProblems(complete + ' future_counter=0')).toContain(
       'unexpected exact report field future_counter',
     );
