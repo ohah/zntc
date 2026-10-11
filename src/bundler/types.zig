@@ -945,6 +945,8 @@ pub const BundlerDiagnostic = struct {
         /// dynamic eval/with 가 보이는 program-level Math binding 때문에 exponentiation
         /// lowering 을 보존함 — configured target 에서 `**` syntax 가 남을 수 있음.
         exponentiation_dynamic_scope,
+        /// sloppy 모듈의 `with` 문이 ESM 출력(모듈로 로드하면 strict)에 들어감 (#5455). warning severity.
+        with_in_esm_output,
     };
 
     pub const Severity = enum {
