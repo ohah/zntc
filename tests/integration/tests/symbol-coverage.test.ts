@@ -12438,9 +12438,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unresolved computed static member invocation stays on semantic reanalysis',
+        name: 'computed optional member invocation with unresolved member-expression receiver stays on semantic reanalysis',
         source:
-          'var key = "value"; globalThis.__zntcUnresolvedOptionalInvocationReceiver = { value() { return 9; } }; class UnresolvedComputedOptionalMemberInvocationField { static value = __zntcUnresolvedOptionalInvocationReceiver[key]?.(); } console.log(UnresolvedComputedOptionalMemberInvocationField.value);',
+          'var key = "value"; globalThis.__zntcUnresolvedOptionalInvocationReceiver = { value() { return 9; } }; class UnresolvedComputedOptionalMemberInvocationField { static value = globalThis.__zntcUnresolvedOptionalInvocationReceiver[key]?.(); } console.log(UnresolvedComputedOptionalMemberInvocationField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
@@ -12732,11 +12732,28 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 undefined 9 method,argument,this,missing-method,method,argument,this,wrap:9\n',
       },
       {
-        name: 'unresolved optional member-call invocation static initializer stays on semantic reanalysis',
+        name: 'unresolved optional member invocations retain root getter, method this, and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'var missingMethod = { get fieldValue() { order.push("missing-method"); return null; } };',
+          'Object.defineProperty(globalThis, "__zntcUnresolvedOptionalMemberInvocation", { configurable: true, get() { order.push("root"); return receiver; } });',
+          'Object.defineProperty(globalThis, "__zntcUnresolvedOptionalMemberInvocationMissing", { configurable: true, get() { order.push("missing-root"); return missingMethod; } });',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "fieldValue"; } }; }',
+          'function argument() { order.push("argument"); return 4; }',
+          'class UnresolvedOptionalMemberInvocationField { static direct = __zntcUnresolvedOptionalMemberInvocation.fieldValue?.(argument()); static computed = __zntcUnresolvedOptionalMemberInvocation[memberKey()]?.(argument()); static absent = __zntcUnresolvedOptionalMemberInvocationMissing.fieldValue?.(argument()); }',
+          'console.log(UnresolvedOptionalMemberInvocationField.direct, UnresolvedOptionalMemberInvocationField.computed, UnresolvedOptionalMemberInvocationField.absent, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 9 undefined root,method,argument,this,root,key,coerce,method,argument,this,missing-root,missing-method\n',
+      },
+      {
+        name: 'unresolved require member invocation stays on semantic reanalysis',
         source:
-          'globalThis.__zntcUnresolvedOptionalMemberInvocation = { fieldValue(input) { return input + 1; } }; class UnresolvedOptionalMemberInvocationField { static value = __zntcUnresolvedOptionalMemberInvocation.fieldValue?.(8); } console.log(UnresolvedOptionalMemberInvocationField.value);',
+          'class UnresolvedRequireMemberInvocationField { static value = require.resolve?.("node:path"); } console.log(typeof UnresolvedRequireMemberInvocationField.value);',
         graph: 'reanalyzed',
-        output: '9\n',
+        output: 'string\n',
       },
       {
         name: 'call-result receiver optional member invocation stays on semantic reanalysis',
