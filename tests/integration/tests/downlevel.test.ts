@@ -2,7 +2,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { bundleAndRun, createFixture, runZntc, transpileAndRun } from './helpers';
+import { bundleAndRun, createFixture, runNode, runZntc, transpileAndRun } from './helpers';
 
 // 런타임 헬퍼는 번들러가 자동 주입 (emitter.zig의 appendRuntimeHelpers)
 
@@ -436,6 +436,36 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(code).toContain('function Performance()');
       expect(code).toContain('return Performance');
     });
+
+    // #5445: 낮춘 클래스의 안쪽 함수 이름은 바깥 rename 을 따라가지 않는다. 의미 그래프를
+    // 재사용하는 경로(define 미사용)와 재분석 경로(define 사용)가 같은 결과를 내야 한다.
+    for (const usesDefine of [false, true]) {
+      test(`class IIFE: --global-identifier keeps inner self name and refs${usesDefine ? ' (define used)' : ''}`, async () => {
+        const { dir, cleanup: cl } = await createFixture({
+          'index.ts': `
+            class Performance {
+              static make() { return new Performance(); }
+              mark() { return "ok"; }
+            }
+            console.log(Performance.name, Performance.make().mark()${usesDefine ? ', __FLAG__' : ''});
+          `,
+        });
+        cleanup = cl;
+        const outFile = join(dir, 'out.js');
+        const bundle = await runZntc([
+          '--bundle',
+          join(dir, 'index.ts'),
+          '-o',
+          outFile,
+          '--target=es5',
+          '--global-identifier=Performance',
+          ...(usesDefine ? ['--define:__FLAG__=1'] : []),
+        ]);
+        expect(bundle.exitCode, bundle.stderr).toBe(0);
+        const run = await runNode(outFile);
+        expect(run.stdout.trim()).toBe(usesDefine ? 'Performance ok 1' : 'Performance ok');
+      });
+    }
 
     test('class expression', async () => {
       const result = await bundleAndRun(
