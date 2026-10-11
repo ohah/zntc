@@ -12394,10 +12394,61 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 undefined key,method,this\n',
       },
       {
-        name: 'optional computed static member invocation stays on semantic reanalysis',
+        name: 'bound computed optional static member invocations retain key, receiver, argument, and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'var missingMethod = { get fieldValue() { order.push("missing-method"); return null; } };',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "fieldValue"; } }; }',
+          'function argument() { order.push("argument"); return 4; }',
+          'function wrap(value) { order.push("wrap:" + String(value)); return value; }',
+          'class ComputedOptionalCallMemberField { static direct = receiver[memberKey()]?.(argument()); static absent = missingMethod[memberKey()]?.(argument()); static nested = wrap(receiver[memberKey()]?.(argument())); }',
+          'console.log(ComputedOptionalCallMemberField.direct, ComputedOptionalCallMemberField.absent, ComputedOptionalCallMemberField.nested, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 undefined 9 key,coerce,method,argument,this,key,coerce,missing-method,key,coerce,method,argument,this,wrap:9\n',
+      },
+      {
+        name: 'optional computed static member invocation with optional key call stays on semantic reanalysis',
         source:
-          'var key = "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberInvocationField { static value = holder[key]?.(); } console.log(OptionalComputedStaticMemberInvocationField.value);',
+          'var key = () => "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberInvocationField { static value = holder[key?.()]?.(); } console.log(OptionalComputedStaticMemberInvocationField.value);',
         graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static member invocation with effectful assignment key stays on semantic reanalysis',
+        source:
+          'var key = "other"; var holder = { value() { return 9; } }; class EffectfulComputedOptionalMemberInvocationField { static value = holder[(key = "value")]?.(); } console.log(EffectfulComputedOptionalMemberInvocationField.value, key);',
+        graph: 'reanalyzed',
+        output: '9 value\n',
+      },
+      {
+        name: 'optional computed static member invocation with call-result receiver stays on semantic reanalysis',
+        source:
+          'var key = "value"; function makeHolder() { return { value() { return 9; } }; } class CallResultComputedOptionalMemberInvocationField { static value = makeHolder()[key]?.(); } console.log(CallResultComputedOptionalMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional computed static member invocation with optional receiver chain stays on semantic reanalysis',
+        source:
+          'var key = "value"; var holder = { value() { return 9; } }; class OptionalReceiverComputedMemberInvocationField { static value = holder?.[key]?.(); } console.log(OptionalReceiverComputedMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unresolved computed static member invocation stays on semantic reanalysis',
+        source:
+          'var key = "value"; globalThis.__zntcUnresolvedOptionalInvocationReceiver = { value() { return 9; } }; class UnresolvedComputedOptionalMemberInvocationField { static value = __zntcUnresolvedOptionalInvocationReceiver[key]?.(); } console.log(UnresolvedComputedOptionalMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'bound computed static member invocation with direct key retains its graph',
+        source:
+          'var key = "value"; var holder = { value() { return 9; } }; class BoundComputedStaticMemberInvocationField { static value = holder[key]?.(); } console.log(BoundComputedStaticMemberInvocationField.value);',
+        graph: 'retained',
         output: '9\n',
       },
       {

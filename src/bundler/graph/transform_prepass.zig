@@ -1108,8 +1108,10 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// evaluation order and a computed member callee's receiver (`this`) survive.
 /// Optional invocations are admitted for static initializer call trees when
 /// their direct identifier is safe or their member receiver is a bound source
-/// identifier. Computed keys, unresolved member receivers, call-result
-/// receivers, and effectful non-call arguments stay on reanalysis.
+/// identifier and the member access (including any computed key) is safe.
+/// Optional receiver chains, unresolved member receivers, call-result
+/// receivers, optional calls inside computed keys, and effectful non-call
+/// arguments stay on reanalysis.
 fn isRetainableUnresolvedStaticFieldCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1153,7 +1155,7 @@ fn isRetainableStaticFieldOptionalMemberInvocation(
 ) bool {
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
-    if (callee.tag != .static_member_expression) return false;
+    if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return false;
     const extra = callee.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 3 or
         ast.extra_data.items[extra + 2] != 0) return false;
