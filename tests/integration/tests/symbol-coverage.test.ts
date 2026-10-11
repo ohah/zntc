@@ -12505,11 +12505,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '7 8 base-key,field-key,field-key,field-value:7,field-value:8\n',
       },
       {
-        name: 'unbound computed static field name reference stays on semantic reanalysis',
+        name: 'unresolved _a computed field key stays external beside generated temp',
         source:
-          'globalThis.__zntcComputedStaticFieldName = "value"; class UnboundComputedStaticFieldName { static [__zntcComputedStaticFieldName] = 9; } console.log(UnboundComputedStaticFieldName.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var reads = 0; Object.defineProperty(globalThis, "_a", { configurable: true, get() { reads += 1; return "value"; } }); class UnresolvedComputedStaticFieldNameCollision { static [_a] = 9; } console.log(UnresolvedComputedStaticFieldNameCollision.value, reads);',
+        graph: 'retained',
+        output: '9 1\n',
       },
       {
         name: 'unresolved computed static field name calls retain key evaluation exactly once',

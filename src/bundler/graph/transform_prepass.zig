@@ -2365,6 +2365,7 @@ fn isRetainableSimpleStaticClassField(
             if (key_value_idx.isNone() or @intFromEnum(key_value_idx) >= ast.nodes.items.len or
                 hasClassSelfReference(ast, semantic, key_value_idx) or
                 (!isSafeConstructorValue(ast, semantic, key_value_idx) and
+                    !isUnresolvedSourceIdentifierReference(ast, semantic, key_value_idx) and
                     !isRetainableStaticFieldMemberAccess(allocator, ast, semantic, key_value_idx) and
                     !isRetainableStaticFieldCall(allocator, ast, semantic, key_value_idx))) return false;
         },
