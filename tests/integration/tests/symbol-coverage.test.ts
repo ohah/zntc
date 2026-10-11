@@ -12240,10 +12240,17 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'true 9\n',
       },
       {
-        name: 'unbound global initializer stays on semantic reanalysis',
+        name: 'unresolved global initializer retains its external reference on the edited graph',
         source:
           'globalThis.__zntcStaticFieldValue = 17; class GlobalStaticField { static value = __zntcStaticFieldValue; } console.log(GlobalStaticField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
+        output: '17\n',
+      },
+      {
+        name: 'unresolved temp-like global remains visible beside a computed static field key',
+        source:
+          'globalThis._a = 17; function fieldKey() { return "value"; } class GlobalTempLikeStaticField { static [fieldKey()] = _a; } console.log(GlobalTempLikeStaticField.value);',
+        graph: 'retained',
         output: '17\n',
       },
       {

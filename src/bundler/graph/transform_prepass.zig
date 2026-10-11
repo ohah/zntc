@@ -636,6 +636,22 @@ fn isBoundSourceIdentifierReference(
     return hasValidSourceSymbol(ast, semantic, node_idx, .identifier_reference);
 }
 
+/// An unresolved source identifier has no SymbolId to relocate. Its spelling
+/// remains reserved in the retained semantic graph, so a simple static-field
+/// initializer can keep this exact external reference without reanalysis.
+fn isUnresolvedSourceIdentifierReference(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    const raw_idx = @intFromEnum(node_idx);
+    const node = ast.nodes.items[raw_idx];
+    if (node.tag != .identifier_reference or raw_idx >= semantic.symbol_ids.len or
+        semantic.symbol_ids[raw_idx] != null) return false;
+    return semantic.unresolved_references.contains(ast.getText(node.span));
+}
+
 fn isBoundSourceIdentifierBinding(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -2346,10 +2362,11 @@ fn hasClassSelfReference(
     return false;
 }
 
-/// A public static field with a safe value expression, exact-bound static
-/// member read, or exact-bound call is emitted as an exact class reference
-/// plus an explicit global Object.defineProperty call. `this`, unresolved names,
-/// and other call/member shapes stay on resync.
+/// A public static field with a safe value expression, one unresolved source
+/// identifier read, exact-bound static member read, or exact-bound call is
+/// emitted as an exact class reference plus an explicit global
+/// Object.defineProperty call. `this`, other unresolved shapes, and unsafe
+/// call/member forms stay on resync.
 fn isRetainableSimpleStaticClassField(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -2388,6 +2405,7 @@ fn isRetainableSimpleStaticClassField(
         else => return false,
     }
     return isSafeConstructorValue(ast, semantic, init_idx) or
+        isUnresolvedSourceIdentifierReference(ast, semantic, init_idx) or
         isRetainableBoundStaticFieldInitializerMemberAccess(allocator, ast, semantic, init_idx) or
         isRetainableBoundStaticFieldCall(allocator, ast, semantic, init_idx);
 }
