@@ -6,6 +6,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
 const es_helpers = @import("../es_helpers.zig");
 const assign_ops = @import("assign_ops.zig");
 const constructors_mod = @import("constructors.zig");
@@ -16,6 +17,41 @@ pub fn SuperProps(comptime Transformer: type) type {
     return struct {
         const constructors = constructors_mod.Constructors(Transformer);
         const buildAssertThisInitialized = constructors.buildAssertThisInitialized;
+
+        const SuperTemp = struct {
+            name_span: Span,
+            binding: ?Transformer.SyntheticBinding,
+        };
+
+        fn beginSuperTemp(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!SuperTemp {
+            const binding = if (self.semantic_edit_enabled and self.state_machine_depth == 0)
+                try self.createSyntheticTempBinding(name_span, declaration_span, self.nearestVarScope(self.current_scope))
+            else
+                null;
+            return .{ .name_span = name_span, .binding = binding };
+        }
+
+        fn registerSuperTempRef(self: *Transformer, temp: SuperTemp, ref: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
+            if (!self.semantic_edit_enabled) return;
+            if (temp.binding) |binding| {
+                const symbol_id = binding.symbol_id orelse std.debug.panic("computed super temp has no exact SymbolId", .{});
+                try self.addSyntheticRefInScope(ref, symbol_id, self.current_scope, flags);
+            } else {
+                // State-machine callback scope is created after this expression is
+                // lowered. Keep its exact name span and attach the refs when that
+                // callback's owner scope is known.
+                try self.trackHoistedTempRefInScope(temp.name_span, ref, self.current_scope, flags);
+            }
+        }
+
+        fn makeSuperTempRef(self: *Transformer, temp: SuperTemp, node_span: Span, flags: ReferenceFlags) Transformer.Error!NodeIndex {
+            const ref = if (temp.binding) |binding|
+                try es_helpers.makeExactSyntheticRefAt(self, binding.name_span, node_span)
+            else
+                try es_helpers.makeTempVarRef(self, temp.name_span, node_span);
+            try registerSuperTempRef(self, temp, ref, flags);
+            return ref;
+        }
 
         fn makeThisAliasRef(self: *Transformer) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeSyntheticRef(self, "_this");
@@ -276,7 +312,8 @@ pub fn SuperProps(comptime Transformer: type) type {
 
             const visited = try self.visitNode(prop_idx);
             const temp_span = try es_helpers.makeTempVarSpan(self);
-            const temp_lhs = try es_helpers.makeTempVarRef(self, temp_span, span);
+            const temp = try beginSuperTemp(self, temp_span, span);
+            const temp_lhs = try makeSuperTempRef(self, temp, span, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -288,9 +325,9 @@ pub fn SuperProps(comptime Transformer: type) type {
             });
             return .{
                 .init = assign,
-                .read = try es_helpers.makeTempVarRef(self, temp_span, span),
+                .read = try makeSuperTempRef(self, temp, span, .{ .read = true }),
                 .value = try es_helpers.makeTempVarRef(self, temp_span, span),
-                .write = try es_helpers.makeTempVarRef(self, temp_span, span),
+                .write = try makeSuperTempRef(self, temp, span, .{ .read = true }),
             };
         }
 
@@ -531,8 +568,11 @@ pub fn SuperProps(comptime Transformer: type) type {
 
                 if (self.options.unsupported.nullish_coalescing) {
                     const read_capture = try es_helpers.captureToTemp(self, get_read, span);
+                    const capture_temp = try beginSuperTemp(self, read_capture.span, span);
+                    const capture_assignment = self.ast.getNode(read_capture.paren_assign);
+                    try registerSuperTempRef(self, capture_temp, capture_assignment.data.binary.left, .{ .write = true });
                     const neq_null = try es_helpers.makeNeqNull(self, read_capture.paren_assign, span);
-                    const get_value = try es_helpers.makeTempVarRef(self, read_capture.span, span);
+                    const get_value = try makeSuperTempRef(self, capture_temp, span, .{ .read = true });
                     const cond = try self.ast.addNode(.{
                         .tag = .conditional_expression,
                         .span = span,
@@ -589,8 +629,9 @@ pub fn SuperProps(comptime Transformer: type) type {
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
                 const temp_span = try es_helpers.makeTempVarSpan(self);
+                const temp = try beginSuperTemp(self, temp_span, span);
                 const get_call = try buildSuperPropGet(self, prop_ref.read, span);
-                const tmp_lhs = try es_helpers.makeTempVarRef(self, temp_span, span);
+                const tmp_lhs = try makeSuperTempRef(self, temp, span, .{ .write = true });
                 const init_old = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = span,
@@ -602,13 +643,13 @@ pub fn SuperProps(comptime Transformer: type) type {
                     .tag = .binary_expression,
                     .span = span,
                     .data = .{ .binary = .{
-                        .left = try es_helpers.makeTempVarRef(self, temp_span, span),
+                        .left = try makeSuperTempRef(self, temp, span, .{ .read = true }),
                         .right = try es_helpers.makeNumericLiteral(self, 1),
                         .flags = bin_op,
                     } },
                 });
                 try self.scratch.append(self.allocator, try buildSuperPropSet(self, prop_ref.write, computed, span));
-                try self.scratch.append(self.allocator, try es_helpers.makeTempVarRef(self, temp_span, span));
+                try self.scratch.append(self.allocator, try makeSuperTempRef(self, temp, span, .{ .read = true }));
 
                 const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 const seq = try self.ast.addNode(.{
