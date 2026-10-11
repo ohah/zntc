@@ -160,6 +160,12 @@ pub fn ES2020(comptime Transformer: type) type {
             base_idx: NodeIndex,
             ctx: LowerCtx,
         ) Transformer.Error!NodeIndex {
+            if (ctx == .normal) {
+                if (findOptionalMemberInvocationReceiverBase(self, node)) |receiver_base| {
+                    return lowerOptionalMemberInvocationAfterReceiver(self, node, receiver_base);
+                }
+            }
+
             // A later optional call can continue a method call that already
             // started an optional chain. Let that first source-rooted method
             // call own the complete chain so a short-circuit skips ordinary
@@ -174,7 +180,7 @@ pub fn ES2020(comptime Transformer: type) type {
             // 일반 capture 경로는 base_idx 를 visit 해서 raw `super` 를 temp 에 대입 → syntax error.
             // optional flag 만 벗겨내고 정상 super lowering 으로 우회 (#2034).
             if (ctx == .normal and isSuperExpression(self, effective_base_idx)) {
-                const stripped = try stripOptionalAtSuperBase(self, node, effective_base_idx);
+                const stripped = try stripOptionalAtBase(self, node, effective_base_idx);
                 return self.visitNode(stripped);
             }
 
@@ -228,6 +234,109 @@ pub fn ES2020(comptime Transformer: type) type {
             // 괄호로 감싸서 binary expression 안에서 우선순위 보장
             // 예: a?.b !== c?.d → (a == null ? void 0 : a.b) !== (c == null ? void 0 : c.d)
             return cond;
+        }
+
+        /// Find the earliest optional member boundary in the receiver of an
+        /// optional method invocation. The null guard for that boundary must
+        /// enclose the later method read and invocation too; lowering the
+        /// receiver into a conditional expression first would read the method
+        /// from `undefined` after the boundary short-circuits.
+        fn findOptionalMemberInvocationReceiverBase(self: *const Transformer, root: Node) ?NodeIndex {
+            if (root.tag != .call_expression) return null;
+            const call_extra = root.data.extra;
+            if (call_extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - call_extra < 4 or
+                (self.readU32(call_extra, 3) & ast_mod.CallFlags.optional_chain) == 0) return null;
+            const callee_idx = self.readNodeIdx(call_extra, 0);
+            if (callee_idx.isNone() or @intFromEnum(callee_idx) >= self.ast.nodes.items.len) return null;
+            const callee = self.ast.getNode(callee_idx);
+            if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return null;
+
+            var current = self.readNodeIdx(callee.data.extra, 0);
+            var receiver_base: ?NodeIndex = null;
+            var remaining_nodes = self.ast.nodes.items.len;
+            while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+                if (current.isNone() or @intFromEnum(current) >= self.ast.nodes.items.len) return null;
+                const current_node = self.ast.getNode(current);
+                switch (current_node.tag) {
+                    .static_member_expression, .computed_member_expression, .private_field_expression => {
+                        const extra = current_node.data.extra;
+                        if (extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - extra < 3) return null;
+                        if ((self.readU32(extra, 2) & ast_mod.MemberFlags.optional_chain) != 0) {
+                            receiver_base = self.readNodeIdx(extra, 0);
+                        }
+                        current = self.readNodeIdx(extra, 0);
+                    },
+                    .call_expression => {
+                        const extra = current_node.data.extra;
+                        if (extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - extra < 4) return null;
+                        current = self.readNodeIdx(extra, 0);
+                    },
+                    else => break,
+                }
+            }
+            const base = receiver_base orelse return null;
+            // A base that already contains an optional operation needs its
+            // own short-circuit boundary preserved first. Keep it on the
+            // existing recursive lowering path until that case is handled.
+            if (hasOptionalChainSegment(self, base)) return null;
+            return base;
+        }
+
+        fn lowerOptionalMemberInvocationAfterReceiver(
+            self: *Transformer,
+            root: Node,
+            receiver_base: NodeIndex,
+        ) Transformer.Error!NodeIndex {
+            const visited_base = try self.visitNode(receiver_base);
+            const base_cap = try captureTrackedTemp(self, visited_base, root.span);
+            const chain_base = try readTrackedTemp(self, base_cap.span, root.span);
+            const rewritten = try replaceOptionalBoundaryWithTemp(self, root, receiver_base, chain_base);
+            const lowered_tail = try self.visitNode(rewritten);
+            const base_eq_null = try helpers.makeEqNull(self, base_cap.paren_assign, root.span);
+            return self.ast.addNode(.{
+                .tag = .conditional_expression,
+                .span = root.span,
+                .data = .{ .ternary = .{
+                    .a = base_eq_null,
+                    .b = try helpers.makeVoidZero(self, root.span),
+                    .c = lowered_tail,
+                } },
+            });
+        }
+
+        fn replaceOptionalBoundaryWithTemp(
+            self: *Transformer,
+            node: Node,
+            receiver_base: NodeIndex,
+            chain_base: NodeIndex,
+        ) Transformer.Error!NodeIndex {
+            switch (node.tag) {
+                .static_member_expression, .computed_member_expression, .private_field_expression => {
+                    const extra = node.data.extra;
+                    const old_obj = self.readNodeIdx(extra, 0);
+                    const prop = self.readNodeIdx(extra, 1);
+                    const flags = self.readU32(extra, 2);
+                    if (old_obj == receiver_base and (flags & ast_mod.MemberFlags.optional_chain) != 0) {
+                        const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
+                        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(chain_base), @intFromEnum(prop), new_flags });
+                        return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+                    }
+                    const new_obj = try replaceOptionalBoundaryWithTemp(self, self.ast.getNode(old_obj), receiver_base, chain_base);
+                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(prop), flags });
+                    return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
+                },
+                .call_expression => {
+                    const extra = node.data.extra;
+                    const old_callee = self.readNodeIdx(extra, 0);
+                    const args_start = self.readU32(extra, 1);
+                    const args_len = self.readU32(extra, 2);
+                    const flags = self.readU32(extra, 3);
+                    const new_callee = try replaceOptionalBoundaryWithTemp(self, self.ast.getNode(old_callee), receiver_base, chain_base);
+                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), args_start, args_len, flags });
+                    return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
+                },
+                else => unreachable,
+            }
         }
 
         /// `prepareOptionalMemberCall` 의 두 가지 반환 모드.
@@ -552,11 +661,10 @@ pub fn ES2020(comptime Transformer: type) type {
             }
         }
 
-        /// node 부터 base_idx 까지 chain 을 따라 내려가서, 그 segment 의 obj/callee 가 base_idx 인
-        /// 지점의 optional_chain flag 만 제거한 새 노드 트리를 반환. 다른 chain segment 의 optional 은
-        /// 그대로 유지 — `(super as any)?.x?.y` 라면 `?.x` (super-base) 만 strip, `?.y` 는 보존되어
-        /// recursive visit 에서 일반 ternary 로 lowering.
-        fn stripOptionalAtSuperBase(self: *Transformer, node: Node, base_idx: NodeIndex) Transformer.Error!NodeIndex {
+        /// Copy the member/call spine and remove only the optional flag whose
+        /// receiver/callee is `base_idx`. Other optional segments remain for
+        /// recursive lowering.
+        fn stripOptionalAtBase(self: *Transformer, node: Node, base_idx: NodeIndex) Transformer.Error!NodeIndex {
             switch (node.tag) {
                 .static_member_expression, .computed_member_expression, .private_field_expression => {
                     const e = node.data.extra;
@@ -568,7 +676,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         const new_extra = try self.ast.addExtras(&.{ @intFromEnum(obj_idx), @intFromEnum(prop), new_flags });
                         return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                     }
-                    const new_obj = try stripOptionalAtSuperBase(self, self.ast.getNode(obj_idx), base_idx);
+                    const new_obj = try stripOptionalAtBase(self, self.ast.getNode(obj_idx), base_idx);
                     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(prop), flags });
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                 },
@@ -583,7 +691,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         const new_extra = try self.ast.addExtras(&.{ @intFromEnum(callee_idx), args_start, args_len, new_flags });
                         return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
                     }
-                    const new_callee = try stripOptionalAtSuperBase(self, self.ast.getNode(callee_idx), base_idx);
+                    const new_callee = try stripOptionalAtBase(self, self.ast.getNode(callee_idx), base_idx);
                     const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), args_start, args_len, flags });
                     return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
                 },
