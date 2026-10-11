@@ -88,6 +88,12 @@ pub const Codegen = struct {
     /// 다음 function/arrow/class에 적용할 contextual name. owned UTF-8 — set 시 dupe,
     /// 소비/save-restore/codegen.deinit 시 free.
     pending_fn_name: ?[]u8 = null,
+    /// 다음 emitFunction 이 함수 이름을 생략한다. 블록 함수 선언을
+    /// `let f = function(){}` 로 낮출 때만 켠다 (#5454).
+    suppress_next_function_name: bool = false,
+    /// 다음 braced block 이 함수 본문이다. 본문 최상위 함수 선언은 var 처럼 함수 스코프에
+    /// 묶이므로 블록 함수 낮추기(#5454) 대상이 아니다. emitBracedList 진입 시 소비한다.
+    next_block_is_function_body: bool = false,
     /// hot-path fast-exit 플래그. tryEmitGlobObject/tryEmitRequireContextObject 가
     /// 모든 call expression 에 대해 호출되므로, 해당 종류의 record 가 없으면 O(1) 로 빠짐.
     has_glob_records: bool = false,

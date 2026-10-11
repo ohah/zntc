@@ -159,6 +159,12 @@ pub const CodegenOptions = struct {
     /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
     /// emitter가 var 선언을 래퍼 밖에 별도 배치.
     esm_var_assign_only: bool = false,
+    /// 번들러가 strict 모듈 코드를 `"use strict"` 없는 함수 안에 내보낼 때(iife/umd/amd
+    /// scope hoisting, `__esm` 래퍼, dev HMR eval) 켠다. sloppy 실행에서는 Annex B 가 블록
+    /// 함수 선언을 바깥 함수의 `var` 로 끌어올려 다른 모듈 바인딩을 덮는다. 블록 함수 선언을
+    /// 블록 맨 위의 `let f = function(){}` 로 낮춰 소스(strict)의 블록 스코프 의미를 지킨다
+    /// (esbuild 와 동일, #5454).
+    lower_strict_block_functions: bool = false,
     /// (#4587 target a) preserve-modules + CJS unwrapped 모듈: 재할당되는 export 바인딩이
     /// `exports.<name>` 로 rename 됐을 때(linking_metadata.renames 가 `"exports."` prefix),
     /// 그 선언(`let A = init`)을 `exports.A = init;` 할당으로 낮춘다(`let exports.A` = SyntaxError

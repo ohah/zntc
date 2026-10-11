@@ -1480,6 +1480,19 @@ pub fn wrapDevModuleCode(
 
 /// 소스맵 sources 배열에 사용할 경로를 반환.
 /// RN 플랫폼은 Metro 호환 절대 경로, 다른 플랫폼은 root_dir 기준 상대 경로.
+/// Whether a module's code is emitted where it may run in sloppy mode while its
+/// source is strict: non-ESM outputs concatenate it into a sloppy function body,
+/// and dev HMR re-evaluates it through indirect eval. Block function
+/// declarations are then lowered to block-scoped `let` (#5454). Targets without
+/// `let` are left unchanged.
+pub fn lowersStrictBlockFunctions(options: *const EmitOptions, module: *const Module) bool {
+    if (options.format == .esm and !options.dev_mode) return false;
+    if (options.unsupported.block_scoping) return false;
+    const sem = module.semantic orelse return false;
+    if (sem.scopes.len == 0) return false;
+    return sem.scopes[0].is_strict;
+}
+
 pub fn sourcemapSourcePath(path: []const u8, options: *const EmitOptions) []const u8 {
     if (options.platform == .react_native) return path;
     return makeModuleId(path, options.root_dir);
@@ -2308,6 +2321,7 @@ pub fn emitModule(
         // 번들 모드에서 ESM이 아니면 import.meta → {} 치환 (esbuild 호환)
         // Node.js는 import.meta를 보면 ESM으로 재파싱하려 해서 에러 발생
         .replace_import_meta = options.format != .esm,
+        .lower_strict_block_functions = lowersStrictBlockFunctions(options, module),
         .platform = options.platform,
         // --charset=utf8 → ascii_only=false (명시적 보장)
         .ascii_only = false,

@@ -393,6 +393,32 @@ fn trimTrailingBlankForBlockClose(self: anytype) void {
     self.gen_col = writer.trailingColumn(self.buf.items);
 }
 
+/// A plain (non-async, non-generator) named function declaration directly in a
+/// block. Async and generator declarations are not Annex B candidates.
+fn isLowerableBlockFunction(self: anytype, idx: NodeIndex) bool {
+    if (idx.isNone()) return false;
+    const node = self.ast.getNode(idx);
+    if (node.tag != .function_declaration) return false;
+    const extras = self.ast.extra_data.items;
+    if (node.data.extra + 3 >= extras.len) return false;
+    const name: NodeIndex = @enumFromInt(extras[node.data.extra]);
+    if (name.isNone()) return false;
+    const flags = extras[node.data.extra + 3];
+    return flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) == 0;
+}
+
+/// `function f() {}` -> `let f = function() {};` (name inferred from the binding).
+fn emitLoweredBlockFunction(self: anytype, idx: NodeIndex) !void {
+    const node = self.ast.getNode(idx);
+    const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+    try self.write("let ");
+    try self.emitNode(name);
+    try self.write(if (self.options.minify_whitespace) "=" else " = ");
+    self.suppress_next_function_name = true;
+    try self.emitNode(idx);
+    try self.writeByte(';');
+}
+
 pub fn emitBracedList(self: anytype, node: Node) !void {
     if (!self.options.minify_whitespace and self.buf.items.len > 0) {
         const last = self.buf.items[self.buf.items.len - 1];
@@ -403,12 +429,28 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
     try self.writeByte('{');
     const list = node.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
+    const is_function_body = self.next_block_is_function_body;
+    self.next_block_is_function_body = false;
+    const lower_functions = node.tag == .block_statement and !is_function_body and
+        self.options.lower_strict_block_functions;
     if (indices.len > 0) {
         self.indent_level += 1;
+        // Block function declarations are initialized when the block is
+        // entered, so their lowered `let` bindings go first.
+        if (lower_functions) {
+            for (indices) |raw| {
+                const idx: NodeIndex = @enumFromInt(raw);
+                if (!isLowerableBlockFunction(self, idx) or isElidedStmt(self, idx)) continue;
+                try writeNewline(self);
+                try writeIndent(self);
+                try emitLoweredBlockFunction(self, idx);
+            }
+        }
         var i: usize = 0;
         while (i < indices.len) : (i += 1) {
             const idx: NodeIndex = @enumFromInt(indices[i]);
             if (isElidedStmt(self, idx)) continue;
+            if (lower_functions and isLowerableBlockFunction(self, idx)) continue;
             try writeNewline(self);
             try writeIndent(self);
             // #3110: `if(c)return A;` 바로 다음 형제가 `return B;` 면 `return c?A:B;` 로 합침.
