@@ -1883,6 +1883,7 @@ fn isSafePostSuperConditionalBranch(
                 semantic,
                 @enumFromInt(raw_statement_idx),
             )) continue;
+            if (isSafePostSuperConditionalStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
             return false;
         }
         return true;

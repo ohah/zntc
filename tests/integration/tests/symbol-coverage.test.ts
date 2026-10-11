@@ -14061,6 +14061,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 2 90 value:2|after:2 false\n',
       },
       {
+        name: 'post-super conditional branch nested if preserves Proxy getter and write order',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({ ready: true }, { get(target, key, receiver) { if (key === "ready") events.push("get:ready"); return Reflect.get(target, key, receiver); }, set(target, key, value, receiver) { events.push("set:" + key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { if (this.ready) { this.value = 1; } else { this.value = 2; } } this.after = 3; } } var child = new Child(); console.log(child.value, child.after, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '1 3 90 get:ready|set:value:1|set:after:3 false\n',
+      },
+      {
+        name: 'post-super conditional branch nested else-if preserves reads and local identity',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({ ready: false, selected: true }, { get(target, key, receiver) { if (key === "ready" || key === "selected") events.push("get:" + key); return Reflect.get(target, key, receiver); }, set(target, key, value, receiver) { events.push("set:" + key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var result = 0; if (true) { if (this.ready) { result = 1; this.value = result; } else if (this.selected) { result = 2; this.value = result; } else { result = 3; this.value = result; } } this.after = result; } } var child = new Child(); console.log(child.value, child.after, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '2 2 90 get:ready|get:selected|set:value:2|set:after:2 false\n',
+      },
+      {
+        name: 'post-super conditional branch nested if call condition stays on reanalysis',
+        source:
+          'var calls = 0; function choose() { calls++; return true; } function Base() {} class Child extends Base { constructor() { super(); if (true) { if (choose()) this.value = 1; else this.value = 2; } } } var child = new Child(); console.log(child.value, calls, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 1 true\n',
+      },
+      {
+        name: 'post-super conditional branch nested computed this condition stays on reanalysis',
+        source:
+          'var key = "ready"; function Base() { this.ready = true; } class Child extends Base { constructor() { super(); if (true) { if (this[key]) this.value = 1; else this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
+      },
+      {
         name: 'post-super conditional branch nested lexical block stays on reanalysis',
         source:
           'function Base() {} class Child extends Base { constructor() { super(); if (true) { { let local = 2; this.value = local; } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
