@@ -109,10 +109,12 @@ run().then((asyncValue) => console.log(generatorValue, asyncValue, calls));`,
   test('lowered parameter-default captures use the emitted function scope', async () => {
     const fixture = await createFixture({
       'input.js': `var calls = 0;
+var keyCalls = 0;
 var box = { value: null };
 function getBox() { calls++; return box; }
-function read(value = getBox().value ??= 5) { return value; }
-console.log(read(), box.value, calls);`,
+function getKey() { keyCalls++; return 'value'; }
+function read(value = getBox()[getKey()] ??= 5) { return value; }
+console.log(read(), box.value, calls, keyCalls);`,
     });
     cleanup = fixture.cleanup;
     const native = spawnSync('node', [join(fixture.dir, 'input.js')], { encoding: 'utf8' });
@@ -143,16 +145,18 @@ console.log(read(), box.value, calls);`,
     const actual = spawnSync('node', [output], { encoding: 'utf8' });
     expect(actual.status, actual.stderr).toBe(0);
     expect(actual.stdout).toBe(native.stdout);
-    expect(actual.stdout).toBe('5 5 1\n');
+    expect(actual.stdout).toBe('5 5 1 1\n');
   });
 
   test('parameter-default captures stay valid when direct eval retains native defaults', async () => {
     const fixture = await createFixture({
       'input.js': `var calls = 0;
+var keyCalls = 0;
 var box = { value: null };
 function getBox() { calls++; return box; }
-function read(value = getBox().value ??= 5) { eval(''); return value; }
-console.log(read(), box.value, calls);`,
+function getKey() { keyCalls++; return 'value'; }
+function read(value = getBox()[getKey()] ??= 5) { eval(''); return value; }
+console.log(read(), box.value, calls, keyCalls);`,
     });
     cleanup = fixture.cleanup;
     const native = spawnSync('node', [join(fixture.dir, 'input.js')], { encoding: 'utf8' });
@@ -181,6 +185,6 @@ console.log(read(), box.value, calls);`,
     const actual = spawnSync('node', [output], { encoding: 'utf8' });
     expect(actual.status, actual.stderr).toBe(0);
     expect(actual.stdout).toBe(native.stdout);
-    expect(actual.stdout).toBe('5 5 1\n');
+    expect(actual.stdout).toBe('5 5 1 1\n');
   });
 });

@@ -1481,6 +1481,7 @@ pub const AssignmentTargetRef = struct {
 
 const AssignmentTempRefs = struct {
     span: Span,
+    declaration_span: Span,
     first_write: NodeIndex,
     value_read: NodeIndex,
     write_read: NodeIndex,
@@ -1497,9 +1498,9 @@ const AssignmentReferenceCopies = struct {
 pub fn trackAssignmentTargetRefs(self: anytype, target: AssignmentTargetRef, use_value: bool, use_write: bool) !void {
     for (target.temps) |maybe_temp| {
         const temp = maybe_temp orelse continue;
-        try self.trackHoistedTempRef(temp.span, temp.first_write, .{ .write = true });
-        if (use_value) try self.trackHoistedTempRef(temp.span, temp.value_read, .{ .read = true });
-        if (use_write) try self.trackHoistedTempRef(temp.span, temp.write_read, .{ .read = true });
+        try self.trackSyntheticTempReference(temp.span, temp.declaration_span, temp.first_write, .{ .write = true });
+        if (use_value) try self.trackSyntheticTempReference(temp.span, temp.declaration_span, temp.value_read, .{ .read = true });
+        if (use_write) try self.trackSyntheticTempReference(temp.span, temp.declaration_span, temp.write_read, .{ .read = true });
     }
     for (target.references) |maybe_reference| {
         const reference = maybe_reference orelse continue;
@@ -1607,7 +1608,13 @@ fn makeSingleEvalExpr(
         .read = assign,
         .value = value_ref,
         .write = write_ref,
-        .temp = .{ .span = temp_span, .first_write = temp_lhs, .value_read = value_ref, .write_read = write_ref },
+        .temp = .{
+            .span = temp_span,
+            .declaration_span = span,
+            .first_write = temp_lhs,
+            .value_read = value_ref,
+            .write_read = write_ref,
+        },
     };
 }
 
