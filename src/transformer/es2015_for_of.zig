@@ -47,6 +47,7 @@ const es_helpers = @import("es_helpers.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
 const std = @import("std");
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const es2015_block_scoping = @import("es2015_block_scoping.zig");
 
 pub fn ES2015ForOf(comptime Transformer: type) type {
@@ -313,61 +314,63 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const obj = try es_helpers.makeTempVarSpan(self);
             const key = try es_helpers.makeTempVarSpan(self);
             const names = try uniqueForInNames(self);
-            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ obj, names.keys, key, names.idx });
-
-            const obj_binding = try es_helpers.makeSyntheticBinding(self, obj);
-            const keys_binding = try es_helpers.makeSyntheticBinding(self, names.keys);
-            const key_binding = try es_helpers.makeSyntheticBinding(self, key);
-            const idx_binding = try es_helpers.makeSyntheticBinding(self, names.idx);
+            // State-machine collection hoists these `var` bindings into the
+            // generated wrapper. Carry each exact name and SymbolId together
+            // so references below never recover identity from a name-span
+            // lookup after collection.
+            const temp_owner_scope = if (self.generator_state_machine_scope.isNone()) loop_scope else self.generator_state_machine_scope;
+            const temp_scope: ?ScopeId = if (self.semantic_edit_enabled)
+                self.nearestVarScope(temp_owner_scope)
+            else
+                null;
+            const obj_binding = try self.createSyntheticTempBinding(obj, span, temp_scope);
+            const keys_binding = try self.createSyntheticTempBinding(names.keys, span, temp_scope);
+            const key_binding = try self.createSyntheticTempBinding(key, span, temp_scope);
+            const idx_binding = try self.createSyntheticTempBinding(names.idx, span, temp_scope);
+            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{
+                obj_binding.name_span,
+                keys_binding.name_span,
+                key_binding.name_span,
+                idx_binding.name_span,
+            });
             if (self.semantic_edit_enabled) {
-                // These declarations are hoisted into the generator wrapper
-                // after state-machine collection. Give each binding its
-                // function-scoped identity now; the final wrapper binding
-                // reuses this exact symbol through state-machine hoisting.
-                // During generator collection the source loop can still be owned
-                // by its original outer scope even after its body has moved into
-                // an extracted per-iteration generator. Bind these wrapper temps
-                // directly to the exact function scope that owns this state
-                // machine; final wrapper declarations reuse these SymbolIds.
-                const temp_owner_scope = if (self.generator_state_machine_scope.isNone()) loop_scope else self.generator_state_machine_scope;
-                const var_scope = self.nearestVarScope(temp_owner_scope);
-                try self.recordGeneratorStateTempSymbol(obj, try self.declareSyntheticTempInScope(obj_binding, span, var_scope));
-                try self.recordGeneratorStateTempSymbol(names.keys, try self.declareSyntheticTempInScope(keys_binding, span, var_scope));
-                try self.recordGeneratorStateTempSymbol(key, try self.declareSyntheticTempInScope(key_binding, span, var_scope));
-                try self.recordGeneratorStateTempSymbol(names.idx, try self.declareSyntheticTempInScope(idx_binding, span, var_scope));
+                try self.recordGeneratorStateTempSymbol(obj_binding.name_span, obj_binding.symbol_id);
+                try self.recordGeneratorStateTempSymbol(keys_binding.name_span, keys_binding.symbol_id);
+                try self.recordGeneratorStateTempSymbol(key_binding.name_span, key_binding.symbol_id);
+                try self.recordGeneratorStateTempSymbol(idx_binding.name_span, idx_binding.symbol_id);
             }
 
             // var _obj = object, _keys = [], _k;
             const empty = try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 });
             const decl = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, obj_binding, right, span),
-                try es_helpers.makeDeclarator(self, keys_binding, empty, span),
-                try es_helpers.makeDeclarator(self, key_binding, .none, span),
+                try es_helpers.makeDeclarator(self, obj_binding.node, right, span),
+                try es_helpers.makeDeclarator(self, keys_binding.node, empty, span),
+                try es_helpers.makeDeclarator(self, key_binding.node, .none, span),
             }, .@"var", span);
 
             // for (_k in _obj) _keys.push(_k);
-            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeTrackedRefFromSpan(self, names.keys, .{ .read = true }, loop_scope, true), try es_helpers.makePropertyName(self, "push"), span), &.{try makeTrackedRefFromSpan(self, key, .{ .read = true }, loop_scope, true)}, span);
+            const push = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "push"), span), &.{try makeRefForSyntheticBinding(self, key_binding, loop_scope, .{ .read = true })}, span);
             const collect = try self.ast.addNode(.{ .tag = .for_in_statement, .span = span, .data = .{ .ternary = .{
-                .a = try makeTrackedRefFromSpan(self, key, .{ .write = true }, loop_scope, true),
-                .b = try makeTrackedRefFromSpan(self, obj, .{ .read = true }, loop_scope, true),
+                .a = try makeRefForSyntheticBinding(self, key_binding, loop_scope, .{ .write = true }),
+                .b = try makeRefForSyntheticBinding(self, obj_binding, loop_scope, .{ .read = true }),
                 .c = try es_helpers.makeExprStmt(self, push, span),
             } } });
 
             // for (var _idx = 0; _idx < _keys.length; _idx++) { <루프 변수 = _keys[_idx]>; body }
             const init = try es_helpers.makeVarDeclaration(self, &.{
-                try es_helpers.makeDeclarator(self, idx_binding, try es_helpers.makeNumericLiteral(self, 0), span),
+                try es_helpers.makeDeclarator(self, idx_binding.node, try es_helpers.makeNumericLiteral(self, 0), span),
             }, .@"var", span);
-            const length = try es_helpers.makeStaticMember(self, try makeTrackedRefFromSpan(self, names.keys, .{ .read = true }, loop_scope, true), try es_helpers.makePropertyName(self, "length"), span);
+            const length = try es_helpers.makeStaticMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }), try es_helpers.makePropertyName(self, "length"), span);
             const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
-                .left = try makeTrackedRefFromSpan(self, names.idx, .{ .read = true }, loop_scope, true),
+                .left = try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true }),
                 .right = length,
                 .flags = @intFromEnum(token_mod.Kind.l_angle),
             } } });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = try self.ast.addExtras(&.{
-                @intFromEnum(try makeTrackedRefFromSpan(self, names.idx, .{ .read = true, .write = true }, loop_scope, true)),
+                @intFromEnum(try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true, .write = true })),
                 @intFromEnum(token_mod.Kind.plus2) | ast_mod.UnaryFlags.postfix,
             }) } });
-            const value = try es_helpers.makeComputedMember(self, try makeTrackedRefFromSpan(self, names.keys, .{ .read = true }, loop_scope, true), try makeTrackedRefFromSpan(self, names.idx, .{ .read = true }, loop_scope, true), span);
+            const value = try es_helpers.makeComputedMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }), try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true }), span);
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
                 @intFromEnum(init), @intFromEnum(test_expr), @intFromEnum(update), @intFromEnum(try buildLoopBody(self, left, value, body, span)),
             });
@@ -488,9 +491,20 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             return es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
         }
 
-        fn makeTrackedRefFromSpan(self: *Transformer, name_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags, scope: @import("../semantic/scope.zig").ScopeId, track: bool) Transformer.Error!NodeIndex {
-            const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
-            if (track) try self.trackHoistedTempRefInScope(name_span, ref, scope, flags);
+        fn makeRefForSyntheticBinding(self: *Transformer, binding: Transformer.SyntheticBinding, scope: ScopeId, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
+            const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, binding.name_span);
+            if (self.semantic_edit_enabled) {
+                const symbol_id = binding.symbol_id orelse std.debug.panic("for-in temp reference has no exact SymbolId", .{});
+                if (self.state_machine_depth > 0) {
+                    // Generator operation collection runs before the callback's
+                    // output scopes are attached. Preserve the producer-chosen
+                    // identity now; finishSemanticEdit will register its exact
+                    // reference and access mode from the emitted AST ancestry.
+                    try self.trackExactOutputReference(ref, @intFromEnum(symbol_id));
+                } else {
+                    try self.addSyntheticRefInScope(ref, symbol_id, scope, flags);
+                }
+            }
             return ref;
         }
 
