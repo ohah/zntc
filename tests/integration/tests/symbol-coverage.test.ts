@@ -12359,11 +12359,18 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'call-result computed member receiver stays on semantic reanalysis',
-        source:
-          'var key = "outer"; function makeHolder() { return { outer: { value: 9 } }; } class CallResultComputedMemberReceiverField { static value = makeHolder()[key].value; } console.log(CallResultComputedMemberReceiverField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+        name: 'bound call-result computed member reads retain key, getter receiver, and order',
+        source: [
+          'var order = [];',
+          'var inner = { get value() { order.push(this === inner ? "value:true" : "value:false"); return 9; } };',
+          'var holder = { get outer() { order.push(this === holder ? "outer:true" : "outer:false"); return inner; } };',
+          'function makeHolder() { order.push("receiver"); return holder; }',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "outer"; } }; }',
+          'class BoundCallResultComputedMemberReadField { static value = makeHolder()[memberKey()].value; }',
+          'console.log(BoundCallResultComputedMemberReadField.value, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 receiver,key,coerce,outer:true,value:true\n',
       },
       {
         name: 'unresolved computed static member call key retains its external reference',
@@ -12548,11 +12555,17 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'call-result computed static member receiver stays on semantic reanalysis',
-        source:
-          'var key = "value"; function makeComputedStaticMemberHolder() { return { value: 9 }; } class CallResultComputedStaticMemberValueField { static value = makeComputedStaticMemberHolder()[key]; } console.log(CallResultComputedStaticMemberValueField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+        name: 'bound call-result computed static member reads retain key conversion and getter order',
+        source: [
+          'var order = [];',
+          'var holder = { get value() { order.push(this === holder ? "value:true" : "value:false"); return 9; } };',
+          'function makeHolder() { order.push("receiver"); return holder; }',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "value"; } }; }',
+          'class BoundCallResultComputedStaticMemberReadField { static value = makeHolder()[memberKey()]; }',
+          'console.log(BoundCallResultComputedStaticMemberReadField.value, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 receiver,key,coerce,value:true\n',
       },
       {
         name: 'unbound optional static member value retains one root read and null short-circuit',
@@ -12590,11 +12603,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'call-result static member value stays on semantic reanalysis',
+        name: 'bound call-result static member reads retain getter receiver and order',
         source:
-          'function makeStaticMemberHolder() { return { value: 9 }; } class CallResultStaticMemberValueField { static value = makeStaticMemberHolder().value; } console.log(CallResultStaticMemberValueField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; var holder = { get value() { order.push(this === holder ? "value:true" : "value:false"); return 9; } }; function makeHolder() { order.push("receiver"); return holder; } class BoundCallResultStaticMemberReadField { static value = makeHolder().value; } console.log(BoundCallResultStaticMemberReadField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 receiver,value:true\n',
       },
       {
         name: 'bound computed static field name identifiers retain their exact key temp graph',
@@ -12944,6 +12957,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'function getFieldReceiver() { return { fieldValue(input) { return input + 1; } }; } class NestedReceiverMemberCallField { static value = getFieldReceiver().fieldValue(8); } console.log(NestedReceiverMemberCallField.value);',
         graph: 'retained',
         output: '9\n',
+      },
+      {
+        name: 'unresolved call-result static member reads stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcUnresolvedMemberReadFactory = function () { return { value: 9 }; }; class UnresolvedCallResultStaticMemberReadField { static value = __zntcUnresolvedMemberReadFactory().value; } console.log(UnresolvedCallResultStaticMemberReadField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional call-result static member reads stay on semantic reanalysis',
+        source:
+          'var holder = { value: 9 }; function makeHolder() { return holder; } class OptionalCallResultStaticMemberReadField { static value = makeHolder()?.value; } console.log(OptionalCallResultStaticMemberReadField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result static member read with effectful receiver argument stays on semantic reanalysis',
+        source:
+          'var order = []; var holder = { value: 9 }; function makeHolder(input) { return holder; } class EffectfulCallResultStaticMemberReadField { static value = makeHolder((order.push("receiver-argument"), 1)).value; } console.log(EffectfulCallResultStaticMemberReadField.value, order.join(","));',
+        graph: 'reanalyzed',
+        output: '9 receiver-argument\n',
       },
       {
         name: 'unresolved direct static initializer calls retain exact external identity and order',
