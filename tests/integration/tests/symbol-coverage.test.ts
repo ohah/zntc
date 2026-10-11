@@ -4524,6 +4524,32 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         output: 'undefined 42 1\n',
       },
       {
+        name: 'optional member call on an unresolved global keeps one receiver read and exact this',
+        graph: 'retained',
+        source: [
+          'var order = []; var receiver = { base: 37, method: function (value) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + value; } };',
+          'Object.defineProperty(globalThis, "__zntcOptionalGlobalReceiver", { configurable: true, get() { order.push("root"); return receiver; } });',
+          'Object.defineProperty(globalThis, "__zntcMissingOptionalGlobalReceiver", { configurable: true, get() { order.push("missing"); return null; } });',
+          'function argument() { order.push("argument"); return 5; }',
+          'function read() { return __zntcOptionalGlobalReceiver?.method(argument()); }',
+          'function readMissing() { return __zntcMissingOptionalGlobalReceiver?.method(argument()); }',
+          'console.log(read(), readMissing(), order.join(","));',
+        ].join('\n'),
+        output: '42 undefined root,argument,this,missing\n',
+      },
+      {
+        name: 'optional invocation on an unresolved optional member stays on semantic reanalysis',
+        graph: 'reanalyzed',
+        source: [
+          'var order = []; var receiver = { base: 2, method: function (value) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + value; } };',
+          'Object.defineProperty(globalThis, "__zntcOptionalInvocationReceiver", { configurable: true, get() { order.push("root"); return receiver; } });',
+          'function argument() { order.push("argument"); return 5; }',
+          'function read() { return __zntcOptionalInvocationReceiver?.method?.(argument()); }',
+          'console.log(read(), order.join(","));',
+        ].join('\n'),
+        output: '7 root,argument,this\n',
+      },
+      {
         name: 'optional member call with captured receiver',
         graph: 'retained',
         source: [
@@ -12351,11 +12377,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional computed static member call access stays on semantic reanalysis',
+        name: 'optional computed static member call access retains receiver and null short-circuit',
         source:
-          'var key = "value"; var holder = { value() { return 9; } }; class OptionalComputedStaticMemberCallField { static value = holder?.[key](); } console.log(OptionalComputedStaticMemberCallField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; function key() { order.push("key"); return "value"; } var holder = { get value() { order.push("method"); return function () { order.push(this === holder ? "this" : "wrong-this"); return 9; }; } }; var missing = null; class OptionalComputedStaticMemberCallField { static value = holder?.[key()](); static absent = missing?.[key()](); } console.log(OptionalComputedStaticMemberCallField.value, OptionalComputedStaticMemberCallField.absent, order.join(","));',
+        graph: 'retained',
+        output: '9 undefined key,method,this\n',
       },
       {
         name: 'optional computed static member invocation stays on semantic reanalysis',
@@ -12526,6 +12552,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'optional member-call computed static field name stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcOptionalStaticFieldKeyReceiver = { fieldKey() { return "value"; } }; class OptionalMemberCallStaticFieldName { static [__zntcOptionalStaticFieldKeyReceiver?.fieldKey()] = 9; } console.log(OptionalMemberCallStaticFieldName.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
         name: 'class-self references in computed static field keys stay on semantic reanalysis',
         source:
           'var SelfKey = class SelfKey { static [false && SelfKey] = 1; }; console.log(SelfKey.false);',
@@ -12596,11 +12629,18 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional member-call static field initializers stay on semantic reanalysis',
+        name: 'bound optional member-call static field initializers retain their graph',
         source:
           'var receiver = { fieldValue(input) { return input + 1; } }; class OptionalMemberCallField { static value = receiver?.fieldValue(8); } console.log(OptionalMemberCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
+      },
+      {
+        name: 'unresolved optional member-call static initializers retain root, receiver this and argument order',
+        source:
+          'var order = []; var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } }; Object.defineProperty(globalThis, "__zntcOptionalStaticCallRoot", { configurable: true, get() { order.push("root"); return receiver; } }); Object.defineProperty(globalThis, "__zntcMissingOptionalStaticCallRoot", { configurable: true, get() { order.push("missing"); return null; } }); function memberKey() { order.push("key"); return "fieldValue"; } function argument() { order.push("argument"); return 4; } class UnresolvedOptionalMemberCallField { static value = __zntcOptionalStaticCallRoot?.[memberKey()](argument()); static absent = __zntcMissingOptionalStaticCallRoot?.[memberKey()](argument()); } console.log(UnresolvedOptionalMemberCallField.value, UnresolvedOptionalMemberCallField.absent, order.join(","));',
+        graph: 'retained',
+        output: '9 undefined root,key,method,argument,this,missing\n',
       },
       {
         name: 'optional member-call invocation static field initializers stay on semantic reanalysis',
@@ -12638,10 +12678,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional nested member receiver static fields stay on semantic reanalysis',
+        name: 'optional nested member receiver static fields retain their graph',
         source:
           'var holder = { receiver: { fieldValue(input) { return input + 1; } } }; class OptionalNestedMemberReceiverField { static value = holder?.receiver.fieldValue(8); } console.log(OptionalNestedMemberReceiverField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
@@ -12778,10 +12818,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional unresolved member receiver calls stay on semantic reanalysis',
+        name: 'optional unresolved member receiver calls retain the external root',
         source:
           'globalThis.__zntcOptionalExternalReceiver = { fieldValue(input) { return input + 1; } }; class OptionalExternalReceiverCallField { static value = __zntcOptionalExternalReceiver?.fieldValue(8); } console.log(OptionalExternalReceiverCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {

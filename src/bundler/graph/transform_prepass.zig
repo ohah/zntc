@@ -734,6 +734,7 @@ fn isRetainableOptionalMemberAccess(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
+    allow_unresolved_root: bool,
 ) bool {
     if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.getNode(node_idx);
@@ -742,9 +743,8 @@ fn isRetainableOptionalMemberAccess(
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
     if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0) return false;
     const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    // Optional member calls still require an exact bound receiver. The edited
-    // graph does not yet preserve the full scope shape for unresolved roots.
-    return isRetainableOptionalMemberReceiver(ast, semantic, receiver, false);
+    // The optional-chain transform captures this receiver into an exact temp.
+    return isRetainableOptionalMemberReceiver(ast, semantic, receiver, allow_unresolved_root);
 }
 
 /// An ordinary member/call tail can follow one audited optional member access
@@ -859,7 +859,9 @@ fn isRetainableOptionalCall(
     const member_extra = member.data.extra;
     if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra <= 2) return false;
     if ((ast.extra_data.items[member_extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) {
-        return isRetainableOptionalMemberAccess(ast, semantic, callee);
+        // An unresolved root is admitted for `root?.method()`, where only the
+        // receiver is optional. Keep `root?.method?.()` on the stricter path.
+        return isRetainableOptionalMemberAccess(ast, semantic, callee, !optional_call);
     }
     const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
     if (!optional_call) return isRetainableOptionalMemberChainTail(ast, semantic, callee);
@@ -1211,6 +1213,44 @@ fn isRetainableStaticFieldCall(
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
         ast.getNode(call_idx).tag != .call_expression) return false;
     return isRetainableStaticFieldExpression(allocator, ast, semantic, call_idx);
+}
+
+/// A static initializer may call a member through an optional receiver when
+/// its member chain and arguments are otherwise retained by the shared checks.
+/// Keep this allowance at the initializer boundary; computed field names use
+/// the stricter call validator above.
+fn isRetainableStaticFieldOptionalMemberCallInitializer(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
+        ast.getNode(call_idx).tag != .call_expression) return false;
+    const extras = ast.extra_data.items;
+    const call = ast.getNode(call_idx);
+    const extra = call.data.extra;
+    if (extra > extras.len or extras.len - extra < 4 or
+        (extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.getNode(callee_idx);
+    if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression)
+        return false;
+    if (!isRetainableStaticFieldOptionalMemberChain(allocator, ast, semantic, callee_idx, true))
+        return false;
+
+    const args_start = extras[extra + 1];
+    const args_len = extras[extra + 2];
+    if (args_start > extras.len or args_len > extras.len - args_start) return false;
+    for (extras[args_start .. args_start + args_len]) |raw_arg| {
+        if (raw_arg >= ast.nodes.items.len) return false;
+        const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
+        if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
+        if (ast.getNode(argument_idx).tag != .call_expression or
+            !isRetainableStaticFieldExpression(allocator, ast, semantic, argument_idx)) return false;
+    }
+    return true;
 }
 
 fn isSafeConstructorVarDeclaration(
@@ -2389,6 +2429,7 @@ fn isRetainableSimpleStaticClassField(
     return isSafeConstructorValue(ast, semantic, init_idx) or
         isUnresolvedSourceIdentifierReference(ast, semantic, init_idx) or
         isRetainableStaticFieldInitializerMemberAccess(allocator, ast, semantic, init_idx) or
+        isRetainableStaticFieldOptionalMemberCallInitializer(allocator, ast, semantic, init_idx) or
         isRetainableStaticFieldCall(allocator, ast, semantic, init_idx);
 }
 
