@@ -10422,6 +10422,200 @@ console.log(new Example().method(undefined, 3), __decorateClass, __decorateParam
           .find((line) => line.startsWith('zntc: symbol-identity '));
         expect(identity, `${target.name}: missing exact report`).toBeDefined();
         expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        expect(postMinifyAuditProblems(proc.stderr), `${target.name}: ${proc.stderr}`).toEqual([]);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${target.name}: differs from TypeScript 5 output`).toBe(
+          oracle.stdout,
+        );
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy computed decorator keys evaluate once and keep exact temp references', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-computed-decorator-key-'));
+    try {
+      const file = join(outDir, 'input.ts');
+      const source = `const _a = 'user-temp-name';
+const events: string[] = [];
+function base() { events.push('base'); return class {}; }
+function methodKey() { events.push('method-key'); return 'run'; }
+function staticKey() { events.push('static-key'); return 'build'; }
+function getterKey() { events.push('getter-key'); return 'label'; }
+function methodDec(target: any, key: string, descriptor: PropertyDescriptor): PropertyDescriptor { events.push('method:' + key); return descriptor; }
+function makeMethodExample() {
+  const _a = 'nested-user-temp-name';
+  class MethodExample extends base() {
+    @methodDec [methodKey()]() { return 7; }
+    userName() { return _a; }
+  }
+  return MethodExample;
+}
+const MethodExample = makeMethodExample();
+class StaticExample {
+  @methodDec static [staticKey()]() { return 9; }
+}
+class GetterExample {
+  @methodDec get [getterKey()]() { return 'getter'; }
+}
+console.log(_a, events.join(','), new MethodExample().run(), new MethodExample().userName(), StaticExample.build(), new GetterExample().label);
+`;
+      writeFileSync(file, source);
+      const referenceFile = join(outDir, 'reference.js');
+      const reference = ts.transpileModule(source, {
+        compilerOptions: {
+          experimentalDecorators: true,
+          target: ts.ScriptTarget.ES5,
+        },
+      }).outputText;
+      writeFileSync(referenceFile, reference);
+      const oracle = spawnSync('node', [referenceFile], { encoding: 'utf8' });
+      expect(oracle.status, oracle.stderr).toBe(0);
+      expect(oracle.stdout).toBe(
+        'user-temp-name base,method-key,method:run,static-key,method:build,getter-key,method:label 7 nested-user-temp-name 9 getter\n',
+      );
+
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, '--experimental-decorators', '--minify-identifiers', '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        expect(postMinifyAuditProblems(proc.stderr), `${target.name}: ${proc.stderr}`).toEqual([]);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${target.name}: differs from TypeScript 5 output`).toBe(
+          oracle.stdout,
+        );
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy computed parameter decorators keep an exact key reference', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-computed-parameter-decorator-'));
+    try {
+      const file = join(outDir, 'input.ts');
+      const source = `const _a = 'user-temp-name';
+const events: string[] = [];
+function key() { events.push('key'); return 'act'; }
+function parameterDec(target: any, key: string, index: number): void { events.push('parameter:' + key + ':' + index); }
+class Example {
+  [key()](@parameterDec value: number) { return value + 2; }
+}
+console.log(_a, events.join(','), new Example().act(5));
+`;
+      writeFileSync(file, source);
+
+      // TypeScript 6 emits an unbound temp for this parameter-only computed key, so assert its runtime contract directly.
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, '--experimental-decorators', '--minify-identifiers', '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        expect(postMinifyAuditProblems(proc.stderr), `${target.name}: ${proc.stderr}`).toEqual([]);
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${target.name}: ${counter}: ${identity}`,
+          ).toBe(0);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${target.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, `${target.name}: computed parameter decorator output`).toBe(
+          'user-temp-name key,parameter:act:0 7\n',
+        );
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
+    }
+  });
+
+  test('legacy computed field decorators use a fresh exact key reference', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-legacy-computed-field-decorator-'));
+    try {
+      const file = join(outDir, 'input.ts');
+      const source = `const _a = 'user-temp-name';
+let count = 0;
+const events: string[] = [];
+function key() { events.push('instance-key'); count++; return 'value'; }
+function staticKey() { events.push('static-key'); count++; return 'staticValue'; }
+function methodKey() { events.push('method-key'); count++; return 'run'; }
+function fieldDec(target: any, key: string): void {}
+function methodDec(target: any, key: string, descriptor: PropertyDescriptor): PropertyDescriptor { return descriptor; }
+class Example {
+  @fieldDec [key()] = 1;
+  @fieldDec static [staticKey()] = 2;
+  @methodDec [methodKey()]() { return 3; }
+}
+console.log(_a, new Example().value, Example.staticValue, new Example().run(), count, events.join(','));
+`;
+      writeFileSync(file, source);
+      const referenceFile = join(outDir, 'reference.js');
+      const reference = ts.transpileModule(source, {
+        compilerOptions: {
+          experimentalDecorators: true,
+          target: ts.ScriptTarget.ES5,
+        },
+      }).outputText;
+      writeFileSync(referenceFile, reference);
+      const oracle = spawnSync('node', [referenceFile], { encoding: 'utf8' });
+      expect(oracle.status, oracle.stderr).toBe(0);
+      expect(oracle.stdout).toBe('user-temp-name 1 2 3 3 instance-key,static-key,method-key\n');
+
+      for (const target of TARGETS) {
+        const output = join(outDir, `${target.name}.js`);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [file, target.arg, '--experimental-decorators', '--minify-identifiers', '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${target.name}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split('\n')
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${target.name}: missing exact report`).toBeDefined();
+        expect(identity, `${target.name}: ${identity}`).toMatch(/clean=1(?:\s|$)/);
+        expect(postMinifyAuditProblems(proc.stderr), `${target.name}: ${proc.stderr}`).toEqual([]);
         for (const counter of EXACT_ZERO_COUNTERS) {
           expect(
             Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
@@ -10446,6 +10640,7 @@ console.log(new Example().method(undefined, 3), __decorateClass, __decorateParam
       const file = join(outDir, 'input.ts');
       const source = `const events: string[] = [];
 function methodDec(target: any, key: string, descriptor: PropertyDescriptor): PropertyDescriptor { events.push(key); return descriptor; }
+function computedKey() { events.push('computed'); return 'value'; }
 const Holder = class Inner {
   @methodDec method(value: number): number { return value + 1; }
   static value = (events.push('static'), 7);
@@ -10453,7 +10648,7 @@ const Holder = class Inner {
   static self() { return Inner; }
 };
 const Anonymous = class {
-  @methodDec value(): number { return 3; }
+  @methodDec [computedKey()](): number { return 3; }
 };
 console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Holder.selfValue === Holder, new Anonymous().value(), events.join(','));
 `;
@@ -10468,7 +10663,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       writeFileSync(referenceFile, reference);
       const oracle = spawnSync('node', [referenceFile], { encoding: 'utf8' });
       expect(oracle.status, oracle.stderr).toBe(0);
-      expect(oracle.stdout).toBe('4 true 7 true 3 static\n');
+      expect(oracle.stdout).toBe('4 true 7 true 3 static,computed\n');
       for (const target of TARGETS) {
         const output = join(outDir, `${target.name}.js`);
         const proc = spawnSync(

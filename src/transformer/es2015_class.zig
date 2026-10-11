@@ -1227,7 +1227,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const deco_start = self.readU32(me, MethodExtra.deco_start);
                     const deco_len = self.readU32(me, MethodExtra.deco_len);
                     if (deco_len > 0 or params_list_m.len > 0) {
-                        const new_key = try self.visitNode(key);
+                        const new_key = (try es_helpers.makeLegacyDecoratorComputedKeyRef(self, key)) orelse
+                            try self.visitNode(key);
                         const empty: NodeList = .{ .start = 0, .len = 0 };
                         try self.collectMemberDecorators(
                             &member_decos,
@@ -1249,7 +1250,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     const deco_len = self.readU32(pe, PropertyExtra.deco_len);
                     if (deco_len > 0) {
                         const key_idx: NodeIndex = self.readNodeIdx(pe, PropertyExtra.key);
-                        const new_key = try self.visitNode(key_idx);
+                        const new_key = (try es_helpers.makeLegacyDecoratorComputedKeyRef(self, key_idx)) orelse
+                            try self.visitNode(key_idx);
                         const empty: NodeList = .{ .start = 0, .len = 0 };
                         try self.collectMemberDecorators(
                             &member_decos,
