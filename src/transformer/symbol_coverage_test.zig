@@ -2838,6 +2838,72 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+test "#4819 generator for-await temporaries bind exact symbols during lowering" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+    const source = "const _a = 0, _b = 0, _step = 0, _ret = 0, _errObj = 0; async function drain(source) { for await (const value of source) use(value); }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    var source_loop: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .for_await_of_statement) source_loop = @enumFromInt(index);
+    }
+    const loop = source_loop orelse return error.MissingForAwaitLoop;
+    const loop_scope = analyzer.scope_owner_map.get(@intFromEnum(loop)) orelse return error.MissingForAwaitScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @enumFromInt(loop_scope);
+    transformer.state_machine_depth = 1;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
+
+    const lowering = @import("es2018_for_await.zig").ES2018ForAwait(Transformer);
+    _ = try lowering.rewriteForAwait(&transformer, loop, parser.ast.getNode(loop), .none, false, true);
+    try std.testing.expectEqual(@as(usize, 4), transformer.generator_temp_var_spans.items.len);
+
+    var binding_ids: [4]?u32 = @splat(null);
+    var ref_counts: [4]usize = @splat(0);
+    for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
+        const temp_name = transformer.ast.getText(temp_span);
+        for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+            if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), temp_name)) continue;
+            try std.testing.expect(binding_ids[temp_index] == null);
+            const id = if (raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[raw] else null;
+            binding_ids[temp_index] = id orelse return error.MissingGeneratedForAwaitTempSymbol;
+        }
+        const recorded_id = transformer.generator_state_temp_symbols.get(temp_span.start) orelse return error.MissingRecordedForAwaitTempSymbol;
+        try std.testing.expectEqual(binding_ids[temp_index] orelse return error.MissingGeneratedForAwaitTempSymbol, recorded_id);
+    }
+
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .identifier_reference) continue;
+        const ref_name = transformer.ast.getText(node.data.string_ref);
+        for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
+            if (!std.mem.eql(u8, ref_name, transformer.ast.getText(temp_span))) continue;
+            const exact_id = transformer.exact_output_ref_symbol_ids.get(@intCast(raw)) orelse
+                return error.MissingDeferredSyntheticTempReference;
+            try std.testing.expectEqual(binding_ids[temp_index] orelse return error.MissingGeneratedForAwaitTempSymbol, exact_id);
+            ref_counts[temp_index] += 1;
+        }
+    }
+    for (ref_counts) |count| try std.testing.expect(count > 0);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
 test "#4819 generator for-of temporaries bind symbols during lowering" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
