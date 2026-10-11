@@ -27,32 +27,21 @@ const es2015_class = @import("es2015_class.zig");
 /// Transformer 타입 (순환 import 방지를 위해 generic)
 pub fn ES2020(comptime Transformer: type) type {
     return struct {
-        fn ensureTrackedTempSymbol(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!void {
-            if (!self.semantic_edit_enabled or self.current_scope.isNone() or
-                self.syntheticTempOutputScopeIsDeferred(self.current_scope)) return;
-            _ = try self.reserveSyntheticTempSymbolInScope(name_span, declaration_span, self.current_scope);
-        }
-
-        fn trackTempReference(self: *Transformer, name_span: Span, ref: NodeIndex, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!void {
-            if (self.lookupSyntheticTempSymbol(name_span, self.current_scope)) |symbol_id| {
-                try self.addSyntheticRefInScope(ref, symbol_id, self.current_scope, flags);
-            } else {
-                try self.trackHoistedTempRef(name_span, ref, flags);
-            }
+        fn trackTempReference(self: *Transformer, name_span: Span, declaration_span: Span, ref: NodeIndex, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!void {
+            try self.trackSyntheticTempReference(name_span, declaration_span, ref, flags);
         }
 
         fn captureTrackedTemp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!helpers.TempCapture {
             const cap = try helpers.captureToTemp(self, value, span);
-            try ensureTrackedTempSymbol(self, cap.span, span);
             const assignment = self.ast.getNode(cap.paren_assign);
             std.debug.assert(assignment.tag == .assignment_expression);
-            try trackTempReference(self, cap.span, assignment.data.binary.left, .{ .write = true });
+            try trackTempReference(self, cap.span, span, assignment.data.binary.left, .{ .write = true });
             return cap;
         }
 
         fn readTrackedTemp(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
             const ref = try helpers.makeTempVarRef(self, name_span, node_span);
-            try trackTempReference(self, name_span, ref, .{ .read = true });
+            try trackTempReference(self, name_span, node_span, ref, .{ .read = true });
             return ref;
         }
 
@@ -91,9 +80,8 @@ pub fn ES2020(comptime Transformer: type) type {
                 });
             } else {
                 const temp_span = try helpers.makeTempVarSpan(self);
-                try ensureTrackedTempSymbol(self, temp_span, node.span);
                 const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
-                try trackTempReference(self, temp_span, temp_ref1, .{ .write = true });
+                try trackTempReference(self, temp_span, node.span, temp_ref1, .{ .write = true });
                 const assign_node = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = node.span,
@@ -113,7 +101,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     } },
                 });
                 const temp_ref2 = try helpers.makeTempVarRef(self, temp_span, node.span);
-                try trackTempReference(self, temp_span, temp_ref2, .{ .read = true });
+                try trackTempReference(self, temp_span, node.span, temp_ref2, .{ .read = true });
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
