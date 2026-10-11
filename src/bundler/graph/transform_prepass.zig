@@ -2104,6 +2104,26 @@ fn hasThisExpressionInSubtree(ast: *const ast_mod.Ast, root_idx: ast_mod.NodeInd
     return false;
 }
 
+fn areSafePostSuperNestedScopes(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    root_idx: ast_mod.NodeIndex,
+) bool {
+    const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
+    defer ast.allocator.free(descendants);
+    for (descendants) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return false;
+        const descendant_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
+        const descendant = ast.nodes.items[raw_idx];
+        switch (descendant.tag) {
+            .switch_statement => if (!isSafePostSuperSwitchStatement(ast, semantic, descendant_idx)) return false,
+            .try_statement => if (!isSafePostSuperTryStatement(ast, semantic, descendant_idx)) return false,
+            else => {},
+        }
+    }
+    return true;
+}
+
 fn isSafePostSuperLoopStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -2117,22 +2137,26 @@ fn isSafePostSuperLoopStatement(
     }
     if (!isSafeConstructorBodyStatement(ast, semantic, statement_idx)) return false;
 
-    // Validate nested constructs with their post-super-specific scope gates.
-    // The recursive constructor-body check above validates each nested loop's
-    // header and body; this pass adds the switch/try scope restrictions.
-    const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, statement_idx) catch return false;
-    defer ast.allocator.free(descendants);
-    for (descendants) |raw_idx| {
-        if (raw_idx >= ast.nodes.items.len) return false;
-        const descendant_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
-        const descendant = ast.nodes.items[raw_idx];
-        switch (descendant.tag) {
-            .switch_statement => if (!isSafePostSuperSwitchStatement(ast, semantic, descendant_idx)) return false,
-            .try_statement => if (!isSafePostSuperTryStatement(ast, semantic, descendant_idx)) return false,
-            else => {},
-        }
+    // The recursive constructor-body check validates each loop's header and
+    // body; this pass adds the post-super-specific nested switch/try gates.
+    return areSafePostSuperNestedScopes(ast, semantic, statement_idx);
+}
+
+fn isSafePostSuperBlockOrLabelStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    switch (ast.getNode(statement_idx).tag) {
+        .block_statement, .labeled_statement => {},
+        else => return false,
     }
-    return true;
+    if (!isSafeConstructorBodyStatement(ast, semantic, statement_idx)) return false;
+
+    // Blocks and labels can wrap nested loops, switches, and try scopes. Apply
+    // the same deeper scope checks used when a loop is the top-level node.
+    return areSafePostSuperNestedScopes(ast, semantic, statement_idx);
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
@@ -2205,6 +2229,13 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                     semantic,
                     following_statement,
                 )) continue;
+                if (!completion_seen and isSafePostSuperBlockOrLabelStatement(
+                    ast,
+                    semantic,
+                    following_statement,
+                )) continue;
+                if (!completion_seen and (ast.getNode(following_statement).tag == .empty_statement or
+                    ast.getNode(following_statement).tag == .debugger_statement)) continue;
                 if (!completion_seen and
                     (isSafeDerivedConstructorReturnStatement(ast, semantic, following_statement) or
                         isSafeDerivedConstructorThrowStatement(ast, semantic, following_statement)))

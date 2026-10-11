@@ -13998,6 +13998,55 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           '2:1 6 4 4 70 80 pair:1:1|inner:return|pair:2:1|inner:return|pair:1:1|inner:return|pair:2:1|inner:return|iterations:6 false\n',
       },
       {
+        name: 'post-super top-level block preserves var identity and Proxy write order',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); { var _this = 10, local = 2; this.value = local; local++; } this.after = local; } } var child = new Child(); console.log(child.value, child.after, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '2 3 90 value:2|after:3 false\n',
+      },
+      {
+        name: 'post-super top-level label preserves nested continue and labeled break',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var i = 0, j = 0; outer: while (i < 3) { i++; inner: for (j = 0; j < 3; j++) { if (i === 1 && j === 0) continue inner; this.value = i * 10 + j; if (i === 2 && j === 1) break outer; } } this.after = i + ":" + j; } } var child = new Child(); console.log(child.value, child.after, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '21 2:1 90 value:11|value:12|value:20|value:21|after:2:1 false\n',
+      },
+      {
+        name: 'post-super top-level empty and debugger statements retain the graph',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); ; debugger; this.value = 1; } } console.log(new Child().value);',
+        graph: 'retained',
+        output: '1\n',
+      },
+      {
+        name: 'post-super top-level block with a lexical binding stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); { let local = 2; this.value = local; } } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'post-super top-level block with a nested switch this access stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); { switch (1) { case 1: this.value = 2; break; } } } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'post-super top-level block with a nested try this access stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); { try { throw 2; } catch (error) { this.value = error; } } } } console.log(new Child().value);',
+        graph: 'reanalyzed',
+        output: '2\n',
+      },
+      {
+        name: 'post-super top-level label with a this loop condition stays on reanalysis',
+        source:
+          'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); outer: while (this.keepGoing) { this.value++; } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: 'false undefined true\n',
+      },
+      {
         name: 'post-super nested loop with this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); var i = 0; while (i < 1) { while (this.keepGoing) {} i++; this.value = i; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
