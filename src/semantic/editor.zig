@@ -767,6 +767,45 @@ pub const SemanticEditor = struct {
         return error.InvalidScope;
     }
 
+    /// Reserve a generated `var` identity before its final declaration node
+    /// exists. The hoister later attaches the emitted binding to this SymbolId.
+    pub fn reserveSyntheticTempSymbol(
+        self: *SemanticEditor,
+        name_span: Span,
+        declaration_span: Span,
+        lexical_scope: ScopeId,
+    ) Error!SymbolId {
+        if (name_span.start & Ast.STRING_TABLE_BIT == 0) return error.InvalidNode;
+        const target = try self.bindingScope(lexical_scope, .variable_var);
+        const name = try self.ast.getTextStable(self.allocator, name_span);
+        if (self.scope_maps.items[target.toIndex()].contains(name)) return error.DuplicateBinding;
+
+        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
+        try self.symbols.append(self.allocator, .{
+            .name = name_span,
+            .scope_id = target,
+            .origin_scope = lexical_scope,
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = declaration_span,
+            .synthetic_name = name,
+        });
+        errdefer _ = self.symbols.pop();
+        try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @intFromEnum(id));
+        errdefer _ = self.scope_maps.items[target.toIndex()].remove(name);
+        try self.references.append(self.allocator, .{
+            .node_index = .none,
+            .declaration_node_index = .none,
+            .scope_id = target,
+            .symbol_id = id,
+            .stmt_idx = Reference.NO_STMT,
+            .scope_stmt_idx = Reference.NO_STMT,
+            .flags = .{ .declare = true },
+        });
+        self.scopes.items[target.toIndex()].symbol_count +|= 1;
+        return id;
+    }
+
     /// 새 합성 바인딩을 선언한다. name_span은 AST string table의 이름이어야 한다.
     /// stmt_idx는 최상위 문장, scope_stmt_idx는 직접 소속된 스코프의 문장 인덱스다.
     pub fn declare(
