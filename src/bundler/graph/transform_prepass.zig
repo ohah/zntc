@@ -1112,7 +1112,7 @@ fn isRetainableStaticFieldOptionalMemberChain(
             const unresolved_external_key = unresolved_external_root and
                 isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx);
             const retained_effectful_sequence_key = unresolved_external_root and
-                isRetainableUnresolvedRootStaticFieldSequenceKey(ast, semantic, property_idx);
+                isRetainableBoundStaticFieldSequenceExpression(ast, semantic, property_idx, true);
             if (!unresolved_external_key and !retained_effectful_sequence_key and
                 (property.tag != .call_expression or
                     !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false))) return false;
@@ -1200,16 +1200,26 @@ fn isRetainableBoundStaticFieldEffectCall(
     return true;
 }
 
-/// An effectful sequence can be a computed key only for an unresolved-root
-/// optional chain. Keep non-final calls exact-bound with safe arguments and
-/// require the last value itself to be safe or an explicitly unresolved name.
-fn isRetainableUnresolvedRootStaticFieldSequenceKey(
+/// Keep sequence expressions only when their non-final calls have exact-bound
+/// callees and safe arguments. The final value is safe, or may be unresolved
+/// when the caller has independently proved the external-root context.
+fn isRetainableBoundStaticFieldSequenceExpression(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     expression_idx: ast_mod.NodeIndex,
+    allow_unresolved_last_value: bool,
 ) bool {
     if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
-    const expression = ast.getNode(expression_idx);
+    var current_idx = expression_idx;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const expression = ast.getNode(current_idx);
+        if (expression.tag != .parenthesized_expression) break;
+        current_idx = expression.data.unary.operand;
+    }
+    if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+    const expression = ast.getNode(current_idx);
     if (expression.tag != .sequence_expression) return false;
     const list = expression.data.list;
     const extras = ast.extra_data.items;
@@ -1222,7 +1232,8 @@ fn isRetainableUnresolvedRootStaticFieldSequenceKey(
     if (last_raw >= ast.nodes.items.len) return false;
     const last_idx: ast_mod.NodeIndex = @enumFromInt(last_raw);
     return isSafeConstructorValue(ast, semantic, last_idx) or
-        isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx);
+        (allow_unresolved_last_value and
+            isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx));
 }
 
 fn isRetainableUnresolvedStaticFieldCallCallee(
@@ -1632,10 +1643,24 @@ fn isRetainableStaticFieldExpression(
                 const args_start = extras[extra + 1];
                 const args_len = extras[extra + 2];
                 if (args_start > extras.len or args_len > extras.len - args_start) return false;
+                const allow_unresolved_root_sequence_arguments = work_item.allow_optional_invocations and
+                    isRetainableUnresolvedStaticFieldOptionalMemberCall(
+                        allocator,
+                        ast,
+                        semantic,
+                        current_idx,
+                    );
                 for (extras[args_start .. args_start + args_len]) |raw_arg| {
                     if (raw_arg >= ast.nodes.items.len) return false;
                     const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
                     if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
+                    if (allow_unresolved_root_sequence_arguments and
+                        isRetainableBoundStaticFieldSequenceExpression(
+                            ast,
+                            semantic,
+                            argument_idx,
+                            false,
+                        )) continue;
                     if (ast.getNode(argument_idx).tag != .call_expression) return false;
                     pending.append(allocator, .{
                         .expression_idx = argument_idx,
