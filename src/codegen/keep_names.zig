@@ -104,6 +104,32 @@ pub fn convertsToAssignment(self: anytype, node: ast_mod.Node) bool {
         self.indent_level == 0;
 }
 
+/// A static `name` member defines the class's own `name` (esbuild skips
+/// these too); restoring the inferred name would overwrite it.
+pub fn classHasStaticName(self: anytype, body: NodeIndex) bool {
+    if (body.isNone()) return false;
+    const list = self.ast.getNode(body).data.list;
+    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        const member = self.ast.getNode(@enumFromInt(raw));
+        const key, const is_static = switch (member.tag) {
+            .method_definition => .{
+                self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key),
+                self.ast.readExtra(member.data.extra, ast_mod.MethodExtra.flags) & ast_mod.MethodFlags.is_static != 0,
+            },
+            .property_definition, .accessor_property => .{
+                self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.key),
+                self.ast.readExtra(member.data.extra, ast_mod.PropertyExtra.flags) & ast_mod.PropertyFlags.is_static != 0,
+            },
+            else => continue,
+        };
+        if (!is_static) continue;
+        const name = self.ast.staticKeyName(self.allocator, key) catch return true;
+        defer if (name) |n| self.allocator.free(n);
+        if (name) |n| if (std.mem.eql(u8, n, "name")) return true;
+    }
+    return false;
+}
+
 /// `__name(<target>, "original");`
 pub fn emitNameStatement(self: anytype, target: NodeIndex, original: []const u8) !void {
     try self.write(helperName(self));

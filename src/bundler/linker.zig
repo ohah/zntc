@@ -327,6 +327,9 @@ pub const Linker = struct {
     /// 를 linker 생성 직후 설정한다. dev_mode 에서는 `__zntc_g.__xxx` 경로를
     /// 사용하므로 이 플래그는 무시된다.
     minify_whitespace: bool = false,
+    /// --keep-names emits its `__name` helper as raw preamble text; reserve
+    /// that spelling so a source binding of the same name is renamed.
+    keep_names: bool = false,
     /// RN/Hermes: defineProperty 에 configurable:true 필요. G1-step2 의 ns arrow
     /// `__export` helper 변형 선택에 사용 (minify_whitespace 와 동일하게 생성 직후 set).
     configurable_exports: bool = false,
@@ -1123,6 +1126,7 @@ pub const Linker = struct {
         for (self.global_identifiers) |name| {
             try self.reserved_globals.put(self.allocator, name, {});
         }
+        if (self.keep_names) try self.reserved_globals.put(self.allocator, rt_names.helperName("__name", self.minify_whitespace), {});
 
         // The CJS factory has a semantic SymbolId but is emitted as raw
         // preamble text, outside source AST nodes. Reserve its selected output
