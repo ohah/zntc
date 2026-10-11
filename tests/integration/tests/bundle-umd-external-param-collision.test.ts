@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { build, close, init } from '../../../packages/core/index';
-import { createFixture, runNode } from './helpers';
+import { createFixture, runNode, runZntc } from './helpers';
 
 describe('UMD external factory parameter collisions', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -149,4 +149,45 @@ describe('UMD external factory parameter collisions', () => {
     const run = await runNode(driver);
     expect(run.stdout.trim()).toBe('["external","local-module"]');
   });
+  // #5448: factory 파라미터와 같은 이름의 default/namespace external import 는
+  // 파라미터 그 자체라 별칭(`var React$1 = React;`)을 만들지 않는다.
+  for (const format of ['umd', 'amd'] as const) {
+    for (const form of ['default', 'namespace'] as const) {
+      test(`${format} ${form} import named like its factory parameter needs no alias`, async () => {
+        const importLine =
+          form === 'default' ? 'import React from "react";' : 'import * as React from "react";';
+        const fixture = await createFixture({
+          'entry.js': `${importLine}\nexport const ver = React.version;\n`,
+          'node_modules/react/package.json': '{"name":"react","main":"index.js"}',
+          'node_modules/react/index.js': 'exports.version = "19.test";\n',
+        });
+        cleanup = fixture.cleanup;
+        const out = join(fixture.dir, 'out.js');
+        const result = await runZntc([
+          '--bundle',
+          join(fixture.dir, 'entry.js'),
+          `--format=${format}`,
+          '--external:react',
+          '-o',
+          out,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        const text = readFileSync(out, 'utf8');
+        expect(text).toContain('function(React)');
+        expect(text).not.toContain('React$1');
+        expect(text).toContain('React.version');
+
+        const driver = join(fixture.dir, 'run.cjs');
+        writeFileSync(
+          driver,
+          format === 'amd'
+            ? `let r;globalThis.define=(deps,f)=>{r=f(...deps.map((d)=>require(${JSON.stringify(join(fixture.dir, 'node_modules/react'))})));};\n` +
+                `require(${JSON.stringify(out)});console.log(r.ver);\n`
+            : `console.log(require(${JSON.stringify(out)}).ver);\n`,
+        );
+        const run = await runNode(driver);
+        expect(run.stdout.trim()).toBe('19.test');
+      });
+    }
+  }
 });
