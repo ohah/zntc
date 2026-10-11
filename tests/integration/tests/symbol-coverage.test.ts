@@ -12281,11 +12281,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 inner-key,next,outer-key,outer-get,argument,method\n',
       },
       {
-        name: 'unbound computed member receiver keys stay on semantic reanalysis',
+        name: 'unresolved computed member receiver keys retain their external reference',
         source:
-          'globalThis.__zntcComputedReceiverKey = "outer"; var holder = { outer: { value: 9 } }; class UnboundComputedMemberReceiverField { static value = holder[__zntcComputedReceiverKey].value; } console.log(UnboundComputedMemberReceiverField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'globalThis.__zntcComputedReceiverKey = "outer"; var order = []; var holder = { get outer() { order.push("outer"); return { get value() { order.push("value"); return 9; } }; } }; class UnboundComputedMemberReceiverField { static value = holder[__zntcComputedReceiverKey].value; } console.log(UnboundComputedMemberReceiverField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 outer,value\n',
       },
       {
         name: 'unbound roots of computed member receiver chains stay on semantic reanalysis',
@@ -12379,10 +12379,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unbound computed static member key stays on semantic reanalysis',
+        name: 'unresolved computed static member read keys retain their external reference',
         source:
           'globalThis.__zntcStaticMemberKey = "value"; var holder = { value: 9 }; class UnboundComputedStaticMemberValueField { static value = holder[__zntcStaticMemberKey]; } console.log(UnboundComputedStaticMemberValueField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9\n',
       },
       {
