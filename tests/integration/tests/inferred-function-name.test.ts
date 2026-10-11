@@ -31,6 +31,20 @@ const cases = [
         console.log(out.join());`,
     },
   },
+  {
+    // ES5 lowers defaults to `x === void 0 ? value : x`, outside NamedEvaluation.
+    name: 'default values and later assignments keep their names',
+    files: {
+      'a.js': `export function f() { return 1; } export const g = 2;`,
+      'entry.js': `import { f, g } from './a.js';
+        const out = [f(), g];
+        function p(cb = () => {}, { d = function () {} } = {}, [e = class {}] = []) { return [cb.name, d.name, e.name]; }
+        out.push(p().join());
+        let h, i; ({ h = () => {} } = {}); [i = function () {}] = []; out.push(h.name, i.name);
+        { let f; f = function () {}; let g; g ||= () => {}; out.push(f.name, g.name); }
+        console.log(out.join());`,
+    },
+  },
 ] as const;
 
 describe('inferred function names', () => {

@@ -452,7 +452,12 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
                 @enumFromInt(self.ast.extra_data.items[node.data.extra]),
                 @enumFromInt(self.ast.extra_data.items[node.data.extra + 2]),
             },
-            .assignment_pattern => .{ node.data.binary.left, node.data.binary.right },
+            .assignment_pattern, .assignment_target_with_default => .{ node.data.binary.left, node.data.binary.right },
+            // `({ x = () => {} } = o)`: right is the default only in shorthand form.
+            .assignment_target_property_identifier => if (node.data.binary.flags & 0x01 != 0)
+                .{ node.data.binary.left, node.data.binary.right }
+            else
+                continue,
             .assignment_expression => blk: {
                 const op: @import("../lexer/token.zig").Kind = @enumFromInt(node.data.binary.flags);
                 if (op != .eq and op != .question2_eq and op != .amp2_eq and op != .pipe2_eq) continue;
@@ -476,7 +481,15 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
             .class_expression => self.ast.readExtraNode(value.data.extra, ast_mod.ClassExtra.name).isNone(),
             else => false,
         };
-        const renamed_anonymous = renames.contains(id);
+        const renamed_anonymous = renames.contains(id) or
+            (if (self.block_rename_map) |*map| map.contains(id) else false);
+        // ES5 lowers a default to `x === void 0 ? value : x`, which is not a
+        // NamedEvaluation position.
+        const lowered_default = switch (node.tag) {
+            .formal_parameter => self.options.unsupported.default_params,
+            .assignment_pattern, .assignment_target_with_default, .assignment_target_property_identifier => self.options.unsupported.default_params or self.options.unsupported.destructuring,
+            else => false,
+        };
         // Unlike an inferred `const` class name, assigning a name to a
         // `var`/`let` class expression's inner class binding changes reads
         // after the outer variable is reassigned. Preserve only the public
@@ -485,7 +498,7 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
         const downleveled_anonymous_class = value.tag == .class_expression and
             self.options.unsupported.class and id < symbols.len and
             symbols[id].kind != @import("../semantic/symbol.zig").SymbolKind.variable_const;
-        if (anonymous and (renamed_anonymous or downleveled_anonymous_class)) {
+        if (anonymous and (renamed_anonymous or lowered_default or downleveled_anonymous_class)) {
             // Class static initialization must see NamedEvaluation first.
             // Its lowering consumes this exact class node inside the IIFE.
             const root = if (value.tag == .class_expression and self.options.unsupported.class) value_root else pair[1];
@@ -538,23 +551,6 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
     const symbols = symbolsOf(self);
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
     defer self.allocator.free(reachable);
-    // `let f = function () {}` takes `.name` from its binding; a renamed
-    // lexical binding (`var f$1 = ...`) would otherwise rename the function.
-    for (reachable) |raw| {
-        const declarator = self.ast.getNode(@enumFromInt(raw));
-        if (declarator.tag != .variable_declarator) continue;
-        const extra = declarator.data.extra;
-        const binding = self.ast.readExtraNode(extra, 0);
-        const id = self.getSymbolIdAt(binding) orelse continue;
-        if (!renames.contains(id) or id >= symbols.len) continue;
-        const init = self.ast.readExtraNode(extra, 2);
-        if (!self.ast.isAnonymousFunctionDefinition(init)) continue;
-        const saved_scope = self.current_scope;
-        self.current_scope = symbols[id].scope_id;
-        defer self.current_scope = saved_scope;
-        const named = try nameValue(self, init, symbols[id].name, self.ast.getNode(init).span);
-        self.ast.extra_data.items[extra + 2] = @intFromEnum(named);
-    }
     var by_scope: std.AutoHashMapUnmanaged(u32, std.ArrayList(ast_mod.NodeIndex)) = .empty;
     var named: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer named.deinit(self.allocator);
