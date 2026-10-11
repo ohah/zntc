@@ -1878,6 +1878,11 @@ fn isSafePostSuperConditionalBranch(
             const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
             if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
                 isSafePostSuperExpressionStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
+            if (isSafePostSuperNonCompletingBlockOrLabelStatement(
+                ast,
+                semantic,
+                @enumFromInt(raw_statement_idx),
+            )) continue;
             return false;
         }
         return true;
@@ -2157,6 +2162,26 @@ fn isSafePostSuperBlockOrLabelStatement(
     // Blocks and labels can wrap nested loops, switches, and try scopes. Apply
     // the same deeper scope checks used when a loop is the top-level node.
     return areSafePostSuperNestedScopes(ast, semantic, statement_idx);
+}
+
+fn isSafePostSuperNonCompletingBlockOrLabelStatement(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    statement_idx: ast_mod.NodeIndex,
+) bool {
+    if (!isSafePostSuperBlockOrLabelStatement(ast, semantic, statement_idx)) return false;
+    const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, statement_idx) catch return false;
+    defer ast.allocator.free(descendants);
+    for (descendants) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return false;
+        switch (ast.nodes.items[raw_idx].tag) {
+            // A nested wrapper must not bypass the branch's explicit terminal
+            // return/throw checks. Keep those shapes on semantic reanalysis.
+            .return_statement, .throw_statement => return false,
+            else => {},
+        }
+    }
+    return true;
 }
 
 fn isSimpleParamsConstructorBodyGraphSafe(
