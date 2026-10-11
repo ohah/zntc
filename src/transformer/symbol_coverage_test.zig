@@ -1548,19 +1548,55 @@ test "#4819 nullish assignment value captures keep distinct symbols" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 2), transformer.synthetic_temp_symbol_ids.count());
     const edited = (try transformer.finishSemanticEdit()).?;
     try std.testing.expectEqual(original_symbols + 6, edited.symbols.items.len);
-    for (edited.symbols.items[original_symbols..], 0..) |generated, offset| {
-        const name = switch (offset % 3) {
-            0 => "_b",
-            1 => "_c",
-            else => "_d",
-        };
-        try std.testing.expectEqualStrings(name, transformer.ast.getText(generated.name));
+    var name_counts = [_]usize{ 0, 0, 0 };
+    for (edited.symbols.items[original_symbols..]) |generated| {
+        const name = transformer.ast.getText(generated.name);
+        const name_index: usize = if (std.mem.eql(u8, name, "_b"))
+            0
+        else if (std.mem.eql(u8, name, "_c"))
+            1
+        else if (std.mem.eql(u8, name, "_d"))
+            2
+        else
+            return error.TestUnexpectedResult;
+        name_counts[name_index] += 1;
         try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
     }
-    try std.testing.expect(edited.symbols.items[original_symbols].scope_id != edited.symbols.items[original_symbols + 3].scope_id);
+    try std.testing.expectEqualSlices(usize, &.{ 2, 2, 2 }, &name_counts);
+
+    var capture_scopes: [2]u32 = undefined;
+    var capture_count: usize = 0;
+    var capture_ids = transformer.synthetic_temp_symbol_ids.valueIterator();
+    while (capture_ids.next()) |raw_id_ptr| {
+        const raw_id = raw_id_ptr.*;
+        try std.testing.expect(raw_id >= original_symbols);
+        const capture = edited.symbols.items[raw_id];
+        try std.testing.expectEqualStrings("_d", transformer.ast.getText(capture.name));
+        try std.testing.expectEqual(@as(u32, 2), capture.reference_count);
+        try std.testing.expectEqual(@as(u32, 1), capture.write_count);
+        try std.testing.expectEqual(@as(usize, @intCast(raw_id)), edited.scope_maps[capture.scope_id.toIndex()].get("_d").?);
+
+        var bindings: usize = 0;
+        var references: usize = 0;
+        for (edited.symbol_ids, 0..) |maybe_id, node_index| {
+            if (maybe_id != raw_id) continue;
+            switch (transformer.ast.nodes.items[node_index].tag) {
+                .binding_identifier => bindings += 1,
+                .identifier_reference => references += 1,
+                else => {},
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expectEqual(@as(usize, 2), references);
+        capture_scopes[capture_count] = capture.scope_id.toIndex();
+        capture_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), capture_count);
+    try std.testing.expect(capture_scopes[0] != capture_scopes[1]);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 

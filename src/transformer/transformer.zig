@@ -876,6 +876,7 @@ pub const Transformer = struct {
     pub const bindRuntimeHelperImportById = @import("transformer/semantic_edit.zig").bindRuntimeHelperImportById;
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
     pub const trackHoistedTempRefInScope = @import("transformer/semantic_edit.zig").trackHoistedTempRefInScope;
+    pub const trackSyntheticTempReference = @import("transformer/semantic_edit.zig").trackSyntheticTempReference;
     pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
     pub const trackUserReadFromBinding = @import("transformer/semantic_edit.zig").trackUserReadFromBinding;
     pub const trackExactOutputRead = @import("transformer/semantic_edit.zig").trackExactOutputRead;

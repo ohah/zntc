@@ -2894,6 +2894,26 @@ pub fn trackHoistedTempRefInScope(self: *Transformer, name_span: Span, node: Nod
     }
 }
 
+/// Attach a generated `var` temp reference to an identity reserved at its
+/// first use when the output scope is known. Parameter environments and
+/// state-machine callbacks keep using the deferred hoist path until their
+/// final declaration scope exists.
+pub fn trackSyntheticTempReference(
+    self: *Transformer,
+    name_span: Span,
+    declaration_span: Span,
+    node: NodeIndex,
+    flags: ReferenceFlags,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or self.current_scope.isNone() or
+        syntheticTempOutputScopeIsDeferred(self, self.current_scope))
+        return trackHoistedTempRef(self, name_span, node, flags);
+
+    const symbol_id = lookupSyntheticTempSymbol(self, name_span, self.current_scope) orelse
+        (try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, self.current_scope)) orelse return;
+    return addSyntheticRefInScope(self, node, symbol_id, self.current_scope, flags);
+}
+
 /// 원본 프로그램·함수의 호이스트 바인딩에 앞서 기록한 참조를 연결한다.
 /// 새로 만든 함수에는 scope 등록 전이므로 호출하지 않는다.
 pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, declaration_span: Span, binding_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!void {
