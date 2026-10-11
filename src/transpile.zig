@@ -1707,6 +1707,7 @@ fn transpileWithCallbackInternal(
             .unresolved_globals = null,
             .references = analyzer.references.items,
             .allow_top_level_inline = options.minify_syntax,
+            .preserve_inferred_names = !options.minify_identifiers,
         };
         minify_mod.minify(transformer.ast, ctx, arena_alloc, root);
         // S4b: 단일 파일 모드에서도 const → let 변환 후 mergeDecls — esbuild parity.

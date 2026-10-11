@@ -106,6 +106,10 @@ pub const MinifyCtx = struct {
     /// (sym.isExported()==false + intra-module ref==0 + pure init) 은 안전하게
     /// elide 가능. caller (emitter) 가 `shaker != null` 일 때만 true 세팅.
     allow_top_level_dead: bool = false,
+    /// An anonymous function or class takes its `.name` from the binding it
+    /// initializes; inlining it into the read site leaves it unnamed. Only
+    /// identifier mangling without keep-names already gives up `.name`.
+    preserve_inferred_names: bool = true,
 
     /// statement 자리 삭제 가능성 판정(`purity.isRemovableAtStmtPos`) 에 필요한 부분만
     /// 추린 뷰. dead-store 제거 패스와 같은 술어를 공유하기 위한 어댑터 (#4514).
@@ -375,7 +379,7 @@ fn runOnce(
             // 이면 name 안전하게 anonymous. mobx 같은 ES5 class transpile 패턴 큰 영향.
             // debug/stack-trace 식별성을 깨므로 minify_syntax 일 때만 적용 (line 596/753 패턴).
             .function_expression => {
-                if (ctx.hasSemantic() and ctx.allow_top_level_inline) elideUnusedFnExprName(ast, ctx, node, &changed);
+                if (ctx.hasSemantic() and ctx.allow_top_level_inline and !ctx.preserve_inferred_names) elideUnusedFnExprName(ast, ctx, node, &changed);
                 if (ctx.allow_top_level_inline) elideTrailingEmptyReturn(ast, node, &changed);
             },
             // 함수 body 마지막 `return;` (no operand) → empty_statement. implicit return undefined
@@ -966,6 +970,7 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     const init_ni = @intFromEnum(init_idx);
     if (init_ni >= ast.nodes.items.len) return;
     const init_node = ast.nodes.items[init_ni];
+    if (ctx.preserve_inferred_names and ast.isAnonymousFunctionDefinition(init_idx)) return;
 
     // inline 대상 세 종류:
     //   ① constant expr (mutable state 무관 → 위치 자유)
