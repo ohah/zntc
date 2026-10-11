@@ -13962,9 +13962,24 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 true\n',
       },
       {
-        name: 'post-super loop nested loop stays on reanalysis',
+        name: 'post-super nested while and lexical for preserve Proxy writes and identities',
         source:
-          'function Base() {} class Child extends Base { constructor() { super(); var i = 0, j = 0; while (i < 1) { while (j < 1) j++; i++; } this.value = j; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+          'var events = [], _this = 90; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var i = 0; while (i < 2) { for (let j = 0; j < 2; j++) { this.value = i * 10 + j; } i++; } } } var child = new Child(); console.log(child.value, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '11 90 value:0|value:1|value:10|value:11 false\n',
+      },
+      {
+        name: 'post-super nested for of closes inner iterator on labeled continue',
+        source:
+          'var events = [], outerNext = 0, innerNext = 0, innerReturns = 0, _iterator = 70, _step = 80; var outerValues = { [Symbol.iterator]() { var i = 0; return { next() { outerNext++; return i < 2 ? { value: ++i, done: false } : { done: true }; } }; } }; var innerValues = { [Symbol.iterator]() { var i = 0; return { next() { innerNext++; return i < 1 ? { value: ++i, done: false } : { done: true }; }, return() { innerReturns++; events.push("inner:return"); return {}; } }; } }; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var outerIndex = 0, _iterator = 1, _step = 2; while (outerIndex < 2) { outer: for (var x of outerValues) { for (var y of innerValues) { this.pair = x + ":" + y; continue outer; } } outerIndex++; } this.iterations = outerNext; } } var child = new Child(); console.log(child.pair, child.iterations, innerNext, innerReturns, _iterator, _step, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output:
+          '2:1 6 4 4 70 80 pair:1:1|inner:return|pair:2:1|inner:return|pair:1:1|inner:return|pair:2:1|inner:return|iterations:6 false\n',
+      },
+      {
+        name: 'post-super nested loop with this condition stays on reanalysis',
+        source:
+          'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); var i = 0; while (i < 1) { while (this.keepGoing) {} i++; this.value = i; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
         graph: 'reanalyzed',
         output: '1 true\n',
       },

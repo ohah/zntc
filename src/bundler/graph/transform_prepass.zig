@@ -2082,8 +2082,8 @@ fn isSafePostSuperLoopStatement(
     if (!isSafeConstructorBodyStatement(ast, semantic, statement_idx)) return false;
 
     // Validate nested constructs with their post-super-specific scope gates.
-    // Keep nested loops separate so their binding and iteration semantics can
-    // be audited in their own admission step.
+    // The recursive constructor-body check above validates each nested loop's
+    // header and body; this pass adds the switch/try scope restrictions.
     const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, statement_idx) catch return false;
     defer ast.allocator.free(descendants);
     for (descendants) |raw_idx| {
@@ -2093,9 +2093,6 @@ fn isSafePostSuperLoopStatement(
         switch (descendant.tag) {
             .switch_statement => if (!isSafePostSuperSwitchStatement(ast, semantic, descendant_idx)) return false,
             .try_statement => if (!isSafePostSuperTryStatement(ast, semantic, descendant_idx)) return false,
-            .for_statement, .while_statement, .do_while_statement, .for_in_statement, .for_of_statement => {
-                if (descendant_idx != statement_idx) return false;
-            },
             else => {},
         }
     }
