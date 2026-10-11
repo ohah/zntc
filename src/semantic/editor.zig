@@ -304,8 +304,11 @@ pub const SemanticEditor = struct {
                     if (body_id != @intFromEnum(id)) {
                         if (body_id >= self.symbols.items.len) return error.InvalidSymbol;
                         const body_symbol = self.symbols.items[body_id];
+                        // A body `var` with the parameter's spelling is a distinct
+                        // binding once parameter expressions split the environments;
+                        // lowering copies the parameter value into it (#5452).
                         const valid_body_alias = body_symbol.kind.isFunctionLike() or
-                            (allow_dynamic_body_var_shadow and body_symbol.kind == .variable_var);
+                            body_symbol.kind == .variable_var;
                         if (!valid_body_alias or body_symbol.scope_id != body_scope)
                             return error.InvalidSymbol;
                         const body_name = if (body_symbol.synthetic_name.len > 0) body_symbol.synthetic_name else self.ast.getText(body_symbol.name);
@@ -1176,9 +1179,10 @@ test "parameter rename preserves the body function binding and rejects inconsist
     try std.testing.expectError(error.DuplicateBinding, editor.renameParameterEnvironmentBinding(parameter_id, "read"));
     const invalid_id: SymbolId = @enumFromInt(@as(u32, @intCast(editor.symbols.items.len)));
     try std.testing.expectError(error.InvalidSymbol, editor.renameParameterEnvironmentBinding(invalid_id, "x$1"));
-    // A same-spelled non-function is not evidence of the parameter/body
-    // redeclaration represented by this operation.
-    editor.symbols.items[@intFromEnum(function_id)].kind = .variable_var;
+    // A same-spelled lexical body binding is not evidence of the parameter/body
+    // redeclaration represented by this operation. (A body `var` is: lowering
+    // copies the parameter value into it, #5452.)
+    editor.symbols.items[@intFromEnum(function_id)].kind = .variable_let;
     try std.testing.expectError(error.InvalidSymbol, editor.renameParameterEnvironmentBinding(parameter_id, "x$1"));
     editor.symbols.items[@intFromEnum(function_id)].kind = .function_decl;
     editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = true;

@@ -260,7 +260,11 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
             }
         }
 
-        if (split_dynamic_body_vars) {
+        // A parameter expression gives the parameters their own environment, so a
+        // same-named body `var` is a separate binding that starts with the
+        // parameter's value (FunctionDeclarationInstantiation). Lowering moves
+        // both into one ES5 function scope, so copy that value explicitly (#5452).
+        {
             const current_symbols = symbolsOf(self);
             const current_scope_maps = scopeMapsOf(self);
             for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
