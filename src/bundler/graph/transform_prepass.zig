@@ -1109,9 +1109,9 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// Optional invocations are admitted for static initializer call trees when
 /// their direct identifier is safe or their member receiver is a bound source
 /// identifier or retained unresolved external identifier and the member access
-/// (including any computed key) is safe. Optional receiver chains, unresolved
-/// receiver expressions, call-result receivers, optional calls inside computed
-/// keys, and effectful non-call arguments stay on reanalysis.
+/// (including any computed key) is safe. Unresolved optional receiver chains,
+/// unresolved receiver expressions, call-result receivers, optional calls
+/// inside computed keys, and effectful non-call arguments stay on reanalysis.
 fn isRetainableUnresolvedStaticFieldCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1181,8 +1181,18 @@ fn isRetainableStaticFieldOptionalMemberInvocation(
     const callee = ast.getNode(callee_idx);
     if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return false;
     const extra = callee.data.extra;
-    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 3 or
-        ast.extra_data.items[extra + 2] != 0) return false;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 3) return false;
+    const member_flags = ast.extra_data.items[extra + 2];
+    if (member_flags == ast_mod.MemberFlags.optional_chain) {
+        return isRetainableStaticFieldOptionalMemberChain(
+            allocator,
+            ast,
+            semantic,
+            callee_idx,
+            false,
+        );
+    }
+    if (member_flags != 0) return false;
     const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
     if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
         ast.getNode(receiver_idx).tag != .identifier_reference or
