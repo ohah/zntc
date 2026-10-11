@@ -1190,7 +1190,7 @@ fn isRetainableBoundStaticFieldEffectCall(
         .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, callee_idx),
         .static_member_expression => hasBoundStaticFieldDotCallCalleeRoot(ast, semantic, callee_idx),
         .computed_member_expression => allow_computed_member_callee and
-            isRetainableBoundStaticFieldMemberRead(ast, semantic, callee_idx),
+            isRetainableBoundStaticFieldMemberRead(ast, semantic, callee_idx, true),
         else => false,
     };
     if (!bound_callee) return false;
@@ -1240,7 +1240,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     const last_idx: ast_mod.NodeIndex = @enumFromInt(last_raw);
     return isSafeConstructorValue(ast, semantic, last_idx) or
         (allow_bound_member_read_last_value and
-            isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx)) or
+            isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx, false)) or
         (allow_bound_call_last_value and
             isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx, true)) or
         (allow_unresolved_last_value and
@@ -1249,10 +1249,12 @@ fn isRetainableBoundStaticFieldSequenceExpression(
 
 /// A sequence argument may end in a non-optional member read only when every
 /// segment uses a safe key and the chain starts at an exact-bound source name.
+/// Computed-call callees can additionally admit exact-bound ordinary call keys.
 fn isRetainableBoundStaticFieldMemberRead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
+    allow_effectful_computed_key_calls: bool,
 ) bool {
     if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
@@ -1275,7 +1277,9 @@ fn isRetainableBoundStaticFieldMemberRead(
         if (current.tag == .static_member_expression) {
             if (ast.getNode(property_idx).tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
-            return false;
+            if (!allow_effectful_computed_key_calls or
+                ast.getNode(property_idx).tag != .call_expression or
+                !isRetainableBoundStaticFieldEffectCall(ast, semantic, property_idx, false)) return false;
         }
         saw_member = true;
         current_idx = receiver_idx;
