@@ -1877,6 +1877,9 @@ fn isSafePostSuperConditionalBranch(
             }
             const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
             if (nested_statement.tag == .empty_statement or nested_statement.tag == .debugger_statement) continue;
+            // Strict block functions bind to this branch block. Their bodies
+            // are deferred and remain covered by the graph and identity gates.
+            if (nested_statement.tag == .function_declaration) continue;
             if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
                 isSafePostSuperExpressionStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
             if (isSafePostSuperNonCompletingBlockOrLabelStatement(

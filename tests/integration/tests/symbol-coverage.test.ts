@@ -14168,7 +14168,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       {
         name: 'post-super conditional branch function declaration retains exact block scope identity',
         source:
-          'function Base() {} class Child extends Base { constructor() { super(); if (true) { function local() { return 2; } this.value = local(); } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+          'var choose = true; var result = 0; function Base() {} class Child extends Base { constructor() { super(); if (choose) { read(); function read() { result = 1; } } else { read(); function read() { result = 2; } } this.value = result; } } var first = new Child(); choose = false; var second = new Child(); console.log(first.value, second.value, first instanceof Child, second instanceof Child);',
+        graph: 'retained',
+        output: '1 2 true true\n',
+      },
+      {
+        name: 'post-super direct function declaration stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); function read() { return 2; } this.value = read(); } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super branch function declaration with direct eval stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { function read() { return eval("2"); } this.value = read(); } } } var child = new Child(); console.log(child.value, child instanceof Child);',
         graph: 'reanalyzed',
         output: '2 true\n',
       },

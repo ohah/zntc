@@ -3424,9 +3424,8 @@ pub const SemanticAnalyzer = struct {
         try self.visitNode(node.data.binary.right);
     }
 
-    /// Block 스코프에 let/const/class 선언을 미리 등록 (statement 순회 전).
-    /// `predeclareVarDecls` 의 lexical 버전 — var/function 은 함수 스코프로 hoisting 되므로
-    /// 여기서는 다루지 않고 `visitFunctionBodyInner` 의 기존 경로를 사용한다.
+    /// Block 스코프의 lexical 선언을 statement 순회 전에 등록한다.
+    /// strict block function도 lexical 선언이며, sloppy function은 기존 Annex B 경로를 유지한다.
     fn predeclareLexicalDecls(self: *SemanticAnalyzer, list: NodeList) AllocError!void {
         if (list.len == 0) return;
         if (list.start + list.len > self.ast.extra_data.items.len) return;
@@ -3443,6 +3442,15 @@ pub const SemanticAnalyzer = struct {
                     const kind = self.ast.variableDeclarationKind(stmt);
                     if (!kind.isLexical()) continue;
                     try self.predeclareLexicalVarDecl(stmt, symbolKindFor(kind));
+                },
+                .function_declaration => {
+                    // Strict block functions are lexical declarations and are
+                    // visible throughout the block, including before their
+                    // source position. Function-body var declarations keep
+                    // using the separate var prepass below.
+                    if (!self.isCurrentStrict() or self.current_scope.isNone() or
+                        self.scopes.items[self.current_scope.toIndex()].kind.isVarScope()) continue;
+                    try self.predeclareFuncDecl(stmt);
                 },
                 .class_declaration => {
                     const extra_start = stmt.data.extra;
@@ -3573,7 +3581,8 @@ pub const SemanticAnalyzer = struct {
         // 함수 이름을 현재 스코프(외부)에 등록
         // predeclared_scope에서는 이미 1st pass에서 등록했으므로 건너뛴다.
         if (!name_idx.isNone()) {
-            const fn_predeclared = if (self.isInPredeclaredScope()) true else blk: {
+            const fn_predeclared = if (self.isInPredeclaredScope() or
+                self.isFunctionDeclarationPredeclaredInCurrentScope(name_idx, node.span)) true else blk: {
                 // 함수 body 내 predeclare 로 이미 등록된 **같은 위치의 function-like** 심볼인지 확인.
                 // `predeclareVarDeclsRecursive` 는 nested block 의 FunctionDeclaration 도 var scope 에
                 // 선등록하지만, 실제 방문 시에는 block lexical 선언으로 다시 등록되어야
@@ -4268,8 +4277,48 @@ pub const SemanticAnalyzer = struct {
         const cases_start = extras[extra_start + 1];
         const cases_len = extras[extra_start + 2];
         const case_list = NodeList{ .start = cases_start, .len = cases_len };
+        try self.predeclareSwitchCaseLexicals(case_list);
         try self.visitNodeList(case_list);
         self.exitScope(saved);
+    }
+
+    fn predeclareSwitchCaseLexicals(self: *SemanticAnalyzer, cases: NodeList) AllocError!void {
+        const extras = self.ast.extra_data.items;
+        if (cases.start > extras.len or cases.len > extras.len - cases.start) return;
+        for (extras[cases.start .. cases.start + cases.len]) |raw_case_idx| {
+            if (raw_case_idx >= self.ast.nodes.items.len) continue;
+            const switch_case = self.ast.getNode(@enumFromInt(raw_case_idx));
+            if (switch_case.tag != .switch_case) continue;
+            const extra = switch_case.data.extra;
+            if (extra > extras.len or extras.len - extra < 3) continue;
+            try self.predeclareLexicalDecls(.{
+                .start = extras[extra + 1],
+                .len = extras[extra + 2],
+            });
+        }
+    }
+
+    fn isFunctionDeclarationPredeclaredInCurrentScope(
+        self: *const SemanticAnalyzer,
+        name_idx: NodeIndex,
+        declaration_span: Span,
+    ) bool {
+        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or
+            self.current_scope.isNone() or
+            self.current_scope.toIndex() >= self.scopes.items.len) return false;
+        const current_scope = self.scopes.items[self.current_scope.toIndex()];
+        if (current_scope.kind.isVarScope()) return false;
+        const raw_name = @intFromEnum(name_idx);
+        if (raw_name >= self.symbol_ids.items.len) return false;
+        const symbol_id = self.symbol_ids.items[raw_name] orelse return false;
+        if (symbol_id >= self.symbols.items.len) return false;
+        const name_node = self.ast.getNode(name_idx);
+        const symbol = self.symbols.items[symbol_id];
+        return symbol.kind.isFunctionLike() and symbol.scope_id == self.current_scope and
+            symbol.origin_scope == self.current_scope and
+            symbol.name.start == name_node.span.start and symbol.name.end == name_node.span.end and
+            symbol.declaration_span.start == declaration_span.start and
+            symbol.declaration_span.end == declaration_span.end;
     }
 
     fn visitCatchClause(self: *SemanticAnalyzer, node: Node) AllocError!void {

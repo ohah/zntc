@@ -2577,9 +2577,10 @@ test "strict module block functions keep exact block scope bindings" {
         \\function outer() {
         \\  function direct() {}
         \\  direct();
-        \\  if (true) { function nested() { return 2; } nested(); }
+        \\  if (true) { nested(); function nested() { return 2; } }
         \\}
-        \\if (true) { function topLevel() {} topLevel(); }
+        \\if (true) { topLevel(); function topLevel() {} }
+        \\switch (0) { case 0: switchLocal(); function switchLocal() {} }
     ;
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
@@ -2592,12 +2593,12 @@ test "strict module block functions keep exact block scope bindings" {
     try ana.analyze();
     try std.testing.expectEqual(@as(usize, 0), ana.errors.items.len);
 
-    const names = [_][]const u8{ "direct", "nested", "topLevel" };
-    const expected_scopes = [_]SemanticScopeKind{ .function, .block, .block };
-    var declaration_ids = [_]?u32{ null, null, null };
-    var reference_ids = [_]?u32{ null, null, null };
-    var declaration_counts = [_]usize{ 0, 0, 0 };
-    var reference_counts = [_]usize{ 0, 0, 0 };
+    const names = [_][]const u8{ "direct", "nested", "topLevel", "switchLocal" };
+    const expected_scopes = [_]SemanticScopeKind{ .function, .block, .block, .switch_block };
+    var declaration_ids = [_]?u32{ null, null, null, null };
+    var reference_ids = [_]?u32{ null, null, null, null };
+    var declaration_counts = [_]usize{ 0, 0, 0, 0 };
+    var reference_counts = [_]usize{ 0, 0, 0, 0 };
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .function_declaration) {
             const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
@@ -2633,7 +2634,7 @@ test "strict module block functions keep exact block scope bindings" {
         try std.testing.expectEqual(@as(usize, 1), reference_counts[i]);
         try std.testing.expectEqual(declaration_ids[i], reference_ids[i]);
     }
-    var symbol_counts = [_]usize{ 0, 0, 0 };
+    var symbol_counts = [_]usize{ 0, 0, 0, 0 };
     for (ana.symbols.items) |symbol| {
         for (names, 0..) |name, i| {
             if (std.mem.eql(u8, symbol.nameText(source), name)) symbol_counts[i] += 1;
@@ -2645,7 +2646,7 @@ test "strict module block functions keep exact block scope bindings" {
 }
 
 test "strict class method nested function keeps its block scope" {
-    const source = "class C { method() { if (true) { function local() { return 2; } return local(); } return 0; } }";
+    const source = "class C { method() { if (true) { return local(); function local() { return 2; } } return 0; } }";
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
     var parser = Parser.init(std.testing.allocator, &scanner);
