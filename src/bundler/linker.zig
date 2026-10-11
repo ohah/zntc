@@ -751,6 +751,55 @@ pub const Linker = struct {
     ///
     /// `cb(ctx, name)` 를 등록 대상 이름마다 호출한다. 두 소비자(collectModuleNames /
     /// fingerprint 빌더) 모두 이름만 필요하므로 sym_idx 는 노출하지 않는다.
+    /// ES5 output cannot keep block scoping: in a scope-hoisted module, block-level
+    /// `let`/`const`/`class` lower to `var`, and strict block functions are hoisted
+    /// by Annex B, all into the shared bundle scope. Enumerate those bindings with
+    /// their exact semantic symbol so cross-module names deconflict like top-level
+    /// declarations (#5454). Shared by collectModuleNames and the rename snapshot
+    /// fingerprint, like forEachTopLevelOwnerName.
+    fn forEachHoistedBlockOwner(
+        self: *Linker,
+        m: Module,
+        comptime Ctx: type,
+        ctx: Ctx,
+        comptime cb: fn (Ctx, []const u8, u32) anyerror!void,
+    ) !void {
+        if (!self.graph.transform_options_base.unsupported.block_scoping) return;
+        if (m.wrap_kind != .none) return;
+        const sem = m.semantic orelse return;
+        for (sem.scopes, 0..) |scope, scope_index| {
+            if (scope_index == 0 or scope_index >= sem.scope_maps.len) continue;
+            if (scope.kind != .block and scope.kind != .switch_block) continue;
+            if (scope.blocksMangling()) continue;
+            var parent = scope.parent;
+            var hops: usize = 0;
+            var hoists_to_module = false;
+            while (!parent.isNone() and hops < sem.scopes.len) : (hops += 1) {
+                const parent_scope = sem.scopes[parent.toIndex()];
+                if (parent_scope.kind.isVarScope()) {
+                    hoists_to_module = parent.toIndex() == 0;
+                    break;
+                }
+                parent = parent_scope.parent;
+            }
+            if (!hoists_to_module) continue;
+            var it = sem.scope_maps[scope_index].iterator();
+            while (it.next()) |entry| {
+                const symbol_index = entry.value_ptr.*;
+                if (symbol_index >= sem.symbols.items.len) continue;
+                switch (sem.symbols.items[symbol_index].kind) {
+                    .variable_let, .variable_const, .class_decl, .function_decl => {},
+                    else => continue,
+                }
+                // A same-module top-level binding of this name is resolved by the
+                // transformer's ES5 block rename (block_rename_table renames the
+                // block side). Only cross-module conflicts are left to the linker.
+                if (sem.scope_maps[0].contains(entry.key_ptr.*)) continue;
+                try cb(ctx, entry.key_ptr.*, @intCast(symbol_index));
+            }
+        }
+    }
+
     fn forEachTopLevelOwnerName(
         self: *Linker,
         m: Module,
@@ -876,6 +925,21 @@ pub const Linker = struct {
             .map = name_to_owners,
             .owner = owner,
         }, Ctx.add);
+        const HoistedCtx = struct {
+            linker: *Linker,
+            map: *NameToOwnersMap,
+            owner: NameOwner,
+            fn add(c: @This(), name: []const u8, symbol_index: u32) anyerror!void {
+                var block_owner = c.owner;
+                block_owner.symbol_id = bundler_symbol.SymbolID.make(@enumFromInt(c.owner.module_index), symbol_index);
+                try c.linker.addNameOwner(c.map, name, block_owner);
+            }
+        };
+        try self.forEachHoistedBlockOwner(m, HoistedCtx, .{
+            .linker = self,
+            .map = name_to_owners,
+            .owner = owner,
+        }, HoistedCtx.add);
     }
 
     /// 후보 이름이 사용 가능한지 확인.
@@ -2497,6 +2561,13 @@ pub const Linker = struct {
             }
         };
         try self.forEachTopLevelOwnerName(m, Ctx, .{ .acc = &fp.toplevel_name_set_hash }, Ctx.add);
+        const HoistedCtx = struct {
+            acc: *u64,
+            fn add(c: @This(), name: []const u8, _: u32) anyerror!void {
+                c.acc.* +%= std.hash.Wyhash.hash(0xc0, name);
+            }
+        };
+        try self.forEachHoistedBlockOwner(m, HoistedCtx, .{ .acc = &fp.toplevel_name_set_hash }, HoistedCtx.add);
 
         // nested binding 이름집합 (G5) — resolveNestedShadowConflicts/hasNestedBinding 입력.
         // forEachNestedBindingName 으로 shadow pass 와 동일한 scope_maps[1..] 집합을 본다.

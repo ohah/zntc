@@ -546,9 +546,34 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         while (lists.next()) |list| list.deinit(self.allocator);
         by_scope.deinit(self.allocator);
     }
+    // Only function-body-level declarations are initialized on entry. A block
+    // function exists only once its block runs (Annex B in ES5 output), so a
+    // `__name` call at the top of the body would read it before it exists.
+    var body_level: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer body_level.deinit(self.allocator);
+    for (reachable) |raw| {
+        const function = self.ast.getNode(@enumFromInt(raw));
+        switch (function.tag) {
+            .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {},
+            else => continue,
+        }
+        const body = self.ast.functionBodyBlock(function) orelse continue;
+        const body_node = self.ast.getNode(body);
+        if (body_node.tag != .block_statement and body_node.tag != .function_body) continue;
+        const list = body_node.data.list;
+        for (self.ast.extra_data.items[list.start .. list.start + list.len]) |stmt| try body_level.put(self.allocator, stmt, {});
+    }
+    if (self.ast.nodes.items.len > 0) {
+        const program = self.ast.getNode(root);
+        if (program.tag == .program) {
+            const list = program.data.list;
+            for (self.ast.extra_data.items[list.start .. list.start + list.len]) |stmt| try body_level.put(self.allocator, stmt, {});
+        }
+    }
     for (reachable) |raw| {
         const declaration = self.ast.getNode(@enumFromInt(raw));
         if (declaration.tag != .function_declaration) continue;
+        if (!body_level.contains(raw)) continue;
         const binding = self.ast.readExtraNode(declaration.data.extra, 0);
         const id = self.getSymbolIdAt(binding) orelse continue;
         const alias = renames.get(id) orelse continue;
