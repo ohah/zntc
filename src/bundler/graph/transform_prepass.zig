@@ -1217,23 +1217,11 @@ fn isRetainableStaticFieldCall(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
+    allow_optional_member_calls: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
         ast.getNode(call_idx).tag != .call_expression) return false;
-    return isRetainableStaticFieldExpression(allocator, ast, semantic, call_idx, false);
-}
-
-/// Static initializer call trees may contain optional member calls. The shared
-/// validator keeps computed field names on their stricter reanalysis boundary.
-fn isRetainableStaticFieldInitializerCall(
-    allocator: std.mem.Allocator,
-    ast: *const ast_mod.Ast,
-    semantic: *const ModuleSemanticData,
-    call_idx: ast_mod.NodeIndex,
-) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
-        ast.getNode(call_idx).tag != .call_expression) return false;
-    return isRetainableStaticFieldExpression(allocator, ast, semantic, call_idx, true);
+    return isRetainableStaticFieldExpression(allocator, ast, semantic, call_idx, allow_optional_member_calls);
 }
 
 fn isSafeConstructorVarDeclaration(
@@ -2405,14 +2393,14 @@ fn isRetainableSimpleStaticClassField(
                         true,
                     ) and
                     !isRetainableStaticFieldMemberAccess(allocator, ast, semantic, key_value_idx) and
-                    !isRetainableStaticFieldCall(allocator, ast, semantic, key_value_idx))) return false;
+                    !isRetainableStaticFieldCall(allocator, ast, semantic, key_value_idx, true))) return false;
         },
         else => return false,
     }
     return isSafeConstructorValue(ast, semantic, init_idx) or
         isUnresolvedSourceIdentifierReference(ast, semantic, init_idx) or
         isRetainableStaticFieldInitializerMemberAccess(allocator, ast, semantic, init_idx) or
-        isRetainableStaticFieldInitializerCall(allocator, ast, semantic, init_idx);
+        isRetainableStaticFieldCall(allocator, ast, semantic, init_idx, true);
 }
 
 fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
