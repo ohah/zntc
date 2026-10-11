@@ -660,6 +660,52 @@ fn reserveGeneratedExternalNames(
     }
 }
 
+/// Runtime helper preambles are emitted as text, so the mangler cannot see the
+/// locals declared inside a helper body. A helper referenced from a helper body
+/// (another helper, or itself) could otherwise receive a short name that one
+/// of those locals shadows (`r.value instanceof i`). Keep such helpers on their
+/// fixed spelling; helpers referenced only from user code still shrink (#5449).
+fn keepHelpersReferencedFromHelperBodies(
+    allocator: std.mem.Allocator,
+    helpers: @import("transformer/transformer.zig").RuntimeHelpers,
+    minify_whitespace: bool,
+    es5_compat: bool,
+    symbols: []const @import("semantic/symbol.zig").Symbol,
+    ast: *const Ast,
+    keep: *std.DynamicBitSet,
+    reserved: *std.StringHashMapUnmanaged(void),
+) !void {
+    var preamble: std.ArrayList(u8) = .empty;
+    defer preamble.deinit(allocator);
+    try rt.appendRuntimeHelpers(&preamble, allocator, helpers, minify_whitespace, es5_compat);
+    for (symbols, 0..) |sym, i| {
+        if (sym.synthetic_kind != .runtime_helper_preamble) continue;
+        const name = if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name);
+        // One occurrence is the helper's own `var name =` declaration.
+        if (countIdentifierOccurrences(preamble.items, name) < 2) continue;
+        keep.set(i);
+        try reserved.put(allocator, name, {});
+    }
+}
+
+fn countIdentifierOccurrences(text: []const u8, name: []const u8) usize {
+    if (name.len == 0) return 0;
+    var count: usize = 0;
+    var start: usize = 0;
+    while (std.mem.indexOfPos(u8, text, start, name)) |pos| {
+        start = pos + 1;
+        if (pos > 0 and isIdentifierByte(text[pos - 1])) continue;
+        const end = pos + name.len;
+        if (end < text.len and isIdentifierByte(text[end])) continue;
+        count += 1;
+    }
+    return count;
+}
+
+fn isIdentifierByte(c: u8) bool {
+    return std.ascii.isAlphanumeric(c) or c == '_' or c == '$';
+}
+
 /// Flow enum codegen inserts these free identifiers without AST reference
 /// nodes. Reserve them so minified source bindings cannot capture the runtime.
 fn reserveFlowEnumCodegenNames(
@@ -1723,6 +1769,18 @@ fn transpileWithCallbackInternal(
                 if (keep.isSet(post_sym)) continue;
                 keep.set(post_sym);
                 reserved.put(arena_alloc, transformer.ast.getText(post.symbols.items[post_sym].name), {}) catch return error.OutOfMemory;
+            }
+            if (mangle_uses_transform_semantic and transformer.runtime_helpers.hasAny()) {
+                keepHelpersReferencedFromHelperBodies(
+                    arena_alloc,
+                    transformer.runtime_helpers,
+                    options.minify_whitespace,
+                    transformer.runtime_es5_compat,
+                    post.symbols.items,
+                    transformer.ast,
+                    &keep,
+                    &reserved,
+                ) catch return error.OutOfMemory;
             }
             mangle_result = Mangler.mangle(arena_alloc, .{
                 .scopes = post.scopes.items,
