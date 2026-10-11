@@ -292,6 +292,7 @@ pub const TransformOptions = struct {
         var walk_scope = profile.begin(.graph_discover_pm_prepass_decision_unsupported_walk);
         defer walk_scope.end();
 
+        var saw_function_declaration = false;
         for (ast.nodes.items) |node| {
             switch (node.tag) {
                 .arrow_function_expression => {
@@ -300,6 +301,7 @@ pub const TransformOptions = struct {
                 .function_declaration,
                 .function_expression,
                 => {
+                    if (node.tag == .function_declaration) saw_function_declaration = true;
                     const flags = ast.readExtra(node.data.extra, ast_mod.FunctionExtra.flags);
                     if (functionNeedsDownlevel(u, (flags & ast_mod.FunctionFlags.is_async) != 0, (flags & ast_mod.FunctionFlags.is_generator) != 0)) return true;
                 },
@@ -382,6 +384,35 @@ pub const TransformOptions = struct {
                         regex_lower.hasModifierGroup(ast.getText(node.span))) return true;
                 },
                 else => {},
+            }
+        }
+        // ES5 output renames a colliding block function and restores its
+        // `.name` with `__name`, so the helper must be discovered before
+        // linking (#5454).
+        if (u.block_scoping and saw_function_declaration) return hasBlockLevelFunctionDeclaration(ast);
+        return false;
+    }
+
+    fn hasBlockLevelFunctionDeclaration(ast: *const Ast) bool {
+        var bodies: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        defer bodies.deinit(ast.allocator);
+        for (ast.nodes.items) |node| {
+            const body = ast.functionBodyBlock(node) orelse continue;
+            bodies.put(ast.allocator, @intFromEnum(body), {}) catch return true;
+        }
+        const extras = ast.extra_data.items;
+        for (ast.nodes.items, 0..) |node, raw| {
+            const list: ast_mod.NodeList = switch (node.tag) {
+                .block_statement => if (bodies.contains(@intCast(raw))) continue else node.data.list,
+                .switch_case => if (ast.hasExtra(node.data.extra, 2))
+                    .{ .start = extras[node.data.extra + 1], .len = extras[node.data.extra + 2] }
+                else
+                    continue,
+                else => continue,
+            };
+            if (list.start > extras.len or list.len > extras.len - list.start) return true;
+            for (extras[list.start .. list.start + list.len]) |stmt| {
+                if (stmt < ast.nodes.items.len and ast.nodes.items[stmt].tag == .function_declaration) return true;
             }
         }
         return false;
@@ -483,6 +514,10 @@ test "lowered syntax discovers helpers and generated globals before linking" {
         .{ .source = "var {x = 3} = input;", .es5_prepass = true },
         .{ .source = "function square(value) { return value ** 2; }", .es5_prepass = true },
         .{ .source = "function square(value) { value **= 2; }", .es5_prepass = true },
+        // A renamed block function restores `.name` with `__name` (#5454).
+        .{ .source = "function f() { { function g() {} } }", .es5_prepass = true },
+        .{ .source = "switch (k) { case 1: function g() {} }", .es5_prepass = true },
+        .{ .source = "function f() { function g() {} if (f) { g(); } }", .es5_prepass = false },
     };
     for (fixtures) |fixture| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

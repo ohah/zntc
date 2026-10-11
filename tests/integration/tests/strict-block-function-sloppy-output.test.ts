@@ -79,6 +79,36 @@ const cases = [
       'entry.js': `import { g } from './b.js'; console.log(g());`,
     },
   },
+  {
+    // ES5 output renames the colliding block function; `.name` must still be
+    // the source name, including on every switch entry that skips the case.
+    name: 'renamed block function keeps its source name',
+    files: {
+      'a.js': `export function f() { return 'a'; }`,
+      'b.js': `import { f } from './a.js';
+        export const out = [f()];
+        { function f() { return 'inner'; } out.push(f.name + ':' + f()); }
+        for (const k of [1, 2]) {
+          switch (k) { case 1: function f() { return 'case'; } case 2: out.push(f.name + ':' + f()); }
+        }`,
+      'entry.js': `import { out } from './b.js'; console.log(out.join());`,
+    },
+  },
+  {
+    // The discriminant reads the outer binding; the cases see the switch-body
+    // function, even when the jump skips the declaring case.
+    name: 'switch discriminant reads the name a case function shadows',
+    files: {
+      'a.js': `export function f() { return 'z'; }`,
+      'b.js': `import { f } from './a.js';
+        export const out = [];
+        switch (f()) {
+          case 'z': out.push(f.name + ':' + f()); break;
+          case 'a': function f() { return 'inner'; }
+        }`,
+      'entry.js': `import { out } from './b.js'; console.log(out.join());`,
+    },
+  },
 ] as const;
 
 function nativeOutput(dir: string): string {
@@ -108,6 +138,16 @@ describe('strict block functions in sloppy bundle output (#5454)', () => {
       format,
       args: [`--format=${format}`, '--target=es5'],
     })),
+    {
+      label: 'iife, es5, minify',
+      format: 'iife' as const,
+      args: ['--format=iife', '--target=es5', '--minify'],
+    },
+    {
+      label: 'iife, es5, keep-names',
+      format: 'iife' as const,
+      args: ['--format=iife', '--target=es5', '--keep-names'],
+    },
     { label: 'react-native', format: 'iife' as const, args: ['--platform=react-native'] },
   ];
 
