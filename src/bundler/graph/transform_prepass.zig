@@ -1219,10 +1219,10 @@ fn isRetainableBoundStaticFieldMemberAccess(
 }
 
 /// A static-field value may read a non-optional member chain rooted at an
-/// exact source binding when each computed key is safe or an unresolved source
-/// name. Those names remain reserved in the retained graph; no binding edge
-/// needs to move with the member expression.
-fn isRetainableBoundStaticFieldInitializerMemberReadWithUnresolvedKey(
+/// exact source binding or one unresolved source identifier when each
+/// computed key is safe or unresolved. External names remain reserved in the
+/// retained graph; no binding edge needs to move with the member expression.
+fn isRetainableStaticFieldInitializerMemberReadWithExternalIdentifiers(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
@@ -1233,8 +1233,10 @@ fn isRetainableBoundStaticFieldInitializerMemberReadWithUnresolvedKey(
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
         if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.getNode(current_idx);
-        if (current.tag == .identifier_reference)
-            return saw_member and isBoundSourceIdentifierReference(ast, semantic, current_idx);
+        if (current.tag == .identifier_reference) {
+            return saw_member and (isBoundSourceIdentifierReference(ast, semantic, current_idx) or
+                isUnresolvedSourceIdentifierReference(ast, semantic, current_idx));
+        }
         if (current.tag != .static_member_expression and current.tag != .computed_member_expression) return false;
 
         const extras = ast.extra_data.items;
@@ -1264,7 +1266,7 @@ fn isRetainableBoundStaticFieldInitializerMemberAccess(
 ) bool {
     return isRetainableBoundStaticFieldOptionalMemberChain(allocator, ast, semantic, member_idx) or
         isRetainableBoundStaticFieldMemberAccess(allocator, ast, semantic, member_idx) or
-        isRetainableBoundStaticFieldInitializerMemberReadWithUnresolvedKey(ast, semantic, member_idx);
+        isRetainableStaticFieldInitializerMemberReadWithExternalIdentifiers(ast, semantic, member_idx);
 }
 
 fn isRetainableBoundStaticFieldCall(

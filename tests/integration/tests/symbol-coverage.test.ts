@@ -12288,9 +12288,16 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 outer,value\n',
       },
       {
-        name: 'unbound roots of computed member receiver chains stay on semantic reanalysis',
+        name: 'unresolved roots of computed member receiver chains retain their external reference',
         source:
-          'globalThis.__zntcComputedReceiverRoot = { outer: { value: 9 } }; var key = "outer"; class UnboundComputedMemberReceiverRootField { static value = __zntcComputedReceiverRoot[key].value; } console.log(UnboundComputedMemberReceiverRootField.value);',
+          'var order = []; globalThis.__zntcComputedReceiverRoot = { get outer() { order.push("outer"); return { get value() { order.push("value"); return 9; } }; } }; var key = "outer"; class UnboundComputedMemberReceiverRootField { static value = __zntcComputedReceiverRoot[key].value; } console.log(UnboundComputedMemberReceiverRootField.value, order.join(","));',
+        graph: 'retained',
+        output: '9 outer,value\n',
+      },
+      {
+        name: 'unresolved roots of optional computed member chains stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcOptionalReceiverRoot = { outer: { value: 9 } }; var key = "outer"; class OptionalUnresolvedReceiverRootField { static value = __zntcOptionalReceiverRoot?.[key].value; } console.log(OptionalUnresolvedReceiverRootField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
@@ -12449,10 +12456,17 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '8\n',
       },
       {
-        name: 'unresolved static member receiver stays on semantic reanalysis',
+        name: 'unresolved static member receiver retains its external reference',
         source:
           'globalThis.__zntcStaticMemberHolder = { value: 9 }; class UnresolvedStaticMemberValueField { static value = __zntcStaticMemberHolder.value; } console.log(UnresolvedStaticMemberValueField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
+        output: '9\n',
+      },
+      {
+        name: 'unresolved static member receiver stays visible beside a generated computed-field temp',
+        source:
+          "globalThis._a = { outer: { value: 9 } }; var key = 'outer'; function fieldKey() { return 'result'; } class ExternalRootCollision { static [fieldKey()] = _a[key].value; } console.log(ExternalRootCollision.result);",
+        graph: 'retained',
         output: '9\n',
       },
       {
