@@ -12783,10 +12783,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '10 argument:8,field:9\n',
       },
       {
-        name: 'optional nested static-field call arguments stay on semantic reanalysis',
+        name: 'bound optional nested static-field call arguments retain their graph',
         source:
           'function fieldArgument(input) { return input + 1; } function fieldValue(input) { return input + 1; } class OptionalNestedCallField { static value = fieldValue(fieldArgument?.(8)); } console.log(OptionalNestedCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '10\n',
       },
       {
@@ -12819,10 +12819,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '11 external:8,inner:9,field:10\n',
       },
       {
-        name: 'deep optional static-field call arguments stay on semantic reanalysis',
+        name: 'deep bound optional static-field call arguments retain their graph',
         source:
           'function inner(input) { return input + 1; } function fieldArgument(input) { return input + 1; } function fieldValue(input) { return input + 1; } class DeepOptionalCallField { static value = fieldValue(inner(fieldArgument?.(8))); } console.log(DeepOptionalCallField.value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '11\n',
       },
       {
@@ -12833,11 +12833,12 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '11\n',
       },
       {
-        name: 'optional direct static initializer calls stay on semantic reanalysis',
+        name: 'bound direct optional static initializer calls retain graph and short-circuit order',
         source:
-          'function fieldValue(input) { return input + 1; } class OptionalCallField { static value = fieldValue?.(8); } console.log(OptionalCallField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; function argument() { order.push("argument"); return 4; } function fieldValue(input) { "use strict"; order.push(this === undefined ? "this:undefined" : "this:bound"); order.push("call:" + input); return input + 1; } var missing = null; function wrap(value) { order.push("wrap:" + String(value)); return value; } class OptionalCallField { static direct = fieldValue?.(argument()); static absent = missing?.(argument()); static nested = wrap(fieldValue?.(argument())); static nestedAbsent = wrap(missing?.(argument())); } console.log(OptionalCallField.direct, OptionalCallField.absent, OptionalCallField.nested, OptionalCallField.nestedAbsent, order.join(","));',
+        graph: 'retained',
+        output:
+          '5 undefined 5 undefined argument,this:undefined,call:4,argument,this:undefined,call:4,wrap:5,wrap:undefined\n',
       },
       {
         name: 'optional unresolved member receiver calls retain the external root',
