@@ -1211,7 +1211,10 @@ fn buildStandaloneLateOutputNameOverrides(
 
     for (transformer.symbols, 0..) |symbol, raw_id| {
         if (!isStandaloneLateOutputNameSymbol(symbol)) continue;
-        const base_name = if (symbol.output_name_hint.len > 0) symbol.output_name_hint else symbol.synthetic_name;
+        const base_name = if (symbol.output_name_hint.len > 0)
+            symbol.output_name_hint
+        else
+            transformer.late_output_name_bases.get(symbol.synthetic_name) orelse symbol.synthetic_name;
         if (base_name.len == 0) return error.TransformError;
 
         var candidate = base_name;

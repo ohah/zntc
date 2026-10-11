@@ -2939,6 +2939,7 @@ test "generator state name handoff survives nested cache invalidation" {
         generator_state_output_scope: ScopeId = .none,
         synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
         synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
+        late_output_name_bases: std.StringHashMapUnmanaged([]const u8) = .empty,
         name_arena: ?std.heap.ArenaAllocator = null,
         synthetic_idents: ?std.AutoHashMapUnmanaged(u32, void) = null,
         generator_state_name_span: ?Span = null,

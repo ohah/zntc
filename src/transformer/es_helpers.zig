@@ -1084,16 +1084,23 @@ pub fn resolveSyntheticNameAvoidingDynamicEval(self: anytype, name: []const u8, 
 
 /// Keep a stable internal spelling for a generated name whose exact SymbolId
 /// will receive its emitted spelling in the standalone final-name pass.
+///
+/// The semantic editor keys bindings by spelling, so the staging spelling must
+/// not equal a source binding's; otherwise the generated binding collides with
+/// (or is attached to) the source symbol before the final-name pass (#5451).
+/// A colliding base gets a collision-free staging spelling, and the final-name
+/// pass starts again from the readable base recorded here.
 pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
     if (self.synthetic_names.get(name)) |resolved| {
         try self.synthetic_taken.put(self.allocator, resolved, {});
         return resolved;
     }
-    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
-    const key = try self.name_arena.?.allocator().dupe(u8, name);
-    try self.synthetic_names.put(self.allocator, key, key);
-    try self.synthetic_taken.put(self.allocator, key, {});
-    return key;
+    const staging = try resolveSyntheticName(self, name);
+    if (!std.mem.eql(u8, staging, name) and !self.late_output_name_bases.contains(staging)) {
+        const base = try self.name_arena.?.allocator().dupe(u8, name);
+        try self.late_output_name_bases.put(self.allocator, staging, base);
+    }
+    return staging;
 }
 
 pub const ScopedSyntheticOutputName = struct {
@@ -1104,10 +1111,9 @@ pub const ScopedSyntheticOutputName = struct {
 /// Share one collision decision between an exact generated reference and the
 /// binding that is emitted later for its output scope.
 pub fn resolveScopedSyntheticOutputName(self: anytype, name: []const u8, scope_id: ScopeId) !ScopedSyntheticOutputName {
-    // Late output naming still needs a unique working spelling while the
-    // semantic graph is reconciled. A source collision can otherwise make a
-    // generated binding share a source SymbolId before the final-name pass.
-    const late = canUseLateStandaloneOutputName(self, scope_id) and !(try syntheticNameInUse(self, name));
+    // A source collision only changes the staging spelling (see
+    // `deferSyntheticOutputName`); the binding still takes the late path.
+    const late = canUseLateStandaloneOutputName(self, scope_id);
     const resolved = if (late)
         try deferSyntheticOutputName(self, name)
     else
