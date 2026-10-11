@@ -12431,11 +12431,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional computed static member invocation with optional receiver chain stays on semantic reanalysis',
-        source:
-          'var key = "value"; var holder = { value() { return 9; } }; class OptionalReceiverComputedMemberInvocationField { static value = holder?.[key]?.(); } console.log(OptionalReceiverComputedMemberInvocationField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+        name: 'bound optional receiver member invocations retain key, receiver, argument, and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'var missingReceiver = null;',
+          'var missingMethod = { get fieldValue() { order.push("missing-method"); return null; } };',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "fieldValue"; } }; }',
+          'function argument() { order.push("argument"); return 4; }',
+          'class BoundOptionalReceiverMemberInvocationField { static dotted = receiver?.fieldValue?.(argument()); static computed = receiver?.[memberKey()]?.(argument()); static absentReceiver = missingReceiver?.[memberKey()]?.(argument()); static absentMethod = missingMethod?.[memberKey()]?.(argument()); }',
+          'console.log(BoundOptionalReceiverMemberInvocationField.dotted, BoundOptionalReceiverMemberInvocationField.computed, BoundOptionalReceiverMemberInvocationField.absentReceiver, BoundOptionalReceiverMemberInvocationField.absentMethod, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 9 undefined undefined method,argument,this,key,coerce,method,argument,this,key,coerce,missing-method\n',
       },
       {
         name: 'computed optional member invocation with unresolved member-expression receiver stays on semantic reanalysis',
@@ -12763,9 +12772,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional receiver with member invocation stays on semantic reanalysis',
+        name: 'unresolved optional receiver chain with member invocation stays on semantic reanalysis',
         source:
-          'var receiver = { fieldValue(input) { return input + 1; } }; class OptionalReceiverMemberInvocationField { static value = receiver?.fieldValue?.(8); } console.log(OptionalReceiverMemberInvocationField.value);',
+          'globalThis.__zntcUnresolvedOptionalReceiverMemberInvocation = { fieldValue(input) { return input + 1; } }; class UnresolvedOptionalReceiverMemberInvocationField { static value = __zntcUnresolvedOptionalReceiverMemberInvocation?.fieldValue?.(8); } console.log(UnresolvedOptionalReceiverMemberInvocationField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
