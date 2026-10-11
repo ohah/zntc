@@ -505,7 +505,8 @@ pub fn trackKnownHoistedTempRef(
     while (iter.next()) |entry| {
         const candidate = entry.value_ptr.*;
         if (candidate.start == name_span.start and candidate.end == name_span.end) {
-            try self.trackHoistedTempRefInScope(candidate, node, scope, flags);
+            if (!try self.trackKnownSyntheticTempReferenceInScope(candidate, node, scope, flags))
+                try self.trackHoistedTempRefInScope(candidate, node, scope, flags);
             return true;
         }
     }

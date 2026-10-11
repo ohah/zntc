@@ -2905,13 +2905,87 @@ pub fn trackSyntheticTempReference(
     node: NodeIndex,
     flags: ReferenceFlags,
 ) Transformer.Error!void {
-    if (!self.semantic_edit_enabled or self.current_scope.isNone() or
-        syntheticTempOutputScopeIsDeferred(self, self.current_scope))
-        return trackHoistedTempRef(self, name_span, node, flags);
+    return trackSyntheticTempReferenceInScope(self, name_span, declaration_span, node, self.current_scope, flags);
+}
 
-    const symbol_id = lookupSyntheticTempSymbol(self, name_span, self.current_scope) orelse
-        (try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, self.current_scope)) orelse return;
-    return addSyntheticRefInScope(self, node, symbol_id, self.current_scope, flags);
+/// The same exact temp tracking for a caller that already knows the emitted
+/// reference scope, even when it differs from `current_scope`.
+pub fn trackSyntheticTempReferenceInScope(
+    self: *Transformer,
+    name_span: Span,
+    declaration_span: Span,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or scope.isNone() or syntheticTempOutputScopeIsDeferred(self, scope))
+        return trackHoistedTempRefInScope(self, name_span, node, scope, flags);
+
+    const symbol_id = lookupSyntheticTempSymbol(self, name_span, scope) orelse
+        (try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, scope)) orelse return;
+    return addSyntheticRefInScope(self, node, symbol_id, scope, flags);
+}
+
+/// Attach a known generated reference only when its already-reserved temp ID
+/// is visible from the reference's output scope. The binding can live in an
+/// enclosing var scope, so the reference scope alone must not reserve a new ID.
+pub fn trackKnownSyntheticTempReferenceInScope(
+    self: *Transformer,
+    name_span: Span,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!bool {
+    if (!self.semantic_edit_enabled or node.isNone() or scope.isNone() or
+        syntheticTempOutputScopeIsDeferred(self, scope)) return false;
+
+    const symbol_id = try lookupVisibleSyntheticTempSymbol(self, name_span, scope) orelse return false;
+    try addSyntheticRefInScope(self, node, symbol_id, scope, flags);
+    return true;
+}
+
+fn lookupVisibleSyntheticTempSymbol(
+    self: *Transformer,
+    name_span: Span,
+    reference_scope: ScopeId,
+) Transformer.Error!?SymbolId {
+    if (self.synthetic_temp_symbol_ids.count() == 0 and self.bound_temp_symbols.count() == 0) return null;
+    const editor = try editorFor(self);
+    if (reference_scope.toIndex() >= editor.scopes.items.len) return null;
+    var found: ?SymbolId = null;
+    var ambiguous = false;
+    var cursor = reference_scope;
+    var hops: usize = 0;
+    while (!cursor.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
+        const key = syntheticTempSymbolKey(name_span, cursor);
+        const synthetic_id = self.synthetic_temp_symbol_ids.get(key);
+        const bound_id = self.bound_temp_symbols.get(key);
+        if (synthetic_id != null and bound_id != null and synthetic_id.? != bound_id.?) return null;
+        const raw_id = synthetic_id orelse bound_id;
+        if (raw_id) |raw| {
+            if (visibleSyntheticTempCandidate(editor, name_span, reference_scope, raw)) |id| {
+                if (found) |existing| {
+                    if (existing != id) ambiguous = true;
+                } else found = id;
+            }
+        }
+        cursor = editor.scopes.items[cursor.toIndex()].parent;
+    }
+
+    return if (ambiguous) null else found;
+}
+
+fn visibleSyntheticTempCandidate(
+    editor: *SemanticEditor,
+    name_span: Span,
+    reference_scope: ScopeId,
+    raw_id: u32,
+) ?SymbolId {
+    if (raw_id >= editor.symbols.items.len) return null;
+    const id: SymbolId = @enumFromInt(raw_id);
+    const symbol = editor.symbols.items[raw_id];
+    if (symbol.name.start != name_span.start or symbol.name.end != name_span.end) return null;
+    return if (editor.symbolVisibleFrom(id, reference_scope)) id else null;
 }
 
 /// 원본 프로그램·함수의 호이스트 바인딩에 앞서 기록한 참조를 연결한다.

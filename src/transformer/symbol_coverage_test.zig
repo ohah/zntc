@@ -1879,6 +1879,61 @@ test "#4819 prehoisted class key write reserves one immediate SymbolId" {
     try std.testing.expectEqual(@as(usize, 1), exact_refs);
 }
 
+test "#4819 known hoisted temp refs attach to an existing exact SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const helpers = @import("es_helpers.zig");
+    var scanner = try Scanner.init(allocator, "function callback() {} const value = 'value';");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+        return error.MissingProgramScope;
+    var nested_function_scope: ?u32 = null;
+    for (analyzer.scopes.items, 0..) |scope, index| {
+        if (scope.kind == .function) {
+            nested_function_scope = @intCast(index);
+            break;
+        }
+    }
+    const reference_scope = nested_function_scope orelse return error.MissingNestedFunctionScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @enumFromInt(program_scope);
+
+    const name_span = try helpers.makeTempVarSpan(&transformer);
+    const binding = try helpers.makeSyntheticBinding(&transformer, name_span);
+    const expected_id = (try transformer.declareSyntheticTempInScope(
+        binding,
+        parser.ast.getNode(root).span,
+        @enumFromInt(program_scope),
+    )) orelse return error.MissingReservedTempSymbol;
+    const reference = try helpers.makeSyntheticRefFromSpan(&transformer, name_span);
+    try std.testing.expect(try helpers.trackKnownHoistedTempRef(
+        &transformer,
+        reference,
+        @enumFromInt(reference_scope),
+        .{ .read = true },
+    ));
+
+    const actual_id = transformer.getSymbolIdAt(reference) orelse return error.MissingKnownTempReferenceSymbol;
+    try std.testing.expectEqual(@intFromEnum(expected_id), actual_id);
+    try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
 test "#4819 transformed scope owners retain their original ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
