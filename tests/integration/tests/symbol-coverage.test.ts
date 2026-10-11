@@ -12757,6 +12757,21 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'bound call-result optional receiver member calls retain key, this, and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'function makeReceiver(value) { order.push(value === null ? "null-receiver" : "receiver"); return value; }',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "fieldValue"; } }; }',
+          'function argument() { order.push("argument"); return 4; }',
+          'class BoundCallResultOptionalReceiverMemberCallField { static dotted = makeReceiver(receiver)?.fieldValue(argument()); static computed = makeReceiver(receiver)?.[memberKey()](argument()); static absent = makeReceiver(null)?.[memberKey()](argument()); }',
+          'console.log(BoundCallResultOptionalReceiverMemberCallField.dotted, BoundCallResultOptionalReceiverMemberCallField.computed, BoundCallResultOptionalReceiverMemberCallField.absent, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 9 undefined receiver,method,argument,this,receiver,key,coerce,method,argument,this,null-receiver\n',
+      },
+      {
         name: 'unresolved optional member-call static initializers retain root, receiver this and argument order',
         source:
           'var order = []; var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } }; Object.defineProperty(globalThis, "__zntcOptionalStaticCallRoot", { configurable: true, get() { order.push("root"); return receiver; } }); Object.defineProperty(globalThis, "__zntcMissingOptionalStaticCallRoot", { configurable: true, get() { order.push("missing"); return null; } }); function memberKey() { order.push("key"); return "fieldValue"; } function argument() { order.push("argument"); return 4; } class UnresolvedOptionalMemberCallField { static value = __zntcOptionalStaticCallRoot?.[memberKey()](argument()); static absent = __zntcMissingOptionalStaticCallRoot?.[memberKey()](argument()); } console.log(UnresolvedOptionalMemberCallField.value, UnresolvedOptionalMemberCallField.absent, order.join(","));',
@@ -12846,6 +12861,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'unresolved call-result optional receiver member call stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcUnresolvedOptionalReceiverCallFactory = function () { return { fieldValue(input) { return input + 1; } }; }; class UnresolvedCallResultOptionalReceiverMemberCallField { static value = __zntcUnresolvedOptionalReceiverCallFactory()?.fieldValue(8); } console.log(UnresolvedCallResultOptionalReceiverMemberCallField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
         name: 'unresolved call-result ordinary member invocation stays on semantic reanalysis',
         source:
           'globalThis.__zntcUnresolvedMemberReceiverFactory = function () { return { fieldValue(input) { return input + 1; } }; }; class UnresolvedCallResultMemberInvocationField { static value = __zntcUnresolvedMemberReceiverFactory().fieldValue(8); } console.log(UnresolvedCallResultMemberInvocationField.value);',
@@ -12863,6 +12885,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         name: 'call-result optional member invocation with effectful receiver argument stays on semantic reanalysis',
         source:
           'var order = []; function makeReceiver(input) { return { fieldValue(value) { return input + value; } }; } class EffectfulCallResultOptionalMemberInvocationField { static value = makeReceiver((order.push("receiver-argument"), 1)).fieldValue?.(8); } console.log(EffectfulCallResultOptionalMemberInvocationField.value, order.join(","));',
+        graph: 'reanalyzed',
+        output: '9 receiver-argument\n',
+      },
+      {
+        name: 'call-result optional receiver member call with effectful receiver argument stays on semantic reanalysis',
+        source:
+          'var order = []; function makeReceiver(input) { return { fieldValue(value) { return input + value; } }; } class EffectfulCallResultOptionalReceiverMemberCallField { static value = makeReceiver((order.push("receiver-argument"), 1))?.fieldValue(8); } console.log(EffectfulCallResultOptionalReceiverMemberCallField.value, order.join(","));',
         graph: 'reanalyzed',
         output: '9 receiver-argument\n',
       },

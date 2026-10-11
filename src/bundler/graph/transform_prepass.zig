@@ -1379,6 +1379,16 @@ fn isRetainableStaticFieldExpression(
                         semantic,
                         callee_idx,
                     );
+                const retained_call_result_optional_receiver_member_call = !optional_call and
+                    work_item.allow_optional_invocations and
+                    isRetainableStaticFieldOptionalMemberChain(
+                        allocator,
+                        ast,
+                        semantic,
+                        callee_idx,
+                        true,
+                        true,
+                    );
                 if (optional_call and (!work_item.allow_optional_invocations or
                     (!isRetainableStaticFieldDirectOptionalCall(ast, semantic, callee_idx) and
                         !retained_optional_member_invocation))) return false;
@@ -1389,6 +1399,7 @@ fn isRetainableStaticFieldExpression(
                     },
                     .static_member_expression, .computed_member_expression => {
                         if (!retained_optional_member_invocation and !retained_call_result_member_call and
+                            !retained_call_result_optional_receiver_member_call and
                             !(allow_optional_member_calls and
                                 isRetainableStaticFieldOptionalMemberChain(
                                     allocator,
