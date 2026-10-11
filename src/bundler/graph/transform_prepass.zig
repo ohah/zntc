@@ -1262,10 +1262,46 @@ fn isSafeConstructorForEachHead(
     if (head_idx.isNone() or @intFromEnum(head_idx) >= ast.nodes.items.len) return false;
     const head = ast.getNode(head_idx);
     return switch (head.tag) {
-        .variable_declaration => isSafeConstructorVarDeclaration(ast, semantic, head),
+        .variable_declaration => switch (ast.variableDeclarationKind(head)) {
+            .@"var" => isSafeConstructorVarDeclaration(ast, semantic, head),
+            .let, .@"const" => isSafeRetainedLexicalForEachHead(ast, semantic, head),
+            else => false,
+        },
         .assignment_target_identifier => isBoundSourceIdentifierAssignmentTarget(ast, semantic, head_idx),
         else => false,
     };
+}
+
+fn isSafeRetainedLexicalForEachHead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration: ast_mod.Node,
+) bool {
+    if (declaration.tag != .variable_declaration) return false;
+    const kind = ast.variableDeclarationKind(declaration);
+    if (kind != .let and kind != .@"const") return false;
+
+    const extras = ast.extra_data.items;
+    const extra = declaration.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const declarators_start = extras[extra + 1];
+    const declarators_len = extras[extra + 2];
+    if (declarators_len != 1 or declarators_start > extras.len or
+        declarators_len > extras.len - declarators_start) return false;
+
+    const declarator_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarators_start]);
+    if (declarator_idx.isNone() or @intFromEnum(declarator_idx) >= ast.nodes.items.len) return false;
+    const declarator = ast.getNode(declarator_idx);
+    if (declarator.tag != .variable_declarator) return false;
+    const declarator_extra = declarator.data.extra;
+    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+    const binding_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
+    const type_annotation_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
+    const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+    if (!type_annotation_idx.isNone() or !initializer_idx.isNone() or
+        !isBoundSourceIdentifierBinding(ast, semantic, binding_idx)) return false;
+
+    return kind != .@"const" or hasOnlyReadReferencesToBinding(ast, semantic, binding_idx);
 }
 
 fn isSafeConstructorLocalAssignment(

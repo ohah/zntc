@@ -12925,17 +12925,17 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '0\n',
       },
       {
-        name: 'constructor lexical for-of head stays on reanalysis',
+        name: 'constructor lexical for-of head retains its graph',
         source:
           'class LexicalConstructorForOf { constructor(values) { for (let value of values) this.value = value; } } console.log(new LexicalConstructorForOf([4, 7]).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '7\n',
       },
       {
-        name: 'constructor lexical for-in head stays on reanalysis',
+        name: 'constructor const for-in head retains its graph',
         source:
           'class LexicalConstructorForIn { constructor(values) { for (const key in values) this.value = key; } } console.log(new LexicalConstructorForIn({ safe: 1 }).value);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: 'safe\n',
       },
       {
@@ -13941,6 +13941,27 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'b 2 last:a|last:b|count:2 false\n',
       },
       {
+        name: 'post-super lexical for in retains key binding and write order',
+        source:
+          'var events = [], values = { a: 2, b: 3 }; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var count = 0; for (let key in values) { count++; key += "!"; this.last = key; } this.count = count; } } var child = new Child(); console.log(child.last, child.count, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: 'b! 2 last:a!|last:b!|count:2 false\n',
+      },
+      {
+        name: 'post-super lexical for of preserves let head writes',
+        source:
+          'var events = [], values = [1, 2]; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); for (let value of values) { value++; this.last = value; } } } var child = new Child(); console.log(child.last, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '3 last:2|last:3 false\n',
+      },
+      {
+        name: 'post-super lexical for of closes its iterator on break',
+        source:
+          'var events = [], nextCalls = 0, closes = 0, _iterator = 70, _step = 80; var values = { [Symbol.iterator]() { return { next() { nextCalls++; return { value: 4, done: false }; }, return() { closes++; events.push("iterator:return"); return {}; } }; } }; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var _iterator = 1, _step = 2; for (const value of values) { this.value = value; break; } } } var child = new Child(); console.log(child.value, nextCalls, closes, _iterator, _step, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '4 1 1 70 80 value:4|iterator:return false\n',
+      },
+      {
         name: 'post-super while this condition stays on reanalysis',
         source:
           'function Base() { this.count = 0; } class Child extends Base { constructor() { super(); while (this.count < 2) { this.count++; } } } var child = new Child(); console.log(child.count, child instanceof Child);',
@@ -13984,11 +14005,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 true\n',
       },
       {
-        name: 'post-super lexical for of head stays on reanalysis',
+        name: 'post-super lexical for of with closure capture stays on reanalysis',
         source:
-          'var values = [1, 2]; function Base() {} class Child extends Base { constructor() { super(); var sum = 0; for (let value of values) sum += value; this.total = sum; } } var child = new Child(); console.log(child.total, child instanceof Child);',
+          'var values = [1, 2], readers = []; function Base() {} class Child extends Base { constructor() { super(); for (let value of values) readers.push(function() { return value; }); this.total = readers[0]() + readers[1](); } } var child = new Child(); console.log(child.total, child instanceof Child);',
         graph: 'reanalyzed',
         output: '3 true\n',
+      },
+      {
+        name: 'post-super destructuring for of head stays on reanalysis',
+        source:
+          'var values = [{ value: 1 }, { value: 2 }]; function Base() {} class Child extends Base { constructor() { super(); var total = 0; for (let { value } of values) total += value; this.total = total; } } var child = new Child(); console.log(child.total, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '3 true\n',
+      },
+      {
+        name: 'post-super destructuring for in head stays on reanalysis',
+        source:
+          'var values = { a: 1 }; function Base() {} class Child extends Base { constructor() { super(); for (let { length } in values) this.value = length; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '1 true\n',
       },
       {
         name: 'post-super else-if call condition stays on reanalysis',
