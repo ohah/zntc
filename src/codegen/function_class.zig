@@ -8,6 +8,7 @@ const debug_metadata = @import("debug_metadata.zig");
 const statement_emit = @import("statements.zig");
 const call_emit = @import("calls.zig");
 const ExprFlags = @import("precedence.zig").ExprFlags;
+const keep_names = @import("keep_names.zig");
 
 fn emitNestedExecutionBody(self: anytype, body: NodeIndex) !void {
     const saved_for_init = self.in_for_init;
@@ -21,22 +22,6 @@ fn emitNestedExecutionBody(self: anytype, body: NodeIndex) !void {
     }
     self.next_block_is_function_body = true;
     try self.emitNode(body);
-}
-
-/// keepNames: name 노드가 rename되었으면 (original_name, new_name) 쌍을 수집.
-/// emitter가 코드젠 완료 후 __name(newName, "originalName") 호출을 append.
-fn collectKeepNameEntry(self: anytype, name_idx: NodeIndex) void {
-    const meta = self.options.linking_metadata orelse return;
-    const sym_id = self.resolveSymbolId(name_idx, meta) orelse return;
-    const new_name = meta.renames.get(sym_id) orelse return;
-    const name_node = self.ast.getNode(name_idx);
-    const original_name = self.ast.getText(name_node.data.string_ref);
-    if (std.mem.eql(u8, new_name, original_name)) return;
-    // OOM 시 append 실패 → __name() 미삽입. arena 할당이므로 현실적으로 발생하지 않음.
-    self.keep_names_entries.append(self.allocator, .{
-        .new_name = new_name,
-        .original_name = original_name,
-    }) catch return;
 }
 
 /// template literal을 child node 단위로 emit.
@@ -137,9 +122,15 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     const suppress_name = self.suppress_next_function_name;
     self.suppress_next_function_name = false;
 
+    // The assignment runs in place, so name the value it assigns.
+    const assigned_original = if (convert_fn_to_assign) keep_names.renamedOriginal(self, name) else null;
     if (convert_fn_to_assign) {
         try self.emitNode(name);
         try self.write(" = ");
+        if (assigned_original != null) {
+            try self.write(keep_names.helperName(self));
+            try self.writeByte('(');
+        }
     }
 
     if (flags & ast_mod.FunctionFlags.is_async != 0) try self.write("async ");
@@ -153,18 +144,18 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     try self.emitNodeList(params_start, params_len, ",");
     try self.writeByte(')');
     try emitNestedExecutionBody(self, body);
+    if (assigned_original) |original| {
+        try self.writeByte(',');
+        try self.writeSpace();
+        try keep_names.writeQuoted(self, original);
+        try self.writeByte(')');
+        self.keep_names_used = true;
+    }
 
     // #1751: assignment 로 변환된 form 은 expression statement 라서 `;` 종결 필요.
     // 다음 statement 가 directive ("use strict") 처럼 ASI 로 구분 안 되는 경우
     // 문법 오류 유발. function declaration 원형은 `}` 로 충분하지만 변환형은 아님.
     if (convert_fn_to_assign) try self.writeByte(';');
-
-    // keepNames: function_declaration에서 이름이 rename된 경우 entry 수집
-    if (self.options.keep_names and node.tag == .function_declaration and !name.isNone() and
-        flags & ast_mod.FunctionFlags.name_preserved == 0)
-    {
-        collectKeepNameEntry(self, name);
-    }
 }
 
 /// arrow_function_expression: extra = [params, body, flags]
@@ -281,6 +272,10 @@ pub fn emitClass(self: anytype, node: Node) !void {
         debug_metadata.fnMapExit(self) catch {}; // defer는 오류 전파 불가 — OOM 시 상위 emit이 이미 실패했으므로 무시
     };
 
+    const class_hint = self.pending_class_hint;
+    self.pending_class_hint = null;
+    const keep_name: ?[]const u8 = if (!name.isNone()) keep_names.renamedOriginal(self, name) else class_hint;
+
     // class는 block-scoped → __esm 콜백 밖 __export getter가 접근 불가.
     // variable_declaration과 동일하게 할당문으로 변환. (emitter가 var 선언을 밖에 배치)
     const convert_to_assign = self.options.esm_var_assign_only and
@@ -334,15 +329,21 @@ pub fn emitClass(self: anytype, node: Node) !void {
         // (`class C extends (yield 0)`, `extends (a?B:C)`). member/call/new 는 그대로.
         try self.emitExpr(super_class, .postfix, .{});
     }
+    // Set after `extends` and decorators: classes nested there come first.
+    if (self.options.keep_names_static_block) self.pending_class_static_name = keep_name;
     try emitNestedExecutionBody(self, body);
 
     if (convert_to_assign or convert_to_var_class_expr) {
         try self.writeByte(';');
     }
 
-    // keepNames: class_declaration에서 이름이 rename된 경우 entry 수집
-    if (self.options.keep_names and node.tag == .class_declaration and !name.isNone()) {
-        collectKeepNameEntry(self, name);
+    // Without static blocks a renamed declaration is named right after it
+    // (an expression is wrapped by emitExpr instead).
+    if (keep_name != null and !self.options.keep_names_static_block and
+        node.tag == .class_declaration and !name.isNone())
+    {
+        try self.writeSpace();
+        try keep_names.emitNameStatement(self, name, keep_name.?);
     }
 }
 

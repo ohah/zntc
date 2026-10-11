@@ -151,9 +151,10 @@ pub const CodegenOptions = struct {
     ///         import.meta.dirname -> __dirname, import.meta.filename -> __filename
     /// - browser/neutral: import.meta.url -> "", import.meta.dirname -> "", import.meta.filename -> ""
     platform: Platform = .browser,
-    /// --keep-names: minify 시 함수/클래스의 .name 프로퍼티 보존.
-    /// codegen이 rename 감지 후 __name() 호출을 수집, 선언 직후에 append.
+    /// --keep-names: restore `.name` of renamed functions/classes (keep_names.zig).
     keep_names: bool = false,
+    /// The target supports class static blocks (`static { __name(this, ..) }`).
+    keep_names_static_block: bool = false,
     // JSX 옵션 제거: Transformer의 jsx_lowering이 JSX -> call_expression 변환을 담당.
     // JsxRuntime enum은 graph.zig/emitter.zig/transpile.zig에서 여전히 사용.
     /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
@@ -202,12 +203,4 @@ pub const CodegenOptions = struct {
     /// Debug 빌드 전용 내부 invariant. private syntax downlevel 대상인데 transformer 후
     /// raw private AST가 codegen까지 도달하면 사용자 입력 에러가 아니라 transformer 버그다.
     assert_no_raw_private_syntax: bool = false,
-};
-
-/// keepNames 엔트리. codegen이 수집하고 emitter가 __name() 호출로 변환.
-pub const KeepNameEntry = struct {
-    /// 리네임된 이름 (linker가 부여한 새 이름)
-    new_name: []const u8,
-    /// 원본 이름 (소스 코드의 함수/클래스 이름)
-    original_name: []const u8,
 };

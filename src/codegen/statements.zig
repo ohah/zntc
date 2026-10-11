@@ -1,6 +1,7 @@
 //! Codegen helpers for comments and statement-level emission.
 
 const std = @import("std");
+const keep_names = @import("keep_names.zig");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -117,6 +118,7 @@ pub fn emitProgram(self: anytype, node: Node) !void {
     const list = node.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     var emitted = false;
+    var names_emitted = !self.options.keep_names;
     var preamble = self.options.program_preamble;
     for (indices) |raw_idx| {
         const node_idx: NodeIndex = @enumFromInt(raw_idx);
@@ -137,6 +139,16 @@ pub fn emitProgram(self: anytype, node: Node) !void {
             if (first_statement.span.start & ast_mod.Ast.STRING_TABLE_BIT == 0) {
                 try emitComments(self, first_statement.span.start);
             }
+        }
+        if (!names_emitted and tag != .hashbang and tag != .directive) {
+            for (indices) |raw| {
+                if (isElidedStmt(self, @enumFromInt(raw))) continue;
+                const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
+                if (emitted) try writeNewline(self);
+                try keep_names.emitNameStatement(self, target.name, target.original);
+                emitted = true;
+            }
+            names_emitted = true;
         }
         // minify 시 standalone block_statement (`if(true){...}` fold 잔여 등) 가
         // declaration 을 가지지 않으면 unwrap — `{f()}` → `f();` (probe11).
@@ -419,6 +431,18 @@ fn emitLoweredBlockFunction(self: anytype, idx: NodeIndex) !void {
     try self.writeByte(';');
 }
 
+/// --keep-names: function declarations exist from the start of their
+/// statement list, so their names are restored there (keep_names.zig).
+fn emitHoistedFunctionNames(self: anytype, indices: []const u32) !void {
+    for (indices) |raw| {
+        if (isElidedStmt(self, @enumFromInt(raw))) continue;
+        const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
+        try writeNewline(self);
+        try writeIndent(self);
+        try keep_names.emitNameStatement(self, target.name, target.original);
+    }
+}
+
 pub fn emitBracedList(self: anytype, node: Node) !void {
     if (!self.options.minify_whitespace and self.buf.items.len > 0) {
         const last = self.buf.items[self.buf.items.len - 1];
@@ -433,6 +457,19 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
     self.next_block_is_function_body = false;
     const lower_functions = node.tag == .block_statement and !is_function_body and
         self.options.lower_strict_block_functions;
+    const static_name = if (node.tag == .class_body) self.pending_class_static_name else null;
+    self.pending_class_static_name = null;
+    if (static_name) |original| {
+        self.indent_level += 1;
+        try writeNewline(self);
+        try writeIndent(self);
+        try keep_names.emitStaticNameBlock(self, original);
+        self.indent_level -= 1;
+        if (indices.len == 0) {
+            try writeNewline(self);
+            try writeIndent(self);
+        }
+    }
     if (indices.len > 0) {
         self.indent_level += 1;
         // Block function declarations are initialized when the block is
@@ -446,10 +483,15 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
                 try emitLoweredBlockFunction(self, idx);
             }
         }
+        var names_emitted = !self.options.keep_names;
         var i: usize = 0;
         while (i < indices.len) : (i += 1) {
             const idx: NodeIndex = @enumFromInt(indices[i]);
             if (isElidedStmt(self, idx)) continue;
+            if (!names_emitted and self.ast.getNode(idx).tag != .directive) {
+                try emitHoistedFunctionNames(self, indices);
+                names_emitted = true;
+            }
             if (lower_functions and isLowerableBlockFunction(self, idx)) continue;
             try writeNewline(self);
             try writeIndent(self);
@@ -1365,8 +1407,25 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
                 try emitLoweredBlockFunction(self, idx);
             }
         }
+        for (case_indices) |raw_case| {
+            for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
+                if (!isLowerableBlockFunction(self, @enumFromInt(raw)) or isElidedStmt(self, @enumFromInt(raw))) continue;
+                const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
+                try writeNewline(self);
+                try writeIndent(self);
+                try keep_names.emitNameStatement(self, target.name, target.original);
+            }
+        }
         try writeNewline(self);
         try writeIndent(self);
+    }
+    const saved_switch_cases = self.keep_name_switch_cases;
+    const saved_switch_lowered = self.keep_name_switch_lowered;
+    self.keep_name_switch_cases = if (self.options.keep_names) case_indices else &.{};
+    self.keep_name_switch_lowered = lower_functions;
+    defer {
+        self.keep_name_switch_cases = saved_switch_cases;
+        self.keep_name_switch_lowered = saved_switch_lowered;
     }
     defer if (lower_functions) {
         const blocks: u32 = if (discriminant_temp != null) 2 else 1;
@@ -1485,6 +1544,23 @@ fn emitSwitchCaseSkippingFunctions(self: anytype, node: Node, skip_lowered_funct
         try self.emitNode(test_expr);
         try self.writeByte(':');
     }
+
+    const switch_cases = self.keep_name_switch_cases;
+    const switch_lowered = self.keep_name_switch_lowered;
+    self.keep_name_switch_cases = &.{};
+    self.indent_level += 1;
+    for (switch_cases) |raw_case| {
+        for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
+            if (isElidedStmt(self, @enumFromInt(raw))) continue;
+            if (switch_lowered and isLowerableBlockFunction(self, @enumFromInt(raw))) continue;
+            const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
+            try writeNewline(self);
+            try writeIndent(self);
+            try keep_names.emitNameStatement(self, target.name, target.original);
+        }
+    }
+    self.indent_level -= 1;
+    self.keep_name_switch_cases = switch_cases;
 
     if (stmts_len > 0) {
         self.indent_level += 1;
