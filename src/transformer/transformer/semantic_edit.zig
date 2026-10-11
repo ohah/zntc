@@ -2918,7 +2918,8 @@ pub fn trackSyntheticTempReferenceInScope(
     scope: ScopeId,
     flags: ReferenceFlags,
 ) Transformer.Error!void {
-    if (!self.semantic_edit_enabled or scope.isNone() or syntheticTempOutputScopeIsDeferred(self, scope))
+    if (!self.semantic_edit_enabled or scope.isNone() or
+        self.static_field_initializer_depth > 0 or syntheticTempOutputScopeIsDeferred(self, scope))
         return trackHoistedTempRefInScope(self, name_span, node, scope, flags);
 
     const symbol_id = lookupSyntheticTempSymbol(self, name_span, scope) orelse

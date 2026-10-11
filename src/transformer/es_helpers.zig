@@ -2451,6 +2451,7 @@ pub const StaticInitSnapshot = struct {
     super_is_static: bool,
     super_static_receiver: ?Span,
     super_in_extracted_fn: bool,
+    static_field_initializer_depth: u32,
 };
 
 pub fn enterStaticInitContext(self: anytype, class_name_span: ?Span) StaticInitSnapshot {
@@ -2460,12 +2461,14 @@ pub fn enterStaticInitContext(self: anytype, class_name_span: ?Span) StaticInitS
         .super_is_static = self.current_super_is_static,
         .super_static_receiver = self.current_super_static_receiver,
         .super_in_extracted_fn = self.current_super_in_extracted_fn,
+        .static_field_initializer_depth = self.static_field_initializer_depth,
     };
     self.static_block_class_name = class_name_span;
     self.this_depth = 0;
     self.current_super_is_static = true;
     if (class_name_span) |s| self.current_super_static_receiver = s;
     self.current_super_in_extracted_fn = true;
+    self.static_field_initializer_depth += 1;
     return snap;
 }
 
@@ -2475,6 +2478,7 @@ pub fn leaveStaticInitContext(self: anytype, snap: StaticInitSnapshot) void {
     self.current_super_is_static = snap.super_is_static;
     self.current_super_static_receiver = snap.super_static_receiver;
     self.current_super_in_extracted_fn = snap.super_in_extracted_fn;
+    self.static_field_initializer_depth = snap.static_field_initializer_depth;
 }
 
 /// 함수 경계를 진입할 때 arrow this/arguments 캡처 상태를 저장하고 0/false 로 초기화.

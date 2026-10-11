@@ -12190,6 +12190,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 9 undefined undefined outer,value,outer,value,empty\n',
       },
       {
+        name: 'function-local static initializer temps bind to the enclosing function hoist',
+        source:
+          'function make() { var holder = { outer: { value: 8 } }; class NestedStaticTemp { static value = holder?.outer?.value; } return NestedStaticTemp.value; } console.log(make());',
+        graph: 'retained',
+        output: '8\n',
+      },
+      {
         name: 'unresolved static member receiver stays on semantic reanalysis',
         source:
           'globalThis.__zntcStaticMemberHolder = { value: 9 }; class UnresolvedStaticMemberValueField { static value = __zntcStaticMemberHolder.value; } console.log(UnresolvedStaticMemberValueField.value);',

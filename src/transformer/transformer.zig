@@ -276,6 +276,10 @@ pub const Transformer = struct {
     /// Pass 2에서 복사된 함수 노드의 원래 스코프를 찾는다.
     transformed_scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     current_scope: ScopeId = .none,
+    /// Static field initializers are visited before being moved out of the
+    /// class body. Their generated var temps must wait for the output hoist
+    /// owner before their SymbolIds are reserved.
+    static_field_initializer_depth: u32 = 0,
     /// Manual generator operation collection carries lexical insertion context
     /// separately from `current_scope`, which remains the visitor's source scope.
     generator_operation_scope: ScopeId = .none,
