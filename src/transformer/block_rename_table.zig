@@ -46,6 +46,12 @@ const NameSets = std.AutoHashMapUnmanaged(u32, std.StringHashMapUnmanaged(void))
 fn isHoistedLexical(sym: Symbol) bool {
     return switch (sym.kind) {
         .variable_let, .variable_const, .class_decl => true,
+        // A strict block function left in its block scope (Annex B hoisting was
+        // skipped because the name conflicts with an outer binding such as an
+        // import). ES5 output runs it under Annex B, which would hoist it over
+        // that binding, so it is renamed like a lowered `let` (Babel lowers it
+        // to `let f = function f() {}` for the same reason) (#5454).
+        .function_decl => true,
         else => false,
     };
 }

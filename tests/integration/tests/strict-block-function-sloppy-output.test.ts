@@ -47,6 +47,15 @@ const cases = [
         console.log(f(), before, globalThis.blockResult);`,
     },
   },
+  {
+    name: 'block-scoped let does not overwrite another module top-level function',
+    files: {
+      'a.js': `export function f() { return 'a'; }`,
+      'b.js': `export function g() { return 1; }
+        { let f = () => 'b-let'; globalThis.x = f(); }`,
+      'entry.js': `import { f } from './a.js'; import { g } from './b.js'; g(); console.log(f(), globalThis.x);`,
+    },
+  },
 ] as const;
 
 function nativeOutput(dir: string): string {
@@ -62,31 +71,45 @@ describe('strict block functions in sloppy bundle output (#5454)', () => {
     cleanup = undefined;
   });
 
+  const variants = [
+    ...(['iife', 'cjs', 'umd', 'esm'] as const).flatMap((format) =>
+      [false, true].map((minify) => ({
+        label: `${format}${minify ? ', minify' : ''}`,
+        format,
+        args: [`--format=${format}`, ...(minify ? ['--minify'] : [])],
+      })),
+    ),
+    // ES5 targets cannot keep block functions block-scoped with `let`.
+    ...(['iife', 'cjs', 'umd'] as const).map((format) => ({
+      label: `${format}, es5`,
+      format,
+      args: [`--format=${format}`, '--target=es5'],
+    })),
+    { label: 'react-native', format: 'iife' as const, args: ['--platform=react-native'] },
+  ];
+
   for (const fixture of cases) {
-    for (const format of ['iife', 'cjs', 'umd', 'esm'] as const) {
-      for (const minify of [false, true]) {
-        test(`${fixture.name}, ${format}${minify ? ', minify' : ''}`, async () => {
-          const created = await createFixture({
-            ...fixture.files,
-            'package.json': '{"type":"module"}',
-          });
-          cleanup = created.cleanup;
-          const expected = nativeOutput(created.dir);
-          const out = join(created.dir, format === 'esm' ? 'out.mjs' : 'out.cjs');
-          const result = await runZntc([
-            '--bundle',
-            join(created.dir, 'entry.js'),
-            `--format=${format}`,
-            ...(minify ? ['--minify'] : []),
-            '-o',
-            out,
-          ]);
-          expect(result.exitCode, result.stderr).toBe(0);
-          const run = spawnSync('node', [out], { encoding: 'utf8' });
-          expect(run.status, run.stderr).toBe(0);
-          expect(run.stdout).toBe(expected);
+    for (const variant of variants) {
+      test(`${fixture.name}, ${variant.label}`, async () => {
+        const created = await createFixture({
+          ...fixture.files,
+          'package.json': '{"type":"module"}',
         });
-      }
+        cleanup = created.cleanup;
+        const expected = nativeOutput(created.dir);
+        const out = join(created.dir, variant.format === 'esm' ? 'out.mjs' : 'out.cjs');
+        const result = await runZntc([
+          '--bundle',
+          join(created.dir, 'entry.js'),
+          ...variant.args,
+          '-o',
+          out,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        const run = spawnSync('node', [out], { encoding: 'utf8' });
+        expect(run.status, run.stderr).toBe(0);
+        expect(run.stdout).toBe(expected);
+      });
     }
   }
 });
