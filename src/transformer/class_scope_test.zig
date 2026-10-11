@@ -10,6 +10,66 @@ const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const coverage = @import("symbol_coverage.zig");
 
+test "#4819 ES5 computed super assignment and update temps have exact identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\class Base { get value() { return 1; } set value(next) {} }
+        \\class Child extends Base {
+        \\  compound(key, delta) { return super[key] += delta; }
+        \\  postfix(key) { return super[key]++; }
+        \\  nullish(key) { return super[key] ??= 5; }
+        \\  *sequence() { yield super[key] += 1; yield super[key]++; yield super[key] ??= 8; }
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try coverage.checkStrict(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        &analyzer.unresolved_references,
+    );
+    defer report.deinit(allocator);
+
+    var exact_temp_findings: usize = 0;
+    for (report.findings.items) |finding| {
+        if (!finding.marked_synthetic or
+            (!std.mem.eql(u8, finding.name, "_a") and !std.mem.eql(u8, finding.name, "_b"))) continue;
+        exact_temp_findings += 1;
+        try std.testing.expectEqual(coverage.StrictStatus.bound, finding.status);
+    }
+    try std.testing.expect(exact_temp_findings >= 5);
+}
+
 test "#4819 class field computed-key prehoist binds temp identity exactly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
