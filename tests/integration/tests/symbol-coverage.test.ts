@@ -93,12 +93,32 @@ const STRICT_ZERO_COUNTERS = [
   'orphan_symbols',
   'cyclic_ast_edges',
 ];
+const STRICT_STATUS_FIELDS = [
+  'bound',
+  'external',
+  'missing_binding',
+  'unclassified',
+  'invalid_id',
+  'name_mismatch',
+  'missing_reference',
+  'identity_mismatch',
+  'invalid_scope',
+  'scope_unknown',
+  'scope_ambiguous',
+  'scope_mismatch',
+  'invisible_reference',
+  'duplicate_reference',
+] as const;
+const STRICT_STATUS_COUNT = 14;
+const STRICT_STATUS_SCHEMA_FINGERPRINT = '37fd7382c204a61b';
 const STRICT_METRIC_FIELDS = ['bound', 'external', 'scope_mismatch', 'marked_synthetic'] as const;
 const STRICT_BOOLEAN_FIELDS = ['consistent', 'symbol_identity_complete'] as const;
+const STRICT_SCHEMA_FIELDS = ['strict_status_count', 'strict_status_fingerprint'] as const;
 const STRICT_REPORT_FIELDS = [
   ...STRICT_METRIC_FIELDS,
   ...STRICT_ZERO_COUNTERS,
   ...STRICT_BOOLEAN_FIELDS,
+  ...STRICT_SCHEMA_FIELDS,
 ] as const;
 const EXACT_SINGLETON_FIELDS = [
   ['generated_bindings', '\\d+'],
@@ -309,9 +329,10 @@ function strictSchemaProblems(report: string): string[] {
   const counts = new Map<string, number>();
   const values = new Map<string, string>();
   const problems: string[] = [];
+  let strictStatusFieldCount = 0;
   const payload = report.slice(payloadStart + 2);
   for (const token of payload.trim().split(/\s+/)) {
-    const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\d+)$/);
+    const match = token.match(/^([A-Za-z_][A-Za-z0-9_]*)=(\S+)$/);
     if (!match) {
       problems.push(`malformed strict report field ${token}`);
       continue;
@@ -319,7 +340,19 @@ function strictSchemaProblems(report: string): string[] {
     const [, field, value] = match;
     counts.set(field, (counts.get(field) ?? 0) + 1);
     values.set(field, value);
+    if (STRICT_STATUS_FIELDS.includes(field as (typeof STRICT_STATUS_FIELDS)[number])) {
+      strictStatusFieldCount++;
+    }
     if (!expectedFields.has(field)) problems.push(`unexpected strict report field ${field}`);
+    const valuePattern = field === 'strict_status_fingerprint' ? /^[0-9a-fA-F]{1,16}$/ : /^\d+$/;
+    if (!valuePattern.test(value)) problems.push(`malformed strict report value ${field}=${value}`);
+  }
+
+  const declaredStatusCount = values.get('strict_status_count');
+  if (declaredStatusCount !== undefined && strictStatusFieldCount !== Number(declaredStatusCount)) {
+    problems.push(
+      `strict status fields=${strictStatusFieldCount}, expected ${declaredStatusCount}`,
+    );
   }
 
   for (const field of STRICT_REPORT_FIELDS) {
@@ -329,12 +362,21 @@ function strictSchemaProblems(report: string): string[] {
       continue;
     }
     const value = values.get(field);
-    const expected = STRICT_ZERO_COUNTERS.includes(field as (typeof STRICT_ZERO_COUNTERS)[number])
-      ? '0'
-      : STRICT_BOOLEAN_FIELDS.includes(field as (typeof STRICT_BOOLEAN_FIELDS)[number])
-        ? '1'
-        : undefined;
-    if (expected !== undefined && value !== expected) {
+    const expected =
+      field === 'strict_status_count'
+        ? String(STRICT_STATUS_COUNT)
+        : field === 'strict_status_fingerprint'
+          ? STRICT_STATUS_SCHEMA_FINGERPRINT
+          : STRICT_ZERO_COUNTERS.includes(field as (typeof STRICT_ZERO_COUNTERS)[number])
+            ? '0'
+            : STRICT_BOOLEAN_FIELDS.includes(field as (typeof STRICT_BOOLEAN_FIELDS)[number])
+              ? '1'
+              : undefined;
+    const mismatched =
+      field === 'strict_status_fingerprint'
+        ? value?.toLowerCase().padStart(16, '0') !== expected
+        : value !== expected;
+    if (expected !== undefined && mismatched) {
       problems.push(`${field}=${value ?? 'missing'}, expected ${expected}`);
     }
   }
@@ -1006,10 +1048,20 @@ describe('symbol identity coverage gate (#4819)', () => {
       ...STRICT_METRIC_FIELDS.map((field) => `${field}=1`),
       ...STRICT_ZERO_COUNTERS.map((field) => `${field}=0`),
       ...STRICT_BOOLEAN_FIELDS.map((field) => `${field}=1`),
+      `strict_status_count=${STRICT_STATUS_COUNT}`,
+      `strict_status_fingerprint=${STRICT_STATUS_SCHEMA_FINGERPRINT}`,
     ].join(' ');
     const report = `zntc: synthetic-coverage fixture.mjs: ${complete}`;
 
     expect(strictSchemaProblems(report)).toEqual([]);
+    expect(
+      strictSchemaProblems(
+        report.replace(
+          STRICT_STATUS_SCHEMA_FINGERPRINT,
+          STRICT_STATUS_SCHEMA_FINGERPRINT.toUpperCase(),
+        ),
+      ),
+    ).toEqual([]);
     for (const counter of STRICT_ZERO_COUNTERS) {
       const corrupted = report.replace(`${counter}=0`, `${counter}=1`);
       expect(corrupted, `strict invariant ${counter} was not present exactly as expected`).not.toBe(
@@ -1040,6 +1092,30 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(strictSchemaProblems(report.replace(' consistent=1', ' consistent=0'))).toContain(
       'consistent=0, expected 1',
     );
+    expect(strictSchemaProblems(report.replace(' strict_status_count=14', ''))).toContain(
+      'strict_status_count occurrences=0, expected 1',
+    );
+    expect(
+      strictSchemaProblems(report.replace(' strict_status_count=14', ' strict_status_count=15')),
+    ).toContain('strict_status_count=15, expected ' + STRICT_STATUS_COUNT);
+    expect(
+      strictSchemaProblems(
+        report.replace(
+          ` strict_status_fingerprint=${STRICT_STATUS_SCHEMA_FINGERPRINT}`,
+          ' strict_status_fingerprint=0000000000000001',
+        ),
+      ),
+    ).toContain(
+      'strict_status_fingerprint=0000000000000001, expected ' + STRICT_STATUS_SCHEMA_FINGERPRINT,
+    );
+    expect(
+      strictSchemaProblems(
+        report.replace(
+          ` strict_status_fingerprint=${STRICT_STATUS_SCHEMA_FINGERPRINT}`,
+          ' strict_status_fingerprint=not-a-hash',
+        ),
+      ),
+    ).toContain('malformed strict report value strict_status_fingerprint=not-a-hash');
     expect(strictSchemaProblems(report.replace(' symbol_identity_complete=1', ''))).toContain(
       'symbol_identity_complete occurrences=0, expected 1',
     );
