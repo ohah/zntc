@@ -668,10 +668,9 @@ fn isBoundSourceIdentifierAssignmentTarget(
     return hasValidSourceSymbol(ast, semantic, node_idx, .assignment_target_identifier);
 }
 
-/// A nested ordinary source-call chain is captured into an exact tracked temp
-/// by optional-chain lowering. Keep it rooted at a bound source identifier and
-/// exclude optional calls and other callee shapes from this chain.
-fn isRetainableOptionalReceiverCallCallee(
+/// Keep nested ordinary source-call chains rooted at a bound source identifier
+/// and exclude optional calls and other callee shapes from the chain.
+fn isRetainableBoundSourceCallCalleeChain(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     callee_idx: ast_mod.NodeIndex,
@@ -723,7 +722,7 @@ fn isRetainableOptionalMemberReceiver(
                 if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
                     return isRetainableOptionalCall(ast, semantic, current);
                 const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-                return isRetainableOptionalReceiverCallCallee(ast, semantic, callee);
+                return isRetainableBoundSourceCallCalleeChain(ast, semantic, callee);
             },
             else => return false,
         }
@@ -848,7 +847,7 @@ fn isRetainableOptionalCall(
             // audited optional call, as in `factory()?.()?.()`. Keep the
             // source-root check at every optional segment; untracked roots
             // still fail both paths below.
-            return isRetainableOptionalReceiverCallCallee(ast, semantic, callee) or
+            return isRetainableBoundSourceCallCalleeChain(ast, semantic, callee) or
                 isRetainableOptionalCallResultTail(ast, semantic, callee);
         }
         // `method?.()()` keeps the optional short-circuit around the complete
@@ -999,6 +998,7 @@ fn isSafeConstructorValue(
 const RetainableStaticFieldExpressionWorkItem = struct {
     expression_idx: ast_mod.NodeIndex,
     allow_optional_invocations: bool,
+    allow_nested_call_callees: bool,
 };
 
 /// A non-optional member chain can be retained when it starts at an exact
@@ -1040,6 +1040,7 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
             pending.append(allocator, .{
                 .expression_idx = property_idx,
                 .allow_optional_invocations = false,
+                .allow_nested_call_callees = false,
             }) catch return false;
         }
         saw_member = true;
@@ -1077,8 +1078,8 @@ fn isRetainableStaticFieldOptionalMemberChain(
             if (call_extra > extras.len or extras.len - call_extra < 4 or
                 (extras[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
             const call_callee: ast_mod.NodeIndex = @enumFromInt(extras[call_extra]);
-            return isRetainableOptionalReceiverCallCallee(ast, semantic, call_callee) and
-                isRetainableStaticFieldCall(allocator, ast, semantic, current_idx, false, false);
+            return isRetainableBoundSourceCallCalleeChain(ast, semantic, call_callee) and
+                isRetainableStaticFieldCall(allocator, ast, semantic, current_idx, false, false, false);
         }
         if (member.tag != .static_member_expression and member.tag != .computed_member_expression)
             return false;
@@ -1105,7 +1106,7 @@ fn isRetainableStaticFieldOptionalMemberChain(
             if (property.tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
             if (property.tag != .call_expression or
-                !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false)) return false;
+                !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false)) return false;
         }
         current_idx = receiver_idx;
     }
@@ -1241,8 +1242,8 @@ fn isRetainableStaticFieldCallResultMemberAccess(
             if (call_extra > extras.len or extras.len - call_extra < 4 or
                 (extras[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
             const call_callee: ast_mod.NodeIndex = @enumFromInt(extras[call_extra]);
-            return isRetainableOptionalReceiverCallCallee(ast, semantic, call_callee) and
-                isRetainableStaticFieldCall(allocator, ast, semantic, current_idx, false, false);
+            return isRetainableBoundSourceCallCalleeChain(ast, semantic, call_callee) and
+                isRetainableStaticFieldCall(allocator, ast, semantic, current_idx, false, false, true);
         }
         if (current.tag != .static_member_expression and current.tag != .computed_member_expression)
             return false;
@@ -1258,7 +1259,7 @@ fn isRetainableStaticFieldCallResultMemberAccess(
             !isUnresolvedSourceIdentifierReference(ast, semantic, property_idx))
         {
             if (ast.getNode(property_idx).tag != .call_expression or
-                !isRetainableStaticFieldCall(allocator, ast, semantic, property_idx, false, false)) return false;
+                !isRetainableStaticFieldCall(allocator, ast, semantic, property_idx, false, false, false)) return false;
         }
         saw_member = true;
         current_idx = receiver_idx;
@@ -1329,6 +1330,7 @@ fn isRetainableStaticFieldExpression(
     expression_idx: ast_mod.NodeIndex,
     allow_optional_member_calls: bool,
     allow_optional_invocations: bool,
+    allow_nested_call_callees: bool,
 ) bool {
     if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
@@ -1339,6 +1341,7 @@ fn isRetainableStaticFieldExpression(
     pending.append(allocator, .{
         .expression_idx = expression_idx,
         .allow_optional_invocations = allow_optional_invocations,
+        .allow_nested_call_callees = allow_nested_call_callees,
     }) catch return false;
     var remaining_nodes = ast.nodes.items.len;
 
@@ -1397,6 +1400,15 @@ fn isRetainableStaticFieldExpression(
                         if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx) and
                             !isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx)) return false;
                     },
+                    .call_expression => {
+                        if (!work_item.allow_nested_call_callees or
+                            !isRetainableBoundSourceCallCalleeChain(ast, semantic, callee_idx)) return false;
+                        pending.append(allocator, .{
+                            .expression_idx = callee_idx,
+                            .allow_optional_invocations = work_item.allow_optional_invocations,
+                            .allow_nested_call_callees = work_item.allow_nested_call_callees,
+                        }) catch return false;
+                    },
                     .static_member_expression, .computed_member_expression => {
                         if (!retained_optional_member_invocation and !retained_call_result_member_call and
                             !retained_call_result_optional_receiver_member_call and
@@ -1429,6 +1441,7 @@ fn isRetainableStaticFieldExpression(
                     pending.append(allocator, .{
                         .expression_idx = argument_idx,
                         .allow_optional_invocations = work_item.allow_optional_invocations,
+                        .allow_nested_call_callees = work_item.allow_nested_call_callees,
                     }) catch return false;
                 }
             },
@@ -1453,7 +1466,7 @@ fn isRetainableStaticFieldMemberAccess(
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
 ) bool {
-    return isRetainableStaticFieldExpression(allocator, ast, semantic, member_idx, false, false);
+    return isRetainableStaticFieldExpression(allocator, ast, semantic, member_idx, false, false, false);
 }
 
 fn isRetainableStaticFieldInitializerMemberAccess(
@@ -1474,6 +1487,7 @@ fn isRetainableStaticFieldCall(
     call_idx: ast_mod.NodeIndex,
     allow_optional_member_calls: bool,
     allow_optional_invocations: bool,
+    allow_nested_call_callees: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
         ast.getNode(call_idx).tag != .call_expression) return false;
@@ -1484,6 +1498,7 @@ fn isRetainableStaticFieldCall(
         call_idx,
         allow_optional_member_calls,
         allow_optional_invocations,
+        allow_nested_call_callees,
     );
 }
 
@@ -2657,14 +2672,14 @@ fn isRetainableSimpleStaticClassField(
                         false,
                     ) and
                     !isRetainableStaticFieldMemberAccess(allocator, ast, semantic, key_value_idx) and
-                    !isRetainableStaticFieldCall(allocator, ast, semantic, key_value_idx, true, false))) return false;
+                    !isRetainableStaticFieldCall(allocator, ast, semantic, key_value_idx, true, false, false))) return false;
         },
         else => return false,
     }
     return isSafeConstructorValue(ast, semantic, init_idx) or
         isUnresolvedSourceIdentifierReference(ast, semantic, init_idx) or
         isRetainableStaticFieldInitializerMemberAccess(allocator, ast, semantic, init_idx) or
-        isRetainableStaticFieldCall(allocator, ast, semantic, init_idx, true, true);
+        isRetainableStaticFieldCall(allocator, ast, semantic, init_idx, true, true, false);
 }
 
 fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {

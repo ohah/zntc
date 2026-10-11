@@ -12875,9 +12875,45 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'nested call-result callee chains stay on semantic reanalysis',
+        name: 'bound nested call-result member receivers retain receiver, key, argument, and this order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'function makeReceiverFactory() { order.push("factory"); return function (input) { order.push("receiver:" + input); return receiver; }; }',
+          'function receiverArgument() { order.push("receiver-argument"); return 2; }',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "fieldValue"; } }; }',
+          'function argument() { order.push("argument"); return 4; }',
+          'class NestedCallResultMemberInvocationField { static value = makeReceiverFactory()(receiverArgument())[memberKey()](argument()); }',
+          'console.log(NestedCallResultMemberInvocationField.value, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 factory,receiver-argument,receiver:2,key,coerce,method,argument,this\n',
+      },
+      {
+        name: 'optional nested call-result member receivers stay on semantic reanalysis',
         source:
-          'var receiver = { fieldValue(input) { return input + 1; } }; function makeReceiverFactory() { return function () { return receiver; }; } class NestedCallResultMemberInvocationField { static value = makeReceiverFactory()().fieldValue(8); } console.log(NestedCallResultMemberInvocationField.value);',
+          'var receiver = { fieldValue(input) { return input + 1; } }; function makeReceiverFactory() { return function () { return receiver; }; } class OptionalNestedCallResultMemberInvocationField { static value = makeReceiverFactory()?.().fieldValue(8); } console.log(OptionalNestedCallResultMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'unresolved nested call-result member receivers stay on semantic reanalysis',
+        source:
+          'var receiver = { fieldValue(input) { return input + 1; } }; globalThis.__zntcUnresolvedNestedReceiverFactory = function () { return function () { return receiver; }; }; class UnresolvedNestedCallResultMemberInvocationField { static value = __zntcUnresolvedNestedReceiverFactory()().fieldValue(8); } console.log(UnresolvedNestedCallResultMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'nested call-result member receiver with effectful call argument stays on semantic reanalysis',
+        source:
+          'var order = []; var receiver = { fieldValue(input) { return input + 1; } }; function makeReceiverFactory(input) { return function () { return receiver; }; } class EffectfulNestedCallResultMemberInvocationField { static value = makeReceiverFactory((order.push("argument-effect"), 1))().fieldValue(8); } console.log(EffectfulNestedCallResultMemberInvocationField.value, order.join(","));',
+        graph: 'reanalyzed',
+        output: '9 argument-effect\n',
+      },
+      {
+        name: 'nested call-result member access in computed class key stays on semantic reanalysis',
+        source:
+          'function makeReceiverFactory() { return function () { return { fieldKey: "value" }; }; } class NestedCallResultComputedKey { static [makeReceiverFactory()().fieldKey] = 9; } console.log(NestedCallResultComputedKey.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
