@@ -1,6 +1,7 @@
 //! Codegen module import/export emission helpers.
 
 const std = @import("std");
+const keep_names = @import("keep_names.zig");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -488,7 +489,7 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                         try self.write(def_name);
                         try self.writeByte('=');
                         // sequence(comma) inner 는 괄호 wrap 필요 — `=a,b` 가 `(=a),b` 로 깨짐 (#4289).
-                        try self.emitExpr(inner, .comma, .{});
+                        try keep_names.emitNamedValue(self, inner, keep_names.defaultExportHint(self, inner), .comma, .{});
                         try self.writeByte(';');
                     } else if (!self.isExportDefaultSelfRef(inner, def_name)) {
                         // namespace import이면 ns var name을 직접 사용 (rename과 다름).
@@ -603,7 +604,7 @@ pub fn emitDefaultVarAssignment(self: anytype, name: []const u8, inner: NodeInde
         try self.write(" = ");
     }
     // sequence(comma) inner 는 괄호 wrap — `var x = a,b` 가 두 선언으로 깨짐 (#4289).
-    try self.emitExpr(inner, .comma, .{});
+    try keep_names.emitNamedValue(self, inner, keep_names.defaultExportHint(self, inner), .comma, .{});
     try self.writeByte(';');
 }
 

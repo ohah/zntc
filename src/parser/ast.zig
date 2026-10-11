@@ -1514,8 +1514,9 @@ pub const Ast = struct {
             switch (node.tag) {
                 .parenthesized_expression => current = node.data.unary.operand,
                 .arrow_function_expression => return true,
-                .function_expression => return self.readExtraNode(node.data.extra, FunctionExtra.name).isNone(),
-                .class_expression => return self.readExtraNode(node.data.extra, ClassExtra.name).isNone(),
+                // Declarations are anonymous only as `export default`.
+                .function_expression, .function_declaration => return self.readExtraNode(node.data.extra, FunctionExtra.name).isNone(),
+                .class_expression, .class_declaration => return self.readExtraNode(node.data.extra, ClassExtra.name).isNone(),
                 else => return false,
             }
         }

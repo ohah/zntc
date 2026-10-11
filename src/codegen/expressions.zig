@@ -1,6 +1,7 @@
 //! Expression and member-expression emit helpers for Codegen.
 
 const std = @import("std");
+const keep_names = @import("keep_names.zig");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -359,6 +360,15 @@ pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags)
     const right_level = Level.assign.lower();
     const is_simple_assign = node.data.binary.flags == 0 or
         @as(Kind, @enumFromInt(node.data.binary.flags)) == .eq;
+    // `=`, `&&=`, `||=` and `??=` name an anonymous function after an
+    // identifier target (NamedEvaluation).
+    const names_value = is_simple_assign or switch (@as(Kind, @enumFromInt(node.data.binary.flags))) {
+        .amp2_eq, .pipe2_eq, .question2_eq => true,
+        else => false,
+    };
+    const saved_hint = self.keep_name_hint;
+    self.keep_name_hint = if (names_value) keep_names.hintFor(self, node.data.binary.left, right) else null;
+    defer self.keep_name_hint = saved_hint;
     if (self.fn_map_builder != null and is_simple_assign and self.isFunctionLike(right)) {
         const saved = self.pending_fn_name;
         self.pending_fn_name = try self.resolveMemberLeafName(node.data.binary.left);

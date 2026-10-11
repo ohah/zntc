@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const writer = @import("writer.zig");
 const expressions = @import("expressions.zig");
 const ExprFlags = @import("precedence.zig").ExprFlags;
+const keep_names = @import("keep_names.zig");
 
 const writeNewline = writer.writeNewline;
 const writeSpace = writer.writeSpace;
@@ -21,7 +22,8 @@ pub fn emitAssignmentPattern(self: anytype, node: Node) !void {
     try self.writeByte('=');
     // default value level = .comma: 최상위 sequence(`[x=(a,b)]`)가 콤마 구분자와 섞이지
     // 않게 괄호로 감싼다 (esbuild binding default = LComma).
-    try self.emitExpr(node.data.binary.right, .comma, .{});
+    const hint = keep_names.hintFor(self, node.data.binary.left, node.data.binary.right);
+    try keep_names.emitNamedValue(self, node.data.binary.right, hint, .comma, .{});
 }
 
 pub fn emitBindingProperty(self: anytype, node: Node) !void {
@@ -80,7 +82,8 @@ pub fn emitBindingProperty(self: anytype, node: Node) !void {
             try self.writeByte('=');
             // default value level = .comma: 최상위 sequence(`({x=(a,b)}=o)`)가 괄호로 감싸진다
             // (default 는 AssignmentExpression 이라 `x=a,b` 는 다른 의미 — silent miscompile).
-            try self.emitExpr(node.data.binary.right, .comma, .{});
+            const hint = keep_names.hintFor(self, node.data.binary.left, node.data.binary.right);
+            try keep_names.emitNamedValue(self, node.data.binary.right, hint, .comma, .{});
         } else {
             try self.writeByte(':');
             try self.emitNode(node.data.binary.right);
@@ -167,7 +170,7 @@ pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void 
             try writeSpace(self);
             try self.writeByte('=');
             try writeSpace(self);
-            try self.emitNode(init_idx);
+            try keep_names.emitNamedValue(self, init_idx, keep_names.hintFor(self, n_idx, init_idx), .comma, .{});
             if (needs_paren) try self.writeByte(')');
             try self.writeByte(';');
             has_output = true;
@@ -246,7 +249,7 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
             // (#4587 [2]) init level = .comma (정상 declarator 경로 emitVariableDeclarator 와 동일):
             // 최상위 sequence(`exports.x = (setup(), 42)`)가 `=` 우변에서 괄호로 감싸져
             // `exports.x = setup(), 42`(오결합 → exports.x = setup())가 되지 않게 한다.
-            try self.emitExpr(init_idx, .comma, .{});
+            try keep_names.emitNamedValue(self, init_idx, keep_names.hintFor(self, n_idx, init_idx), .comma, .{});
             try self.writeByte(';');
             has_output = true;
         } else {
@@ -281,6 +284,7 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
         // 안(`for(var x=(a in b);;)`)이면 forbid_in 전파 — top-level `in` 이 for-in 헤더로
         // 오파싱되지 않게 괄호 (array/call 등 중첩에선 자식 emit 이 flag clear).
         const init_flags = ExprFlags{ .forbid_in = self.in_for_init };
+        const hint = keep_names.hintFor(self, name, init_val);
         // contextual name: binding_identifier = function/arrow/class → 변수명을 이름으로
         if (self.fn_map_builder != null and self.isFunctionLike(init_val)) {
             const saved = self.pending_fn_name;
@@ -289,9 +293,9 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
                 if (self.pending_fn_name) |s| self.allocator.free(s);
                 self.pending_fn_name = saved;
             }
-            try self.emitExpr(init_val, .comma, init_flags);
+            try keep_names.emitNamedValue(self, init_val, hint, .comma, init_flags);
         } else {
-            try self.emitExpr(init_val, .comma, init_flags);
+            try keep_names.emitNamedValue(self, init_val, hint, .comma, init_flags);
         }
     }
 }
@@ -310,6 +314,6 @@ pub fn emitFormalParam(self: anytype, node: Node) !void {
         try self.writeByte('=');
         // default value level = .comma: 최상위 sequence(`f(x=(a,b))`)가 파라미터 구분
         // 콤마와 섞이지 않게 괄호로 감싼다 (esbuild fn arg default = LComma).
-        try self.emitExpr(default_val, .comma, .{});
+        try keep_names.emitNamedValue(self, default_val, keep_names.hintFor(self, pattern, default_val), .comma, .{});
     }
 }

@@ -2368,8 +2368,8 @@ pub fn emitModule(
         .sourcemap = options.sourcemap.enable,
         .source_root = options.sourcemap.source_root orelse "",
         .sources_content = options.sourcemap.sources_content,
-        // keepNames: codegen이 rename된 함수/클래스를 수집
         .keep_names = options.keep_names,
+        .keep_names_static_block = !options.unsupported.class_static_block,
         // Metro function map: sourcemap 활성화 시에만 수집
         .sourcemap_function_map = options.sourcemap.enable and options.sourcemap.function_map,
         // JSX: Transformer가 이미 call_expression으로 lowering 완료.
@@ -2444,9 +2444,7 @@ pub fn emitModule(
     // Plugin: transform 훅은 graph.zig에서 파싱 전에 호출 (Rolldown 호환).
     // emitModule에서는 중복 호출하지 않는다.
 
-    // keepNames: codegen이 generate() 내에서 직접 __name() 호출을 buf에 append.
-    // entries가 있으면 런타임 헬퍼 플래그만 설정.
-    if (cg.keep_names_entries.items.len > 0) {
+    if (cg.keep_names_used) {
         if (helpers_out) |h| h.keep_names = true;
     }
 

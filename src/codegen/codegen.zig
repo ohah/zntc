@@ -28,7 +28,6 @@ pub const LinkingMetadata = options_mod.LinkingMetadata;
 pub const QuoteStyle = options_mod.QuoteStyle;
 pub const JsxRuntime = options_mod.JsxRuntime;
 pub const CodegenOptions = options_mod.CodegenOptions;
-pub const KeepNameEntry = options_mod.KeepNameEntry;
 
 const SourceMapBuilder = @import("sourcemap.zig").SourceMapBuilder;
 const FunctionMapBuilder = @import("function_map.zig").FunctionMapBuilder;
@@ -75,8 +74,22 @@ pub const Codegen = struct {
     /// top-level에서 선언된 이름 추적 (namespace var 중복 제거용).
     /// function/class/var/let/const/enum 선언 시 등록, namespace 출력 시 이미 있으면 var 생략.
     declared_names: std.StringHashMapUnmanaged(void) = .empty,
-    /// keepNames: rename된 함수/클래스 선언 정보. generate() 완료 후 emitter에서 __name() 호출 생성에 사용.
-    keep_names_entries: std.ArrayList(KeepNameEntry) = .empty,
+    /// --keep-names (keep_names.zig): the source name the next anonymous
+    /// function/class value takes, set by its binding context.
+    keep_name_hint: ?[]const u8 = null,
+    /// The node currently being wrapped in `__name(...)` (not wrapped again).
+    keep_name_wrapped: NodeIndex = .none,
+    /// The class whose body is emitted next gets `static { __name(this, ..) }`.
+    pending_class_static_name: ?[]const u8 = null,
+    /// The anonymous class being emitted next takes this source name.
+    pending_class_hint: ?[]const u8 = null,
+    /// Some `__name` call was emitted (the bundle needs the helper).
+    keep_names_used: bool = false,
+    /// Cases of the switch being emitted: a switch body can be entered at any
+    /// case, so each case restores the names of all its function declarations.
+    keep_name_switch_cases: []const u32 = &.{},
+    /// Those cases' lowerable functions were named in the wrapper block.
+    keep_name_switch_lowered: bool = false,
     // JSX 필드 제거: Transformer의 jsx_lowering이 JSX → call_expression 변환을 담당.
     // codegen은 더 이상 JSX AST 노드를 처리하지 않음.
 
@@ -228,7 +241,6 @@ pub const Codegen = struct {
     pub fn deinit(self: *Codegen) void {
         self.buf.deinit(self.allocator);
         self.declared_names.deinit(self.allocator);
-        self.keep_names_entries.deinit(self.allocator);
         if (self.sm_builder) |*sm| sm.deinit();
         if (self.fn_map_builder) |*fm| fm.deinit();
         // fn_name_stack 의 entries 는 fn_map_builder.names 의 owned slice 를 borrow —
@@ -291,22 +303,6 @@ pub const Codegen = struct {
 
         var finalize_scope = profile.begin(.codegen_finalize);
         defer finalize_scope.end();
-
-        // keepNames: 수집된 entries를 코드 끝에 __name() 호출로 append (복사 없음)
-        // #1621: minify 시 __name → $nm 축약.
-        const keep_name: []const u8 = if (self.options.minify_whitespace) rt.NAMES.NAME_MIN else "__name";
-        for (self.keep_names_entries.items) |entry| {
-            try self.write(keep_name);
-            try self.write("(");
-            try self.write(entry.new_name);
-            try self.write(", \"");
-            try self.write(entry.original_name);
-            if (self.options.minify_whitespace) {
-                try self.write("\");");
-            } else {
-                try self.write("\");\n");
-            }
-        }
 
         // JSX import 주입 제거: Transformer의 jsx_import_info로 transpile.zig에서 처리.
 

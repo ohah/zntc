@@ -13,6 +13,7 @@ const call_emit = @import("calls.zig");
 const jsx_emit = @import("jsx.zig");
 const function_class_emit = @import("function_class.zig");
 const binding_emit = @import("bindings.zig");
+const keep_names = @import("keep_names.zig");
 const precedence = @import("precedence.zig");
 const Level = precedence.Level;
 const ExprFlags = precedence.ExprFlags;
@@ -68,6 +69,30 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
     // TS/Flow type wrapper: operand 만 출력 (type 스트리핑, #3129 단일 source).
     // pre-visit body codegen 시 TS/Flow 노드가 남아있을 수 있어 명시 처리.
     if (ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) return self.emitExpr(node.data.unary.operand, level, flags);
+
+    // --keep-names: a binding context's name applies to this value only.
+    const keep_hint = self.keep_name_hint;
+    if (node.tag != .parenthesized_expression) self.keep_name_hint = null;
+    if (self.options.keep_names and self.keep_name_wrapped != idx) {
+        if (keepNameWrap(self, node, keep_hint)) |original| {
+            const saved_wrapped = self.keep_name_wrapped;
+            self.keep_name_wrapped = idx;
+            defer self.keep_name_wrapped = saved_wrapped;
+            // A call as a `new` callee would take the `new` arguments.
+            if (flags.forbid_call) try self.writeByte('(');
+            try self.write(keep_names.helperName(self));
+            try self.writeByte('(');
+            try self.emitExpr(idx, .comma, .{});
+            try self.writeByte(',');
+            try self.writeSpace();
+            try keep_names.writeQuoted(self, original);
+            try self.writeByte(')');
+            if (flags.forbid_call) try self.writeByte(')');
+            self.keep_names_used = true;
+            return;
+        }
+        if (node.tag == .class_expression or node.tag == .class_declaration) self.pending_class_hint = keep_hint;
+    }
 
     // precedence wrap: 자기 결합강도가 부모가 요구한 최소 level 이하면 괄호 (esbuild printExpr).
     // wrap 을 emitExpr 한 곳에 집중해 emitter 내부 early-return 과 무관하게 정확히 닫는다.
@@ -433,6 +458,23 @@ pub fn emitExpr(self: anytype, idx: NodeIndex, level: Level, flags: ExprFlags) E
 ///
 /// 주의 — identifier_reference 처럼 dispatch case 안에 early-return 이 있는 노드는
 /// 여기서 wrap 을 켜면 닫는 `)` 가 누락된다(전부 별도 fn 으로 dispatch 되는 노드만 안전).
+/// The source name to restore by wrapping this value in `__name(...)`.
+/// Classes use a static block instead when the target supports one.
+fn keepNameWrap(self: anytype, node: ast_mod.Node, hint: ?[]const u8) ?[]const u8 {
+    switch (node.tag) {
+        .function_expression, .function_declaration, .class_expression, .class_declaration => {},
+        .arrow_function_expression => return hint,
+        else => return null,
+    }
+    const is_class = node.tag == .class_expression or node.tag == .class_declaration;
+    if (is_class and self.options.keep_names_static_block) return null;
+    const name = self.ast.readExtraNode(node.data.extra, 0);
+    // Named declarations are statements; keep_names hoists or appends them.
+    if (node.tag == .function_declaration or node.tag == .class_declaration)
+        return if (name.isNone()) hint else null;
+    return if (name.isNone()) hint else keep_names.renamedOriginal(self, name);
+}
+
 pub fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: ExprFlags) bool {
     return switch (node.tag) {
         .unary_expression, .await_expression => level.gte(.prefix),
