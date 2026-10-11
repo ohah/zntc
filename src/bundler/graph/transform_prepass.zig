@@ -998,7 +998,7 @@ fn isSafeConstructorValue(
 
 const RetainableStaticFieldExpressionWorkItem = struct {
     expression_idx: ast_mod.NodeIndex,
-    allow_direct_optional_calls: bool,
+    allow_optional_invocations: bool,
 };
 
 /// A non-optional member chain can be retained when it starts at an exact
@@ -1039,7 +1039,7 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
             if (ast.getNode(property_idx).tag != .call_expression) return false;
             pending.append(allocator, .{
                 .expression_idx = property_idx,
-                .allow_direct_optional_calls = false,
+                .allow_optional_invocations = false,
             }) catch return false;
         }
         saw_member = true;
@@ -1106,10 +1106,10 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// iterative worklist. This keeps deeply nested calls out of recursive helper
 /// chains, rejects repeated nodes/cycles, and leaves the original AST intact so
 /// evaluation order and a computed member callee's receiver (`this`) survive.
-/// Direct optional calls are admitted for static initializer call trees only
-/// when their identifier is bound or is an unresolved non-`require` source
-/// name. Computed keys, unresolved calls elsewhere, unresolved `require`,
-/// call-result receivers, and effectful non-call arguments stay on reanalysis.
+/// Optional invocations are admitted for static initializer call trees when
+/// their direct identifier is safe or their member receiver is a bound source
+/// identifier. Computed keys, unresolved member receivers, call-result
+/// receivers, and effectful non-call arguments stay on reanalysis.
 fn isRetainableUnresolvedStaticFieldCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1143,6 +1143,25 @@ fn isRetainableStaticFieldDirectOptionalCall(
         ast.getNode(callee_idx).tag != .identifier_reference) return false;
     return isBoundSourceIdentifierReference(ast, semantic, callee_idx) or
         isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx);
+}
+
+fn isRetainableStaticFieldOptionalMemberInvocation(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    callee_idx: ast_mod.NodeIndex,
+) bool {
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.getNode(callee_idx);
+    if (callee.tag != .static_member_expression) return false;
+    const extra = callee.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 3 or
+        ast.extra_data.items[extra + 2] != 0) return false;
+    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
+        ast.getNode(receiver_idx).tag != .identifier_reference or
+        !isBoundSourceIdentifierReference(ast, semantic, receiver_idx)) return false;
+    return isRetainableStaticFieldMemberAccess(allocator, ast, semantic, callee_idx);
 }
 
 fn collectRetainableStaticFieldUnresolvedOptionalCalls(
@@ -1179,7 +1198,7 @@ fn isRetainableStaticFieldExpression(
     semantic: *const ModuleSemanticData,
     expression_idx: ast_mod.NodeIndex,
     allow_optional_member_calls: bool,
-    allow_direct_optional_calls: bool,
+    allow_optional_invocations: bool,
 ) bool {
     if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
@@ -1189,7 +1208,7 @@ fn isRetainableStaticFieldExpression(
     defer visited.deinit(allocator);
     pending.append(allocator, .{
         .expression_idx = expression_idx,
-        .allow_direct_optional_calls = allow_direct_optional_calls,
+        .allow_optional_invocations = allow_optional_invocations,
     }) catch return false;
     var remaining_nodes = ast.nodes.items.len;
 
@@ -1213,8 +1232,14 @@ fn isRetainableStaticFieldExpression(
                 const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
                 if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
                 const callee = ast.getNode(callee_idx);
-                if (optional_call and (!work_item.allow_direct_optional_calls or
-                    !isRetainableStaticFieldDirectOptionalCall(ast, semantic, callee_idx))) return false;
+                if (optional_call and (!work_item.allow_optional_invocations or
+                    (!isRetainableStaticFieldDirectOptionalCall(ast, semantic, callee_idx) and
+                        !isRetainableStaticFieldOptionalMemberInvocation(
+                            allocator,
+                            ast,
+                            semantic,
+                            callee_idx,
+                        )))) return false;
                 switch (callee.tag) {
                     .identifier_reference => {
                         if (!isBoundSourceIdentifierReference(ast, semantic, callee_idx) and
@@ -1248,7 +1273,7 @@ fn isRetainableStaticFieldExpression(
                     if (ast.getNode(argument_idx).tag != .call_expression) return false;
                     pending.append(allocator, .{
                         .expression_idx = argument_idx,
-                        .allow_direct_optional_calls = work_item.allow_direct_optional_calls,
+                        .allow_optional_invocations = work_item.allow_optional_invocations,
                     }) catch return false;
                 }
             },
@@ -1292,7 +1317,7 @@ fn isRetainableStaticFieldCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
     allow_optional_member_calls: bool,
-    allow_direct_optional_calls: bool,
+    allow_optional_invocations: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
         ast.getNode(call_idx).tag != .call_expression) return false;
@@ -1302,7 +1327,7 @@ fn isRetainableStaticFieldCall(
         semantic,
         call_idx,
         allow_optional_member_calls,
-        allow_direct_optional_calls,
+        allow_optional_invocations,
     );
 }
 
