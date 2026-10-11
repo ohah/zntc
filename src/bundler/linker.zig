@@ -702,6 +702,7 @@ pub const Linker = struct {
     /// 충돌 후보 판정. 과거 inline 루프(local_name 으로 매칭한 *첫* binding 으로 판정)와 동일
     /// 로직을 추출해 linear-scan 경로와 index-lookup 경로가 공유한다(드리프트 차단).
     fn importBindingGeneratesTopLevelVar(self: *const Linker, m: *const Module, ib: ImportBinding) bool {
+        if (self.importBindingIsExternalParam(m, ib)) return false;
         if (ib.kind == .namespace) return true;
         if (ib.import_record_index >= m.import_records.len) return false;
         const rec = m.import_records[ib.import_record_index];
@@ -726,6 +727,19 @@ pub const Linker = struct {
             // non-esm: CJS 타겟만 require() preamble 에서 var 생성.
             return target_wrap == .cjs;
         }
+    }
+
+    /// UMD/AMD/IIFE factory 파라미터와 같은 이름의 default/namespace external import 는
+    /// 파라미터 그 자체다. metadata 가 `var React = React;` self-assign 을 생략하므로
+    /// top-level 이름을 점유하지 않는다. owner 로 등록하면 파라미터 예약 이름과 충돌한
+    /// 것으로 보여 `var React$1 = React;` 별칭이 생긴다(#5448).
+    fn importBindingIsExternalParam(self: *const Linker, m: *const Module, ib: ImportBinding) bool {
+        if (ib.kind != .namespace and !ib.importsDefault()) return false;
+        if (ib.import_record_index >= m.import_records.len) return false;
+        const rec = m.import_records[ib.import_record_index];
+        if (!rec.is_external) return false;
+        const names = self.externalParamNamesFor(rec.externalName()) orelse return false;
+        return std.mem.eql(u8, names.parameter_name, ib.local_name);
     }
 
     /// 모듈의 top-level owner 이름을 **단일 출처**로 열거한다 (perf/hmr-link-rename-reuse).
