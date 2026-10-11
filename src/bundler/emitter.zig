@@ -483,6 +483,39 @@ pub fn emit(
 ///
 /// 청크 경로(chunk.zig)는 도달성 BitSet 이 비면 이미 skip 하므로 영향 없다 —
 /// 이 가드는 non-splitting 단일 번들과 dev per-module emit 경로용이다.
+/// Whether every bundled JavaScript module is strict code. Modules without
+/// semantic data (JSON, assets, CSS) carry no strictness and are ignored.
+fn allBundledModulesStrict(modules: []const *const Module) bool {
+    for (modules) |m| {
+        const sem = m.semantic orelse continue;
+        if (sem.scopes.len == 0) continue;
+        if (!sem.scopes[0].is_strict) return false;
+    }
+    return true;
+}
+
+/// ESM output is module code and therefore strict, so a sloppy module's `with`
+/// statement fails when the bundle is loaded as a module (esbuild rejects an
+/// explicit `--format=esm`). A bundle without import/export may still run as a
+/// classic script, and esm is the default format, so this warns (#5455).
+fn reportWithInEsmOutput(linker: *const Linker, modules: []const *const Module) !void {
+    for (modules) |m| {
+        const sem = m.semantic orelse continue;
+        if (sem.scopes.len == 0 or !sem.scopes[0].subtree_has_with) continue;
+        const linker_mut = @constCast(linker);
+        linker_mut.diagnostics_mutex.lock();
+        defer linker_mut.diagnostics_mutex.unlock();
+        try linker_mut.fatal_diagnostics.append(linker.allocator, .{
+            .code = .with_in_esm_output,
+            .severity = .warning,
+            .message = try linker.allocator.dupe(u8, "With statements cannot be used with the \"esm\" output format due to strict mode; loading this bundle as an ES module fails"),
+            .file_path = m.path,
+            .span = @import("../lexer/token.zig").Span.EMPTY,
+            .step = .emit,
+        });
+    }
+}
+
 fn isCssOnlyAsset(m: *const Module) bool {
     if (!m.loader.isAsset()) return false;
     if (m.is_entry_point) return false;
@@ -689,7 +722,10 @@ pub fn emitWithTreeShaking(
     var prelude_scope = profile.begin(.emit_prelude);
 
     // 포맷별 prologue
-    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_global_names, ext_param_names);
+    try emitFormatPrologue(&output, allocator, options.format, options.global_name, factory_fn, ext_specifiers.items, ext_global_names, ext_param_names, allBundledModulesStrict(sorted.items));
+    if (options.format == .esm) {
+        if (linker) |l| try reportWithInEsmOutput(l, sorted.items);
+    }
 
     if (options.intro_js) |intro| {
         try output.appendSlice(allocator, intro);

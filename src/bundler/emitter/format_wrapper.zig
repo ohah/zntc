@@ -13,6 +13,9 @@ pub fn emitFormatPrologue(
     external_specifiers: []const []const u8,
     external_global_names: []const []const u8,
     ext_param_names: []const []const u8,
+    /// cjs: every bundled module is strict, so a file-level `"use strict"`
+    /// keeps their semantics without changing any sloppy module (#5455).
+    all_modules_strict: bool,
 ) !void {
     switch (format) {
         .iife => {
@@ -60,7 +63,9 @@ pub fn emitFormatPrologue(
             try writeParamList(output, allocator, ext_param_names);
             try output.appendSlice(allocator, ") {\n");
         },
-        .cjs => try output.appendSlice(allocator, "\"use strict\";\n"),
+        // esbuild/rolldown never force a file-level directive; a sloppy CommonJS
+        // dependency (`with`, legacy octal, `arguments` aliasing) must stay sloppy.
+        .cjs => if (all_modules_strict) try output.appendSlice(allocator, "\"use strict\";\n"),
         .esm => {},
     }
 }
