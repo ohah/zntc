@@ -247,7 +247,6 @@ pub fn SuperProps(comptime Transformer: type) type {
         const SuperPropRef = struct {
             init: NodeIndex,
             read: NodeIndex,
-            value: NodeIndex,
             write: NodeIndex,
         };
 
@@ -305,7 +304,6 @@ pub fn SuperProps(comptime Transformer: type) type {
                 return .{
                     .init = .none,
                     .read = read,
-                    .value = try cloneNewNode(self, read),
                     .write = try cloneNewNode(self, read),
                 };
             }
@@ -326,7 +324,6 @@ pub fn SuperProps(comptime Transformer: type) type {
             return .{
                 .init = assign,
                 .read = try makeSuperTempRef(self, temp, span, .{ .read = true }),
-                .value = try es_helpers.makeTempVarRef(self, temp_span, span),
                 .write = try makeSuperTempRef(self, temp, span, .{ .read = true }),
             };
         }
