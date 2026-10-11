@@ -13059,6 +13059,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 undefined 1 outer,argument,this,missing\n',
       },
       {
+        name: 'unresolved optional invocation after a deep optional member receiver retains exact external identity',
+        source: [
+          'var events = [];',
+          'var calls = 0;',
+          'globalThis.__zntcUnresolvedDeepOptionalInvocationHolder = { get outer() { events.push("outer"); return { receiver: { base: 1, fieldValue(input) { events.push(this.base === 1 ? "this" : "wrong-this"); return this.base + input; } } }; } };',
+          'globalThis.__zntcUnresolvedNullDeepOptionalInvocationHolder = { get outer() { events.push("missing"); return null; } };',
+          'function argument() { calls++; events.push("argument"); return 8; }',
+          'class UnresolvedOptionalDeepMemberReceiverField { static value = __zntcUnresolvedDeepOptionalInvocationHolder.outer?.receiver.fieldValue?.(argument()); static missing = __zntcUnresolvedNullDeepOptionalInvocationHolder.outer?.receiver.fieldValue?.(argument()); }',
+          'console.log(UnresolvedOptionalDeepMemberReceiverField.value, UnresolvedOptionalDeepMemberReceiverField.missing, calls, events.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 undefined 1 outer,argument,this,missing\n',
+      },
+      {
         name: 'unresolved deep member-call receiver chains retain their exact graph',
         source:
           'globalThis.__zntcDeepFieldHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class UnresolvedDeepMemberReceiverField { static value = __zntcDeepFieldHolder.outer.receiver.fieldValue(8); } console.log(UnresolvedDeepMemberReceiverField.value);',
