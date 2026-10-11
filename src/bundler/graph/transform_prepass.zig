@@ -1120,8 +1120,8 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// their direct identifier is safe or their member receiver is a bound source
 /// identifier or retained unresolved external identifier and the member access
 /// (including any computed key) is safe. Unresolved optional receiver chains,
-/// unbound receiver expressions, unbound call-result receivers, optional calls
-/// inside computed keys, and effectful non-call arguments stay on reanalysis.
+/// unbound receiver expressions or call-result callees, optional calls inside
+/// computed keys, and effectful non-call arguments stay on reanalysis.
 fn isRetainableUnresolvedStaticFieldCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1369,6 +1369,16 @@ fn isRetainableStaticFieldExpression(
                         semantic,
                         callee_idx,
                     );
+                // Only initializer call trees opt into this extension; computed
+                // class keys and standalone member expressions stay on reanalysis.
+                const retained_call_result_member_call = !optional_call and
+                    work_item.allow_optional_invocations and
+                    isRetainableStaticFieldCallResultMemberAccess(
+                        allocator,
+                        ast,
+                        semantic,
+                        callee_idx,
+                    );
                 if (optional_call and (!work_item.allow_optional_invocations or
                     (!isRetainableStaticFieldDirectOptionalCall(ast, semantic, callee_idx) and
                         !retained_optional_member_invocation))) return false;
@@ -1378,7 +1388,7 @@ fn isRetainableStaticFieldExpression(
                             !isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx)) return false;
                     },
                     .static_member_expression, .computed_member_expression => {
-                        if (!retained_optional_member_invocation and
+                        if (!retained_optional_member_invocation and !retained_call_result_member_call and
                             !(allow_optional_member_calls and
                                 isRetainableStaticFieldOptionalMemberChain(
                                     allocator,
