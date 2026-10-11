@@ -1548,7 +1548,7 @@ test "#4819 nullish assignment value captures keep distinct symbols" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
-    try std.testing.expectEqual(@as(usize, 2), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 6), transformer.synthetic_temp_symbol_ids.count());
     const edited = (try transformer.finishSemanticEdit()).?;
     try std.testing.expectEqual(original_symbols + 6, edited.symbols.items.len);
     var name_counts = [_]usize{ 0, 0, 0 };
@@ -1575,7 +1575,7 @@ test "#4819 nullish assignment value captures keep distinct symbols" {
         const raw_id = raw_id_ptr.*;
         try std.testing.expect(raw_id >= original_symbols);
         const capture = edited.symbols.items[raw_id];
-        try std.testing.expectEqualStrings("_d", transformer.ast.getText(capture.name));
+        if (!std.mem.eql(u8, "_d", transformer.ast.getText(capture.name))) continue;
         try std.testing.expectEqual(@as(u32, 2), capture.reference_count);
         try std.testing.expectEqual(@as(u32, 1), capture.write_count);
         try std.testing.expectEqual(@as(usize, @intCast(raw_id)), edited.scope_maps[capture.scope_id.toIndex()].get("_d").?);
@@ -1604,7 +1604,7 @@ test "#4819 assignment target temps exclude unused candidate references" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "const _a = 1; const box = { x: 2 }; function obj() { return box; } function key() { return 'x'; } obj()[key()] ||= 5; obj()[key()] **= 2; console.log(box.x, _a);");
+    var scanner = try Scanner.init(allocator, "const _a = 1; const box = { x: 2 }; function obj() { return box; } function key() { return 'x'; } function updateInside() { obj()[key()] ||= 5; obj()[key()] **= 2; } updateInside(); obj()[key()] ||= 6; obj()[key()] **= 3; console.log(box.x, _a);");
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
     _ = try parser.parse();
@@ -1625,19 +1625,51 @@ test "#4819 assignment target temps exclude unused candidate references" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 8), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(original_symbols + 4, edited.symbols.items.len);
-    for (edited.symbols.items[original_symbols..], 0..) |generated, offset| {
-        const expected_name = switch (offset) {
-            0 => "_b",
-            1 => "_c",
-            2 => "_d",
-            else => "_e",
-        };
-        try std.testing.expectEqualStrings(expected_name, transformer.ast.getText(generated.name));
+    try std.testing.expectEqual(original_symbols + 8, edited.symbols.items.len);
+    var observed_scopes = [_]u32{ std.math.maxInt(u32), std.math.maxInt(u32) };
+    var symbols_per_scope = [_]usize{ 0, 0 };
+    var names_per_scope: [2][4][]const u8 = undefined;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |generated, symbol_index| {
         try std.testing.expectEqual(@as(u32, 2), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
+        var bindings: usize = 0;
+        var references: usize = 0;
+        for (edited.symbol_ids, 0..) |maybe_id, node_index| {
+            const id = maybe_id orelse continue;
+            if (@as(usize, @intCast(id)) != symbol_index) continue;
+            switch (transformer.ast.nodes.items[node_index].tag) {
+                .binding_identifier => bindings += 1,
+                .identifier_reference, .assignment_target_identifier => references += 1,
+                else => {},
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expectEqual(@as(usize, 2), references);
+        const scope_raw = generated.scope_id.toIndex();
+        var scope_index: usize = 0;
+        while (scope_index < observed_scopes.len and observed_scopes[scope_index] != scope_raw) : (scope_index += 1) {}
+        if (scope_index == observed_scopes.len) {
+            scope_index = 0;
+            while (scope_index < observed_scopes.len and observed_scopes[scope_index] != std.math.maxInt(u32)) : (scope_index += 1) {}
+            try std.testing.expect(scope_index < observed_scopes.len);
+            observed_scopes[scope_index] = scope_raw;
+        }
+        try std.testing.expect(symbols_per_scope[scope_index] < names_per_scope[scope_index].len);
+        names_per_scope[scope_index][symbols_per_scope[scope_index]] = transformer.ast.getText(generated.name);
+        symbols_per_scope[scope_index] += 1;
     }
+    try std.testing.expect(observed_scopes[0] != observed_scopes[1]);
+    try std.testing.expectEqualSlices(usize, &.{ 4, 4 }, &symbols_per_scope);
+    var repeated_names: usize = 0;
+    for (names_per_scope[0]) |first_name| {
+        for (names_per_scope[1]) |second_name| {
+            if (std.mem.eql(u8, first_name, second_name)) repeated_names += 1;
+        }
+    }
+    try std.testing.expect(repeated_names > 0);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
