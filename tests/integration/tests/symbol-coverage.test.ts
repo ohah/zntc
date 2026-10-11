@@ -12667,9 +12667,37 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 undefined root,key,method,argument,this,missing\n',
       },
       {
-        name: 'optional member-call invocation static field initializers stay on semantic reanalysis',
+        name: 'bound optional member-call invocation static initializers retain receiver and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'var missingMethod = { get fieldValue() { order.push("missing-method"); return null; } };',
+          'function argument() { order.push("argument"); return 4; }',
+          'function wrap(value) { order.push("wrap:" + String(value)); return value; }',
+          'class OptionalCallMemberCallField { static direct = receiver.fieldValue?.(argument()); static absent = missingMethod.fieldValue?.(argument()); static nested = wrap(receiver.fieldValue?.(argument())); }',
+          'console.log(OptionalCallMemberCallField.direct, OptionalCallMemberCallField.absent, OptionalCallMemberCallField.nested, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 undefined 9 method,argument,this,missing-method,method,argument,this,wrap:9\n',
+      },
+      {
+        name: 'unresolved optional member-call invocation static initializer stays on semantic reanalysis',
         source:
-          'var receiver = { fieldValue(input) { return input + 1; } }; class OptionalCallMemberCallField { static value = receiver.fieldValue?.(8); } console.log(OptionalCallMemberCallField.value);',
+          'globalThis.__zntcUnresolvedOptionalMemberInvocation = { fieldValue(input) { return input + 1; } }; class UnresolvedOptionalMemberInvocationField { static value = __zntcUnresolvedOptionalMemberInvocation.fieldValue?.(8); } console.log(UnresolvedOptionalMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'call-result receiver optional member invocation stays on semantic reanalysis',
+        source:
+          'function getReceiver() { return { fieldValue(input) { return input + 1; } }; } class CallResultOptionalMemberInvocationField { static value = getReceiver().fieldValue?.(8); } console.log(CallResultOptionalMemberInvocationField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'optional receiver with member invocation stays on semantic reanalysis',
+        source:
+          'var receiver = { fieldValue(input) { return input + 1; } }; class OptionalReceiverMemberInvocationField { static value = receiver?.fieldValue?.(8); } console.log(OptionalReceiverMemberInvocationField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
