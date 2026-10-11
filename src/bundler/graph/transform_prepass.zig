@@ -1050,9 +1050,11 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
 }
 
 /// Optional static-field member chains can stay on the edited graph when
-/// their segments are dot reads or optional computed reads with safe values or
-/// call keys admitted by the shared validator. Callers control whether an
-/// unresolved identifier or a bound ordinary call may be the root.
+/// their segments are dot reads or optional computed reads with safe values
+/// or call keys admitted by the shared validator. A computed key can also be
+/// an unresolved external identifier when the chain has an unresolved root.
+/// Callers control whether an unresolved identifier or a bound ordinary call
+/// may be the root.
 fn isRetainableStaticFieldOptionalMemberChain(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -1105,8 +1107,12 @@ fn isRetainableStaticFieldOptionalMemberChain(
         if (member.tag == .static_member_expression) {
             if (property.tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
-            if (property.tag != .call_expression or
-                !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false)) return false;
+            const unresolved_external_key = allow_unresolved_root and
+                isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx) and
+                hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, member_idx);
+            if (!unresolved_external_key and
+                (property.tag != .call_expression or
+                    !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false))) return false;
         }
         current_idx = receiver_idx;
     }
@@ -1125,13 +1131,21 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// the complete method read and invocation. Unresolved optional receiver chains,
 /// unbound receiver expressions or call-result callees, optional calls inside
 /// computed keys, and effectful non-call arguments also stay on reanalysis.
+fn isRetainableUnresolvedStaticFieldIdentifier(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    identifier_idx: ast_mod.NodeIndex,
+) bool {
+    if (!isUnresolvedSourceIdentifierReference(ast, semantic, identifier_idx)) return false;
+    return !std.mem.eql(u8, ast.getText(ast.getNode(identifier_idx).span), "require");
+}
+
 fn isRetainableUnresolvedStaticFieldCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     callee_idx: ast_mod.NodeIndex,
 ) bool {
-    if (!isUnresolvedSourceIdentifierReference(ast, semantic, callee_idx)) return false;
-    return !std.mem.eql(u8, ast.getText(ast.getNode(callee_idx).span), "require");
+    return isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, callee_idx);
 }
 
 fn isRetainableUnresolvedOptionalStaticFieldCall(
