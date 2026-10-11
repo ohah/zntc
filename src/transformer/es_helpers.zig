@@ -1660,7 +1660,7 @@ pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
 pub fn captureToTrackedTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
     const captured = try captureToTemp(self, value, span);
     const assignment = self.ast.getNode(captured.paren_assign);
-    try self.trackHoistedTempRef(captured.span, assignment.data.binary.left, .{ .write = true });
+    try self.trackSyntheticTempReference(captured.span, span, assignment.data.binary.left, .{ .write = true });
     return captured;
 }
 

@@ -1732,6 +1732,49 @@ test "#4819 tracked temp references reserve exact symbols in known scopes" {
     try std.testing.expectEqualStrings("_b", temp_names[0]);
 }
 
+test "#4819 tracked captures attach the write SymbolId before reads" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const helpers = @import("es_helpers.zig");
+    var scanner = try Scanner.init(allocator, "const source = 'value';");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+        return error.MissingProgramScope;
+    var value: ?AstNodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .string_literal) value = @enumFromInt(index);
+    }
+    const value_idx = value orelse return error.MissingCapturedValue;
+    const value_node = parser.ast.getNode(value_idx);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @enumFromInt(program_scope);
+
+    const captured = try helpers.captureToTrackedTemp(&transformer, value_idx, value_node.span);
+    const assignment = transformer.ast.getNode(captured.paren_assign);
+    const write = assignment.data.binary.left;
+    const write_id = transformer.getSymbolIdAt(write) orelse return error.MissingCapturedTempWriteSymbol;
+    const read = try helpers.makeTrackedTempRef(&transformer, captured.span, value_node.span, .{ .read = true });
+    const read_id = transformer.getSymbolIdAt(read) orelse return error.MissingCapturedTempReadSymbol;
+    try std.testing.expectEqual(write_id, read_id);
+    try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
+
 test "#4819 transformed scope owners retain their original ScopeId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
