@@ -1108,10 +1108,10 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// evaluation order and a computed member callee's receiver (`this`) survive.
 /// Optional invocations are admitted for static initializer call trees when
 /// their direct identifier is safe or their member receiver is a bound source
-/// identifier and the member access (including any computed key) is safe.
-/// Optional receiver chains, unresolved member receivers, call-result
-/// receivers, optional calls inside computed keys, and effectful non-call
-/// arguments stay on reanalysis.
+/// identifier or retained unresolved external identifier and the member access
+/// (including any computed key) is safe. Optional receiver chains, unresolved
+/// receiver expressions, call-result receivers, optional calls inside computed
+/// keys, and effectful non-call arguments stay on reanalysis.
 fn isRetainableUnresolvedStaticFieldCallCallee(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1134,6 +1134,30 @@ fn isRetainableUnresolvedOptionalStaticFieldCall(
         (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) == 0) return false;
     const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
     return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx);
+}
+
+fn isRetainableUnresolvedOptionalStaticFieldMemberInvocation(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    const call = ast.getNode(call_idx);
+    if (call.tag != .call_expression) return false;
+    const extra = call.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
+        (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) == 0) return false;
+    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.getNode(callee_idx);
+    if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return false;
+    const member_extra = callee.data.extra;
+    if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra < 3 or
+        ast.extra_data.items[member_extra + 2] != 0) return false;
+    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
+    return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, receiver_idx) and
+        isRetainableStaticFieldOptionalMemberInvocation(allocator, ast, semantic, callee_idx);
 }
 
 fn isRetainableStaticFieldDirectOptionalCall(
@@ -1162,11 +1186,12 @@ fn isRetainableStaticFieldOptionalMemberInvocation(
     const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
     if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
         ast.getNode(receiver_idx).tag != .identifier_reference or
-        !isBoundSourceIdentifierReference(ast, semantic, receiver_idx)) return false;
+        (!isBoundSourceIdentifierReference(ast, semantic, receiver_idx) and
+            !isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, receiver_idx))) return false;
     return isRetainableStaticFieldMemberAccess(allocator, ast, semantic, callee_idx);
 }
 
-fn collectRetainableStaticFieldUnresolvedOptionalCalls(
+fn collectRetainableStaticFieldUnresolvedOptionalInvocations(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1187,7 +1212,13 @@ fn collectRetainableStaticFieldUnresolvedOptionalCalls(
         defer ast.allocator.free(initializer_nodes);
         for (initializer_nodes) |call_raw_idx| {
             const call_idx: ast_mod.NodeIndex = @enumFromInt(call_raw_idx);
-            if (!isRetainableUnresolvedOptionalStaticFieldCall(ast, semantic, call_idx)) continue;
+            if (!isRetainableUnresolvedOptionalStaticFieldCall(ast, semantic, call_idx) and
+                !isRetainableUnresolvedOptionalStaticFieldMemberInvocation(
+                    allocator,
+                    ast,
+                    semantic,
+                    call_idx,
+                )) continue;
             allowed_calls.put(ast.allocator, call_raw_idx, {}) catch return false;
         }
     }
@@ -2806,15 +2837,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer ast.allocator.free(reachable_nodes);
     var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
     defer top_level_statements.deinit();
-    var retained_static_field_unresolved_optional_calls: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer retained_static_field_unresolved_optional_calls.deinit(ast.allocator);
+    var retained_static_field_unresolved_optional_invocations: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_static_field_unresolved_optional_invocations.deinit(ast.allocator);
     if (options.unsupported.optional_chaining and
-        !collectRetainableStaticFieldUnresolvedOptionalCalls(
+        !collectRetainableStaticFieldUnresolvedOptionalInvocations(
             allocator,
             ast,
             semantic,
             reachable_nodes,
-            &retained_static_field_unresolved_optional_calls,
+            &retained_static_field_unresolved_optional_invocations,
         )) return false;
 
     // ES5 for-in/of block-scoping lowering edits the original loop-head
@@ -3384,7 +3415,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 {
                     if (node.tag != .call_expression or
                         (!isRetainableOptionalCall(ast, semantic, @enumFromInt(raw_idx)) and
-                            !retained_static_field_unresolved_optional_calls.contains(raw_idx))) return false;
+                            !retained_static_field_unresolved_optional_invocations.contains(raw_idx))) return false;
                     found_lowered_optional_chaining = true;
                 }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
