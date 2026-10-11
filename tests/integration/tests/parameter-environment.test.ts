@@ -103,6 +103,20 @@ const cases = [
       console.log(JSON.stringify(f()));`,
     expected: '[3,4]\n',
   },
+  // #5452: 파라미터 식이 있으면 같은 이름의 body var 는 별개 바인딩이지만 파라미터 값으로
+  // 시작한다. ES5 는 둘을 한 함수 스코프로 합치므로 값을 명시적으로 복사해야 한다.
+  {
+    name: 'uninitialized body var starts with the parameter value',
+    source: `function f(x, h = () => x) { var x; return [x, h()]; }
+      console.log(JSON.stringify(f(7)));`,
+    expected: '[7,7]\n',
+  },
+  {
+    name: 'default parameter and same-named body var without closure',
+    source: `function f(x = 3) { var x; return x; }
+      console.log(JSON.stringify([f(), f(9)]));`,
+    expected: '[3,9]\n',
+  },
   {
     name: 'parameter closure writes stay apart from body var initialization',
     source: `function f(x = 3, update = () => { x = 5; }, get = () => x) {
