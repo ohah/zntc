@@ -56,6 +56,29 @@ const cases = [
       'entry.js': `import { f } from './a.js'; import { g } from './b.js'; g(); console.log(f(), globalThis.x);`,
     },
   },
+  {
+    name: 'switch case function does not overwrite another module top-level function',
+    files: {
+      'a.js': `export function f() { return 'a'; }`,
+      'b.js': `export function g(k) {
+          switch (k) { case 1: function f() { return 'b-case'; } return f(); }
+          return 0;
+        }
+        switch (1) { case 1: function f() { return 'b-top'; } globalThis.x = f(); }`,
+      'entry.js': `import { f } from './a.js'; import { g } from './b.js'; console.log(f(), g(1), globalThis.x);`,
+    },
+  },
+  {
+    // Switch-body functions exist on block entry, so a jump past the
+    // declaring case can still call them (esbuild's in-place `let` throws here).
+    name: 'switch case function is callable after jumping past its case',
+    files: {
+      'b.js': `export function g() {
+          switch (2) { case 1: function f() { return 1; } case 2: return typeof f + ':' + f(); }
+        }`,
+      'entry.js': `import { g } from './b.js'; console.log(g());`,
+    },
+  },
 ] as const;
 
 function nativeOutput(dir: string): string {

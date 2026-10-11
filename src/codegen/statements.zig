@@ -1323,6 +1323,38 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
     const discriminant: NodeIndex = @enumFromInt(extras[0]);
     const cases_start = extras[1];
     const cases_len = extras[2];
+    const case_indices = self.ast.extra_data.items[cases_start .. cases_start + cases_len];
+
+    // (#5454) Function declarations in a switch body are initialized when the
+    // switch block is entered, before any case runs (a jump to a later case can
+    // call them). Lower them to `let` bindings in a block wrapping the switch,
+    // so sloppy output cannot Annex-B-hoist them. esbuild lowers them in place,
+    // which leaves a TDZ when a jump skips the declaring case. Skip lowering when
+    // the discriminant reads one of the names, since the wrapper would shadow it.
+    const lower_functions = self.options.lower_strict_block_functions and
+        switchHasLowerableFunction(self, case_indices) and
+        !discriminantReadsLoweredName(self, discriminant, case_indices);
+    if (lower_functions) {
+        try self.writeByte('{');
+        self.indent_level += 1;
+        for (case_indices) |raw_case| {
+            for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
+                const idx: NodeIndex = @enumFromInt(raw);
+                if (!isLowerableBlockFunction(self, idx) or isElidedStmt(self, idx)) continue;
+                try writeNewline(self);
+                try writeIndent(self);
+                try emitLoweredBlockFunction(self, idx);
+            }
+        }
+        try writeNewline(self);
+        try writeIndent(self);
+    }
+    defer if (lower_functions) {
+        self.indent_level -= 1;
+        writeNewline(self) catch {};
+        writeIndent(self) catch {};
+        self.writeByte('}') catch {};
+    };
 
     if (self.options.minify_whitespace) try self.write("switch(") else try self.write("switch (");
     try self.emitNode(discriminant);
@@ -1331,11 +1363,14 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
     try self.writeByte('{');
     if (cases_len > 0) {
         self.indent_level += 1;
-        const case_indices = self.ast.extra_data.items[cases_start .. cases_start + cases_len];
         for (case_indices) |raw_idx| {
             try writeNewline(self);
             try writeIndent(self);
-            try self.emitNode(@enumFromInt(raw_idx));
+            if (lower_functions) {
+                try emitSwitchCaseSkippingFunctions(self, self.ast.getNode(@enumFromInt(raw_idx)), true);
+            } else {
+                try self.emitNode(@enumFromInt(raw_idx));
+            }
         }
         self.indent_level -= 1;
         try writeNewline(self);
@@ -1345,6 +1380,50 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
 }
 
 pub fn emitSwitchCase(self: anytype, node: Node) !void {
+    try emitSwitchCaseSkippingFunctions(self, node, false);
+}
+
+fn switchCaseStatements(self: anytype, case_idx: NodeIndex) []const u32 {
+    const node = self.ast.getNode(case_idx);
+    const extras = self.ast.extra_data.items[node.data.extra .. node.data.extra + 3];
+    return self.ast.extra_data.items[extras[1] .. extras[1] + extras[2]];
+}
+
+fn switchHasLowerableFunction(self: anytype, case_indices: []const u32) bool {
+    for (case_indices) |raw_case| {
+        for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
+            if (isLowerableBlockFunction(self, @enumFromInt(raw))) return true;
+        }
+    }
+    return false;
+}
+
+fn discriminantReadsLoweredName(self: anytype, discriminant: NodeIndex, case_indices: []const u32) bool {
+    if (discriminant.isNone()) return false;
+    var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    stack.append(self.allocator, discriminant) catch return true;
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(idx);
+        if (node.tag == .identifier_reference) {
+            const text = self.ast.getText(node.data.string_ref);
+            for (case_indices) |raw_case| {
+                for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
+                    const decl: NodeIndex = @enumFromInt(raw);
+                    if (!isLowerableBlockFunction(self, decl)) continue;
+                    const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[self.ast.getNode(decl).data.extra]);
+                    if (std.mem.eql(u8, text, self.ast.getText(self.ast.getNode(name).data.string_ref))) return true;
+                }
+            }
+        }
+        var it = @import("../parser/ast_walk.zig").children(self.ast, node);
+        while (it.next()) |child| stack.append(self.allocator, child) catch return true;
+    }
+    return false;
+}
+
+fn emitSwitchCaseSkippingFunctions(self: anytype, node: Node, skip_lowered_functions: bool) !void {
     try self.addSourceMapping(node.span);
     // 파서 구조: extra = [test_expr, stmts_start, stmts_len]
     // test_expr가 none이면 default:
@@ -1366,6 +1445,7 @@ pub fn emitSwitchCase(self: anytype, node: Node) !void {
         self.indent_level += 1;
         const stmt_indices = self.ast.extra_data.items[stmts_start .. stmts_start + stmts_len];
         for (stmt_indices) |raw_idx| {
+            if (skip_lowered_functions and isLowerableBlockFunction(self, @enumFromInt(raw_idx))) continue;
             try writeNewline(self);
             try writeIndent(self);
             try self.emitNode(@enumFromInt(raw_idx));
