@@ -13003,9 +13003,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional deep member receiver static fields stay on semantic reanalysis',
+        name: 'bound deep optional member receiver calls retain key, getter, argument, this, and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'var holder = { get outer() { order.push("outer"); return { get receiver() { order.push("receiver"); return receiver; } }; } };',
+          'var missingHolder = { get outer() { order.push("missing-outer"); return null; } };',
+          'var nullFinalHolder = { get outer() { order.push("null-outer"); return { get receiver() { order.push("null-receiver"); return null; } }; } };',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "receiver"; } }; }',
+          'function argument() { order.push("argument"); return 4; }',
+          'class DeepOptionalMemberReceiverField { static value = holder.outer?.[memberKey()].fieldValue(argument()); static absent = missingHolder.outer?.[memberKey()].fieldValue(argument()); }',
+          'function failAtFinalReceiver() { class NullFinalOptionalReceiverField { static value = nullFinalHolder.outer?.[memberKey()].fieldValue(argument()); } } try { failAtFinalReceiver(); } catch (error) { order.push(error instanceof TypeError ? "type-error" : "wrong-error"); }',
+          'console.log(DeepOptionalMemberReceiverField.value, DeepOptionalMemberReceiverField.absent, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 undefined outer,key,coerce,receiver,method,argument,this,missing-outer,null-outer,key,coerce,null-receiver,type-error\n',
+      },
+      {
+        name: 'unresolved deep optional member receiver calls stay on semantic reanalysis',
         source:
-          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class OptionalDeepMemberReceiverField { static value = holder.outer?.receiver.fieldValue(8); } console.log(OptionalDeepMemberReceiverField.value);',
+          'globalThis.__zntcUnresolvedDeepOptionalFieldHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class UnresolvedDeepOptionalMemberReceiverField { static value = __zntcUnresolvedDeepOptionalFieldHolder.outer?.receiver.fieldValue(8); } console.log(UnresolvedDeepOptionalMemberReceiverField.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
+        name: 'explicit optional call after a deep optional member receiver stays on semantic reanalysis',
+        source:
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } }; class ExplicitOptionalDeepMemberReceiverField { static value = holder.outer?.receiver.fieldValue?.(8); } console.log(ExplicitOptionalDeepMemberReceiverField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
