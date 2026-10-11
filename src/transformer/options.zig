@@ -293,6 +293,8 @@ pub const TransformOptions = struct {
         defer walk_scope.end();
 
         var saw_named_definition = false;
+        var saw_lexical = false;
+        var saw_named_assignment = false;
         for (ast.nodes.items) |node| {
             switch (node.tag) {
                 .arrow_function_expression => {
@@ -354,7 +356,10 @@ pub const TransformOptions = struct {
                 .tagged_template_expression => if (u.template_literal) return true,
                 .variable_declaration => {
                     if (u.using and ast.variableDeclarationKind(node).isUsing()) return true;
-                    if (ast.variableDeclarationKind(node).isLexical()) saw_named_definition = true;
+                    if (ast.variableDeclarationKind(node).isLexical()) {
+                        saw_named_definition = true;
+                        saw_lexical = true;
+                    }
                 },
                 .await_expression => if (u.top_level_await) return true,
                 // Exponentiation lowering emits a free `Math.pow` reference.
@@ -367,6 +372,7 @@ pub const TransformOptions = struct {
                 .assignment_expression => {
                     if (u.exponentiation and
                         node.data.binary.flags == @intFromEnum(token_mod.Kind.star2_eq)) return true;
+                    if (ast.isAnonymousFunctionDefinition(node.data.binary.right)) saw_named_assignment = true;
                 },
                 // regex 다운레벨 (named capture, dotall, sticky, unicode brace escape).
                 // named capture 는 wrap 변환에 helper module import 필요 — prepass 거쳐야
@@ -390,7 +396,9 @@ pub const TransformOptions = struct {
         // ES5 output renames a colliding block function or lexical binding and
         // restores the source `.name` with `__name`, so the helper must be
         // discovered before linking (#5454).
-        if (u.block_scoping and saw_named_definition) return hasBlockLevelNamedDefinition(ast);
+        if (u.block_scoping and saw_named_definition and hasBlockLevelNamedDefinition(ast)) return true;
+        // A renamed lexical binding can also be assigned a function later.
+        if (u.block_scoping and saw_lexical and saw_named_assignment) return true;
         return false;
     }
 
@@ -547,6 +555,8 @@ test "lowered syntax discovers helpers and generated globals before linking" {
         .{ .source = "for (let g = function () {}; ;) break;", .es5_prepass = true },
         .{ .source = "{ let g = function named() {}, h = 1; }", .es5_prepass = false },
         .{ .source = "const g = () => {}; { let h = 1; }", .es5_prepass = false },
+        .{ .source = "{ let h; h = () => {}; }", .es5_prepass = true },
+        .{ .source = "var h; h = () => {};", .es5_prepass = false },
     };
     for (fixtures) |fixture| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
