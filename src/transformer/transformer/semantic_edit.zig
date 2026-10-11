@@ -2944,6 +2944,25 @@ pub fn trackKnownSyntheticTempReferenceInScope(
     return true;
 }
 
+/// Attach a reference to an explicitly declared temp when its exact binding
+/// identity is already visible. Unlike hoisted-temp tracking, this remains
+/// valid when a surrounding state-machine pass will reparent the owner scope:
+/// the binding already exists, and final semantic validation checks visibility
+/// after that move.
+pub fn trackVisibleDeclaredSyntheticTempReferenceInScope(
+    self: *Transformer,
+    name_span: Span,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!bool {
+    if (!self.semantic_edit_enabled or node.isNone() or scope.isNone()) return false;
+
+    const symbol_id = try lookupVisibleSyntheticTempSymbol(self, name_span, scope) orelse return false;
+    try addSyntheticRefInScope(self, node, symbol_id, scope, flags);
+    return true;
+}
+
 fn lookupVisibleSyntheticTempSymbol(
     self: *Transformer,
     name_span: Span,

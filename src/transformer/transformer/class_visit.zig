@@ -167,9 +167,29 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 // 별도 처리 — 여기 alias 는 instance prototype 기준).
                 const alias_span = try es_helpers.makeTempVarSpan(self);
                 const alias_binding = try es_helpers.makeSyntheticBinding(self, alias_span);
+                var alias_scope: ScopeId = .none;
+                if (self.semantic_edit_enabled) {
+                    // The alias is emitted after the class. Class expressions
+                    // place that postlude inside the wrapper IIFE, so reserve
+                    // and reparent the real output scope before transforming
+                    // methods that read the alias.
+                    if (node.tag == .class_expression and prepared_wrapper_scope.isNone())
+                        prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
+                    alias_scope = if (node.tag == .class_expression)
+                        prepared_wrapper_scope
+                    else blk: {
+                        const class_scope = self.outputOwnedScope(source_idx) orelse
+                            std.debug.panic("super proto-chain alias class has no source scope", .{});
+                        break :blk self.outputScopeParent(class_scope);
+                    };
+                    _ = try self.declareSyntheticTempInScope(alias_binding, node.span, alias_scope) orelse
+                        std.debug.panic("super proto-chain alias has no SymbolId", .{});
+                }
                 const class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
-                const class_ref = if (self.semantic_edit_enabled and generated_class_self_symbol_id != null)
-                    try self.makeCurrentClassRefAtScope(class_name_span_opt.?, prepared_wrapper_scope)
+                // The postlude reads the class name outside the class body;
+                // resolve it in the chosen output scope and record its read.
+                const class_ref = if (self.semantic_edit_enabled)
+                    try self.makeCurrentClassRefAtScope(class_name_span_opt.?, alias_scope)
                 else
                     try self.makeIdentifierRefWithSymbol(class_name_span_opt.?, class_old_idx);
                 const proto_prop = try es_helpers.makePropertyName(self, "prototype");
@@ -182,6 +202,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 const init_call = try es_helpers.makeCallExpr(self, callee, &.{class_proto}, node.span);
                 const declarator = try es_helpers.makeDeclarator(self, alias_binding, init_call, node.span);
                 super_proto_alias_decl = try es_helpers.makeVarDeclaration(self, &.{declarator}, .@"var", node.span);
+                es_helpers.consumeTempVarSpan(self, alias_span);
                 // super-prop access 가 alias 식별자 그대로 참조하도록 set.
                 self.current_super_class = alias_span;
                 self.current_super_class_old_idx = .none;

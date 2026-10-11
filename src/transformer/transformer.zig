@@ -879,6 +879,7 @@ pub const Transformer = struct {
     pub const trackSyntheticTempReference = @import("transformer/semantic_edit.zig").trackSyntheticTempReference;
     pub const trackSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackSyntheticTempReferenceInScope;
     pub const trackKnownSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackKnownSyntheticTempReferenceInScope;
+    pub const trackVisibleDeclaredSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackVisibleDeclaredSyntheticTempReferenceInScope;
     pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
     pub const trackUserReadFromBinding = @import("transformer/semantic_edit.zig").trackUserReadFromBinding;
     pub const trackExactOutputRead = @import("transformer/semantic_edit.zig").trackExactOutputRead;
