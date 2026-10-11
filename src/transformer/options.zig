@@ -292,7 +292,7 @@ pub const TransformOptions = struct {
         var walk_scope = profile.begin(.graph_discover_pm_prepass_decision_unsupported_walk);
         defer walk_scope.end();
 
-        var saw_function_declaration = false;
+        var saw_named_definition = false;
         for (ast.nodes.items) |node| {
             switch (node.tag) {
                 .arrow_function_expression => {
@@ -301,7 +301,7 @@ pub const TransformOptions = struct {
                 .function_declaration,
                 .function_expression,
                 => {
-                    if (node.tag == .function_declaration) saw_function_declaration = true;
+                    if (node.tag == .function_declaration) saw_named_definition = true;
                     const flags = ast.readExtra(node.data.extra, ast_mod.FunctionExtra.flags);
                     if (functionNeedsDownlevel(u, (flags & ast_mod.FunctionFlags.is_async) != 0, (flags & ast_mod.FunctionFlags.is_generator) != 0)) return true;
                 },
@@ -354,6 +354,7 @@ pub const TransformOptions = struct {
                 .tagged_template_expression => if (u.template_literal) return true,
                 .variable_declaration => {
                     if (u.using and ast.variableDeclarationKind(node).isUsing()) return true;
+                    if (ast.variableDeclarationKind(node).isLexical()) saw_named_definition = true;
                 },
                 .await_expression => if (u.top_level_await) return true,
                 // Exponentiation lowering emits a free `Math.pow` reference.
@@ -386,14 +387,14 @@ pub const TransformOptions = struct {
                 else => {},
             }
         }
-        // ES5 output renames a colliding block function and restores its
-        // `.name` with `__name`, so the helper must be discovered before
-        // linking (#5454).
-        if (u.block_scoping and saw_function_declaration) return hasBlockLevelFunctionDeclaration(ast);
+        // ES5 output renames a colliding block function or lexical binding and
+        // restores the source `.name` with `__name`, so the helper must be
+        // discovered before linking (#5454).
+        if (u.block_scoping and saw_named_definition) return hasBlockLevelNamedDefinition(ast);
         return false;
     }
 
-    fn hasBlockLevelFunctionDeclaration(ast: *const Ast) bool {
+    fn hasBlockLevelNamedDefinition(ast: *const Ast) bool {
         var bodies: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer bodies.deinit(ast.allocator);
         for (ast.nodes.items) |node| {
@@ -408,12 +409,36 @@ pub const TransformOptions = struct {
                     .{ .start = extras[node.data.extra + 1], .len = extras[node.data.extra + 2] }
                 else
                     continue,
+                .for_statement => {
+                    if (ast.hasExtra(node.data.extra, 0) and isNamedDefinition(ast, extras[node.data.extra])) return true;
+                    continue;
+                },
                 else => continue,
             };
             if (list.start > extras.len or list.len > extras.len - list.start) return true;
             for (extras[list.start .. list.start + list.len]) |stmt| {
-                if (stmt < ast.nodes.items.len and ast.nodes.items[stmt].tag == .function_declaration) return true;
+                if (isNamedDefinition(ast, stmt)) return true;
             }
+        }
+        return false;
+    }
+
+    /// A function declaration, or a lexical declaration whose initializer
+    /// takes its `.name` from the binding.
+    fn isNamedDefinition(ast: *const Ast, raw: u32) bool {
+        if (raw >= ast.nodes.items.len) return false;
+        const node = ast.nodes.items[raw];
+        if (node.tag == .function_declaration) return true;
+        if (node.tag != .variable_declaration or !ast.variableDeclarationKind(node).isLexical()) return false;
+        if (!ast.hasExtra(node.data.extra, 2)) return true;
+        const start = ast.extra_data.items[node.data.extra + 1];
+        const len = ast.extra_data.items[node.data.extra + 2];
+        if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return true;
+        for (ast.extra_data.items[start .. start + len]) |declarator| {
+            if (declarator >= ast.nodes.items.len) return true;
+            const decl = ast.nodes.items[declarator];
+            if (decl.tag != .variable_declarator or !ast.hasExtra(decl.data.extra, 2)) continue;
+            if (ast.isAnonymousFunctionDefinition(ast.readExtraNode(decl.data.extra, 2))) return true;
         }
         return false;
     }
@@ -518,6 +543,10 @@ test "lowered syntax discovers helpers and generated globals before linking" {
         .{ .source = "function f() { { function g() {} } }", .es5_prepass = true },
         .{ .source = "switch (k) { case 1: function g() {} }", .es5_prepass = true },
         .{ .source = "function f() { function g() {} if (f) { g(); } }", .es5_prepass = false },
+        .{ .source = "{ let g = () => {}; }", .es5_prepass = true },
+        .{ .source = "for (let g = function () {}; ;) break;", .es5_prepass = true },
+        .{ .source = "{ let g = function named() {}, h = 1; }", .es5_prepass = false },
+        .{ .source = "const g = () => {}; { let h = 1; }", .es5_prepass = false },
     };
     for (fixtures) |fixture| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

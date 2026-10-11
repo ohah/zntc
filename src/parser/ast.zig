@@ -1505,6 +1505,23 @@ pub const Ast = struct {
     /// arrow_function_expression / method_definition. arrow 는 extra[1], 나머지는 extra[2].
     /// (params 슬롯 다음 칸 — `functionParamsList` 와 같은 슬롯 규칙.)
     /// body 가 없거나 잘못된 경우 null.
+    /// ECMA-262 IsAnonymousFunctionDefinition: the binding it initializes
+    /// becomes the function's or class's `.name`.
+    pub fn isAnonymousFunctionDefinition(self: *const Ast, idx: NodeIndex) bool {
+        var current = idx;
+        while (!current.isNone() and @intFromEnum(current) < self.nodes.items.len) {
+            const node = self.getNode(current);
+            switch (node.tag) {
+                .parenthesized_expression => current = node.data.unary.operand,
+                .arrow_function_expression => return true,
+                .function_expression => return self.readExtraNode(node.data.extra, FunctionExtra.name).isNone(),
+                .class_expression => return self.readExtraNode(node.data.extra, ClassExtra.name).isNone(),
+                else => return false,
+            }
+        }
+        return false;
+    }
+
     pub fn functionBodyBlock(self: *const Ast, node: Node) ?NodeIndex {
         const body_slot: u32 = switch (node.tag) {
             .arrow_function_expression => 1,

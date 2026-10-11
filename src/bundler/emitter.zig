@@ -1919,6 +1919,7 @@ pub fn emitModule(
         // "drop 가능" 신호가 있을 때만 정밀 DCE 적용. mobx/rxjs/lodash 등 라이브러리는
         // 거의 모두 이 신호를 가지고 있어 mobx 4KB cascade-dead 회수 경로 활성화.
         ctx.allow_top_level_dead = (shaker != null) and module.isUserDeclaredPure();
+        ctx.preserve_inferred_names = !options.minify_identifiers or options.keep_names;
         // prepass minify (#3267 N-step4) 가 dead branch 안 ref 감산을 마쳤다면 그 결과를
         // hydrate — 그렇지 않으면 emitter minify 의 fold pass 는 이미 fold 된 stmt 를
         // 다시 fold 못 하고 ref 감산도 일어나지 않아 cascade dead binding 이 인식되지 않는다.

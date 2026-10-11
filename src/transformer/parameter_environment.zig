@@ -538,6 +538,23 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
     const symbols = symbolsOf(self);
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
     defer self.allocator.free(reachable);
+    // `let f = function () {}` takes `.name` from its binding; a renamed
+    // lexical binding (`var f$1 = ...`) would otherwise rename the function.
+    for (reachable) |raw| {
+        const declarator = self.ast.getNode(@enumFromInt(raw));
+        if (declarator.tag != .variable_declarator) continue;
+        const extra = declarator.data.extra;
+        const binding = self.ast.readExtraNode(extra, 0);
+        const id = self.getSymbolIdAt(binding) orelse continue;
+        if (!renames.contains(id) or id >= symbols.len) continue;
+        const init = self.ast.readExtraNode(extra, 2);
+        if (!self.ast.isAnonymousFunctionDefinition(init)) continue;
+        const saved_scope = self.current_scope;
+        self.current_scope = symbols[id].scope_id;
+        defer self.current_scope = saved_scope;
+        const named = try nameValue(self, init, symbols[id].name, self.ast.getNode(init).span);
+        self.ast.extra_data.items[extra + 2] = @intFromEnum(named);
+    }
     var by_scope: std.AutoHashMapUnmanaged(u32, std.ArrayList(ast_mod.NodeIndex)) = .empty;
     var named: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer named.deinit(self.allocator);

@@ -4646,6 +4646,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             minify_mod.MinifyCtx.fromSemantic(&module.semantic.?, transformer.symbol_ids.items, allow_top_level_inline)
         else
             .empty;
+        ctx.preserve_inferred_names = !self.minify_identifiers or self.transform_options_base.keep_names;
         if (ctx.hasSemantic()) {
             if (arena_alloc.alloc(u32, ctx.symbols.len)) |buf| {
                 @memset(buf, 0);
