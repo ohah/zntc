@@ -12547,11 +12547,25 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 this\n',
       },
       {
-        name: 'optional computed static field member-read key stays on semantic reanalysis',
+        name: 'bound optional computed static field keys retain getter order and null short-circuit',
         source:
-          'var holder = { key: "value" }; class OptionalComputedStaticFieldMemberKey { static [holder?.key] = 9; } console.log(OptionalComputedStaticFieldMemberKey.value);',
+          'var order = []; var holder = { get key() { order.push("key"); return "value"; } }; var missing = null; class OptionalComputedStaticFieldMemberKey { static [holder?.key] = 9; static [missing?.key] = 10; } console.log(OptionalComputedStaticFieldMemberKey.value, OptionalComputedStaticFieldMemberKey.undefined, order.join(","));',
+        graph: 'retained',
+        output: '9 10 key\n',
+      },
+      {
+        name: 'unresolved external optional computed field roots retain order and short-circuit',
+        source:
+          'var order = []; function computedKey() { order.push("computed"); return "key"; } Object.defineProperty(globalThis, "_a", { configurable: true, get() { order.push("root"); return { get key() { order.push("key"); return "value"; } }; } }); globalThis._b = null; class UnresolvedOptionalComputedStaticFieldMemberKey { static [_a?.[computedKey()]] = 9; static [_b?.[computedKey()]] = 10; } console.log(UnresolvedOptionalComputedStaticFieldMemberKey.value, UnresolvedOptionalComputedStaticFieldMemberKey.undefined, order.join(","));',
+        graph: 'retained',
+        output: '9 10 root,computed,key\n',
+      },
+      {
+        name: 'unresolved optional member call roots keep identity on reanalysis',
+        source:
+          'var order = []; var receiver = { key: "called", get method() { order.push("method"); return function () { order.push(this === receiver ? "this" : "wrong-this"); return this.key; }; } }; Object.defineProperty(globalThis, "_callRoot", { configurable: true, get() { order.push("root"); return receiver; } }); globalThis._nullRoot = null; function argument() { order.push("argument"); return 1; } class UnresolvedOptionalMemberCallStaticFieldKey { static [_callRoot?.method?.(argument())] = 11; static [_nullRoot?.method?.(argument())] = 12; } console.log(UnresolvedOptionalMemberCallStaticFieldKey.called, UnresolvedOptionalMemberCallStaticFieldKey.undefined, order.join(","));',
         graph: 'reanalyzed',
-        output: '9\n',
+        output: '11 12 root,method,argument,this\n',
       },
       {
         name: 'call-result receiver in computed static field member-read key stays on semantic reanalysis',
