@@ -12552,16 +12552,23 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional member-call computed static field name stays on semantic reanalysis',
+        name: 'optional computed member call in static field name preserves receiver and key order',
         source:
-          'globalThis.__zntcOptionalStaticFieldKeyReceiver = { fieldKey() { return "value"; } }; class OptionalMemberCallStaticFieldName { static [__zntcOptionalStaticFieldKeyReceiver?.fieldKey()] = 9; } console.log(OptionalMemberCallStaticFieldName.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; var receiver = { base: 5, get fieldKey() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } }; Object.defineProperty(globalThis, "__zntcOptionalStaticFieldKeyReceiver", { configurable: true, get() { order.push("root"); return receiver; } }); Object.defineProperty(globalThis, "__zntcMissingOptionalStaticFieldKeyReceiver", { configurable: true, get() { order.push("missing"); return null; } }); function memberKey() { order.push("key"); return "fieldKey"; } function argument() { order.push("argument"); return 4; } function initializer(value) { order.push("init:" + value); return value; } class OptionalMemberCallStaticFieldName { static [__zntcOptionalStaticFieldKeyReceiver?.[memberKey()](argument())] = initializer("present"); static [__zntcMissingOptionalStaticFieldKeyReceiver?.[memberKey()](argument())] = initializer("absent"); } console.log(OptionalMemberCallStaticFieldName["9"], OptionalMemberCallStaticFieldName.undefined, order.join(","));',
+        graph: 'retained',
+        output: 'present absent root,key,method,argument,this,missing,init:present,init:absent\n',
       },
       {
-        name: 'nested optional member calls in computed static field names stay on semantic reanalysis',
+        name: 'nested optional member calls in computed static field names retain undefined key conversion',
         source:
-          'globalThis.__zntcNestedOptionalStaticFieldKeyReceiver = { fieldKey() { return "value"; } }; function wrapKey(value) { return value; } class NestedOptionalMemberCallStaticFieldName { static [wrapKey(__zntcNestedOptionalStaticFieldKeyReceiver?.fieldKey())] = 9; } console.log(NestedOptionalMemberCallStaticFieldName.value);',
+          'var order = []; Object.defineProperty(globalThis, "__zntcNestedOptionalStaticFieldKeyReceiver", { configurable: true, get() { order.push("missing"); return null; } }); function memberKey() { order.push("key"); return "fieldKey"; } function argument() { order.push("argument"); return 4; } function wrapKey(value) { order.push("wrap:" + value); return value; } function initializer(value) { order.push("init:" + value); return value; } class NestedOptionalMemberCallStaticFieldName { static [wrapKey(__zntcNestedOptionalStaticFieldKeyReceiver?.[memberKey()](argument()))] = initializer("absent"); } console.log(NestedOptionalMemberCallStaticFieldName.undefined, order.join(","));',
+        graph: 'retained',
+        output: 'absent missing,wrap:undefined,init:absent\n',
+      },
+      {
+        name: 'explicit optional invocation in computed static field name stays on semantic reanalysis',
+        source:
+          'globalThis.__zntcOptionalInvocationStaticFieldKeyReceiver = { fieldKey() { return "value"; } }; class OptionalInvocationStaticFieldName { static [__zntcOptionalInvocationStaticFieldKeyReceiver?.fieldKey?.()] = 9; } console.log(OptionalInvocationStaticFieldName.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },
