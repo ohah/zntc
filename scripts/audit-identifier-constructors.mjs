@@ -11,12 +11,14 @@
 //                  makeTempVarRef · makeRuntimeHelperRef
 //   - 전역:        makeGlobalRef(FromSpan/At)
 //   - 속성 이름:   makePropertyName(FromSpan/At)
+//   - 대입 target: producer가 확정한 SymbolId를 직접 등록하는 허용 함수만
 //
 //   - JSX:         makeSyntheticJsxTag · makeJsxAttributeName  (사용자 컴포넌트 태그는 원본 노드를 옮긴다)
 //
-// 규칙: src/transformer 안에서 identifier_reference / binding_identifier / jsx_identifier 노드를 직접
-// 만드는 곳(`.tag = if (…) … else .identifier_reference` 같은 조건식 포함)과 `makeBindingIdentifier(`
-// 호출은 아래 ALLOWLIST 의 함수 안에서만 허용한다. 등록 안 된 곳이 있으면 CI 실패.
+// 규칙: src/transformer 안에서 identifier_reference / assignment_target_identifier /
+// binding_identifier / jsx_identifier 노드를 직접 만드는 곳(`.tag = if (…) … else
+// .identifier_reference` 같은 조건식 포함)과 `makeBindingIdentifier(` 호출은 아래 ALLOWLIST 의 함수
+// 안에서만 허용한다. 등록 안 된 곳이 있으면 CI 실패.
 //
 // 대상 밖(의도): `private_identifier`(`#x`) 는 스코프 심볼이 아니다. AST 플러그인(`ast_plugin.zig`)은
 // 외부 API 라 임의 노드를 만든다 — 플러그인이 만든 식별자의 이름은 변환 뒤 재분석(minify·번들)이 정한다.
@@ -44,6 +46,10 @@ const ALLOWLIST = {
     '이미 확정된 이름 Span을 재해석하지 않는 합성 바인딩 생성 함수',
   'src/transformer/es_helpers.zig::retagAssignmentTargetAsReference':
     '기존 assignment target 노드를 읽기 reference로 재사용',
+  'src/transformer/es_helpers.zig::buildCapturedFunctionAssignment':
+    '합성 함수 대입 target에 producer가 선택한 SymbolId를 pending 등록',
+  'src/transformer/transformer/driver.zig::appendParameterBodyVarCopies':
+    '이동한 body-var 대입 target을 해당 body SymbolId에 직접 연결',
   'src/transformer/transformer/node_helpers.zig::makeUserBinding':
     '사용자 바인딩 생성 함수(심볼 전달)',
   'src/transformer/es_helpers.zig::jsxIdentifierNode':
@@ -51,8 +57,12 @@ const ALLOWLIST = {
 };
 
 const PATTERNS = [
-  // `.tag = X` 뿐 아니라 `.tag = if (c) .a else .identifier_reference` 도 잡는다(`==` 비교는 제외).
+  // `.tag = X` 와 조건식 tag 모두 잡는다(`==` 비교는 제외).
   { re: /\.tag\s*=(?!=)[^,;]*\.identifier_reference\b/, what: 'identifier_reference 직접 생성' },
+  {
+    re: /\.tag\s*=(?!=)[^,;]*\.assignment_target_identifier\b/,
+    what: 'assignment_target_identifier 직접 생성',
+  },
   { re: /\.tag\s*=(?!=)[^,;]*\.binding_identifier\b/, what: 'binding_identifier 직접 생성' },
   { re: /\.tag\s*=(?!=)[^,;]*\.jsx_identifier\b/, what: 'jsx_identifier 직접 생성' },
   { re: /\bmakeBindingIdentifier\(/, what: 'makeBindingIdentifier 직접 호출' },
