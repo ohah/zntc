@@ -196,6 +196,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.synthetic_names.deinit(self.allocator);
     self.runtime_helper_aliases.deinit(self.allocator);
     self.synthetic_taken.deinit(self.allocator);
+    self.late_output_name_bases.deinit(self.allocator);
     if (self.user_symbol_names) |*set| set.deinit(self.allocator);
     if (self.synthetic_idents) |*set| set.deinit(self.allocator);
     for (self.const_enums.items) |decl| {
