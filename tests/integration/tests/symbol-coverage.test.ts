@@ -12772,9 +12772,28 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unresolved optional receiver chain with member invocation stays on semantic reanalysis',
+        name: 'unresolved optional receiver member invocations retain root getter and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } };',
+          'var missingMethod = { get fieldValue() { order.push("missing-method"); return null; } };',
+          'Object.defineProperty(globalThis, "__zntcUnresolvedOptionalReceiverMemberInvocation", { configurable: true, get() { order.push("root"); return receiver; } });',
+          'Object.defineProperty(globalThis, "__zntcUnresolvedComputedOptionalReceiverMemberInvocation", { configurable: true, get() { order.push("computed-root"); return receiver; } });',
+          'Object.defineProperty(globalThis, "__zntcUnresolvedNullOptionalReceiverMemberInvocation", { configurable: true, get() { order.push("null-root"); return null; } });',
+          'Object.defineProperty(globalThis, "__zntcUnresolvedMissingOptionalReceiverMemberInvocation", { configurable: true, get() { order.push("missing-root"); return missingMethod; } });',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "fieldValue"; } }; }',
+          'function argument() { order.push("argument"); return 4; }',
+          'class UnresolvedOptionalReceiverMemberInvocationField { static dotted = __zntcUnresolvedOptionalReceiverMemberInvocation?.fieldValue?.(argument()); static computed = __zntcUnresolvedComputedOptionalReceiverMemberInvocation?.[memberKey()]?.(argument()); static absentReceiver = __zntcUnresolvedNullOptionalReceiverMemberInvocation?.[memberKey()]?.(argument()); static absentMethod = __zntcUnresolvedMissingOptionalReceiverMemberInvocation?.[memberKey()]?.(argument()); }',
+          'console.log(UnresolvedOptionalReceiverMemberInvocationField.dotted, UnresolvedOptionalReceiverMemberInvocationField.computed, UnresolvedOptionalReceiverMemberInvocationField.absentReceiver, UnresolvedOptionalReceiverMemberInvocationField.absentMethod, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 9 undefined undefined root,method,argument,this,computed-root,key,coerce,method,argument,this,null-root,missing-root,key,coerce,missing-method\n',
+      },
+      {
+        name: 'call-result optional receiver chain with member invocation stays on semantic reanalysis',
         source:
-          'globalThis.__zntcUnresolvedOptionalReceiverMemberInvocation = { fieldValue(input) { return input + 1; } }; class UnresolvedOptionalReceiverMemberInvocationField { static value = __zntcUnresolvedOptionalReceiverMemberInvocation?.fieldValue?.(8); } console.log(UnresolvedOptionalReceiverMemberInvocationField.value);',
+          'function makeReceiver() { return { fieldValue(input) { return input + 1; } }; } class CallResultOptionalReceiverMemberInvocationField { static value = makeReceiver()?.fieldValue?.(8); } console.log(CallResultOptionalReceiverMemberInvocationField.value);',
         graph: 'reanalyzed',
         output: '9\n',
       },

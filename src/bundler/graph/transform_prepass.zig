@@ -1153,11 +1153,17 @@ fn isRetainableUnresolvedOptionalStaticFieldMemberInvocation(
     const callee = ast.getNode(callee_idx);
     if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return false;
     const member_extra = callee.data.extra;
-    if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra < 3 or
-        ast.extra_data.items[member_extra + 2] != 0) return false;
-    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
-    return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, receiver_idx) and
-        isRetainableStaticFieldOptionalMemberInvocation(allocator, ast, semantic, callee_idx);
+    if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra < 3) return false;
+    const member_flags = ast.extra_data.items[member_extra + 2];
+    if (member_flags == ast_mod.MemberFlags.optional_chain) {
+        if (!hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, callee_idx)) return false;
+    } else if (member_flags == 0) {
+        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
+        if (!isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, receiver_idx)) return false;
+    } else {
+        return false;
+    }
+    return isRetainableStaticFieldOptionalMemberInvocation(allocator, ast, semantic, callee_idx);
 }
 
 fn isRetainableStaticFieldDirectOptionalCall(
@@ -1189,7 +1195,7 @@ fn isRetainableStaticFieldOptionalMemberInvocation(
             ast,
             semantic,
             callee_idx,
-            false,
+            true,
         );
     }
     if (member_flags != 0) return false;
@@ -1199,6 +1205,28 @@ fn isRetainableStaticFieldOptionalMemberInvocation(
         (!isBoundSourceIdentifierReference(ast, semantic, receiver_idx) and
             !isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, receiver_idx))) return false;
     return isRetainableStaticFieldMemberAccess(allocator, ast, semantic, callee_idx);
+}
+
+fn hasUnresolvedStaticFieldMemberChainRoot(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    member_idx: ast_mod.NodeIndex,
+) bool {
+    const extras = ast.extra_data.items;
+    var current_idx = member_idx;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const current = ast.getNode(current_idx);
+        if (current.tag == .identifier_reference)
+            return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, current_idx);
+        if (current.tag != .static_member_expression and current.tag != .computed_member_expression)
+            return false;
+        const extra = current.data.extra;
+        if (extra > extras.len or extras.len - extra < 3) return false;
+        current_idx = @enumFromInt(extras[extra]);
+    }
+    return false;
 }
 
 fn collectRetainableStaticFieldUnresolvedOptionalInvocations(
