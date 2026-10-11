@@ -12966,11 +12966,31 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'optional call-result static member reads stay on semantic reanalysis',
+        name: 'bound call-result optional member reads retain receiver, key, getter, and short-circuit order',
+        source: [
+          'var order = [];',
+          'var receiver = { get value() { order.push(this === receiver ? "value:true" : "value:false"); return 9; } };',
+          'function makeHolder(value) { order.push(value === null ? "null-receiver" : "receiver"); return value; }',
+          'function memberKey() { order.push("key"); return { [Symbol.toPrimitive]() { order.push("coerce"); return "value"; } }; }',
+          'class BoundCallResultOptionalMemberReadField { static dotted = makeHolder(receiver)?.value; static computed = makeHolder(receiver)?.[memberKey()]; static absent = makeHolder(null)?.[memberKey()]; }',
+          'console.log(BoundCallResultOptionalMemberReadField.dotted, BoundCallResultOptionalMemberReadField.computed, BoundCallResultOptionalMemberReadField.absent, order.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 9 undefined receiver,value:true,receiver,key,coerce,value:true,null-receiver\n',
+      },
+      {
+        name: 'unresolved call-result optional member reads stay on semantic reanalysis',
         source:
-          'var holder = { value: 9 }; function makeHolder() { return holder; } class OptionalCallResultStaticMemberReadField { static value = makeHolder()?.value; } console.log(OptionalCallResultStaticMemberReadField.value);',
+          'globalThis.__zntcUnresolvedOptionalMemberReadFactory = function () { return { value: 9 }; }; class UnresolvedCallResultOptionalMemberReadField { static value = __zntcUnresolvedOptionalMemberReadFactory()?.value; } console.log(UnresolvedCallResultOptionalMemberReadField.value);',
         graph: 'reanalyzed',
         output: '9\n',
+      },
+      {
+        name: 'optional call-result member read with effectful receiver argument stays on semantic reanalysis',
+        source:
+          'var order = []; var holder = { value: 9 }; function makeHolder(input) { return holder; } class EffectfulOptionalCallResultMemberReadField { static value = makeHolder((order.push("receiver-argument"), 1))?.value; } console.log(EffectfulOptionalCallResultMemberReadField.value, order.join(","));',
+        graph: 'reanalyzed',
+        output: '9 receiver-argument\n',
       },
       {
         name: 'call-result static member read with effectful receiver argument stays on semantic reanalysis',
