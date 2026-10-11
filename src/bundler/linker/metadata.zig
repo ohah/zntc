@@ -407,12 +407,22 @@ fn synchronizeClassSelfNames(
         if (name_idx >= sem.symbol_ids.len) std.debug.panic("class outer binding node is outside semantic table", .{});
         const outer_id = sem.symbol_ids[name_idx] orelse std.debug.panic("class outer binding has no SymbolId", .{});
         if (outer_id == inner_id) std.debug.panic("class outer and self SymbolId collapsed", .{});
+        // ES5 class lowering keeps the source class node in a retained graph but
+        // moves the self binding into the IIFE as the constructor function's own
+        // name. That inner name is independent of the outer `var` (#5445).
+        if (classSelfWasLowered(sem, inner_id)) continue;
         if (renames.get(outer_id)) |name| {
             try renames.put(allocator, inner_id, name);
         } else {
             _ = renames.remove(inner_id);
         }
     }
+}
+
+fn classSelfWasLowered(sem: *const @import("../module.zig").ModuleSemanticData, inner_id: u32) bool {
+    const scope_id = sem.symbols.items[inner_id].scope_id;
+    if (scope_id.isNone() or scope_id.toIndex() >= sem.scopes.len) return false;
+    return sem.scopes[scope_id.toIndex()].kind != .class_body;
 }
 
 /// record `rec_i` 에 속한 import binding 이 있는지 — `namespace_only=true` 면 namespace
