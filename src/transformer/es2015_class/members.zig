@@ -45,6 +45,11 @@ pub fn Members(comptime Transformer: type) type {
             symbol_id: ?u32 = null,
         };
 
+        const ComputedAccessorKeyBinding = struct {
+            binding: NodeIndex,
+            references: [2]NodeIndex,
+        };
+
         /// instance field init 의 emission 정보를 source order 로 보존하는 union.
         /// 분류 단계 (classifyMembers) 에서는 raw key/init 만 push 하고, mapping 이 set 된 뒤에
         /// `emitInstanceInits` 가 한 번에 visit 해 statement 로 빌드한다.
@@ -89,6 +94,10 @@ pub fn Members(comptime Transformer: type) type {
             accessor_key_memos: std.ArrayList(NodeIndex) = .empty,
             /// `makeTempVarSpan`으로 만든 computed-key memo의 명시적 IIFE 바인딩 정보.
             computed_key_temp_bindings: std.ArrayList(es_helpers.ComputedKeyMemo) = .empty,
+            /// Computed auto-accessor keys use a separately allocated exact name
+            /// rather than a temp span, so their binding and getter/setter reads
+            /// are registered directly once the class IIFE scope is known.
+            computed_accessor_key_bindings: std.ArrayList(ComputedAccessorKeyBinding) = .empty,
             /// 클래스 IIFE 안에서 읽는, 바깥 스코프에서 선호이스트된 computed-key temp 참조.
             computed_key_temp_reads: std.ArrayList(NodeIndex) = .empty,
             /// instance field init에 arrow this 캡처가 필요한 경우 true.
@@ -118,6 +127,7 @@ pub fn Members(comptime Transformer: type) type {
                 cm.synthesized_private_names.deinit(allocator);
                 cm.accessor_key_memos.deinit(allocator);
                 cm.computed_key_temp_bindings.deinit(allocator);
+                cm.computed_accessor_key_bindings.deinit(allocator);
                 cm.computed_key_temp_reads.deinit(allocator);
             }
         };
@@ -469,8 +479,9 @@ pub fn Members(comptime Transformer: type) type {
         pub fn bindComputedKeyTemps(self: *Transformer, cm: *ClassifiedMembers, scope: @import("../../semantic/scope.zig").ScopeId, span: Span) Transformer.Error!void {
             for (cm.computed_key_temp_bindings.items) |memo| es_helpers.consumeTempVarSpan(self, memo.temp_span);
             if (!self.semantic_edit_enabled) return;
-            if (scope.isNone() and (cm.computed_key_temp_bindings.items.len > 0 or cm.computed_key_temp_reads.items.len > 0))
-                std.debug.panic("computed class key temps have no output IIFE scope", .{});
+            if (scope.isNone() and (cm.computed_key_temp_bindings.items.len > 0 or
+                cm.computed_accessor_key_bindings.items.len > 0 or cm.computed_key_temp_reads.items.len > 0))
+                std.debug.panic("computed class keys have no exact output IIFE scope", .{});
 
             for (cm.computed_key_temp_reads.items) |ref|
                 _ = try es_helpers.trackKnownHoistedTempRef(self, ref, scope, .{ .read = true });
@@ -478,6 +489,13 @@ pub fn Members(comptime Transformer: type) type {
             for (cm.computed_key_temp_bindings.items) |memo| {
                 try self.trackHoistedTempRefInScope(memo.temp_span, memo.computed_ref, scope, .{ .read = true });
                 try self.bindSyntheticTempInScope(memo.binding, memo.temp_span, span, .variable_var, scope);
+            }
+
+            for (cm.computed_accessor_key_bindings.items) |memo| {
+                const symbol = (try self.declareSyntheticInScope(memo.binding, span, .variable_var, scope)) orelse
+                    std.debug.panic("computed auto-accessor key has no direct SymbolId", .{});
+                for (memo.references) |reference|
+                    try self.addSyntheticRefInScope(reference, symbol, scope, .{ .read = true });
             }
         }
 
@@ -679,13 +697,16 @@ pub fn Members(comptime Transformer: type) type {
             const mem_var_name = try private_names.makeUniqueName(mem_var_base);
             try cm.synthesized_private_names.append(self.allocator, mem_var_name); // allocator 소유 보관용 재사용
             const mem_var_span = try self.ast.addString(mem_var_name);
+            const mem_var_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, mem_var_span);
             const visited_inner = try self.visitNode(inner_expr);
             try cm.computed_key_temp_reads.append(self.allocator, visited_inner);
-            const var_decl = try self.buildVarDecl(mem_var_name, visited_inner, span);
+            const memo_declarator = try es_helpers.makeDeclarator(self, mem_var_binding, visited_inner, span);
+            const var_decl = try es_helpers.makeVarDeclaration(self, &.{memo_declarator}, .@"var", span);
             try cm.accessor_key_memos.append(self.allocator, var_decl);
 
             // computed key 노드: computed_property_key(identifier_reference("_acc_key_N")) — getter/setter 각 1개씩.
             const getter_key = try es_helpers.makeComputedKeyRef(self, mem_var_span, span);
+            const getter_ref = self.ast.getNode(getter_key).data.unary.operand;
             const getter_return = try makePrivateFieldAccess(self, storage_span, span);
             const getter_idx = try buildComputedAccessorGetter(self, getter_key, getter_return, is_static, span);
             try cm.accessors.append(self.allocator, .{
@@ -696,6 +717,7 @@ pub fn Members(comptime Transformer: type) type {
             });
 
             const setter_key = try es_helpers.makeComputedKeyRef(self, mem_var_span, span);
+            const setter_ref = self.ast.getNode(setter_key).data.unary.operand;
             const setter_target = try makePrivateFieldAccess(self, storage_span, span);
             const setter = try buildComputedAccessorSetter(self, setter_key, setter_target, is_static, span);
             try cm.accessors.append(self.allocator, .{
@@ -705,6 +727,10 @@ pub fn Members(comptime Transformer: type) type {
                 .is_static = is_static,
                 .is_getter = false,
                 .member_span = member_span,
+            });
+            try cm.computed_accessor_key_bindings.append(self.allocator, .{
+                .binding = mem_var_binding,
+                .references = .{ getter_ref, setter_ref },
             });
         }
 
