@@ -13052,6 +13052,31 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 undefined 1 outer,receiver,method,argument,this,missing\n',
       },
       {
+        name: 'unresolved deep optional member calls retain a safe computed key call and ToPropertyKey order',
+        source: [
+          'var events = [];',
+          'globalThis.__zntcUnresolvedComputedOptionalKeyHolder = { get outer() { events.push("outer"); return { get receiver() { events.push("receiver"); return { base: 1, get fieldValue() { events.push("method"); return function (input) { events.push(this.base === 1 ? "this" : "wrong-this"); return this.base + input; }; } }; } }; } };',
+          'globalThis.__zntcUnresolvedNullComputedOptionalKeyHolder = { get outer() { events.push("missing"); return null; } };',
+          'function memberKey() { events.push("key"); return { [Symbol.toPrimitive]() { events.push("coerce"); return "receiver"; } }; }',
+          'function argument() { events.push("argument"); return 8; }',
+          'class UnresolvedComputedOptionalMemberKeyField { static value = __zntcUnresolvedComputedOptionalKeyHolder.outer?.[memberKey()].fieldValue(argument()); static missing = __zntcUnresolvedNullComputedOptionalKeyHolder.outer?.[memberKey()].fieldValue(argument()); }',
+          'console.log(UnresolvedComputedOptionalMemberKeyField.value, UnresolvedComputedOptionalMemberKeyField.missing, events.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output: '9 undefined outer,key,coerce,receiver,method,argument,this,missing\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an unresolved computed key stay on semantic reanalysis',
+        source: [
+          'globalThis.__zntcUnresolvedComputedKeyHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'globalThis.__zntcUnresolvedComputedKey = "receiver";',
+          'class UnresolvedComputedKeyDeepOptionalMemberField { static value = __zntcUnresolvedComputedKeyHolder.outer?.[__zntcUnresolvedComputedKey].fieldValue(8); }',
+          'console.log(UnresolvedComputedKeyDeepOptionalMemberField.value);',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
         name: 'unresolved deep optional member calls with effectful computed keys stay on semantic reanalysis',
         source: [
           'var events = [];',
