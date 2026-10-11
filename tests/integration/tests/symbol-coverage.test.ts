@@ -12559,6 +12559,13 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
+        name: 'nested optional member calls in computed static field names stay on semantic reanalysis',
+        source:
+          'globalThis.__zntcNestedOptionalStaticFieldKeyReceiver = { fieldKey() { return "value"; } }; function wrapKey(value) { return value; } class NestedOptionalMemberCallStaticFieldName { static [wrapKey(__zntcNestedOptionalStaticFieldKeyReceiver?.fieldKey())] = 9; } console.log(NestedOptionalMemberCallStaticFieldName.value);',
+        graph: 'reanalyzed',
+        output: '9\n',
+      },
+      {
         name: 'class-self references in computed static field keys stay on semantic reanalysis',
         source:
           'var SelfKey = class SelfKey { static [false && SelfKey] = 1; }; console.log(SelfKey.false);',
@@ -12774,6 +12781,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'function fieldArgument(input) { return input + 1; } function fieldValue(input) { return input + 1; } class OptionalNestedCallField { static value = fieldValue(fieldArgument?.(8)); } console.log(OptionalNestedCallField.value);',
         graph: 'reanalyzed',
         output: '10\n',
+      },
+      {
+        name: 'optional member calls nested in static initializer arguments retain evaluation order',
+        source:
+          'var order = []; var receiver = { base: 5, get fieldValue() { order.push("method"); return function (input) { order.push(this === receiver ? "this" : "wrong-this"); return this.base + input; }; } }; Object.defineProperty(globalThis, "__zntcNestedOptionalCallRoot", { configurable: true, get() { order.push("root"); return receiver; } }); Object.defineProperty(globalThis, "__zntcMissingNestedOptionalCallRoot", { configurable: true, get() { order.push("missing"); return null; } }); function memberKey() { order.push("key"); return "fieldValue"; } function argument() { order.push("argument"); return 4; } function inner(value) { order.push("inner:" + value); return value; } function outer(value) { order.push("outer:" + value); return value; } class NestedOptionalMemberCallArgumentField { static value = outer(inner(__zntcNestedOptionalCallRoot?.[memberKey()](argument()))); static absent = outer(inner(__zntcMissingNestedOptionalCallRoot?.[memberKey()](argument()))); } console.log(NestedOptionalMemberCallArgumentField.value, NestedOptionalMemberCallArgumentField.absent, order.join(","));',
+        graph: 'retained',
+        output:
+          '9 undefined root,key,method,argument,this,inner:9,outer:9,missing,inner:undefined,outer:undefined\n',
       },
       {
         name: 'bound computed member calls in static-field arguments retain their graph',
