@@ -12295,11 +12295,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 outer,value\n',
       },
       {
-        name: 'unresolved roots of optional computed member chains stay on semantic reanalysis',
+        name: 'unresolved optional computed static initializer roots retain order and skip null keys',
         source:
-          'globalThis.__zntcOptionalReceiverRoot = { outer: { value: 9 } }; var key = "outer"; class OptionalUnresolvedReceiverRootField { static value = __zntcOptionalReceiverRoot?.[key].value; } console.log(OptionalUnresolvedReceiverRootField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; function key() { order.push("key"); return "outer"; } Object.defineProperty(globalThis, "__zntcOptionalReceiverRoot", { configurable: true, get() { order.push("root"); return { get outer() { order.push("outer"); return { get value() { order.push("value"); return 9; } }; } }; } }); Object.defineProperty(globalThis, "__zntcMissingOptionalReceiverRoot", { configurable: true, get() { order.push("missing"); return null; } }); class OptionalUnresolvedReceiverRootField { static value = __zntcOptionalReceiverRoot?.[key()].value; static absent = __zntcMissingOptionalReceiverRoot?.[key()].value; } console.log(OptionalUnresolvedReceiverRootField.value, OptionalUnresolvedReceiverRootField.absent, order.join(","));',
+        graph: 'retained',
+        output: '9 undefined root,key,outer,value,missing\n',
       },
       {
         name: 'unresolved computed member receiver key calls retain order and external identity',
@@ -12435,11 +12435,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9\n',
       },
       {
-        name: 'unbound optional static member value stays on semantic reanalysis',
+        name: 'unbound optional static member value retains one root read and null short-circuit',
         source:
-          'globalThis.__zntcOptionalStaticReceiver = { value: 9 }; class UnboundOptionalStaticMemberValueField { static value = __zntcOptionalStaticReceiver?.value; } console.log(UnboundOptionalStaticMemberValueField.value);',
-        graph: 'reanalyzed',
-        output: '9\n',
+          'var order = []; Object.defineProperty(globalThis, "__zntcOptionalStaticReceiver", { configurable: true, get() { order.push("root"); return { get value() { order.push("value"); return 9; } }; } }); Object.defineProperty(globalThis, "__zntcMissingOptionalStaticReceiver", { configurable: true, get() { order.push("missing"); return null; } }); class UnboundOptionalStaticMemberValueField { static value = __zntcOptionalStaticReceiver?.value; static absent = __zntcMissingOptionalStaticReceiver?.value; } console.log(UnboundOptionalStaticMemberValueField.value, UnboundOptionalStaticMemberValueField.absent, order.join(","));',
+        graph: 'retained',
+        output: '9 undefined root,value,missing\n',
       },
       {
         name: 'nested bound optional static-member chains retain getter order and null short-circuit',

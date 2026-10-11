@@ -1198,7 +1198,7 @@ fn isRetainableStaticFieldInitializerMemberAccess(
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
 ) bool {
-    return isRetainableStaticFieldOptionalMemberChain(allocator, ast, semantic, member_idx, false) or
+    return isRetainableStaticFieldOptionalMemberChain(allocator, ast, semantic, member_idx, true) or
         isRetainableStaticFieldMemberAccess(allocator, ast, semantic, member_idx);
 }
 
