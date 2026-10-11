@@ -1107,10 +1107,13 @@ fn isRetainableStaticFieldOptionalMemberChain(
         if (member.tag == .static_member_expression) {
             if (property.tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
-            const unresolved_external_key = allow_unresolved_root and
-                isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx) and
+            const unresolved_external_root = allow_unresolved_root and
                 hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, member_idx);
-            if (!unresolved_external_key and
+            const unresolved_external_key = unresolved_external_root and
+                isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx);
+            const retained_effectful_sequence_key = unresolved_external_root and
+                isRetainableUnresolvedRootStaticFieldSequenceKey(ast, semantic, property_idx);
+            if (!unresolved_external_key and !retained_effectful_sequence_key and
                 (property.tag != .call_expression or
                     !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false))) return false;
         }
@@ -1138,6 +1141,88 @@ fn isRetainableUnresolvedStaticFieldIdentifier(
 ) bool {
     if (!isUnresolvedSourceIdentifierReference(ast, semantic, identifier_idx)) return false;
     return !std.mem.eql(u8, ast.getText(ast.getNode(identifier_idx).span), "require");
+}
+
+fn hasBoundStaticFieldDotCallCalleeRoot(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    callee_idx: ast_mod.NodeIndex,
+) bool {
+    const extras = ast.extra_data.items;
+    var current_idx = callee_idx;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const current = ast.getNode(current_idx);
+        if (current.tag == .identifier_reference)
+            return isBoundSourceIdentifierReference(ast, semantic, current_idx);
+        if (current.tag != .static_member_expression) return false;
+        const extra = current.data.extra;
+        if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
+        const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+        if (object_idx.isNone() or @intFromEnum(object_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+            ast.getNode(property_idx).tag != .identifier_reference) return false;
+        current_idx = object_idx;
+    }
+    return false;
+}
+
+fn isRetainableBoundStaticFieldEffectCall(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    call_idx: ast_mod.NodeIndex,
+) bool {
+    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    const call = ast.getNode(call_idx);
+    if (call.tag != .call_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = call.data.extra;
+    if (extra > extras.len or extras.len - extra < 4 or
+        (extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
+    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.getNode(callee_idx);
+    const bound_callee = switch (callee.tag) {
+        .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, callee_idx),
+        .static_member_expression => hasBoundStaticFieldDotCallCalleeRoot(ast, semantic, callee_idx),
+        else => false,
+    };
+    if (!bound_callee) return false;
+    const args_start = extras[extra + 1];
+    const args_len = extras[extra + 2];
+    if (args_start > extras.len or args_len > extras.len - args_start) return false;
+    for (extras[args_start .. args_start + args_len]) |raw_arg| {
+        if (raw_arg >= ast.nodes.items.len or
+            !isSafeConstructorValue(ast, semantic, @enumFromInt(raw_arg))) return false;
+    }
+    return true;
+}
+
+/// An effectful sequence can be a computed key only for an unresolved-root
+/// optional chain. Keep non-final calls exact-bound with safe arguments and
+/// require the last value itself to be safe or an explicitly unresolved name.
+fn isRetainableUnresolvedRootStaticFieldSequenceKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    expression_idx: ast_mod.NodeIndex,
+) bool {
+    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    const expression = ast.getNode(expression_idx);
+    if (expression.tag != .sequence_expression) return false;
+    const list = expression.data.list;
+    const extras = ast.extra_data.items;
+    if (list.len < 2 or list.start > extras.len or list.len > extras.len - list.start) return false;
+    for (extras[list.start .. list.start + list.len - 1]) |raw_item| {
+        if (raw_item >= ast.nodes.items.len or
+            !isRetainableBoundStaticFieldEffectCall(ast, semantic, @enumFromInt(raw_item))) return false;
+    }
+    const last_raw = extras[list.start + list.len - 1];
+    if (last_raw >= ast.nodes.items.len) return false;
+    const last_idx: ast_mod.NodeIndex = @enumFromInt(last_raw);
+    return isSafeConstructorValue(ast, semantic, last_idx) or
+        isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx);
 }
 
 fn isRetainableUnresolvedStaticFieldCallCallee(
