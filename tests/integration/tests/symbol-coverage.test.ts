@@ -14047,6 +14047,62 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'false undefined true\n',
       },
       {
+        name: 'post-super conditional branch nested block preserves var identity and Proxy write order',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); if (true) { { var _this = 10, local = 2; this.value = local; local++; } } this.after = local; } } var child = new Child(); console.log(child.value, child.after, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '2 3 90 value:2|after:3 false\n',
+      },
+      {
+        name: 'post-super conditional branch label preserves continue and break',
+        source:
+          'var events = [], _this = 90; function Base() { return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var i = 0; if (true) { outer: while (i < 3) { i++; if (i === 1) continue outer; this.value = i; break outer; } } this.after = i; } } var child = new Child(); console.log(child.value, child.after, _this, events.join("|"), child instanceof Child);',
+        graph: 'retained',
+        output: '2 2 90 value:2|after:2 false\n',
+      },
+      {
+        name: 'post-super conditional branch nested lexical block stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { { let local = 2; this.value = local; } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super conditional branch nested switch this access stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { { switch (1) { case 1: this.value = 2; break; } } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super conditional branch nested try this access stays on reanalysis',
+        source:
+          'function Base() {} class Child extends Base { constructor() { super(); if (true) { { try { throw 2; } catch (error) { this.value = error; } } } } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super conditional branch label with a this condition stays on reanalysis',
+        source:
+          'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); if (true) { outer: while (this.keepGoing) { this.value++; } } } } var child = new Child(); console.log(child.keepGoing, child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: 'false undefined true\n',
+      },
+      {
+        name: 'post-super conditional branch nested return stays on reanalysis',
+        source:
+          'var resultObject = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { { return resultObject; this.value = 1; } } } } var child = new Child(); console.log(child === resultObject, child.value);',
+        graph: 'reanalyzed',
+        output: 'true undefined\n',
+      },
+      {
+        name: 'post-super conditional branch nested throw stays on reanalysis',
+        source:
+          'var sentinel = {}; function Base() {} class Child extends Base { constructor() { super(); if (true) { { throw sentinel; this.value = 1; } } } } try { new Child(); } catch (error) { console.log(error === sentinel); }',
+        graph: 'reanalyzed',
+        output: 'true\n',
+      },
+      {
         name: 'post-super nested loop with this condition stays on reanalysis',
         source:
           'function Base() { this.keepGoing = false; } class Child extends Base { constructor() { super(); var i = 0; while (i < 1) { while (this.keepGoing) {} i++; this.value = i; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
