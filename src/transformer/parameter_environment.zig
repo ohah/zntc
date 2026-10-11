@@ -547,10 +547,38 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         by_scope.deinit(self.allocator);
     }
     // Only function-body-level declarations are initialized on entry. A block
-    // function exists only once its block runs (Annex B in ES5 output), so a
-    // `__name` call at the top of the body would read it before it exists.
+    // function exists once its block (or switch body) is entered, so its
+    // `__name` call goes at the top of that block instead (#5454). A switch
+    // body can be entered at any case, so every case gets the call.
     var body_level: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer body_level.deinit(self.allocator);
+    var container_of: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer container_of.deinit(self.allocator);
+    var switch_of: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer switch_of.deinit(self.allocator);
+    var by_container: std.AutoHashMapUnmanaged(u32, std.ArrayList(ast_mod.NodeIndex)) = .empty;
+    defer {
+        var lists = by_container.valueIterator();
+        while (lists.next()) |list| list.deinit(self.allocator);
+        by_container.deinit(self.allocator);
+    }
+    for (reachable) |raw| {
+        const container = self.ast.getNode(@enumFromInt(raw));
+        const statements = switch (container.tag) {
+            .block_statement => self.ast.extra_data.items[container.data.list.start .. container.data.list.start + container.data.list.len],
+            .switch_case => blk: {
+                const extras = self.ast.extra_data.items[container.data.extra .. container.data.extra + 3];
+                break :blk self.ast.extra_data.items[extras[1] .. extras[1] + extras[2]];
+            },
+            .switch_statement => {
+                const extras = self.ast.extra_data.items[container.data.extra .. container.data.extra + 3];
+                for (self.ast.extra_data.items[extras[1] .. extras[1] + extras[2]]) |case| try switch_of.put(self.allocator, case, raw);
+                continue;
+            },
+            else => continue,
+        };
+        for (statements) |stmt| try container_of.put(self.allocator, stmt, raw);
+    }
     for (reachable) |raw| {
         const function = self.ast.getNode(@enumFromInt(raw));
         switch (function.tag) {
@@ -573,7 +601,7 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
     for (reachable) |raw| {
         const declaration = self.ast.getNode(@enumFromInt(raw));
         if (declaration.tag != .function_declaration) continue;
-        if (!body_level.contains(raw)) continue;
+        const block_container: ?u32 = if (body_level.contains(raw)) null else container_of.get(raw) orelse continue;
         const binding = self.ast.readExtraNode(declaration.data.extra, 0);
         const id = self.getSymbolIdAt(binding) orelse continue;
         const alias = renames.get(id) orelse continue;
@@ -585,12 +613,53 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         const saved_scope = self.current_scope;
         self.current_scope = scope;
         defer self.current_scope = saved_scope;
-        const ref = try self.makeUserRefNamed(alias, binding);
         const span: @import("../lexer/token.zig").Span = .{ .start = declaration.span.start, .end = declaration.span.start };
-        const call = try nameValue(self, ref, symbols[id].name, span);
+        if (block_container) |container| {
+            var targets: std.ArrayList(u32) = .empty;
+            defer targets.deinit(self.allocator);
+            if (switch_of.get(container)) |switch_raw| {
+                const extra = self.ast.getNode(@enumFromInt(switch_raw)).data.extra;
+                const start = self.ast.extra_data.items[extra + 1];
+                try targets.appendSlice(self.allocator, self.ast.extra_data.items[start .. start + self.ast.extra_data.items[extra + 2]]);
+            } else try targets.append(self.allocator, container);
+            for (targets.items) |target| {
+                const call = try nameValue(self, try self.makeUserRefNamed(alias, binding), symbols[id].name, span);
+                const entry = try by_container.getOrPut(self.allocator, target);
+                if (!entry.found_existing) entry.value_ptr.* = .empty;
+                try entry.value_ptr.append(self.allocator, try es_helpers.makeExprStmt(self, call, span));
+            }
+            continue;
+        }
+        const call = try nameValue(self, try self.makeUserRefNamed(alias, binding), symbols[id].name, span);
         const entry = try by_scope.getOrPut(self.allocator, @intFromEnum(scope));
         if (!entry.found_existing) entry.value_ptr.* = .empty;
         try entry.value_ptr.append(self.allocator, try es_helpers.makeExprStmt(self, call, span));
+    }
+    var containers = by_container.iterator();
+    while (containers.next()) |entry| {
+        const container_raw = entry.key_ptr.*;
+        const container = self.ast.getNode(@enumFromInt(container_raw));
+        const old_list: ast_mod.NodeList = switch (container.tag) {
+            .block_statement => container.data.list,
+            .switch_case => .{
+                .start = self.ast.extra_data.items[container.data.extra + 1],
+                .len = self.ast.extra_data.items[container.data.extra + 2],
+            },
+            else => continue,
+        };
+        var statements: std.ArrayList(ast_mod.NodeIndex) = .empty;
+        defer statements.deinit(self.allocator);
+        try statements.appendSlice(self.allocator, entry.value_ptr.items);
+        for (self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len]) |stmt| try statements.append(self.allocator, @enumFromInt(stmt));
+        const new_list = try self.ast.addNodeList(statements.items);
+        switch (container.tag) {
+            .block_statement => self.ast.nodes.items[container_raw].data.list = new_list,
+            .switch_case => {
+                self.ast.extra_data.items[container.data.extra + 1] = new_list.start;
+                self.ast.extra_data.items[container.data.extra + 2] = new_list.len;
+            },
+            else => unreachable,
+        }
     }
     for (reachable) |raw| {
         const function = self.ast.getNode(@enumFromInt(raw));

@@ -1329,14 +1329,33 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
     // switch block is entered, before any case runs (a jump to a later case can
     // call them). Lower them to `let` bindings in a block wrapping the switch,
     // so sloppy output cannot Annex-B-hoist them. esbuild lowers them in place,
-    // which leaves a TDZ when a jump skips the declaring case. Skip lowering when
-    // the discriminant reads one of the names, since the wrapper would shadow it.
+    // which leaves a TDZ when a jump skips the declaring case.
     const lower_functions = self.options.lower_strict_block_functions and
-        switchHasLowerableFunction(self, case_indices) and
-        !discriminantReadsLoweredName(self, discriminant, case_indices);
+        switchHasLowerableFunction(self, case_indices);
+    // The wrapper `let` bindings would shadow an outer name the discriminant
+    // reads, so evaluate the discriminant into a temp outside them first:
+    // `{ let t = d; { let f = function() {}; switch (t) { ... } } }`.
+    var temp_buf: [32]u8 = undefined;
+    const discriminant_temp: ?[]const u8 = if (lower_functions and discriminantReadsLoweredName(self, discriminant, case_indices))
+        switchDiscriminantTempName(self, &temp_buf)
+    else
+        null;
     if (lower_functions) {
         try self.writeByte('{');
         self.indent_level += 1;
+        if (discriminant_temp) |temp| {
+            try writeNewline(self);
+            try writeIndent(self);
+            try self.write("let ");
+            try self.write(temp);
+            try self.write(if (self.options.minify_whitespace) "=" else " = ");
+            try self.emitExpr(discriminant, .comma, .{});
+            try self.writeByte(';');
+            try writeNewline(self);
+            try writeIndent(self);
+            try self.writeByte('{');
+            self.indent_level += 1;
+        }
         for (case_indices) |raw_case| {
             for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
                 const idx: NodeIndex = @enumFromInt(raw);
@@ -1350,14 +1369,17 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
         try writeIndent(self);
     }
     defer if (lower_functions) {
-        self.indent_level -= 1;
-        writeNewline(self) catch {};
-        writeIndent(self) catch {};
-        self.writeByte('}') catch {};
+        const blocks: u32 = if (discriminant_temp != null) 2 else 1;
+        for (0..blocks) |_| {
+            self.indent_level -= 1;
+            writeNewline(self) catch {};
+            writeIndent(self) catch {};
+            self.writeByte('}') catch {};
+        }
     };
 
     if (self.options.minify_whitespace) try self.write("switch(") else try self.write("switch (");
-    try self.emitNode(discriminant);
+    if (discriminant_temp) |temp| try self.write(temp) else try self.emitNode(discriminant);
     try self.writeByte(')');
     try writeSpace(self);
     try self.writeByte('{');
@@ -1419,6 +1441,29 @@ fn discriminantReadsLoweredName(self: anytype, discriminant: NodeIndex, case_ind
         }
         var it = @import("../parser/ast_walk.zig").children(self.ast, node);
         while (it.next()) |child| stack.append(self.allocator, child) catch return true;
+    }
+    return false;
+}
+
+/// A name no identifier in this module can spell: absent from the source and
+/// from every selected output name.
+fn switchDiscriminantTempName(self: anytype, buf: *[32]u8) []const u8 {
+    var suffix: u32 = 0;
+    while (true) : (suffix += 1) {
+        const name = if (suffix == 0) "_zntc_switch" else std.fmt.bufPrint(buf, "_zntc_switch{d}", .{suffix}) catch unreachable;
+        if (!switchTempNameTaken(self, name)) return name;
+    }
+}
+
+fn switchTempNameTaken(self: anytype, name: []const u8) bool {
+    if (std.mem.indexOf(u8, self.ast.source, name) != null) return true;
+    if (self.options.linking_metadata) |metadata| {
+        var it = metadata.renames.valueIterator();
+        while (it.next()) |renamed| if (std.mem.eql(u8, renamed.*, name)) return true;
+    }
+    if (self.options.semantic_symbol_name_overrides) |overrides| {
+        var it = overrides.valueIterator();
+        while (it.next()) |renamed| if (std.mem.eql(u8, renamed.*, name)) return true;
     }
     return false;
 }
