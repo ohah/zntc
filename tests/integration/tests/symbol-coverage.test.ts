@@ -14131,6 +14131,34 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '2 true\n',
       },
       {
+        name: 'post-super switch case function declaration retains exact switch scope identity',
+        source:
+          'var choose = true, result = 0; function Base() {} class Child extends Base { constructor() { super(); if (choose) { switch (1) { case 1: read(); break; case 2: function read() { result = 1; } } } else { switch (1) { case 1: read(); break; case 2: function read() { result = 2; } } } this.value = result; } } var first = new Child(); choose = false; var second = new Child(); console.log(first.value, second.value, first instanceof Child, second instanceof Child);',
+        graph: 'retained',
+        output: '1 2 true true\n',
+      },
+      {
+        name: 'post-super switch case function declaration with direct eval stays on reanalysis',
+        source:
+          'var result = 0; function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: read(); function read() { result = eval("2"); } break; } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super switch case async function declaration stays on reanalysis',
+        source:
+          'var result = 0; function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: read(); break; case 2: async function read() { result = 2; } } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '2 true\n',
+      },
+      {
+        name: 'post-super switch case generator declaration stays on reanalysis',
+        source:
+          'var result = 0; function Base() {} class Child extends Base { constructor() { super(); if (true) { switch (1) { case 1: read(); break; case 2: function* read() { result = 2; } } } this.value = result; } } var child = new Child(); console.log(child.value, child instanceof Child);',
+        graph: 'reanalyzed',
+        output: '0 true\n',
+      },
+      {
         name: 'post-super conditional branch try preserves catch identity and finally write order',
         source:
           'var events = [], sentinel = {}, baseCalls = 0; function Base() { baseCalls++; return new Proxy({}, { set(target, key, value, receiver) { events.push(key + ":" + value); return Reflect.set(target, key, value, receiver); } }); } class Child extends Base { constructor() { super(); var caught, finalized = false; if (true) { try { throw sentinel; } catch (error) { caught = error; } finally { finalized = true; } } this.same = caught === sentinel; this.finalized = finalized; } } var child = new Child(); console.log(child.same, child.finalized, baseCalls, events.join("|"), child instanceof Child);',

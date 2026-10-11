@@ -2580,7 +2580,7 @@ test "strict module block functions keep exact block scope bindings" {
         \\  if (true) { nested(); function nested() { return 2; } }
         \\}
         \\if (true) { topLevel(); function topLevel() {} }
-        \\switch (0) { case 0: switchLocal(); function switchLocal() {} }
+        \\switch (0) { case 0: switchLocal(); break; case 1: function switchLocal() {} }
     ;
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();

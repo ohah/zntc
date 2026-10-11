@@ -2037,6 +2037,39 @@ fn isSafePostSuperConditionalStatement(
     return false;
 }
 
+fn isSafeStrictSwitchBlockFunctionDeclaration(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration_idx: ast_mod.NodeIndex,
+) bool {
+    if (declaration_idx.isNone() or @intFromEnum(declaration_idx) >= ast.nodes.items.len) return false;
+    const declaration = ast.getNode(declaration_idx);
+    if (declaration.tag != .function_declaration) return false;
+
+    const extra = declaration.data.extra;
+    const extras = ast.extra_data.items;
+    if (extra > extras.len or extras.len - extra <= ast_mod.FunctionExtra.flags) return false;
+    const flags = extras[extra + ast_mod.FunctionExtra.flags];
+    if ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0) return false;
+    const name_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.FunctionExtra.name]);
+    if (!isBoundSourceIdentifierBinding(ast, semantic, name_idx)) return false;
+
+    const name_raw = @intFromEnum(name_idx);
+    if (name_raw >= semantic.symbol_ids.len) return false;
+    const symbol_raw = semantic.symbol_ids[name_raw] orelse return false;
+    if (symbol_raw >= semantic.symbols.items.len) return false;
+    const symbol = semantic.symbols.items[symbol_raw];
+    if (!symbol.kind.isFunctionLike() or symbol.scope_id.isNone() or
+        symbol.scope_id != symbol.origin_scope or @intFromEnum(symbol.scope_id) >= semantic.scopes.len) return false;
+    const scope = semantic.scopes[@intFromEnum(symbol.scope_id)];
+    if (scope.kind != .switch_block or !scope.is_strict) return false;
+
+    const name = ast.getNode(name_idx);
+    return symbol.name.start == name.span.start and symbol.name.end == name.span.end and
+        symbol.declaration_span.start == declaration.span.start and
+        symbol.declaration_span.end == declaration.span.end;
+}
+
 fn isSafePostSuperSwitchCase(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -2063,6 +2096,7 @@ fn isSafePostSuperSwitchCase(
                 isSafeDerivedConstructorThrowStatement(ast, semantic, case_statement_idx)) return true;
             if (case_statement.tag == .break_statement and case_statement.data.unary.operand.isNone()) return true;
         }
+        if (isSafeStrictSwitchBlockFunctionDeclaration(ast, semantic, case_statement_idx)) continue;
         if (isSafeConstructorVarDeclaration(ast, semantic, case_statement) or
             isSafePostSuperSwitchExpressionStatement(ast, semantic, case_statement_idx)) continue;
         return false;
