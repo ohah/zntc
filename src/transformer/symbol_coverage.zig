@@ -4187,6 +4187,34 @@ pub const StrictStatus = enum {
     invisible_reference,
     duplicate_reference,
 };
+
+const StrictStatusPolicy = enum {
+    accepted_bound,
+    accepted_external,
+    binding_scope_delegated,
+    must_be_zero,
+};
+
+fn strictStatusPolicy(status: StrictStatus) StrictStatusPolicy {
+    return switch (status) {
+        .bound => .accepted_bound,
+        .external => .accepted_external,
+        .scope_mismatch => .binding_scope_delegated,
+        .missing_binding,
+        .unclassified,
+        .invalid_id,
+        .name_mismatch,
+        .missing_reference,
+        .identity_mismatch,
+        .invalid_scope,
+        .scope_unknown,
+        .scope_ambiguous,
+        .invisible_reference,
+        .duplicate_reference,
+        => .must_be_zero,
+    };
+}
+
 pub const StrictFinding = struct {
     node: u32,
     name: []const u8,
@@ -4223,6 +4251,25 @@ pub const StrictReport = struct {
     findings: std.ArrayList(StrictFinding) = .empty,
     orphan_symbol_findings: std.ArrayList(OrphanSyntheticSymbol) = .empty,
 
+    pub fn statusCount() usize {
+        return std.meta.fields(StrictStatus).len;
+    }
+
+    /// Pin the enum-backed counter schema independently of the hand-written
+    /// diagnostic line. Adding or renaming a status must update the fixture
+    /// gate instead of silently leaving the new counter unreported.
+    pub fn statusSchemaFingerprint() u64 {
+        var hash: u64 = 0xcbf29ce484222325;
+        feedSchemaFingerprint(&hash, "zntc.StrictStatus/v2\x00");
+        inline for (std.meta.tags(StrictStatus)) |status| {
+            feedSchemaFingerprint(&hash, @tagName(status));
+            feedSchemaFingerprint(&hash, "\x00");
+            feedSchemaFingerprint(&hash, @tagName(strictStatusPolicy(status)));
+            feedSchemaFingerprint(&hash, "\n");
+        }
+        return hash;
+    }
+
     pub fn deinit(self: *StrictReport, allocator: std.mem.Allocator) void {
         self.findings.deinit(allocator);
         self.orphan_symbol_findings.deinit(allocator);
@@ -4253,8 +4300,10 @@ pub const StrictReport = struct {
         if (!self.isConsistent()) return false;
         if (self.orphan_symbols != 0) return false;
         for (self.counts, 0..) |count, status| {
-            if (status != @intFromEnum(StrictStatus.bound) and
-                status != @intFromEnum(StrictStatus.external) and count != 0) return false;
+            switch (strictStatusPolicy(@enumFromInt(status))) {
+                .accepted_bound, .accepted_external => {},
+                .binding_scope_delegated, .must_be_zero => if (count != 0) return false,
+            }
         }
         return true;
     }
@@ -4272,9 +4321,10 @@ pub const StrictReport = struct {
             if (finding.status == .scope_mismatch and finding.tag != .binding_identifier) return false;
         }
         for (self.counts, 0..) |count, status| {
-            if (status != @intFromEnum(StrictStatus.bound) and
-                status != @intFromEnum(StrictStatus.external) and
-                status != @intFromEnum(StrictStatus.scope_mismatch) and count != 0) return false;
+            switch (strictStatusPolicy(@enumFromInt(status))) {
+                .accepted_bound, .accepted_external, .binding_scope_delegated => {},
+                .must_be_zero => if (count != 0) return false,
+            }
         }
         return true;
     }
@@ -4755,10 +4805,25 @@ fn checkStrictImpl(
 }
 
 pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
-    std.debug.print(
-        "zntc: synthetic-coverage {s}: bound={d} external={d} missing_binding={d} unclassified={d} invalid_id={d} name_mismatch={d} missing_reference={d} identity_mismatch={d} invalid_scope={d} scope_unknown={d} scope_ambiguous={d} scope_mismatch={d} invisible_reference={d} duplicate_reference={d} orphan_symbols={d} cyclic_ast_edges={d} marked_synthetic={d} consistent={d} symbol_identity_complete={d}\n",
-        .{ file_path, report.counts[@intFromEnum(StrictStatus.bound)], report.counts[@intFromEnum(StrictStatus.external)], report.counts[@intFromEnum(StrictStatus.missing_binding)], report.counts[@intFromEnum(StrictStatus.unclassified)], report.counts[@intFromEnum(StrictStatus.invalid_id)], report.counts[@intFromEnum(StrictStatus.name_mismatch)], report.counts[@intFromEnum(StrictStatus.missing_reference)], report.counts[@intFromEnum(StrictStatus.identity_mismatch)], report.counts[@intFromEnum(StrictStatus.invalid_scope)], report.counts[@intFromEnum(StrictStatus.scope_unknown)], report.counts[@intFromEnum(StrictStatus.scope_ambiguous)], report.counts[@intFromEnum(StrictStatus.scope_mismatch)], report.counts[@intFromEnum(StrictStatus.invisible_reference)], report.counts[@intFromEnum(StrictStatus.duplicate_reference)], report.orphan_symbols, report.cyclic_ast_edges, report.marked_synthetic, @intFromBool(report.isConsistent()), @intFromBool(report.hasCompleteSymbolIdentity()) },
-    );
+    var buffer: [16 * 1024]u8 = undefined;
+    var writer = std.Io.Writer.fixed(&buffer);
+    const report_written = blk: {
+        writer.print("zntc: synthetic-coverage {s}:", .{file_path}) catch break :blk false;
+        inline for (std.meta.tags(StrictStatus)) |status| {
+            writer.print(" {s}={d}", .{ @tagName(status), report.counts[@intFromEnum(status)] }) catch break :blk false;
+        }
+        writer.print(
+            " orphan_symbols={d} cyclic_ast_edges={d} marked_synthetic={d} consistent={d} symbol_identity_complete={d} strict_status_count={d} strict_status_fingerprint={x}\n",
+            .{ report.orphan_symbols, report.cyclic_ast_edges, report.marked_synthetic, @intFromBool(report.isConsistent()), @intFromBool(report.hasCompleteSymbolIdentity()), StrictReport.statusCount(), StrictReport.statusSchemaFingerprint() },
+        ) catch break :blk false;
+        break :blk true;
+    };
+    if (report_written) {
+        std.debug.print("{s}", .{writer.buffered()});
+    } else {
+        // Incomplete report output must fail the integration schema gate.
+        std.debug.print("zntc: synthetic-coverage {s}: report_format_overflow=1\n", .{file_path});
+    }
     for (report.orphan_symbol_findings.items[0..@min(report.orphan_symbol_findings.items.len, 8)]) |finding| {
         std.debug.print("  synthetic-coverage orphan_symbol id={d} name={s} kind={s} scope={d}\n", .{
             finding.symbol_id,
@@ -4786,6 +4851,11 @@ test "baseName strips rename suffix" {
     try std.testing.expectEqualStrings("x$", baseName("x$"));
     try std.testing.expectEqualStrings("$x", baseName("$x"));
     try std.testing.expectEqualStrings("a$b", baseName("a$b"));
+}
+
+test "strict status schema pins the complete SymbolId and ScopeId counter set" {
+    try std.testing.expectEqual(@as(usize, 14), StrictReport.statusCount());
+    try std.testing.expectEqual(@as(u64, 0x37fd7382c204a61b), StrictReport.statusSchemaFingerprint());
 }
 
 test "exact coverage is not clean when a generated binding scope is unknown" {
