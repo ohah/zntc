@@ -1049,6 +1049,7 @@ pub const Transformer = struct {
 
     pub const visitClass = class_deco.visitClass;
     pub const visitClassWithAssignSemantics = class_deco.visitClassWithAssignSemantics;
+    pub const hoistLegacyDecoratorComputedMethodKeys = class_deco.hoistLegacyDecoratorComputedMethodKeys;
     pub const lowerClassWithPrehoistedKeys = class_deco.lowerClassWithPrehoistedKeys;
     pub const buildStaticFieldAssignment = class_deco.buildStaticFieldAssignment;
     pub const classifyClassMember = class_deco.classifyClassMember;

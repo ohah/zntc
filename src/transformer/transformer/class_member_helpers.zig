@@ -180,7 +180,9 @@ pub fn classifyPropertyDefinition(
         const deco_start = self.readU32(me, ast_mod.PropertyExtra.deco_start);
         const deco_len = self.readU32(me, ast_mod.PropertyExtra.deco_len);
         if (deco_len > 0) {
-            const new_key = try self.visitNode(self.readNodeIdx(me, ast_mod.PropertyExtra.key));
+            const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
+            const new_key = (try es_helpers.makeLegacyDecoratorComputedKeyRef(self, key_idx)) orelse
+                try self.visitNode(key_idx);
             const empty: ast_mod.NodeList = .{ .start = 0, .len = 0 };
             try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty);
         }
@@ -208,6 +210,8 @@ pub fn classifyPropertyDefinition(
             const new_init = try self.visitNode(init_idx);
             const key_node = self.ast.getNode(key_idx);
             const is_computed = (key_node.tag == .computed_property_key);
+            if (is_computed and !self.options.use_define_for_class_fields)
+                try es_helpers.trackKnownHoistedComputedKeyRef(self, new_key, self.current_scope);
             try field_assignments.append(self.allocator, .{
                 .key = new_key,
                 .value = new_init,
@@ -342,7 +346,9 @@ pub fn classifyMethodDefinition(
         const deco_start = self.readU32(me, ast_mod.MethodExtra.deco_start);
         const deco_len = self.readU32(me, ast_mod.MethodExtra.deco_len);
         if (deco_len > 0 or params_list_m.len > 0) {
-            const new_key = try self.visitNode(self.readNodeIdx(me, ast_mod.MethodExtra.key));
+            const key_idx = self.readNodeIdx(me, ast_mod.MethodExtra.key);
+            const new_key = (try es_helpers.makeLegacyDecoratorComputedKeyRef(self, key_idx)) orelse
+                try self.visitNode(key_idx);
             try self.collectMemberDecorators(
                 member_decorators,
                 deco_start,

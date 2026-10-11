@@ -630,7 +630,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.this_depth -= 1;
             };
             const replacement_idx = try self.dispatchVisitor(.on_class_declaration, idx);
-            const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
+            var target_node_idx = replacement_idx orelse idx;
+            var target_node = self.ast.getNode(target_node_idx);
             // Stage 3 decorator는 unsupported.class 분기보다 먼저 돌려야 한다 — 반대면 decorator가 silent drop.
             // 이름 있는 class_declaration은 Stage 3 내부에서 outer_var_decl을 pending_nodes로 hoist하고
             // `.none`을 반환하므로, export_named/default declaration이 이름을 감지해 `export { X };` 또는
@@ -640,9 +641,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 if (self.options.unsupported.class) return self.visitNode(stage3_result);
                 return stage3_result;
             }
+            const pre_legacy_hoist_idx = target_node_idx;
+            target_node_idx = try self.hoistLegacyDecoratorComputedMethodKeys(idx, target_node_idx, target_node);
+            target_node = self.ast.getNode(target_node_idx);
             if (self.options.unsupported.class) {
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassDeclaration);
             }
+            if (target_node_idx != pre_legacy_hoist_idx) return self.visitClass(idx, target_node);
             if (replacement_idx) |r| return r;
             return self.visitClass(idx, node);
         },
@@ -653,14 +658,19 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.this_depth -= 1;
             };
             const replacement_idx = try self.dispatchVisitor(.on_class_expression, idx);
-            const target_node = if (replacement_idx) |r| self.ast.getNode(r) else node;
+            var target_node_idx = replacement_idx orelse idx;
+            var target_node = self.ast.getNode(target_node_idx);
             if (try self.tryTransformStage3(idx, target_node)) |stage3_result| {
                 if (self.options.unsupported.class) return self.visitNode(stage3_result);
                 return stage3_result;
             }
+            const pre_legacy_hoist_idx = target_node_idx;
+            target_node_idx = try self.hoistLegacyDecoratorComputedMethodKeys(idx, target_node_idx, target_node);
+            target_node = self.ast.getNode(target_node_idx);
             if (self.options.unsupported.class) {
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassExpression);
             }
+            if (target_node_idx != pre_legacy_hoist_idx) return self.visitClass(idx, target_node);
             if (replacement_idx) |r| return r;
             return self.visitClass(idx, node);
         },

@@ -799,6 +799,52 @@ pub fn makeComputedKeyRef(self: anytype, var_span: Span, span: Span) !NodeIndex 
     });
 }
 
+/// Legacy decorator calls execute after class evaluation. When the emitted
+/// computed key already writes a generated temp, give the decorator call its
+/// own read of that temp instead of reusing the key expression or AST node.
+/// This preserves single evaluation and keeps each output reference attached
+/// to its actual AST use.
+pub fn makeLegacyDecoratorComputedKeyRef(self: anytype, key: NodeIndex) !?NodeIndex {
+    if (key.isNone()) return null;
+    const key_node = self.ast.getNode(key);
+    if (key_node.tag != .computed_property_key) return null;
+
+    const expression_idx = key_node.data.unary.operand;
+    if (expression_idx.isNone()) return null;
+    const expression = self.ast.getNode(expression_idx);
+    const candidate_idx = if (expression.tag == .assignment_expression)
+        expression.data.binary.left
+    else
+        expression_idx;
+    if (candidate_idx.isNone()) return null;
+    const candidate = self.ast.getNode(candidate_idx);
+    if (candidate.tag != .identifier_reference and candidate.tag != .assignment_target_identifier) return null;
+
+    var is_known_temp = false;
+    var temp_iter = self.temp_span_by_counter.iterator();
+    while (temp_iter.next()) |entry| {
+        const temp_span = entry.value_ptr.*;
+        if (temp_span.start == candidate.data.string_ref.start and temp_span.end == candidate.data.string_ref.end) {
+            is_known_temp = true;
+            break;
+        }
+    }
+    if (!is_known_temp) return null;
+
+    const read_ref = try makeTempVarRef(self, candidate.data.string_ref, candidate.span);
+    if (self.semantic_edit_enabled) {
+        if (self.current_scope.isNone())
+            std.debug.panic("legacy decorator computed key has no output reference scope", .{});
+        if (!try trackKnownHoistedTempRef(self, read_ref, self.current_scope, .{ .read = true }))
+            std.debug.panic("legacy decorator computed key lost its exact temp identity", .{});
+    }
+    return try self.ast.addNode(.{
+        .tag = .computed_property_key,
+        .span = key_node.span,
+        .data = .{ .unary = .{ .operand = read_ref, .flags = key_node.data.unary.flags } },
+    });
+}
+
 /// computed key 식을 `var _N = <expr>;` 으로 캡쳐하고, 그 자리에는 `[_N]` 참조를 둘 수 있게 한다.
 /// 반환값: 변수 선언 statement + key 위치에 끼워넣을 computed_property_key.
 /// 호출자는 `decl` 을 적절한 hoist 위치(class IIFE 위/accessor_key_memos)에 추가하고,

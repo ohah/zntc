@@ -687,6 +687,117 @@ fn classBodyHasFieldAndComputedKey(self: *Transformer, body_idx: NodeIndex) bool
     return has_field and has_computed;
 }
 
+/// A legacy member decorator is emitted after the class. Preserve the key
+/// value for that call by assigning a temp at the method's computed-key site.
+/// The temp declaration itself is hoisted without side effects, so heritage
+/// evaluation still happens before the key expression.
+pub fn hoistLegacyDecoratorComputedMethodKeys(
+    self: *Transformer,
+    source_idx: NodeIndex,
+    input_idx: NodeIndex,
+    node: Node,
+) Error!NodeIndex {
+    if (!self.options.experimental_decorators or node.tag != .class_declaration)
+        return input_idx;
+
+    const body_idx = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.body);
+    // The existing class-field path already captures every computed key for
+    // use from moved initializers. Let it own those keys; this helper handles
+    // method-only classes whose computed key otherwise gets evaluated again
+    // by the post-class decorator call.
+    if (classBodyHasFieldAndComputedKey(self, body_idx)) return input_idx;
+    if (body_idx.isNone()) return input_idx;
+
+    const body = self.ast.getNode(body_idx);
+    var members: std.ArrayList(NodeIndex) = .empty;
+    defer members.deinit(self.allocator);
+    var changed = false;
+    var i: u32 = 0;
+    while (i < body.data.list.len) : (i += 1) {
+        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body.data.list.start + i]);
+        const member = self.ast.getNode(member_idx);
+        if (member.tag != .method_definition) {
+            try members.append(self.allocator, member_idx);
+            continue;
+        }
+
+        const me = member.data.extra;
+        const deco_len = self.readU32(me, ast_mod.MethodExtra.deco_len);
+        var has_parameter_decorator = false;
+        const params = self.ast.functionParamsList(member);
+        var param_i: u32 = 0;
+        while (param_i < params.len) : (param_i += 1) {
+            const param_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[params.start + param_i]);
+            if (param_idx.isNone() or self.ast.getNode(param_idx).tag != .formal_parameter) continue;
+            const param_extra = self.ast.getNode(param_idx).data.extra;
+            if (self.readU32(param_extra, 5) > 0) {
+                has_parameter_decorator = true;
+                break;
+            }
+        }
+        if (deco_len == 0 and !has_parameter_decorator) {
+            try members.append(self.allocator, member_idx);
+            continue;
+        }
+
+        const key_idx = self.readNodeIdx(me, ast_mod.MethodExtra.key);
+        if (key_idx.isNone()) {
+            try members.append(self.allocator, member_idx);
+            continue;
+        }
+        const key = self.ast.getNode(key_idx);
+        if (key.tag != .computed_property_key) {
+            try members.append(self.allocator, member_idx);
+            continue;
+        }
+
+        const temp_span = try es_helpers.makeTempVarSpan(self);
+        const write_ref = try es_helpers.makeTempVarRef(self, temp_span, key.span);
+        if (self.semantic_edit_enabled)
+            try self.trackSyntheticTempReference(temp_span, key.span, write_ref, .{ .write = true });
+        const assignment = try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = key.span,
+            .data = .{ .binary = .{ .left = write_ref, .right = key.data.unary.operand, .flags = 0 } },
+        });
+        const computed_key = try self.ast.addNode(.{
+            .tag = .computed_property_key,
+            .span = key.span,
+            .data = .{ .unary = .{ .operand = assignment, .flags = key.data.unary.flags } },
+        });
+        var slots: [6]u32 = undefined;
+        for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[me + slot];
+        slots[ast_mod.MethodExtra.key] = @intFromEnum(computed_key);
+        const copied_extra = try self.ast.addExtras(&slots);
+        const copied_member = try self.ast.addNode(.{
+            .tag = .method_definition,
+            .span = member.span,
+            .data = .{ .extra = copied_extra },
+        });
+        if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(member_idx, copied_member);
+        try members.append(self.allocator, copied_member);
+        changed = true;
+    }
+    if (!changed) return input_idx;
+
+    const new_body = try self.ast.addNode(.{
+        .tag = .class_body,
+        .span = body.span,
+        .data = .{ .list = try self.ast.addNodeList(members.items) },
+    });
+    var slots: [8]u32 = undefined;
+    for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[node.data.extra + slot];
+    slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+    const copied_extra = try self.ast.addExtras(&slots);
+    const copied_class = try self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = copied_extra } });
+    if (self.semantic_edit_enabled) {
+        try self.remapCopiedScopeOwner(input_idx, copied_class);
+        if (self.outputOwnedScope(copied_class) == null and input_idx != source_idx)
+            try self.remapCopiedScopeOwner(source_idx, copied_class);
+    }
+    return copied_class;
+}
+
 /// 모든 멤버의 computed 키를 소스 순서대로 temp 에 평가하고, 키를 `[_t]` 로 바꾼 새
 /// class_body 를 돌려준다. 대입은 클래스 **식**이면 `key_assigns`(쉼표 식)로, **선언**이면
 /// 앞 문장(pending_nodes)으로 낸다.
