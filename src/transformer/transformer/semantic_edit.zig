@@ -13,6 +13,7 @@ const SymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SyntheticKind = @import("../../semantic/symbol.zig").SyntheticKind;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../../semantic/scope.zig").ScopeKind;
+const Scope = @import("../../semantic/scope.zig").Scope;
 const Symbol = @import("../../semantic/symbol.zig").Symbol;
 const Reference = @import("../../semantic/symbol.zig").Reference;
 const ReferenceFlags = @import("../../semantic/symbol.zig").ReferenceFlags;
@@ -132,6 +133,64 @@ pub fn nearestVarScope(self: *Transformer, scope: ScopeId) ScopeId {
         cursor = scopes[cursor.toIndex()].parent;
     }
     std.debug.panic("scope has no var scope", .{});
+}
+
+/// Whether a source temp's final output var scope will be created by async or
+/// generator lowering after this expression is visited. Those paths must keep
+/// refs pending until the generated callback owner exists.
+pub fn syntheticTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bool {
+    if (self.state_machine_depth > 0) return true;
+    if (start.isNone()) return false;
+    const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var current = start;
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        if (current.toIndex() >= scopes.len) return false;
+        if (scopes[current.toIndex()].kind == .function) {
+            if (scopeOwnerNode(self, current)) |owner| {
+                if (self.ast.getNode(owner).tag == .formal_parameters) return true;
+                if (ownerNeedsLoweredFunctionScope(self, owner)) return true;
+            }
+        }
+        current = scopes[current.toIndex()].parent;
+    }
+    return false;
+}
+
+fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
+    const raw_scope = @intFromEnum(scope);
+    var transformed = self.transformed_scope_owner_map.iterator();
+    while (transformed.next()) |entry| {
+        if (entry.value_ptr.* == raw_scope and entry.key_ptr.* < self.ast.nodes.items.len)
+            return @enumFromInt(entry.key_ptr.*);
+    }
+    var original = self.scope_owner_map.iterator();
+    while (original.next()) |entry| {
+        if (entry.value_ptr.* == raw_scope and entry.key_ptr.* < self.ast.nodes.items.len)
+            return @enumFromInt(entry.key_ptr.*);
+    }
+    return null;
+}
+
+fn ownerNeedsLoweredFunctionScope(self: *Transformer, owner: NodeIndex) bool {
+    const node = self.ast.getNode(owner);
+    return switch (node.tag) {
+        .function_declaration, .function_expression, .function => blk: {
+            const flags = self.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
+            break :blk ((flags & ast_mod.FunctionFlags.is_async) != 0 and self.options.unsupported.async_await) or
+                ((flags & ast_mod.FunctionFlags.is_generator) != 0 and self.options.unsupported.generator);
+        },
+        .arrow_function_expression => blk: {
+            const flags = self.readU32(node.data.extra, 2);
+            break :blk (flags & ast_mod.ArrowFlags.is_async) != 0 and self.options.unsupported.async_await;
+        },
+        .method_definition => blk: {
+            const flags = self.readU32(node.data.extra, ast_mod.MethodExtra.flags);
+            break :blk ((flags & ast_mod.MethodFlags.is_async) != 0 and self.options.unsupported.async_await) or
+                ((flags & ast_mod.MethodFlags.is_generator) != 0 and self.options.unsupported.generator);
+        },
+        else => false,
+    };
 }
 
 /// The original function or method node, not the transform traversal cursor,
@@ -2214,25 +2273,51 @@ pub fn declareSyntheticTempInScope(self: *Transformer, binding: NodeIndex, decla
     if (!self.semantic_edit_enabled) return null;
     const editor = try editorFor(self);
     const name_span = self.ast.getNode(binding).data.string_ref;
-    const key = syntheticTempSymbolKey(name_span, variableScope(self, scope));
+    const id = (try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, scope)) orelse return null;
+    editor.attachExistingBinding(binding, id) catch |err| return editError(err);
+    try setSymbolId(self, binding, id);
+    return id;
+}
+
+/// Reserve the identity of a known lowering temp before its hoisted binding
+/// node is emitted. The eventual declaration attaches to this exact SymbolId.
+pub fn reserveSyntheticTempSymbolInScope(
+    self: *Transformer,
+    name_span: Span,
+    declaration_span: Span,
+    lexical_scope: ScopeId,
+) Transformer.Error!?SymbolId {
+    if (!self.semantic_edit_enabled) return null;
+    const editor = try editorFor(self);
+    const owner_scope = variableScope(self, lexical_scope);
+    const key = syntheticTempSymbolKey(name_span, owner_scope);
     if (self.synthetic_temp_symbol_ids.get(key)) |raw_id| {
+        if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
         const id: SymbolId = @enumFromInt(raw_id);
-        editor.attachExistingBinding(binding, id) catch |err| return editError(err);
-        try setSymbolId(self, binding, id);
+        const symbol = editor.symbols.items[raw_id];
+        // State-machine construction can reparent the source var scope before
+        // its final callback scope exists. bindStateCallbackTemp validates the
+        // moved ID against the exact source and callback owners after assembly.
+        const scope_mismatch = symbol.scope_id != owner_scope;
+        if ((scope_mismatch and self.state_machine_depth == 0) or symbol.kind != .variable_var or
+            symbol.name.start != name_span.start or symbol.name.end != name_span.end or
+            !std.mem.eql(u8, symbol.synthetic_name, self.ast.getText(name_span)))
+            return editError(error.InvalidSymbol);
         return id;
     }
-    const id = editor.declare(
-        binding,
-        name_span,
-        declaration_span,
-        scope,
-        .variable_var,
-        Reference.NO_STMT,
-        Reference.NO_STMT,
-    ) catch |err| return editError(err);
-    try setSymbolId(self, binding, id);
+    const id = editor.reserveSyntheticTempSymbol(name_span, declaration_span, lexical_scope) catch |err| return editError(err);
     try self.synthetic_temp_symbol_ids.put(self.allocator, key, @intFromEnum(id));
     return id;
+}
+
+/// Look up the exact temp identity already selected for this output var scope.
+/// Callers attach references directly when present and use pending name-span
+/// tracking only when the binding scope has not been established yet.
+pub fn lookupSyntheticTempSymbol(self: *Transformer, name_span: Span, scope: ScopeId) ?SymbolId {
+    if (!self.semantic_edit_enabled or scope.isNone()) return null;
+    const key = syntheticTempSymbolKey(name_span, variableScope(self, scope));
+    const raw_id = self.synthetic_temp_symbol_ids.get(key) orelse return null;
+    return @enumFromInt(raw_id);
 }
 
 /// Create a generated `var` temp and register its semantic identity at the

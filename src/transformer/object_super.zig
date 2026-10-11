@@ -29,7 +29,6 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const Span = @import("../lexer/token.zig").Span;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
-const Scope = @import("../semantic/scope.zig").Scope;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const ReferenceFlags = @import("../semantic/symbol.zig").ReferenceFlags;
@@ -223,7 +222,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
         if (self.semantic_edit_enabled) {
             if (parent_scope.isNone()) std.debug.panic("function-scoped object home temp has no output scope", .{});
-            const symbol_id: ?SymbolId = if (hasDeferredFunctionOutputScope(self, parent_scope))
+            const symbol_id: ?SymbolId = if (self.syntheticTempOutputScopeIsDeferred(parent_scope))
                 null
             else blk: {
                 const owner_scope = self.nearestVarScope(parent_scope);
@@ -342,64 +341,6 @@ fn trackHoistedHomeReferences(
         var it = ast_walk.children(self.ast, node);
         while (it.next()) |child| try queue.append(self.allocator, .{ .node = child, .scope = scope });
     }
-}
-
-/// Async/generator lowering moves an enclosing function body into a generated
-/// callback. Its final var scope does not exist yet while the object literal is
-/// visited, so keep those temps pending until the callback owner is registered.
-fn hasDeferredFunctionOutputScope(self: *Transformer, start: ScopeId) bool {
-    if (self.state_machine_depth > 0) return true;
-    if (start.isNone()) return false;
-    const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-    var current = start;
-    var hops: usize = 0;
-    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
-        if (current.toIndex() >= scopes.len) return false;
-        if (scopes[current.toIndex()].kind == .function) {
-            if (scopeOwnerNode(self, current)) |owner| {
-                if (ownerNeedsLoweredFunctionScope(self, owner)) return true;
-            }
-        }
-        current = scopes[current.toIndex()].parent;
-    }
-    return false;
-}
-
-fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
-    const raw_scope = @intFromEnum(scope);
-    var transformed = self.transformed_scope_owner_map.iterator();
-    while (transformed.next()) |entry| {
-        if (entry.value_ptr.* == raw_scope and entry.key_ptr.* < self.ast.nodes.items.len)
-            return @enumFromInt(entry.key_ptr.*);
-    }
-    var original = self.scope_owner_map.iterator();
-    while (original.next()) |entry| {
-        if (entry.value_ptr.* == raw_scope and entry.key_ptr.* < self.ast.nodes.items.len)
-            return @enumFromInt(entry.key_ptr.*);
-    }
-    return null;
-}
-
-fn ownerNeedsLoweredFunctionScope(self: *Transformer, owner: NodeIndex) bool {
-    const node = self.ast.getNode(owner);
-    const lowered = switch (node.tag) {
-        .function_declaration, .function_expression, .function => blk: {
-            const flags = self.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
-            break :blk ((flags & ast_mod.FunctionFlags.is_async) != 0 and self.options.unsupported.async_await) or
-                ((flags & ast_mod.FunctionFlags.is_generator) != 0 and self.options.unsupported.generator);
-        },
-        .arrow_function_expression => blk: {
-            const flags = self.readU32(node.data.extra, 2);
-            break :blk (flags & ast_mod.ArrowFlags.is_async) != 0 and self.options.unsupported.async_await;
-        },
-        .method_definition => blk: {
-            const flags = self.readU32(node.data.extra, ast_mod.MethodExtra.flags);
-            break :blk ((flags & ast_mod.MethodFlags.is_async) != 0 and self.options.unsupported.async_await) or
-                ((flags & ast_mod.MethodFlags.is_generator) != 0 and self.options.unsupported.generator);
-        },
-        else => false,
-    };
-    return lowered;
 }
 
 /// Arrow/function home wrappers introduce a real parameter scope after their
