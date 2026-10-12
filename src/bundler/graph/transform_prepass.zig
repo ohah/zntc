@@ -1060,7 +1060,8 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
 /// their segments are dot reads or optional computed reads with safe values
 /// or call keys admitted by the shared validator. A computed key can also be
 /// an unresolved external identifier when the chain has an unresolved root.
-/// Callers control whether an unresolved identifier or a bound ordinary call
+/// A bounded effectful sequence key requires a bound or unresolved root and
+/// exact-bound prefix calls. Callers control whether an unresolved identifier
 /// may be the root.
 fn isRetainableStaticFieldOptionalMemberChain(
     allocator: std.mem.Allocator,
@@ -1116,14 +1117,15 @@ fn isRetainableStaticFieldOptionalMemberChain(
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
             const unresolved_external_root = allow_unresolved_root and
                 hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, member_idx);
+            const bound_source_root = hasBoundStaticFieldMemberChainRoot(ast, semantic, member_idx);
             const unresolved_external_key = unresolved_external_root and
                 isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx);
-            const retained_effectful_sequence_key = unresolved_external_root and
+            const retained_effectful_sequence_key = (unresolved_external_root or bound_source_root) and
                 isRetainableBoundStaticFieldSequenceExpression(
                     ast,
                     semantic,
                     property_idx,
-                    true,
+                    unresolved_external_root,
                     false,
                     .disallowed,
                     false,
@@ -1149,7 +1151,8 @@ fn isRetainableStaticFieldOptionalMemberChain(
 /// the complete method read and invocation. Unresolved optional receiver chains,
 /// unbound receiver expressions or call-result callees, optional calls inside
 /// computed keys and effectful arguments other than the bounded sequence form
-/// admitted for unresolved-root optional member calls also stay on reanalysis.
+/// admitted for optional member calls with a bound or unresolved root also stay
+/// on reanalysis.
 fn isRetainableUnresolvedStaticFieldIdentifier(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1555,6 +1558,28 @@ fn hasUnresolvedStaticFieldMemberChainRoot(
         const current = ast.getNode(current_idx);
         if (current.tag == .identifier_reference)
             return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, current_idx);
+        if (current.tag != .static_member_expression and current.tag != .computed_member_expression)
+            return false;
+        const extra = current.data.extra;
+        if (extra > extras.len or extras.len - extra < 3) return false;
+        current_idx = @enumFromInt(extras[extra]);
+    }
+    return false;
+}
+
+fn hasBoundStaticFieldMemberChainRoot(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    member_idx: ast_mod.NodeIndex,
+) bool {
+    const extras = ast.extra_data.items;
+    var current_idx = member_idx;
+    var remaining_nodes = ast.nodes.items.len;
+    while (remaining_nodes > 0) : (remaining_nodes -= 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const current = ast.getNode(current_idx);
+        if (current.tag == .identifier_reference)
+            return isBoundSourceIdentifierReference(ast, semantic, current_idx);
         if (current.tag != .static_member_expression and current.tag != .computed_member_expression)
             return false;
         const extra = current.data.extra;
