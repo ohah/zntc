@@ -256,12 +256,15 @@ describe('번들 스모크 테스트', () => {
     expect(output).not.toContain('unused.ts');
   });
 
-  test('#1913: unused import elision 뒤에도 side-effectful package 실행', async () => {
-    const result = await bundleAndRun({
-      'index.ts': `import { unused } from "pkg"; console.log("entry");`,
-      'node_modules/pkg/package.json': `{"name":"pkg","main":"index.js"}`,
-      'node_modules/pkg/index.js': `console.log("pkg-side-marker-1913"); export const unused = 1;`,
-    });
+  test('#1913: JS 의 unused import 는 side-effectful package 를 실행', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.js': `import { unused } from "pkg"; console.log("entry");`,
+        'node_modules/pkg/package.json': `{"name":"pkg","main":"index.js"}`,
+        'node_modules/pkg/index.js': `console.log("pkg-side-marker-1913"); export const unused = 1;`,
+      },
+      'index.js',
+    );
     cleanup = result.cleanup;
 
     expect(result.exitCode).toBe(0);
@@ -270,16 +273,22 @@ describe('번들 스모크 테스트', () => {
   });
 
   test('#1913: sideEffects=false package의 unused import는 실행하지 않음', async () => {
-    const result = await bundleAndRun({
-      'index.ts': `import { unused } from "pkg"; console.log("entry");`,
-      'node_modules/pkg/package.json': `{"name":"pkg","main":"index.js","sideEffects":false}`,
-      'node_modules/pkg/index.js': `console.log("pkg-side-marker-1913"); export const unused = 1;`,
-    });
-    const sideEffectful = await bundleAndRun({
-      'index.ts': `import { unused } from "pkg"; console.log("entry");`,
-      'node_modules/pkg/package.json': `{"name":"pkg","main":"index.js"}`,
-      'node_modules/pkg/index.js': `console.log("pkg-side-marker-1913"); export const unused = 1;`,
-    });
+    const result = await bundleAndRun(
+      {
+        'index.js': `import { unused } from "pkg"; console.log("entry");`,
+        'node_modules/pkg/package.json': `{"name":"pkg","main":"index.js","sideEffects":false}`,
+        'node_modules/pkg/index.js': `console.log("pkg-side-marker-1913"); export const unused = 1;`,
+      },
+      'index.js',
+    );
+    const sideEffectful = await bundleAndRun(
+      {
+        'index.js': `import { unused } from "pkg"; console.log("entry");`,
+        'node_modules/pkg/package.json': `{"name":"pkg","main":"index.js"}`,
+        'node_modules/pkg/index.js': `console.log("pkg-side-marker-1913"); export const unused = 1;`,
+      },
+      'index.js',
+    );
     cleanup = async () => {
       await result.cleanup();
       await sideEffectful.cleanup();
@@ -289,6 +298,21 @@ describe('번들 스모크 테스트', () => {
     expect(result.runOutput).toBe('entry');
     expect(result.bundleOutput).not.toContain('pkg-side-marker-1913');
     expect(result.bundleOutput.length).toBeLessThan(sideEffectful.bundleOutput.length);
+  });
+
+  test('#5581: TS 의 unused import 는 tsc 처럼 package 를 실행하지 않음', async () => {
+    // TypeScript drops an import whose bindings are used only as types (or not
+    // at all), so the package is not evaluated — tsc and esbuild agree.
+    const result = await bundleAndRun({
+      'index.ts': `import { unused } from "pkg"; console.log("entry");`,
+      'node_modules/pkg/package.json': `{"name":"pkg","main":"index.js"}`,
+      'node_modules/pkg/index.js': `console.log("pkg-side-marker-1913"); export const unused = 1;`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('entry');
+    expect(result.bundleOutput).not.toContain('pkg-side-marker-1913');
   });
 
   test('서브패스 package.json resolve (디렉토리 내 main/module 필드)', async () => {

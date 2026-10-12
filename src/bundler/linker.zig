@@ -709,7 +709,7 @@ pub const Linker = struct {
         if (ib.kind == .namespace) return true;
         if (ib.import_record_index >= m.import_records.len) return false;
         const rec = m.import_records[ib.import_record_index];
-        if (rec.resolved.isNone()) return !rec.is_lazy_resolved;
+        if (rec.resolved.isNone()) return !rec.is_lazy_resolved and !rec.ts_elided;
         const target_idx = @intFromEnum(rec.resolved);
         if (target_idx >= self.graph.moduleCount()) return m.wrap_kind == .esm;
         const target_module = self.getModule(target_idx).?;

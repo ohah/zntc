@@ -796,6 +796,10 @@ pub const ImportRecord = struct {
     /// 등록만 미룬 record. 성공 resolve와 실제 unresolved를 구분해 IIFE emit 진단이
     /// unused re-export를 오탐하지 않도록 한다.
     is_lazy_resolved: bool = false,
+    /// TypeScript import whose bindings are all used only as types in the
+    /// source: TypeScript drops the whole import, so its module is neither
+    /// resolved nor evaluated (like `import type`, #5581).
+    ts_elided: bool = false,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
     is_external: bool = false,
     /// external 로 방출할 때 쓸 **대체 지정자** (`--external-alias:K=V`, #4616).

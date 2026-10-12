@@ -24,6 +24,14 @@ const TestResult = struct {
         self.cache.deinit();
     }
 
+    /// Whether a module is in the bundle. A TypeScript import used only as a
+    /// type (or not at all) is dropped whole, so its module may not even be
+    /// loaded (#5581) — that is "not included" too.
+    fn isModuleIncluded(self: *const TestResult, suffix: []const u8) bool {
+        const idx = self.findModule(suffix) orelse return false;
+        return self.shaker.isIncluded(idx);
+    }
+
     /// 모듈 경로 접미사로 인덱스 조회. 못 찾으면 null.
     fn findModule(self: *const TestResult, suffix: []const u8) ?u32 {
         for (0..self.graph.moduleCount()) |i| {
@@ -284,10 +292,25 @@ test "esbuild: sideEffects=false removes module when import unused" {
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"pkg.ts"});
     defer r.deinit();
 
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("pkg.ts").?));
+    try std.testing.expect(!r.isModuleIncluded("pkg.ts"));
 }
 
-test "#1913: unused import elision still keeps side-effectful module" {
+test "#1913: unused JS import still keeps side-effectful module" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { foo } from './pkg'; console.log('entry');");
+    try writeFile(tmp.dir, "pkg.ts", "console.log('pkg side effect'); export const foo = 123;");
+
+    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.js");
+    defer r.deinit();
+
+    try std.testing.expect(r.shaker.isIncluded(r.findModule("pkg.ts").?));
+    try std.testing.expect(!r.shaker.isExportUsed(r.findModule("pkg.ts").?, "foo"));
+}
+
+test "#5581: unused TypeScript import drops its module like tsc" {
+    // TypeScript elides an import whose bindings are used only as types (or
+    // not at all), so the module is not evaluated (tsc, esbuild).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import { foo } from './pkg'; console.log('entry');");
@@ -296,8 +319,7 @@ test "#1913: unused import elision still keeps side-effectful module" {
     var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
     defer r.deinit();
 
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("pkg.ts").?));
-    try std.testing.expect(!r.shaker.isExportUsed(r.findModule("pkg.ts").?, "foo"));
+    try std.testing.expect(!r.isModuleIncluded("pkg.ts"));
 }
 
 test "esbuild: sideEffects=false removes side-effect-only import" {
@@ -531,7 +553,7 @@ test "rollup: unused import from sideEffects=false module excluded" {
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"pure-lib.ts"});
     defer r.deinit();
 
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("pure-lib.ts").?));
+    try std.testing.expect(!r.isModuleIncluded("pure-lib.ts"));
 }
 
 // ============================================================
@@ -658,12 +680,13 @@ test "complex: re-export default through barrel" {
 // import { foo } 했지만 foo를 코드에서 한 번도 안 씀 → foo의 reference_count == 0
 // → 해당 export를 "사용됨"으로 마킹하면 안 됨
 test "refcount: unused named import not marked as used" {
+    // JS entry: a TypeScript one drops the unused import whole (#5581).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.ts", "import { foo } from './lib'; console.log('no foo usage');");
+    try writeFile(tmp.dir, "entry.js", "import { foo } from './lib'; console.log('no foo usage');");
     try writeFile(tmp.dir, "lib.ts", "export const foo = 42; export const bar = 99;");
 
-    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.js");
     defer r.deinit();
 
     const lib = r.findModule("lib.ts").?;
@@ -726,8 +749,8 @@ test "refcount: multiple imports partial use + sideEffects=false excludes module
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"dormant.ts"});
     defer r.deinit();
 
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("active.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("dormant.ts").?));
+    try std.testing.expect(r.isModuleIncluded("active.ts"));
+    try std.testing.expect(!r.isModuleIncluded("dormant.ts"));
 }
 
 // ============================================================
@@ -797,9 +820,9 @@ test "fixpoint: excluded module's imports don't mark exports as used" {
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{ "dead.ts", "deep.ts" });
     defer r.deinit();
 
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("alive.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("dead.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("deep.ts").?));
+    try std.testing.expect(r.isModuleIncluded("alive.ts"));
+    try std.testing.expect(!r.isModuleIncluded("dead.ts"));
+    try std.testing.expect(!r.isModuleIncluded("deep.ts"));
 }
 
 test "fixpoint: transitive unused chain all excluded" {
@@ -817,9 +840,9 @@ test "fixpoint: transitive unused chain all excluded" {
     defer r.deinit();
 
     try std.testing.expect(r.shaker.isIncluded(0)); // entry
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("chain-a.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("chain-b.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("chain-c.ts").?));
+    try std.testing.expect(!r.isModuleIncluded("chain-a.ts"));
+    try std.testing.expect(!r.isModuleIncluded("chain-b.ts"));
+    try std.testing.expect(!r.isModuleIncluded("chain-c.ts"));
 }
 
 test "fixpoint: shared dep included if any live module uses it" {
@@ -837,9 +860,9 @@ test "fixpoint: shared dep included if any live module uses it" {
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{ "mod-a.ts", "mod-b.ts", "shared.ts" });
     defer r.deinit();
 
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("mod-a.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("mod-b.ts").?));
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("shared.ts").?));
+    try std.testing.expect(r.isModuleIncluded("mod-a.ts"));
+    try std.testing.expect(!r.isModuleIncluded("mod-b.ts"));
+    try std.testing.expect(r.isModuleIncluded("shared.ts"));
 }
 
 // ============================================================
@@ -974,12 +997,13 @@ test "edge: import { x as y } — alias tracked correctly" {
 
 // import alias 미사용: alias를 import했지만 사용 안 함
 test "edge: import { x as y } unused — not marked" {
+    // JS entry: a TypeScript one drops the unused import whole (#5581).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.ts", "import { x as y } from './lib'; console.log('no y');");
+    try writeFile(tmp.dir, "entry.js", "import { x as y } from './lib'; console.log('no y');");
     try writeFile(tmp.dir, "lib.ts", "export const x = 42;");
 
-    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.js");
     defer r.deinit();
 
     try std.testing.expect(!r.shaker.isExportUsed(r.findModule("lib.ts").?, "x"));
@@ -1352,12 +1376,12 @@ test "structure: wide fan-out — entry imports 6, uses 2" {
     defer r.deinit();
 
     // b, e만 사용 → fb, fe 포함. 나머지 sideEffects=false → 제거
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("fb.ts").?));
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("fe.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("fa.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("fc.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("fd.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("ff.ts").?));
+    try std.testing.expect(r.isModuleIncluded("fb.ts"));
+    try std.testing.expect(r.isModuleIncluded("fe.ts"));
+    try std.testing.expect(!r.isModuleIncluded("fa.ts"));
+    try std.testing.expect(!r.isModuleIncluded("fc.ts"));
+    try std.testing.expect(!r.isModuleIncluded("fd.ts"));
+    try std.testing.expect(!r.isModuleIncluded("ff.ts"));
 }
 
 test "structure: entry with no exports — just side effects" {
@@ -1409,8 +1433,8 @@ test "structure: module imports but uses nothing — sideEffects=false" {
     defer r.deinit();
 
     // passthrough imports deep but doesn't use or re-export x
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("passthrough.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("deep.ts").?));
+    try std.testing.expect(!r.isModuleIncluded("passthrough.ts"));
+    try std.testing.expect(!r.isModuleIncluded("deep.ts"));
 }
 
 test "structure: barrel that re-exports and adds own export" {
@@ -1471,10 +1495,10 @@ test "structure: sideEffects=false module imported by live and dead — still in
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{ "live.ts", "dead.ts", "util.ts" });
     defer r.deinit();
 
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("live.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("dead.ts").?));
+    try std.testing.expect(r.isModuleIncluded("live.ts"));
+    try std.testing.expect(!r.isModuleIncluded("dead.ts"));
     // util은 live가 사용 → 포함
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("util.ts").?));
+    try std.testing.expect(r.isModuleIncluded("util.ts"));
 }
 
 test "structure: diamond all sideEffects=false — only used paths included" {
@@ -1534,8 +1558,8 @@ test "side-effects: sideEffects=false circular pair unused from entry" {
     defer r.deinit();
 
     // p, q 모두 미사용 + sideEffects=false → 양쪽 다 제거
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("cyp.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("cyq.ts").?));
+    try std.testing.expect(!r.isModuleIncluded("cyp.ts"));
+    try std.testing.expect(!r.isModuleIncluded("cyq.ts"));
 }
 
 test "side-effects: deep chain all sideEffects=false — all excluded when unused" {
@@ -1550,9 +1574,9 @@ test "side-effects: deep chain all sideEffects=false — all excluded when unuse
     defer r.deinit();
 
     // x imported but never referenced in code → all excluded
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("d1.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("d2.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("d3.ts").?));
+    try std.testing.expect(!r.isModuleIncluded("d1.ts"));
+    try std.testing.expect(!r.isModuleIncluded("d2.ts"));
+    try std.testing.expect(!r.isModuleIncluded("d3.ts"));
 }
 
 // ============================================================
@@ -1834,8 +1858,8 @@ test "ref: deep chain — middle module used, ends excluded" {
     var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"de.ts"});
     defer r.deinit();
 
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("dc.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("de.ts").?));
+    try std.testing.expect(r.isModuleIncluded("dc.ts"));
+    try std.testing.expect(!r.isModuleIncluded("de.ts"));
 }
 
 // --- rolldown: export * from 체인 + sideEffects=false 중간 ---
@@ -1941,17 +1965,17 @@ test "ref: 10-module fan-out all sideEffects=false — only 3 used" {
     defer r.deinit();
 
     // c(w3), f(w6), i(w9)만 사용
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("w3.ts").?));
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("w6.ts").?));
-    try std.testing.expect(r.shaker.isIncluded(r.findModule("w9.ts").?));
+    try std.testing.expect(r.isModuleIncluded("w3.ts"));
+    try std.testing.expect(r.isModuleIncluded("w6.ts"));
+    try std.testing.expect(r.isModuleIncluded("w9.ts"));
     // 나머지 7개 제거
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("w1.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("w2.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("w4.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("w5.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("w7.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("w8.ts").?));
-    try std.testing.expect(!r.shaker.isIncluded(r.findModule("w10.ts").?));
+    try std.testing.expect(!r.isModuleIncluded("w1.ts"));
+    try std.testing.expect(!r.isModuleIncluded("w2.ts"));
+    try std.testing.expect(!r.isModuleIncluded("w4.ts"));
+    try std.testing.expect(!r.isModuleIncluded("w5.ts"));
+    try std.testing.expect(!r.isModuleIncluded("w7.ts"));
+    try std.testing.expect(!r.isModuleIncluded("w8.ts"));
+    try std.testing.expect(!r.isModuleIncluded("w10.ts"));
 }
 
 // lodash-es 패턴: barrel re-export + sideEffects=false + 전이적 의존성
@@ -2001,12 +2025,13 @@ test "fixpoint: sideEffects=false barrel re-export — transitive deps included"
 // entry의 모든 import가 무조건 seed되던 회귀가 있었음(#1562).
 
 test "#1558 Phase 5: entry의 미사용 import는 sideEffects=false 모듈을 포함시키지 않는다" {
+    // JS entry: a TypeScript one drops the unused import whole (#5581).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.ts", "import { foo } from './lib'; console.log('no foo use');");
+    try writeFile(tmp.dir, "entry.js", "import { foo } from './lib'; console.log('no foo use');");
     try writeFile(tmp.dir, "lib.ts", "export const foo = 42; export const bar = 99;");
 
-    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.ts", &.{"lib.ts"});
+    var r = try buildAndShakeWithOpts(std.testing.allocator, &tmp, "entry.js", &.{"lib.ts"});
     defer r.deinit();
 
     const lib = r.findModule("lib.ts").?;

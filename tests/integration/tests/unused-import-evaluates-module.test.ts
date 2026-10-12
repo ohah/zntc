@@ -40,6 +40,25 @@ const tsCases = {
     },
     expected: 'cjs dep\nmain 1\n',
   },
+  // The classic JSX factory/fragment are used by the JSX transform, not by the
+  // source text: still value uses (`/** @jsx h */` + `import { h }`).
+  'TS: classic JSX pragma factory and fragment imports': {
+    files: {
+      'preact.ts':
+        "export function h(tag, props, ...kids) { return (typeof tag === 'function' ? 'frag' : tag) + ':' + kids.join(''); }\nexport function Frag() {}\nconsole.log('preact');",
+      'entry.tsx':
+        "/** @jsx h */\n/** @jsxFrag Frag */\nimport { h, Frag } from './preact';\nconsole.log(<div>hi</div>, <><b>x</b></>);",
+    },
+    expected: 'preact\ndiv:hi frag:b:x\n',
+  },
+  'TS: classic JSX member pragma factory import': {
+    files: {
+      'preact.ts':
+        "export const ns = { h(tag, props, ...kids) { return tag + ':' + kids.join(''); } };\nconsole.log('preact');",
+      'entry.tsx': "/** @jsx ns.h */\nimport { ns } from './preact';\nconsole.log(<i>y</i>);",
+    },
+    expected: 'preact\ni:y\n',
+  },
 } as const;
 
 describe('an import evaluates its module (#5571)', () => {
@@ -79,7 +98,8 @@ describe('an import evaluates its module (#5571)', () => {
 
     for (const [name, { files, expected }] of Object.entries(tsCases)) {
       test(`${name}, ${target}`, async () => {
-        const { stdout } = await bundle(files, 'entry.ts', target);
+        const entry = Object.keys(files).find((f) => f.startsWith('entry'))!;
+        const { stdout } = await bundle(files, entry, target);
         expect(stdout).toBe(expected);
       });
     }
