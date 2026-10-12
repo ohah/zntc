@@ -252,6 +252,32 @@ console.log(read().join(' '));
       'lexical-capturing arrow or its containing class/object literal inside a with statement',
     );
     expect(readFileSync(output, 'utf8')).toContain('=>');
+
+    const actual = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe('2 7\n');
+  });
+
+  test('reanalysis retains an explicit strict directive in a CJS dependency', async () => {
+    const fixture = await createFixture({
+      'dep.cjs': `
+'use strict';
+module.exports = () => (function () { return this === undefined; })();
+`,
+      'index.mjs': "import run from './dep.cjs'; console.log(run());",
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.cjs');
+    const bundle = spawnSync(
+      ZNTC_BIN,
+      ['--bundle', 'index.mjs', '--target=es5', '--format=cjs', '-o', output],
+      { cwd: fixture.dir, encoding: 'utf8' },
+    );
+
+    expect(bundle.status, bundle.stderr).toBe(0);
+    const actual = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe('true\n');
   });
 
   test('keeps lexical super valid when an arrow is nested in a with-scoped class method', async () => {
