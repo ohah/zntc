@@ -5353,7 +5353,7 @@ test "#4485 CSS url(): bare + ?query / #fragment suffix 도 재작성 + suffix �
 }
 
 test "#4475 동명 basename 자산의 require 래퍼가 deconflict 된다" {
-    // 회귀: asset 모듈은 semantic 이 없어 래퍼 이름 등록을 건너뛰었고, emit 이
+    // 회귀: AST-less asset 모듈의 래퍼 이름 등록을 건너뛰었고, emit 이
     // basename 기반 fallback(`require_logo`)을 써서 두 자산이 같은 이름을 가졌다.
     // 두 번째 선언이 첫 번째를 가려 `import x from './a/logo.png'` 가 b 의 URL 을
     // 돌려주는 조용한 오컴파일.
@@ -5397,6 +5397,51 @@ test "#4475 동명 basename 자산의 require 래퍼가 deconflict 된다" {
     }
     try std.testing.expectEqual(@as(usize, 1), decl_count);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "require_logo$") != null);
+}
+
+test "#4819 minified asset declarations and rewritten imports share the exact wrapper name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "a");
+    try tmp.dir.createDirPath(std.testing.io, "b");
+    try writeFile(tmp.dir, "entry.ts", "import x from './a/logo.png';\nimport y from './b/logo.png';\nconsole.log(x, y);");
+    const img_a = [_]u8{0xA1} ** 5000;
+    const img_b = [_]u8{0xB2} ** 5000;
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/logo.png", .data = &img_a });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "b/logo.png", .data = &img_b });
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .minify_identifiers = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    // The declaration must use the same RenameTable spelling as its generated
+    // import call (`require_X()`). Comparing each exact RHS owner catches a
+    // silent mismatch where the declaration kept its canonical name.
+    const wrapper_decl_marker = " = __commonJS({";
+    var search_from: usize = 0;
+    var wrapper_count: usize = 0;
+    while (std.mem.indexOfPos(u8, result.output, search_from, wrapper_decl_marker)) |rhs_start| {
+        const var_start = std.mem.lastIndexOf(u8, result.output[0..rhs_start], "var ") orelse return error.ExpectedAssetWrapperDeclaration;
+        const name_start = var_start + "var ".len;
+        const wrapper_name = result.output[name_start..rhs_start];
+        try std.testing.expect(wrapper_name.len > 0);
+        try std.testing.expect(std.mem.indexOfScalar(u8, wrapper_name, ' ') == null);
+        const call = try std.fmt.allocPrint(std.testing.allocator, "{s}()", .{wrapper_name});
+        defer std.testing.allocator.free(call);
+        try std.testing.expect(std.mem.indexOf(u8, result.output, call) != null);
+        wrapper_count += 1;
+        search_from = rhs_start + wrapper_decl_marker.len;
+    }
+    try std.testing.expectEqual(@as(usize, 2), wrapper_count);
 }
 
 // ============================================================

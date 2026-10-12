@@ -217,6 +217,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     var seed_it = self.modules.iterator(0);
     while (seed_it.next()) |m| {
         if (m.wrap_kind == .none) continue;
+        _ = findCjsWrapperRequireSymbol(m);
         // RFC #3940 L.4c-2a-i: mangle 전 단계 (canonical 미설정) → rt null, synthetic_name 조회.
         if (m.getInitName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
         if (m.getExportsName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
@@ -263,11 +264,10 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
             esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
         }
-        const needs_init = m.init_symbol == null;
-        const needs_exports = m.exports_symbol == null;
+        const needs_init = m.ast != null and m.init_symbol == null;
+        const needs_exports = m.ast != null and m.exports_symbol == null;
         const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
         if (!needs_init and !needs_exports and !needs_require) continue;
-        const arena = if (m.parse_arena) |a| a.allocator() else continue;
 
         // semantic 이 없는 모듈 (asset / disabled / optional-missing) — JS 파싱을 거치지
         // 않아 심볼 테이블이 없다. 예전엔 여기서 `continue` 해 등록을 통째로 건너뛰었고,
@@ -275,14 +275,33 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         // `require_logo` 가 됐다 → 두 번째 선언이 첫 번째를 가려 한쪽 자산이 다른 쪽의
         // URL 을 돌려주는 조용한 오컴파일 (#4475).
         //
-        // 심볼 테이블은 못 만들지만 이름 deconflict 는 할 수 있다 — 전용 슬롯에 담는다.
+        // AST가 없는 모듈도 그래프가 생성한 래퍼 심볼을 담을 빈 semantic 저장소를
+        // 가질 수 있다. 이름 문자열만 남기면 linker가 실제 선언/참조와 같은 SymbolId로
+        // 추적하지 못하므로 CJS require 래퍼도 일반 합성 심볼로 등록한다.
         if (m.semantic == null) {
-            if (needs_require and m.wrapper_name_synthetic == null) {
+            if (!needs_require or !ensureSyntheticModuleSemantic(self, m)) continue;
+            const arena = if (m.parse_arena) |a| a.allocator() else continue;
+            const sem_ptr = if (m.semantic) |*s| s else continue;
+            // 이전 캐시에서 넘어온 문자열 이름이 있으면 spelling을 보존하고 SymbolId로
+            // 승격한다. 새 등록에서는 기존 deconflict 경로와 같은 이름을 할당한다.
+            const require_name = if (m.wrapper_name_synthetic) |legacy_name|
+                legacy_name
+            else blk: {
                 const base = types.makeRequireVarName(arena, m.path) catch continue;
-                m.wrapper_name_synthetic = uniqueName(arena, base, &used_names, self.allocator) catch continue;
-            }
+                break :blk uniqueName(arena, base, &used_names, self.allocator) catch continue;
+            };
+            m.require_symbol = semantic_symbol.extendSymbol(
+                arena,
+                &sem_ptr.symbols,
+                .function_decl,
+                .cjs_require,
+                require_name,
+                Span.EMPTY,
+            ) catch null;
+            if (m.require_symbol != null) m.wrapper_name_synthetic = null;
             continue;
         }
+        const arena = if (m.parse_arena) |a| a.allocator() else continue;
         const sem_ptr = if (m.semantic) |*s| s else continue;
 
         if (needs_init) {
@@ -312,8 +331,12 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         }
 
         if (needs_require) {
-            const require_base = types.makeRequireVarName(arena, m.path) catch continue;
-            const require_name = uniqueName(arena, require_base, &used_names, self.allocator) catch continue;
+            const require_name = if (m.wrapper_name_synthetic) |legacy_name|
+                legacy_name
+            else blk: {
+                const require_base = types.makeRequireVarName(arena, m.path) catch continue;
+                break :blk uniqueName(arena, require_base, &used_names, self.allocator) catch continue;
+            };
             m.require_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -322,13 +345,13 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
                 require_name,
                 Span.EMPTY,
             ) catch null;
+            if (m.require_symbol != null) m.wrapper_name_synthetic = null;
         }
     }
 
-    // Asset/disabled CJS wrappers have no semantic table of their own. If the
-    // graph still contains parsed JavaScript, anchor the graph-level runtime
-    // factory identity to the first semantic module. For an entirely generated
-    // graph, an AST-less module gets an empty semantic shell so the factory
+    // If the graph still contains parsed JavaScript, anchor the graph-level
+    // runtime factory identity to a parsed module. For an entirely generated
+    // graph, reuse an AST-less module's synthetic semantic shell so the factory
     // still has a normal SymbolID owner.
     if (!cjs_runtime_identity_registered) {
         var has_cjs_wrapper = false;
@@ -342,7 +365,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (has_cjs_wrapper) {
             var semantic_it = self.modules.iterator(0);
             while (semantic_it.next()) |m| {
-                if (m.semantic == null or m.parse_arena == null) continue;
+                if (m.ast == null or m.semantic == null or m.parse_arena == null) continue;
                 registerCjsRuntimeFactorySymbol(m);
                 cjs_runtime_identity_registered = m.cjs_runtime_factory_symbol != null;
                 if (cjs_runtime_identity_registered) break;
@@ -350,8 +373,8 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             if (!cjs_runtime_identity_registered) {
                 var synthetic_it = self.modules.iterator(0);
                 while (synthetic_it.next()) |m| {
-                    if (m.semantic != null or m.ast != null) continue;
-                    if (!ensureSyntheticRuntimeSemantic(self, m)) continue;
+                    if (m.ast != null) continue;
+                    if (!ensureSyntheticModuleSemantic(self, m)) continue;
                     registerCjsRuntimeFactorySymbol(m);
                     if (m.cjs_runtime_factory_symbol != null) {
                         cjs_runtime_identity_registered = true;
@@ -378,7 +401,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (has_binary_asset) {
             var semantic_it = self.modules.iterator(0);
             while (semantic_it.next()) |m| {
-                if (m.semantic == null or m.parse_arena == null) continue;
+                if (m.ast == null or m.semantic == null or m.parse_arena == null) continue;
                 registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
                 to_binary_runtime_identity_registered = m.to_binary_runtime_symbol != null;
                 if (to_binary_runtime_identity_registered) break;
@@ -386,8 +409,8 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             if (!to_binary_runtime_identity_registered) {
                 var synthetic_binary_it = self.modules.iterator(0);
                 while (synthetic_binary_it.next()) |m| {
-                    if (m.loader != .binary or m.source.len == 0 or m.semantic != null or m.ast != null) continue;
-                    if (!ensureSyntheticRuntimeSemantic(self, m)) continue;
+                    if (m.loader != .binary or m.source.len == 0 or m.ast != null) continue;
+                    if (!ensureSyntheticModuleSemantic(self, m)) continue;
                     registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
                     if (m.to_binary_runtime_symbol != null) break;
                 }
@@ -411,7 +434,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (has_esm_wrapper) {
             var semantic_it = self.modules.iterator(0);
             while (semantic_it.next()) |m| {
-                if (m.semantic == null or m.parse_arena == null) continue;
+                if (m.ast == null or m.semantic == null or m.parse_arena == null) continue;
                 registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
                 esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
                 if (esm_runtime_identity_registered) break;
@@ -419,8 +442,8 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             if (!esm_runtime_identity_registered) {
                 var synthetic_it = self.modules.iterator(0);
                 while (synthetic_it.next()) |m| {
-                    if (m.semantic != null or m.ast != null) continue;
-                    if (!ensureSyntheticRuntimeSemantic(self, m)) continue;
+                    if (m.ast != null) continue;
+                    if (!ensureSyntheticModuleSemantic(self, m)) continue;
                     registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
                     if (m.esm_runtime_factory_symbol != null) {
                         esm_runtime_identity_registered = true;
@@ -432,12 +455,12 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     }
 }
 
-/// Runtime helpers can be needed by graphs made entirely of generated modules
-/// (for example, a binary asset used as the entry point). Keep their virtual
-/// symbols in the usual module-owned semantic storage without pretending that
-/// the module has source scopes or an AST. `parse_arena` owns the symbol array,
-/// matching ordinary semantic data and its incremental lifetime.
-fn ensureSyntheticRuntimeSemantic(graph: *ModuleGraph, m: *Module) bool {
+/// Runtime helpers and wrappers can be emitted for modules without source ASTs
+/// (for example, assets and disabled modules). Keep their virtual symbols in
+/// the usual module-owned semantic storage without pretending that the module
+/// has source scopes or an AST. `parse_arena` owns the symbol array, matching
+/// ordinary semantic data and its incremental lifetime.
+fn ensureSyntheticModuleSemantic(graph: *ModuleGraph, m: *Module) bool {
     if (m.semantic != null) return true;
     if (m.ast != null) return false;
     if (m.parse_arena == null) {
@@ -452,6 +475,24 @@ fn ensureSyntheticRuntimeSemantic(graph: *ModuleGraph, m: *Module) bool {
         .unresolved_references = .empty,
     };
     return true;
+}
+
+fn findCjsWrapperRequireSymbol(m: *Module) ?semantic_symbol.SymbolId {
+    const sem = if (m.semantic) |*value| value else {
+        m.require_symbol = null;
+        return null;
+    };
+    if (m.require_symbol) |existing| {
+        const raw: usize = @intFromEnum(existing);
+        if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == .cjs_require) return existing;
+        m.require_symbol = null;
+    }
+    for (sem.symbols.items, 0..) |symbol, index| {
+        if (symbol.synthetic_kind != .cjs_require) continue;
+        m.require_symbol = @enumFromInt(index);
+        return m.require_symbol;
+    }
+    return null;
 }
 
 fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) void {

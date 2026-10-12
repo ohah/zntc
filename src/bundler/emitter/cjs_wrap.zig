@@ -8,6 +8,7 @@ const std = @import("std");
 const rt = @import("../runtime_helpers.zig");
 const module_mod = @import("../module.zig");
 const Module = module_mod.Module;
+const RenameTable = @import("../symbol.zig").RenameTable;
 const EmitOptions = @import("../emitter.zig").EmitOptions;
 const rt_names = @import("../../runtime_helper_names.zig");
 
@@ -31,12 +32,19 @@ pub const WrapperSyntax = struct {
 /// wrapper key는 dev/HMR registry 조회와 일치해야 하므로 module.wrapperId()를 쓴다.
 pub fn emitDisabledModule(allocator: std.mem.Allocator, module: *const Module, minify: bool, syn: WrapperSyntax) !?[]const u8 {
     const factory_name = if (minify) rt.NAMES.CJS_FACTORY_MIN else "__commonJS";
-    return emitDisabledModuleWithFactoryName(allocator, module, minify, syn, factory_name);
+    return emitDisabledModuleWithFactoryName(allocator, module, minify, syn, factory_name, null);
 }
 
-pub fn emitDisabledModuleWithFactoryName(allocator: std.mem.Allocator, module: *const Module, minify: bool, syn: WrapperSyntax, factory_name: []const u8) !?[]const u8 {
+pub fn emitDisabledModuleWithFactoryName(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    minify: bool,
+    syn: WrapperSyntax,
+    factory_name: []const u8,
+    rename_table: ?*const RenameTable,
+) !?[]const u8 {
     // RFC #3940 L.5b: disabled/asset 모듈은 semantic 없어 syntheticName 이 즉시 fallback (rt 무관).
-    const var_name = try module.allocRequireName(allocator, null);
+    const var_name = try module.allocRequireName(allocator, rename_table);
     defer allocator.free(var_name);
     const wrapper_id = module.wrapperId();
 
@@ -142,6 +150,7 @@ pub fn emitAssetModuleWithFactoryName(allocator: std.mem.Allocator, module: *con
         options,
         factory_name,
         rt_names.helperName("__toBinary", options.minify_whitespace),
+        null,
     );
 }
 
@@ -151,6 +160,7 @@ pub fn emitAssetModuleWithRuntimeNames(
     options: *const EmitOptions,
     factory_name: []const u8,
     to_binary_name: []const u8,
+    rename_table: ?*const RenameTable,
 ) !?[]const u8 {
     if (module.source.len == 0) return null;
     var binary_source: ?[]const u8 = null;
@@ -159,19 +169,27 @@ pub fn emitAssetModuleWithRuntimeNames(
         binary_source = try std.fmt.allocPrint(allocator, "{s}({s})", .{ to_binary_name, module.source });
         break :blk binary_source.?;
     } else module.source;
-    return emitCjsWrapperWithFactoryName(allocator, module, source, options.minify_whitespace, WrapperSyntax.from(options), factory_name);
+    return emitCjsWrapperWithFactoryName(allocator, module, source, options.minify_whitespace, WrapperSyntax.from(options), factory_name, rename_table);
 }
 
 /// `var require_X = __commonJS({ "filename"(exports, module) { module.exports = <source>; } });`
 /// 형태의 __commonJS wrapper를 생성.
 pub fn emitCjsWrapper(allocator: std.mem.Allocator, module: *const Module, source: []const u8, minify: bool, syn: WrapperSyntax) !?[]const u8 {
     const factory_name = if (minify) rt.NAMES.CJS_FACTORY_MIN else "__commonJS";
-    return emitCjsWrapperWithFactoryName(allocator, module, source, minify, syn, factory_name);
+    return emitCjsWrapperWithFactoryName(allocator, module, source, minify, syn, factory_name, null);
 }
 
-pub fn emitCjsWrapperWithFactoryName(allocator: std.mem.Allocator, module: *const Module, source: []const u8, minify: bool, syn: WrapperSyntax, factory_name: []const u8) !?[]const u8 {
+pub fn emitCjsWrapperWithFactoryName(
+    allocator: std.mem.Allocator,
+    module: *const Module,
+    source: []const u8,
+    minify: bool,
+    syn: WrapperSyntax,
+    factory_name: []const u8,
+    rename_table: ?*const RenameTable,
+) !?[]const u8 {
     // RFC #3940 L.5b: disabled/asset 모듈은 semantic 없어 syntheticName 이 즉시 fallback (rt 무관).
-    const var_name = try module.allocRequireName(allocator, null);
+    const var_name = try module.allocRequireName(allocator, rename_table);
     defer allocator.free(var_name);
 
     var buf: std.ArrayList(u8) = .empty;
