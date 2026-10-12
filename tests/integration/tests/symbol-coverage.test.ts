@@ -4229,6 +4229,50 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 named-function new.target alone triggers exact identity prepass', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-named-new-target-prepass-'));
+    const input = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      ['function Plain() { return new.target; }', 'console.log(new Plain() === Plain);'].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--target=es5', '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const report = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+      );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/generated_references=1(?:\s|$)/);
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const graphMode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+      );
+      expect(graphMode, proc.stderr).toContain('semantic_graph=retained');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('es5 new.target lowering retains the exact graph only without dynamic eval', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-new-target-retained-'));
     const runAndCheck = (
