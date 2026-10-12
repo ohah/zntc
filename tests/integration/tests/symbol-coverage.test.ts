@@ -13887,7 +13887,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           '9 11 11 before,optional-key-argument,key:value,value,before-null-inner,key:undefined,undefined,before-null-outer,undefined\n',
       },
       {
-        name: 'unresolved deep optional member calls keep an optional member-call argument in an optional computed member-read key on reanalysis',
+        name: 'unresolved deep optional member calls retain an exact-bound optional member-call argument in an optional computed member-read key',
         source: [
           'var events = [];',
           'var argumentSource = { get value() { events.push("value"); return 8; }, get undefined() { events.push("undefined"); return 10; }, keyArgument() { events.push(this === argumentSource ? "member-key:this" : "member-key:wrong-this"); return "value"; } };',
@@ -13898,6 +13898,36 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         ].join('\n'),
         graph: 'retained',
         output: '9 before,member-key:this,key:value,value\n',
+      },
+      {
+        name: 'unresolved deep optional member calls retain one exact-bound optional member call inside an ordinary computed member-read key',
+        source: [
+          'var events = [];',
+          'var fieldReceiver = { fieldValue(input) { events.push(this === fieldReceiver ? "field:this" : "field:wrong-this"); return input + 1; } };',
+          'var argumentSource = { get value() { events.push("value"); return 8; }, get undefined() { events.push("undefined"); return 10; }, keyArgument() { events.push(this === argumentSource ? "member-key:this" : "member-key:wrong-this"); return "value"; }, absentKeyArgument: null };',
+          'function argumentKey(input) { events.push("key:" + input); return input === "value" ? "value" : "undefined"; }',
+          'globalThis.__zntcOrdinaryNestedOptionalMemberReadKeyHolder = { get outer() { events.push("outer"); return { receiver: fieldReceiver }; } };',
+          'globalThis.__zntcMissingOrdinaryNestedOptionalMemberReadKeyHolder = { get outer() { events.push("missing"); return null; } };',
+          'class OrdinaryNestedOptionalMemberReadKeyField { static value = __zntcOrdinaryNestedOptionalMemberReadKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey(argumentSource.keyArgument?.())])); static absent = __zntcOrdinaryNestedOptionalMemberReadKeyHolder.outer?.receiver.fieldValue((events.push("before-undefined"), argumentSource[argumentKey(argumentSource.absentKeyArgument?.())])); static skipped = __zntcMissingOrdinaryNestedOptionalMemberReadKeyHolder.outer?.receiver.fieldValue((events.push("before-skipped"), argumentSource[argumentKey(argumentSource.keyArgument?.())])); }',
+          'console.log(OrdinaryNestedOptionalMemberReadKeyField.value, OrdinaryNestedOptionalMemberReadKeyField.absent, OrdinaryNestedOptionalMemberReadKeyField.skipped, events.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 11 undefined outer,before,member-key:this,key:value,value,field:this,outer,before-undefined,key:undefined,undefined,field:this,missing\n',
+      },
+      {
+        name: 'unresolved deep optional member calls keep an unbound optional nested call in an ordinary computed member-read key on reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { get value() { events.push("value"); return 8; } };',
+          'function argumentKey(input) { events.push("key:" + input); return "value"; }',
+          'globalThis.__zntcUnboundOrdinaryOptionalKeyArgument = function () { events.push("unbound"); return "value"; };',
+          'globalThis.__zntcUnboundOrdinaryOptionalKeyHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class UnboundOrdinaryOptionalKeyArgumentField { static value = __zntcUnboundOrdinaryOptionalKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey(__zntcUnboundOrdinaryOptionalKeyArgument?.())])); }',
+          'console.log(UnboundOrdinaryOptionalKeyArgumentField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,unbound,key:value,value\n',
       },
       {
         name: 'unresolved deep optional member calls keep an unbound optional nested call argument in an optional computed member-read key on reanalysis',
@@ -13957,18 +13987,20 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 before-argument,key-argument,key:inner,value\n',
       },
       {
-        name: 'unresolved deep optional member calls keep an optional nested computed-member key argument on reanalysis',
+        name: 'unresolved deep optional member calls retain one exact-bound optional direct call inside an ordinary computed member-read key',
         source: [
           'var events = [];',
-          'var argumentSource = { get value() { events.push("value"); return 8; } };',
+          'var argumentSource = { get value() { events.push("value"); return 8; }, get undefined() { events.push("undefined"); return 10; } };',
           'function keyArgument() { events.push("key-argument"); return "inner"; }',
-          'function argumentKey(input) { events.push("key:" + input); return "value"; }',
+          'function argumentKey(input) { events.push("key:" + input); return input === "inner" ? "value" : "undefined"; }',
+          'var absentKeyArgument = null;',
           'globalThis.__zntcOptionalNestedComputedMemberSequenceHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
-          'class OptionalNestedComputedMemberSequenceField { static value = __zntcOptionalNestedComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource[argumentKey(keyArgument?.())])); }',
-          'console.log(OptionalNestedComputedMemberSequenceField.value, events.join(","));',
+          'class OptionalNestedComputedMemberSequenceField { static value = __zntcOptionalNestedComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource[argumentKey(keyArgument?.())])); static absent = __zntcOptionalNestedComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before-absent"), argumentSource[argumentKey(absentKeyArgument?.())])); }',
+          'console.log(OptionalNestedComputedMemberSequenceField.value, OptionalNestedComputedMemberSequenceField.absent, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
-        output: '9 before-argument,key-argument,key:inner,value\n',
+        graph: 'retained',
+        output:
+          '9 11 before-argument,key-argument,key:inner,value,before-absent,key:undefined,undefined\n',
       },
       {
         name: 'unresolved deep optional member calls keep deeper computed-member key argument nesting on reanalysis',
