@@ -256,6 +256,12 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         break :blk try self.visitParamsCollectProperties(params_list_old);
     };
     defer pp.prop_names.deinit(self.allocator);
+    // Native parameter initializers cannot see the body's `var`s: temps they
+    // allocate stay with the enclosing function, as an arrow's do (#5552).
+    const body_temp_start = if (!self.options.unsupported.default_params or self.native_parameter_list_retained_for_dynamic_lookup)
+        self.temp_var_counter
+    else
+        saved_temp_counter;
     const param_needs_this = self.needs_this_var;
     const param_needs_arguments = self.needs_arguments_var;
     const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, capture_frame.active_frame, .new_target_value);
@@ -326,13 +332,13 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         new_body = try self.prependStatementsToBody(new_body, capture_stmts[0..capture_count]);
     }
 
-    if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
+    if (self.temp_var_counter > body_temp_start and !new_body.isNone()) {
         new_body = if (self.semantic_edit_enabled)
-            try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span)
+            try self.hoistTempVarsInOriginalFunction(new_body, body_temp_start, node.span)
         else
-            try self.hoistTempVars(new_body, saved_temp_counter, node.span);
+            try self.hoistTempVars(new_body, body_temp_start, node.span);
     }
-    self.temp_var_counter = saved_temp_counter;
+    self.temp_var_counter = body_temp_start;
 
     self.arrow_this_depth = saved_arrow_depth;
     self.needs_this_var = saved_needs_this;
