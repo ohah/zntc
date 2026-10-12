@@ -437,6 +437,36 @@ describe('ES 다운레벨링 런타임 테스트', () => {
       expect(code).toContain('return Performance');
     });
 
+    test('ESM wrapper does not rewrite function-like text inside user strings', async () => {
+      const { dir, cleanup: cl } = await createFixture({
+        'mod.ts': `
+          const Performance = 0;
+          export const marker = '= function Performance(';
+          export const nested = function Performance() { return Performance.name; };
+        `,
+        'index.ts': `
+          const lib = require('./mod');
+          console.log(lib.marker, lib.nested.name, lib.nested());
+        `,
+      });
+      cleanup = cl;
+      const outFile = join(dir, 'out.js');
+      const bundle = await runZntc([
+        '--bundle',
+        join(dir, 'index.ts'),
+        '-o',
+        outFile,
+        '--target=es5',
+        '--format=esm',
+      ]);
+      expect(bundle.exitCode, bundle.stderr).toBe(0);
+
+      const code = readFileSync(outFile, 'utf-8');
+      expect(code).toContain('marker = "= function Performance("');
+      const run = await runNode(outFile);
+      expect(run.stdout.trim()).toBe('= function Performance( Performance$1 Performance$1');
+    });
+
     // #5445: 낮춘 클래스의 안쪽 함수 이름은 바깥 rename 을 따라가지 않는다. 의미 그래프를
     // 재사용하는 경로(define 미사용)와 재분석 경로(define 사용)가 같은 결과를 내야 한다.
     for (const usesDefine of [false, true]) {
