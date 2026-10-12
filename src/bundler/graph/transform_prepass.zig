@@ -1376,7 +1376,7 @@ fn isRetainableBoundStaticFieldMemberRead(
                     (key_call_mode == .sequence_argument_member_read and optional_key_call),
                 switch (key_call_mode) {
                     .sequence_final => .one,
-                    .sequence_argument_member_read => if (optional_key_call) .one else .two,
+                    .sequence_argument_member_read => .two,
                     else => .none,
                 },
                 if (key_call_mode == .sequence_argument_member_read and optional_key_call)

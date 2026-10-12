@@ -13855,7 +13855,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 before,unbound-argument,key:1,value\n',
       },
       {
-        name: 'unresolved deep optional member calls keep a deeper nested call in an optional computed member-read key on reanalysis',
+        name: 'unresolved deep optional member calls retain two exact-bound call-argument levels in an optional computed member-read key',
         source: [
           'var events = [];',
           'var argumentSource = { get value() { events.push("value"); return 8; } };',
@@ -13866,7 +13866,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class DeepOptionalMemberReadKeyArgumentField { static value = __zntcDeepOptionalMemberReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(outerKeyArgument(innerKeyArgument()))])); }',
           'console.log(DeepOptionalMemberReadKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,inner-argument,outer-argument,key:1,value\n',
       },
       {
@@ -13944,19 +13944,22 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 before,unbound-nested,key:value,value\n',
       },
       {
-        name: 'unresolved deep optional member calls keep a deeper optional nested call argument on reanalysis',
+        name: 'unresolved deep optional member calls retain two exact-bound nested call-argument levels in an optional computed member-read key',
         source: [
           'var events = [];',
-          'var argumentSource = { get value() { events.push("value"); return 8; } };',
-          'function argumentKey(input) { events.push("key:" + input); return "value"; }',
+          'var argumentSource = { get value() { events.push("value"); return 8; }, get undefined() { events.push("undefined"); return 10; } };',
+          'function argumentKey(input) { events.push("key:" + input); return input === 1 ? "value" : "undefined"; }',
           'function outerKeyArgument(input) { events.push("outer-key:" + input); return input; }',
           'function innerKeyArgument() { events.push("inner-key"); return 1; }',
+          'var absentOuterKeyArgument = null;',
+          'var absentKeyArgument = null;',
           'globalThis.__zntcDeeperOptionalNestedMemberReadKeyArgumentHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
-          'class DeeperOptionalNestedMemberReadKeyArgumentField { static value = __zntcDeeperOptionalNestedMemberReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(outerKeyArgument?.(innerKeyArgument?.()))])); }',
-          'console.log(DeeperOptionalNestedMemberReadKeyArgumentField.value, events.join(","));',
+          'class DeeperOptionalNestedMemberReadKeyArgumentField { static value = __zntcDeeperOptionalNestedMemberReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(outerKeyArgument?.(innerKeyArgument?.()))])); static absentNested = __zntcDeeperOptionalNestedMemberReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before-absent-nested"), argumentSource[argumentKey?.(absentOuterKeyArgument?.(innerKeyArgument?.()))])); static absentKey = __zntcDeeperOptionalNestedMemberReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before-absent-key"), argumentSource[absentKeyArgument?.(outerKeyArgument?.(innerKeyArgument?.()))])); }',
+          'console.log(DeeperOptionalNestedMemberReadKeyArgumentField.value, DeeperOptionalNestedMemberReadKeyArgumentField.absentNested, DeeperOptionalNestedMemberReadKeyArgumentField.absentKey, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
-        output: '9 before,inner-key,outer-key:1,key:1,value\n',
+        graph: 'retained',
+        output:
+          '9 11 11 before,inner-key,outer-key:1,key:1,value,before-absent-nested,key:undefined,undefined,before-absent-key,undefined\n',
       },
       {
         name: 'unresolved deep optional member calls retain one exact-bound nested computed-member key argument',
@@ -14031,6 +14034,22 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         ].join('\n'),
         graph: 'reanalyzed',
         output: '9 before-argument,inner-key,middle-key:deep,outer-key:deep,key:deep,value\n',
+      },
+      {
+        name: 'unresolved deep optional member calls keep a third nested optional call-argument level on reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { get value() { events.push("value"); return 8; } };',
+          'function innerKeyArgument() { events.push("inner-key"); return 1; }',
+          'function middleKeyArgument(input) { events.push("middle-key:" + input); return input; }',
+          'function outerKeyArgument(input) { events.push("outer-key:" + input); return input; }',
+          'function argumentKey(input) { events.push("key:" + input); return "value"; }',
+          'globalThis.__zntcThirdOptionalNestedComputedMemberSequenceHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class ThirdOptionalNestedComputedMemberSequenceField { static value = __zntcThirdOptionalNestedComputedMemberSequenceHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(outerKeyArgument?.(middleKeyArgument?.(innerKeyArgument?.())))])); }',
+          'console.log(ThirdOptionalNestedComputedMemberSequenceField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,inner-key,middle-key:1,outer-key:1,key:1,value\n',
       },
       {
         name: 'optional invocation after a deep optional member receiver keeps short-circuit and exact identity',
