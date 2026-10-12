@@ -4318,10 +4318,22 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (!options.jsx_transform) return false;
                 if (options.unsupported.object_spread) {
                     // JSX lowering materializes Object.assign after this
-                    // source-graph preflight. Keep the same Object-shadowing
-                    // guard as source object spreads, and record this lowered
-                    // global edge in the retained-graph scan.
-                    if (source_binds_object) return false;
+                    // source-graph preflight. Only a source Object binding
+                    // visible from this spread can shadow it; unrelated
+                    // nested bindings do not require reanalysis.
+                    if (source_binds_object) {
+                        if (!source_parent_map_ready) {
+                            source_parent_map_ready = true;
+                            if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                        }
+                        if (sourceBindingShadowsGeneratedGlobalAtNode(
+                            ast,
+                            semantic,
+                            &source_parent_map,
+                            @intCast(raw_idx),
+                            "Object",
+                        )) return false;
+                    }
                     found_lowered_object_spread = true;
                 }
             },
