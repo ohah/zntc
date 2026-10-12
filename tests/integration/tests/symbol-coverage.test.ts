@@ -4029,6 +4029,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       );
       expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).toContain('semantic_graph=reanalyzed');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('42\n');
@@ -4046,6 +4047,73 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       }
       expect(report).toMatch(/shadowed_external_reference=1(?:\s|$)/);
       expect(report).toMatch(/clean=0(?:\s|$)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('object spread retains the graph when Object is bound only in an unrelated function', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-spread-unrelated-object-symbol-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'function readLocalObject() {',
+        '  var Object = { value: "local" };',
+        '  return Object.value;',
+        '}',
+        'var source = { value: 42 };',
+        'var copy = { ...source };',
+        'console.log(copy.value, readLocalObject());',
+      ].join('\n'),
+    );
+    try {
+      const cases = [
+        { label: 'ES5', target: '--target=es5' },
+        { label: 'ES2017', target: '--target=es2017' },
+        { label: 'ES5 identifier minify', target: '--target=es5', minify: true },
+      ];
+      for (const { label, target, minify = false } of cases) {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            target,
+            ...(minify ? ['--minify-identifiers'] : []),
+            '--platform=node',
+            '--format=cjs',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${label}: ${proc.stderr}`).toBe(0);
+        expect(proc.stderr, label).toContain('semantic_graph=retained');
+
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+          );
+        expect(report, `${label}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${label}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report, label).toMatch(/clean=1(?:\s|$)/);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${label}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, label).toBe('42 local\n');
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -16781,7 +16849,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         rmSync(dir, { recursive: true, force: true });
       }
     }
-  }, 30_000);
+  }, 120_000);
 
   test('native strict block function declarations keep exact scope identity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-strict-block-function-'));

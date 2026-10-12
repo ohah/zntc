@@ -3361,6 +3361,86 @@ fn collectSimpleConstructorDefaultParameterNodes(
     return true;
 }
 
+fn collectRetainedPreflightParents(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    root: ast_mod.NodeIndex,
+    parents: *std.AutoHashMapUnmanaged(u32, u32),
+) bool {
+    const VisitState = enum { visiting, visited };
+    const Frame = struct { node: ast_mod.NodeIndex, parent: ?u32 = null, exit: bool = false };
+    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) return false;
+
+    var states: std.AutoHashMapUnmanaged(u32, VisitState) = .empty;
+    defer states.deinit(allocator);
+    var stack: std.ArrayList(Frame) = .empty;
+    defer stack.deinit(allocator);
+    stack.append(allocator, .{ .node = root }) catch return false;
+
+    while (stack.pop()) |frame| {
+        if (frame.node.isNone() or @intFromEnum(frame.node) >= ast.nodes.items.len) return false;
+        const raw = @intFromEnum(frame.node);
+        if (frame.exit) {
+            states.put(allocator, raw, .visited) catch return false;
+            continue;
+        }
+        if (frame.parent) |parent| {
+            const parent_entry = parents.getOrPut(allocator, raw) catch return false;
+            if (parent_entry.found_existing and parent_entry.value_ptr.* != parent) return false;
+            if (!parent_entry.found_existing) parent_entry.value_ptr.* = parent;
+        }
+        if (states.get(raw)) |state| {
+            if (state == .visiting) return false;
+            continue;
+        }
+        states.put(allocator, raw, .visiting) catch return false;
+        stack.append(allocator, .{ .node = frame.node, .exit = true }) catch return false;
+
+        var children = ast_walk.children(ast, ast.getNode(frame.node));
+        while (children.next()) |child| {
+            if (child.isNone()) continue;
+            if (@intFromEnum(child) >= ast.nodes.items.len) return false;
+            stack.append(allocator, .{ .node = child, .parent = raw }) catch return false;
+        }
+    }
+    return true;
+}
+
+fn scopeChainContainsBinding(
+    semantic: *const ModuleSemanticData,
+    starting_scope: u32,
+    name: []const u8,
+) bool {
+    var scope = starting_scope;
+    var hops: usize = 0;
+    while (hops < semantic.scopes.len) : (hops += 1) {
+        if (scope >= semantic.scopes.len or scope >= semantic.scope_maps.len) return true;
+        if (semantic.scope_maps[scope].contains(name)) return true;
+        const parent = semantic.scopes[scope].parent;
+        if (parent.isNone()) return false;
+        scope = parent.toIndex();
+    }
+    return true;
+}
+
+fn sourceBindingShadowsGeneratedGlobalAtNode(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    node: u32,
+    name: []const u8,
+) bool {
+    var current = node;
+    var hops: usize = 0;
+    while (hops <= ast.nodes.items.len) : (hops += 1) {
+        if (semantic.scope_owner_map.get(current)) |scope| {
+            return scopeChainContainsBinding(semantic, scope, name);
+        }
+        current = parents.get(current) orelse return true;
+    }
+    return true;
+}
+
 /// Arrow lowering edits the existing graph and creates only output function
 /// scopes plus explicitly tracked captures. Native `await` and `yield` add no
 /// binding or scope edges. Tagged-template lowering registers its cache
@@ -3657,6 +3737,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
         if (std.mem.eql(u8, name, "Object")) source_binds_object = true;
         if (source_binds_object) break;
     }
+    var source_parent_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer source_parent_map.deinit(ast.allocator);
+    var source_parent_map_ready = false;
 
     // Default-parameter lowering replaces only these literal assignment
     // patterns with exact reads/writes of the same parameter SymbolId. Admit
@@ -3988,9 +4071,22 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .object_expression => {
                 if (hasDirectSpreadElement(ast, node)) {
                     if (options.unsupported.object_spread) {
-                        // Lowering emits Object.assign. A source Object binding
-                        // changes which function that generated reference calls.
-                        if (source_binds_object) return false;
+                        // Lowering emits Object.assign. Only a source Object
+                        // binding visible from this expression can shadow it;
+                        // unrelated nested bindings do not require reanalysis.
+                        if (source_binds_object) {
+                            if (!source_parent_map_ready) {
+                                source_parent_map_ready = true;
+                                if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                            }
+                            if (sourceBindingShadowsGeneratedGlobalAtNode(
+                                ast,
+                                semantic,
+                                &source_parent_map,
+                                @intCast(raw_idx),
+                                "Object",
+                            )) return false;
+                        }
                         found_lowered_object_spread = true;
                     } else if (options.unsupported.spread) {
                         return false;
