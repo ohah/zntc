@@ -366,9 +366,21 @@ pub const TransformOptions = struct {
                 .formal_parameter => {
                     if (u.default_params and !ast.readExtraNode(node.data.extra, ast_mod.FormalParameterExtra.default).isNone()) return true;
                 },
-                .private_identifier,
-                .private_field_expression,
-                => if (u.requiresPrivateDownlevel()) return true,
+                .private_identifier => if (u.requiresPrivateDownlevel()) return true,
+                .private_field_expression => {
+                    if (u.requiresPrivateDownlevel()) return true;
+                    if (u.optional_chaining and
+                        (ast.readExtra(node.data.extra, 2) & ast_mod.MemberFlags.optional_chain) != 0) return true;
+                },
+                // These operator lowerings can introduce temporary bindings and
+                // references. Discover them before the bundler assigns exact
+                // identities, even when no other unsupported syntax is present.
+                .static_member_expression,
+                .computed_member_expression,
+                => if (u.optional_chaining and
+                    (ast.readExtra(node.data.extra, 2) & ast_mod.MemberFlags.optional_chain) != 0) return true,
+                .call_expression => if (u.optional_chaining and
+                    (ast.readExtra(node.data.extra, 3) & ast_mod.CallFlags.optional_chain) != 0) return true,
                 .static_block => if (u.class_static_block) return true,
                 // An object literal lowered after its first computed key names
                 // its members with `__name`; discover the helper before linking.
@@ -392,9 +404,17 @@ pub const TransformOptions = struct {
                     if (u.exponentiation and
                         node.data.binary.flags == @intFromEnum(token_mod.Kind.star2)) return true;
                 },
+                .logical_expression => {
+                    if (u.nullish_coalescing and
+                        node.data.binary.flags == @intFromEnum(token_mod.Kind.question2)) return true;
+                },
                 .assignment_expression => {
                     if (u.exponentiation and
                         node.data.binary.flags == @intFromEnum(token_mod.Kind.star2_eq)) return true;
+                    if (u.logical_assignment) {
+                        const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                        if (op == .amp2_eq or op == .pipe2_eq or op == .question2_eq) return true;
+                    }
                     if (ast.isAnonymousFunctionDefinition(node.data.binary.right)) saw_named_assignment = true;
                 },
                 // regex 다운레벨 (named capture, dotall, sticky, unicode brace escape).
@@ -809,6 +829,75 @@ test "class and public-field lowering independently require graph pre-pass" {
         .{
             .source = "class C { #value = 1; }",
             .unsupported = .{ .class_field = true },
+            .needs_prepass = false,
+        },
+    };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        const options: TransformOptions = .{ .unsupported = fixture.unsupported };
+        try std.testing.expectEqual(
+            fixture.needs_prepass,
+            options.requiresGraphPrePass(&parser.ast),
+        );
+    }
+}
+
+test "ES2020 and logical-assignment lowering independently require graph pre-pass" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const UnsupportedFeatures = @import("compat.zig").UnsupportedFeatures;
+    const fixtures = [_]struct {
+        source: []const u8,
+        unsupported: UnsupportedFeatures,
+        needs_prepass: bool,
+    }{
+        .{
+            .source = "const value = object?.property;",
+            .unsupported = .{ .optional_chaining = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "const value = object?.method();",
+            .unsupported = .{ .optional_chaining = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "const value = object.property;",
+            .unsupported = .{ .optional_chaining = true },
+            .needs_prepass = false,
+        },
+        .{
+            .source = "const value = left ?? right;",
+            .unsupported = .{ .nullish_coalescing = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "const value = left || right;",
+            .unsupported = .{ .nullish_coalescing = true },
+            .needs_prepass = false,
+        },
+        .{
+            .source = "let value; value ||= 1;",
+            .unsupported = .{ .logical_assignment = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "let value; value &&= 1;",
+            .unsupported = .{ .logical_assignment = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "let value; value ??= 1;",
+            .unsupported = .{ .logical_assignment = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "let value; value += 1;",
+            .unsupported = .{ .logical_assignment = true },
             .needs_prepass = false,
         },
     };
