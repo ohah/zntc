@@ -1004,6 +1004,12 @@ const ComputedMemberKeyCallMode = enum {
     nested_call_argument,
 };
 
+const BoundCallArgumentDepth = enum {
+    none,
+    one,
+    two,
+};
+
 const RetainableStaticFieldExpressionWorkItem = struct {
     expression_idx: ast_mod.NodeIndex,
     allow_optional_invocations: bool,
@@ -1198,7 +1204,7 @@ fn isRetainableBoundStaticFieldEffectCall(
     // Each caller explicitly gates optional calls and bounded exact-bound
     // call arguments for the edge it is validating.
     allow_optional_call: bool,
-    allow_bound_call_arguments: bool,
+    bound_call_argument_depth: BoundCallArgumentDepth,
     // Nested argument calls may use safe computed-member callees, but not
     // effectful computed keys within those callees unless the bounded mode
     // explicitly admits one exact-bound key call.
@@ -1235,18 +1241,28 @@ fn isRetainableBoundStaticFieldEffectCall(
         if (raw_arg >= ast.nodes.items.len) return false;
         const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
         if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
-        if (!allow_bound_call_arguments or
-            !isRetainableBoundStaticFieldEffectCall(
-                ast,
-                semantic,
-                argument_idx,
-                true,
-                computed_member_key_call_mode == .sequence_final or
-                    computed_member_key_call_mode == .sequence_argument_optional_key_call or
-                    computed_member_key_call_mode == .sequence_argument_member_read_optional_nested_call,
-                false,
-                .nested_call_argument,
-            )) return false;
+        const nested_argument_depth: BoundCallArgumentDepth = switch (bound_call_argument_depth) {
+            .none => return false,
+            .one => .none,
+            .two => .one,
+        };
+        const nested_key_call_mode: ComputedMemberKeyCallMode = if (bound_call_argument_depth == .two and
+            (computed_member_key_call_mode == .sequence_argument_optional_key_call or
+                computed_member_key_call_mode == .sequence_argument_member_read_optional_nested_call))
+            .sequence_argument_member_read_optional_nested_call
+        else
+            .nested_call_argument;
+        if (!isRetainableBoundStaticFieldEffectCall(
+            ast,
+            semantic,
+            argument_idx,
+            true,
+            computed_member_key_call_mode == .sequence_final or
+                computed_member_key_call_mode == .sequence_argument_optional_key_call or
+                computed_member_key_call_mode == .sequence_argument_member_read_optional_nested_call,
+            nested_argument_depth,
+            nested_key_call_mode,
+        )) return false;
     }
     return true;
 }
@@ -1287,7 +1303,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
                 @enumFromInt(raw_item),
                 false,
                 false,
-                false,
+                .none,
                 .disallowed,
             )) return false;
     }
@@ -1304,7 +1320,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
                 last_idx,
                 true,
                 false,
-                true,
+                .one,
                 .sequence_final,
             )) or
         (allow_unresolved_last_value and
@@ -1313,9 +1329,10 @@ fn isRetainableBoundStaticFieldSequenceExpression(
 
 /// A sequence argument may end in a non-optional member read only when every
 /// segment uses a safe key and the chain starts at an exact-bound source name.
-/// Key calls are mode-gated: member-read values allow ordinary and optional
-/// calls with at most one exact-bound call argument; final calls may use the
-/// wider bounded optional-call form.
+/// Key calls are mode-gated: an ordinary computed-member key call at a
+/// sequence-argument boundary may contain two exact-bound call-argument
+/// levels. Optional key calls and final calls use shallower modes, and nested
+/// computed callees cannot inherit the deeper mode.
 fn isRetainableBoundStaticFieldMemberRead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1357,8 +1374,11 @@ fn isRetainableBoundStaticFieldMemberRead(
                 false,
                 key_call_mode == .sequence_final or
                     (key_call_mode == .sequence_argument_member_read and optional_key_call),
-                key_call_mode == .sequence_final or
-                    key_call_mode == .sequence_argument_member_read,
+                switch (key_call_mode) {
+                    .sequence_final => .one,
+                    .sequence_argument_member_read => if (optional_key_call) .one else .two,
+                    else => .none,
+                },
                 if (key_call_mode == .sequence_argument_member_read and optional_key_call)
                     .sequence_argument_optional_key_call
                 else if (key_call_mode == .sequence_argument_member_read)
