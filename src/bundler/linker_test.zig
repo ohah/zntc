@@ -4,6 +4,7 @@ const Linker = linker_mod.Linker;
 const ImportBinding = linker_mod.ImportBinding;
 const LinkingMetadata = linker_mod.LinkingMetadata;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
+const Module = @import("module.zig").Module;
 const CjsRuntimeInternalSymbolIds = @import("module.zig").CjsRuntimeInternalSymbolIds;
 const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
@@ -51,6 +52,113 @@ fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_na
     try linker.link();
 
     return .{ .linker = linker, .graph = graph, .cache = cache };
+}
+
+test "linker: createRequire shim local has an exact detached SymbolId and reserves hostile names" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.cjs", "const fs = require('node:fs'); module.exports = fs;");
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import dep from './dep.cjs'; const createRequire = 1; " ++
+            "const createRequire$1 = 2; console.log(typeof createRequire$2, dep);",
+    );
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    try r.linker.computeRenames();
+    var output_modules: std.ArrayList(*const Module) = .empty;
+    defer output_modules.deinit(std.testing.allocator);
+    var modules = r.graph.modulesIterator();
+    while (modules.next()) |module| try output_modules.append(std.testing.allocator, module);
+
+    const first_name = try r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items);
+    defer std.testing.allocator.free(first_name);
+    try std.testing.expectEqualStrings("createRequire$3", first_name);
+
+    var owner: ?*Module = null;
+    var output_identity_count: usize = 0;
+    var owner_it = r.graph.modulesIterator();
+    while (owner_it.next()) |module| {
+        if (module.semantic) |sem| {
+            for (sem.symbols.items) |symbol| {
+                if (symbol.synthetic_kind == .require_shim_local) output_identity_count += 1;
+            }
+        }
+        if (module.require_shim_local_symbol != null) owner = @constCast(module);
+    }
+    try std.testing.expectEqual(@as(usize, 1), output_identity_count);
+    const local_owner = owner orelse return error.TestUnexpectedResult;
+    const inner = local_owner.require_shim_local_symbol.?;
+    const id = bundler_symbol.SymbolID.make(local_owner.index, @intFromEnum(inner));
+    const symbol = local_owner.semantic.?.symbols.items[@intFromEnum(inner)];
+    try std.testing.expectEqual(semantic_symbol.SymbolKind.import_binding, symbol.kind);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.require_shim_local, symbol.synthetic_kind.?);
+    try std.testing.expectEqualStrings("createRequire", symbol.synthetic_name);
+    try std.testing.expect(symbol.scope_id.isNone());
+    try std.testing.expectEqualStrings(first_name, r.linker.rename_table.get(id) orelse return error.TestUnexpectedResult);
+
+    // The output-owned import has no AST binding/reference or lexical-map edge.
+    const sem = &local_owner.semantic.?;
+    for (sem.symbol_ids) |maybe_id| try std.testing.expect(maybe_id == null or maybe_id.? != @intFromEnum(inner));
+    for (sem.references) |reference| try std.testing.expect(reference.symbol_id != inner);
+    for (sem.scope_maps) |scope_map| {
+        var entries = scope_map.valueIterator();
+        while (entries.next()) |mapped| try std.testing.expect(mapped.* != @intFromEnum(inner));
+    }
+
+    // Repeated preparation must ignore its own canonical spelling and recover
+    // the same typed row if the convenience cache is dropped.
+    local_owner.require_shim_local_symbol = null;
+    const repeated_name = try r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items);
+    defer std.testing.allocator.free(repeated_name);
+    try std.testing.expectEqualStrings(first_name, repeated_name);
+    try std.testing.expectEqual(inner, local_owner.require_shim_local_symbol.?);
+
+    // A rename-table reset followed by hostile global and reserved names must
+    // still bind the chosen alias to this exact identity.
+    r.linker.clearCanonicalNames();
+    r.linker.global_identifiers = &.{"createRequire$3"};
+    const global_blocked_name = try r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items);
+    defer std.testing.allocator.free(global_blocked_name);
+    try std.testing.expectEqualStrings("createRequire$4", global_blocked_name);
+    try std.testing.expectEqualStrings(global_blocked_name, r.linker.rename_table.get(id) orelse return error.TestUnexpectedResult);
+
+    r.linker.clearCanonicalNames();
+    r.linker.global_identifiers = &.{};
+    try r.linker.reserved_globals.put(std.testing.allocator, "createRequire$3", {});
+    try r.linker.reserved_globals.put(std.testing.allocator, "createRequire$4", {});
+    const reserved_name = try r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items);
+    defer std.testing.allocator.free(reserved_name);
+    try std.testing.expectEqualStrings("createRequire$5", reserved_name);
+    try std.testing.expectEqualStrings(reserved_name, r.linker.rename_table.get(id) orelse return error.TestUnexpectedResult);
+
+    // Malformed typed rows fail closed instead of silently receiving a name.
+    const original = local_owner.semantic.?.symbols.items[@intFromEnum(inner)];
+    local_owner.semantic.?.symbols.items[@intFromEnum(inner)].synthetic_name = "wrong-name";
+    try std.testing.expectError(error.RequireShimLocalIdentityInvalid, r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items));
+    local_owner.semantic.?.symbols.items[@intFromEnum(inner)] = original;
+    local_owner.semantic.?.symbols.items[@intFromEnum(inner)].kind = .variable_var;
+    try std.testing.expectError(error.RequireShimLocalIdentityInvalid, r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items));
+    local_owner.semantic.?.symbols.items[@intFromEnum(inner)] = original;
+
+    const arena = local_owner.parse_arena.?.allocator();
+    const sem_mut = &local_owner.semantic.?;
+    const original_len = sem_mut.symbols.items.len;
+    _ = try semantic_symbol.extendSymbol(
+        arena,
+        &sem_mut.symbols,
+        .import_binding,
+        .require_shim_local,
+        "createRequire",
+        @import("../lexer/token.zig").Span.EMPTY,
+    );
+    try std.testing.expectError(error.RequireShimLocalIdentityAmbiguous, r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items));
+    sem_mut.symbols.items.len = original_len;
 }
 
 test "linker: direct import resolves to export" {

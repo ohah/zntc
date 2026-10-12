@@ -5237,6 +5237,7 @@ fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
         .esm_runtime_internal_local,
         .esm_interop_runtime_internal_local,
         .bundler_runtime_helper,
+        .require_shim_local,
         => true,
         else => false,
     };

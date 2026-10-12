@@ -851,6 +851,7 @@ fn exactDetachedOutputSymbolShape(symbol: *const Symbol) bool {
                 std.mem.eql(u8, symbol.synthetic_name, "export.name"),
             else => false,
         },
+        .require_shim_local => symbol.kind == .import_binding and std.mem.eql(u8, symbol.synthetic_name, "createRequire"),
         .esm_init, .cjs_require => symbol.kind == .function_decl,
         .cjs_exports, .bundler_runtime_helper => symbol.kind == .variable_var,
         else => false,

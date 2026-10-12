@@ -214,6 +214,7 @@ test "exact scope audit allows only detached graph-output symbol identities" {
         .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "export.all" },
         .{ .kind = .variable_var, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "export.name" },
         .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "to_common_js.module" },
+        .{ .kind = .import_binding, .synthetic_kind = .require_shim_local, .name = "createRequire" },
         .{ .kind = .function_decl, .synthetic_kind = .esm_init, .name = "init_module" },
         .{ .kind = .variable_var, .synthetic_kind = .cjs_exports, .name = "exports_module" },
         .{ .kind = .function_decl, .synthetic_kind = .cjs_require, .name = "require_module" },
@@ -268,6 +269,60 @@ test "exact scope audit allows only detached graph-output symbol identities" {
     };
     const invalid_esm_interop_name = try checkExactFixture(allocator, &ast, root, &.{}, &.{unknown_esm_interop_internal}, &scopes, &scope_maps, &owners, &.{});
     try std.testing.expect(!invalid_esm_interop_name.isClean());
+
+    const invalid_require_shim_rows = [_]Symbol{
+        .{
+            .name = span,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .decl_flags = SymbolKind.import_binding.declFlags(),
+            .declaration_span = span,
+            .synthetic_kind = .require_shim_local,
+            .synthetic_name = "createRequire$1",
+        },
+        .{
+            .name = span,
+            .scope_id = .none,
+            .kind = .variable_var,
+            .decl_flags = SymbolKind.variable_var.declFlags(),
+            .declaration_span = span,
+            .synthetic_kind = .require_shim_local,
+            .synthetic_name = "createRequire",
+        },
+    };
+    for (invalid_require_shim_rows) |invalid_row| {
+        const report = try checkExactFixture(allocator, &ast, root, &.{}, &.{invalid_row}, &scopes, &scope_maps, &owners, &.{});
+        try std.testing.expect(!report.isClean());
+    }
+
+    const require_shim_output_reference = [_]Reference{.{
+        .node_index = .none,
+        .scope_id = @enumFromInt(0),
+        .symbol_id = @enumFromInt(0),
+        .flags = .{ .declare = true },
+    }};
+    const require_shim_output_symbol = Symbol{
+        .name = span,
+        .scope_id = .none,
+        .kind = .import_binding,
+        .decl_flags = SymbolKind.import_binding.declFlags(),
+        .declaration_span = span,
+        .synthetic_kind = .require_shim_local,
+        .synthetic_name = "createRequire",
+    };
+    const require_shim_output_with_edge = try checkExactFixture(
+        allocator,
+        &ast,
+        root,
+        &.{},
+        &.{require_shim_output_symbol},
+        &scopes,
+        &scope_maps,
+        &owners,
+        &require_shim_output_reference,
+    );
+    try std.testing.expect(require_shim_output_with_edge.invalid_scope > 0);
+    try std.testing.expect(!require_shim_output_with_edge.isClean());
 
     const interop_output_reference = [_]Reference{.{
         .node_index = .none,

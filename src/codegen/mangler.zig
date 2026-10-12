@@ -505,6 +505,7 @@ fn hasFixedOutputName(sym: Symbol) bool {
         .esm_runtime_internal_local,
         .esm_interop_runtime_internal_local,
         .bundler_runtime_helper,
+        .require_shim_local,
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;
         // their original spelling is not necessarily present in emitted output.

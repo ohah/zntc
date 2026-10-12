@@ -463,6 +463,10 @@ pub const Module = struct {
     esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds = null,
     /// Exact identities for lexical locals in raw ESM interop helper bodies.
     esm_interop_runtime_internal_symbols: ?EsmInteropRuntimeInternalSymbolIds = null,
+    /// Exact identity for the generated `createRequire` import local emitted
+    /// in this module's output unit. The semantic row is detached from source
+    /// AST scopes and is recovered by its typed synthetic kind after rebuilds.
+    require_shim_local_symbol: ?SemanticSymbolId = null,
 
     /// RFC #3940 L.5a — post-link tree-shake AST mutation 후 semantic resync 시 carry-over 된
     /// rename (SymbolID→name). tree_shaker(const linker)가 resync 전 `rename_table` 에서 캡처해
