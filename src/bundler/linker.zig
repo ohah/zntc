@@ -58,6 +58,7 @@ pub const MfStaticRemotes = @import("federation.zig").MfStaticRemotes;
 /// namespace 접근 패턴에서 생성되는 변수 prefix.
 /// metadata.zig, codegen.zig, emitter.zig에서 공유.
 pub const NS_VAR_PREFIX = "__ns_";
+const REQUIRE_SHIM_LOCAL_NAME = "createRequire";
 
 /// CJS named import의 expression rename 형태: `require_xxx().prop`.
 /// metadata.zig가 이 sentinel 형식으로 rename을 만들고 codegen이 substring 으로
@@ -1307,6 +1308,183 @@ pub const Linker = struct {
                 try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
             }
         }
+    }
+
+    /// Assign the output-local Node ESM `createRequire` import to one exact
+    /// detached semantic identity. Each bundle/chunk calls this with only its
+    /// own modules, so separate files may safely choose different aliases.
+    /// Semantic-less output units retain the old string-only fallback.
+    pub fn prepareRequireShimLocalName(
+        self: *Linker,
+        allocator: std.mem.Allocator,
+        modules: []const *const Module,
+    ) ![]const u8 {
+        var owner_index: ?ModuleIndex = null;
+        var owner_symbol: ?semantic_symbol.SymbolId = null;
+        var has_semantic_module = false;
+
+        // Reuse the typed row first. This keeps an output unit's identity
+        // stable if preparation is repeated or its convenience cache is lost.
+        for (modules) |module| {
+            const sem = module.semantic orelse continue;
+            has_semantic_module = true;
+            for (sem.symbols.items, 0..) |symbol, raw_id| {
+                if (symbol.synthetic_kind != .require_shim_local) continue;
+                if (symbol.kind != .import_binding or !std.mem.eql(u8, symbol.synthetic_name, REQUIRE_SHIM_LOCAL_NAME)) {
+                    return error.RequireShimLocalIdentityInvalid;
+                }
+                if (owner_symbol != null) return error.RequireShimLocalIdentityAmbiguous;
+                owner_index = module.index;
+                owner_symbol = @enumFromInt(raw_id);
+            }
+        }
+
+        if (owner_symbol == null) {
+            // Prefer the source module that introduced the external require;
+            // if it is semantic-less, use another parse-backed module in this
+            // output unit as the detached identity owner.
+            for (modules) |module| {
+                if (module.semantic == null or module.parse_arena == null) continue;
+                for (module.import_records) |record| {
+                    if (record.kind == .require and record.is_external) {
+                        owner_index = module.index;
+                        break;
+                    }
+                }
+                if (owner_index != null) break;
+            }
+            if (owner_index == null) {
+                for (modules) |module| {
+                    if (module.semantic != null and module.parse_arena != null) {
+                        owner_index = module.index;
+                        break;
+                    }
+                }
+            }
+            if (owner_index) |index| {
+                owner_symbol = try self.ensureRequireShimLocalSymbol(index);
+            } else if (has_semantic_module) {
+                // A semantic output must not silently fall back to a raw name
+                // when none of its modules can own the exact identity.
+                return error.RequireShimLocalOwnerMissing;
+            }
+        } else if (owner_index) |index| {
+            const owner = self.moduleAtMut(@intFromEnum(index)) orelse return error.RequireShimLocalOwnerMissing;
+            owner.require_shim_local_symbol = owner_symbol;
+        }
+
+        const candidate = try self.selectRequireShimLocalName(allocator, modules, owner_index, owner_symbol);
+        errdefer allocator.free(candidate);
+
+        if (owner_index) |module_index| {
+            const symbol_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(owner_symbol.?));
+            const linker_owned_name = try self.allocator.dupe(u8, candidate);
+            errdefer self.allocator.free(linker_owned_name);
+            try self.assignSymbolCanonical(symbol_id, linker_owned_name);
+        }
+        return candidate;
+    }
+
+    fn ensureRequireShimLocalSymbol(self: *Linker, module_index: ModuleIndex) !semantic_symbol.SymbolId {
+        const owner = self.moduleAtMut(@intFromEnum(module_index)) orelse return error.RequireShimLocalOwnerMissing;
+        const sem = if (owner.semantic) |*value| value else return error.RequireShimLocalOwnerMissing;
+        var recovered: ?semantic_symbol.SymbolId = null;
+        for (sem.symbols.items, 0..) |symbol, raw_id| {
+            if (symbol.synthetic_kind != .require_shim_local) continue;
+            if (symbol.kind != .import_binding or !std.mem.eql(u8, symbol.synthetic_name, REQUIRE_SHIM_LOCAL_NAME)) {
+                return error.RequireShimLocalIdentityInvalid;
+            }
+            if (recovered != null) return error.RequireShimLocalIdentityAmbiguous;
+            recovered = @enumFromInt(raw_id);
+        }
+        if (recovered == null) {
+            const arena = if (owner.parse_arena) |value| value.allocator() else return error.RequireShimLocalOwnerMissing;
+            recovered = try semantic_symbol.extendSymbol(
+                arena,
+                &sem.symbols,
+                .import_binding,
+                .require_shim_local,
+                REQUIRE_SHIM_LOCAL_NAME,
+                Span.EMPTY,
+            );
+        }
+        owner.require_shim_local_symbol = recovered;
+        return recovered.?;
+    }
+
+    fn selectRequireShimLocalName(
+        self: *Linker,
+        allocator: std.mem.Allocator,
+        modules: []const *const Module,
+        owner_index: ?ModuleIndex,
+        owner_symbol: ?semantic_symbol.SymbolId,
+    ) ![]const u8 {
+        var suffix: u32 = 0;
+        while (true) : (suffix += 1) {
+            const candidate = if (suffix == 0)
+                try allocator.dupe(u8, REQUIRE_SHIM_LOCAL_NAME)
+            else
+                try std.fmt.allocPrint(allocator, "{s}${d}", .{ REQUIRE_SHIM_LOCAL_NAME, suffix });
+            if (!self.requireShimNameInUse(candidate, modules, owner_index, owner_symbol)) return candidate;
+            allocator.free(candidate);
+            if (suffix == std.math.maxInt(u32)) return error.RequireShimAliasExhausted;
+        }
+    }
+
+    fn requireShimNameInUse(
+        self: *const Linker,
+        candidate: []const u8,
+        modules: []const *const Module,
+        owner_index: ?ModuleIndex,
+        owner_symbol: ?semantic_symbol.SymbolId,
+    ) bool {
+        const ignored_id: ?bundler_symbol.SymbolID = if (owner_index) |module_index|
+            if (owner_symbol) |inner| bundler_symbol.SymbolID.make(module_index, @intFromEnum(inner)) else null
+        else
+            null;
+        const ignored_name = if (ignored_id) |id| self.rename_table.get(id) else null;
+        if (self.reserved_globals.contains(candidate) or
+            (self.canonical_names_used.contains(candidate) and
+                !(ignored_name != null and std.mem.eql(u8, ignored_name.?, candidate)))) return true;
+        for (self.global_identifiers) |name| {
+            if (std.mem.eql(u8, name, candidate)) return true;
+        }
+        var renamed = self.rename_table.map.iterator();
+        while (renamed.next()) |entry| {
+            if (ignored_id) |id| {
+                if (entry.key_ptr.module == id.module and entry.key_ptr.inner == id.inner) continue;
+            }
+            if (std.mem.eql(u8, entry.value_ptr.*, candidate)) return true;
+        }
+        var cross_chunk = self.cross_chunk_global_names.valueIterator();
+        while (cross_chunk.next()) |names| {
+            var values = names.valueIterator();
+            while (values.next()) |name| {
+                if (std.mem.eql(u8, name.*, candidate)) return true;
+            }
+        }
+        var consumer_imports = self.consumer_import_local.valueIterator();
+        while (consumer_imports.next()) |names| {
+            var values = names.valueIterator();
+            while (values.next()) |name| {
+                if (std.mem.eql(u8, name.*, candidate)) return true;
+            }
+        }
+
+        for (modules) |module| {
+            const sem = module.semantic orelse continue;
+            if (sem.unresolved_references.contains(candidate)) return true;
+            for (sem.symbols.items, 0..) |symbol, raw_id| {
+                // These rows describe prior output-only imports and do not
+                // represent source bindings in the current emitted unit.
+                if (symbol.synthetic_kind == .require_shim_local) continue;
+                if (ignored_id) |id| {
+                    if (module.index == id.module and raw_id == @intFromEnum(id.inner)) continue;
+                }
+                if (std.mem.eql(u8, symbol.nameText(module.source), candidate)) return true;
+            }
+        }
+        return false;
     }
 
     fn clearExternalParamNames(self: *Linker) void {
@@ -3486,7 +3664,7 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .bundler_runtime_helper, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .bundler_runtime_helper, .require_shim_local, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;
@@ -3499,6 +3677,9 @@ pub const Linker = struct {
                         // The graph-level binary helper is assigned explicitly
                         // by reserveToBinaryRuntimeName, not a source scope map.
                         if (sk == .bundler_runtime_helper) continue;
+                        // The createRequire import local is output-unit scoped
+                        // and receives its exact name during preamble emission.
+                        if (sk == .require_shim_local) continue;
                         // Unshadowed CJS callback parameters have a compatibility
                         // alias in the source root map and are candidates there.
                         // A lexical conflict keeps its parameter in the virtual

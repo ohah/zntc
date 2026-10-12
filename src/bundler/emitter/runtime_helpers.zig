@@ -548,6 +548,11 @@ fn requireShimCreateRequireLocal(
     modules: []const *const Module,
     linker: ?*const Linker,
 ) ![]const u8 {
+    if (linker) |l| return @constCast(l).prepareRequireShimLocalName(allocator, modules);
+    for (modules) |module| {
+        if (module.semantic != null) return error.RequireShimLinkerMissing;
+    }
+
     var suffix: u32 = 0;
     while (true) : (suffix += 1) {
         const candidate = if (suffix == 0)
@@ -556,6 +561,7 @@ fn requireShimCreateRequireLocal(
             try std.fmt.allocPrint(allocator, "createRequire${d}", .{suffix});
         if (!requireShimNameInUse(candidate, modules, linker)) return candidate;
         allocator.free(candidate);
+        if (suffix == std.math.maxInt(u32)) return error.RequireShimAliasExhausted;
     }
 }
 

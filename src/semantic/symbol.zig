@@ -314,6 +314,11 @@ pub const SyntheticKind = enum(u8) {
     /// Lexical locals inside raw ESM interop runtime helper templates. Keep
     /// appended so serialized SyntheticKind tags remain stable.
     esm_interop_runtime_internal_local,
+    /// Output-owned `createRequire` import local emitted for Node ESM require
+    /// shims. The linker assigns its selected output spelling to this exact
+    /// detached identity after the output unit's source names are known.
+    /// Keep appended so serialized SyntheticKind tags remain stable.
+    require_shim_local,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
