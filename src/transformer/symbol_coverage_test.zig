@@ -4066,6 +4066,82 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     try std.testing.expectEqual(@as(usize, 1), outer_reads);
 }
 
+fn checkStandaloneForOfTempFinalization(source: []const u8, expect_late_names: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+    var source_loop: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .for_of_statement) source_loop = @enumFromInt(raw);
+    }
+    const loop = source_loop orelse return error.MissingForOfLoop;
+    const loop_scope_raw = analyzer.scope_owner_map.get(@intFromEnum(loop)) orelse return error.MissingForOfScope;
+    const loop_scope: ScopeId = @enumFromInt(loop_scope_raw);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = false,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const expected_temp_scope = transformer.nearestVarScope(loop_scope);
+
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var temp_count: usize = 0;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
+        const name = symbol.synthetic_name;
+        if (symbol.kind != SymbolKind.variable_var or name.len != 2 or name[0] != '_' or name[1] < 'a' or name[1] > 'z') continue;
+        try std.testing.expectEqual(expected_temp_scope, symbol.scope_id);
+        try std.testing.expectEqual(expect_late_names, symbol.synthetic_kind == SyntheticKind.standalone_temp_binding);
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[symbol.scope_id.toIndex()].get(name));
+
+        var binding_count: usize = 0;
+        for (transformer.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
+            if (edited.symbol_ids[raw] == @as(?u32, @intCast(id))) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+        var reference_count: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != id or reference.node_index.isNone()) continue;
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count > 0);
+        temp_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), temp_count);
+}
+
+test "#4819 standalone for-of temps finalize by exact IDs outside dynamic scopes" {
+    try checkStandaloneForOfTempFinalization(
+        "for (const value of source) use(value);",
+        true,
+    );
+    try checkStandaloneForOfTempFinalization(
+        "eval(''); for (const value of source) use(value);",
+        false,
+    );
+}
+
 test "#4819 optional catch binding gets a symbol in its catch scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

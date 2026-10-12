@@ -120,9 +120,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
 
             // var _a = true; var _b = false; var _c = void 0;
             const norm_binding = try es_helpers.makeSyntheticBinding(self, norm);
-            const norm_symbol = if (stable_scope)
-                try self.declareSyntheticInScope(norm_binding, span, .variable_var, outer_scope)
-            else if (register_sm_temps)
+            const norm_symbol = if (stable_scope) blk: {
+                const symbol = try self.declareSyntheticInScope(norm_binding, span, .variable_var, outer_scope);
+                es_helpers.markStandaloneLateSyntheticTemp(self, symbol, outer_scope);
+                break :blk symbol;
+            } else if (register_sm_temps)
                 try self.declareSyntheticTempInScope(norm_binding, span, generated_temp_scope)
             else
                 null;
@@ -131,9 +133,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try es_helpers.makeDeclarator(self, norm_binding, try es_helpers.makeBoolLiteral(self, true), span),
             }, .@"var", span);
             const did_binding = try es_helpers.makeSyntheticBinding(self, did_err);
-            const did_symbol = if (stable_scope)
-                try self.declareSyntheticInScope(did_binding, span, .variable_var, outer_scope)
-            else if (register_sm_temps)
+            const did_symbol = if (stable_scope) blk: {
+                const symbol = try self.declareSyntheticInScope(did_binding, span, .variable_var, outer_scope);
+                es_helpers.markStandaloneLateSyntheticTemp(self, symbol, outer_scope);
+                break :blk symbol;
+            } else if (register_sm_temps)
                 try self.declareSyntheticTempInScope(did_binding, span, generated_temp_scope)
             else
                 null;
@@ -142,9 +146,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try es_helpers.makeDeclarator(self, did_binding, try es_helpers.makeBoolLiteral(self, false), span),
             }, .@"var", span);
             const err_binding = try es_helpers.makeSyntheticBinding(self, err_val);
-            const err_symbol = if (stable_scope)
-                try self.declareSyntheticInScope(err_binding, span, .variable_var, outer_scope)
-            else if (register_sm_temps)
+            const err_symbol = if (stable_scope) blk: {
+                const symbol = try self.declareSyntheticInScope(err_binding, span, .variable_var, outer_scope);
+                es_helpers.markStandaloneLateSyntheticTemp(self, symbol, outer_scope);
+                break :blk symbol;
+            } else if (register_sm_temps)
                 try self.declareSyntheticTempInScope(err_binding, span, generated_temp_scope)
             else
                 null;
@@ -163,8 +169,11 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try self.declareSyntheticTempInScope(iter_binding, span, generated_temp_scope)
             else if (self.pending_loop_extraction_depth != 0)
                 null
-            else
-                try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
+            else if (stable_scope) blk: {
+                const symbol = try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
+                es_helpers.markStandaloneLateSyntheticTemp(self, symbol, loop_scope);
+                break :blk symbol;
+            } else try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
             if (register_sm_temps) try self.recordGeneratorStateTempSymbol(iter, iter_symbol);
             const step_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, step);
             const step_symbol = if (register_sm_temps)
