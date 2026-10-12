@@ -1000,6 +1000,7 @@ const ComputedMemberKeyCallMode = enum {
     sequence_final,
     sequence_argument_member_read,
     sequence_argument_optional_key_call,
+    sequence_argument_member_read_optional_nested_call,
     nested_call_argument,
 };
 
@@ -1241,7 +1242,8 @@ fn isRetainableBoundStaticFieldEffectCall(
                 argument_idx,
                 true,
                 computed_member_key_call_mode == .sequence_final or
-                    computed_member_key_call_mode == .sequence_argument_optional_key_call,
+                    computed_member_key_call_mode == .sequence_argument_optional_key_call or
+                    computed_member_key_call_mode == .sequence_argument_member_read_optional_nested_call,
                 false,
                 .nested_call_argument,
             )) return false;
@@ -1320,7 +1322,8 @@ fn isRetainableBoundStaticFieldMemberRead(
     member_idx: ast_mod.NodeIndex,
     key_call_mode: ComputedMemberKeyCallMode,
 ) bool {
-    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len or
+        key_call_mode == .sequence_argument_member_read_optional_nested_call) return false;
     const extras = ast.extra_data.items;
     var current_idx = member_idx;
     var saw_member = false;
@@ -1358,6 +1361,8 @@ fn isRetainableBoundStaticFieldMemberRead(
                     key_call_mode == .sequence_argument_member_read,
                 if (key_call_mode == .sequence_argument_member_read and optional_key_call)
                     .sequence_argument_optional_key_call
+                else if (key_call_mode == .sequence_argument_member_read)
+                    .sequence_argument_member_read_optional_nested_call
                 else
                     .disallowed,
             )) return false;
