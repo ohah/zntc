@@ -360,6 +360,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     });
     const fn_scope = try self.addGeneratedFunctionScope(self.current_scope, fn_expr);
     const match_symbol = try self.declareSyntheticInScope(match_param, span, .parameter, fn_scope);
+    es_helpers.markStandaloneLateSyntheticTemp(self, match_symbol, fn_scope);
 
     // 각 arm → `if (<test>) { <bindings>; [if (<guard>)] return <body>; }`
     // 을 순서대로 나열. 매치되면 return 으로 함수 탈출, 아니면 다음 if 로 진행.

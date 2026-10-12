@@ -6,6 +6,7 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const Tag = @import("../parser/ast.zig").Node.Tag;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 
 test "#4819 Flow match temp binding and every emitted read get IDs during lowering" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -30,7 +31,7 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
     }
     const source_match = match_node orelse return error.TestUnexpectedResult;
 
-    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .defer_runtime_helper_name_resolution = true });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
@@ -55,6 +56,10 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
     const editor = &transformer.semantic_editor.?;
     try std.testing.expectEqual(SymbolKind.parameter, editor.symbols.items[@intCast(parameter_id)].kind);
     try std.testing.expectEqual(function_scope, editor.symbols.items[@intCast(parameter_id)].scope_id);
+    try std.testing.expectEqual(
+        @as(?SyntheticKind, .standalone_temp_binding),
+        editor.symbols.items[@intCast(parameter_id)].synthetic_kind,
+    );
 
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, lowered);
     var temp_reads: usize = 0;
@@ -96,4 +101,49 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
         registered_reads += 1;
     }
     try std.testing.expectEqual(temp_reads, registered_reads);
+}
+
+test "#4819 Flow match temp does not use a late standalone name in a direct-eval scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "// @flow\nmatch (input) { _ => eval(sourceText) };";
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.is_flow = true;
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var match_node: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .flow_match_expression) {
+            match_node = @enumFromInt(raw);
+            break;
+        }
+    }
+    const source_match = match_node orelse return error.TestUnexpectedResult;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{ .defer_runtime_helper_name_resolution = true });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+
+    const lowered = try transformer.visitNode(source_match);
+    const call = transformer.ast.getNode(lowered);
+    const fn_expr: @TypeOf(source_match) = @enumFromInt(transformer.ast.extra_data.items[call.data.extra]);
+    const function = transformer.ast.getNode(fn_expr);
+    const params = transformer.ast.functionParamsList(function);
+    const parameter: @TypeOf(source_match) = @enumFromInt(transformer.ast.extra_data.items[params.start]);
+    const parameter_id = transformer.getSymbolIdAt(parameter) orelse return error.TestUnexpectedResult;
+    const symbol = transformer.semantic_editor.?.symbols.items[@intCast(parameter_id)];
+    try std.testing.expectEqual(@as(?SyntheticKind, null), symbol.synthetic_kind);
 }
