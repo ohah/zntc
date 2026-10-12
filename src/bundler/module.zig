@@ -781,31 +781,6 @@ pub const Module = struct {
         return self.syntheticName(self.require_symbol, rt);
     }
 
-    fn cjsWrapperParameterName(
-        self: *const Module,
-        maybe_id: ?SemanticSymbolId,
-        fallback: []const u8,
-        rt: ?*const RenameTable,
-    ) []const u8 {
-        const id = maybe_id orelse return fallback;
-        const sem = self.semantic orelse return fallback;
-        const idx: u32 = @intFromEnum(id);
-        if (idx >= sem.symbols.items.len) return fallback;
-        if (rt) |table| {
-            if (table.get(SymbolID.make(self.index, idx))) |name| return name;
-        }
-        const symbol = sem.symbols.items[idx];
-        return if (symbol.synthetic_name.len > 0) symbol.synthetic_name else fallback;
-    }
-
-    pub fn getCjsWrapperExportsParameterName(self: *const Module, rt: ?*const RenameTable) []const u8 {
-        return self.cjsWrapperParameterName(self.cjs_wrapper_exports_parameter_symbol, "exports", rt);
-    }
-
-    pub fn getCjsWrapperModuleParameterName(self: *const Module, rt: ?*const RenameTable) []const u8 {
-        return self.cjsWrapperParameterName(self.cjs_wrapper_module_parameter_symbol, "module", rt);
-    }
-
     /// 등록된 exact wrapper SymbolId의 이름만 반환한다. 심볼이 빠진 상태에서
     /// 경로 문자열로 이름을 추측하면 rename graph 밖의 참조가 생기므로 실패한다.
     pub fn allocInitName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) WrapperNameError![]const u8 {

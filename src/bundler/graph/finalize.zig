@@ -10,6 +10,7 @@ const semantic_symbol = @import("../../semantic/symbol.zig");
 const scope_mod = @import("../../semantic/scope.zig");
 const Scope = scope_mod.Scope;
 const ScopeId = scope_mod.ScopeId;
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const Ast = @import("../../parser/ast.zig").Ast;
 const Span = @import("../../lexer/token.zig").Span;
 const runtime_helper_names = @import("../../runtime_helper_names.zig");
@@ -611,34 +612,60 @@ fn findCjsRuntimeFactorySymbol(m: *Module) ?semantic_symbol.SymbolId {
 /// Register the two implicit bindings supplied to a CommonJS module wrapper.
 /// A source top-level declaration already has the right identity (including
 /// `var`/function redeclarations); otherwise add a generated parameter SymbolId
-/// to the module scope and bind unresolved source references to it.
+/// to the module scope and bind unresolved source references to it. A source
+/// lexical/import binding named `exports` or `module` remains a distinct body
+/// binding, so its corresponding wrapper parameter gets a virtual SymbolId
+/// without replacing the body scope map entry.
 fn registerCjsWrapperParameters(m: *Module) !void {
-    const ast_ptr = if (m.ast) |*ast| ast else return;
     const sem_ptr = if (m.semantic) |*sem| sem else return error.MissingSemantic;
-    if (sem_ptr.scopes.len == 0 or sem_ptr.scope_maps.len == 0) return error.MissingSemantic;
     const arena = if (m.parse_arena) |a| a.allocator() else return error.MissingSemantic;
+
+    // AST-less CJS wrappers still emit the callback parameters. Give them
+    // exact output identities too; there are no source references or body
+    // bindings to attach in this case.
+    const ast_ptr = if (m.ast) |*ast| ast else {
+        const existing_exports = findCjsWrapperParameter(sem_ptr.symbols.items, .cjs_wrapper_exports_parameter, "exports");
+        const existing_module = findCjsWrapperParameter(sem_ptr.symbols.items, .cjs_wrapper_module_parameter, "module");
+        const new_symbol_count: usize = @as(usize, @intFromBool(existing_exports == null)) +
+            @as(usize, @intFromBool(existing_module == null));
+        try sem_ptr.symbols.ensureUnusedCapacity(arena, new_symbol_count);
+        const old_symbol_count = sem_ptr.symbols.items.len;
+        m.cjs_wrapper_exports_parameter_symbol = existing_exports orelse try addDetachedCjsWrapperParameter(
+            sem_ptr,
+            arena,
+            "exports",
+            .cjs_wrapper_exports_parameter,
+        );
+        m.cjs_wrapper_module_parameter_symbol = existing_module orelse try addDetachedCjsWrapperParameter(
+            sem_ptr,
+            arena,
+            "module",
+            .cjs_wrapper_module_parameter,
+        );
+        if (new_symbol_count > 0) extendCachedRefDeltas(arena, m, old_symbol_count, sem_ptr.symbols.items.len);
+        return;
+    };
+    if (sem_ptr.scopes.len == 0 or sem_ptr.scope_maps.len == 0) return error.MissingSemantic;
     const root_scope_ptr = @constCast(&sem_ptr.scopes[0]);
     const root_map = @constCast(&sem_ptr.scope_maps[0]);
 
-    // The wrapper parameters share the body binding for `var` and function
-    // declarations. A lexical/import binding with the same spelling is a
-    // distinct binding in an outer module scope; leave those rare mixed cases
-    // on the collision-safe legacy allocator instead of overwriting its map.
-    if (hasIncompatibleCjsRootBinding(sem_ptr, ast_ptr, "exports", .cjs_wrapper_exports_parameter) or
-        hasIncompatibleCjsRootBinding(sem_ptr, ast_ptr, "module", .cjs_wrapper_module_parameter))
-    {
-        m.cjs_wrapper_exports_parameter_symbol = null;
-        m.cjs_wrapper_module_parameter_symbol = null;
-        return;
-    }
-
-    const existing_exports = cjsRootBinding(sem_ptr, ast_ptr, "exports", .cjs_wrapper_exports_parameter);
-    const existing_module = cjsRootBinding(sem_ptr, ast_ptr, "module", .cjs_wrapper_module_parameter);
+    const exports_conflict = hasIncompatibleCjsRootBinding(sem_ptr, ast_ptr, "exports", .cjs_wrapper_exports_parameter);
+    const module_conflict = hasIncompatibleCjsRootBinding(sem_ptr, ast_ptr, "module", .cjs_wrapper_module_parameter);
+    const existing_exports = if (exports_conflict)
+        findCjsWrapperParameter(sem_ptr.symbols.items, .cjs_wrapper_exports_parameter, "exports")
+    else
+        cjsRootBinding(sem_ptr, ast_ptr, "exports", .cjs_wrapper_exports_parameter);
+    const existing_module = if (module_conflict)
+        findCjsWrapperParameter(sem_ptr.symbols.items, .cjs_wrapper_module_parameter, "module")
+    else
+        cjsRootBinding(sem_ptr, ast_ptr, "module", .cjs_wrapper_module_parameter);
     const new_symbol_count: usize = @as(usize, @intFromBool(existing_exports == null)) +
         @as(usize, @intFromBool(existing_module == null));
-    const new_map_count: usize = @as(usize, @intFromBool(!root_map.contains("exports"))) +
-        @as(usize, @intFromBool(!root_map.contains("module")));
-    if (new_symbol_count > 0 and @as(usize, root_scope_ptr.symbol_count) > std.math.maxInt(u16) - new_symbol_count) {
+    const new_root_symbol_count: usize = @as(usize, @intFromBool(existing_exports == null and !exports_conflict)) +
+        @as(usize, @intFromBool(existing_module == null and !module_conflict));
+    const new_map_count: usize = @as(usize, @intFromBool(!exports_conflict and !root_map.contains("exports"))) +
+        @as(usize, @intFromBool(!module_conflict and !root_map.contains("module")));
+    if (new_root_symbol_count > 0 and @as(usize, root_scope_ptr.symbol_count) > std.math.maxInt(u16) - new_root_symbol_count) {
         return error.CjsWrapperParameterScopeOverflow;
     }
 
@@ -649,30 +676,26 @@ fn registerCjsWrapperParameters(m: *Module) !void {
     try root_map.ensureUnusedCapacity(arena, @intCast(new_map_count));
 
     const old_symbol_count = sem_ptr.symbols.items.len;
-    const exports_symbol = existing_exports orelse try addCjsWrapperParameter(
-        sem_ptr,
-        root_scope_ptr,
-        root_map,
-        arena,
-        "exports",
-        .cjs_wrapper_exports_parameter,
-    );
-    const module_symbol = existing_module orelse try addCjsWrapperParameter(
-        sem_ptr,
-        root_scope_ptr,
-        root_map,
-        arena,
-        "module",
-        .cjs_wrapper_module_parameter,
-    );
+    const exports_symbol = existing_exports orelse if (exports_conflict)
+        try addDetachedCjsWrapperParameter(sem_ptr, arena, "exports", .cjs_wrapper_exports_parameter)
+    else
+        try addCjsWrapperParameter(sem_ptr, root_scope_ptr, root_map, arena, "exports", .cjs_wrapper_exports_parameter);
+    const module_symbol = existing_module orelse if (module_conflict)
+        try addDetachedCjsWrapperParameter(sem_ptr, arena, "module", .cjs_wrapper_module_parameter)
+    else
+        try addCjsWrapperParameter(sem_ptr, root_scope_ptr, root_map, arena, "module", .cjs_wrapper_module_parameter);
 
-    const exports_raw: usize = @intFromEnum(exports_symbol);
-    if ((root_map.get("exports") orelse std.math.maxInt(usize)) != exports_raw) {
-        root_map.putAssumeCapacity("exports", exports_raw);
+    // Keep incompatible source bindings in the root map. Only wrapper
+    // parameters actually owned by that map are installed there.
+    if (sem_ptr.symbols.items[@intFromEnum(exports_symbol)].scope_id == @as(ScopeId, @enumFromInt(0))) {
+        const exports_raw: usize = @intFromEnum(exports_symbol);
+        if ((root_map.get("exports") orelse std.math.maxInt(usize)) != exports_raw)
+            root_map.putAssumeCapacity("exports", exports_raw);
     }
-    const module_raw: usize = @intFromEnum(module_symbol);
-    if ((root_map.get("module") orelse std.math.maxInt(usize)) != module_raw) {
-        root_map.putAssumeCapacity("module", module_raw);
+    if (sem_ptr.symbols.items[@intFromEnum(module_symbol)].scope_id == @as(ScopeId, @enumFromInt(0))) {
+        const module_raw: usize = @intFromEnum(module_symbol);
+        if ((root_map.get("module") orelse std.math.maxInt(usize)) != module_raw)
+            root_map.putAssumeCapacity("module", module_raw);
     }
 
     const exports_generated = isCjsWrapperParameter(sem_ptr, exports_symbol, .cjs_wrapper_exports_parameter);
@@ -712,10 +735,12 @@ fn cjsRootBinding(
     kind: semantic_symbol.SyntheticKind,
 ) ?semantic_symbol.SymbolId {
     const root_scope: ScopeId = @enumFromInt(0);
-    if (sem.scope_maps[0].get(name)) |raw| {
+    var bindings = sem.scope_maps[0].valueIterator();
+    while (bindings.next()) |raw_ptr| {
+        const raw = raw_ptr.*;
         if (raw < sem.symbols.items.len) {
             const symbol = sem.symbols.items[raw];
-            if (symbol.scope_id == root_scope and std.mem.eql(u8, symbol.nameText(ast.source), name)) {
+            if (symbol.scope_id == root_scope and cjsWrapperIdentifierEquals(symbol.nameText(ast.source), name)) {
                 return @enumFromInt(@as(u32, @intCast(raw)));
             }
         }
@@ -730,12 +755,23 @@ fn hasIncompatibleCjsRootBinding(
     kind: semantic_symbol.SyntheticKind,
 ) bool {
     const root_scope: ScopeId = @enumFromInt(0);
-    const raw = sem.scope_maps[0].get(name) orelse return false;
-    if (raw >= sem.symbols.items.len) return false;
-    const symbol = sem.symbols.items[raw];
-    if (symbol.scope_id != root_scope or !std.mem.eql(u8, symbol.nameText(ast.source), name)) return false;
-    if (symbol.synthetic_kind == kind) return false;
-    return symbol.kind != .variable_var and !symbol.kind.isFunctionLike();
+    var bindings = sem.scope_maps[0].valueIterator();
+    while (bindings.next()) |raw_ptr| {
+        const raw = raw_ptr.*;
+        if (raw >= sem.symbols.items.len) continue;
+        const symbol = sem.symbols.items[raw];
+        if (symbol.scope_id != root_scope or !cjsWrapperIdentifierEquals(symbol.nameText(ast.source), name)) continue;
+        if (symbol.synthetic_kind == kind) return false;
+        return symbol.kind != .variable_var and !symbol.kind.isFunctionLike();
+    }
+    return false;
+}
+
+fn cjsWrapperIdentifierEquals(raw: []const u8, expected: []const u8) bool {
+    // CJS environment names are short ASCII identifiers. Decode source
+    // escapes so `exp\u006frts` and `exports` have the same binding identity.
+    var scratch: [7]u8 = undefined;
+    return expected.len <= scratch.len and Scanner.identifierTextEqualsAscii(raw, expected, scratch[0..expected.len]);
 }
 
 fn addCjsWrapperParameter(
@@ -762,6 +798,25 @@ fn addCjsWrapperParameter(
     return id;
 }
 
+fn addDetachedCjsWrapperParameter(
+    sem: *@import("../module.zig").ModuleSemanticData,
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    kind: semantic_symbol.SyntheticKind,
+) !semantic_symbol.SymbolId {
+    // The callback parameter is emitted outside the parsed body scope. In the
+    // lexical/import collision case there is no AST-owned reference for it,
+    // so preserve its identity as an output-owned symbol with no body ScopeId.
+    return semantic_symbol.extendSymbol(
+        allocator,
+        &sem.symbols,
+        .parameter,
+        kind,
+        name,
+        Span.EMPTY,
+    );
+}
+
 fn isCjsWrapperParameter(
     sem: *const @import("../module.zig").ModuleSemanticData,
     id: semantic_symbol.SymbolId,
@@ -778,7 +833,8 @@ fn findCjsWrapperParameter(
     name: []const u8,
 ) ?semantic_symbol.SymbolId {
     for (symbols, 0..) |symbol, raw| {
-        if (symbol.synthetic_kind != kind or symbol.scope_id != @as(ScopeId, @enumFromInt(0)) or
+        if (symbol.synthetic_kind != kind or
+            (symbol.scope_id != @as(ScopeId, @enumFromInt(0)) and !symbol.scope_id.isNone()) or
             !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
         return @enumFromInt(@as(u32, @intCast(raw)));
     }

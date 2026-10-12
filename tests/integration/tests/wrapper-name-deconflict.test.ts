@@ -564,6 +564,79 @@ describe('#4530: 래퍼 심볼 ↔ 사용자 top-level 심볼 deconflict', () =>
 });
 
 describe('#4819: CJS wrapper parameter identity', () => {
+  const lexicalConflicts = [
+    {
+      name: 'exports',
+      source:
+        "let exports = 'local-exports';\nmodule.exports = exports;\nconsole.log(module.exports);",
+      expected: 'local-exports',
+    },
+    {
+      name: 'module',
+      source:
+        "let module = 'local-module';\nexports.answer = 42;\nconsole.log(module, exports.answer);",
+      expected: 'local-module 42',
+    },
+    {
+      name: 'escaped exports',
+      source:
+        "let exp\\u006frts = 'escaped-local';\nmodule.exports = exp\\u006frts;\nconsole.log(module.exports);",
+      expected: 'escaped-local',
+    },
+    {
+      name: 'escaped module',
+      source:
+        "let modul\\u0065 = 'escaped-module';\nexports.answer = 42;\nconsole.log(modul\\u0065, exports.answer);",
+      expected: 'escaped-module 42',
+    },
+    {
+      name: 'both wrapper parameters',
+      source:
+        "let exports = 'local-exports';\nlet module = 'local-module';\nconsole.log(exports, module);",
+      expected: 'local-exports local-module',
+    },
+  ];
+
+  for (const mode of ['', '--minify-whitespace', '--minify']) {
+    for (const { name, source, expected } of lexicalConflicts) {
+      test(`keeps exact wrapper parameter identities when top-level ${name} is lexical (${mode || 'plain'})`, async () => {
+        const { dir, cleanup } = await createFixture({ 'entry.cjs': source });
+        try {
+          const out = join(dir, 'bundle.cjs');
+          const args = ['--bundle', join(dir, 'entry.cjs'), '-o', out, '--format=cjs'];
+          if (mode) args.push(mode);
+          const result = await runZntc(args);
+          expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+          const { stdout, stderr } = await runNode(out);
+          expect(stderr).not.toContain('SyntaxError');
+          expect(stdout.trim()).toBe(expected);
+        } finally {
+          await cleanup();
+        }
+      });
+    }
+  }
+
+  test('virtual aliases avoid user bindings and direct eval keeps the unaffected parameter name', async () => {
+    const { dir, cleanup } = await createFixture({
+      'entry.cjs':
+        "let exports = 'local';\n" +
+        'const $e = 1, $e2 = 2;\n' +
+        "eval('console.log(module.exports === module.exports)');\n" +
+        'console.log(exports, $e + $e2);',
+    });
+    try {
+      const out = join(dir, 'bundle.cjs');
+      const result = await runZntc(['--bundle', join(dir, 'entry.cjs'), '-o', out, '--format=cjs']);
+      expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('SyntaxError');
+      expect(stdout.trim().split('\n')).toEqual(['true', 'local 3']);
+    } finally {
+      await cleanup();
+    }
+  });
+
   const redeclarations = [
     {
       name: 'exports',

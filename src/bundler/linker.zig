@@ -5316,13 +5316,10 @@ pub const Linker = struct {
         if (self.cjs_factory_runtime_symbol_id != null or !opts.compute_renames) {
             try self.prepareCjsRuntimeInternalNames();
         }
-        // `--minify-whitespace` historically shortened CJS callback parameters
-        // even when identifier mangling was disabled. Preserve that behavior
-        // through their exact SymbolIds so body references and wrapper syntax
-        // receive one shared output name.
-        if (self.minify_whitespace and !self.graph.minify_identifiers) {
-            try self.assignCjsWrapperParameterAliases();
-        }
+        // Keep legacy whitespace-only aliases, and also give virtual
+        // parameters a collision-free exact name when a source lexical/import
+        // binding owns `exports` or `module` in the body scope.
+        try self.assignCjsWrapperParameterAliases();
         self.populateReExportAliases();
         self.populateImportSymbols();
         if (opts.populate_namespace_accesses) self.populateNamespaceAccesses();
@@ -5338,41 +5335,77 @@ pub const Linker = struct {
     }
 
     fn assignCjsWrapperParameterAliases(self: *Linker) !void {
-        if (self.graph.resolve_cache.platform == .react_native or cjs_wrap_mangle_disabled.enabled()) return;
-
+        const normal_aliasing = self.minify_whitespace and !self.graph.minify_identifiers and
+            self.graph.resolve_cache.platform != .react_native and !cjs_wrap_mangle_disabled.enabled();
         var modules = self.graph.modules.iterator(0);
         while (modules.next()) |module| {
             if (module.wrap_kind != .cjs) continue;
-            const exports_id = module.cjs_wrapper_exports_parameter_symbol orelse continue;
-            const module_id = module.cjs_wrapper_module_parameter_symbol orelse continue;
             const sem = module.semantic orelse continue;
-            if (sem.scopes.len == 0 or sem.scopes[0].blocksMangling()) continue;
-
-            const exports_sid = bundler_symbol.SymbolID.make(module.index, @intFromEnum(exports_id));
-            const module_sid = bundler_symbol.SymbolID.make(module.index, @intFromEnum(module_id));
             const exports_preferred = rt_names.NAMES.CJS_WRAPPER_EXPORTS_MIN;
             const module_preferred = rt_names.NAMES.CJS_WRAPPER_MODULE_MIN;
+            const blocks_mangling = sem.scopes.len == 0 or sem.scopes[0].blocksMangling();
+            const exports_id = module.cjs_wrapper_exports_parameter_symbol;
+            const module_id = module.cjs_wrapper_module_parameter_symbol;
+            const exports_sid = if (exports_id) |id| bundler_symbol.SymbolID.make(module.index, @intFromEnum(id)) else null;
+            const module_sid = if (module_id) |id| bundler_symbol.SymbolID.make(module.index, @intFromEnum(id)) else null;
+            var exports_name: ?[]const u8 = null;
 
-            const exports_name = if (self.rename_table.get(exports_sid)) |existing|
-                (if (isCjsWrapperAlias(existing, exports_preferred)) existing else try self.allocateCjsWrapperParamAlias(module, exports_sid, exports_preferred, null))
-            else
-                try self.allocateCjsWrapperParamAlias(module, exports_sid, exports_preferred, null);
-            if (self.rename_table.get(exports_sid) == null or
-                !std.mem.eql(u8, self.rename_table.get(exports_sid).?, exports_name))
-            {
-                try self.assignCjsWrapperAlias(exports_sid, exports_name);
+            if (exports_id) |id| {
+                const raw: usize = @intFromEnum(id);
+                if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
+                const symbol = sem.symbols.items[raw];
+                const detached_conflict = module.ast != null and symbol.scope_id.isNone();
+                const needs_alias = detached_conflict or (normal_aliasing and !blocks_mangling);
+                const sid = exports_sid.?;
+                if (needs_alias) {
+                    const other = if (module_sid) |other_sid|
+                        try self.cjsWrapperParameterCurrentName(module, other_sid, @intFromEnum(module_id.?))
+                    else
+                        null;
+                    const selected = if (self.rename_table.get(sid)) |existing|
+                        (if (isCjsWrapperAlias(existing, exports_preferred) and
+                            (other == null or !std.mem.eql(u8, existing, other.?))) existing else try self.allocateCjsWrapperParamAlias(module, sid, exports_preferred, other))
+                    else
+                        try self.allocateCjsWrapperParamAlias(module, sid, exports_preferred, other);
+                    if (self.rename_table.get(sid) == null or !std.mem.eql(u8, self.rename_table.get(sid).?, selected))
+                        try self.assignCjsWrapperAlias(sid, selected);
+                    exports_name = selected;
+                } else {
+                    exports_name = try self.cjsWrapperParameterCurrentName(module, sid, raw);
+                }
             }
 
-            const module_name = if (self.rename_table.get(module_sid)) |existing|
-                (if (isCjsWrapperAlias(existing, module_preferred) and !std.mem.eql(u8, existing, exports_name)) existing else try self.allocateCjsWrapperParamAlias(module, module_sid, module_preferred, exports_name))
-            else
-                try self.allocateCjsWrapperParamAlias(module, module_sid, module_preferred, exports_name);
-            if (self.rename_table.get(module_sid) == null or
-                !std.mem.eql(u8, self.rename_table.get(module_sid).?, module_name))
-            {
-                try self.assignCjsWrapperAlias(module_sid, module_name);
+            if (module_id) |id| {
+                const raw: usize = @intFromEnum(id);
+                if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
+                const symbol = sem.symbols.items[raw];
+                const detached_conflict = module.ast != null and symbol.scope_id.isNone();
+                const needs_alias = detached_conflict or (normal_aliasing and !blocks_mangling);
+                if (!needs_alias) continue;
+
+                const sid = module_sid.?;
+                const selected = if (self.rename_table.get(sid)) |existing|
+                    (if (isCjsWrapperAlias(existing, module_preferred) and
+                        (exports_name == null or !std.mem.eql(u8, existing, exports_name.?))) existing else try self.allocateCjsWrapperParamAlias(module, sid, module_preferred, exports_name))
+                else
+                    try self.allocateCjsWrapperParamAlias(module, sid, module_preferred, exports_name);
+                if (self.rename_table.get(sid) == null or !std.mem.eql(u8, self.rename_table.get(sid).?, selected))
+                    try self.assignCjsWrapperAlias(sid, selected);
             }
         }
+    }
+
+    fn cjsWrapperParameterCurrentName(
+        self: *const Linker,
+        module: *const Module,
+        symbol_id: bundler_symbol.SymbolID,
+        raw_symbol_id: usize,
+    ) ![]const u8 {
+        if (self.rename_table.get(symbol_id)) |name| return name;
+        const sem = module.semantic orelse return error.MissingSemantic;
+        if (raw_symbol_id >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
+        const symbol = sem.symbols.items[raw_symbol_id];
+        return symbol.preferredOutputName(module.source);
     }
 
     fn assignCjsWrapperAlias(self: *Linker, id: bundler_symbol.SymbolID, name: []const u8) !void {

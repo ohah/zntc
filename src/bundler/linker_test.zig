@@ -339,10 +339,17 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
 
     const first_inner = first.require_symbol orelse return error.TestUnexpectedResult;
     const second_inner = second.require_symbol orelse return error.TestUnexpectedResult;
+    const first_exports_param = first.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
+    const first_module_param = first.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
     const first_row = first_sem.symbols.items[@intFromEnum(first_inner)];
     const second_row = second_sem.symbols.items[@intFromEnum(second_inner)];
+    const first_exports_row = first_sem.symbols.items[@intFromEnum(first_exports_param)];
+    const first_module_row = first_sem.symbols.items[@intFromEnum(first_module_param)];
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, first_row.synthetic_kind.?);
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, second_row.synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter, first_exports_row.synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter, first_module_row.synthetic_kind.?);
+    try std.testing.expect(first_exports_row.scope_id.isNone() and first_module_row.scope_id.isNone());
     try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
     const first_symbol_count = first_sem.symbols.items.len;
@@ -354,10 +361,68 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     try graph_finalize.registerWrapperSymbols(graph);
     try graph_finalize.registerWrapperSymbols(graph);
     try std.testing.expectEqual(first_inner, first.require_symbol orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(first_exports_param, first.cjs_wrapper_exports_parameter_symbol.?);
+    try std.testing.expectEqual(first_module_param, first.cjs_wrapper_module_parameter_symbol.?);
     try std.testing.expectEqual(first_symbol_count, first.semantic.?.symbols.items.len);
     try std.testing.expectEqual(second_symbol_count, second.semantic.?.symbols.items.len);
     try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
+}
+
+test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "let exports = 'local'; let module = exports;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const index = findModuleIdx(r.graph, "entry.cjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+    const exports_id = module.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
+    const module_id = module.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
+    const sem = module.semantic orelse return error.TestUnexpectedResult;
+    const exports_row = sem.symbols.items[@intFromEnum(exports_id)];
+    const module_row = sem.symbols.items[@intFromEnum(module_id)];
+
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter, exports_row.synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter, module_row.synthetic_kind.?);
+    try std.testing.expect(exports_row.scope_id.isNone());
+    try std.testing.expect(module_row.scope_id.isNone());
+
+    const source_exports = sem.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult;
+    const source_module = sem.scope_maps[0].get("module") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(source_exports != @intFromEnum(exports_id));
+    try std.testing.expect(source_module != @intFromEnum(module_id));
+    try std.testing.expectEqualStrings("exports", sem.symbols.items[source_exports].nameText(module.source));
+    try std.testing.expectEqualStrings("module", sem.symbols.items[source_module].nameText(module.source));
+
+    const symbol_count = sem.symbols.items.len;
+    try graph_finalize.registerWrapperSymbols(r.graph);
+    try graph_finalize.registerWrapperSymbols(r.graph);
+    try std.testing.expectEqual(exports_id, module.cjs_wrapper_exports_parameter_symbol.?);
+    try std.testing.expectEqual(module_id, module.cjs_wrapper_module_parameter_symbol.?);
+    try std.testing.expectEqual(symbol_count, module.semantic.?.symbols.items.len);
+}
+
+test "#4819: escaped CJS var redeclaration shares the wrapper parameter SymbolId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "var exp\\u006frts = 42;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const index = findModuleIdx(r.graph, "entry.cjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.getModule(index) orelse return error.TestUnexpectedResult;
+    const exports_id = module.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
+    const sem = module.semantic orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, @intFromEnum(exports_id)), sem.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult);
+    try std.testing.expect(sem.symbols.items[@intFromEnum(exports_id)].synthetic_kind == null);
 }
 
 test "linker: wrapped source modules fail closed without semantic identity" {
