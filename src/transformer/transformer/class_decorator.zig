@@ -176,6 +176,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
+                es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
                 self.current_class_name_node = new_name;
                 self.current_class_self_symbol_id = @intFromEnum(id);
                 try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
@@ -308,6 +309,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
             const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                 std.debug.panic("anonymous class wrapper name has no direct SymbolId", .{});
+            es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
             self.current_class_name_node = new_name;
             self.current_class_self_symbol_id = @intFromEnum(id);
             try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));

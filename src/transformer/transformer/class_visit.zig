@@ -86,6 +86,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
+                es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
                 generated_class_self_symbol_id = @intFromEnum(id);
                 try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
             }
@@ -100,6 +101,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-block class name has no direct SymbolId", .{});
+                es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
                 generated_class_self_symbol_id = @intFromEnum(id);
                 try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
             }
@@ -600,7 +602,8 @@ pub fn wrapClassExprInIIFE(
     else
         .none;
     var decl_name = new_name;
-    const ret_name_span: Span = if (decl_name.isNone()) blk: {
+    const generated_ret_name = decl_name.isNone();
+    const ret_name_span: Span = if (generated_ret_name) blk: {
         const tmp_span = try es_helpers.makeTempVarSpan(self);
         decl_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         break :blk tmp_span;
@@ -626,7 +629,13 @@ pub fn wrapClassExprInIIFE(
             std.debug.panic("generated class wrapper name has no direct SymbolId", .{});
         break :blk @intFromEnum(id);
     } else null;
-
+    if (generated_ret_name and self.semantic_edit_enabled) {
+        es_helpers.markStandaloneLateSyntheticTemp(
+            self,
+            @enumFromInt(class_binding_symbol_id orelse std.debug.panic("generated class wrapper has no exact SymbolId", .{})),
+            wrapper_scope,
+        );
+    }
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
     try self.scratch.appendSlice(self.allocator, pre_stmts_a);
