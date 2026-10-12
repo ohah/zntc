@@ -120,6 +120,112 @@ console.log(typeof new Dynamic().read(), new Dynamic().seen, _this);
     expect(runtime.stdout).toBe('object undefined outer\n');
   });
 
+  test('derived constructor arguments capture gets a late name by exact SymbolId', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+var _arguments = 'outer';
+class Base {}
+class Explicit extends Base {
+  constructor(value = (() => arguments.length)()) {
+    super();
+    this.value = value;
+  }
+}
+console.log(new Explicit(undefined, 5).value, _arguments);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const proc = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+      cwd: fixture.dir,
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+      encoding: 'utf8',
+    });
+    expect(proc.status, proc.stderr).toBe(0);
+
+    const report = (proc.stderr ?? '')
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'));
+    expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+    expect(report, proc.stderr).toMatch(/missing_binding=0(?:\s|$)/);
+    expect(report, proc.stderr).toMatch(/missing_reference=0(?:\s|$)/);
+
+    const code = readFileSync(output, 'utf8');
+    const names = [...code.matchAll(/\bvar (_arguments\d+)\s*=\s*arguments\b/g)].map(
+      (match) => match[1],
+    );
+    expect(names).toEqual(['_arguments2']);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('2 outer\n');
+  });
+
+  test('direct eval keeps generated arguments capture out of observable names', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+var _arguments = 'outer';
+class Base {}
+class Dynamic extends Base {
+  constructor(value = (() => arguments.length)()) {
+    super();
+    this.value = value;
+    this.seen = eval('typeof _arguments2');
+  }
+}
+const instance = new Dynamic(undefined, 5);
+console.log(instance.value, instance.seen, _arguments);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const proc = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+      cwd: fixture.dir,
+      encoding: 'utf8',
+    });
+    expect(proc.status, proc.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).not.toMatch(/var _arguments2\s*=\s*arguments\b/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('2 undefined outer\n');
+  });
+
+  test('nested direct eval keeps captured arguments name out of closure scope', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+var _arguments = 'outer';
+class Base {}
+class NestedDynamic extends Base {
+  constructor(value = (() => arguments.length)()) {
+    super();
+    const probe = () => eval('typeof _arguments2');
+    this.value = value;
+    this.seen = probe();
+  }
+}
+const instance = new NestedDynamic(undefined, 5);
+console.log(instance.value, instance.seen, _arguments);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const proc = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+      cwd: fixture.dir,
+      encoding: 'utf8',
+    });
+    expect(proc.status, proc.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).not.toMatch(/var _arguments2\s*=\s*arguments\b/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('2 undefined outer\n');
+  });
+
   test('direct eval cannot observe a generated new.target local', async () => {
     const fixture = await createFixture({
       'input.js': `

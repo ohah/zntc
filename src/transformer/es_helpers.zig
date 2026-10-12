@@ -935,7 +935,8 @@ pub fn makeGlobalRef(self: anytype, name: []const u8) !NodeIndex {
 
 /// 변환기가 만든 합성 변수 참조 — `_this`, `_state`, `_ret`. 사용자 심볼이 없다.
 pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
-    const resolved = if (std.mem.eql(u8, name, "_this") and self.semantic_edit_enabled and
+    const is_lexical_capture_alias = std.mem.eql(u8, name, "_this") or std.mem.eql(u8, name, "_arguments");
+    const resolved = if (is_lexical_capture_alias and self.semantic_edit_enabled and
         self.capture_frame != 0 and !self.capture_scope.isNone())
         try resolveSyntheticNameAvoidingDynamicEval(self, name, self.capture_scope)
     else
