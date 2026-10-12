@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { bundleAndRun, createFixture, ZNTC_BIN } from './helpers';
 
-describe('ES5 class new.target symbols (#4819)', () => {
+describe('ES5 class synthetic capture symbols (#4819)', () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -49,6 +49,75 @@ console.log(new Explicit().target === Explicit, new Default().target === Default
     const runtime = spawnSync('node', [output], { encoding: 'utf8' });
     expect(runtime.status, runtime.stderr).toBe(0);
     expect(runtime.stdout).toBe('true true outer\n');
+  });
+
+  test('explicit and default derived constructor this captures get distinct late names', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+var _this = 'outer';
+function Base() { this.value = 5; }
+class Explicit extends Base {
+  read = () => this.value;
+  constructor() { super(); }
+}
+class Default extends Base { read = () => this.value; }
+console.log(new Explicit().read(), new Default().read(), _this);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const proc = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+      cwd: fixture.dir,
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+      encoding: 'utf8',
+    });
+    expect(proc.status, proc.stderr).toBe(0);
+
+    const report = (proc.stderr ?? '')
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'));
+    expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+    expect(report, proc.stderr).toMatch(/missing_binding=0(?:\s|$)/);
+    expect(report, proc.stderr).toMatch(/missing_reference=0(?:\s|$)/);
+
+    const code = readFileSync(output, 'utf8');
+    const names = [...code.matchAll(/\bvar (_this\d+)\b/g)].map((match) => match[1]);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+    expect(names).toContain('_this2');
+    expect(names).toContain('_this3');
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('5 5 outer\n');
+  });
+
+  test('direct eval keeps generated this capture out of observable names', async () => {
+    const fixture = await createFixture({
+      'input.js': `
+var _this = 'outer';
+function Base() {}
+class Dynamic extends Base {
+  read = () => this;
+  constructor() { super(); this.seen = eval('typeof _this2'); }
+}
+console.log(typeof new Dynamic().read(), new Dynamic().seen, _this);
+`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const proc = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+      cwd: fixture.dir,
+      encoding: 'utf8',
+    });
+    expect(proc.status, proc.stderr).toBe(0);
+
+    const code = readFileSync(output, 'utf8');
+    expect(code).not.toMatch(/var _this2\b/);
+
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe('object undefined outer\n');
   });
 
   test('direct eval cannot observe a generated new.target local', async () => {

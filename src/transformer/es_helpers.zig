@@ -935,7 +935,12 @@ pub fn makeGlobalRef(self: anytype, name: []const u8) !NodeIndex {
 
 /// 변환기가 만든 합성 변수 참조 — `_this`, `_state`, `_ret`. 사용자 심볼이 없다.
 pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
-    return markSynthetic(self, try makeIdentifierRef(self, try resolveSyntheticName(self, name)));
+    const resolved = if (std.mem.eql(u8, name, "_this") and self.semantic_edit_enabled and
+        self.capture_frame != 0 and !self.capture_scope.isNone())
+        try resolveSyntheticNameAvoidingDynamicEval(self, name, self.capture_scope)
+    else
+        try resolveSyntheticName(self, name);
+    return markSynthetic(self, try makeIdentifierRef(self, resolved));
 }
 
 /// 이미 고유 이름을 확정한 생성자가 동일한 철자의 바인딩/참조를 만든다.
@@ -1139,6 +1144,10 @@ pub fn resolveSyntheticNameAvoidingDynamicEval(self: anytype, name: []const u8, 
 pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
     if (self.synthetic_names.get(name)) |resolved| {
         try self.synthetic_taken.put(self.allocator, resolved, {});
+        if (!std.mem.eql(u8, resolved, name) and !self.late_output_name_bases.contains(resolved)) {
+            const base = try self.name_arena.?.allocator().dupe(u8, name);
+            try self.late_output_name_bases.put(self.allocator, resolved, base);
+        }
         return resolved;
     }
     const staging = try resolveSyntheticName(self, name);
