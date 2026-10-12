@@ -847,6 +847,11 @@ pub fn emitWithTreeShaking(
         allocator.free(results);
     }
     for (results) |*r| r.* = .{};
+    // A module that fails to emit must fail the build, not vanish from the
+    // bundle (#5558): workers record the error in the module's own slot.
+    const emit_errors = try allocator.alloc(?anyerror, sorted.items.len);
+    defer allocator.free(emit_errors);
+    @memset(emit_errors, null);
 
     // Phase 1.5: compiled output cache lookup. input_hashes 는 Phase 2.5 put 에
     // 재사용 — miss 당 hash 를 두 번 계산하지 않기 위함.
@@ -955,7 +960,7 @@ pub fn emitWithTreeShaking(
         var s: usize = 0;
         while (s < total) {
             const e = @min(s + chunk, total);
-            group.async(io, emitRangeThread, .{ allocator, sorted.items, options, linker, entry_idx, used_names_list, hit_mask, shaker, results, s, e });
+            group.async(io, emitRangeThread, .{ allocator, sorted.items, options, linker, entry_idx, used_names_list, hit_mask, shaker, results, emit_errors, s, e });
             s = e;
         }
         group.await(io) catch {};
@@ -964,9 +969,13 @@ pub fn emitWithTreeShaking(
             if (hit_mask[i]) continue;
             const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
             const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch null;
+            results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch |err| blk: {
+                emit_errors[i] = err;
+                break :blk null;
+            };
         }
     }
+    for (emit_errors) |maybe_err| if (maybe_err) |err| return err;
 
     // Phase 2.5: miss 결과를 cache 에 put. StringHashMap.put 은 thread-unsafe 이므로
     // 병렬 emit 완료 후 순차 처리. put 실패는 다음 빌드에서 재시도되므로 silent continue.
@@ -1757,6 +1766,7 @@ fn emitRangeThread(
     hit_mask: []const bool,
     shaker: ?*const TreeShaker,
     results: []CompiledModule,
+    emit_errors: []?anyerror,
     lo: usize,
     hi: usize,
 ) void {
@@ -1766,7 +1776,10 @@ fn emitRangeThread(
         const m = sorted_items[i];
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
         const used_names: ?[]const []const u8 = if (used_names_list[i].all_used) null else used_names_list[i].names;
-        results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch null;
+        results[i].code = emitModule(allocator, m, options, linker, is_entry, used_names, shaker, &results[i].helpers, &results[i].mappings, &results[i].names, &results[i].preamble_lines, &results[i].fn_map_json, &results[i].entry_chain, &results[i].shared_ns_decls) catch |err| blk: {
+            emit_errors[i] = err;
+            break :blk null;
+        };
     }
 }
 
