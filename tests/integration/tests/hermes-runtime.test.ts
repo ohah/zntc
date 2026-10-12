@@ -1,7 +1,8 @@
 import { describe, test, expect, beforeAll } from 'bun:test';
 import { ZNTC_BIN } from './helpers';
-import { resolve } from 'node:path';
-import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { existsSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 /**
  * Hermes 런타임 테스트.
@@ -14,6 +15,8 @@ import { existsSync } from 'node:fs';
  */
 
 const EXAMPLE_APP = resolve(import.meta.dir, 'fixtures/rn-example-app');
+// Bundle outputs go to a temp dir, not the tracked fixture.
+const OUT_DIR = mkdtempSync(join(tmpdir(), 'zntc-hermes-runtime-'));
 
 // Hermes 런타임 바이너리 경로 탐색
 function findHermes(): string | null {
@@ -148,7 +151,7 @@ describe('Hermes 런타임: ZNTC 번들 실행 검증', () => {
   test('RN 번들 Hermes 구문 검증 (hermesc)', async () => {
     const hermesc = findHermesc();
     if (!hermesc) return; // hermesc not found (bun install 미실행)
-    const outFile = resolve(EXAMPLE_APP, 'zntc-hermes.js');
+    const outFile = join(OUT_DIR, 'zntc-hermes.js');
     const zntc = Bun.spawnSync([
       ZNTC_BIN,
       '--bundle',
@@ -161,7 +164,7 @@ describe('Hermes 런타임: ZNTC 번들 실행 검증', () => {
     ]);
     if (zntc.exitCode !== 0) return; // 번들 실패 시 skip (node_modules 부재 등)
 
-    const hbc = resolve(EXAMPLE_APP, 'zntc-hermes.hbc');
+    const hbc = join(OUT_DIR, 'zntc-hermes.hbc');
     const result = Bun.spawnSync([hermesc, '-emit-binary', '-out', hbc, outFile]);
     const stderr = result.stderr?.toString() ?? '';
     const errorCount = (stderr.match(/error:/g) || []).length;
@@ -267,9 +270,11 @@ print("RES:" + arr.join(","));`;
     expect(result.stdout?.toString() ?? '').toContain('RES:done');
   });
 
+  // Bundles the whole example app like the hermesc test above: the default
+  // 5s timeout is too short for a debug build.
   test('__copyProps getOwnPropertyNames 패턴이 번들에 포함됨', async () => {
     // 이전 테스트(hermesc)에 의존하지 않고 자체 번들 생성
-    const outFile = resolve(EXAMPLE_APP, 'zntc-hermes.js');
+    const outFile = join(OUT_DIR, 'zntc-hermes.js');
     const zntc = Bun.spawnSync([
       ZNTC_BIN,
       '--bundle',
@@ -289,5 +294,5 @@ print("RES:" + arr.join(","));`;
     expect(output).not.toContain('Object.keys(from).forEach');
     expect(output).not.toContain('for(let key in from)');
     expect(output).not.toMatch(/for\s*\(\s*let\s+key\s+in\s+from\s*\)/);
-  });
+  }, 60_000);
 });

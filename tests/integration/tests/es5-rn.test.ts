@@ -1,6 +1,8 @@
 import { describe, test, expect } from 'bun:test';
 import { ZNTC_BIN } from './helpers';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 /**
  * React Native ES5 다운레벨링 회귀 테스트.
@@ -192,6 +194,11 @@ describe('RN ES5: ExampleApp 번들 테스트', () => {
 
 describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
   const EXAMPLE_APP = resolve(import.meta.dir, 'fixtures/rn-example-app');
+  // Shared by the require/__esm checks below; written to a temp dir, not the fixture.
+  const REQUIRE_CHECK_OUT = join(
+    mkdtempSync(join(tmpdir(), 'zntc-require-check-')),
+    'zntc-require-check.js',
+  );
 
   test('Metro 번들 모듈 수 기준선', async () => {
     // Metro 번들
@@ -258,7 +265,7 @@ describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
     );
 
     // ZNTC 번들
-    const outFile = resolve(EXAMPLE_APP, 'zntc-hermes.js');
+    const outFile = join(mkdtempSync(join(tmpdir(), 'zntc-es5-rn-')), 'zntc-hermes.js');
     const zntc = Bun.spawnSync([
       ZNTC_BIN,
       '--bundle',
@@ -272,7 +279,7 @@ describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
     expect(zntc.exitCode).toBe(0);
 
     // hermesc로 구문 검증
-    const hbc = resolve(EXAMPLE_APP, 'zntc-hermes.hbc');
+    const hbc = outFile.replace(/\.js$/, '.hbc');
     const hermes = Bun.spawnSync([hermesc, '-emit-binary', '-out', hbc, outFile]);
     const stderr = hermes.stderr?.toString() ?? '';
     if (hermes.exitCode !== 0) {
@@ -287,7 +294,7 @@ describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
     // __commonJS 래퍼 안에서 ESM import가 require()로 변환될 때
     // require_xxx()로 치환되어야 함. raw require("specifier")가 남아있으면 런타임 에러.
     // 이전 ��스트(Hermes 구문 검증)에 의존하지 않고 자체 번들 생성
-    const outFile = resolve(EXAMPLE_APP, 'zntc-require-check.js');
+    const outFile = REQUIRE_CHECK_OUT;
     const zntc = Bun.spawnSync([
       ZNTC_BIN,
       '--bundle',
@@ -318,7 +325,7 @@ describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
   test('__esm 래퍼 내 exports/module.exports 부재 검증', async () => {
     // __esm 래퍼 안에서 exports.x=x 또는 module.exports=x가 있으면 런타임 에러 발생.
     // __esm은 exports/module 파라미터를 제공하지 않으므로, CJS export 출력이 없어야 함.
-    const outFile = resolve(EXAMPLE_APP, 'zntc-require-check.js');
+    const outFile = REQUIRE_CHECK_OUT;
     const output = await Bun.file(outFile).text();
 
     // __esm 래퍼 안의 코드 추출하여 exports. / module.exports 검사
@@ -350,7 +357,7 @@ describe('RN 번들: Metro vs ZNTC 모듈 수 비교', () => {
   test('__esm 래퍼 내 __export getter 변수 정의 검증', async () => {
     // __export의 getter가 참조하는 변수가 같은 __esm 래퍼 안에 정의되어 있는지 검증.
     // 미정의 변수 참조 시 런타임 ReferenceError 발생.
-    const outFile = resolve(EXAMPLE_APP, 'zntc-require-check.js');
+    const outFile = REQUIRE_CHECK_OUT;
     const output = await Bun.file(outFile).text();
 
     // __esm 블록에서 __export의 getter 변수명 추출
