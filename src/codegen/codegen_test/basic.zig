@@ -909,11 +909,27 @@ test "Codegen: enum + class + var mixed re-export" {
     try std.testing.expect(std.mem.indexOf(u8, r.output, "name") != null);
 }
 
-test "Codegen: const enum re-export is stripped" {
-    var r = try e2e(std.testing.allocator, "const enum Color { Red, Green }\nexport { Color };");
+test "Codegen: exported const enum keeps its declaration (#5594)" {
+    var r = try e2e(std.testing.allocator, "const enum Color { Red, Green }\nexport { Color };\nexport const c = Color.Green;");
     defer r.deinit();
-    // const enum은 삭제되지만 export specifier는 남을 수 있음
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "Color[Color") == null);
+    // 다른 모듈이 `Color.Red` 로 읽는다 — tsc --isolatedModules·esbuild 처럼 일반 enum 으로 남기고,
+    // 이 파일 안의 참조는 계속 인라인한다.
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Color[Color") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c = 1") != null or std.mem.indexOf(u8, r.output, "c=1") != null);
+}
+
+test "Codegen: exported const enum still inlines its own self-references (#5594)" {
+    // 남긴 선언의 본문에서 `E` 는 IIFE 파라미터 심볼로 해석된다 — 그래도 `E.A` 를 평가해 인라인한다.
+    var r = try e2e(std.testing.allocator, "export const enum E { A = 1, B = E.A + 1 }\nexport const c = E.B;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "E[E") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "c = 2") != null or std.mem.indexOf(u8, r.output, "c=2") != null);
+}
+
+test "Codegen: local const enum is erased (#5594)" {
+    var r = try e2e(std.testing.allocator, "const enum Color { Red, Green }\nexport const c = Color.Green;");
+    defer r.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "Color") == null);
 }
 
 test "Codegen: string enum re-export" {

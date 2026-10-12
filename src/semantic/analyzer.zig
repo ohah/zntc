@@ -3070,11 +3070,13 @@ pub const SemanticAnalyzer = struct {
 
     /// Runtime enum initializers execute inside the generated enum IIFE. Model
     /// that function scope and its parameter even though neither has an AST
-    /// binding node. Const/ambient enum declarations are erased by the transformer.
+    /// binding node. Ambient enum declarations are erased by the transformer; a
+    /// const enum is erased too unless it is exported (#5594), so model it as
+    /// well — an erased one leaves an unreachable scope.
     fn visitEnumDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items;
-        if (e + 3 >= extras.len or extras[e + 3] != 0) return;
+        if (e + 3 >= extras.len or (extras[e + 3] & 2) != 0) return;
         const name_idx: NodeIndex = @enumFromInt(extras[e]);
         const members_start = extras[e + 1];
         const members_len = extras[e + 2];

@@ -35,20 +35,33 @@ pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const flags = self.readU32(e, 3);
 
-    if ((flags & 1) != 0) {
-        // 평가 가능한 단순 케이스만 등록. 실패해도 선언은 삭제 (참조는 그대로 남아 ReferenceError가 나지만,
-        // 기존 동작과 동일하므로 회귀가 아님 — 인라인 가능 케이스만 새로 동작 추가).
-        collectConstEnum(self, node) catch {};
+    if ((flags & 2) != 0) {
+        if ((flags & 1) != 0) collectConstEnum(self, node) catch {};
         return .none;
     }
 
-    if ((flags & 2) != 0) return .none;
+    if ((flags & 1) != 0) {
+        // 평가 가능한 단순 케이스만 등록 — 이 파일 안의 `E.A` 는 literal 로 인라인된다.
+        collectConstEnum(self, node) catch {};
+        // (#5594) export 된 const enum 은 다른 모듈이 `E.A` 로 읽으므로 선언을 일반 enum 으로
+        // 남긴다 — tsc `--isolatedModules`(preserveConstEnums 내포)·esbuild transform 과 같다.
+        // 로컬 const enum 은 tsc 처럼 지운다.
+        if (!constEnumIsExported(self, node)) return .none;
+    }
 
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));
     const new_members = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
     return self.addExtraNode(.ts_enum_declaration, node.span, &.{
-        @intFromEnum(new_name), new_members.start, new_members.len, flags,
+        @intFromEnum(new_name), new_members.start, new_members.len, flags & ~@as(u32, 1),
     });
+}
+
+/// Exported from the module (not from a namespace, whose const enums stay erased).
+fn constEnumIsExported(self: *const Transformer, node: Node) bool {
+    const sym_id = self.getSymbolIdAt(self.readNodeIdx(node.data.extra, 0)) orelse return false;
+    if (sym_id >= self.symbols.len) return false;
+    const sym = self.symbols[sym_id];
+    return sym.isExported() and !sym.scope_id.isNone() and sym.scope_id.toIndex() == 0;
 }
 
 /// const enum 멤버를 평가하여 self.const_enums 에 추가.
@@ -271,7 +284,9 @@ fn tryEvalEnumMemberAccess(self: *const Transformer, node: Node, ctx: ConstEnumE
     const prop_name = (memberPropertyName(self, node.tag, prop_idx)) orelse return null;
 
     // 현재 collecting 중인 enum self-reference (예: `Other.X` from inside Other 정의)
-    if (matchesEnumName(ctx.current_name, ctx.current_symbol_id, obj_name, obj_sym)) {
+    if (matchesEnumName(ctx.current_name, ctx.current_symbol_id, obj_name, obj_sym) or
+        isEnumIifeParameter(self, obj_sym, obj_name, ctx.current_name))
+    {
         for (ctx.current_members) |m| {
             if (cooked_name.eql(m.name, prop_name)) return m.value;
         }
@@ -284,6 +299,13 @@ fn tryEvalEnumMemberAccess(self: *const Transformer, node: Node, ctx: ConstEnumE
         }
     }
     return null;
+}
+
+/// Inside its own body an enum's name resolves to the generated IIFE parameter.
+fn isEnumIifeParameter(self: *const Transformer, ref_sym: ?u32, ref_name: []const u8, enum_name: []const u8) bool {
+    const sid = ref_sym orelse return false;
+    if (sid >= self.symbols.len) return false;
+    return self.symbols[sid].synthetic_kind == .enum_iife_parameter and std.mem.eql(u8, ref_name, enum_name);
 }
 
 fn matchesEnumName(decl_name: []const u8, decl_sym: ?u32, ref_name: []const u8, ref_sym: ?u32) bool {
