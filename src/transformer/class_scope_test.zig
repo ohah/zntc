@@ -10,6 +10,117 @@ const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const coverage = @import("symbol_coverage.zig");
 
+fn expectAnonymousClassTempNameMarks(
+    source: []const u8,
+    use_define_for_class_fields: bool,
+    expected_generated: usize,
+    expected_late: usize,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        .use_define_for_class_fields = use_define_for_class_fields,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    try std.testing.expect(report.isConsistent());
+    try std.testing.expect(report.hasCompleteSymbolIdentity());
+
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    defer allocator.free(reachable);
+    var generated_class_count: usize = 0;
+    var late_name_count: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.kind != .class_decl or symbol.synthetic_name.len == 0) continue;
+        generated_class_count += 1;
+        if (symbol.synthetic_kind != .standalone_temp_binding) continue;
+        late_name_count += 1;
+        const id: u32 = @intCast(raw_id);
+        try std.testing.expect(!symbol.scope_id.isNone());
+        try std.testing.expectEqual(
+            @as(?usize, raw_id),
+            edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name),
+        );
+
+        var bindings: usize = 0;
+        var references: usize = 0;
+        for (reachable) |raw_node| {
+            if (raw_node >= edited.symbol_ids.len or edited.symbol_ids[raw_node] != id) continue;
+            switch (transformer.ast.nodes.items[raw_node].tag) {
+                .binding_identifier => bindings += 1,
+                .identifier_reference => references += 1,
+                else => {},
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expect(references > 0);
+    }
+    try std.testing.expectEqual(expected_generated, generated_class_count);
+    try std.testing.expectEqual(expected_late, late_name_count);
+}
+
+test "#4819 anonymous class temp names finalize from their exact class SymbolIds" {
+    // Both visitor modes create exact class bindings from makeTempVarSpan:
+    // the private/static paths create the name early, while instance-private
+    // lowering creates it when the class-expression wrapper is assembled.
+    const source =
+        \\var _a = 17;
+        \\var PrivateStatic = class { static #value = 1; static read() { return this.#value; } };
+        \\var StaticBlock = class { static { this.value = 2; } };
+        \\var PrivateInstance = class { #value = 3; read() { return this.#value; } };
+    ;
+    try expectAnonymousClassTempNameMarks(source, true, 3, 3);
+    try expectAnonymousClassTempNameMarks(source, false, 3, 3);
+}
+
+test "#4819 anonymous class temp names remain fixed when direct eval can see them" {
+    const source =
+        \\var Holder = class {
+        \\  static #value = 1;
+        \\  static read(suffix) { return eval("_" + suffix); }
+        \\};
+    ;
+    try expectAnonymousClassTempNameMarks(source, true, 1, 0);
+}
+
 test "#4819 ES5 computed super assignment and update temps have exact identity" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
