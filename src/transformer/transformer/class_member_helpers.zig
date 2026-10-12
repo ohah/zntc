@@ -25,10 +25,14 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
     if (field.is_computed)
         try es_helpers.trackKnownHoistedComputedKeyRef(self, field.key, reference_scope);
     const member = if (field.is_computed) blk: {
-        // computed: ClassName[key]
+        // computed: ClassName[key] — the member takes the key expression, not
+        // its `[ … ]` wrapper (`C[[_a]]` reads the array's string, and a
+        // symbol key throws).
+        const key_node = self.ast.getNode(field.key);
+        const actual_key = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else field.key;
         const me_extra = try self.ast.addExtras(&.{
             @intFromEnum(cls_ref),
-            @intFromEnum(field.key),
+            @intFromEnum(actual_key),
             0,
         });
         break :blk try self.ast.addNode(.{
@@ -43,7 +47,7 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = field.span,
-        .data = .{ .binary = .{ .left = member, .right = field.value, .flags = 0 } },
+        .data = .{ .binary = .{ .left = member, .right = try namedFieldValue(self, field, reference_scope), .flags = 0 } },
     });
     return self.ast.addNode(.{
         .tag = .expression_statement,
@@ -58,12 +62,18 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
 /// 왜 assign(`obj.k = v`)이 아닌가 — ES2022 public field 는 **own property 를 정의**한다.
 /// 상위 클래스에 같은 이름의 setter 가 있으면 assign 은 그 setter 를 타지만 정의는 타지
 /// 않고, 초기값 없는 `u;` 도 `'u' in obj === true` 여야 한다. 그 차이를 헬퍼가 메운다.
+fn namedFieldValue(self: anytype, field: FieldAssignment, reference_scope: ScopeId) Error!NodeIndex {
+    if (!field.name_by_key) return field.value;
+    return @import("../parameter_environment.zig").nameByRuntimeKey(self, field.value, field.key, null, reference_scope, field.span);
+}
+
 fn buildPublicFieldCall(self: anytype, obj: NodeIndex, field: FieldAssignment, reference_scope: ScopeId) Error!NodeIndex {
     self.runtime_helpers.public_field = true;
     const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, field.key);
     try es_helpers.trackKnownHoistedComputedKeyRef(self, key_arg, reference_scope);
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
-    const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, field.value }, field.span);
+    const value = try namedFieldValue(self, field, reference_scope);
+    const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, value }, field.span);
     return es_helpers.makeExprStmt(self, call, field.span);
 }
 
@@ -209,7 +219,9 @@ pub fn classifyPropertyDefinition(
             defer self.super_call_this_alias = saved_super_alias;
             const saved_new_target_ctx = self.new_target_ctx;
             self.new_target_ctx = .field_initializer;
-            const new_init = try self.visitNode(init_idx);
+            const pe = @import("../parameter_environment.zig");
+            const bound = try pe.bindRuntimeKeyClass(self, key_idx, init_idx, new_key);
+            const new_init = try pe.finishRuntimeKeyClass(self, bound, init_idx, try self.visitNode(init_idx), false, self.current_scope, member.span);
             self.new_target_ctx = saved_new_target_ctx;
             const key_node = self.ast.getNode(key_idx);
             const is_computed = (key_node.tag == .computed_property_key);
@@ -220,6 +232,7 @@ pub fn classifyPropertyDefinition(
                 .value = new_init,
                 .is_computed = is_computed,
                 .span = member.span,
+                .name_by_key = try @import("../parameter_environment.zig").needsRuntimeKeyName(self, key_idx, init_idx),
             });
             // Private field: class body 의 declaration 도 유지해야 JS engine 이 인식. fall through
             // 해서 아래 `visitNode` 분기로 가서 `#x;` (또는 init 까지 포함된) declaration emit.
@@ -278,16 +291,20 @@ pub fn classifyPropertyDefinition(
         // 초기값 있음 → class 밖 할당문으로 이동 (Foo.z = 2)
         if (ctx.static_field_assignments) |sfa| {
             const new_key = try self.visitNode(key_idx);
-            const new_init = if (ctx.class_name_span) |class_span|
+            const pe = @import("../parameter_environment.zig");
+            const bound = try pe.bindRuntimeKeyClass(self, key_idx, init_idx, new_key);
+            const visited_init = if (ctx.class_name_span) |class_span|
                 try visitStaticFieldInit(self, init_idx, class_span)
             else
                 try self.visitNode(init_idx);
+            const new_init = try pe.finishRuntimeKeyClass(self, bound, init_idx, visited_init, false, self.current_scope, member.span);
             const key_node = self.ast.getNode(key_idx);
             try sfa.append(self.allocator, .{
                 .key = new_key,
                 .value = new_init,
                 .is_computed = (key_node.tag == .computed_property_key),
                 .span = member.span,
+                .name_by_key = try @import("../parameter_environment.zig").needsRuntimeKeyName(self, key_idx, init_idx),
             });
             return;
         }
@@ -407,6 +424,9 @@ pub const FieldAssignment = struct {
     value: NodeIndex,
     is_computed: bool,
     span: Span,
+    /// The value is an anonymous function/class named by a runtime computed
+    /// key; the key temp names it where the assignment is built (#5527).
+    name_by_key: bool = false,
 };
 
 /// experimentalDecorators: member decorator 정보
@@ -854,7 +874,7 @@ pub fn buildThisAssignment(self: anytype, field: FieldAssignment) Error!NodeInde
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = field.span,
-        .data = .{ .binary = .{ .left = member, .right = field.value, .flags = 0 } },
+        .data = .{ .binary = .{ .left = member, .right = try namedFieldValue(self, field, self.current_scope), .flags = 0 } },
     });
     return self.ast.addNode(.{
         .tag = .expression_statement,

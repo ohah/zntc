@@ -837,13 +837,13 @@ pub fn Members(comptime Transformer: type) type {
             if (self.options.use_define_for_class_fields) {
                 self.runtime_helpers.public_field = true;
                 const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
-                const value = if (!init_idx.isNone()) try self.visitNode(init_idx) else try es_helpers.makeVoidZero(self, span);
+                const value = if (!init_idx.isNone()) try visitKeyedInit(self, key_idx, init_idx, span) else try es_helpers.makeVoidZero(self, span);
                 const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
                 const call = try es_helpers.makeCallExpr(self, callee, &.{ obj, key_arg, value }, span);
                 return es_helpers.makeExprStmt(self, call, span);
             }
             const member = try es_helpers.makeMemberFromKeyIdx(self, obj, key_idx, span);
-            const new_init = try self.visitNode(init_idx);
+            const new_init = try visitKeyedInit(self, key_idx, init_idx, span);
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -860,8 +860,22 @@ pub fn Members(comptime Transformer: type) type {
         /// 단순 `Class.key = init` 대입 대신 [[DefineOwnProperty]] 시맨틱이 필요한 이유 — TC39
         /// `ClassFieldDefinitionEvaluation` 은 항상 fresh data descriptor 를 install 한다. 예: `static name = "Custom"`
         /// 의 경우 Function.prototype 으로부터 상속된 `name` 슬롯이 non-writable 이라 단순 대입은 strict mode 에서 throw 한다.
+        /// A field value named by a runtime computed key (#5527).
+        fn visitKeyedInit(self: *Transformer, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const pe = @import("../parameter_environment.zig");
+            const bound = try pe.bindRuntimeKeyClass(self, key_idx, init_idx, key_idx);
+            const value = try self.visitNode(init_idx);
+            return namedByRuntimeKey(self, try pe.finishRuntimeKeyClass(self, bound, init_idx, value, false, self.current_scope, span), key_idx, init_idx, span);
+        }
+
+        fn namedByRuntimeKey(self: *Transformer, value: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const pe = @import("../parameter_environment.zig");
+            if (!try pe.needsRuntimeKeyName(self, key_idx, init_idx)) return value;
+            return pe.nameByRuntimeKey(self, value, key_idx, null, self.current_scope, span);
+        }
+
         fn buildStaticFieldDefineProperty(self: *Transformer, obj: NodeIndex, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const new_init = try self.visitNode(init_idx);
+            const new_init = try visitKeyedInit(self, key_idx, init_idx, span);
             const config_prop = try buildBooleanProp(self, "configurable", true, span);
             const enumerable_prop = try buildBooleanProp(self, "enumerable", true, span);
             const writable_prop = try buildBooleanProp(self, "writable", true, span);

@@ -1779,13 +1779,13 @@ test "ES2015: object getter/setter preserved (ES5 supports)" {
 test "ES2015: object computed method → bracket assignment with function" {
     var r = try e2eTarget(std.testing.allocator, "var o={[k](){return 1;}};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var o=(_a={},_a[k]=function(){return 1;},_a);", r.output);
+    try std.testing.expectEqualStrings("var _a,_b;var o=(_a={},_a[_b=k]=__name(function(){return 1;},_b),_a);", r.output);
 }
 
 test "ES2015: object Symbol.dispose computed method" {
     var r = try e2eTarget(std.testing.allocator, "var o={[Symbol.dispose](){}};", .es5);
     defer r.deinit();
-    try std.testing.expectEqualStrings("var _a;var o=(_a={},_a[Symbol.dispose]=function(){},_a);", r.output);
+    try std.testing.expectEqualStrings("var _a,_b;var o=(_a={},_a[_b=Symbol.dispose]=__name(function(){},_b),_a);", r.output);
 }
 
 test "ES2015: object method no transform on esnext" {

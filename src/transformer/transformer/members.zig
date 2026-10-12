@@ -473,7 +473,20 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
     else
         try self.visitNode(key_idx);
     try self.propagateSymbolId(key_idx, new_key);
+    // A lowered anonymous class (an IIFE now) is no longer named by its
+    // runtime computed key: capture the key once (before the class reads it)
+    // and name the class inside its lowering, before its static elements run
+    // (#5527).
+    const pe = @import("../parameter_environment.zig");
+    var keyed = new_key;
+    var bound: ?u32 = null;
+    if (!new_key.isNone() and try pe.runtimeKeyClass(self, key_idx, node.data.binary.right)) {
+        const captured = try pe.captureRuntimeKey(self, self.ast.getNode(new_key).data.unary.operand, node.span);
+        keyed = try self.ast.addNode(.{ .tag = .computed_property_key, .span = self.ast.getNode(new_key).span, .data = .{ .unary = .{ .operand = captured.key, .flags = 0 } } });
+        bound = try pe.bindRuntimeKeyClass(self, key_idx, node.data.binary.right, try es_helpers.makeIdentifierRefFromSpan(self, captured.temp));
+    }
     var new_value = try self.visitNode(node.data.binary.right);
+    new_value = try pe.finishRuntimeKeyClass(self, bound, node.data.binary.right, new_value, true, self.current_scope, node.span);
     // styled-components: { One: styled.div`...` } 의 value 가 styled tagged template 이면
     // property key 이름을 displayName 으로 사용해 wrap. variable_declarator 와 동일 패턴.
     if (!new_key.isNone() and styled_components_mod.shouldAttemptWrap(self, new_value)) {
@@ -485,7 +498,7 @@ pub fn visitObjectProperty(self: *Transformer, node: Node) Error!NodeIndex {
         .tag = .object_property,
         .span = node.span,
         .data = .{ .binary = .{
-            .left = new_key,
+            .left = keyed,
             .right = new_value,
             .flags = node.data.binary.flags,
         } },
