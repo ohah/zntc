@@ -1179,6 +1179,9 @@ fn isRetainableBoundStaticFieldEffectCall(
     // only for computed member keys.
     allow_optional_call: bool,
     allow_bound_call_arguments: bool,
+    // Nested argument calls may use safe computed-member callees, but not
+    // effectful computed keys within those callees.
+    allow_effectful_computed_member_callee_keys: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
@@ -1195,7 +1198,12 @@ fn isRetainableBoundStaticFieldEffectCall(
         .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, callee_idx),
         .static_member_expression => hasBoundStaticFieldDotCallCalleeRoot(ast, semantic, callee_idx),
         .computed_member_expression => allow_computed_member_callee and
-            isRetainableBoundStaticFieldMemberRead(ast, semantic, callee_idx, true),
+            isRetainableBoundStaticFieldMemberRead(
+                ast,
+                semantic,
+                callee_idx,
+                allow_effectful_computed_member_callee_keys,
+            ),
         else => false,
     };
     if (!bound_callee) return false;
@@ -1207,7 +1215,7 @@ fn isRetainableBoundStaticFieldEffectCall(
         const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
         if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
         if (!allow_bound_call_arguments or
-            !isRetainableBoundStaticFieldEffectCall(ast, semantic, argument_idx, false, false, false)) return false;
+            !isRetainableBoundStaticFieldEffectCall(ast, semantic, argument_idx, true, false, false, false)) return false;
     }
     return true;
 }
@@ -1241,7 +1249,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     if (list.len < 2 or list.start > extras.len or list.len > extras.len - list.start) return false;
     for (extras[list.start .. list.start + list.len - 1]) |raw_item| {
         if (raw_item >= ast.nodes.items.len or
-            !isRetainableBoundStaticFieldEffectCall(ast, semantic, @enumFromInt(raw_item), false, false, false)) return false;
+            !isRetainableBoundStaticFieldEffectCall(ast, semantic, @enumFromInt(raw_item), false, false, false, false)) return false;
     }
     const last_raw = extras[list.start + list.len - 1];
     if (last_raw >= ast.nodes.items.len) return false;
@@ -1250,7 +1258,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
         (allow_bound_member_read_last_value and
             isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx, false)) or
         (allow_bound_call_last_value and
-            isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx, true, false, false)) or
+            isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx, true, false, false, true)) or
         (allow_unresolved_last_value and
             isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx));
 }
@@ -1297,6 +1305,7 @@ fn isRetainableBoundStaticFieldMemberRead(
                 false,
                 true,
                 true,
+                false,
             )) return false;
         }
         saw_member = true;
