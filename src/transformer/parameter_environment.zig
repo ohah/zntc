@@ -711,6 +711,34 @@ pub fn nameInFirstStaticBlock(self: anytype, source: ast_mod.NodeIndex, members:
     }
 }
 
+/// ES5 class lowering defines a method as `{ value: function () {} }` (or an
+/// accessor as `{ get: function () {} }`), which names it "value"/"get".
+/// Name it after the source member (`prefix` is "get "/"set " for accessors).
+/// Runtime computed keys are not known statically and stay unnamed (#5527).
+pub fn nameLoweredMember(self: anytype, func: ast_mod.NodeIndex, member: ast_mod.NodeIndex, prefix: []const u8, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    if (func.isNone() or member.isNone()) return func;
+    const key = self.ast.readExtraNode(self.ast.getNode(member).data.extra, ast_mod.MethodExtra.key);
+    const key_name = (try keyName(self, key, false)) orelse return func;
+    const name = if (prefix.len == 0) key_name else blk: {
+        const joined = try std.mem.concat(self.allocator, u8, &.{ prefix, self.ast.getText(key_name) });
+        defer self.allocator.free(joined);
+        break :blk try self.ast.addString(joined);
+    };
+    const saved_scope = self.current_scope;
+    self.current_scope = scope;
+    defer self.current_scope = saved_scope;
+    return nameValue(self, func, name, span);
+}
+
+/// An object literal lowered to `_a.k = function () {}` assignments loses the
+/// property's NamedEvaluation; name an anonymous function or arrow value after
+/// its static key. (Anonymous classes are named by class lowering.)
+pub fn nameLoweredProperty(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.NodeIndex, source_value: ast_mod.NodeIndex, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    if (value.isNone() or functionRoot(self, source_value) == null) return value;
+    const name = (try keyName(self, key, true)) orelse return value;
+    return nameValue(self, value, name, span);
+}
+
 /// `__name(<class ref>, "<name>");` evaluated in `scope`.
 pub fn classNameStatement(self: anytype, ref: ast_mod.NodeIndex, name: @import("../lexer/token.zig").Span, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
     const saved_scope = self.current_scope;
