@@ -86,24 +86,72 @@ function enclosingFn(lines, i) {
   return '<top>';
 }
 
+// Keep inline `test` fixtures out of the production-constructor audit. Zig
+// tests can live in a production module, where their AST fixture literals are
+// not constructor paths used by the transformer.
+function stripZigCommentsAndStrings(line, state) {
+  if (/^\s*\\\\/.test(line)) return '';
+  let code = '';
+  for (let i = 0; i < line.length; i++) {
+    if (state.inBlockComment) {
+      if (line[i] === '*' && line[i + 1] === '/') {
+        state.inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (line[i] === '/' && line[i + 1] === '/') break;
+    if (line[i] === '/' && line[i + 1] === '*') {
+      state.inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (line[i] === '"' || line[i] === "'") {
+      const quote = line[i];
+      i++;
+      while (i < line.length) {
+        if (line[i] === '\\') i++;
+        else if (line[i] === quote) break;
+        i++;
+      }
+      code += ' ';
+      continue;
+    }
+    code += line[i];
+  }
+  return code;
+}
+
 const violations = [];
 const usedAllow = new Set();
 for (const file of walk(scanRoot, [])) {
   const rel = relative(root, file);
   const lines = readFileSync(file, 'utf8').split('\n');
+  const lexical = { inBlockComment: false };
+  let braceDepth = 0;
+  let testBlockDepth = null;
   lines.forEach((line, i) => {
-    const code = line.replace(/\/\/.*$/, '');
-    for (const { re, what } of PATTERNS) {
-      if (!re.test(code)) continue;
-      // 함수 정의 줄 자신(`fn makeBindingIdentifier(`)은 호출이 아니다.
-      if (/\bfn\s+makeBindingIdentifier\(/.test(code)) continue;
-      const key = `${rel}::${enclosingFn(lines, i)}`;
-      if (ALLOWLIST[key]) {
-        usedAllow.add(key);
-        continue;
+    const code = stripZigCommentsAndStrings(line, lexical);
+    const startsTest = testBlockDepth === null && braceDepth === 0 && /^\s*test\b/.test(code);
+    if (testBlockDepth === null && !startsTest) {
+      for (const { re, what } of PATTERNS) {
+        if (!re.test(code)) continue;
+        // 함수 정의 줄 자신(`fn makeBindingIdentifier(`)은 호출이 아니다.
+        if (/\bfn\s+makeBindingIdentifier\(/.test(code)) continue;
+        const key = `${rel}::${enclosingFn(lines, i)}`;
+        if (ALLOWLIST[key]) {
+          usedAllow.add(key);
+          continue;
+        }
+        violations.push(`${rel}:${i + 1} (${key}) — ${what}`);
       }
-      violations.push(`${rel}:${i + 1} (${key}) — ${what}`);
     }
+
+    const opens = (code.match(/{/g) ?? []).length;
+    const closes = (code.match(/}/g) ?? []).length;
+    if (startsTest && opens > closes) testBlockDepth = braceDepth + 1;
+    braceDepth += opens - closes;
+    if (testBlockDepth !== null && braceDepth < testBlockDepth) testBlockDepth = null;
   });
 }
 
