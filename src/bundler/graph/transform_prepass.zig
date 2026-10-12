@@ -1193,8 +1193,8 @@ fn isRetainableBoundStaticFieldEffectCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
     allow_computed_member_callee: bool,
-    // Optional calls and one level of exact-bound call arguments are accepted
-    // only in call-key or sequence-final modes selected by their callers.
+    // Each caller explicitly gates optional calls and bounded exact-bound
+    // call arguments for the edge it is validating.
     allow_optional_call: bool,
     allow_bound_call_arguments: bool,
     // Nested argument calls may use safe computed-member callees, but not
@@ -1309,8 +1309,9 @@ fn isRetainableBoundStaticFieldSequenceExpression(
 
 /// A sequence argument may end in a non-optional member read only when every
 /// segment uses a safe key and the chain starts at an exact-bound source name.
-/// Key calls are mode-gated: member-read values allow ordinary zero-argument
-/// calls, while final calls may use the wider bounded optional-call form.
+/// Key calls are mode-gated: member-read values allow ordinary calls and
+/// optional calls with safe arguments; final calls may use the wider bounded
+/// optional-call form.
 fn isRetainableBoundStaticFieldMemberRead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1342,13 +1343,17 @@ fn isRetainableBoundStaticFieldMemberRead(
                 ast.getNode(property_idx).tag != .call_expression) return false;
             const key_call_extra = ast.getNode(property_idx).data.extra;
             if (key_call_extra > extras.len or extras.len - key_call_extra < 4) return false;
+            const optional_key_call =
+                (extras[key_call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
             if (!isRetainableBoundStaticFieldEffectCall(
                 ast,
                 semantic,
                 property_idx,
                 false,
-                key_call_mode == .sequence_final,
-                key_call_mode == .sequence_final or key_call_mode == .sequence_argument_member_read,
+                key_call_mode == .sequence_final or
+                    (key_call_mode == .sequence_argument_member_read and optional_key_call),
+                key_call_mode == .sequence_final or
+                    (key_call_mode == .sequence_argument_member_read and !optional_key_call),
                 .disallowed,
             )) return false;
         }
