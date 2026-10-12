@@ -7192,6 +7192,90 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 class-method Object shadow checks follow the class lexical scope', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-class-method-object-shadow-scope-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    const cases = [
+      {
+        label: 'Object in an unrelated function',
+        graph: 'retained',
+        shadowedExternal: 0,
+        source: [
+          'function unrelated(Object) { return Object; }',
+          'class Handler { read() { return 42; } }',
+          'console.log(new Handler().read());',
+        ].join('\n'),
+      },
+      {
+        label: 'Object in the class declaration scope',
+        graph: 'reanalyzed',
+        shadowedExternal: 1,
+        source: [
+          'function run(Object) {',
+          '  class Handler { read() { return 42; } }',
+          '  return new Handler().read();',
+          '}',
+          'console.log(run({ defineProperty: function () { throw new Error("source Object was called"); } }));',
+        ].join('\n'),
+      },
+    ];
+
+    try {
+      for (const fixture of cases) {
+        writeFileSync(input, fixture.source);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.label}: ${proc.stderr}`).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const report = lines.find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+        expect(report, `${fixture.label}: ${proc.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          const expected = counter === 'shadowed_external_reference' ? fixture.shadowedExternal : 0;
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${fixture.label}: ${counter}: ${report}`,
+          ).toBe(expected);
+        }
+        expect(report, fixture.label).toMatch(
+          fixture.shadowedExternal === 0 ? /clean=1(?:\s|$)/ : /clean=0(?:\s|$)/,
+        );
+
+        const graphMode = lines.find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+        expect(graphMode, `${fixture.label}: ${proc.stderr}`).toContain(
+          `semantic_graph=${fixture.graph}`,
+        );
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.label}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.label).toBe('42\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('native tagged templates keep TypeScript erasure on the edited semantic graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-tagged-template-retained-'));
     const output = join(dir, 'out.cjs');

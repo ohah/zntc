@@ -3140,7 +3140,7 @@ fn isSimpleClass(
     semantic: *const ModuleSemanticData,
     node: ast_mod.Node,
     raw_node: usize,
-    source_binds_object: bool,
+    source_object_shadows_class: bool,
 ) bool {
     if (node.tag != .class_declaration and node.tag != .class_expression) return false;
     const extra = node.data.extra;
@@ -3171,7 +3171,7 @@ fn isSimpleClass(
     if (body_node.tag != .class_body) return false;
     const members = body_node.data.list;
     if (members.len == 0) return true;
-    if (source_binds_object) return false;
+    if (source_object_shadows_class) return false;
     if (members.start > extras.len or members.len > extras.len - members.start) return false;
 
     var accessor_pair: ?struct { flags: u32, key_text: []const u8 } = null;
@@ -3311,7 +3311,7 @@ fn isRetainableGraphClass(
     top_level_statements: *const std.DynamicBitSet,
     function_body_class_declarations: *const std.AutoHashMapUnmanaged(u32, void),
     direct_var_class_expressions: *const std.AutoHashMapUnmanaged(u32, void),
-    source_binds_object: bool,
+    source_object_shadows_class: bool,
 ) bool {
     const raw: u32 = @intCast(raw_node);
     const has_safe_owner = switch (node.tag) {
@@ -3319,7 +3319,7 @@ fn isRetainableGraphClass(
         .class_expression => direct_var_class_expressions.contains(raw),
         else => false,
     };
-    return has_safe_owner and isSimpleClass(allocator, ast, semantic, node, raw_node, source_binds_object);
+    return has_safe_owner and isSimpleClass(allocator, ast, semantic, node, raw_node, source_object_shadows_class);
 }
 
 fn collectSimpleConstructorDefaultParameterNodes(
@@ -3760,6 +3760,20 @@ fn canRetainGraphForAuditedSyntaxSubset(
         for (reachable_nodes) |raw_idx| {
             const class_node = ast.nodes.items[raw_idx];
             if (class_node.tag != .class_declaration and class_node.tag != .class_expression) continue;
+            var source_object_shadows_class = false;
+            if (source_binds_object) {
+                if (!source_parent_map_ready) {
+                    source_parent_map_ready = true;
+                    if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                }
+                source_object_shadows_class = sourceBindingShadowsGeneratedGlobalAtNode(
+                    ast,
+                    semantic,
+                    &source_parent_map,
+                    @intCast(raw_idx),
+                    "Object",
+                );
+            }
             if (!isRetainableGraphClass(
                 allocator,
                 ast,
@@ -3769,7 +3783,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 &top_level_statements,
                 &function_body_class_declarations,
                 &direct_var_class_expressions,
-                source_binds_object,
+                source_object_shadows_class,
             )) continue;
             retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
             if (options.unsupported.default_params and
