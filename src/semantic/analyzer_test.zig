@@ -10,6 +10,58 @@ const NodeIndex = @import("../parser/ast.zig").NodeIndex;
 const Parser = @import("../parser/parser.zig").Parser;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 
+test "escaped and canonical identifier spellings resolve to one binding while nested shadowing stays local" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "let exp\\u006frts = {}; exports.answer = 42; module.exports = exp\\u006frts; function shadow(exports) { return exports; }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    defer analyzer.deinit();
+    try analyzer.analyze();
+
+    var escaped_binding: ?u32 = null;
+    var shadow_parameter: ?u32 = null;
+    var outer_canonical_reference: ?u32 = null;
+    var outer_escaped_reference: ?u32 = null;
+    var shadow_reference: ?u32 = null;
+    var decode_buffer: [32]u8 = undefined;
+    const shadow_start = std.mem.indexOf(u8, source, "function shadow") orelse return error.TestUnexpectedResult;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        const name = parser.ast.identifierNameText(node);
+        if (node.tag == .binding_identifier and
+            Scanner.identifierTextEqualsAscii(name, "exports", &decode_buffer))
+        {
+            const id = analyzer.symbol_ids.items[raw] orelse continue;
+            if (std.mem.indexOf(u8, name, "\\u") != null) {
+                escaped_binding = id;
+            } else if (node.span.start >= shadow_start) {
+                shadow_parameter = id;
+            }
+        } else if (node.tag == .identifier_reference) {
+            const id = analyzer.symbol_ids.items[raw] orelse continue;
+            if (std.mem.eql(u8, name, "exports") and node.span.start < shadow_start) {
+                outer_canonical_reference = id;
+            } else if (std.mem.indexOf(u8, name, "\\u") != null) {
+                outer_escaped_reference = id;
+            } else if (std.mem.eql(u8, name, "exports") and node.span.start > shadow_start) {
+                shadow_reference = id;
+            }
+        }
+    }
+
+    const escaped_id = escaped_binding orelse return error.MissingEscapedBinding;
+    const parameter_id = shadow_parameter orelse return error.MissingShadowParameter;
+    try std.testing.expectEqual(escaped_id, outer_canonical_reference orelse return error.MissingCanonicalReference);
+    try std.testing.expectEqual(escaped_id, outer_escaped_reference orelse return error.MissingEscapedReference);
+    try std.testing.expectEqual(parameter_id, shadow_reference orelse return error.MissingShadowReference);
+    try std.testing.expect(escaped_id != parameter_id);
+    try std.testing.expectEqual(@as(u32, 2), analyzer.symbols.items[escaped_id].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), analyzer.symbols.items[parameter_id].reference_count);
+}
+
 test "#4819 namespace exports and shadowed parameter retain distinct reference IDs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

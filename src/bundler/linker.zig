@@ -3170,9 +3170,11 @@ pub const Linker = struct {
                         // The graph-level binary helper is assigned explicitly
                         // by reserveToBinaryRuntimeName, not a source scope map.
                         if (sk == .bundler_runtime_helper) continue;
-                        // CJS callback parameters are registered in module
-                        // scope, so the ordinary scope-map pass above already
-                        // added each exact SID as a candidate.
+                        // Unshadowed CJS callback parameters have a compatibility
+                        // alias in the source root map and are candidates there.
+                        // A lexical conflict keeps its parameter in the virtual
+                        // callback scope and receives an explicit collision-free
+                        // rename in assignCjsWrapperParameterAliases above.
                         if (sk == .cjs_wrapper_exports_parameter or sk == .cjs_wrapper_module_parameter) continue;
                         if (sk == .namespace_iife_parameter or sk == .enum_iife_parameter or sk == .runtime_helper_preamble) {
                             // Keep virtual output-owned binding names reserved
@@ -5385,9 +5387,8 @@ pub const Linker = struct {
             if (exports_id) |id| {
                 const raw: usize = @intFromEnum(id);
                 if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
-                const symbol = sem.symbols.items[raw];
-                const detached_conflict = module.ast != null and symbol.scope_id.isNone();
-                const needs_alias = detached_conflict or (normal_aliasing and !blocks_mangling);
+                const source_binding_conflict = cjsWrapperParameterConflictsWithRoot(module, raw, "exports");
+                const needs_alias = source_binding_conflict or (normal_aliasing and !blocks_mangling);
                 const sid = exports_sid.?;
                 if (needs_alias) {
                     const other = if (module_sid) |other_sid|
@@ -5410,9 +5411,8 @@ pub const Linker = struct {
             if (module_id) |id| {
                 const raw: usize = @intFromEnum(id);
                 if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
-                const symbol = sem.symbols.items[raw];
-                const detached_conflict = module.ast != null and symbol.scope_id.isNone();
-                const needs_alias = detached_conflict or (normal_aliasing and !blocks_mangling);
+                const source_binding_conflict = cjsWrapperParameterConflictsWithRoot(module, raw, "module");
+                const needs_alias = source_binding_conflict or (normal_aliasing and !blocks_mangling);
                 if (!needs_alias) continue;
 
                 const sid = module_sid.?;
@@ -5425,6 +5425,13 @@ pub const Linker = struct {
                     try self.assignCjsWrapperAlias(sid, selected);
             }
         }
+    }
+
+    fn cjsWrapperParameterConflictsWithRoot(module: *const Module, raw_symbol_id: usize, name: []const u8) bool {
+        if (module.ast == null) return false;
+        const sem = module.semantic orelse return true;
+        if (sem.scope_maps.len == 0) return true;
+        return sem.scope_maps[0].get(name) != raw_symbol_id;
     }
 
     fn cjsWrapperParameterCurrentName(

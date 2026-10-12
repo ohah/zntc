@@ -541,6 +541,7 @@ pub const TreeShaker = struct {
                     self.allocator,
                     ast,
                     sem.symbols.items,
+                    sem.scopes,
                     sem.symbol_ids,
                     &sem.unresolved_references,
                     m.wrap_kind == .cjs,
