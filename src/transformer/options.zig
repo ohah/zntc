@@ -412,6 +412,11 @@ pub const TransformOptions = struct {
                     }
                 },
                 .await_expression => if (u.top_level_await) return true,
+                // Named-function `new.target` lowering reuses the source
+                // function binding for its generated reference. Trigger the
+                // identity pre-pass even without minification so that
+                // reference is attached to its exact source SymbolId.
+                .meta_property => if (u.new_target and node.data.none == 1) return true,
                 // Exponentiation lowering emits a free `Math.pow` reference.
                 // Discover it before linking even though it adds no helper
                 // import, so the linker can reserve the generated global.
@@ -750,6 +755,7 @@ test "lowered syntax discovers helpers and generated globals before linking" {
         .{ .source = "var {x = 3} = input;", .es5_prepass = true },
         .{ .source = "function square(value) { return value ** 2; }", .es5_prepass = true },
         .{ .source = "function square(value) { value **= 2; }", .es5_prepass = true },
+        .{ .source = "function Plain() { return new.target; }", .es5_prepass = true },
         // A renamed block function restores `.name` with `__name` (#5454).
         .{ .source = "function f() { { function g() {} } }", .es5_prepass = true },
         .{ .source = "switch (k) { case 1: function g() {} }", .es5_prepass = true },
