@@ -1066,6 +1066,40 @@ fn childSkipsScopeOwner(ast: *const Ast, parent_raw: u32, child_raw: u32) bool {
     }
 }
 
+/// The self-name scope of a reachable named function expression, accepted as
+/// owned when it has exactly the analyzer's shape: a block scope directly
+/// around the function (or parameter) scope, declaring only the function's
+/// own function-like name, with no reference recorded in it directly.
+fn generatedFunctionExpressionNameScope(
+    ast: *const Ast,
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    referenced_scopes: *const std.AutoHashMapUnmanaged(u32, void),
+    function_raw: u32,
+) ?u32 {
+    if (function_raw >= ast.nodes.items.len or ast.nodes.items[function_raw].tag != .function_expression) return null;
+    const extra = ast.nodes.items[function_raw].data.extra;
+    if (extra >= ast.extra_data.items.len) return null;
+    const name_raw = ast.extra_data.items[extra];
+    const name_scope = functionExpressionNameScope(ast, scope_owner_map, scopes, function_raw, name_raw) orelse return null;
+    if (name_scope >= scopes.len or name_scope >= scope_maps.len) return null;
+    if (scope_maps[name_scope].count() != 1 or referenced_scopes.contains(name_scope)) return null;
+    if (!isFunctionExpressionNameScope(
+        ast,
+        function_raw,
+        @enumFromInt(name_scope),
+        scopes[name_scope].parent,
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+    )) return null;
+    return name_scope;
+}
+
 fn functionExpressionNameScope(
     ast: *const Ast,
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -2783,6 +2817,18 @@ fn checkExactImpl(
                         try reachable_scope_owners.put(allocator, scope, {});
                     }
                 }
+            }
+            // A named function expression's self-name scope is ownerless by
+            // construction (the analyzer's own too): the function node owns
+            // the function scope. Accept a generated one only in that exact
+            // shape (generatedFunctionExpressionNameScope).
+            var referenced_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer referenced_scopes.deinit(allocator);
+            for (references) |reference| try referenced_scopes.put(allocator, @intFromEnum(reference.scope_id), {});
+            var name_scope_iter = reachable_nodes.iterator();
+            while (name_scope_iter.next()) |entry| {
+                if (generatedFunctionExpressionNameScope(ast, scope_owner_map, scopes, scope_maps, symbol_ids, symbols, &referenced_scopes, entry.key_ptr.*)) |name_scope|
+                    try reachable_scope_owners.put(allocator, name_scope, {});
             }
             for (source_scope_count..scopes.len) |scope_index| {
                 const scope_id: u32 = @intCast(scope_index);
