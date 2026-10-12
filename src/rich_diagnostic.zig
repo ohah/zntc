@@ -164,6 +164,7 @@ pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
         .arrow_dynamic_scope => .arrow_dynamic_scope,
         .arrow_dynamic_eval => .arrow_dynamic_eval,
         .with_in_esm_output => .with_strict,
+        .top_level_await_target => .top_level_await_target,
     };
 }
 

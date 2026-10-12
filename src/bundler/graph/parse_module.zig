@@ -244,6 +244,8 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
         // import 바인딩/namespace 멤버 변형(`ns.x = v`/`delete ns.x`) 검출 — 번들 단계만
         // (esbuild/rolldown 처럼 bundle 시 에러, single-file transform/transpile 은 통과).
         analyzer.check_import_mutation = true;
+        analyzer.reject_exported_top_level_await = self.transform_options_base.unsupported.top_level_await and
+            self.transform_options_base.unsupported.async_await;
         const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
 
         // import-mutation 진단(ZNTC0805)만 사용자 노출 fatal 로 승격. 다른 semantic 에러
@@ -253,6 +255,9 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
                 const m = if (sem_err.message.len > 0) sem_err.message else "Cannot assign to or delete an imported binding";
                 self.addDiag(.assign_to_import, .@"error", module.path, sem_err.span, .link, m, null);
                 emitted_error_diag = true; // #4438 ON==OFF: 진단 발행 → store skip
+            } else if (sem_err.code == .top_level_await_target and analyzer.reject_exported_top_level_await) {
+                self.addDiag(.top_level_await_target, .@"error", module.path, sem_err.span, .transform, sem_err.message, null);
+                emitted_error_diag = true;
             }
         }
 
