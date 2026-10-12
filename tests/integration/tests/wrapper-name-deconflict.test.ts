@@ -853,6 +853,29 @@ describe('#4533: 주입된 래퍼 참조 ↔ 소비자 스코프 바인딩', () 
     }
   });
 
+  test('AST-less asset CJS wrapper name still avoids a consumer shadow', async () => {
+    const { dir, cleanup } = await createFixture({
+      'logo.png': 'x'.repeat(5000),
+      'entry.cjs':
+        'function load(){\n' +
+        '  function require_logo(){ return "SHADOW"; }\n' +
+        '  const url = require("./logo.png");\n' +
+        '  return url + "|" + require_logo();\n' +
+        '}\n' +
+        'console.log(load());',
+    });
+    try {
+      const out = join(dir, 'b.mjs');
+      const res = await runZntc(['--bundle', join(dir, 'entry.cjs'), '-o', out, '--format=esm']);
+      expect(res.exitCode, `빌드 실패:\n${res.stderr}`).toBe(0);
+      const { stdout, stderr } = await runNode(out);
+      expect(stderr).not.toContain('TypeError');
+      expect(stdout.trim()).toMatch(/\.png\|SHADOW$/);
+    } finally {
+      await cleanup();
+    }
+  });
+
   test('(2) 동적 import() 소비자', async () => {
     const { dir, cleanup } = await createFixture({
       'legacy.cjs': CJS_LEGACY,

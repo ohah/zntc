@@ -345,8 +345,6 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, second_row.synthetic_kind.?);
     try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
-    try std.testing.expect(first.wrapper_name_synthetic == null and second.wrapper_name_synthetic == null);
-
     const first_symbol_count = first_sem.symbols.items.len;
     const second_symbol_count = second_sem.symbols.items.len;
     // A lost convenience field must be recovered from the owning semantic row,
