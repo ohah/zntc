@@ -646,6 +646,94 @@ test "exact declaration coverage rejects missing and duplicate declaration ancho
     try std.testing.expect(!duplicated.isClean());
 }
 
+test "exact identity audit rejects stale symbol read and write counts independently" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "let value = 0; value = 1; value += 2; value;");
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.enable_exact_declaration_anchors = true;
+    try analyzer.analyze();
+
+    var value_symbol_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or
+            !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "value")) continue;
+        value_symbol_id = analyzer.symbol_ids.items[raw] orelse return error.TestUnexpectedResult;
+        break;
+    }
+    const value_id = value_symbol_id orelse return error.TestUnexpectedResult;
+    try std.testing.expect(value_id < analyzer.symbols.items.len);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const baseline = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(baseline.isClean());
+
+    const stale_read_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    stale_read_symbols[value_id].reference_count += 1;
+    const stale_read_count = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        stale_read_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), stale_read_count.reference_count_mismatch);
+    try std.testing.expectEqual(@as(usize, 0), stale_read_count.write_count_mismatch);
+    try std.testing.expect(!stale_read_count.isClean());
+
+    const stale_write_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
+    stale_write_symbols[value_id].write_count += 1;
+    const stale_write_count = try coverage.checkExactWithDeclarationAnchors(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        stale_write_symbols,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 0), stale_write_count.reference_count_mismatch);
+    try std.testing.expectEqual(@as(usize, 1), stale_write_count.write_count_mismatch);
+    try std.testing.expect(!stale_write_count.isClean());
+}
+
 test "exact source scope audit separates parameter expressions from body var bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
