@@ -212,6 +212,15 @@ pub fn deinitExceptAst(self: *Transformer) void {
         self.allocator.free(decl.members);
     }
     self.const_enums.deinit(self.allocator);
+    for (self.enum_values.items) |decl| {
+        self.allocator.free(decl.name);
+        for (decl.members) |m| {
+            self.allocator.free(m.name);
+            if (m.value == .string) self.allocator.free(m.value.string);
+        }
+        self.allocator.free(decl.members);
+    }
+    self.enum_values.deinit(self.allocator);
     {
         var it = self.regex_var_map.iterator();
         while (it.next()) |entry| self.allocator.free(entry.value_ptr.*);

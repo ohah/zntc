@@ -53,7 +53,7 @@ var E07 = /* @__PURE__ */ ((E07) => {E07[E07["A"]=0]="A";E07[E07["B"]=1]="B";E07
 var E08 = /* @__PURE__ */ ((E08) => {E08[E08["A"]=10]="A";E08["B"]="hello";E08[E08["C"]=10 /* A */]="C";E08["D"]="hello" /* B */;E08[E08["E"]=10 /* C */]="E";return E08;})(E08 || {});
 // Examples of numeric enum types with only constant members
 var E10 = /* @__PURE__ */ ((E10) => {return E10;})(E10 || {});
-var E11 = /* @__PURE__ */ ((E11) => {E11[E11["A"]=+0]="A";E11[E11["B"]=0]="B";E11[E11["C"]=1]="C";return E11;})(E11 || {});
+var E11 = /* @__PURE__ */ ((E11) => {E11[E11["A"]=+0]="A";E11[E11["B"]=1]="B";E11[E11["C"]=2]="C";return E11;})(E11 || {});
 var E12 = /* @__PURE__ */ ((E12) => {E12[E12["A"]=1 << 0]="A";E12[E12["B"]=1 << 1]="B";E12[E12["C"]=1 << 2]="C";return E12;})(E12 || {});
 // Examples of numeric enum types with constant and computed members
 var E20 = /* @__PURE__ */ ((E20) => {E20[E20["A"]="foo".length]="A";E20[E20["B"]=E20.A + 1]="B";E20[E20["C"]=+"123"]="C";E20[E20["D"]=Math.sin(1)]="D";return E20;})(E20 || {});
@@ -64,7 +64,7 @@ exports[`TSC: enums enumConstantMembers 1`] = `
 "// Constant members allow negatives, but not decimals. Also hex literals are allowed
 var E1 = /* @__PURE__ */ ((E1) => {E1[E1["a"]=1]="a";E1[E1["b"]=2]="b";return E1;})(E1 || {});
 var E2 = /* @__PURE__ */ ((E2) => {E2[E2["a"]=-1]="a";E2[E2["b"]=0]="b";return E2;})(E2 || {});
-var E3 = /* @__PURE__ */ ((E3) => {E3[E3["a"]=0.1]="a";E3[E3["b"]=0]="b";return E3;})(E3 || {});
+var E3 = /* @__PURE__ */ ((E3) => {E3[E3["a"]=0.1]="a";E3[E3["b"]=1.1]="b";return E3;})(E3 || {});
 // Error because 0.1 is not a constant
 // Not a constant
 var E5 = /* @__PURE__ */ ((E5) => {E5[E5["a"]=1 / 0]="a";E5[E5["b"]=2 / 0.0]="b";E5[E5["c"]=1.0 / 0.0]="c";E5[E5["d"]=0.0 / 0.0]="d";E5[E5["e"]=NaN]="e";E5[E5["f"]=Infinity]="f";E5[E5["g"]=-Infinity]="g";return E5;})(E5 || {});
@@ -118,7 +118,7 @@ var E = /* @__PURE__ */ ((E) => {E[E["test"]=value]="test";return E;})(E || {});
 exports[`TSC: enums enumExportMergingES6 1`] = `
 "export var Animals = /* @__PURE__ */ ((Animals) => {Animals[Animals["Cat"]=1]="Cat";return Animals;})(Animals || {});
 export var Animals = /* @__PURE__ */ ((Animals) => {Animals[Animals["Dog"]=2]="Dog";return Animals;})(Animals || {});
-export var Animals = /* @__PURE__ */ ((Animals) => {Animals[Animals["CatDog"]=Cat | Dog]="CatDog";return Animals;})(Animals || {});
+export var Animals = /* @__PURE__ */ ((Animals) => {Animals[Animals["CatDog"]=3]="CatDog";return Animals;})(Animals || {});
 "
 `;
 

@@ -6,6 +6,7 @@ const Node = ast_mod.Node;
 const Tag = Node.Tag;
 const NodeIndex = ast_mod.NodeIndex;
 const cooked_name = @import("../cooked_name.zig");
+const ast_walk = @import("../../parser/ast_walk.zig");
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const transformer_mod = @import("../transformer.zig");
@@ -50,10 +51,100 @@ pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     }
 
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));
-    const new_members = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
+    const new_members = try visitEnumMembers(self, node);
     return self.addExtraNode(.ts_enum_declaration, node.span, &.{
         @intFromEnum(new_name), new_members.start, new_members.len, flags & ~@as(u32, 1),
     });
+}
+
+/// 런타임 enum 멤버를 방문하며, 값이 정해진 두 경우 초기값을 숫자/문자열 리터럴로 채운다
+/// (tsc·esbuild 와 같은 값, #5601):
+///   - 계산식(`A = 1 << 1`, `A = 0x10`) 뒤의 자동 증가 멤버 — codegen 은 식을 평가하지 못해
+///     직전 정수 리터럴 기준으로 세어 틀린 값(0 부터)을 냈다.
+///   - 병합된 앞선 선언의 멤버를 이름만으로 쓰는 초기값(`enum E { B = A + 1 }`) — 이 선언의
+///     IIFE 안에는 `A` 가 없어 ReferenceError 였다.
+fn visitEnumMembers(self: *Transformer, node: Node) Error!ast_mod.NodeList {
+    const e = node.data.extra;
+    const list: ast_mod.NodeList = .{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) };
+    const id = enumNameAndSymbol(self, node) orelse return self.visitExtraList(list);
+    const prior_index = findEnumDecl(self.enum_values.items, id.name, id.sym);
+    const prior_len = if (prior_index) |pi| self.enum_values.items[pi].members.len else 0;
+    var ev = try evaluateEnum(self, node, if (prior_index) |pi| self.enum_values.items[pi].members else &.{});
+    defer ev.deinit(self.allocator);
+
+    var out: std.ArrayList(NodeIndex) = .empty;
+    defer out.deinit(self.allocator);
+    // codegen 이 자동 증가를 직접 셀 수 있는 상태(직전 멤버 값이 정수 리터럴/자동 증가)인지.
+    var codegen_counts = true;
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const member = self.ast.getNode(member_idx);
+        const value = ev.values.items[i];
+        if (member.tag != .ts_enum_member) {
+            try out.append(self.allocator, try self.visitNode(member_idx));
+            codegen_counts = false;
+            continue;
+        }
+        const init_idx = member.data.binary.right;
+        const fold = if (value == null)
+            false
+        else if (init_idx.isNone())
+            !codegen_counts
+        else
+            refersToPriorMember(self, init_idx, ev.known.items[0..prior_len]);
+        if (fold) {
+            const new_key = try self.visitNode(member.data.binary.left);
+            const literal = try makeConstEnumLiteralNode(self, value.?, member.span);
+            try out.append(self.allocator, try self.ast.addNode(.{
+                .tag = .ts_enum_member,
+                .span = member.span,
+                .data = .{ .binary = .{ .left = new_key, .right = literal, .flags = member.data.binary.flags } },
+            }));
+            codegen_counts = isIntegral(value.?);
+        } else {
+            try out.append(self.allocator, try self.visitNode(member_idx));
+            if (!init_idx.isNone()) {
+                const init_node = self.ast.getNode(init_idx);
+                codegen_counts = switch (init_node.tag) {
+                    .numeric_literal => if (std.fmt.parseInt(i64, self.ast.getText(init_node.span), 10)) |_| true else |_| false,
+                    .identifier_reference => value != null and isIntegral(value.?),
+                    else => false,
+                };
+            } else if (value == null) codegen_counts = false;
+        }
+    }
+    try storeEnumValues(self, &self.enum_values, node, prior_index, &ev);
+    return self.ast.addNodeList(out.items);
+}
+
+fn isIntegral(value: ConstEnumValue) bool {
+    return switch (value) {
+        .number => |n| @floor(n) == n and !std.math.isInf(n),
+        .string => false,
+    };
+}
+
+/// 초기값이 병합된 앞선 선언의 멤버를 이름만으로 참조하는가. 멤버 접근의 속성 이름은 제외.
+fn refersToPriorMember(self: *const Transformer, expr_idx: NodeIndex, prior: []const ConstEnumMember) bool {
+    if (prior.len == 0 or expr_idx.isNone()) return false;
+    const node = self.ast.getNode(expr_idx);
+    switch (node.tag) {
+        .identifier_reference => {
+            const name = self.ast.getText(node.span);
+            for (prior) |m| {
+                if (cooked_name.eql(m.name, name)) return true;
+            }
+            return false;
+        },
+        .static_member_expression => return refersToPriorMember(self, self.readNodeIdx(node.data.extra, 0), prior),
+        else => {},
+    }
+    var it = ast_walk.children(self.ast, node);
+    while (it.next()) |child| {
+        if (refersToPriorMember(self, child, prior)) return true;
+    }
+    return false;
 }
 
 /// Exported from the module (not from a namespace, whose const enums stay erased).
@@ -64,97 +155,166 @@ fn constEnumIsExported(self: *const Transformer, node: Node) bool {
     return sym.isExported() and !sym.scope_id.isNone() and sym.scope_id.toIndex() == 0;
 }
 
-/// const enum 멤버를 평가하여 self.const_enums 에 추가.
+/// 한 enum 선언의 멤버 값 평가 결과.
+const EnumEval = struct {
+    /// 앞서 병합된 선언의 멤버 + 이 선언에서 값이 정해진 멤버 (이름·문자열 소유).
+    known: std.ArrayList(ConstEnumMember) = .empty,
+    /// 이 선언의 멤버별 값 (`known` 을 빌림). 상수가 아니면 null.
+    values: std.ArrayList(?ConstEnumValue) = .empty,
+    complete: bool = true,
+
+    fn deinit(self: *EnumEval, allocator: std.mem.Allocator) void {
+        freeMembers(allocator, self.known.items);
+        self.known.deinit(allocator);
+        self.values.deinit(allocator);
+    }
+};
+
+fn freeMembers(allocator: std.mem.Allocator, members: []const ConstEnumMember) void {
+    for (members) |m| {
+        allocator.free(m.name);
+        if (m.value == .string) allocator.free(m.value.string);
+    }
+}
+
+fn enumMemberKeyName(self: *const Transformer, key_idx: NodeIndex) ?[]const u8 {
+    if (key_idx.isNone()) return null;
+    const key_node = self.ast.getNode(key_idx);
+    return switch (key_node.tag) {
+        .identifier_reference, .binding_identifier => self.ast.getText(key_node.span),
+        .string_literal => blk: {
+            const raw = self.ast.getText(key_node.data.string_ref);
+            if (raw.len < 2) return null;
+            break :blk raw[1 .. raw.len - 1];
+        },
+        else => null,
+    };
+}
+
+/// 같은 enum 의 앞선 선언(병합, #5601) 멤버를 찾는다.
+fn findEnumDecl(list: []const ConstEnumDecl, name: []const u8, sym: ?u32) ?usize {
+    for (list, 0..) |decl, i| {
+        if (enumDeclMatches(decl, name, sym)) return i;
+    }
+    return null;
+}
+
+/// enum 멤버 값을 평가한다. `prior` 는 앞서 병합된 선언의 멤버 — 뒤 선언의 초기값은
+/// 그 이름을 그대로 쓸 수 있다(TS 병합 enum).
 /// TypeScript spec 의 const enum expression subset 을 지원:
 ///   numeric/string/boolean literal · 단항(`+ - ~ !`) · 이항(산술/비트/비교/논리) · parenthesized ·
 ///   같은 enum 내 다른 멤버 참조(`B = A + 1`) · 외부 const enum 참조(`B = OtherEnum.X`) · 빈 init(auto-inc).
-/// 평가 불가 expression 은 해당 enum 전체 등록을 건너뜀 (인라인 미동작 → 기존 동작 유지, 회귀 아님).
-fn collectConstEnum(self: *Transformer, node: Node) Error!void {
+fn evaluateEnum(self: *Transformer, node: Node, prior: []const ConstEnumMember) Error!EnumEval {
     const e = node.data.extra;
     const name_idx = self.readNodeIdx(e, 0);
-    if (name_idx.isNone()) return;
-    const name_node = self.ast.getNode(name_idx);
-    if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return;
-    const enum_name_src = self.ast.getText(name_node.span);
-
+    const enum_name_src = self.ast.getText(self.ast.getNode(name_idx).span);
     const members_start = self.readU32(e, 1);
     const members_len = self.readU32(e, 2);
 
-    var collected: std.ArrayList(ConstEnumMember) = .empty;
-    errdefer {
-        for (collected.items) |m| {
-            self.allocator.free(m.name);
-            if (m.value == .string) self.allocator.free(m.value.string);
-        }
-        collected.deinit(self.allocator);
+    var ev: EnumEval = .{};
+    errdefer ev.deinit(self.allocator);
+    for (prior) |m| {
+        const owned_name = try self.allocator.dupe(u8, m.name);
+        errdefer self.allocator.free(owned_name);
+        const owned_value: ConstEnumValue = switch (m.value) {
+            .number => |n| .{ .number = n },
+            .string => |str| .{ .string = try self.allocator.dupe(u8, str) },
+        };
+        try ev.known.append(self.allocator, .{ .name = owned_name, .value = owned_value });
     }
 
-    var prev_number: ?f64 = null;
+    var prev_number: ?f64 = if (prior.len == 0) -1 else null;
     var i: u32 = 0;
     while (i < members_len) : (i += 1) {
         const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[members_start + i]);
         const member_node = self.ast.getNode(member_idx);
-        if (member_node.tag != .ts_enum_member) return;
+        const member_name_src = if (member_node.tag == .ts_enum_member) enumMemberKeyName(self, member_node.data.binary.left) else null;
+        const init_idx = if (member_node.tag == .ts_enum_member) member_node.data.binary.right else NodeIndex.none;
 
-        const key_idx = member_node.data.binary.left;
-        const init_idx = member_node.data.binary.right;
-        if (key_idx.isNone()) return;
-        const key_node = self.ast.getNode(key_idx);
-        const member_name_src = switch (key_node.tag) {
-            .identifier_reference, .binding_identifier => self.ast.getText(key_node.span),
-            .string_literal => blk: {
-                const raw = self.ast.getText(key_node.data.string_ref);
-                if (raw.len < 2) return;
-                break :blk raw[1 .. raw.len - 1];
-            },
-            else => return,
-        };
-
-        var value: ConstEnumValue = undefined;
         // #4232: concat 중간 문자열 수거 — 멤버 저장(아래 재-dupe) 후 일괄 해제.
         var temp_strings: std.ArrayList([]const u8) = .empty;
         defer {
             for (temp_strings.items) |ts| self.allocator.free(ts);
             temp_strings.deinit(self.allocator);
         }
-        if (init_idx.isNone()) {
-            const next: f64 = if (prev_number) |pv| pv + 1 else 0;
-            value = .{ .number = next };
-        } else {
-            value = (try evalConstEnumExpr(self, init_idx, .{
-                .current_members = collected.items,
+        const value: ?ConstEnumValue = if (member_name_src == null)
+            null
+        else if (init_idx.isNone())
+            (if (prev_number) |pv| ConstEnumValue{ .number = pv + 1 } else null)
+        else
+            try evalConstEnumExpr(self, init_idx, .{
+                .current_members = ev.known.items,
                 .current_name = enum_name_src,
                 .current_symbol_id = self.getSymbolIdAt(name_idx),
                 .temp_strings = &temp_strings,
-            })) orelse return;
-        }
-        switch (value) {
-            .number => |n| prev_number = n,
-            .string => prev_number = null,
-        }
-
-        const owned_name = try self.allocator.dupe(u8, member_name_src);
-        errdefer self.allocator.free(owned_name);
-        const owned_value: ConstEnumValue = switch (value) {
-            .number => |n| .{ .number = n },
-            .string => |s| .{ .string = try self.allocator.dupe(u8, s) },
+            });
+        const v = value orelse {
+            ev.complete = false;
+            prev_number = null;
+            try ev.values.append(self.allocator, null);
+            continue;
         };
-        try collected.append(self.allocator, .{ .name = owned_name, .value = owned_value });
+        prev_number = switch (v) {
+            .number => |n| n,
+            .string => null,
+        };
+
+        const owned_name = try self.allocator.dupe(u8, member_name_src.?);
+        errdefer self.allocator.free(owned_name);
+        const owned_value: ConstEnumValue = switch (v) {
+            .number => |n| .{ .number = n },
+            .string => |str| .{ .string = try self.allocator.dupe(u8, str) },
+        };
+        errdefer if (owned_value == .string) self.allocator.free(owned_value.string);
+        try ev.known.append(self.allocator, .{ .name = owned_name, .value = owned_value });
+        try ev.values.append(self.allocator, owned_value);
     }
+    return ev;
+}
 
-    const owned_enum_name = try self.allocator.dupe(u8, enum_name_src);
+/// `ev.known` 을 enum 목록에 기록한다 — 병합된 앞선 선언 항목이 있으면 교체한다.
+fn storeEnumValues(self: *Transformer, list: *std.ArrayList(ConstEnumDecl), node: Node, prior_index: ?usize, ev: *EnumEval) Error!void {
+    const name_idx = self.readNodeIdx(node.data.extra, 0);
+    const members_owned = try ev.known.toOwnedSlice(self.allocator);
+    if (prior_index) |pi| {
+        freeMembers(self.allocator, list.items[pi].members);
+        self.allocator.free(list.items[pi].members);
+        list.items[pi].members = members_owned;
+        return;
+    }
+    errdefer {
+        freeMembers(self.allocator, members_owned);
+        self.allocator.free(members_owned);
+    }
+    const owned_enum_name = try self.allocator.dupe(u8, self.ast.getText(self.ast.getNode(name_idx).span));
     errdefer self.allocator.free(owned_enum_name);
-    const members_owned = try collected.toOwnedSlice(self.allocator);
-
     // shadowing 안전을 위해 enum binding 의 symbol_id 보관. visitMemberExpression 에서
     // identifier_reference.symbol_id == decl.symbol_id 일 때만 인라인.
-    const sym_id = self.getSymbolIdAt(name_idx);
-
-    try self.const_enums.append(self.allocator, .{
+    try list.append(self.allocator, .{
         .name = owned_enum_name,
         .members = members_owned,
-        .symbol_id = sym_id,
+        .symbol_id = self.getSymbolIdAt(name_idx),
     });
+}
+
+fn enumNameAndSymbol(self: *const Transformer, node: Node) ?struct { name: []const u8, sym: ?u32 } {
+    const name_idx = self.readNodeIdx(node.data.extra, 0);
+    if (name_idx.isNone()) return null;
+    const name_node = self.ast.getNode(name_idx);
+    if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return null;
+    return .{ .name = self.ast.getText(name_node.span), .sym = self.getSymbolIdAt(name_idx) };
+}
+
+/// const enum 멤버를 평가하여 self.const_enums 에 추가.
+/// 평가 불가 expression 이 있으면 해당 enum 전체 등록을 건너뜀 (인라인 미동작 → 기존 동작 유지).
+fn collectConstEnum(self: *Transformer, node: Node) Error!void {
+    const id = enumNameAndSymbol(self, node) orelse return;
+    const prior_index = findEnumDecl(self.const_enums.items, id.name, id.sym);
+    const prior: []const ConstEnumMember = if (prior_index) |pi| self.const_enums.items[pi].members else &.{};
+    var ev = try evaluateEnum(self, node, prior);
+    defer ev.deinit(self.allocator);
+    if (!ev.complete) return;
+    try storeEnumValues(self, &self.const_enums, node, prior_index, &ev);
 }
 
 /// 평가 컨텍스트: 현재 collecting 중인 enum의 정보 (self-reference 해결용).

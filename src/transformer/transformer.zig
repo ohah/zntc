@@ -680,6 +680,8 @@ pub const Transformer = struct {
     /// TS const enum: 선언 시 멤버 값을 미리 평가하여 보관.
     /// 후속 visitMemberExpression에서 `E.A` 형태 참조를 literal로 인라인.
     const_enums: std.ArrayList(ConstEnumDecl) = .empty,
+    /// 런타임 enum 의 상수 멤버 값 — 병합된 뒤 선언·계산식 뒤 자동 증가 멤버용 (#5601).
+    enum_values: std.ArrayList(ConstEnumDecl) = .empty,
 
     /// `const re = /.../;` 형태로 선언된 regex literal 추적.
     /// key=symbol_id, value=pattern 텍스트 (`/`/flags 제외 owned slice).
