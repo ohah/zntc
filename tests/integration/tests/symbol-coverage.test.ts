@@ -13318,7 +13318,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 before,unbound-key-argument,key:value\n',
       },
       {
-        name: 'unresolved deep optional member calls with an effectful argument to the computed final-call key stay on semantic reanalysis',
+        name: 'unresolved deep optional member calls retain a computed final-call key with one exact-bound argument call',
         source: [
           'var events = [];',
           'var argumentSource = { receiver: { valueCall(input) { return input + 7; } } };',
@@ -13328,8 +13328,37 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class EffectfulArgumentComputedFinalCallKeyField { static value = __zntcEffectfulArgumentComputedFinalCallKeyHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(effectfulKeyArgument())](1))); }',
           'console.log(EffectfulArgumentComputedFinalCallKeyField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,key-argument,key:value\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with an unbound nested computed final-call key argument stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { receiver: { valueCall(input) { return input + 7; } } };',
+          'function argumentKey(key) { events.push("key:" + key); return "valueCall"; }',
+          'globalThis.__zntcUnboundComputedFinalCallKeyArgument = function () { events.push("unbound-key-argument"); return "value"; };',
+          'globalThis.__zntcUnboundComputedFinalCallKeyArgumentHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class UnboundNestedComputedFinalCallKeyArgumentField { static value = __zntcUnboundComputedFinalCallKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(__zntcUnboundComputedFinalCallKeyArgument())](1))); }',
+          'console.log(UnboundNestedComputedFinalCallKeyArgumentField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,unbound-key-argument,key:value\n',
+      },
+      {
+        name: 'unresolved deep optional member calls with a two-level computed final-call key argument stay on semantic reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { receiver: { valueCall(input) { return input + 7; } } };',
+          'function argumentKey(value) { events.push("key:" + value); return "valueCall"; }',
+          'function nestedKeyArgument(value) { events.push("nested:" + value); return value; }',
+          'function deepKeyArgument() { events.push("deep"); return "value"; }',
+          'globalThis.__zntcDeepComputedFinalCallKeyArgumentHolder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class DeepComputedFinalCallKeyArgumentField { static value = __zntcDeepComputedFinalCallKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey(nestedKeyArgument(deepKeyArgument()))](1))); }',
+          'console.log(DeepComputedFinalCallKeyArgumentField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,deep,nested:value,key:value\n',
       },
       {
         name: 'bound-root deep optional member calls with safe computed final-call sequences stay on semantic reanalysis',

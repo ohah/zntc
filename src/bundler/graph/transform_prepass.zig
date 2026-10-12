@@ -1290,16 +1290,13 @@ fn isRetainableBoundStaticFieldMemberRead(
                 ast.getNode(property_idx).tag != .call_expression) return false;
             const key_call_extra = ast.getNode(property_idx).data.extra;
             if (key_call_extra > extras.len or extras.len - key_call_extra < 4) return false;
-            const optional_key_call =
-                (extras[key_call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
-            const allow_bound_call_arguments = optional_key_call;
             if (!isRetainableBoundStaticFieldEffectCall(
                 ast,
                 semantic,
                 property_idx,
                 false,
                 true,
-                allow_bound_call_arguments,
+                true,
             )) return false;
         }
         saw_member = true;
