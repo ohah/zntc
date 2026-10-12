@@ -40,7 +40,11 @@ fn expandBlockRenamedShorthand(self: *Transformer, node: Node) Error!?NodeIndex 
     const new_key = try self.copyNodeDirect(key_idx);
     try self.propagateSymbolId(key_idx, new_key);
 
-    const new_value = try self.makeUserRefNamed(new_name, key_idx);
+    // The implied read keeps the source reference (and its scope), as a
+    // renamed identifier does: inside a lowered async function the current
+    // scope is the generated generator's, where the read is not recorded.
+    const new_value = (try self.tryRenameIdentifierLike(key_idx, .identifier_reference)) orelse
+        try self.makeUserRefNamed(new_name, key_idx);
 
     return try self.ast.addNode(.{
         .tag = .object_property,
