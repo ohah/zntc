@@ -1239,7 +1239,7 @@ fn isRetainableBoundStaticFieldEffectCall(
                 semantic,
                 argument_idx,
                 true,
-                false,
+                computed_member_key_call_mode == .sequence_final,
                 false,
                 .nested_call_argument,
             )) return false;
