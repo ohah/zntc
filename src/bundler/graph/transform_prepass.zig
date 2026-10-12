@@ -1309,9 +1309,9 @@ fn isRetainableBoundStaticFieldSequenceExpression(
 
 /// A sequence argument may end in a non-optional member read only when every
 /// segment uses a safe key and the chain starts at an exact-bound source name.
-/// Key calls are mode-gated: member-read values allow ordinary calls and
-/// optional calls with safe arguments; final calls may use the wider bounded
-/// optional-call form.
+/// Key calls are mode-gated: member-read values allow ordinary and optional
+/// calls with at most one exact-bound call argument; final calls may use the
+/// wider bounded optional-call form.
 fn isRetainableBoundStaticFieldMemberRead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1353,7 +1353,7 @@ fn isRetainableBoundStaticFieldMemberRead(
                 key_call_mode == .sequence_final or
                     (key_call_mode == .sequence_argument_member_read and optional_key_call),
                 key_call_mode == .sequence_final or
-                    (key_call_mode == .sequence_argument_member_read and !optional_key_call),
+                    key_call_mode == .sequence_argument_member_read,
                 .disallowed,
             )) return false;
         }
