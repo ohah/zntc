@@ -532,6 +532,13 @@ pub const TransformOptions = struct {
     /// Preserve the original operator and make the configured target limitation explicit.
     pub const exponentiation_dynamic_scope_msg =
         "exponentiation is emitted unchanged because a dynamic scope prevents safe downleveling without exposing generated bindings; the configured target may not support **.";
+
+    /// A lexical-capturing arrow cannot be represented by ordinary function
+    /// syntax inside `with` without changing dynamic identifier lookup. Its
+    /// containing class or object literal may also need to remain native to
+    /// retain lexical `super`.
+    pub const arrow_dynamic_scope_msg =
+        "a lexical-capturing arrow or its containing class/object literal inside a with statement is emitted unchanged because dynamic lookup can intercept generated capture bindings or erase lexical super context; the configured target may not support syntax retained inside it.";
 };
 
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게
