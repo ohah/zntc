@@ -1818,7 +1818,15 @@ pub fn emitModule(
             rt.NAMES.CJS_FACTORY_MIN
         else
             "__commonJS";
-        return cjs_wrap.emitDisabledModuleWithFactoryName(allocator, module, options.minify_whitespace, cjs_wrap.WrapperSyntax.from(options), factory_name);
+        const rename_table = if (linker) |l| &l.rename_table else null;
+        return cjs_wrap.emitDisabledModuleWithFactoryName(
+            allocator,
+            module,
+            options.minify_whitespace,
+            cjs_wrap.WrapperSyntax.from(options),
+            factory_name,
+            rename_table,
+        );
     }
 
     // Asset 모듈: JSON 모듈과 동일한 패턴으로 출력.
@@ -1837,7 +1845,8 @@ pub fn emitModule(
         if (module.loader == .binary) {
             if (linker) |l| to_binary_name = try l.toBinaryRuntimeName();
         }
-        return cjs_wrap.emitAssetModuleWithRuntimeNames(allocator, module, options, factory_name, to_binary_name);
+        const rename_table = if (linker) |l| &l.rename_table else null;
+        return cjs_wrap.emitAssetModuleWithRuntimeNames(allocator, module, options, factory_name, to_binary_name, rename_table);
     }
 
     const ast = &(module.ast orelse return null);

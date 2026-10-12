@@ -275,12 +275,21 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
     );
     const internal_ids = entry.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
 
-    var has_semantic_less_cjs = false;
+    var has_ast_less_cjs_with_exact_wrapper = false;
     var module_it = r.graph.modulesIterator();
     while (module_it.next()) |module| {
-        if (module.wrap_kind == .cjs and module.semantic == null) has_semantic_less_cjs = true;
+        if (module.wrap_kind == .cjs and module.ast == null) {
+            const wrapper_sem = module.semantic orelse return error.TestUnexpectedResult;
+            const require_inner = module.require_symbol orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(
+                semantic_symbol.SyntheticKind.cjs_require,
+                wrapper_sem.symbols.items[@intFromEnum(require_inner)].synthetic_kind.?,
+            );
+            try std.testing.expect(module.getRequireName(null) != null);
+            has_ast_less_cjs_with_exact_wrapper = true;
+        }
     }
-    try std.testing.expect(has_semantic_less_cjs);
+    try std.testing.expect(has_ast_less_cjs_with_exact_wrapper);
 
     try r.linker.computeRenames();
     try expectCjsRuntimeInternalNames(&r.linker, entry_index, internal_ids);
@@ -299,6 +308,57 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
     const source_id = bundler_symbol.SymbolID.make(entry_index, source_inner);
     const source_name = r.linker.rename_table.get(source_id) orelse "__commonJS";
     try std.testing.expect(!std.mem.eql(u8, runtime_name, source_name));
+}
+
+test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    const graph = try std.testing.allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(std.testing.allocator, &cache);
+    defer {
+        graph.deinit();
+        std.testing.allocator.destroy(graph);
+    }
+
+    const first_index = try graph.addDisabledModule("a/logo.png");
+    const second_index = try graph.addDisabledModule("b/logo.png");
+    for ([_]ModuleIndex{ first_index, second_index }) |index| {
+        const module = graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+        module.wrap_kind = .cjs;
+        module.exports_kind = .commonjs;
+    }
+
+    graph_finalize.registerWrapperSymbols(graph);
+    const first = graph.moduleAtMut(first_index) orelse return error.TestUnexpectedResult;
+    const second = graph.moduleAtMut(second_index) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(first.ast == null and second.ast == null);
+    const first_sem = first.semantic orelse return error.TestUnexpectedResult;
+    const second_sem = second.semantic orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), first_sem.scopes.len);
+    try std.testing.expectEqual(@as(usize, 0), first_sem.scope_maps.len);
+
+    const first_inner = first.require_symbol orelse return error.TestUnexpectedResult;
+    const second_inner = second.require_symbol orelse return error.TestUnexpectedResult;
+    const first_row = first_sem.symbols.items[@intFromEnum(first_inner)];
+    const second_row = second_sem.symbols.items[@intFromEnum(second_inner)];
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, first_row.synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, second_row.synthetic_kind.?);
+    try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
+    try std.testing.expect(first.wrapper_name_synthetic == null and second.wrapper_name_synthetic == null);
+
+    const first_symbol_count = first_sem.symbols.items.len;
+    const second_symbol_count = second_sem.symbols.items.len;
+    // A lost convenience field must be recovered from the owning semantic row,
+    // and repeated finalization must not append duplicate identities.
+    first.require_symbol = null;
+    graph_finalize.registerWrapperSymbols(graph);
+    graph_finalize.registerWrapperSymbols(graph);
+    try std.testing.expectEqual(first_inner, first.require_symbol orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(first_symbol_count, first.semantic.?.symbols.items.len);
+    try std.testing.expectEqual(second_symbol_count, second.semantic.?.symbols.items.len);
+    try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
 }
 
 test "linker: semantic-less binary entry assigns exact runtime SymbolIds" {
