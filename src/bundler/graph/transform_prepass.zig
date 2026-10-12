@@ -1345,7 +1345,7 @@ fn isRetainableBoundStaticFieldMemberRead(
                 property_idx,
                 false,
                 key_call_mode == .sequence_final,
-                key_call_mode == .sequence_final,
+                key_call_mode == .sequence_final or key_call_mode == .sequence_argument_member_read,
                 .disallowed,
             )) return false;
         }
