@@ -2006,9 +2006,8 @@ test "ES2015: arrow simple params — no unnecessary lowering" {
 test "ES2015: class method destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { method({x,...rest}:any) { return rest; } }", .es5);
     defer r.deinit();
-    // The lowered method keeps its name (`value: __name(function () {}, "method")`).
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(_") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, ",\"method\")") != null);
+    // The lowered method keeps its name (`value: function method() {}`).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "function method(_") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
@@ -3757,7 +3756,7 @@ test "ES2020: temp var hoisted for ?? in function" {
 test "ES2020: temp var hoisted for ?? in class method" {
     var r = try e2eTarget(std.testing.allocator, "class C{m(options){var queryHash=options.queryHash??hash(options.queryKey);return queryHash;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(options){var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:function m(options){var _a;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=options.queryHash)") != null);
 }
 

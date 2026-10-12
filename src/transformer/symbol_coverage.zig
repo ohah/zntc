@@ -2824,7 +2824,12 @@ fn checkExactImpl(
             // shape (generatedFunctionExpressionNameScope).
             var referenced_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer referenced_scopes.deinit(allocator);
-            for (references) |reference| try referenced_scopes.put(allocator, @intFromEnum(reference.scope_id), {});
+            for (references) |reference| {
+                // Declaration rows anchor a binding in its own scope; only an
+                // evaluated read or write would sit in the self-name scope.
+                if (reference.flags.declare) continue;
+                try referenced_scopes.put(allocator, @intFromEnum(reference.scope_id), {});
+            }
             var name_scope_iter = reachable_nodes.iterator();
             while (name_scope_iter.next()) |entry| {
                 if (generatedFunctionExpressionNameScope(ast, scope_owner_map, scopes, scope_maps, symbol_ids, symbols, &referenced_scopes, entry.key_ptr.*)) |name_scope|

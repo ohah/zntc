@@ -12130,8 +12130,8 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       expect(proc.stderr).toMatch(/symbol-coverage .* missing=0 wrong=0/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* missing_binding=0/);
       // Private storage and generated runtime-helper references all carry
-      // synthetic identity markers now. The fifth is the `__name` helper that
-      // names the lowered `read` method (ES5 class lowering).
+      // synthetic identity markers now. The fifth is the generated self-name
+      // of the lowered `read` method (`value: function read() {}`).
       expect(proc.stderr).toMatch(/synthetic-coverage .* marked_synthetic=5/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* consistent=1/);
       expect(proc.stderr).toMatch(/synthetic-coverage .* symbol_identity_complete=1/);

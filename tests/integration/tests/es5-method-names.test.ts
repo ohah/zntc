@@ -57,6 +57,10 @@ describe('ES5 method names', () => {
 
   const variants = [
     { label: 'es5', args: ['--target=es5'] },
+    // A native method keeps its name through minification (it is a property
+    // key); the lowered one must too.
+    { label: 'es5, minify', args: ['--target=es5', '--minify'] },
+    { label: 'react-native, minify', args: ['--platform=react-native', '--minify'] },
     { label: 'es5, minify, keep-names', args: ['--target=es5', '--minify', '--keep-names'] },
     { label: 'react-native', args: ['--platform=react-native'] },
     {
