@@ -5176,8 +5176,27 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         var semantic_scope = profile.begin(.graph_resync_semantic);
         defer semantic_scope.end();
 
-        analyzer.is_strict_mode = true;
-        analyzer.is_module = true;
+        // Reanalysis must use the source module's resolved program mode. In
+        // particular, a `.cjs` module can be a sloppy script even when it is
+        // bundled beside ESM; forcing strict mode makes the emitter add a
+        // file-level directive that makes retained `with` statements invalid.
+        if (previous_semantic) |semantic| {
+            if (semantic.scopes.len > 0) {
+                const root_scope = semantic.scopes[0];
+                analyzer.is_strict_mode = root_scope.is_strict;
+                analyzer.is_module = root_scope.kind == .module;
+            } else {
+                // Empty semantic scopes are only expected after an earlier
+                // analysis failure. Preserve the previous conservative mode.
+                analyzer.is_strict_mode = true;
+                analyzer.is_module = true;
+            }
+        } else {
+            // A successful parse normally always supplies the prior root
+            // scope. Keep the old fallback for malformed or incomplete modules.
+            analyzer.is_strict_mode = true;
+            analyzer.is_module = true;
+        }
         analyzer.is_ts = module.module_type.isTypeScript();
         analyzer.is_flow = self.flow or isFlowPath(module.path);
         analyzer.enable_stmt_info = true;
