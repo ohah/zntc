@@ -998,6 +998,7 @@ fn isSafeConstructorValue(
 const ComputedMemberKeyCallMode = enum {
     disallowed,
     sequence_final,
+    sequence_argument_member_read,
     nested_call_argument,
 };
 
@@ -1118,7 +1119,15 @@ fn isRetainableStaticFieldOptionalMemberChain(
             const unresolved_external_key = unresolved_external_root and
                 isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, property_idx);
             const retained_effectful_sequence_key = unresolved_external_root and
-                isRetainableBoundStaticFieldSequenceExpression(ast, semantic, property_idx, true, false, false);
+                isRetainableBoundStaticFieldSequenceExpression(
+                    ast,
+                    semantic,
+                    property_idx,
+                    true,
+                    false,
+                    .disallowed,
+                    false,
+                );
             if (!unresolved_external_key and !retained_effectful_sequence_key and
                 (property.tag != .call_expression or
                     !isRetainableStaticFieldExpression(allocator, ast, semantic, property_idx, false, false, false))) return false;
@@ -1245,6 +1254,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     expression_idx: ast_mod.NodeIndex,
     allow_unresolved_last_value: bool,
     allow_bound_member_read_last_value: bool,
+    member_read_key_call_mode: ComputedMemberKeyCallMode,
     allow_bound_call_last_value: bool,
 ) bool {
     if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
@@ -1279,7 +1289,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     const last_idx: ast_mod.NodeIndex = @enumFromInt(last_raw);
     return isSafeConstructorValue(ast, semantic, last_idx) or
         (allow_bound_member_read_last_value and
-            isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx, .disallowed)) or
+            isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx, member_read_key_call_mode)) or
         (allow_bound_call_last_value and
             isRetainableBoundStaticFieldEffectCall(
                 ast,
@@ -1296,8 +1306,8 @@ fn isRetainableBoundStaticFieldSequenceExpression(
 
 /// A sequence argument may end in a non-optional member read only when every
 /// segment uses a safe key and the chain starts at an exact-bound source name.
-/// Computed-call callees can additionally admit exact-bound ordinary or
-/// optional call keys; optional calls are enabled only for those keys.
+/// Key calls are mode-gated: member-read values allow ordinary zero-argument
+/// calls, while final calls may use the wider bounded optional-call form.
 fn isRetainableBoundStaticFieldMemberRead(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -1753,25 +1763,30 @@ fn isRetainableStaticFieldExpression(
                 const args_len = extras[extra + 2];
                 if (args_start > extras.len or args_len > extras.len - args_start) return false;
                 const allow_unresolved_root_sequence_arguments = work_item.allow_optional_invocations and
-                    isRetainableUnresolvedStaticFieldOptionalMemberCall(
+                    hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, callee_idx) and
+                    isRetainableStaticFieldOptionalMemberChain(
                         allocator,
                         ast,
                         semantic,
-                        current_idx,
+                        callee_idx,
+                        true,
+                        true,
                     );
                 for (extras[args_start .. args_start + args_len]) |raw_arg| {
                     if (raw_arg >= ast.nodes.items.len) return false;
                     const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
                     if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
-                    if (allow_unresolved_root_sequence_arguments and
+                    const retainable_sequence_argument = allow_unresolved_root_sequence_arguments and
                         isRetainableBoundStaticFieldSequenceExpression(
                             ast,
                             semantic,
                             argument_idx,
                             false,
                             true,
+                            .sequence_argument_member_read,
                             true,
-                        )) continue;
+                        );
+                    if (retainable_sequence_argument) continue;
                     if (ast.getNode(argument_idx).tag != .call_expression) return false;
                     pending.append(allocator, .{
                         .expression_idx = argument_idx,
