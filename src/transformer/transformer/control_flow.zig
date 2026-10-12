@@ -224,6 +224,29 @@ pub fn visitBinaryStatementBody(self: *Transformer, idx: NodeIndex) Error!NodeIn
     });
 }
 
+/// Visit the object expression before entering the dynamic environment, then
+/// track the WithEnvironmentRecord while transforming its statement body.
+pub fn visitWithStatement(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
+    const node = self.ast.getNode(idx);
+    const old_left = node.data.binary.left;
+    const old_right = node.data.binary.right;
+    const new_left = try self.visitNode(old_left);
+    self.with_statement_depth += 1;
+    defer self.with_statement_depth -= 1;
+    const raw_right = try self.visitNode(old_right);
+    const new_right = try ensureStatementBody(self, old_right, raw_right, node.span);
+    if (new_left == old_left and new_right == old_right) return idx;
+    return self.ast.addNode(.{
+        .tag = node.tag,
+        .span = node.span,
+        .data = .{ .binary = .{
+            .left = new_left,
+            .right = new_right,
+            .flags = node.data.binary.flags,
+        } },
+    });
+}
+
 /// while / do-while. es5 에서 본문 선언(let/const/class)을 클로저가 캡처하면 본문을 `_loop`
 /// 함수로 뽑아 반복마다 새 바인딩을 만든다 (#4743). 두 루프는 헤더 선언이 없어 예전엔 추출
 /// 경로 자체가 없었다 — 모든 클로저가 마지막 값을 봤다.

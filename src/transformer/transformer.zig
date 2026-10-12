@@ -431,6 +431,10 @@ pub const Transformer = struct {
     /// this → _this, arguments → _arguments로 치환한다.
     /// 일반 함수 진입 시 0으로 리셋 (자체 this/arguments 바인딩).
     arrow_this_depth: u32 = 0,
+    /// `with` body 안을 방문 중인지 추적한다. Arrow downleveling that needs
+    /// lexical capture aliases must preserve its syntax because a WithEnvironmentRecord
+    /// can intercept any generated identifier at runtime.
+    with_statement_depth: u32 = 0,
 
     /// ES2015 new.target: 현재 함수의 종류 (new.target 변환에 사용).
     /// constructor: this.constructor, method: void 0,
@@ -624,6 +628,10 @@ pub const Transformer = struct {
     /// also declares Math; the original operator is preserved and a target warning
     /// is emitted by transpile/bundler callers.
     used_unsupported_exponentiation: bool = false,
+
+    /// A lexical-capturing arrow or its method container was kept intact inside
+    /// a dynamic `with` scope because aliases/home-object syntax could be unsafe.
+    used_unsupported_arrow_dynamic_scope: bool = false,
 
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.
@@ -934,6 +942,7 @@ pub const Transformer = struct {
     const control_flow_mod = @import("transformer/control_flow.zig");
     pub const visitIfStatement = control_flow_mod.visitIfStatement;
     pub const visitBinaryStatementBody = control_flow_mod.visitBinaryStatementBody;
+    pub const visitWithStatement = control_flow_mod.visitWithStatement;
     pub const visitForInOfTernary = control_flow_mod.visitForInOfTernary;
     pub const tryLowerForInOfPrivateTarget = control_flow_mod.tryLowerForInOfPrivateTarget;
     pub const maybeLowerForInOfDestructuring = control_flow_mod.maybeLowerForInOfDestructuring;

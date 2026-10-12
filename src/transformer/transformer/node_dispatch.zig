@@ -188,6 +188,17 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // object_expression: spread(ES2018) / method shorthand / computed property(ES2015) 다운레벨링
         .object_expression => {
+            const object_super_needs_lowering = self.options.unsupported.class or
+                (self.options.unsupported.needsObjectMethodDownlevel() and
+                    es2015_object_methods.ES2015ObjectMethods(Transformer).needsObjectMethodLowering(self, node));
+            if (self.with_statement_depth > 0 and object_super_needs_lowering and
+                try es2015_arrow.ES2015Arrow(Transformer).hasLexicalSuperArrow(self, idx))
+            {
+                // Replacing an object method with a function erases the home
+                // object context required by a retained lexical-super arrow.
+                self.used_unsupported_arrow_dynamic_scope = true;
+                return idx;
+            }
             // V7 fix: 이전 F7 가 object_expression 진입 시 super context 5종을 일괄 reset 했으나,
             // 그러면 object 의 property VALUE 위치 (`{ y: super.foo() }`) 의 super 도 reset 되어
             // outer class 의 super lowering 이 비활성화됨 → ES5 등 class-lowering 타깃에서 raw super
@@ -416,7 +427,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .while_statement,
         .do_while_statement,
         => @import("control_flow.zig").visitWhileLoop(self, idx),
-        .with_statement => self.visitBinaryStatementBody(idx),
+        .with_statement => self.visitWithStatement(idx),
 
         // JSX
         .jsx_attribute,
@@ -605,6 +616,24 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .function,
         => self.visitFunction(node, idx),
         .arrow_function_expression => {
+            const arrow_extra = node.data.extra;
+            const is_async_arrow = arrow_extra + 2 < self.ast.extra_data.items.len and
+                (self.ast.extra_data.items[arrow_extra + 2] & ast_mod.ArrowFlags.is_async) != 0;
+            const arrow_needs_downlevel = self.options.unsupported.arrow or
+                (is_async_arrow and self.options.unsupported.async_await);
+            const captures = if (self.with_statement_depth > 0)
+                try es2015_arrow.ES2015Arrow(Transformer).lexicalCaptures(self, idx)
+            else
+                es2015_arrow.LexicalCaptureInfo{};
+            const capture_needs_downlevel = (arrow_needs_downlevel and captures.any()) or
+                (self.options.unsupported.new_target and captures.new_target_value);
+            if (self.with_statement_depth > 0 and capture_needs_downlevel) {
+                // The emitted arrow keeps the actual dynamic environment. A
+                // generated `_this`/`_arguments`/`_newTarget` name could be
+                // intercepted by the `with` object regardless of its suffix.
+                self.used_unsupported_arrow_dynamic_scope = true;
+                return idx;
+            }
             if (self.options.unsupported.async_await) {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
@@ -622,6 +651,14 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitArrowFunction(idx, node);
         },
         .class_declaration => {
+            if (self.with_statement_depth > 0 and self.options.unsupported.class and
+                try es2015_arrow.ES2015Arrow(Transformer).hasLexicalSuperArrow(self, idx))
+            {
+                // Lowering the method would erase the home-object context that
+                // a retained lexical-super arrow needs in order to stay valid.
+                self.used_unsupported_arrow_dynamic_scope = true;
+                return idx;
+            }
             // static 초기값·static 블록 안의 중첩 클래스는 자기 `this` 를 가진다 — 바깥 클래스 이름으로
             // 치환하지 않게 함수 경계처럼 깊이를 올린다 (#4801).
             const in_static_ctx = self.static_block_class_name != null;
@@ -652,6 +689,12 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             return self.visitClass(idx, node);
         },
         .class_expression => {
+            if (self.with_statement_depth > 0 and self.options.unsupported.class and
+                try es2015_arrow.ES2015Arrow(Transformer).hasLexicalSuperArrow(self, idx))
+            {
+                self.used_unsupported_arrow_dynamic_scope = true;
+                return idx;
+            }
             const in_static_ctx = self.static_block_class_name != null;
             if (in_static_ctx) self.this_depth += 1;
             defer if (in_static_ctx) {

@@ -26,6 +26,7 @@
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
@@ -33,8 +34,130 @@ const Tag = Node.Tag;
 const es_helpers = @import("es_helpers.zig");
 const FunctionInfo = @import("ast_plugin.zig").FunctionInfo;
 
+pub const LexicalCaptureInfo = struct {
+    this_value: bool = false,
+    arguments_value: bool = false,
+    new_target_value: bool = false,
+    super_value: bool = false,
+
+    pub fn any(self: LexicalCaptureInfo) bool {
+        return self.this_value or self.arguments_value or self.new_target_value or self.super_value;
+    }
+};
+
 pub fn ES2015Arrow(comptime Transformer: type) type {
     return struct {
+        fn pushDecorators(self: *Transformer, stack: *std.ArrayList(NodeIndex), extra: u32, start_offset: u32, len_offset: u32) std.mem.Allocator.Error!void {
+            const list = ast_mod.NodeList{
+                .start = self.readU32(extra, start_offset),
+                .len = self.readU32(extra, len_offset),
+            };
+            if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) return;
+            var decorators = self.ast.iterateExtraList(list);
+            while (decorators.next()) |decorator| try stack.append(self.allocator, decorator);
+        }
+
+        /// Dynamic `with` lookup can intercept generated lexical-capture aliases.
+        /// Scan nested arrows and class expressions in outer-evaluated positions,
+        /// while skipping ordinary functions and method bodies with their own values.
+        pub fn lexicalCaptures(self: *Transformer, source_owner: NodeIndex) std.mem.Allocator.Error!LexicalCaptureInfo {
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            var captures: LexicalCaptureInfo = .{};
+            try stack.append(self.allocator, source_owner);
+
+            while (stack.pop()) |idx| {
+                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                const raw = @intFromEnum(idx);
+                if (seen.contains(raw)) continue;
+                try seen.put(self.allocator, raw, {});
+                const node = self.ast.getNode(idx);
+                if (idx != source_owner and isLexicalValueBoundary(node.tag)) continue;
+                if (idx != source_owner) switch (node.tag) {
+                    // A method owns `this` in its parameters and body, but its
+                    // computed key and decorators are evaluated outside it.
+                    .method_definition => {
+                        try stack.append(self.allocator, self.readNodeIdx(node.data.extra, ast_mod.MethodExtra.key));
+                        try pushDecorators(self, &stack, node.data.extra, ast_mod.MethodExtra.deco_start, ast_mod.MethodExtra.deco_len);
+                        continue;
+                    },
+                    // Class field initializers have class/instance `this`; a
+                    // computed field key and decorators evaluate in the outer scope.
+                    .property_definition, .accessor_property => {
+                        try stack.append(self.allocator, self.readNodeIdx(node.data.extra, ast_mod.PropertyExtra.key));
+                        try pushDecorators(self, &stack, node.data.extra, ast_mod.PropertyExtra.deco_start, ast_mod.PropertyExtra.deco_len);
+                        continue;
+                    },
+                    .static_block => continue,
+                    else => {},
+                };
+
+                switch (node.tag) {
+                    .this_expression => captures.this_value = true,
+                    .super_expression => captures.super_value = true,
+                    .meta_property => if (node.data.none == 1) {
+                        captures.new_target_value = true;
+                    },
+                    .identifier_reference => {
+                        const raw_name = self.ast.identifierNameText(node);
+                        var decode_buffer: [64]u8 = undefined;
+                        const name = if (std.mem.indexOfScalar(u8, raw_name, '\\') != null)
+                            Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse raw_name
+                        else
+                            raw_name;
+                        if (std.mem.eql(u8, name, "arguments")) captures.arguments_value = true;
+                    },
+                    else => {},
+                }
+
+                if (node.tag == .class_declaration or node.tag == .class_expression) {
+                    try pushDecorators(self, &stack, node.data.extra, ast_mod.ClassExtra.deco_start, ast_mod.ClassExtra.deco_len);
+                }
+
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| try stack.append(self.allocator, child);
+            }
+            return captures;
+        }
+
+        /// Downleveling a class erases the method home-object context required
+        /// by a preserved arrow's lexical `super`. Keep the whole class when a
+        /// `with` body can make that preservation necessary.
+        pub fn hasLexicalSuperArrow(self: *Transformer, root: NodeIndex) std.mem.Allocator.Error!bool {
+            var stack: std.ArrayList(NodeIndex) = .empty;
+            defer stack.deinit(self.allocator);
+            var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            defer seen.deinit(self.allocator);
+            try stack.append(self.allocator, root);
+
+            while (stack.pop()) |idx| {
+                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                const raw = @intFromEnum(idx);
+                if (seen.contains(raw)) continue;
+                try seen.put(self.allocator, raw, {});
+                const node = self.ast.getNode(idx);
+                if (idx != root and isLexicalValueBoundary(node.tag)) continue;
+
+                if (node.tag == .arrow_function_expression) {
+                    const captures = try lexicalCaptures(self, idx);
+                    if (captures.super_value) return true;
+                }
+                if (node.tag == .class_declaration or node.tag == .class_expression) {
+                    try pushDecorators(self, &stack, node.data.extra, ast_mod.ClassExtra.deco_start, ast_mod.ClassExtra.deco_len);
+                } else if (node.tag == .method_definition) {
+                    try pushDecorators(self, &stack, node.data.extra, ast_mod.MethodExtra.deco_start, ast_mod.MethodExtra.deco_len);
+                } else if (node.tag == .property_definition or node.tag == .accessor_property) {
+                    try pushDecorators(self, &stack, node.data.extra, ast_mod.PropertyExtra.deco_start, ast_mod.PropertyExtra.deco_len);
+                }
+
+                var children = ast_walk.children(self.ast, node);
+                while (children.next()) |child| try stack.append(self.allocator, child);
+            }
+            return false;
+        }
+
         /// arrow_function_expression → function_expression 변환.
         /// arrow body 안의 this → _this, arguments → _arguments 치환을 위해
         /// arrow_this_depth를 증가시킨 상태로 body를 방문한다.
@@ -180,6 +303,16 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 },
             };
         }
+    };
+}
+
+fn isLexicalValueBoundary(tag: Tag) bool {
+    return switch (tag) {
+        .function_declaration,
+        .function_expression,
+        .function,
+        => true,
+        else => false,
     };
 }
 
