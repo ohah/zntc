@@ -539,6 +539,11 @@ pub const TransformOptions = struct {
     /// retain lexical `super`.
     pub const arrow_dynamic_scope_msg =
         "a lexical-capturing arrow or its containing class/object literal inside a with statement is emitted unchanged because dynamic lookup can intercept generated capture bindings or erase lexical super context; the configured target may not support syntax retained inside it.";
+
+    /// Dynamic source passed to direct eval can observe an arbitrary generated
+    /// lexical-capture name, so retain the arrow instead of guessing a suffix.
+    pub const arrow_dynamic_eval_msg =
+        "a lexical-capturing arrow is emitted unchanged because a non-literal direct eval argument can observe generated capture bindings; the configured target may not support arrow syntax retained inside it.";
 };
 
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게

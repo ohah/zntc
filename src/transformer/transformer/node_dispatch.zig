@@ -621,7 +621,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 (self.ast.extra_data.items[arrow_extra + 2] & ast_mod.ArrowFlags.is_async) != 0;
             const arrow_needs_downlevel = self.options.unsupported.arrow or
                 (is_async_arrow and self.options.unsupported.async_await);
-            const captures = if (self.with_statement_depth > 0)
+            const has_dynamic_eval_argument = if (arrow_needs_downlevel or self.options.unsupported.new_target)
+                try es2015_arrow.ES2015Arrow(Transformer).hasDynamicEvalArgument(self, idx)
+            else
+                false;
+            const captures = if (self.with_statement_depth > 0 or has_dynamic_eval_argument)
                 try es2015_arrow.ES2015Arrow(Transformer).lexicalCaptures(self, idx)
             else
                 es2015_arrow.LexicalCaptureInfo{};
@@ -632,6 +636,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 // generated `_this`/`_arguments`/`_newTarget` name could be
                 // intercepted by the `with` object regardless of its suffix.
                 self.used_unsupported_arrow_dynamic_scope = true;
+                return idx;
+            }
+            if (capture_needs_downlevel and has_dynamic_eval_argument) {
+                self.used_unsupported_arrow_dynamic_eval = true;
                 return idx;
             }
             if (self.options.unsupported.async_await) {

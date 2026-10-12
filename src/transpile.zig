@@ -1694,6 +1694,9 @@ fn transpileWithCallbackInternal(
     if (transformer.used_unsupported_arrow_dynamic_scope) {
         std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.arrow_dynamic_scope_msg });
     }
+    if (transformer.used_unsupported_arrow_dynamic_eval) {
+        std.log.warn("zntc: {s}: {s}", .{ file_path, TransformOptions.arrow_dynamic_eval_msg });
+    }
 
     if (options.stop_after == .transform) {
         return .{ .code = try allocator.dupe(u8, "") };

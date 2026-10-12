@@ -4812,6 +4812,9 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     if (transformer.used_unsupported_arrow_dynamic_scope) {
         self.addDiag(.arrow_dynamic_scope, .warning, module.path, Span.EMPTY, .parse, TransformOptions.arrow_dynamic_scope_msg, null);
     }
+    if (transformer.used_unsupported_arrow_dynamic_eval) {
+        self.addDiag(.arrow_dynamic_eval, .warning, module.path, Span.EMPTY, .parse, TransformOptions.arrow_dynamic_eval_msg, null);
+    }
     if (self.ignore_annotations) {
         purity.clearPureCallFlags(transformer.ast);
     } else {

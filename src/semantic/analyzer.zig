@@ -50,6 +50,19 @@ fn isDirectEvalIdentifier(ast: *const Ast, node: Node) bool {
     return std.mem.eql(u8, decoded_name, "eval");
 }
 
+fn isDirectEvalCallee(ast: *const Ast, source: NodeIndex) bool {
+    var idx = source;
+    while (!idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len) {
+        const node = ast.getNode(idx);
+        if (node.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) {
+            idx = node.data.unary.operand;
+            continue;
+        }
+        return node.tag == .identifier_reference and isDirectEvalIdentifier(ast, node);
+    }
+    return false;
+}
+
 const NamespaceMemberGroup = struct {
     owner_symbol: u32,
     members: std.StringHashMapUnmanaged(u32) = .empty,
@@ -2094,19 +2107,13 @@ pub const SemanticAnalyzer = struct {
                 const e = node.data.extra;
                 if (self.ast.hasExtra(e, 2)) {
                     const callee_idx = self.ast.readExtraNode(e, 0);
-                    // direct eval 감지: callee가 단순 identifier "eval"이면
+                    // direct eval 감지: 괄호/타입 래퍼 뒤의 callee가 단순 identifier "eval"이면
                     // 현재 스코프~루트의 변수 mangling을 차단.
                     // indirect eval ((0,eval)(...), globalThis.eval 등)은 ECMA 사양상
                     // 전역에서 평가되므로 로컬 변수에 영향 없음 → 감지 제외.
                     if (node.tag == .call_expression and !callee_idx.isNone()) {
-                        const callee_ni = @intFromEnum(callee_idx);
-                        if (callee_ni < self.ast.nodes.items.len) {
-                            const callee_node = self.ast.nodes.items[callee_ni];
-                            if (callee_node.tag == .identifier_reference) {
-                                if (isDirectEvalIdentifier(self.ast, callee_node)) {
-                                    self.markScopeFieldToRoot("subtree_has_direct_eval");
-                                }
-                            }
+                        if (isDirectEvalCallee(self.ast, callee_idx)) {
+                            self.markScopeFieldToRoot("subtree_has_direct_eval");
                         }
                     }
                     try self.visitNode(callee_idx);

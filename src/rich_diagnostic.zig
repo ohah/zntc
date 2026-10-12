@@ -162,6 +162,7 @@ pub fn bundlerErrorCode(code: BundlerDiagnostic.ErrorCode) ?error_codes.Code {
         .regex_modifier_unsupported => .regex_modifier_unsupported,
         .exponentiation_dynamic_scope => .exponentiation_dynamic_scope,
         .arrow_dynamic_scope => .arrow_dynamic_scope,
+        .arrow_dynamic_eval => .arrow_dynamic_eval,
         .with_in_esm_output => .with_strict,
     };
 }
