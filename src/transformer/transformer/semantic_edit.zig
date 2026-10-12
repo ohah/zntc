@@ -1780,7 +1780,10 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     if (self.getSymbolIdAt(temp.binding)) |existing| {
         if (existing != @intFromEnum(id)) std.debug.panic("state callback temp binding changed SymbolId", .{});
     } else try setSymbolId(self, temp.binding, id);
-
+    // Source temps carry producer identity. Only callback temps created after
+    // state-machine assembly lack it and may take the exact-scope late-name
+    // path here.
+    if (temp.symbol_id == null) es_helpers.markStandaloneLateSyntheticTemp(self, id, binding_scope);
     if (temp.symbol_id) |raw_id| {
         var nodes = live.iterator();
         while (nodes.next()) |entry| {
@@ -1922,6 +1925,7 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
     if (bound.found_existing and bound.value_ptr.* != @intFromEnum(id))
         std.debug.panic("callback temp allocation changed its exact SymbolId", .{});
     bound.value_ptr.* = @intFromEnum(id);
+    es_helpers.markStandaloneLateSyntheticTemp(self, id, callback_scope);
     const temp_slot = @intFromEnum(temp.binding);
     if (temp_slot < self.symbol_ids.items.len) {
         if (self.symbol_ids.items[temp_slot]) |existing| {

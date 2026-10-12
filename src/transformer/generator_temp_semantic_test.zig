@@ -15,6 +15,14 @@ fn checkGeneratedTemps(source: []const u8, target: TransformOptions.compat.ESTar
 }
 
 fn checkGeneratedTempsWithBlock(source: []const u8, target: TransformOptions.compat.ESTarget, expected: usize, has_state: bool, expect_block_refs: bool) !void {
+    return checkGeneratedTempsWithBlockAndLateNames(source, target, expected, has_state, expect_block_refs, false, false, null);
+}
+
+fn checkGeneratedTempsWithLateNames(source: []const u8, target: TransformOptions.compat.ESTarget, expected: usize, has_state: bool, expect_late_names: bool) !void {
+    return checkGeneratedTempsWithBlockAndLateNames(source, target, expected, has_state, false, true, expect_late_names, null);
+}
+
+fn checkGeneratedTempsWithBlockAndLateNames(source: []const u8, target: TransformOptions.compat.ESTarget, expected: usize, has_state: bool, expect_block_refs: bool, late_name_mode: bool, expect_late_names: bool, preserve_source_name: ?[]const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -29,7 +37,8 @@ fn checkGeneratedTempsWithBlock(source: []const u8, target: TransformOptions.com
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(target),
-        .emit_runtime_helper_imports = true,
+        .emit_runtime_helper_imports = !late_name_mode,
+        .defer_runtime_helper_name_resolution = late_name_mode,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
@@ -42,6 +51,17 @@ fn checkGeneratedTempsWithBlock(source: []const u8, target: TransformOptions.com
     transformer.semantic_edit_enabled = true;
     const root = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
+    if (preserve_source_name) |name| {
+        var matched: usize = 0;
+        for (analyzer.symbols.items, 0..) |_, source_id| {
+            const symbol = edited.symbols.items[source_id];
+            if (!std.mem.eql(u8, symbol.nameText(parser.ast.source), name)) continue;
+            matched += 1;
+            try std.testing.expect(symbol.synthetic_kind == null);
+            try std.testing.expectEqual(@as(?usize, source_id), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.nameText(parser.ast.source)));
+        }
+        try std.testing.expectEqual(@as(usize, 1), matched);
+    }
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
@@ -53,6 +73,10 @@ fn checkGeneratedTempsWithBlock(source: []const u8, target: TransformOptions.com
         // The private receiver expression creates one write and two reads.
         if (symbol.reference_count != 3 or symbol.write_count != 1) continue;
         found += 1;
+        if (late_name_mode) {
+            try std.testing.expectEqual(expect_late_names, symbol.synthetic_kind == .standalone_temp_binding);
+            try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+        }
         try std.testing.expect(symbol.scope_id.toIndex() >= analyzer.scopes.items.len);
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
         var owner_count: usize = 0;
@@ -112,6 +136,141 @@ test "#4819 callback local private receiver temp has exact binding and reference
 test "#4819 generator and async generator callback temps stay separate" {
     try checkGeneratedTemps("class Box { static #method() { return 1; } static receiver() { return this; } static *run() { yield this.receiver().#method(); } }", .es5, 1, true);
     try checkGeneratedTemps("class Box { static #method() { return 1; } static receiver() { return this; } static async *run() { yield await Promise.resolve(this.receiver().#method()); } }", .es5, 1, true);
+}
+
+test "#4819 state-machine callback temps finalize by exact ID unless dynamic lookup blocks them" {
+    const async_method = "class Box { static #method() { return 1; } static receiver() { return this; } static async run() { await Promise.resolve(); return this.receiver().#method(); } }";
+    const generator_method = "class Box { static #method() { return 1; } static receiver() { return this; } static *run() { var sourceValue = 5; yield this.receiver().#method() + sourceValue; } }";
+    const eval_blocks = "class Box { static #method() { return 1; } static receiver() { return this; } static async run() { await Promise.resolve(); return this.receiver().#method(); } } function sibling() { eval(''); }";
+    try checkGeneratedTempsWithLateNames(async_method, .es5, 1, true, true);
+    try checkGeneratedTempsWithBlockAndLateNames(generator_method, .es5, 1, true, false, true, true, "sourceValue");
+    try checkGeneratedTempsWithLateNames(eval_blocks, .es5, 1, true, false);
+}
+
+fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .emit_runtime_helper_imports = false,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var source_scope = transformer.programScope();
+    var found_owner_scope = false;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        const name = transformer.readNodeIdx(node.data.extra, 0);
+        if (name.isNone() or !std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(name).data.string_ref), "owner")) continue;
+        source_scope = @enumFromInt(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingOwnerScope);
+        found_owner_scope = true;
+        break;
+    }
+    try std.testing.expect(found_owner_scope);
+
+    var preserved_binding_source: ?ast_mod.NodeIndex = null;
+    var preserved_id: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_preserved")) continue;
+        preserved_binding_source = @enumFromInt(raw);
+        preserved_id = analyzer.symbol_ids.items[raw];
+    }
+    const original_preserved_binding = preserved_binding_source orelse return error.MissingPreservedSourceBinding;
+    const preserved_symbol_id = preserved_id orelse return error.MissingPreservedSourceSymbol;
+    const preserved_span = transformer.ast.getNode(original_preserved_binding).data.string_ref;
+    const preserved_binding = try es_helpers.makeSyntheticBinding(&transformer, preserved_span);
+    const preserved_reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, preserved_span);
+    const preserved_declarator = try es_helpers.makeDeclarator(&transformer, preserved_binding, ast_mod.NodeIndex.none, .EMPTY);
+    const preserved_declaration = try es_helpers.makeVarDeclaration(&transformer, &.{preserved_declarator}, .@"var", .EMPTY);
+    const preserved_reference_statement = try es_helpers.makeExprStmt(&transformer, preserved_reference, .EMPTY);
+
+    const name_span = try transformer.ast.addString("_tracked");
+    const binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name_span);
+    const declarator = try es_helpers.makeDeclarator(&transformer, binding, ast_mod.NodeIndex.none, .EMPTY);
+    const declaration = try es_helpers.makeVarDeclaration(&transformer, &.{declarator}, .@"var", .EMPTY);
+    const reference_statement = try es_helpers.makeExprStmt(&transformer, reference, .EMPTY);
+    const body_list = try transformer.ast.addNodeList(&.{ preserved_declaration, preserved_reference_statement, declaration, reference_statement });
+    const body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = body_list },
+    });
+    const state_name = try transformer.ast.addString("_state");
+    const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
+    const callback_params_list = try transformer.ast.addNodeList(&.{state_parameter});
+    const callback_params = try transformer.ast.addFormalParameters(callback_params_list, .EMPTY);
+    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(callback_params), @intFromEnum(body), 0, none });
+    const callback = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = callback_extra },
+    });
+    try transformer.generator_state_bindings.append(allocator, .{
+        .binding = preserved_binding,
+        .name_span = preserved_span,
+        .symbol_id = preserved_symbol_id,
+        .owner_scope = source_scope,
+    });
+    try transformer.generator_state_bindings.append(allocator, .{
+        .binding = binding,
+        .name_span = name_span,
+        .callback_local = true,
+    });
+    try transformer.trackHoistedTempRefInScope(preserved_span, preserved_reference, source_scope, .{ .read = true });
+    try transformer.trackHoistedTempRefInScope(name_span, reference, source_scope, .{ .read = true });
+    try transformer.bindGeneratedState(source_scope, source_scope, callback, state_parameter, 0, &.{}, &.{}, .EMPTY);
+
+    const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
+    const callback_scope: @import("../semantic/scope.zig").ScopeId = @enumFromInt(
+        editor.scope_owner_map.get(@intFromEnum(callback)) orelse return error.MissingCallbackScope,
+    );
+    const preserved_symbol = editor.symbols.items[preserved_symbol_id];
+    try std.testing.expect(preserved_symbol.synthetic_kind == null);
+    try std.testing.expectEqual(@as(?u32, preserved_symbol_id), transformer.getSymbolIdAt(preserved_binding));
+    try std.testing.expectEqual(source_scope, preserved_symbol.scope_id);
+    try std.testing.expectEqual(
+        @as(?usize, preserved_symbol_id),
+        editor.scope_maps.items[source_scope.toIndex()].get(preserved_symbol.nameText(parser.ast.source)),
+    );
+    const preserved_reference_record = (try editor.referenceForNode(preserved_reference)) orelse return error.MissingPreservedSourceReference;
+    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @enumFromInt(preserved_symbol_id)), preserved_reference_record.symbol_id);
+    try std.testing.expectEqual(callback_scope, preserved_reference_record.scope_id);
+    const raw_id = transformer.getSymbolIdAt(binding) orelse return error.MissingTrackedCallbackSymbol;
+    const id: usize = raw_id;
+    const symbol = editor.symbols.items[id];
+    try std.testing.expectEqual(callback_scope, symbol.scope_id);
+    try std.testing.expectEqual(
+        expect_late_name,
+        symbol.synthetic_kind == .standalone_temp_binding,
+    );
+    try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[callback_scope.toIndex()].get(symbol.synthetic_name));
+    const reference_record = (try editor.referenceForNode(reference)) orelse return error.MissingTrackedCallbackReference;
+    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @enumFromInt(raw_id)), reference_record.symbol_id);
+    try std.testing.expectEqual(callback_scope, reference_record.scope_id);
+}
+
+test "#4819 tracked callback-local temp finalizes through its exact SymbolId" {
+    try checkTrackedCallbackTemp("function owner() { var _preserved = 1; } export {};", true);
+    try checkTrackedCallbackTemp("function owner() { var _preserved = 1; eval(''); } export {};", false);
 }
 
 test "#4819 generator for-in temps retain their exact wrapper symbols" {
