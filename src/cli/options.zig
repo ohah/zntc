@@ -1139,6 +1139,11 @@ pub fn parseCliArguments(args: []const []const u8, allocator: std.mem.Allocator,
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try usage_cli.printUsage(stdout);
             return null;
+        } else if (arg.len == 0) {
+            // An empty argument (`zntc ""`, an unset shell variable) is neither
+            // an input nor an option.
+            try stderr.print("zntc: empty argument\n", .{});
+            std.process.exit(1);
         } else if (arg[0] != '-' or (arg.len == 1 and arg[0] == '-')) {
             if (opts.input_file == null) {
                 opts.input_file = arg;

@@ -57,6 +57,17 @@ const cases = [
         console.log([D1, D2, D3, D4].map((C) => C.name + '/' + C.s).join(' '), D1.g(), D5.g(), new D6().g());`,
     },
   },
+  {
+    // Numeric and BigInt keys name the class with their canonical ToString form.
+    name: 'numeric, BigInt, escaped and private keys',
+    files: {
+      'entry.js': `const o = { 1.50: class { static s = this.name; }, 0x10: class {}, 1n: class {}, '\\u0041': class {},
+          1e21: class {}, 1e-7: class {}, [2.50]: class {}, 1_000: class {} };
+        class H { static #k = class { static s = this.name; }; static get() { return H.#k; } }
+        console.log(o[1.5].name, o[1.5].s, o[16].name, o[1].name, o.A.name, o['1e+21'].name,
+          o['1e-7'].name, o[2.5].name, o[1000].name, H.get().name, H.get().s);`,
+    },
+  },
 ] as const;
 
 describe('anonymous class names under class lowering (#5519)', () => {
@@ -103,5 +114,40 @@ describe('anonymous class names under class lowering (#5519)', () => {
         expect(run.stdout).toBe(native.stdout);
       });
     }
+  }
+});
+
+// With `useDefineForClassFields: false` the static fields move out of the
+// class; its static blocks follow them so the restored name is visible (tsc
+// keeps both as static blocks in source order).
+describe('anonymous class names with useDefineForClassFields: false (#5519)', () => {
+  for (const target of ['esnext', 'es2022', 'es2020', 'es5'] as const) {
+    test(target, async () => {
+      const created = await createFixture({
+        'entry.ts': `const out: string[] = [];
+          let g: any; g = class { static s = 1; static { out.push(this.name); } };
+          let k: any; k = class { static s = this.name; static { out.push(this.name + '/' + this.s); } };
+          console.log(out.join(' '), g.name, k.s);`,
+        'tsconfig.json': '{"compilerOptions":{"useDefineForClassFields":false}}',
+        'package.json': '{"type":"module"}',
+      });
+      try {
+        const out = join(created.dir, 'out.cjs');
+        const result = await runZntc([
+          '--bundle',
+          join(created.dir, 'entry.ts'),
+          '--format=iife',
+          `--target=${target}`,
+          '-o',
+          out,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        const run = spawnSync('node', [out], { encoding: 'utf8' });
+        expect(run.status, run.stderr).toBe(0);
+        expect(run.stdout).toBe('g k/k g k\n');
+      } finally {
+        await created.cleanup();
+      }
+    });
   }
 });

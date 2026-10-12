@@ -276,18 +276,24 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // emitDecoratorMetadata: constructor 파라미터 위치 (원본 AST에서 수집)
     var ctor_params: ast_mod.NodeList = .{ .start = 0, .len = 0 };
 
+    // static field 를 class 밖으로 옮겨야 하는 조건은 instance field 와 같다 —
+    // 옵션이 assign 의미론이거나, 타겟이 class field 를 모르거나 (#4629).
+    const lowers_static_fields = !self.options.use_define_for_class_fields or self.options.unsupported.class_field;
+    // An anonymous class that moves static fields out is bound to a generated
+    // name and named right after its declaration; its static blocks must run
+    // after that too, in source order with the fields (tsc keeps both as
+    // static blocks) (#5519).
+    const lowers_static_blocks = self.options.unsupported.class_static_block or
+        (as_expression and new_name.isNone() and lowers_static_fields and classBodyNeedsNameForStatics(self, body_idx, true));
     var ctx = ClassMemberContext{
         .class_members = &class_members,
         .field_assignments = &field_assignments,
         .member_decorators = &member_decorators,
         .existing_constructor = &existing_constructor,
         .existing_constructor_pos = &existing_constructor_pos,
-        .static_block_iifes = if (self.options.unsupported.class_static_block) &static_block_iifes else null,
-        .static_block_field_counts = if (self.options.unsupported.class_static_block) &static_block_field_counts else null,
-        // static field 를 class 밖으로 옮겨야 하는 조건은 instance field 와 같다 —
-        // 옵션이 assign 의미론이거나, 타겟이 class field 를 모르거나 (#4629).
-        .static_field_assignments = if (!self.options.use_define_for_class_fields or
-            self.options.unsupported.class_field) &static_field_assignments else null,
+        .static_block_iifes = if (lowers_static_blocks) &static_block_iifes else null,
+        .static_block_field_counts = if (lowers_static_blocks) &static_block_field_counts else null,
+        .static_field_assignments = if (lowers_static_fields) &static_field_assignments else null,
         .ctor_param_decos = &ctor_param_decos,
         .has_super = has_super,
         .ctor_params = &ctor_params,

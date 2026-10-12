@@ -591,10 +591,65 @@ fn bindingName(self: anytype, binding: ast_mod.NodeIndex) ?@import("../lexer/tok
 
 fn keyName(self: anytype, key: ast_mod.NodeIndex, object_literal: bool) std.mem.Allocator.Error!?@import("../lexer/token.zig").Span {
     if (key.isNone()) return null;
+    // A numeric key names the class with its canonical ToString form.
+    var literal = key;
+    if (self.ast.getNode(literal).tag == .computed_property_key) literal = self.ast.getNode(literal).data.unary.operand;
+    if (!literal.isNone()) {
+        const node = self.ast.getNode(literal);
+        var buf: [64]u8 = undefined;
+        const canonical: ?[]const u8 = switch (node.tag) {
+            .numeric_literal => if (ast_mod.parseNumericText(self.ast.getText(node.span))) |value| jsNumberString(&buf, value) else null,
+            .bigint_literal => bigintString(&buf, self.ast.getText(node.span)),
+            else => null,
+        };
+        if (canonical) |text| return try self.ast.addString(text);
+        if (node.tag == .numeric_literal or node.tag == .bigint_literal) return null;
+    }
     const text = try self.ast.staticKeyName(self.allocator, key) orelse return null;
     defer self.allocator.free(text);
     if (object_literal and self.ast.getNode(key).tag != .computed_property_key and std.mem.eql(u8, text, "__proto__")) return null;
     return try self.ast.addString(text);
+}
+
+/// Number::toString for a property key (finite values; NaN/Infinity keys
+/// cannot come from a numeric literal).
+fn jsNumberString(buf: []u8, value: f64) ?[]const u8 {
+    if (!std.math.isFinite(value)) return null;
+    if (value == 0) return "0";
+    const magnitude = @abs(value);
+    if (magnitude >= 1e21 or magnitude < 1e-6) {
+        // `{e}` prints `1e21` / `1.5e-7`; JS writes `1e+21`.
+        var tmp: [64]u8 = undefined;
+        const raw = std.fmt.bufPrint(&tmp, "{e}", .{value}) catch return null;
+        const e = std.mem.indexOfScalar(u8, raw, 'e') orelse return null;
+        const sign: []const u8 = if (e + 1 < raw.len and raw[e + 1] == '-') "" else "+";
+        return std.fmt.bufPrint(buf, "{s}e{s}{s}", .{ raw[0..e], sign, raw[e + 1 ..] }) catch null;
+    }
+    return std.fmt.bufPrint(buf, "{d}", .{value}) catch null;
+}
+
+/// BigInt::toString of a `123n` / `0x10n` literal.
+fn bigintString(buf: []u8, text: []const u8) ?[]const u8 {
+    if (text.len < 2 or text[text.len - 1] != 'n') return null;
+    var digits = text[0 .. text.len - 1];
+    var radix: u8 = 10;
+    if (digits.len > 2 and digits[0] == '0') switch (digits[1] | 0x20) {
+        'x' => radix = 16,
+        'o' => radix = 8,
+        'b' => radix = 2,
+        else => {},
+    };
+    if (radix != 10) digits = digits[2..];
+    var clean: [64]u8 = undefined;
+    var len: usize = 0;
+    for (digits) |c| {
+        if (c == '_') continue;
+        if (len == clean.len) return null;
+        clean[len] = c;
+        len += 1;
+    }
+    const value = std.fmt.parseInt(u128, clean[0..len], radix) catch return null;
+    return std.fmt.bufPrint(buf, "{d}", .{value}) catch null;
 }
 
 /// The inferred name of an anonymous class lowered under a generated binding,
