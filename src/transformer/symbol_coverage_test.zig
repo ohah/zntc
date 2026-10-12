@@ -200,6 +200,20 @@ test "exact scope audit allows only detached graph-output symbol identities" {
         .{ .kind = .catch_binding, .synthetic_kind = .esm_runtime_internal_local, .name = "e" },
         .{ .kind = .function_decl, .synthetic_kind = .esm_runtime_internal_local, .name = "__init" },
         .{ .kind = .variable_var, .synthetic_kind = .esm_runtime_internal_local, .name = "f" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "copy_props.to" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "copy_props.from" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "copy_props.desc" },
+        .{ .kind = .variable_var, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "copy_props.keys" },
+        .{ .kind = .variable_var, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "copy_props.index" },
+        .{ .kind = .variable_var, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "copy_props.key" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "copy_props.closure_key" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "to_esm.module" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "to_esm.node_mode" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "to_esm.target" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "export.target" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "export.all" },
+        .{ .kind = .variable_var, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "export.name" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_interop_runtime_internal_local, .name = "to_common_js.module" },
         .{ .kind = .function_decl, .synthetic_kind = .esm_init, .name = "init_module" },
         .{ .kind = .variable_var, .synthetic_kind = .cjs_exports, .name = "exports_module" },
         .{ .kind = .function_decl, .synthetic_kind = .cjs_require, .name = "require_module" },
@@ -230,6 +244,49 @@ test "exact scope audit allows only detached graph-output symbol identities" {
     };
     const invalid_esm_internal = try checkExactFixture(allocator, &ast, root, &.{}, &.{wrong_esm_internal_name}, &scopes, &scope_maps, &owners, &.{});
     try std.testing.expect(!invalid_esm_internal.isClean());
+
+    const wrong_esm_interop_internal_kind = Symbol{
+        .name = span,
+        .scope_id = .none,
+        .kind = .variable_var,
+        .decl_flags = SymbolKind.variable_var.declFlags(),
+        .declaration_span = span,
+        .synthetic_kind = .esm_interop_runtime_internal_local,
+        .synthetic_name = "copy_props.to",
+    };
+    const invalid_esm_interop_kind = try checkExactFixture(allocator, &ast, root, &.{}, &.{wrong_esm_interop_internal_kind}, &scopes, &scope_maps, &owners, &.{});
+    try std.testing.expect(!invalid_esm_interop_kind.isClean());
+
+    const unknown_esm_interop_internal = Symbol{
+        .name = span,
+        .scope_id = .none,
+        .kind = SymbolKind.parameter,
+        .decl_flags = SymbolKind.parameter.declFlags(),
+        .declaration_span = span,
+        .synthetic_kind = .esm_interop_runtime_internal_local,
+        .synthetic_name = "unregistered.interop.local",
+    };
+    const invalid_esm_interop_name = try checkExactFixture(allocator, &ast, root, &.{}, &.{unknown_esm_interop_internal}, &scopes, &scope_maps, &owners, &.{});
+    try std.testing.expect(!invalid_esm_interop_name.isClean());
+
+    const interop_output_reference = [_]Reference{.{
+        .node_index = .none,
+        .scope_id = @enumFromInt(0),
+        .symbol_id = @enumFromInt(0),
+        .flags = .{ .declare = true },
+    }};
+    const interop_output_symbol = Symbol{
+        .name = span,
+        .scope_id = .none,
+        .kind = SymbolKind.parameter,
+        .decl_flags = SymbolKind.parameter.declFlags(),
+        .declaration_span = span,
+        .synthetic_kind = .esm_interop_runtime_internal_local,
+        .synthetic_name = "copy_props.to",
+    };
+    const interop_output_with_edge = try checkExactFixture(allocator, &ast, root, &.{}, &.{interop_output_symbol}, &scopes, &scope_maps, &owners, &interop_output_reference);
+    try std.testing.expect(interop_output_with_edge.invalid_scope > 0);
+    try std.testing.expect(!interop_output_with_edge.isClean());
 
     const unclassified = Symbol{
         .name = span,

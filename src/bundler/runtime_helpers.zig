@@ -2404,7 +2404,18 @@ fn appendRuntimeWithEsmInteropNames(
     minify: bool,
     names: names_mod.EsmInteropRuntimeNames,
 ) !void {
-    var replacements: [names_mod.ESM_INTEROP_RUNTIME_HELPERS.len]RuntimeIdentifierReplacement = undefined;
+    try appendRuntimeWithEsmInteropAndInternalNames(buf, allocator, source, minify, names, &.{});
+}
+
+fn appendRuntimeWithEsmInteropAndInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    minify: bool,
+    names: names_mod.EsmInteropRuntimeNames,
+    internal_replacements: []const RuntimeIdentifierReplacement,
+) !void {
+    var replacements: [names_mod.ESM_INTEROP_RUNTIME_HELPERS.len + 14]RuntimeIdentifierReplacement = undefined;
     inline for (names_mod.ESM_INTEROP_RUNTIME_HELPERS, 0..) |helper, index| {
         const base_name = names_mod.esmInteropRuntimeHelperBaseName(helper);
         replacements[index] = .{
@@ -2412,7 +2423,8 @@ fn appendRuntimeWithEsmInteropNames(
             .to = names.get(helper),
         };
     }
-    try appendRuntimeWithIdentifierReplacements(buf, allocator, source, &replacements);
+    @memcpy(replacements[names_mod.ESM_INTEROP_RUNTIME_HELPERS.len..][0..internal_replacements.len], internal_replacements);
+    try appendRuntimeWithIdentifierReplacements(buf, allocator, source, replacements[0 .. names_mod.ESM_INTEROP_RUNTIME_HELPERS.len + internal_replacements.len]);
 }
 
 fn isJsIdentifierStart(c: u8) bool {
@@ -2444,7 +2456,7 @@ fn appendRuntimeWithNamedIdentifier(
 /// configurable(의미) 이 우선 — RN 은 그 변종이 이미 function 문법이다. 그 다음이
 /// es5_syntax(문법) (#4630).
 pub fn appendToEsmRuntime(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, minify: bool, es5_syntax: bool, configurable: bool) !void {
-    try appendToEsmRuntimeWithNames(buf, allocator, minify, es5_syntax, configurable, names_mod.defaultEsmInteropRuntimeNames(minify));
+    try appendToEsmRuntimeWithInternalNames(buf, allocator, minify, es5_syntax, configurable, names_mod.defaultEsmInteropRuntimeNames(minify), .{});
 }
 
 /// Emit the CJS-to-ESM runtime using the graph-wide names selected for each
@@ -2457,6 +2469,20 @@ pub fn appendToEsmRuntimeWithNames(
     configurable: bool,
     names: names_mod.EsmInteropRuntimeNames,
 ) !void {
+    try appendToEsmRuntimeWithInternalNames(buf, allocator, minify, es5_syntax, configurable, names, .{});
+}
+
+/// Emit the ESM interop helpers with exact identities for both helper names and
+/// lexical bindings inside their raw templates.
+pub fn appendToEsmRuntimeWithInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    names: names_mod.EsmInteropRuntimeNames,
+    internal_names: names_mod.EsmInteropRuntimeInternalNames,
+) !void {
     const source = if (configurable) blk: {
         break :blk if (minify) TOESM_RUNTIME_CONFIGURABLE_MIN else TOESM_RUNTIME_CONFIGURABLE;
     } else if (es5_syntax) blk: {
@@ -2464,7 +2490,19 @@ pub fn appendToEsmRuntimeWithNames(
     } else blk: {
         break :blk if (minify) TOESM_RUNTIME_MIN else TOESM_RUNTIME;
     };
-    try appendRuntimeWithEsmInteropNames(buf, allocator, source, minify, names);
+    const replacements = [_]RuntimeIdentifierReplacement{
+        .{ .from = "to", .to = internal_names.copy_props_to },
+        .{ .from = "from", .to = internal_names.copy_props_from },
+        .{ .from = "desc", .to = internal_names.copy_props_desc },
+        .{ .from = "keys", .to = internal_names.copy_props_keys },
+        .{ .from = "i", .to = internal_names.copy_props_index },
+        .{ .from = "key", .to = internal_names.copy_props_key },
+        .{ .from = "k", .to = internal_names.copy_props_closure_key },
+        .{ .from = "mod", .to = internal_names.to_esm_module },
+        .{ .from = "isNodeMode", .to = internal_names.to_esm_node_mode },
+        .{ .from = "target", .to = internal_names.to_esm_target },
+    };
+    try appendRuntimeWithEsmInteropAndInternalNames(buf, allocator, source, minify, names, &replacements);
 }
 
 /// ESM wrap 런타임을 주입한다 (__esm + __export + __toCommonJS).
@@ -2501,6 +2539,22 @@ pub fn appendEsmWrapRuntimeWithInternalNames(
     names: names_mod.EsmInteropRuntimeNames,
     internal_names: names_mod.EsmRuntimeInternalNames,
 ) !void {
+    try appendEsmWrapRuntimeWithGraphInternalNames(buf, allocator, minify, es5_syntax, configurable, factory_name, names, internal_names, .{});
+}
+
+/// Emit the ESM wrapper with exact SymbolId-derived names for both the
+/// `__esm` factory body and raw ESM interop helper locals.
+pub fn appendEsmWrapRuntimeWithGraphInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    factory_name: []const u8,
+    names: names_mod.EsmInteropRuntimeNames,
+    internal_names: names_mod.EsmRuntimeInternalNames,
+    interop_internal_names: names_mod.EsmInteropRuntimeInternalNames,
+) !void {
     // __esm 은 서술자를 만들지 않으므로 문법 축만 본다.
     const fn_syntax = es5_syntax or configurable;
     const runtime = if (minify)
@@ -2526,7 +2580,12 @@ pub fn appendEsmWrapRuntimeWithInternalNames(
         (if (minify) EXPORT_RUNTIME_ES5_MIN else EXPORT_RUNTIME_ES5)
     else
         (if (minify) EXPORT_RUNTIME_MIN else EXPORT_RUNTIME);
-    try appendRuntimeWithEsmInteropNames(buf, allocator, export_runtime, minify, names);
+    const export_replacements = [_]RuntimeIdentifierReplacement{
+        .{ .from = "target", .to = interop_internal_names.export_target },
+        .{ .from = "all", .to = interop_internal_names.export_all },
+        .{ .from = "name", .to = interop_internal_names.export_name },
+    };
+    try appendRuntimeWithEsmInteropAndInternalNames(buf, allocator, export_runtime, minify, names, &export_replacements);
 
     const to_common_js_runtime = if (configurable)
         (if (minify) TOCOMMONJS_RUNTIME_CONFIGURABLE_MIN else TOCOMMONJS_RUNTIME_CONFIGURABLE)
@@ -2534,7 +2593,10 @@ pub fn appendEsmWrapRuntimeWithInternalNames(
         (if (minify) TOCOMMONJS_RUNTIME_ES5_MIN else TOCOMMONJS_RUNTIME_ES5)
     else
         (if (minify) TOCOMMONJS_RUNTIME_MIN else TOCOMMONJS_RUNTIME);
-    try appendRuntimeWithEsmInteropNames(buf, allocator, to_common_js_runtime, minify, names);
+    const to_common_js_replacements = [_]RuntimeIdentifierReplacement{
+        .{ .from = "mod", .to = interop_internal_names.to_common_js_module },
+    };
+    try appendRuntimeWithEsmInteropAndInternalNames(buf, allocator, to_common_js_runtime, minify, names, &to_common_js_replacements);
 }
 
 fn appendEsmRuntimeWithNames(

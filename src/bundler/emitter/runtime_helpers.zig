@@ -76,7 +76,11 @@ pub fn emitBundleRuntimeHelpers(
                 try l.esmInteropRuntimeNames()
             else
                 rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
-            try rt.appendToEsmRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names);
+            const internal_names = if (linker) |l|
+                try l.esmInteropRuntimeInternalNames()
+            else
+                rt_names.EsmInteropRuntimeInternalNames{};
+            try rt.appendToEsmRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names, internal_names);
         }
     }
     if (needs_esm_wrap_runtime) {
@@ -94,7 +98,11 @@ pub fn emitBundleRuntimeHelpers(
             try l.esmFactoryRuntimeInternalNames()
         else
             rt_names.EsmRuntimeInternalNames{};
-        try rt.appendEsmWrapRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names);
+        const interop_internal_names = if (linker) |l|
+            try l.esmInteropRuntimeInternalNames()
+        else
+            rt_names.EsmInteropRuntimeInternalNames{};
+        try rt.appendEsmWrapRuntimeWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names, interop_internal_names);
     }
     // Legacy decorators use the transformer's named virtual-module import.
     // An option-wide preamble would define __decorateClass a second time.
@@ -450,7 +458,11 @@ pub fn emitChunkRuntimeHelpers(
                 try l.esmInteropRuntimeNames()
             else
                 rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
-            try rt.appendToEsmRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names);
+            const internal_names = if (linker) |l|
+                try l.esmInteropRuntimeInternalNames()
+            else
+                rt_names.EsmInteropRuntimeInternalNames{};
+            try rt.appendToEsmRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names, internal_names);
         }
     } else if (options.preserve_modules and needs_to_esm_runtime) {
         // (#4524) preserve-modules 의 소비자 청크는 CJS 도 ESM-wrap 도 없는 **순수 ESM 파일**
@@ -465,7 +477,11 @@ pub fn emitChunkRuntimeHelpers(
             try l.esmInteropRuntimeNames()
         else
             rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
-        try rt.appendToEsmRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names);
+        const internal_names = if (linker) |l|
+            try l.esmInteropRuntimeInternalNames()
+        else
+            rt_names.EsmInteropRuntimeInternalNames{};
+        try rt.appendToEsmRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, helper_names, internal_names);
     }
     if (needs_esm_wrap_runtime) {
         const factory_name = if (linker) |l|
@@ -482,7 +498,11 @@ pub fn emitChunkRuntimeHelpers(
             try l.esmFactoryRuntimeInternalNames()
         else
             rt_names.EsmRuntimeInternalNames{};
-        try rt.appendEsmWrapRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names);
+        const interop_internal_names = if (linker) |l|
+            try l.esmInteropRuntimeInternalNames()
+        else
+            rt_names.EsmInteropRuntimeInternalNames{};
+        try rt.appendEsmWrapRuntimeWithGraphInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names, interop_internal_names);
     }
     // The virtual decorator module is distributed with its importing chunk.
     // #1961: RuntimeHelpers 비트맵 기반 helper (es_decorator / async_helper / generator

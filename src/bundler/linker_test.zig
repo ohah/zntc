@@ -804,6 +804,136 @@ test "linker: ESM raw runtime locals recover by exact IDs and fail closed" {
     try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
 }
 
+test "linker: ESM interop raw locals recover by exact IDs and reject malformed rows" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "export const value = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const module_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(module_index) orelse return error.TestUnexpectedResult;
+    module.wrap_kind = .esm;
+    module.exports_kind = .esm;
+    try graph_finalize.registerWrapperSymbols(r.graph);
+    const names = try r.linker.esmInteropRuntimeInternalNames();
+    const ids = module.esm_interop_runtime_internal_symbols orelse return error.TestUnexpectedResult;
+    const expected = [_]struct { id: semantic_symbol.SymbolId, identity: []const u8, output_name: []const u8, kind: semantic_symbol.SymbolKind }{
+        .{ .id = ids.copy_props_to, .identity = "copy_props.to", .output_name = names.copy_props_to, .kind = .parameter },
+        .{ .id = ids.copy_props_from, .identity = "copy_props.from", .output_name = names.copy_props_from, .kind = .parameter },
+        .{ .id = ids.copy_props_desc, .identity = "copy_props.desc", .output_name = names.copy_props_desc, .kind = .parameter },
+        .{ .id = ids.copy_props_keys, .identity = "copy_props.keys", .output_name = names.copy_props_keys, .kind = .variable_var },
+        .{ .id = ids.copy_props_index, .identity = "copy_props.index", .output_name = names.copy_props_index, .kind = .variable_var },
+        .{ .id = ids.copy_props_key, .identity = "copy_props.key", .output_name = names.copy_props_key, .kind = .variable_var },
+        .{ .id = ids.copy_props_closure_key, .identity = "copy_props.closure_key", .output_name = names.copy_props_closure_key, .kind = .parameter },
+        .{ .id = ids.to_esm_module, .identity = "to_esm.module", .output_name = names.to_esm_module, .kind = .parameter },
+        .{ .id = ids.to_esm_node_mode, .identity = "to_esm.node_mode", .output_name = names.to_esm_node_mode, .kind = .parameter },
+        .{ .id = ids.to_esm_target, .identity = "to_esm.target", .output_name = names.to_esm_target, .kind = .parameter },
+        .{ .id = ids.export_target, .identity = "export.target", .output_name = names.export_target, .kind = .parameter },
+        .{ .id = ids.export_all, .identity = "export.all", .output_name = names.export_all, .kind = .parameter },
+        .{ .id = ids.export_name, .identity = "export.name", .output_name = names.export_name, .kind = .variable_var },
+        .{ .id = ids.to_common_js_module, .identity = "to_common_js.module", .output_name = names.to_common_js_module, .kind = .parameter },
+    };
+    for (expected) |item| {
+        const symbol = module.semantic.?.symbols.items[@intFromEnum(item.id)];
+        try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_interop_runtime_internal_local, symbol.synthetic_kind.?);
+        try std.testing.expectEqual(item.kind, symbol.kind);
+        try std.testing.expectEqualStrings(item.identity, symbol.synthetic_name);
+        try std.testing.expectEqualStrings(item.output_name, r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(item.id))) orelse return error.TestUnexpectedResult);
+    }
+
+    // The typed rows are authoritative. Dropped and corrupt convenience IDs
+    // are recovered; a lost rename-table entry is restored before emission.
+    module.esm_interop_runtime_internal_symbols = null;
+    try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
+    module.esm_interop_runtime_internal_symbols = .{
+        .copy_props_to = @enumFromInt(999_999),
+        .copy_props_from = @enumFromInt(999_999),
+        .copy_props_desc = @enumFromInt(999_999),
+        .copy_props_keys = @enumFromInt(999_999),
+        .copy_props_index = @enumFromInt(999_999),
+        .copy_props_key = @enumFromInt(999_999),
+        .copy_props_closure_key = @enumFromInt(999_999),
+        .to_esm_module = @enumFromInt(999_999),
+        .to_esm_node_mode = @enumFromInt(999_999),
+        .to_esm_target = @enumFromInt(999_999),
+        .export_target = @enumFromInt(999_999),
+        .export_all = @enumFromInt(999_999),
+        .export_name = @enumFromInt(999_999),
+        .to_common_js_module = @enumFromInt(999_999),
+    };
+    try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
+
+    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.copy_props_to));
+    _ = r.linker.rename_table.map.fetchRemove(missing_name_id) orelse return error.TestUnexpectedResult;
+    try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
+
+    // Exact typed rows are also a fail-closed boundary: wrong kind, duplicate
+    // identity, and a missing row must not be papered over by stale cached IDs.
+    const sem = &module.semantic.?;
+    const local_index = @intFromEnum(ids.copy_props_to);
+    const original_kind = sem.symbols.items[local_index].kind;
+    sem.symbols.items[local_index].kind = .variable_var;
+    try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsInvalid, r.linker.prepareEsmInteropRuntimeNames());
+    sem.symbols.items[local_index].kind = original_kind;
+
+    const duplicate_index = @intFromEnum(ids.copy_props_from);
+    const original_identity = sem.symbols.items[duplicate_index].synthetic_name;
+    sem.symbols.items[duplicate_index].synthetic_name = "copy_props.to";
+    try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsInvalid, r.linker.prepareEsmInteropRuntimeNames());
+    sem.symbols.items[duplicate_index].synthetic_name = original_identity;
+
+    const original_synthetic = sem.symbols.items[local_index].synthetic_kind;
+    sem.symbols.items[local_index].synthetic_kind = .bundler_runtime_helper;
+    try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsMissing, r.linker.prepareEsmInteropRuntimeNames());
+    sem.symbols.items[local_index].synthetic_kind = original_synthetic;
+    try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
+
+    const chunk_modules = [_]ModuleIndex{module_index};
+    try r.linker.computeRenamesForModules(&chunk_modules, &.{});
+    try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
+
+    // A semantic rebuild can replace the entire detached-row set while the
+    // Module convenience cache survives. The pre-emit audit must recreate the
+    // whole canonical set before workers start; a partial set still fails above.
+    const rebuild_sem = &module.semantic.?;
+    const first_local = @intFromEnum(ids.copy_props_to);
+    try std.testing.expectEqual(@as(usize, 14), rebuild_sem.symbols.items.len - first_local);
+    rebuild_sem.symbols.items.len = first_local;
+    try r.linker.prepareEsmInteropRuntimeNamesForEmit();
+    const regenerated_ids = module.esm_interop_runtime_internal_symbols orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(ids.copy_props_to, regenerated_ids.copy_props_to);
+    try std.testing.expectEqual(ids.to_common_js_module, regenerated_ids.to_common_js_module);
+    try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, regenerated_ids);
+}
+
+fn expectEsmInteropRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids: @import("module.zig").EsmInteropRuntimeInternalSymbolIds) !void {
+    const names = try linker.esmInteropRuntimeInternalNames();
+    const values = .{
+        .{ ids.copy_props_to, names.copy_props_to, "to" },
+        .{ ids.copy_props_from, names.copy_props_from, "from" },
+        .{ ids.copy_props_desc, names.copy_props_desc, "desc" },
+        .{ ids.copy_props_keys, names.copy_props_keys, "keys" },
+        .{ ids.copy_props_index, names.copy_props_index, "i" },
+        .{ ids.copy_props_key, names.copy_props_key, "key" },
+        .{ ids.copy_props_closure_key, names.copy_props_closure_key, "k" },
+        .{ ids.to_esm_module, names.to_esm_module, "mod" },
+        .{ ids.to_esm_node_mode, names.to_esm_node_mode, "isNodeMode" },
+        .{ ids.to_esm_target, names.to_esm_target, "target" },
+        .{ ids.export_target, names.export_target, "target" },
+        .{ ids.export_all, names.export_all, "all" },
+        .{ ids.export_name, names.export_name, "name" },
+        .{ ids.to_common_js_module, names.to_common_js_module, "mod" },
+    };
+    inline for (values) |value| {
+        try std.testing.expectEqualStrings(value[2], value[1]);
+        try std.testing.expectEqualStrings(value[1], linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(value[0]))) orelse return error.TestUnexpectedResult);
+    }
+}
+
 fn expectEsmRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids: @import("module.zig").EsmRuntimeInternalSymbolIds) !void {
     const names = try linker.esmFactoryRuntimeInternalNames();
     try std.testing.expectEqualStrings("fn", names.factory_parameter);

@@ -834,6 +834,23 @@ fn exactDetachedOutputSymbolShape(symbol: *const Symbol) bool {
             .variable_var => std.mem.eql(u8, symbol.synthetic_name, "f"),
             else => false,
         },
+        .esm_interop_runtime_internal_local => switch (symbol.kind) {
+            .parameter => std.mem.eql(u8, symbol.synthetic_name, "copy_props.to") or
+                std.mem.eql(u8, symbol.synthetic_name, "copy_props.from") or
+                std.mem.eql(u8, symbol.synthetic_name, "copy_props.desc") or
+                std.mem.eql(u8, symbol.synthetic_name, "copy_props.closure_key") or
+                std.mem.eql(u8, symbol.synthetic_name, "to_esm.module") or
+                std.mem.eql(u8, symbol.synthetic_name, "to_esm.node_mode") or
+                std.mem.eql(u8, symbol.synthetic_name, "to_esm.target") or
+                std.mem.eql(u8, symbol.synthetic_name, "export.target") or
+                std.mem.eql(u8, symbol.synthetic_name, "export.all") or
+                std.mem.eql(u8, symbol.synthetic_name, "to_common_js.module"),
+            .variable_var => std.mem.eql(u8, symbol.synthetic_name, "copy_props.keys") or
+                std.mem.eql(u8, symbol.synthetic_name, "copy_props.index") or
+                std.mem.eql(u8, symbol.synthetic_name, "copy_props.key") or
+                std.mem.eql(u8, symbol.synthetic_name, "export.name"),
+            else => false,
+        },
         .esm_init, .cjs_require => symbol.kind == .function_decl,
         .cjs_exports, .bundler_runtime_helper => symbol.kind == .variable_var,
         else => false,
