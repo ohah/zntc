@@ -1245,27 +1245,52 @@ fn buildStandaloneLateOutputNameOverrides(
 }
 
 fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbol) bool {
-    return symbol.synthetic_kind == .runtime_helper_preamble or
-        symbol.synthetic_kind == .runtime_helper_import or
-        symbol.synthetic_kind == .optional_catch_binding or
-        symbol.synthetic_kind == .stage3_metadata_binding or
-        symbol.synthetic_kind == .stage3_class_this_binding or
-        symbol.synthetic_kind == .stage3_class_decorator_binding or
-        symbol.synthetic_kind == .stage3_member_decorator_binding or
-        symbol.synthetic_kind == .generator_state_parameter or
-        symbol.synthetic_kind == .class_super_parameter or
-        symbol.synthetic_kind == .new_target_capture_binding or
-        symbol.synthetic_kind == .this_capture_binding or
-        symbol.synthetic_kind == .arguments_capture_binding or
-        symbol.synthetic_kind == .class_self_write_binding or
-        symbol.synthetic_kind == .class_self_alias_binding or
-        symbol.synthetic_kind == .anonymous_class_export_binding or
-        symbol.synthetic_kind == .anonymous_class_expression_binding or
-        symbol.synthetic_kind == .block_scoping_loop_binding or
-        symbol.synthetic_kind == .for_of_step_binding or
-        symbol.synthetic_kind == .object_super_home_binding or
-        symbol.synthetic_kind == .block_scoping_loop_ret_binding or
-        symbol.synthetic_kind == .tagged_template_function_binding;
+    const kind = symbol.synthetic_kind orelse return false;
+    return switch (kind) {
+        // These standalone bindings receive their final spelling from their exact SymbolId.
+        .runtime_helper_preamble,
+        .runtime_helper_import,
+        .optional_catch_binding,
+        .stage3_metadata_binding,
+        .stage3_class_this_binding,
+        .stage3_class_decorator_binding,
+        .stage3_member_decorator_binding,
+        .generator_state_parameter,
+        .class_super_parameter,
+        .new_target_capture_binding,
+        .this_capture_binding,
+        .arguments_capture_binding,
+        .class_self_write_binding,
+        .class_self_alias_binding,
+        .anonymous_class_export_binding,
+        .anonymous_class_expression_binding,
+        .block_scoping_loop_binding,
+        .for_of_step_binding,
+        .object_super_home_binding,
+        .block_scoping_loop_ret_binding,
+        .tagged_template_function_binding,
+        => true,
+
+        // Fixed aliases, virtual codegen identities, and graph-owned names use
+        // their own output contract and must not enter the standalone pass.
+        .default_export,
+        .namespace_iife_parameter,
+        .enum_iife_parameter,
+        .enum_iife_member,
+        .cjs_exports,
+        .cjs_require,
+        .esm_init,
+        .worklet_factory_local,
+        .cjs_wrapper_exports_parameter,
+        .cjs_wrapper_module_parameter,
+        .cjs_runtime_factory,
+        .cjs_runtime_internal_local,
+        .bundler_runtime_helper,
+        .esm_runtime_internal_local,
+        .esm_interop_runtime_internal_local,
+        .require_shim_local,
+        => false,
+    };
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
@@ -4415,6 +4440,30 @@ test "stage 3 데코레이터 헬퍼 호출은 minify 에서 preamble 과 같은
     try std.testing.expect(std.mem.indexOf(u8, r.code, "__esDecorate(") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "__runInitializers(") == null);
     try std.testing.expect(std.mem.indexOf(u8, r.code, "$eD(") != null);
+}
+
+test "#4819 standalone final-name policy separates late IDs from other output owners" {
+    const Symbol = @import("semantic/symbol.zig").Symbol;
+    const SyntheticKind = @import("semantic/symbol.zig").SyntheticKind;
+
+    const make_symbol = struct {
+        fn withKind(kind: ?SyntheticKind) Symbol {
+            return .{
+                .name = .EMPTY,
+                .scope_id = .none,
+                .kind = .variable_var,
+                .declaration_span = .EMPTY,
+                .synthetic_kind = kind,
+            };
+        }
+    }.withKind;
+
+    try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.runtime_helper_preamble)));
+    try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.block_scoping_loop_ret_binding)));
+    try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.default_export)));
+    try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.namespace_iife_parameter)));
+    try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.require_shim_local)));
+    try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(null)));
 }
 
 test "#4819 standalone helper preamble resolves its emitted name through SymbolId" {
