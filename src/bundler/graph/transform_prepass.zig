@@ -86,9 +86,9 @@ fn refreshTlaPromiseReference(module: *Module) void {
 
 /// 보수적 graph pre-pass 게이트.
 ///
-/// graph 단계 pre-pass 는 helper import 또는 최종 이름 결정 전에 등록해야 하는
-/// graph-visible 전역을 만드는 모듈에 필요하다. 단순 ESM/TS-strip 모듈은 parser
-/// metadata와 emit 단계의 legacy transformer/codegen 경로를 그대로 쓴다.
+/// graph 단계 pre-pass 는 helper import·graph-visible 전역 또는 최종 이름 결정에 쓸
+/// 합성 SymbolId 를 만드는 모듈에 필요하다. 단순 ESM/TS-strip 모듈은 parser metadata와
+/// emit 단계의 legacy transformer/codegen 경로를 그대로 쓴다.
 pub fn shouldRun(
     self: anytype,
     module: *const Module,

@@ -2,7 +2,9 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const ast_walk = @import("../parser/ast_walk.zig");
 const token_mod = @import("../lexer/token.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const profile = @import("../profile.zig");
@@ -15,6 +17,11 @@ const regex_lower = @import("regex_lower.zig");
 pub const DefineEntry = define_mod.DefineEntry;
 
 pub const Plugin = @import("../bundler/plugin.zig").Plugin;
+
+const ArrowCaptureScanItem = struct {
+    node: ast_mod.NodeIndex,
+    inside_arrow: bool,
+};
 
 /// `import { x } from 'mod'` 의 cherry-pick 매핑 — `babel-plugin-lodash` 동등.
 ///
@@ -267,6 +274,7 @@ pub const TransformOptions = struct {
     pub const compat = @import("compat.zig");
 
     /// graph 단계 transformer pre-pass 가 필요한지.
+    /// graph-visible helper/global 이나 최종 이름 결정에 쓸 합성 SymbolId 가 생기는지 확인한다.
     /// 옵션-side 사유 (drop / define / minify / decorator 등) 를 먼저 cheap 하게 본 뒤,
     /// `unsupported.*` 가 set 된 경우에 한해 AST 노드 사용을 스캔해 실제로 lowering 대상
     /// 문법이 있을 때만 pre-pass 를 강제한다 (예: `target=es5` + 단순 TS strip → skip).
@@ -295,9 +303,11 @@ pub const TransformOptions = struct {
         var saw_named_definition = false;
         var saw_lexical = false;
         var saw_named_assignment = false;
+        var saw_arrow = false;
         for (ast.nodes.items) |node| {
             switch (node.tag) {
                 .arrow_function_expression => {
+                    saw_arrow = true;
                     if (u.async_await and hasArrowFlag(ast, node, ast_mod.ArrowFlags.is_async)) return true;
                 },
                 .function_declaration,
@@ -396,6 +406,7 @@ pub const TransformOptions = struct {
                 else => {},
             }
         }
+        if (u.arrow and saw_arrow and hasLoweredArrowCapture(ast)) return true;
         // ES5 output renames a colliding block function or lexical binding and
         // restores the source `.name` with `__name`, so the helper must be
         // discovered before linking (#5454).
@@ -403,6 +414,139 @@ pub const TransformOptions = struct {
         // A renamed lexical binding can also be assigned a function later.
         if (u.block_scoping and saw_lexical and saw_named_assignment) return true;
         return false;
+    }
+
+    /// A lowered arrow needs graph pre-pass when it must materialize a lexical
+    /// capture binding. The emitter's legacy transform path deliberately has
+    /// semantic editing disabled, so those generated bindings would otherwise
+    /// reach codegen without exact SymbolIds.
+    fn hasLoweredArrowCapture(ast: *const Ast) bool {
+        if (ast.nodes.items.len == 0) return true;
+        const root: ast_mod.NodeIndex = ast.transformed_root orelse @enumFromInt(
+            @as(u32, @intCast(ast.nodes.items.len - 1)),
+        );
+        if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len or
+            ast.nodes.items[@intFromEnum(root)].tag != .program) return true;
+
+        var stack: std.ArrayList(ArrowCaptureScanItem) = .empty;
+        defer stack.deinit(ast.allocator);
+        var seen: std.AutoHashMapUnmanaged(u64, void) = .empty;
+        defer seen.deinit(ast.allocator);
+        stack.append(ast.allocator, .{ .node = root, .inside_arrow = false }) catch return true;
+
+        while (stack.pop()) |item| {
+            const idx = item.node;
+            if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+            const raw = @intFromEnum(idx);
+            const visit_key = (@as(u64, raw) << 1) | @intFromBool(item.inside_arrow);
+            if (seen.contains(visit_key)) continue;
+            seen.put(ast.allocator, visit_key, {}) catch return true;
+            const node = ast.nodes.items[raw];
+            const inside_arrow = item.inside_arrow or node.tag == .arrow_function_expression;
+
+            switch (node.tag) {
+                .this_expression, .super_expression => if (inside_arrow) return true,
+                .meta_property => if (inside_arrow and node.data.none == 1) return true,
+                .identifier_reference => if (inside_arrow) {
+                    const raw_name = ast.identifierNameText(node);
+                    var decode_buffer: [64]u8 = undefined;
+                    const name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse raw_name;
+                    if (std.mem.eql(u8, name, "arguments")) return true;
+                },
+                // Descend into normal functions with a fresh lexical context
+                // so arrows nested in their bodies are still checked.
+                .function_declaration, .function_expression, .function => {
+                    var children = ast_walk.children(ast, node);
+                    while (children.next()) |child| {
+                        stack.append(ast.allocator, .{ .node = child, .inside_arrow = false }) catch return true;
+                    }
+                    continue;
+                },
+                // A method's key/decorators are evaluated in the surrounding
+                // context, while its params/body start a new `this`/`super` scope.
+                .method_definition => {
+                    if (!pushDecoratorExpressions(
+                        ast,
+                        &stack,
+                        node.data.extra,
+                        ast_mod.MethodExtra.deco_start,
+                        ast_mod.MethodExtra.deco_len,
+                        item.inside_arrow,
+                    )) return true;
+                    stack.append(ast.allocator, .{
+                        .node = ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.key),
+                        .inside_arrow = item.inside_arrow,
+                    }) catch return true;
+                    stack.append(ast.allocator, .{
+                        .node = ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.params),
+                        .inside_arrow = false,
+                    }) catch return true;
+                    stack.append(ast.allocator, .{
+                        .node = ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.body),
+                        .inside_arrow = false,
+                    }) catch return true;
+                    continue;
+                },
+                // Field initializers own class `this`; computed keys and
+                // decorators are still evaluated in the enclosing context.
+                .property_definition, .accessor_property => {
+                    if (!pushDecoratorExpressions(
+                        ast,
+                        &stack,
+                        node.data.extra,
+                        ast_mod.PropertyExtra.deco_start,
+                        ast_mod.PropertyExtra.deco_len,
+                        item.inside_arrow,
+                    )) return true;
+                    stack.append(ast.allocator, .{
+                        .node = ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.key),
+                        .inside_arrow = item.inside_arrow,
+                    }) catch return true;
+                    stack.append(ast.allocator, .{
+                        .node = ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.init),
+                        .inside_arrow = false,
+                    }) catch return true;
+                    continue;
+                },
+                // Arrows inside a static block still need their own capture
+                // bindings; reset only the block's direct lexical values.
+                .static_block => {
+                    var children = ast_walk.children(ast, node);
+                    while (children.next()) |child| {
+                        stack.append(ast.allocator, .{ .node = child, .inside_arrow = false }) catch return true;
+                    }
+                    continue;
+                },
+                else => {},
+            }
+
+            var children = ast_walk.children(ast, node);
+            while (children.next()) |child| {
+                stack.append(ast.allocator, .{ .node = child, .inside_arrow = inside_arrow }) catch return true;
+            }
+        }
+        return false;
+    }
+
+    fn pushDecoratorExpressions(
+        ast: *const Ast,
+        stack: *std.ArrayList(ArrowCaptureScanItem),
+        extra: u32,
+        start_offset: u32,
+        len_offset: u32,
+        inside_arrow: bool,
+    ) bool {
+        if (!ast.hasExtra(extra, @max(start_offset, len_offset))) return false;
+        const list = ast_mod.NodeList{
+            .start = ast.readExtra(extra, start_offset),
+            .len = ast.readExtra(extra, len_offset),
+        };
+        if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return false;
+        var iter = ast.iterateExtraList(list);
+        while (iter.next()) |decorator| {
+            stack.append(ast.allocator, .{ .node = decorator, .inside_arrow = inside_arrow }) catch return false;
+        }
+        return true;
     }
 
     fn hasBlockLevelNamedDefinition(ast: *const Ast) bool {
@@ -553,7 +697,6 @@ fn jsxHeadIdent(spec: []const u8) []const u8 {
 }
 
 test "lowered syntax discovers helpers and generated globals before linking" {
-    const Scanner = @import("../lexer/scanner.zig").Scanner;
     const Parser = @import("../parser/parser.zig").Parser;
     const fixtures = [_]struct { source: []const u8, es5_prepass: bool }{
         .{ .source = "function f(x = function(){}) { function x(){} }", .es5_prepass = true },
@@ -585,5 +728,33 @@ test "lowered syntax discovers helpers and generated globals before linking" {
         const native: TransformOptions = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2020) };
         try std.testing.expectEqual(fixture.es5_prepass, es5.requiresGraphPrePass(&parser.ast));
         try std.testing.expect(!native.requiresGraphPrePass(&parser.ast));
+    }
+}
+
+test "arrow capture bindings require graph pre-pass but ordinary arrows do not" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct { source: []const u8, needs_prepass: bool }{
+        .{ .source = "const plain = () => 1;", .needs_prepass = false },
+        .{ .source = "const captured = () => this;", .needs_prepass = true },
+        .{ .source = "function f() { return () => arguments[0]; }", .needs_prepass = true },
+        .{ .source = "function f() { return () => argum\\u0065nts[0]; }", .needs_prepass = true },
+        .{ .source = "function f() { return () => new.target; }", .needs_prepass = true },
+        .{ .source = "function f() { return () => function nested() { return this; }; }", .needs_prepass = false },
+        .{ .source = "const C = () => class { field = this; method() { return arguments[0]; } };", .needs_prepass = false },
+        .{ .source = "const C = () => class { [this.key]() {} };", .needs_prepass = true },
+        .{ .source = "class C extends Base { method() { return () => super.value; } }", .needs_prepass = true },
+        .{ .source = "function f() { return () => () => new.target; }", .needs_prepass = true },
+    };
+    const options: TransformOptions = .{ .unsupported = .{ .arrow = true } };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        _ = try parser.parse();
+        try std.testing.expectEqual(
+            fixture.needs_prepass,
+            options.requiresGraphPrePass(&parser.ast),
+        );
     }
 }
