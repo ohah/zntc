@@ -21,6 +21,26 @@ const graph_parse_helpers = @import("parse_helpers.zig");
 const suppressRuntimeHelperInternalUnresolved = graph_parse_helpers.suppressRuntimeHelperInternalUnresolved;
 const getMtime = ModuleGraph.getMtime;
 
+/// TypeScript elides an import whose binding is used only as a type. Record
+/// that on each named binding from the source references, before a transform
+/// (constant inlining) removes its value uses (#5571).
+fn markSourceTypeOnlyImports(module: *module_mod.Module, arena_alloc: std.mem.Allocator) void {
+    if (!module.module_type.isTypeScript()) return;
+    const sem = if (module.semantic) |*s| s else return;
+    if (sem.scope_maps.len == 0 or module.import_bindings.len == 0) return;
+    var value_used = std.DynamicBitSetUnmanaged.initEmpty(arena_alloc, sem.symbols.items.len) catch return;
+    for (sem.references) |r| {
+        const raw = @intFromEnum(r.symbol_id);
+        if (raw < sem.symbols.items.len and r.isValueUse()) value_used.set(raw);
+    }
+    for (module.import_bindings) |*ib| {
+        if (ib.kind != .named or ib.is_helper) continue;
+        const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
+        if (sym_idx >= sem.symbols.items.len) continue;
+        ib.source_type_only = !value_used.isSet(sym_idx);
+    }
+}
+
 pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     const mod_idx = @intFromEnum(idx);
     if (mod_idx >= self.modules.count()) return;
@@ -332,6 +352,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     }
 
     if (!self.materializeParserMetadata(module, &parser, arena_alloc)) return;
+    markSourceTypeOnlyImports(module, arena_alloc);
 
     // #1961/#1913: transformer pre-pass. helper module 을 graph 의 1급 모듈로
     // 분배하려면 helper import 가 link 단계 전에 import_records 에 등록되어야 한다.

@@ -59,6 +59,11 @@ pub const ImportBinding = struct {
     /// `helper_scope_map` 에서 sym_index 를 찾아야 사용자가 같은 이름의 식별자를
     /// 선언한 경우에도 충돌이 일어나지 않는다.
     is_helper: bool = false,
+    /// TypeScript only: the binding is used as a type alone **in the source**,
+    /// so the import is elided. Judged at parse time, before transforms can
+    /// inline its value uses away (#5571). null = not computed (fall back to
+    /// the current references).
+    source_type_only: ?bool = null,
 
     pub const Kind = enum {
         default,
