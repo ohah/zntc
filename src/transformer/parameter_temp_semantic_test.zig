@@ -381,6 +381,74 @@ test "#4819 reserved generated constructor scope owns parameter temps before its
     );
 }
 
+fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var generated_temps: usize = 0;
+    var late_generated_temps: usize = 0;
+    for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, symbol_index| {
+        if (symbol.kind != .variable_var or symbol.synthetic_name.len == 0 or symbol.synthetic_name[0] != '_') continue;
+        generated_temps += 1;
+        if (symbol.synthetic_kind != .standalone_temp_binding) continue;
+        late_generated_temps += 1;
+        const raw_id: u32 = @intCast(symbol_index);
+        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+        var bindings: usize = 0;
+        var references: usize = 0;
+        for (transformer.ast.nodes.items, 0..) |node, raw_node| {
+            if (node.tag != .binding_identifier or raw_node >= edited.symbol_ids.len or edited.symbol_ids[raw_node] != raw_id) continue;
+            bindings += 1;
+        }
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != raw_id or reference.flags.declare) continue;
+            try std.testing.expect(!reference.node_index.isNone());
+            try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            references += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+        try std.testing.expect(references > 0);
+    }
+    try std.testing.expect(generated_temps > 0);
+    try std.testing.expectEqual(expected_late, late_generated_temps > 0);
+}
+
+test "#4819 standalone parameter destructuring temps finalize from exact symbols unless dynamic lookup blocks it" {
+    try checkStandaloneParameterTempNameMarking(
+        "function run(_a, [{ first: { seed } }]) { return [_a, seed]; }",
+        true,
+    );
+    try checkStandaloneParameterTempNameMarking(
+        "function run([{ first: { seed } }]) { return seed; } function sibling() { eval('typeof _a'); }",
+        false,
+    );
+}
+
 fn lowerDestructuringParametersWithoutSemanticEditing(source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
