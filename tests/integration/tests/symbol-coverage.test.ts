@@ -3948,6 +3948,56 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES2018 optional catch binding lowering enters exact identity prepass', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-catch-symbol-prepass-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'function run() {',
+        '  try { throw "e"; } catch { return 42; }',
+        '}',
+        'console.log(run());',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--target=es2018',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('non-minified ES5 arrow captures still receive exact bundler SymbolIds', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-capture-symbols-'));
     const output = join(dir, 'out.cjs');
