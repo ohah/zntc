@@ -776,6 +776,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // meta_property: new.target / import.meta
         .meta_property => {
+            // Static blocks and static field initializers have no new.target
+            // (undefined). Moved out of the class into an IIFE or a statement,
+            // `new.target` would read the enclosing function's value or be a
+            // SyntaxError at the top level.
+            if (node.data.none == 1 and ((self.static_field_initializer_depth > 0 and self.this_depth == 0) or
+                self.new_target_ctx == .field_initializer))
+                return es_helpers.makeVoidZero(self, node.span);
             // A retained native class constructor may evaluate parameters
             // before `this` is initialized (including base constructors).
             // Keep `new.target` native there; `this.constructor` is invalid or

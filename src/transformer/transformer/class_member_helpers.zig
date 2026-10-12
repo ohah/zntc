@@ -207,7 +207,10 @@ pub fn classifyPropertyDefinition(
             // 나온다 (#4629 에서 이 경로를 그 타겟들이 타게 되며 드러났다).
             if (ctx.has_super and self.options.unsupported.class) self.super_call_this_alias = true;
             defer self.super_call_this_alias = saved_super_alias;
+            const saved_new_target_ctx = self.new_target_ctx;
+            self.new_target_ctx = .field_initializer;
             const new_init = try self.visitNode(init_idx);
+            self.new_target_ctx = saved_new_target_ctx;
             const key_node = self.ast.getNode(key_idx);
             const is_computed = (key_node.tag == .computed_property_key);
             if (is_computed and !self.options.use_define_for_class_fields)
@@ -264,8 +267,11 @@ pub fn classifyPropertyDefinition(
         return;
     }
 
-    // static field — 같은 두 조건.
-    if (lower_fields and is_static) {
+    // static field — 같은 두 조건. A private field keeps define semantics:
+    // it reaches here only when the target supports it natively, and
+    // `C.#x = v` outside the class body is a SyntaxError (tsc keeps it too).
+    const is_private_key = self.ast.getNode(self.readNodeIdx(me, ast_mod.PropertyExtra.key)).tag == .private_identifier;
+    if (lower_fields and is_static and !is_private_key) {
         const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
         const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
         if (init_idx.isNone()) return; // 초기값 없음 → 타입 선언만, 제거

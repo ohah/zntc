@@ -615,7 +615,7 @@ pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: [
 pub fn lowerNewTarget(self: *Transformer, span: Span) Error!NodeIndex {
     return switch (self.new_target_ctx) {
         .constructor => es_helpers.makeThisDotConstructor(self, span),
-        .method, .none => es_helpers.makeVoidZero(self, span),
+        .method, .none, .field_initializer => es_helpers.makeVoidZero(self, span),
         .function_named => |named| {
             // (this instanceof Fn ? this.constructor : void 0)
             const this1 = try es_helpers.makeThisExpr(self, span);
