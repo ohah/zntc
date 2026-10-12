@@ -4947,13 +4947,10 @@ test "#4598 다운레벨 ESM: async IIFE 는 정확히 한 번만 방출된다 (
     );
     defer std.testing.allocator.free(js);
 
-    var n: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.indexOfPos(u8, js, pos, "(async () =>")) |at| {
-        n += 1;
-        pos = at + 12;
-    }
-    try std.testing.expectEqual(@as(usize, 1), n);
+    // The module body runs inside its async `__esm` factory: no inner async
+    // IIFE (#5570), and its top-level await is emitted exactly once.
+    try std.testing.expect(std.mem.indexOf(u8, js, "(async () =>") == null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, js, "Promise.resolve(41)"));
 }
 
 test "#4598 다운레벨 ESM: minify 에서도 promise 변수 참조가 맞는다 (회귀 가드)" {
@@ -4977,22 +4974,27 @@ test "#4598 다운레벨 ESM: minify 에서도 promise 변수 참조가 맞는�
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(!result.hasErrors());
     const js = result.output;
-    // TLA promise 변수는 `X=(async` 로 대입된다. 그 **같은 이름**으로 `return X` 가
-    // 있어야 한다 — 원본 이름을 쓰면 여기서 어긋나 `ReferenceError` 가 된다.
-    const marker = "=(async";
-    const at = std.mem.indexOf(u8, js, marker) orelse return error.MissingTlaAssign;
-    var start = at;
-    while (start > 0) : (start -= 1) {
-        const c = js[start - 1];
-        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-            (c >= '0' and c <= '9') or c == '_' or c == '$';
-        if (!ok) break;
-    }
-    const name = js[start..at];
-    try std.testing.expect(name.len > 0);
-    const ret = try std.fmt.allocPrint(std.testing.allocator, "return {s}", .{name});
-    defer std.testing.allocator.free(ret);
-    try std.testing.expect(std.mem.indexOf(u8, js, ret) != null);
+    // The importer awaits the dependency's init by its **renamed** name; with
+    // the original name the minified bundle would throw a ReferenceError. The
+    // module runs inside its async factory, with no inner async IIFE (#5570).
+    try std.testing.expect(std.mem.indexOf(u8, js, "=(async") == null);
+    const marker = "await ";
+    var pos: usize = 0;
+    const name = while (std.mem.indexOfPos(u8, js, pos, marker)) |at| {
+        var end = at + marker.len;
+        while (end < js.len) : (end += 1) {
+            const c = js[end];
+            const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                (c >= '0' and c <= '9') or c == '_' or c == '$';
+            if (!ok) break;
+        }
+        pos = end;
+        // `await <init>()` — the dependency's init call.
+        if (end > at + marker.len and std.mem.startsWith(u8, js[end..], "()")) break js[at + marker.len .. end];
+    } else return error.MissingInitAwait;
+    const decl = try std.fmt.allocPrint(std.testing.allocator, "{s}=", .{name});
+    defer std.testing.allocator.free(decl);
+    try std.testing.expect(std.mem.indexOf(u8, js, decl) != null);
 }
 
 test "#4598 다운레벨 ESM: promise 임시변수가 사용자 심볼을 덮지 않는다" {

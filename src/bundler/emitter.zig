@@ -1642,13 +1642,20 @@ pub fn appendIndented(wrapped: *std.ArrayList(u8), allocator: std.mem.Allocator,
 /// 모듈의 wrap_kind에 따라 require_xxx() 또는 init_xxx() 호출 코드를 생성한다.
 /// run-before-main, 엔트리 자동 호출, star export init 등에서 공용.
 pub fn appendModuleCall(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype, rename_tbl: ?*const RenameTable) !void {
+    return appendModuleCallAwaiting(output, allocator, mod, rename_tbl, true);
+}
+
+/// `allow_await`: whether a top-level `await` may precede the call. A target
+/// without top-level await starts an async module's init without waiting —
+/// its async factory still runs its awaits (#5570).
+fn appendModuleCallAwaiting(output: *std.ArrayList(u8), allocator: std.mem.Allocator, mod: anytype, rename_tbl: ?*const RenameTable, allow_await: bool) !void {
     if (!mod.wrap_kind.isWrapped()) return;
     const call_name = if (mod.wrap_kind == .cjs)
         try mod.allocRequireName(allocator, rename_tbl)
     else
         try mod.allocInitName(allocator, rename_tbl);
     defer allocator.free(call_name);
-    if (mod.wrap_kind != .cjs and mod.uses_top_level_await) {
+    if (allow_await and mod.wrap_kind != .cjs and mod.uses_top_level_await) {
         try output.appendSlice(allocator, "await ");
     }
     try output.appendSlice(allocator, call_name);
@@ -1667,7 +1674,7 @@ pub fn appendGuardedModuleCall(
     rename_tbl: ?*const RenameTable,
 ) !void {
     if (!mod.shouldGuard(options.entry_error_guard)) {
-        try appendModuleCall(output, allocator, mod, rename_tbl);
+        try appendModuleCallAwaiting(output, allocator, mod, rename_tbl, !options.unsupported.top_level_await);
         return;
     }
     const call_name = if (mod.wrap_kind == .cjs)

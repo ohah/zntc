@@ -78,13 +78,14 @@ pub const TransformOptions = struct {
     /// ⚠️ async 미지원 타겟(es5)도 안 된다 — factory 가 generator 여야 하는데 `for await`
     /// 다운레벨이 내부에 `await` 를 그대로 내보내 generator 안에서 SyntaxError 가 된다.
     tla_chunk_wrapped: bool = false,
-    /// #4598: `export const x = await f()` 의 **초기화식을 async IIFE 로 옮겨도 되는지**.
+    /// #4598: 이 빌드가 top-level await 모듈을 **async `__esm` factory** 로 평가해
+    /// 소비자가 그 init promise 를 기다리는지(`promoteAsyncConeToEsmWrap` 와 같은 조건).
     ///
-    /// 옮기면 "그 promise 를 누군가 기다려야" 값이 채워진다. 기다려 줄 기계
-    /// (`promoteAsyncConeToEsmWrap` 승격 + 소비자 await, 또는 emitter 의 최상위 await
-    /// fallback)가 **없는 빌드 위상**에서 옮기면 export 가 조용히 `undefined` 가 된다
-    /// — splitting·preserve-modules·비-ESM 출력에서 실제로 그랬다(리뷰 실측).
-    /// 그래서 빌드 단위로 미리 판정해 내려보낸다.
+    /// 그렇다면 `lowerProgram` 은 모듈을 async IIFE 로 쪼개지 않는다 — await 는 factory
+    /// 안에 그대로 남고, factory 가 최상위 바인딩을 끌어올리며 문장 순서를 지킨다.
+    /// 쪼개면 IIFE 밖 export 가 안쪽 지역 변수를 못 보고(`export function f() { return
+    /// config }`) 순서가 뒤집혀 TDZ 가 났다(#5570). 기다려 줄 기계가 **없는 빌드 위상**
+    /// (splitting·preserve-modules·비-ESM·async 미지원)에서는 기존 IIFE 경로를 쓴다.
     tla_export_decl_deferrable: bool = false,
     /// TS 타입 스트리핑 활성화 (기본: true)
     strip_types: bool = true,
