@@ -124,6 +124,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.temp_span_by_counter.deinit(self.allocator);
     self.generated_temp_spans.deinit(self.allocator);
     self.value_used_symbols.deinit(self.allocator);
+    if (self.decorator_metadata_type_names) |*names| names.deinit(self.allocator);
     self.pending_nodes.deinit(self.allocator);
     self.symbol_ids.deinit(self.allocator);
     self.reference_origin_map.deinit(self.allocator);
