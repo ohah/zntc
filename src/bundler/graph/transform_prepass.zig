@@ -3725,6 +3725,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var found_lowered_object_rest = false;
     var found_lowered_object_spread = false;
     var found_lowered_optional_catch_binding = false;
+    var found_lowered_new_target = false;
     var found_safe_template_literal = false;
     var found_lowered_optional_chaining = false;
     var found_computed_object_data_key = false;
@@ -4108,10 +4109,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.class_static_block) return false;
             },
             .meta_property => {
-                // `new.target` is safe here only when the target preserves it
-                // natively. Lowering it can synthesize a different reference
-                // expression and must use the semantic resync path.
-                if (node.data.none == 1 and options.unsupported.new_target) return false;
+                // `lowerNewTarget` records its generated expression in the
+                // edited graph: named-function references reuse the source
+                // function SymbolId, while arrow lexical captures bind their
+                // synthetic references to the generated output scope. Keep
+                // this syntax on the retained graph so those exact identities
+                // survive linking without a semantic rescan.
+                if (node.data.none == 1 and options.unsupported.new_target) {
+                    found_lowered_new_target = true;
+                }
             },
             .method_definition => {
                 const key_at = node.data.extra + ast_mod.MethodExtra.key;
@@ -4252,7 +4258,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_computed_object_data_key or found_computed_object_method_key or found_computed_object_accessor_key or
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
-        found_lowered_optional_catch_binding;
+        found_lowered_optional_catch_binding or found_lowered_new_target;
 }
 
 /// A retained prepass graph may absorb imports introduced by audited generator,
