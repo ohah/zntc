@@ -100,8 +100,8 @@ pub const CachedResolvedDep = struct {
     };
 };
 
-/// Semantic analyzer 결과. parse_arena가 소유하는 데이터의 참조.
-/// linker가 import→export 연결 + 이름 충돌 해결에 사용.
+/// Semantic analyzer 결과 또는 AST 없는 그래프 생성 심볼의 저장소.
+/// 모든 backing 데이터는 parse_arena가 소유하며 linker가 import→export 연결 + 이름 충돌 해결에 사용.
 pub const ModuleSemanticData = struct {
     const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
     /// Semantic 심볼 배열. parse_arena가 backing 메모리를 소유.
