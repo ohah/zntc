@@ -132,6 +132,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
             });
+            try self.generated_super_call_assignments.put(self.allocator, @intFromEnum(raw_assign), {});
             const assert_uninit = try es_helpers.makeRuntimeHelperRef(self, "__assertThisUninitialized");
             const current_this = try makeThisAliasRef(self);
             const assert_call = try es_helpers.makeCallExpr(self, assert_uninit, &.{current_this}, span);

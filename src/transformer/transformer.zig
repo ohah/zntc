@@ -594,6 +594,10 @@ pub const Transformer = struct {
     /// __callSuper가 Reflect.construct를 사용하면 새 객체를 반환하므로,
     /// super() 이후의 this 참조를 _this로 교체해야 한다.
     super_call_this_alias: bool = false,
+    /// Exact assignment nodes emitted for source `super()` calls. Derived
+    /// constructor field insertion follows these NodeIndex handles instead of
+    /// rediscovering generated code from `_this` or helper spellings.
+    generated_super_call_assignments: std.AutoHashMapUnmanaged(u32, void) = .empty,
 
     /// for-in/for-of/for-await-of 헤더의 left(variable_declaration)를 방문 중인지.
     /// true면 let/const → var 다운레벨 시 `= void 0` init 주입을 생략.

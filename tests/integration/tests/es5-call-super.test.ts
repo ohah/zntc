@@ -157,6 +157,33 @@ console.log(c.tag + "/" + c.count + "/" + (c instanceof Child) + "/" + (c instan
     expect(result.runOutput).toBe('kid/7/true/true');
   });
 
+  test('user helper named __callSuper does not count as the generated super assignment', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `const events: string[] = [];
+function __callSuper(value: number) { events.push("user"); return value; }
+class Base { constructor() { events.push("super"); } }
+class Child extends Base {
+  field = (events.push("field"), 1);
+  constructor() {
+    let result: number;
+    result = __callSuper(0);
+    super();
+    events.push("body");
+  }
+}
+const child = new Child();
+console.log(events.join(",") + ":" + child.field);`,
+      },
+      'index.ts',
+      ['--target=es5'],
+    );
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('user,super,field,body:1');
+  });
+
   test('super 인자에 constructor param + spread 혼합', async () => {
     // super(first, ...rest) — spread 가 array literal 로 들어가고 NewTarget 은 _newTarget.
     const result = await bundleAndRun(
