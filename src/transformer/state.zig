@@ -35,6 +35,9 @@ pub const NewTargetCtx = union(enum) {
     none,
     constructor, // class constructor: new.target -> this.constructor
     method, // class method: new.target -> void 0
+    /// An instance field initializer moved into the constructor: its
+    /// new.target is undefined, not the constructor's.
+    field_initializer,
     function_named: NamedFn, // function Fn: new.target -> this instanceof Fn ? this.constructor : void 0
 
     /// `span` 은 함수 이름, `node` 는 그 바인딩(심볼을 물려준다, #4760).

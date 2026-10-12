@@ -542,6 +542,12 @@ pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
             .export_default_declaration => .{ try self.ast.addString("default"), node.data.unary.operand },
             else => continue,
         };
+        // A lowered field becomes `__publicField(C, "k", value)` / `this.k = value`
+        // (or a descriptor `value:`), outside NamedEvaluation (#5519).
+        if (node.tag == .property_definition) if (name) |n| if (functionRoot(self, value)) |fn_raw| {
+            const slot = try self.parameter_inferred_names.getOrPut(self.allocator, fn_raw);
+            if (!slot.found_existing) slot.value_ptr.* = n;
+        };
         const class_raw = anonymousClassRoot(self, value) orelse continue;
         if (name) |n| try self.class_inferred_names.put(self.allocator, class_raw, n);
     }
@@ -563,6 +569,21 @@ pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
             if (!slot.found_existing) slot.value_ptr.* = entry.value_ptr.*;
         }
     }
+}
+
+/// An anonymous function or arrow (through parentheses).
+fn functionRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
+    var current = value;
+    while (!current.isNone() and @intFromEnum(current) < self.ast.nodes.items.len) {
+        const node = self.ast.getNode(current);
+        switch (node.tag) {
+            .parenthesized_expression => current = node.data.unary.operand,
+            .arrow_function_expression => return @intFromEnum(current),
+            .function_expression => return if (self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name).isNone()) @intFromEnum(current) else null,
+            else => return null,
+        }
+    }
+    return null;
 }
 
 fn anonymousClassRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
@@ -661,6 +682,33 @@ pub fn takeAnonymousClassName(self: anytype, source: ast_mod.NodeIndex) ?@import
     _ = self.class_inferred_names.remove(key);
     _ = self.parameter_inferred_names.remove(key);
     return name;
+}
+
+/// An anonymous class bound to a generated name keeps static blocks in its
+/// body: restore its name at the top of the first one, which runs before the
+/// others. The name then is not restored again after the declaration.
+pub fn nameInFirstStaticBlock(self: anytype, source: ast_mod.NodeIndex, members: []const ast_mod.NodeIndex) std.mem.Allocator.Error!void {
+    for (members) |member_idx| {
+        const member = self.ast.getNode(member_idx);
+        if (member.tag != .static_block) continue;
+        const block_idx = member.data.unary.operand;
+        if (block_idx.isNone()) return;
+        const scope: ScopeId = if (!self.semantic_edit_enabled)
+            self.current_scope
+        else
+            self.outputOwnedScope(member_idx) orelse self.outputOwnedScope(block_idx) orelse return;
+        const name = takeAnonymousClassName(self, source) orelse return;
+        const span = member.span;
+        const this_ref = try es_helpers.makeThisExpr(self, span);
+        const statement = try classNameStatement(self, this_ref, name, scope, span);
+        const old = self.ast.getNode(block_idx).data.list;
+        var statements: std.ArrayList(ast_mod.NodeIndex) = .empty;
+        defer statements.deinit(self.allocator);
+        try statements.append(self.allocator, statement);
+        for (self.ast.extra_data.items[old.start .. old.start + old.len]) |raw| try statements.append(self.allocator, @enumFromInt(raw));
+        self.ast.nodes.items[@intFromEnum(block_idx)].data.list = try self.ast.addNodeList(statements.items);
+        return;
+    }
 }
 
 /// `__name(<class ref>, "<name>");` evaluated in `scope`.

@@ -68,6 +68,30 @@ const cases = [
           o['1e-7'].name, o[2.5].name, o[1000].name, H.get().name, H.get().s);`,
     },
   },
+  {
+    // Static blocks and field initializers have no new.target; lowered field
+    // functions keep the field name (NamedEvaluation) (#5519).
+    name: 'field initializers: new.target and function names',
+    files: {
+      'entry.js': `const out = [];
+        function F() {
+          class A { static s = typeof new.target; static { out.push('blk:' + typeof new.target); }
+            static f = () => typeof new.target; static g = function () { return typeof new.target; };
+            x = typeof new.target; }
+          out.push('s:' + A.s, 'f:' + A.f(), 'g:' + new A.g().constructor.name, 'x:' + new A().x);
+        }
+        new F();
+        class Base { constructor() { this.tag = 'base'; } }
+        class C extends Base {
+          onClick = () => this.tag; handler = function () {}; #priv = () => 1;
+          'str key' = () => 3; named = function real() {}; static sArrow = () => 4;
+          getPriv() { return this.#priv.name; }
+        }
+        const c = new C();
+        out.push(c.onClick.name, c.onClick(), c.handler.name, c.getPriv(), c['str key'].name, c.named.name, C.sArrow.name);
+        console.log(out.join(' '));`,
+    },
+  },
 ] as const;
 
 describe('anonymous class names under class lowering (#5519)', () => {
@@ -124,10 +148,16 @@ describe('anonymous class names with useDefineForClassFields: false (#5519)', ()
   for (const target of ['esnext', 'es2022', 'es2020', 'es5'] as const) {
     test(target, async () => {
       const created = await createFixture({
+        // A kept static block must keep private names, `super` and new.target
+        // (it stays in the class body).
         'entry.ts': `const out: string[] = [];
-          let g: any; g = class { static s = 1; static { out.push(this.name); } };
+          class B { static greet() { return 'hi'; } }
+          let g: any; g = class extends B { static #p = 7; static s = 1;
+            static { out.push(this.name + ':' + this.#p + ':' + super.greet() + ':' + typeof new.target); }
+            static get p() { return this.#p; } };
           let k: any; k = class { static s = this.name; static { out.push(this.name + '/' + this.s); } };
-          console.log(out.join(' '), g.name, k.s);`,
+          class H { static #q; static set(v: number) { H.#q = v; return H.#q; } }
+          console.log(out.join(' '), g.name, k.s, g.p, H.set(3));`,
         'tsconfig.json': '{"compilerOptions":{"useDefineForClassFields":false}}',
         'package.json': '{"type":"module"}',
       });
@@ -144,7 +174,7 @@ describe('anonymous class names with useDefineForClassFields: false (#5519)', ()
         expect(result.exitCode, result.stderr).toBe(0);
         const run = spawnSync('node', [out], { encoding: 'utf8' });
         expect(run.status, run.stderr).toBe(0);
-        expect(run.stdout).toBe('g k/k g k\n');
+        expect(run.stdout).toBe('g:7:hi:undefined k/k g k 7 3\n');
       } finally {
         await created.cleanup();
       }

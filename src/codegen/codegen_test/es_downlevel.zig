@@ -3044,7 +3044,8 @@ test "ES2017: static init keeps this of nested class field initializers" {
 test "ES2017: static private field arrow this becomes class reference" {
     var r = try e2eTarget(std.testing.allocator, "class A { static #x = () => this; static get() { return A.#x(); } }", .es2017);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:()=>A}") != null);
+    // The lowered field keeps its NamedEvaluation name "#x" (#5519).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(()=>A,\"#x\")}") != null);
 }
 
 // 변환이 고정 이름으로 만드는 합성 변수(`_this`·`_super`·`_loop`)가 사용자 변수와 겹치면 서로를 가렸다
