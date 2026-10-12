@@ -477,7 +477,7 @@ test "linker: disabled CJS wrappers receive runtime SymbolIds without source sem
     try std.testing.expectEqual(@as(usize, 0), store.modules.count());
 }
 
-test "linker: semantic-less ESM wrappers receive an exact runtime SymbolId" {
+test "linker: semantic-less ESM wrappers receive exact wrapper and runtime SymbolIds" {
     var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
     defer cache.deinit();
     const graph = try std.testing.allocator.create(ModuleGraph);
@@ -487,15 +487,48 @@ test "linker: semantic-less ESM wrappers receive an exact runtime SymbolId" {
         std.testing.allocator.destroy(graph);
     }
 
-    const index = try graph.addDisabledModule("runtime-only-esm");
+    const index = try graph.addDisabledModule("a/runtime-only-esm");
+    const second_index = try graph.addDisabledModule("b/runtime-only-esm");
     const module = graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+    const second = graph.moduleAtMut(second_index) orelse return error.TestUnexpectedResult;
     module.wrap_kind = .esm;
     module.exports_kind = .esm;
+    second.wrap_kind = .esm;
+    second.exports_kind = .esm;
     graph_finalize.registerWrapperSymbols(graph);
     try std.testing.expect(module.ast == null);
     const semantic = module.semantic orelse return error.TestUnexpectedResult;
+    const second_semantic = second.semantic orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 0), semantic.scopes.len);
     try std.testing.expectEqual(@as(usize, 0), semantic.scope_maps.len);
+    const init_inner = module.init_symbol orelse return error.TestUnexpectedResult;
+    const exports_inner = module.exports_symbol orelse return error.TestUnexpectedResult;
+    const second_init_inner = second.init_symbol orelse return error.TestUnexpectedResult;
+    const second_exports_inner = second.exports_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_init, semantic.symbols.items[@intFromEnum(init_inner)].synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_exports, semantic.symbols.items[@intFromEnum(exports_inner)].synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_init, second_semantic.symbols.items[@intFromEnum(second_init_inner)].synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_exports, second_semantic.symbols.items[@intFromEnum(second_exports_inner)].synthetic_kind.?);
+    try std.testing.expectEqualStrings("init_runtime_only_esm", module.getInitName(null) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings("exports_runtime_only_esm", module.getExportsName(null) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings("init_runtime_only_esm$2", second.getInitName(null) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings("exports_runtime_only_esm$2", second.getExportsName(null) orelse return error.TestUnexpectedResult);
+
+    const first_symbol_count = semantic.symbols.items.len;
+    const second_symbol_count = second_semantic.symbols.items.len;
+    module.init_symbol = null;
+    module.exports_symbol = null;
+    second.init_symbol = null;
+    second.exports_symbol = null;
+    graph_finalize.registerWrapperSymbols(graph);
+    graph_finalize.registerWrapperSymbols(graph);
+    try std.testing.expectEqual(init_inner, module.init_symbol orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(exports_inner, module.exports_symbol orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(second_init_inner, second.init_symbol orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(second_exports_inner, second.exports_symbol orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(first_symbol_count, module.semantic.?.symbols.items.len);
+    try std.testing.expectEqual(second_symbol_count, second.semantic.?.symbols.items.len);
+
     const factory_inner = module.esm_runtime_factory_symbol orelse return error.TestUnexpectedResult;
 
     var linker = Linker.initWithGlobalIdentifiers(std.testing.allocator, graph, .esm, &.{"__esm"});

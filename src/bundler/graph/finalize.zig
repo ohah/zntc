@@ -217,7 +217,9 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
     var seed_it = self.modules.iterator(0);
     while (seed_it.next()) |m| {
         if (m.wrap_kind == .none) continue;
-        _ = findCjsWrapperRequireSymbol(m);
+        _ = findWrapperSymbol(m, &m.init_symbol, .esm_init);
+        _ = findWrapperSymbol(m, &m.exports_symbol, .cjs_exports);
+        _ = findWrapperSymbol(m, &m.require_symbol, .cjs_require);
         // RFC #3940 L.4c-2a-i: mangle 전 단계 (canonical 미설정) → rt null, synthetic_name 조회.
         if (m.getInitName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
         if (m.getExportsName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
@@ -264,42 +266,17 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
             esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
         }
-        const needs_init = m.ast != null and m.init_symbol == null;
-        const needs_exports = m.ast != null and m.exports_symbol == null;
+        const needs_init = (m.ast != null or m.wrap_kind == .esm) and m.init_symbol == null;
+        const needs_exports = (m.ast != null or m.wrap_kind == .esm) and m.exports_symbol == null;
         const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
         if (!needs_init and !needs_exports and !needs_require) continue;
 
-        // semantic 이 없는 모듈 (asset / disabled / optional-missing) — JS 파싱을 거치지
-        // 않아 심볼 테이블이 없다. 예전엔 여기서 `continue` 해 등록을 통째로 건너뛰었고,
-        // emit 은 basename 기반 fallback 이름을 써서 `a/logo.png` 와 `b/logo.png` 가 둘 다
-        // `require_logo` 가 됐다 → 두 번째 선언이 첫 번째를 가려 한쪽 자산이 다른 쪽의
-        // URL 을 돌려주는 조용한 오컴파일 (#4475).
-        //
-        // AST가 없는 모듈도 그래프가 생성한 래퍼 심볼을 담을 빈 semantic 저장소를
-        // 가질 수 있다. 이름 문자열만 남기면 linker가 실제 선언/참조와 같은 SymbolId로
-        // 추적하지 못하므로 CJS require 래퍼도 일반 합성 심볼로 등록한다.
+        // semantic 이 없는 AST-less 모듈(asset / disabled / optional-missing 등)은
+        // JS 파싱을 거치지 않아 심볼 테이블이 없다. 그래프 생성 래퍼 이름을 문자열
+        // fallback으로 남기지 않고 빈 semantic 저장소의 정확한 SymbolId로 등록한다.
         if (m.semantic == null) {
-            if (!needs_require or !ensureSyntheticModuleSemantic(self, m)) continue;
-            const arena = if (m.parse_arena) |a| a.allocator() else continue;
-            const sem_ptr = if (m.semantic) |*s| s else continue;
-            // 이전 캐시에서 넘어온 문자열 이름이 있으면 spelling을 보존하고 SymbolId로
-            // 승격한다. 새 등록에서는 기존 deconflict 경로와 같은 이름을 할당한다.
-            const require_name = if (m.wrapper_name_synthetic) |legacy_name|
-                legacy_name
-            else blk: {
-                const base = types.makeRequireVarName(arena, m.path) catch continue;
-                break :blk uniqueName(arena, base, &used_names, self.allocator) catch continue;
-            };
-            m.require_symbol = semantic_symbol.extendSymbol(
-                arena,
-                &sem_ptr.symbols,
-                .function_decl,
-                .cjs_require,
-                require_name,
-                Span.EMPTY,
-            ) catch null;
-            if (m.require_symbol != null) m.wrapper_name_synthetic = null;
-            continue;
+            if (m.ast != null or (!needs_init and !needs_exports and !needs_require)) continue;
+            if (!ensureSyntheticModuleSemantic(self, m)) continue;
         }
         const arena = if (m.parse_arena) |a| a.allocator() else continue;
         const sem_ptr = if (m.semantic) |*s| s else continue;
@@ -477,20 +454,24 @@ fn ensureSyntheticModuleSemantic(graph: *ModuleGraph, m: *Module) bool {
     return true;
 }
 
-fn findCjsWrapperRequireSymbol(m: *Module) ?semantic_symbol.SymbolId {
+fn findWrapperSymbol(
+    m: *Module,
+    identity: *?semantic_symbol.SymbolId,
+    expected_kind: semantic_symbol.SyntheticKind,
+) ?semantic_symbol.SymbolId {
     const sem = if (m.semantic) |*value| value else {
-        m.require_symbol = null;
+        identity.* = null;
         return null;
     };
-    if (m.require_symbol) |existing| {
+    if (identity.*) |existing| {
         const raw: usize = @intFromEnum(existing);
-        if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == .cjs_require) return existing;
-        m.require_symbol = null;
+        if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == expected_kind) return existing;
+        identity.* = null;
     }
     for (sem.symbols.items, 0..) |symbol, index| {
-        if (symbol.synthetic_kind != .cjs_require) continue;
-        m.require_symbol = @enumFromInt(index);
-        return m.require_symbol;
+        if (symbol.synthetic_kind != expected_kind) continue;
+        identity.* = @enumFromInt(index);
+        return identity.*;
     }
     return null;
 }

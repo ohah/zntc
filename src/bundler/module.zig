@@ -337,7 +337,7 @@ pub const Module = struct {
     /// panic 한다 (#2694). ptr 으로 두면 struct copy 가 ptr 만 복사 — 두 위치가 같은
     /// 객체 참조하고 nullify 한 쪽이 ownership 박탈을 명확히 표현한다.
     parse_arena: ?*std.heap.ArenaAllocator,
-    /// semantic analyzer 결과. parse_arena가 소유. linker에서 사용.
+    /// Semantic analyzer 결과 또는 AST-less 그래프 생성 심볼 저장소. parse_arena가 소유.
     semantic: ?ModuleSemanticData,
     /// Semantic Analyzer에서 사전 구축한 StmtInfo. parse_arena가 소유.
     /// tree_shaker가 AST를 다시 순회하지 않고 이 데이터를 사용한다.
@@ -405,12 +405,12 @@ pub const Module = struct {
     /// 재파스마다 `&.{}` 로 초기화되고 bake 발생 시에만 채워진다.
     const_providers: []const []const u8 = &.{},
 
-    /// wrap_kind != .none 모듈의 `init_<path>` 함수 심볼 id (semantic 공간).
-    /// null = 미래핑 또는 semantic 없음 (fallback: makeInitVarName 재할당).
+    /// 래핑 모듈의 `init_<path>` 함수 SymbolId. owner는 parsed semantic 또는 AST-less shell.
+    /// null = 미등록 (allocInitName은 makeInitVarName fallback을 사용).
     init_symbol: ?SemanticSymbolId = null,
-    /// wrap_kind != .none 모듈의 `exports_<path>` 객체 심볼 id.
+    /// 래핑 모듈의 `exports_<path>` 객체 SymbolId.
     exports_symbol: ?SemanticSymbolId = null,
-    /// wrap_kind == .cjs 모듈의 `require_<path>` 함수 심볼 id.
+    /// CJS 래퍼의 `require_<path>` 함수 SymbolId.
     require_symbol: ?SemanticSymbolId = null,
     /// `__commonJS` 콜백의 암묵적 `exports`/`module` 매개변수 identity.
     /// 최상위 var/function 재선언은 해당 원본 SID를 공유하고, 그 외에는
