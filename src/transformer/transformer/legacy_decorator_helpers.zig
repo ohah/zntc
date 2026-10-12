@@ -205,7 +205,7 @@ pub fn buildDecorateClassMemberCall(
     defer deco_items.deinit(self.allocator);
     try deco_items.appendSlice(self.allocator, md.decorators);
     // emitDecoratorMetadata: __metadata 호출 추가
-    try self.appendMemberMetadata(&deco_items, md.params);
+    try self.appendMemberMetadata(&deco_items, md.params, md.member);
     const deco_array_list = try self.ast.addNodeList(deco_items.items);
     const deco_array = try self.ast.addNode(.{
         .tag = .array_expression,

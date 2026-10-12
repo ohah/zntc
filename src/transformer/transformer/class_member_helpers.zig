@@ -194,7 +194,7 @@ pub fn classifyPropertyDefinition(
             const new_key = (try es_helpers.makeLegacyDecoratorComputedKeyRef(self, key_idx)) orelse
                 try self.visitNode(key_idx);
             const empty: ast_mod.NodeList = .{ .start = 0, .len = 0 };
-            try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty);
+            try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty, @enumFromInt(raw_idx));
         }
     }
 
@@ -381,6 +381,7 @@ pub fn classifyMethodDefinition(
                 is_static,
                 1,
                 params_list_m,
+                member_idx,
             );
         }
     }
@@ -441,6 +442,9 @@ pub const MemberDecoratorInfo = struct {
     kind: u32,
     /// emitDecoratorMetadata: 원본 AST 파라미터 리스트
     params: ast_mod.NodeList = .{ .start = 0, .len = 0 },
+    /// emitDecoratorMetadata: 원본 AST member (method / property) — its kind and
+    /// type annotations decide the metadata (#5587).
+    member: NodeIndex = .none,
 };
 
 /// decorator 노드에서 expression 부분을 visit하여 반환.
@@ -468,6 +472,7 @@ pub fn collectMemberDecorators(
     is_static: bool,
     kind: u32,
     orig_params: ast_mod.NodeList,
+    member: NodeIndex,
 ) Error!void {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -498,6 +503,7 @@ pub fn collectMemberDecorators(
         .is_static = is_static,
         .kind = kind,
         .params = orig_params,
+        .member = member,
     });
 }
 

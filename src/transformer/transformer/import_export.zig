@@ -315,6 +315,66 @@ fn hasImportElisionFacts(self: *const Transformer) bool {
 /// 있음에도 "미사용" 으로 오판했음 (PR #1793 revert 원인).
 ///
 /// `self.references` 가 비어있으면 보수적으로 "사용 중" 간주. symbol_id 조회 실패도 동일.
+/// Whether emitDecoratorMetadata reads `name` as a value: a parameter type of a
+/// constructor in a decorated class (or with a decorated parameter), a
+/// decorated method's parameter and return types, or a decorated property's
+/// type — the positions `appendClassMetadata` / `appendMemberMetadata` read.
+fn decoratorMetadataReads(self: *Transformer, name: []const u8) bool {
+    if (self.decorator_metadata_type_names == null) {
+        var names: std.StringHashMapUnmanaged(void) = .empty;
+        collectDecoratorMetadataTypeNames(self, &names) catch {};
+        self.decorator_metadata_type_names = names;
+    }
+    return self.decorator_metadata_type_names.?.contains(name);
+}
+
+fn collectDecoratorMetadataTypeNames(self: *Transformer, names: *std.StringHashMapUnmanaged(void)) !void {
+    const metadata = @import("decorator_metadata.zig");
+    const ast = self.ast;
+    const count = @min(self.parser_node_count, ast.nodes.items.len);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const class = ast.nodes.items[i];
+        if (class.tag != .class_declaration and class.tag != .class_expression) continue;
+        const ce = class.data.extra;
+        const class_decorated = ast.extra_data.items[ce + ast_mod.ClassExtra.deco_len] > 0;
+        const body = ast.readExtraNode(ce, ast_mod.ClassExtra.body);
+        if (body.isNone()) continue;
+        const members = ast.getNode(body).data.list;
+        for (ast.extra_data.items[members.start .. members.start + members.len]) |raw| {
+            const member = ast.getNode(@enumFromInt(raw));
+            switch (member.tag) {
+                .property_definition, .accessor_property => {
+                    if (ast.extra_data.items[member.data.extra + ast_mod.PropertyExtra.deco_len] == 0) continue;
+                    const key = ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.key);
+                    if (key.isNone()) continue;
+                    if (metadata.annotationRootAt(ast, ast.getNode(key).span.end)) |root| try names.put(self.allocator, root, {});
+                },
+                .method_definition => {
+                    const me = member.data.extra;
+                    const is_ctor = es_helpers.isConstructorKey(self, ast.readExtraNode(me, ast_mod.MethodExtra.key));
+                    const params_idx = ast.readExtraNode(me, ast_mod.MethodExtra.params);
+                    if (params_idx.isNone()) continue;
+                    const params = ast.getNode(params_idx).data.list;
+                    const param_items = ast.extra_data.items[params.start .. params.start + params.len];
+                    var serialized = if (is_ctor) class_decorated else ast.extra_data.items[me + ast_mod.MethodExtra.deco_len] > 0;
+                    if (is_ctor and !serialized) for (param_items) |p_raw| {
+                        const p = ast.getNode(@enumFromInt(p_raw));
+                        if (p.tag == .formal_parameter and ast.extra_data.items[p.data.extra + 5] > 0) serialized = true;
+                    };
+                    if (!serialized) continue;
+                    for (param_items) |p_raw| {
+                        if (metadata.metadataTypeRoot(ast, @enumFromInt(p_raw))) |root| try names.put(self.allocator, root, {});
+                    }
+                    if (!is_ctor) if (metadata.afterMethodParams(ast, member)) |pos| if (metadata.annotationRootAt(ast, pos)) |root|
+                        try names.put(self.allocator, root, {});
+                },
+                else => {},
+            }
+        }
+    }
+}
+
 fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
     // #1791: Phase D 를 **named specifier 한정**. default/namespace 는 JSX pragma,
     // CSS-in-JS default export, namespace member access 같은 implicit value use 가
@@ -335,6 +395,11 @@ fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: N
             std.mem.eql(u8, local_name, self.options.jsxClassicFragmentHead()))
             return false;
     }
+
+    // emitDecoratorMetadata serializes parameter types of decorated classes and
+    // methods to value reads (`[Service]`); tsc keeps those imports (#5587).
+    if (self.options.emit_decorator_metadata and decoratorMetadataReads(self, local_name))
+        return false;
 
     // Emotion wraps object/array JSX css props after this import visitor has
     // decided whether the local is unused. Keep that exact import binding for

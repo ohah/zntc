@@ -1213,6 +1213,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var ctor_param_decos: std.ArrayList(NodeIndex) = .empty;
             defer ctor_param_decos.deinit(self.allocator);
 
+            // emitDecoratorMetadata: the constructor's source parameters (#5587).
+            var ctor_params: NodeList = .{ .start = 0, .len = 0 };
             // visitNode/collectMemberDecorators가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
             var m_loop: u32 = 0;
             while (m_loop < members_len) : (m_loop += 1) {
@@ -1227,6 +1229,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
                     if (!is_static and es_helpers.isConstructorKey(self, key)) {
                         // constructor param decorator
+                        ctor_params = params_list_m;
                         try self.collectParamDecorators(&ctor_param_decos, params_list_m);
                         continue;
                     }
@@ -1237,7 +1240,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     if (deco_len > 0 or params_list_m.len > 0) {
                         const new_key = (try es_helpers.makeLegacyDecoratorComputedKeyRef(self, key)) orelse
                             try self.visitNode(key);
-                        const empty: NodeList = .{ .start = 0, .len = 0 };
                         try self.collectMemberDecorators(
                             &member_decos,
                             deco_start,
@@ -1246,7 +1248,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             new_key,
                             is_static,
                             1,
-                            empty,
+                            params_list_m,
+                            @enumFromInt(raw_idx),
                         );
                     }
                 } else if (member.tag == .property_definition) {
@@ -1270,6 +1273,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             is_static,
                             2,
                             empty,
+                            @enumFromInt(raw_idx),
                         );
                     }
                 }
@@ -1292,7 +1296,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                     old_deco_start,
                     old_deco_len,
                     ctor_param_decos.items,
-                    .{ .start = 0, .len = 0 },
+                    ctor_params,
                 );
                 try self.pending_nodes.append(self.allocator, class_deco_stmt);
             }

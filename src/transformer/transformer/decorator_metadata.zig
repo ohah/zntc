@@ -69,47 +69,106 @@ pub fn extractTypeFromSource(self: anytype, param: Node) Error!NodeIndex {
 }
 
 fn extractTypeFromSourceAtNode(self: anytype, param: Node, param_idx: NodeIndex) Error!NodeIndex {
-    const span_end = param.span.end;
-    const source = self.ast.source;
-    if (span_end >= source.len) return makeMetadataNameRef(self, "Object");
+    return (try serializeTypeAt(self, param_idx, param.span.end)) orelse makeMetadataNameRef(self, "Object");
+}
 
-    // span 끝 이후에서 `: Type` 패턴 탐색
-    var pos = span_end;
-    // 공백 건너뜀
-    while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t' or source[pos] == '\n' or source[pos] == '\r' or source[pos] == '?')) : (pos += 1) {}
-    // `:` 확인
-    if (pos >= source.len or source[pos] != ':') return makeMetadataNameRef(self, "Object");
-    pos += 1;
-    // 공백 건너뜀
-    while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t')) : (pos += 1) {}
-    // 타입 이름 시작
-    const type_start = pos;
-    if (!param_idx.isNone()) {
-        if (findTypeAnnotationForParam(self, param_idx, @intCast(type_start))) |type_ann_idx| {
-            return serializeTypeAnnotation(self, type_ann_idx);
+/// The source position just past a method's parameter list `)`, where a
+/// return type annotation can start. The parameter list node has no span, so
+/// scan from the last parameter (or the key) to the matching parenthesis.
+pub fn afterMethodParams(ast: *const ast_mod.Ast, method: Node) ?u32 {
+    const source = ast.source;
+    const params = ast.functionParamsList(method);
+    var pos: usize = undefined;
+    if (params.len > 0) {
+        const last: NodeIndex = @enumFromInt(ast.extra_data.items[params.start + params.len - 1]);
+        if (last.isNone()) return null;
+        pos = ast.getNode(last).span.end;
+    } else {
+        const key = ast.readExtraNode(method.data.extra, ast_mod.MethodExtra.key);
+        if (key.isNone()) return null;
+        pos = ast.getNode(key).span.end;
+        while (pos < source.len and source[pos] != '(') : (pos += 1) {}
+        if (pos >= source.len) return null;
+        pos += 1;
+    }
+    var depth: usize = 1;
+    while (pos < source.len) : (pos += 1) {
+        switch (source[pos]) {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if (depth == 0) return @intCast(pos + 1);
+            },
+            '\'', '"', '`' => {
+                const quote = source[pos];
+                pos += 1;
+                while (pos < source.len and source[pos] != quote) : (pos += 1) {
+                    if (source[pos] == '\\') pos += 1;
+                }
+            },
+            else => {},
         }
     }
-    // 식별자 끝 찾기 (알파벳, 숫자, _, $, .)
-    while (pos < source.len and (std.ascii.isAlphanumeric(source[pos]) or source[pos] == '_' or source[pos] == '$' or source[pos] == '.')) : (pos += 1) {}
-    if (pos == type_start) return makeMetadataNameRef(self, "Object");
+    return null;
+}
 
-    const type_name = source[type_start..pos];
+/// The widest type node starting exactly at `type_start`.
+fn findTypeNodeAt(self: anytype, type_start: u32) ?NodeIndex {
+    var best: ?NodeIndex = null;
+    var best_end: u32 = type_start;
+    for (self.ast.nodes.items, 0..) |node, raw| {
+        if (node.span.start != type_start or !type_only.isTypeOnlyNode(node.tag)) continue;
+        if (node.span.end >= best_end) {
+            best = @enumFromInt(raw);
+            best_end = node.span.end;
+        }
+    }
+    return best;
+}
+
+/// Where the type of a `name: Type` annotation starts, after `pos` (the end of
+/// the annotated name; `?` / `!` markers are skipped). null without one.
+fn annotationStart(source: []const u8, pos_in: u32) ?u32 {
+    var pos: usize = pos_in;
+    while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t' or source[pos] == '\n' or source[pos] == '\r' or source[pos] == '?' or source[pos] == '!')) : (pos += 1) {}
+    if (pos >= source.len or source[pos] != ':') return null;
+    pos += 1;
+    while (pos < source.len and (source[pos] == ' ' or source[pos] == '\t' or source[pos] == '\n' or source[pos] == '\r')) : (pos += 1) {}
+    return @intCast(pos);
+}
+
+/// Serialize the `: Type` annotation following source position `pos` — from
+/// the widest type node after `anchor` when one starts there, else from the
+/// source text. null when there is no annotation.
+fn serializeTypeAt(self: anytype, anchor: NodeIndex, pos: u32) Error!?NodeIndex {
+    const source = self.ast.source;
+    if (pos >= source.len) return null;
+    const type_start = annotationStart(source, pos) orelse return null;
+    const type_node = (if (anchor.isNone()) null else findTypeAnnotationForParam(self, anchor, type_start)) orelse
+        findTypeNodeAt(self, type_start);
+    if (type_node) |type_ann_idx| return try serializeTypeAnnotation(self, type_ann_idx);
+    var end: usize = type_start;
+    // 식별자 끝 찾기 (알파벳, 숫자, _, $, .)
+    while (end < source.len and (std.ascii.isAlphanumeric(source[end]) or source[end] == '_' or source[end] == '$' or source[end] == '.')) : (end += 1) {}
+    if (end == type_start) return try makeMetadataNameRef(self, "Object");
+
+    const type_name = source[type_start..end];
     // SWC 호환 타입 직렬화 (텍스트 기반 폴백)
-    if (std.mem.eql(u8, type_name, "number")) return makeMetadataNameRef(self, "Number");
-    if (std.mem.eql(u8, type_name, "string")) return makeMetadataNameRef(self, "String");
-    if (std.mem.eql(u8, type_name, "boolean")) return makeMetadataNameRef(self, "Boolean");
-    if (std.mem.eql(u8, type_name, "symbol")) return makeTypeofGuard(self, "Symbol");
-    if (std.mem.eql(u8, type_name, "bigint")) return makeTypeofGuard(self, "BigInt");
+    if (std.mem.eql(u8, type_name, "number")) return try makeMetadataNameRef(self, "Number");
+    if (std.mem.eql(u8, type_name, "string")) return try makeMetadataNameRef(self, "String");
+    if (std.mem.eql(u8, type_name, "boolean")) return try makeMetadataNameRef(self, "Boolean");
+    if (std.mem.eql(u8, type_name, "symbol")) return try makeTypeofGuard(self, "Symbol");
+    if (std.mem.eql(u8, type_name, "bigint")) return try makeTypeofGuard(self, "BigInt");
     if (std.mem.eql(u8, type_name, "any") or std.mem.eql(u8, type_name, "object") or
-        std.mem.eql(u8, type_name, "unknown")) return makeMetadataNameRef(self, "Object");
+        std.mem.eql(u8, type_name, "unknown")) return try makeMetadataNameRef(self, "Object");
     if (std.mem.eql(u8, type_name, "void") or std.mem.eql(u8, type_name, "undefined") or
         std.mem.eql(u8, type_name, "null") or std.mem.eql(u8, type_name, "never"))
-        return es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
+        return try es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
     if (qualified_type_name.isSimpleQualifiedPath(type_name)) {
-        return makeQualifiedMetadataTypeRef(self, type_name);
+        return try makeQualifiedMetadataTypeRef(self, type_name);
     }
     // 클래스/인터페이스 참조 → typeof 런타임 체크 (SWC 호환)
-    return makeTypeReferenceGuard(self, type_name);
+    return try makeTypeReferenceGuard(self, type_name);
 }
 
 /// Simple parameter ASTs store the binding identifier in the parameter list,
@@ -304,12 +363,21 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
         if (param.tag == .formal_parameter) {
             // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
             const pe = param.data.extra;
-            if (pe + 1 < self.ast.extra_data.items.len) {
-                const type_ann_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[pe + 1]);
-                const type_val = try serializeTypeAnnotation(self, type_ann_idx);
-                try type_nodes.append(self.allocator, type_val);
+            const type_ann_idx: NodeIndex = if (pe + 1 < self.ast.extra_data.items.len)
+                @enumFromInt(self.ast.extra_data.items[pe + 1])
+            else
+                .none;
+            if (!type_ann_idx.isNone()) {
+                try type_nodes.append(self.allocator, try serializeTypeAnnotation(self, type_ann_idx));
             } else {
-                try type_nodes.append(self.allocator, try makeMetadataNameRef(self, "Object"));
+                // A parameter property / decorated parameter keeps its type with
+                // the inner binding (`private s: Service`), as a plain one does.
+                const inner: NodeIndex = @enumFromInt(self.ast.extra_data.items[pe]);
+                const type_val = if (inner.isNone())
+                    try makeMetadataNameRef(self, "Object")
+                else
+                    try extractTypeFromSourceAtNode(self, self.ast.getNode(inner), inner);
+                try type_nodes.append(self.allocator, type_val);
             }
         } else if (param.tag == .binding_identifier or param.tag == .assignment_pattern) {
             // 일반 파라미터: 소스에서 타입 어노테이션 추출 (: Type 패턴)
@@ -324,29 +392,117 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
     return self.ast.addNode(.{ .tag = .array_expression, .span = zero_span, .data = .{ .list = list } });
 }
 
+/// The identifier a parameter's metadata type serializes to a value read of
+/// (`s: Service` / `s: ns.Service` → "Service" / "ns"), mirroring
+/// `buildParamTypesArray`. null when it has no annotation.
+pub fn metadataTypeRoot(ast: *const ast_mod.Ast, param_idx: NodeIndex) ?[]const u8 {
+    if (param_idx.isNone() or @intFromEnum(param_idx) >= ast.nodes.items.len) return null;
+    const param = ast.getNode(param_idx);
+    switch (param.tag) {
+        .formal_parameter => {
+            const pe = param.data.extra;
+            if (pe + 1 >= ast.extra_data.items.len) return null;
+            const type_idx: NodeIndex = @enumFromInt(ast.extra_data.items[pe + 1]);
+            if (type_idx.isNone()) return metadataTypeRoot(ast, @enumFromInt(ast.extra_data.items[pe]));
+            if (@intFromEnum(type_idx) >= ast.nodes.items.len) return null;
+            const type_node = ast.getNode(type_idx);
+            const name = switch (type_node.tag) {
+                .ts_type_reference => qualified_type_name.typeReferenceName(ast, type_node) orelse ast.getText(type_node.span),
+                .identifier_reference, .binding_identifier => ast.getText(type_node.data.string_ref),
+                else => return null,
+            };
+            return rootIdentifier(name);
+        },
+        .binding_identifier, .assignment_pattern => return annotationRootAt(ast, param.span.end),
+        else => return null,
+    }
+}
+
+/// The identifier the `: Type` annotation after source position `pos` (a
+/// parameter, a property key, a parameter list for a return type) serializes
+/// to a value read of — the widest type node there, as `serializeTypeAt`
+/// picks it. null for builtins, arrays, unions and other `Object` shapes.
+pub fn annotationRootAt(ast: *const ast_mod.Ast, pos: u32) ?[]const u8 {
+    const source = ast.source;
+    if (pos >= source.len) return null;
+    const start = annotationStart(source, pos) orelse return null;
+    var best: ?Node = null;
+    var best_end: u32 = start;
+    for (ast.nodes.items) |node| {
+        if (node.span.start != start or !type_only.isTypeOnlyNode(node.tag)) continue;
+        if (node.span.end >= best_end) {
+            best = node;
+            best_end = node.span.end;
+        }
+    }
+    if (best) |node| return switch (node.tag) {
+        .ts_type_reference => rootIdentifier(qualified_type_name.typeReferenceName(ast, node) orelse ast.getText(node.span)),
+        else => null,
+    };
+    var end: usize = start;
+    while (end < source.len and (std.ascii.isAlphanumeric(source[end]) or source[end] == '_' or source[end] == '$')) : (end += 1) {}
+    return rootIdentifier(source[start..end]);
+}
+
+fn rootIdentifier(name: []const u8) ?[]const u8 {
+    const end = std.mem.indexOfAny(u8, name, ".<") orelse name.len;
+    if (end == 0) return null;
+    return name[0..end];
+}
+
 /// decorator 배열에 __metadata 호출을 추가한다 (emitDecoratorMetadata 활성 시).
 /// member decorator용: design:type(Function) + design:paramtypes([...]) + design:returntype(...)
 pub fn appendMemberMetadata(
     self: anytype,
     deco_list: *std.ArrayList(NodeIndex),
     params: ast_mod.NodeList,
+    member: NodeIndex,
 ) Error!void {
     if (!self.options.emit_decorator_metadata) return;
 
+    // tsc: a property records only its type; an accessor its type (and the
+    // setter's parameter types); a method Function, parameter types and its
+    // return type (`void 0` without an annotation).
+    const member_node: ?Node = if (member.isNone()) null else self.ast.getNode(member);
+    if (member_node) |m| if (m.tag == .property_definition or m.tag == .accessor_property) {
+        const key = self.ast.readExtraNode(m.data.extra, ast_mod.PropertyExtra.key);
+        const type_val = if (key.isNone())
+            null
+        else
+            try serializeTypeAt(self, key, self.ast.getNode(key).span.end);
+        try deco_list.append(self.allocator, try buildMetadataCall(self, "design:type", type_val orelse try makeMetadataNameRef(self, "Object")));
+        return;
+    };
+    var flags: u32 = 0;
+    var return_type: ?NodeIndex = null;
+    if (member_node) |m| if (m.tag == .method_definition) {
+        const me = m.data.extra;
+        flags = self.ast.extra_data.items[me + ast_mod.MethodExtra.flags];
+        if ((flags & ast_mod.MethodFlags.is_setter) == 0) if (afterMethodParams(self.ast, m)) |pos| {
+            return_type = try serializeTypeAt(self, .none, pos);
+        };
+    };
+    if ((flags & ast_mod.MethodFlags.is_getter) != 0) {
+        try deco_list.append(self.allocator, try buildMetadataCall(self, "design:type", return_type orelse try makeMetadataNameRef(self, "Object")));
+        try deco_list.append(self.allocator, try buildMetadataCall(self, "design:paramtypes", try buildParamTypesArray(self, .{ .start = 0, .len = 0 })));
+        return;
+    }
+    const param_types = try buildParamTypesArray(self, params);
+    if ((flags & ast_mod.MethodFlags.is_setter) != 0) {
+        const first = self.ast.getNode(param_types).data.list;
+        const type_val = if (first.len > 0) @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[first.start])) else try makeMetadataNameRef(self, "Object");
+        // A separate array: one node cannot appear twice in the output.
+        try deco_list.append(self.allocator, try buildMetadataCall(self, "design:type", type_val));
+        try deco_list.append(self.allocator, try buildMetadataCall(self, "design:paramtypes", try buildParamTypesArray(self, params)));
+        return;
+    }
+
     // design:type → always Function for methods
     const func_ref = try makeMetadataNameRef(self, "Function");
-    const type_meta = try buildMetadataCall(self, "design:type", func_ref);
-    try deco_list.append(self.allocator, type_meta);
-
-    // design:paramtypes → 파라미터 타입 배열
-    const param_types = try buildParamTypesArray(self, params);
-    const paramtypes_meta = try buildMetadataCall(self, "design:paramtypes", param_types);
-    try deco_list.append(self.allocator, paramtypes_meta);
-
-    // design:returntype → Object (AST에 리턴 타입 추출 미지원)
-    const return_type_val = try makeMetadataNameRef(self, "Object");
-    const return_meta = try buildMetadataCall(self, "design:returntype", return_type_val);
-    try deco_list.append(self.allocator, return_meta);
+    try deco_list.append(self.allocator, try buildMetadataCall(self, "design:type", func_ref));
+    try deco_list.append(self.allocator, try buildMetadataCall(self, "design:paramtypes", param_types));
+    const return_val = return_type orelse try es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
+    try deco_list.append(self.allocator, try buildMetadataCall(self, "design:returntype", return_val));
 }
 
 /// class decorator 배열에 constructor paramtypes 메타데이터를 추가한다.

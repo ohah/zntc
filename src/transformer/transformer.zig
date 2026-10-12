@@ -401,6 +401,9 @@ pub const Transformer = struct {
     /// 바뀌면(다른 slice) ptr/len 불일치로 자동 재구축(stale 방지). self.allocator 소유,
     /// deinitExceptAst 에서 해제.
     value_used_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// emitDecoratorMetadata: type names its `design:paramtypes` reads as
+    /// values, collected once before import elision (#5587).
+    decorator_metadata_type_names: ?std.StringHashMapUnmanaged(void) = null,
     value_used_symbols_built_for: ?[]const @import("../semantic/symbol.zig").Reference = null,
 
     /// Full semantic을 건너뛰는 standalone transpile 경로에서 named import elision만
