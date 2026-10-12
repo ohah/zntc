@@ -154,6 +154,7 @@ pub fn shouldLinkResolvedRecordForModule(self: anytype, mod_idx: usize, rec_i: u
         .side_effect, .css_import, .require, .dynamic_import, .worker, .glob, .require_context, .css_url => return true,
         .static_import, .re_export => {},
     }
+    if (record.ts_elided) return false;
 
     if (!isLazyBarrelCandidate(self, m)) return true;
     // Wrapper-barrel pattern 은 body mutation 이 imports 에 의존하므로 lazy 비활성화.

@@ -24,8 +24,21 @@ const getMtime = ModuleGraph.getMtime;
 /// TypeScript elides an import whose binding is used only as a type. Record
 /// that on each named binding from the source references, before a transform
 /// (constant inlining) removes its value uses (#5571).
-fn markSourceTypeOnlyImports(module: *module_mod.Module, arena_alloc: std.mem.Allocator) void {
+///
+/// Uses the transform adds are value uses too, as in the transformer's own
+/// elision (`isImportSpecifierUnused`): the classic JSX factory/fragment head
+/// (`/** @jsx h */` + `import { h }`). Transforms that rewrite code onto user
+/// imports (Emotion css prop, styled-components, decorator metadata) leave the
+/// judgement to the post-transform references.
+fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast: *const @import("../../parser/ast.zig").Ast, arena_alloc: std.mem.Allocator) void {
     if (!module.module_type.isTypeScript()) return;
+    // The pre-pass's per-module options (transform_prepass `run`).
+    var base = self.transform_options_base;
+    base.jsx_transform = ast.has_jsx;
+    const options = base.withModuleJsxPragmas(ast);
+    const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
+    if (((self.emotion or self.styled_components) and is_user_code) or options.emit_decorator_metadata) return;
+    const verbatim_module_syntax = options.verbatim_module_syntax;
     const sem = if (module.semantic) |*s| s else return;
     if (sem.scope_maps.len == 0 or module.import_bindings.len == 0) return;
     var value_used = std.DynamicBitSetUnmanaged.initEmpty(arena_alloc, sem.symbols.items.len) catch return;
@@ -33,11 +46,33 @@ fn markSourceTypeOnlyImports(module: *module_mod.Module, arena_alloc: std.mem.Al
         const raw = @intFromEnum(r.symbol_id);
         if (raw < sem.symbols.items.len and r.isValueUse()) value_used.set(raw);
     }
+    const classic_jsx = ast.has_jsx and options.shouldLowerJsx() and options.jsx_runtime == .classic;
     for (module.import_bindings) |*ib| {
         if (ib.kind != .named or ib.is_helper) continue;
+        if (classic_jsx and (std.mem.eql(u8, ib.local_name, options.jsxClassicFactoryHead()) or
+            std.mem.eql(u8, ib.local_name, options.jsxClassicFragmentHead())))
+        {
+            ib.source_type_only = false;
+            continue;
+        }
         const sym_idx = sem.scope_maps[0].get(ib.local_name) orelse continue;
         if (sym_idx >= sem.symbols.items.len) continue;
         ib.source_type_only = !value_used.isSet(sym_idx);
+    }
+    // An import whose every binding is a type alone is dropped whole: its
+    // module is not loaded (#5581). Default and namespace bindings stay —
+    // a JSX pragma can use them implicitly (#1793).
+    if (verbatim_module_syntax) return;
+    for (module.import_records, 0..) |*rec, rec_i| {
+        if (rec.kind != .static_import) continue;
+        var bindings: usize = 0;
+        var type_only = true;
+        for (module.import_bindings) |ib| {
+            if (ib.import_record_index != rec_i) continue;
+            bindings += 1;
+            if (ib.kind != .named or ib.is_helper or ib.source_type_only != true) type_only = false;
+        }
+        rec.ts_elided = bindings > 0 and type_only;
     }
 }
 
@@ -352,7 +387,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     }
 
     if (!self.materializeParserMetadata(module, &parser, arena_alloc)) return;
-    markSourceTypeOnlyImports(module, arena_alloc);
+    markSourceTypeOnlyImports(self, module, &parser.ast, arena_alloc);
 
     // #1961/#1913: transformer pre-pass. helper module 을 graph 의 1급 모듈로
     // 분배하려면 helper import 가 link 단계 전에 import_records 에 등록되어야 한다.
