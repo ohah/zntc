@@ -70,4 +70,33 @@ describe('async generator inner function scope (#4819)', () => {
       }
     }
   }
+
+  test('minified await helper alias is not shadowed by async-generator template locals (#4819)', async () => {
+    const source = `
+      const __await = 1;
+      async function* run() { yield await Promise.resolve(__await + 1); }
+      run().next().then(result => console.log(JSON.stringify(result)));
+    `;
+    const fixture = await createFixture({
+      'input.mjs': source,
+      'package.json': '{"type":"module"}',
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.mjs');
+    const native = spawnSync('node', [input], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+
+    const output = join(fixture.dir, 'out.mjs');
+    const result = await runZntcInDir(fixture.dir, [
+      'input.mjs',
+      '--target=es2015',
+      '--minify-identifiers',
+      '-o',
+      output,
+    ]);
+    expect(result.exitCode, result.stderr).toBe(0);
+    const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(runtime.status, runtime.stderr).toBe(0);
+    expect(runtime.stdout).toBe(native.stdout);
+  });
 });

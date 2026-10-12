@@ -670,6 +670,7 @@ fn keepHelpersReferencedFromHelperBodies(
     helpers: @import("transformer/transformer.zig").RuntimeHelpers,
     minify_whitespace: bool,
     es5_compat: bool,
+    runtime_helper_aliases: *const std.StringHashMapUnmanaged([]const u8),
     symbols: []const @import("semantic/symbol.zig").Symbol,
     ast: *const Ast,
     keep: *std.DynamicBitSet,
@@ -681,8 +682,23 @@ fn keepHelpersReferencedFromHelperBodies(
     for (symbols, 0..) |sym, i| {
         if (sym.synthetic_kind != .runtime_helper_preamble) continue;
         const name = if (sym.synthetic_name.len > 0) sym.synthetic_name else ast.getText(sym.name);
+        // A source binding can force the transform-time helper spelling to a
+        // collision-free alias (for example `__await2`). The static template
+        // still contains the canonical spelling until emission rewrites it,
+        // so count that canonical spelling when deciding whether the helper
+        // must keep its name. Otherwise the mangler can choose a template-local
+        // name such as `n`, which is shadowed by `step(n, r)` in the raw async
+        // generator helper.
+        var template_name = name;
+        var aliases = runtime_helper_aliases.iterator();
+        while (aliases.next()) |entry| {
+            if (std.mem.eql(u8, entry.value_ptr.*, name)) {
+                template_name = entry.key_ptr.*;
+                break;
+            }
+        }
         // One occurrence is the helper's own `var name =` declaration.
-        if (countIdentifierOccurrences(preamble.items, name) < 2) continue;
+        if (countIdentifierOccurrences(preamble.items, template_name) < 2) continue;
         keep.set(i);
         try reserved.put(allocator, name, {});
     }
@@ -1788,6 +1804,7 @@ fn transpileWithCallbackInternal(
                     transformer.runtime_helpers,
                     options.minify_whitespace,
                     transformer.runtime_es5_compat,
+                    &transformer.runtime_helper_aliases,
                     post.symbols.items,
                     transformer.ast,
                     &keep,
