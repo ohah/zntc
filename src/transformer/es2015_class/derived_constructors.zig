@@ -8,7 +8,6 @@ const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const es_helpers = @import("../es_helpers.zig");
-const helper_names = @import("../../runtime_helper_names.zig");
 
 pub fn DerivedConstructors(comptime Transformer: type) type {
     return struct {
@@ -320,7 +319,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             if (!containsSuperCallAssignment(self, expr_idx)) return expr_idx;
             const node = self.ast.getNode(expr_idx);
 
-            if (isSuperThisAssignment(self, node)) {
+            if (self.generated_super_call_assignments.contains(@intFromEnum(expr_idx))) {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -452,16 +451,6 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             }
         }
 
-        fn isSuperThisAssignment(self: *Transformer, node: Node) bool {
-            if (node.tag != .assignment_expression) return false;
-            const left = self.ast.getNode(node.data.binary.left);
-            if (left.tag != .identifier_reference and left.tag != .assignment_target_identifier) return false;
-            const this_name = es_helpers.resolveSyntheticName(self, "_this") catch return false;
-            if (!std.mem.eql(u8, self.ast.getText(left.data.string_ref), this_name)) return false;
-            const right = self.ast.getNode(node.data.binary.right);
-            return isSuperCallLike(self, right);
-        }
-
         fn isSuperCallAssignmentStatement(self: *Transformer, node_idx: NodeIndex) bool {
             if (node_idx.isNone()) return false;
             const node = self.ast.getNode(node_idx);
@@ -469,11 +458,11 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             return containsSuperCallAssignment(self, node.data.unary.operand);
         }
 
-        /// lowerSuperCall이 생성하는 `_this = __callSuper(...)` 대입을 포함하는지 재귀 탐색.
-        /// LHS=bare identifier + RHS=call_expression 패턴으로 매칭.
-        /// (member expression `_this.x = ...` 과 구분)
+        /// A statement contains a lowered source `super()` only when its tree
+        /// includes the exact assignment node recorded by `lowerSuperCall`.
         fn containsSuperCallAssignment(self: *Transformer, node_idx: NodeIndex) bool {
             if (node_idx.isNone()) return false;
+            if (self.generated_super_call_assignments.contains(@intFromEnum(node_idx))) return true;
             const node = self.ast.getNode(node_idx);
 
             switch (node.tag) {
@@ -508,8 +497,9 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                     return containsSuperCallAssignment(self, init);
                 },
                 .call_expression, .new_expression => {
-                    if (isSuperCallLike(self, node)) return true;
                     const e = node.data.extra;
+                    const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    if (containsSuperCallAssignment(self, callee)) return true;
                     const args_start = self.ast.extra_data.items[e + 1];
                     const args_len = self.ast.extra_data.items[e + 2];
                     for (self.ast.extra_data.items[args_start .. args_start + args_len]) |raw_idx| {
@@ -543,11 +533,6 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                     return containsSuperCallAssignment(self, node.data.unary.operand);
                 },
                 .assignment_expression => {
-                    const left = self.ast.getNode(node.data.binary.left);
-                    const right = self.ast.getNode(node.data.binary.right);
-                    if ((left.tag == .identifier_reference or left.tag == .assignment_target_identifier) and isSuperCallLike(self, right)) {
-                        return true;
-                    }
                     return containsSuperCallAssignment(self, node.data.binary.left) or
                         containsSuperCallAssignment(self, node.data.binary.right);
                 },
@@ -565,20 +550,6 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 },
                 else => return false,
             }
-        }
-
-        /// `super(...)` 또는 lowering 후의 `_this = __callSuper(...)` 같은 super 호출 패턴인지 판별.
-        /// raw super 호출은 lowering 전, helper 호출은 lowering 후 형태.
-        fn isSuperCallLike(self: *Transformer, node: Node) bool {
-            if (node.tag != .call_expression) return false;
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
-            if (callee_idx.isNone()) return false;
-            const callee = self.ast.getNode(callee_idx);
-            if (callee.tag == .super_expression) return true;
-            if (callee.tag != .identifier_reference) return false;
-            const name = self.ast.getText(callee.data.string_ref);
-            return std.mem.eql(u8, name, "__callSuper") or
-                std.mem.eql(u8, name, helper_names.NAMES.CALL_SUPER_MIN);
         }
 
         /// extends가 있고 constructor가 없을 때 기본 constructor 생성:

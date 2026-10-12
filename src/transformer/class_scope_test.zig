@@ -892,6 +892,89 @@ test "#4819 explicit derived constructor super calls reuse the exact newTarget h
     try std.testing.expectEqual(@as(usize, 4), total_reads);
 }
 
+test "#4819 derived field insertion tracks the exact generated super assignment" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function __callSuper(value) { return value; }
+        \\class Base {}
+        \\class Child extends Base {
+        \\  field = 1;
+        \\  constructor() {
+        \\    let result;
+        \\    result = __callSuper(0);
+        \\    super();
+        \\  }
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+
+    try std.testing.expectEqual(@as(usize, 1), transformer.generated_super_call_assignments.count());
+    var marked_assignment: ?u32 = null;
+    var user_helper_assignment: ?u32 = null;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .assignment_expression) continue;
+        const left = transformer.ast.getNode(node.data.binary.left);
+        const right = transformer.ast.getNode(node.data.binary.right);
+        if ((left.tag == .identifier_reference or left.tag == .assignment_target_identifier) and
+            std.mem.eql(u8, transformer.ast.getText(left.data.string_ref), "result") and
+            right.tag == .call_expression)
+        {
+            const callee: NodeIndex = @enumFromInt(transformer.ast.extra_data.items[right.data.extra]);
+            if (transformer.ast.getNode(callee).tag == .identifier_reference and
+                std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(callee).data.string_ref), "__callSuper"))
+            {
+                user_helper_assignment = raw;
+            }
+        }
+        if (transformer.generated_super_call_assignments.contains(raw)) {
+            try std.testing.expect(marked_assignment == null);
+            marked_assignment = raw;
+        }
+    }
+    const marked_raw = marked_assignment orelse return error.MissingGeneratedSuperAssignment;
+    const fake_raw = user_helper_assignment orelse return error.MissingUserHelperLookalike;
+    try std.testing.expect(marked_raw != fake_raw);
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const generated = transformer.ast.nodes.items[marked_raw];
+    const generated_left = generated.data.binary.left;
+    const generated_symbol = edited.symbol_ids[@intFromEnum(generated_left)] orelse
+        return error.GeneratedSuperAssignmentLostSymbolId;
+    const generated_scope = edited.symbols.items[generated_symbol].scope_id;
+    var binding_found = false;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[raw] == generated_symbol) binding_found = true;
+    }
+    try std.testing.expect(binding_found);
+    try std.testing.expect(!generated_scope.isNone());
+    try std.testing.expect(!transformer.generated_super_call_assignments.contains(fake_raw));
+    try std.testing.expectEqual(root, transformer.ast.transformed_root.?);
+}
+
 test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
