@@ -429,7 +429,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const desc_target = static_descriptors_out orelse pre_stmts;
             for (field_mappings.items, field_init_idx.items) |m, init_val| {
                 if (m.class_name) |cname| {
-                    const cname_span = try self.ast.addString(cname);
+                    const cname_span = try self.ast.addString(es_helpers.freshClassNameText(self, cname, m.class_name_node));
                     const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span, cname_span, m.binding_node);
                     try desc_target.append(self.allocator, desc);
                     self.runtime_helpers.class_static_private_field = true;
@@ -824,7 +824,7 @@ pub fn ES2022(comptime Transformer: type) type {
             if (mapping.class_name) |class_name| {
                 self.runtime_helpers.class_static_private_field = true;
                 const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
-                const class_ref = try self.makeUserRefNamed(class_name, mapping.class_name_node);
+                const class_ref = try self.makeUserRefNamed(es_helpers.freshClassNameText(self, class_name, mapping.class_name_node), mapping.class_name_node);
                 const desc_ref = try es_helpers.makePrivateMethodWeakSetRef(self, mapping);
                 return es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, class_ref, desc_ref }, span);
             }

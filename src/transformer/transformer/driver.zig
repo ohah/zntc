@@ -58,6 +58,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
 
     // 블록 스코핑 리네임을 심볼 기준으로 미리 정한다 (#4760).
     try self.buildBlockRenameMap();
+    try @import("../parameter_environment.zig").collectClassInferredNames(self);
 
     // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
     const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);

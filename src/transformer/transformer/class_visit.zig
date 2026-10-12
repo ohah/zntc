@@ -46,6 +46,10 @@ fn trackPrivateHelperPrelude(
 }
 
 pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
+    // `export default class {}` is an anonymous declaration: lowering that
+    // needs a class name treats it as a class expression (IIFE wrapper).
+    const as_expression = node.tag == .class_expression or
+        (node.tag == .class_declaration and self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name).isNone());
     const e = node.data.extra;
 
     // 낮춰야 할 public class field 가 **실제로 있을 때만** fast path 를 벗어난다 (#4629).
@@ -73,7 +77,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         const _lower_pf_pre = self.options.unsupported.class_private_field;
         var prepared_wrapper_scope: ScopeId = .none;
         var generated_class_self_symbol_id: ?u32 = null;
-        if ((_lower_pm_pre or _lower_pf_pre) and node.tag == .class_expression and new_name.isNone() and
+        if ((_lower_pm_pre or _lower_pf_pre) and as_expression and new_name.isNone() and
             classBodyHasStaticPrivateMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre))
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
@@ -86,7 +90,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
             }
         }
-        if (self.options.unsupported.class_static_block and node.tag == .class_expression and new_name.isNone() and
+        if (self.options.unsupported.class_static_block and as_expression and new_name.isNone() and
             classBodyHasLowerableMember(self, _anon_body_idx, false, false, true))
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
@@ -111,7 +115,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // Static private descriptor expressions are emitted after the class,
         // inside the class-expression wrapper. Reserve that real output scope
         // before building their exact class-self references.
-        if (self.semantic_edit_enabled and node.tag == .class_expression and prepared_wrapper_scope.isNone() and
+        if (self.semantic_edit_enabled and as_expression and prepared_wrapper_scope.isNone() and
             classBodyHasLowerableMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre, false))
         {
             prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
@@ -173,9 +177,9 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                     // place that postlude inside the wrapper IIFE, so reserve
                     // and reparent the real output scope before transforming
                     // methods that read the alias.
-                    if (node.tag == .class_expression and prepared_wrapper_scope.isNone())
+                    if (as_expression and prepared_wrapper_scope.isNone())
                         prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
-                    alias_scope = if (node.tag == .class_expression)
+                    alias_scope = if (as_expression)
                         prepared_wrapper_scope
                     else blk: {
                         const class_scope = self.outputOwnedScope(source_idx) orelse
@@ -285,7 +289,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             const desc_out: ?*std.ArrayList(NodeIndex) = &static_descriptors;
             const private_helper_scope = if (!self.semantic_edit_enabled)
                 @as(ScopeId, .none)
-            else if (node.tag == .class_expression)
+            else if (as_expression)
                 prepared_wrapper_scope
             else blk: {
                 const class_scope = self.outputOwnedScope(source_idx) orelse
@@ -347,7 +351,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 });
                 if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
 
-                if (node.tag == .class_expression) {
+                if (as_expression) {
                     // V_EXPR fix: post_stmts = super_alias + static_descriptors + static_block_iifes
                     // — alias/descriptor 가 IIFE 안에서 class_decl 뒤에 emit (receiver=D TDZ 회피).
                     const scratch_top_e = self.scratch.items.len;
@@ -403,7 +407,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             });
             if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
 
-            if (node.tag == .class_expression) {
+            if (as_expression) {
                 // V_EXPR + VSHADOW fix: super_alias + descriptor 를 IIFE 안 class_decl 뒤에 emit.
                 const scratch_top_e2 = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top_e2);
@@ -628,18 +632,17 @@ pub fn wrapClassExprInIIFE(
     try self.scratch.appendSlice(self.allocator, pre_stmts_a);
     try self.scratch.appendSlice(self.allocator, pre_stmts_b);
     try self.scratch.append(self.allocator, class_decl);
+    // An anonymous class now bound to a generated name restores its inferred
+    // name before any static element runs (#5519).
+    if (@import("../parameter_environment.zig").takeAnonymousClassName(self, source_idx)) |name| {
+        if (!std.mem.eql(u8, self.ast.getText(ret_name_span), self.ast.getText(name))) {
+            const ref = try wrapperClassRef(self, class_binding_symbol_id, ret_name_span, wrapper_scope, decl_name);
+            try self.scratch.append(self.allocator, try @import("../parameter_environment.zig").classNameStatement(self, ref, name, wrapper_scope, span));
+        }
+    }
     try self.scratch.appendSlice(self.allocator, post_stmts);
 
-    // The wrapper's class read follows the class-self identity selected by the
-    // class transform, not an outer declaration node that may share its text.
-    const ret_ref = if (class_binding_symbol_id) |raw_id| blk: {
-        const ref = try es_helpers.makeIdentifierRefFromSpan(self, ret_name_span);
-        try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), wrapper_scope, .{ .read = true });
-        break :blk ref;
-    } else if (self.semantic_edit_enabled)
-        try self.makeCurrentClassRefAtScope(ret_name_span, wrapper_scope)
-    else
-        try self.makeIdentifierRefWithSymbol(ret_name_span, decl_name);
+    const ret_ref = try wrapperClassRef(self, class_binding_symbol_id, ret_name_span, wrapper_scope, decl_name);
     const return_stmt = try self.ast.addNode(.{
         .tag = .return_statement,
         .span = span,
@@ -670,6 +673,18 @@ pub fn wrapClassExprInIIFE(
         return result;
     }
     return es_helpers.makeCallExpr(self, arrow, &.{}, span);
+}
+
+/// The wrapper's class read follows the class-self identity selected by the
+/// class transform, not an outer declaration node that may share its text.
+fn wrapperClassRef(self: *Transformer, class_binding_symbol_id: ?u32, name_span: Span, wrapper_scope: ScopeId, decl_name: NodeIndex) Error!NodeIndex {
+    if (class_binding_symbol_id) |raw_id| {
+        const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
+        try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), wrapper_scope, .{ .read = true });
+        return ref;
+    }
+    if (self.semantic_edit_enabled) return self.makeCurrentClassRefAtScope(name_span, wrapper_scope);
+    return self.makeIdentifierRefWithSymbol(name_span, decl_name);
 }
 
 /// Reserve and attach the class-expression body scope before static postlude

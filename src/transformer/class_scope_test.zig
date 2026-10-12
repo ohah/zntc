@@ -1890,7 +1890,8 @@ test "#4819 anonymous ES5 class expression name gets an exact SymbolId before wr
         try std.testing.expect(visible);
         reads += 1;
     }
-    try std.testing.expectEqual(@as(usize, 3), reads);
+    // The fourth read restores the anonymous class's empty `.name` (#5519).
+    try std.testing.expectEqual(@as(usize, 4), reads);
 }
 
 test "#4819 anonymous ES5 class expression names are finalized from exact SymbolIds" {

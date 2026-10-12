@@ -1282,6 +1282,18 @@ fn makeIdentifierRef(self: anytype, name: []const u8) !NodeIndex {
 ///
 /// transformer → bundler 역의존을 피하기 위해 `bundler/runtime_helpers.zig` 가 아니라
 /// 공용 모듈 `../runtime_helper_names.zig` 를 import 한다.
+/// A private-member mapping stores its class name as a slice; a generated name
+/// lives in the AST string table, which later `addString` calls may move.
+/// Read the spelling from the binding node at the point of use.
+pub fn freshClassNameText(self: anytype, stored: []const u8, node: NodeIndex) []const u8 {
+    if (node.isNone()) return stored;
+    const n = self.ast.getNode(node);
+    return switch (n.tag) {
+        .binding_identifier, .identifier_reference => self.ast.getText(n.data.string_ref),
+        else => stored,
+    };
+}
+
 pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     const names = @import("../runtime_helper_names.zig");
     const local_name = names.helperName(base_name, self.options.minify_whitespace);

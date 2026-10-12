@@ -507,6 +507,115 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
     }
 }
 
+/// Class lowering may bind an anonymous class to a generated name; record the
+/// name NamedEvaluation gives each anonymous class instead (#5519).
+pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
+    const u = self.options.unsupported;
+    const lowers_classes = u.class or u.class_field or u.class_static_block or u.class_private_method or
+        u.class_private_field or !self.options.use_define_for_class_fields;
+    if (!lowers_classes) return;
+    const nodes_len = self.ast.nodes.items.len;
+    var i: usize = 0;
+    while (i < nodes_len) : (i += 1) {
+        const node = self.ast.nodes.items[i];
+        const name: ?@import("../lexer/token.zig").Span, const value: ast_mod.NodeIndex = switch (node.tag) {
+            .variable_declarator, .formal_parameter => .{
+                bindingName(self, self.ast.readExtraNode(node.data.extra, 0)),
+                self.ast.readExtraNode(node.data.extra, 2),
+            },
+            .assignment_pattern, .assignment_target_with_default => .{ bindingName(self, node.data.binary.left), node.data.binary.right },
+            .assignment_target_property_identifier => if (node.data.binary.flags & 0x01 != 0)
+                .{ bindingName(self, node.data.binary.left), node.data.binary.right }
+            else
+                continue,
+            .assignment_expression => blk: {
+                const op: @import("../lexer/token.zig").Kind = @enumFromInt(node.data.binary.flags);
+                if (node.data.binary.flags != 0 and op != .eq and op != .question2_eq and op != .amp2_eq and op != .pipe2_eq) continue;
+                break :blk .{ bindingName(self, node.data.binary.left), node.data.binary.right };
+            },
+            // `{ k: class {} }` and `static k = class {}` take the key; `__proto__:` sets the prototype.
+            .object_property => .{ try keyName(self, node.data.binary.left, true), node.data.binary.right },
+            .property_definition => .{
+                try keyName(self, self.ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.key), false),
+                self.ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.init),
+            },
+            .export_default_declaration => .{ try self.ast.addString("default"), node.data.unary.operand },
+            else => continue,
+        };
+        const class_raw = anonymousClassRoot(self, value) orelse continue;
+        if (name) |n| try self.class_inferred_names.put(self.allocator, class_raw, n);
+    }
+    // Every other anonymous class has no name.
+    i = 0;
+    while (i < nodes_len) : (i += 1) {
+        if (self.ast.nodes.items[i].tag != .class_expression) continue;
+        const class_raw = anonymousClassRoot(self, @enumFromInt(i)) orelse continue;
+        const entry = try self.class_inferred_names.getOrPut(self.allocator, class_raw);
+        if (!entry.found_existing) entry.value_ptr.* = .{ .start = 0, .end = 0 };
+    }
+    // ES5 lowering of a class without static elements yields a named
+    // function expression; visitNode names that value (preserveInferredName).
+    if (u.class) {
+        var it = self.class_inferred_names.iterator();
+        while (it.next()) |entry| {
+            if (self.ast.nodes.items[entry.key_ptr.*].tag != .class_expression) continue;
+            const slot = try self.parameter_inferred_names.getOrPut(self.allocator, entry.key_ptr.*);
+            if (!slot.found_existing) slot.value_ptr.* = entry.value_ptr.*;
+        }
+    }
+}
+
+fn anonymousClassRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
+    var current = value;
+    while (!current.isNone() and @intFromEnum(current) < self.ast.nodes.items.len) {
+        const node = self.ast.getNode(current);
+        if (node.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) {
+            current = node.data.unary.operand;
+            continue;
+        }
+        if (node.tag != .class_expression and node.tag != .class_declaration) return null;
+        if (!self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name).isNone()) return null;
+        return @intFromEnum(current);
+    }
+    return null;
+}
+
+fn bindingName(self: anytype, binding: ast_mod.NodeIndex) ?@import("../lexer/token.zig").Span {
+    if (binding.isNone()) return null;
+    const node = self.ast.getNode(binding);
+    return switch (node.tag) {
+        .binding_identifier, .assignment_target_identifier, .identifier_reference => node.data.string_ref,
+        else => null,
+    };
+}
+
+fn keyName(self: anytype, key: ast_mod.NodeIndex, object_literal: bool) std.mem.Allocator.Error!?@import("../lexer/token.zig").Span {
+    if (key.isNone()) return null;
+    const text = try self.ast.staticKeyName(self.allocator, key) orelse return null;
+    defer self.allocator.free(text);
+    if (object_literal and self.ast.getNode(key).tag != .computed_property_key and std.mem.eql(u8, text, "__proto__")) return null;
+    return try self.ast.addString(text);
+}
+
+/// The inferred name of an anonymous class lowered under a generated binding,
+/// consumed so no outer wrapper names the class again.
+pub fn takeAnonymousClassName(self: anytype, source: ast_mod.NodeIndex) ?@import("../lexer/token.zig").Span {
+    const raw = @intFromEnum(source);
+    const key = if (self.class_inferred_names.contains(raw)) raw else self.scope_owner_origins.get(raw) orelse return null;
+    const name = self.class_inferred_names.get(key) orelse return null;
+    _ = self.class_inferred_names.remove(key);
+    _ = self.parameter_inferred_names.remove(key);
+    return name;
+}
+
+/// `__name(<class ref>, "<name>");` evaluated in `scope`.
+pub fn classNameStatement(self: anytype, ref: ast_mod.NodeIndex, name: @import("../lexer/token.zig").Span, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    const saved_scope = self.current_scope;
+    self.current_scope = scope;
+    defer self.current_scope = saved_scope;
+    return es_helpers.makeExprStmt(self, try nameValue(self, ref, name, span), span);
+}
+
 /// A helper call preserves the inferred name without introducing a named
 /// function-expression binding (which would intercept recursive outer reads).
 /// Unlike an object-literal naming wrapper this also handles `__proto__` and
@@ -514,6 +623,12 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
 pub fn preserveInferredName(self: anytype, source: ast_mod.NodeIndex, output: ast_mod.NodeIndex) std.mem.Allocator.Error!ast_mod.NodeIndex {
     if (output.isNone()) return output;
     const name = self.parameter_inferred_names.get(@intFromEnum(source)) orelse return output;
+    // A lowered class that became `function f() {}` already has the name.
+    const out = self.ast.getNode(output);
+    if (out.tag == .function_expression or out.tag == .class_expression) {
+        const out_name = self.ast.readExtraNode(out.data.extra, 0);
+        if (!out_name.isNone() and std.mem.eql(u8, self.ast.getText(self.ast.getNode(out_name).data.string_ref), self.ast.getText(name))) return output;
+    }
     return nameValue(self, output, name, self.ast.getNode(source).span);
 }
 
@@ -529,8 +644,13 @@ fn nameValue(self: anytype, value: ast_mod.NodeIndex, name: @import("../lexer/to
 /// overwriting a user-defined static `name` field/getter/block afterwards.
 pub fn takeClassNameStatement(self: anytype, source: ast_mod.NodeIndex, binding: ast_mod.NodeIndex, constructor: ast_mod.NodeIndex, scope: ScopeId) std.mem.Allocator.Error!?ast_mod.NodeIndex {
     const raw = @intFromEnum(source);
-    const key = if (self.parameter_inferred_names.contains(raw)) raw else self.scope_owner_origins.get(raw) orelse return null;
-    const name = self.parameter_inferred_names.get(key) orelse return null;
+    const key = if (self.parameter_inferred_names.contains(raw)) raw else self.scope_owner_origins.get(raw);
+    const hinted = if (key) |k| self.parameter_inferred_names.get(k) else null;
+    if (key) |k| _ = self.parameter_inferred_names.remove(k);
+    const anonymous = takeAnonymousClassName(self, source);
+    const name = hinted orelse anonymous orelse return null;
+    // A generated binding that already spells the name needs no call.
+    if (std.mem.eql(u8, self.ast.getText(self.ast.getNode(binding).data.string_ref), self.ast.getText(name))) return null;
     const saved_scope = self.current_scope;
     self.current_scope = scope;
     defer self.current_scope = saved_scope;
@@ -538,7 +658,6 @@ pub fn takeClassNameStatement(self: anytype, source: ast_mod.NodeIndex, binding:
     const span = self.ast.getNode(source).span;
     const statement = try es_helpers.makeExprStmt(self, try nameValue(self, ref, name, span), span);
     self.ast.extra_data.items[self.ast.getNode(constructor).data.extra + ast_mod.FunctionExtra.flags] |= ast_mod.FunctionFlags.name_preserved;
-    _ = self.parameter_inferred_names.remove(key);
     return statement;
 }
 

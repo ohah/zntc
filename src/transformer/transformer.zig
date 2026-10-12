@@ -368,6 +368,10 @@ pub const Transformer = struct {
     block_rename_map: ?std.AutoHashMapUnmanaged(u32, []const u8) = null,
     /// Source initializer NodeIndex -> original inferred function/class name.
     parameter_inferred_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
+    /// Anonymous source class NodeIndex -> the name its NamedEvaluation would
+    /// give it ("" without a naming context). Class lowering that binds the
+    /// class to a generated name (`_a`, `_Class`) restores it (#5519).
+    class_inferred_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
     /// 합성 이름 → 이 모듈에서 실제로 쓰는 이름 (`resolveSyntheticName`). 사용자 코드에 같은 이름이
     /// 있으면 `_this2` 처럼 비껴 간다. 같은 기본 이름은 모듈 안에서 늘 같은 결과라 바인딩과 참조가 맞는다.
     synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,

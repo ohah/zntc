@@ -193,6 +193,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     if (self.name_arena) |*a| a.deinit();
     if (self.block_rename_map) |*m| m.deinit(self.allocator);
     self.parameter_inferred_names.deinit(self.allocator);
+    self.class_inferred_names.deinit(self.allocator);
     self.synthetic_names.deinit(self.allocator);
     self.runtime_helper_aliases.deinit(self.allocator);
     self.synthetic_taken.deinit(self.allocator);

@@ -71,6 +71,10 @@ pub fn visitClassWithAssignSemantics(self: *Transformer, source_idx: NodeIndex, 
 }
 
 fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex, node: Node, key_assigns: *std.ArrayListUnmanaged(NodeIndex)) Error!NodeIndex {
+    // `export default class {}` is an anonymous declaration: lowering that
+    // needs a class name treats it as a class expression (IIFE wrapper).
+    const as_expression = node.tag == .class_expression or
+        (node.tag == .class_declaration and self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name).isNone());
     const e = node.data.extra;
     const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
     const has_super = !super_idx.isNone();
@@ -162,7 +166,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     }
     if (lower_pm or lower_pf) {
         // class_expression + static private → 이름 부여(static init 참조 / IIFE).
-        if (node.tag == .class_expression and new_name.isNone() and
+        if (as_expression and new_name.isNone() and
             classBodyHasStaticPrivateMember(self, body_idx, lower_pm, lower_pf))
         {
             const tmp_span = try es_helpers.makeTempVarSpan(self);
@@ -184,14 +188,14 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             self.ast.getText(s)
         else
             null;
-        if (self.semantic_edit_enabled and node.tag == .class_expression and prepared_wrapper_scope.isNone() and
+        if (self.semantic_edit_enabled and as_expression and prepared_wrapper_scope.isNone() and
             classBodyHasLowerableMember(self, body_idx, lower_pm, lower_pf, false))
         {
             prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
         }
         const private_helper_scope = if (!self.semantic_edit_enabled)
             @as(ScopeId, .none)
-        else if (node.tag == .class_expression)
+        else if (as_expression)
             prepared_wrapper_scope
         else blk: {
             const class_scope = self.outputOwnedScope(source_idx) orelse
@@ -293,13 +297,13 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // 그 문장들이 클래스를 가리킬 이름이 필요하다. 이름 없이 진행하면 static field 할당이
     // `.none` 이름을 역참조해 **컴파일러가 죽는다**(#4723 — #4629 가 es2015~es2021 에서
     // field 를 낮추기 시작하며 드러남). 분류(static block 의 this 치환) **전에** 붙인다.
-    if (node.tag == .class_expression and new_name.isNone() and
+    if (as_expression and new_name.isNone() and
         classBodyNeedsNameForStatics(self, body_idx, ctx.static_field_assignments != null))
     {
         const tmp_span = try es_helpers.makeTempVarSpan(self);
         new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         es_helpers.consumeTempVarSpan(self, tmp_span);
-        if (node.tag == .class_expression and self.semantic_edit_enabled) {
+        if (self.semantic_edit_enabled) {
             prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
             const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                 std.debug.panic("anonymous class wrapper name has no direct SymbolId", .{});
@@ -349,7 +353,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                     .span = field.span,
                     .data = .{ .binary = .{ .left = temp_ref, .right = actual_key, .flags = 0 } },
                 });
-                if (node.tag == .class_expression) {
+                if (as_expression) {
                     try key_assigns.append(self.allocator, assign);
                 } else {
                     try self.pending_nodes.append(self.allocator, try es_helpers.makeExprStmt(self, assign, field.span));
@@ -446,7 +450,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     const has_static_blocks = static_block_iifes.items.len > 0;
 
     if (has_static_fields or has_static_blocks) {
-        if (node.tag == .class_expression and has_static_fields and prepared_wrapper_scope.isNone()) {
+        if (as_expression and has_static_fields and prepared_wrapper_scope.isNone()) {
             prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
         }
         const static_field_ref_scope = if (!prepared_wrapper_scope.isNone()) prepared_wrapper_scope else if (self.semantic_edit_enabled) blk: {
@@ -486,7 +490,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         // 클래스 **식**은 값 자리라 문장을 앞뒤에 끼울 수 없다 — IIFE 로 감싸 클래스를
         // 돌려준다. 예전엔 여기서도 pending 에 넣고 `.none` 을 돌려줘 식이 통째로 사라질
         // 경로였다(이름이 없어 그 전에 크래시했을 뿐). (#4723)
-        if (node.tag == .class_expression) {
+        if (as_expression) {
             return wrapClassExprInIIFE(self, source_idx, &.{}, priv_pre_stmts.items, class_result, post.items, new_name, prepared_wrapper_scope, pm_mappings.items, pf_mappings.items, node.span);
         }
         try trackPrivateHelperPrelude(self, source_idx, priv_pre_stmts.items, assign_static_descriptors.items, static_block_iifes.items, class_result, pm_mappings.items, pf_mappings.items);
@@ -508,7 +512,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             new_decos.start,        new_decos.len,
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
-        if (node.tag == .class_expression) {
+        if (as_expression) {
             return wrapClassExprInIIFE(
                 self,
                 source_idx,
