@@ -327,7 +327,17 @@ pub const TransformOptions = struct {
                 .class_declaration,
                 .class_expression,
                 => {
-                    if (u.requiresPrivateDownlevel() or u.class_static_block) return true;
+                    if (u.class or u.requiresPrivateDownlevel() or u.class_static_block) return true;
+                },
+                // Public field lowering can synthesize constructor bindings
+                // and runtime-helper references even while class syntax stays
+                // native. Keep this gate tied to its own feature bit instead
+                // of relying on target-version ordering with static blocks.
+                .property_definition => {
+                    if (u.class_field) {
+                        const key = ast.readExtraNode(node.data.extra, ast_mod.PropertyExtra.key);
+                        if (!key.isNone() and ast.getNode(key).tag != .private_identifier) return true;
+                    }
                 },
                 .for_of_statement => if (u.for_of) return true,
                 .for_await_of_statement => if (u.needsForAwaitOfDownlevel()) return true,
@@ -752,6 +762,64 @@ test "arrow capture bindings require graph pre-pass but ordinary arrows do not" 
         var scanner = try Scanner.init(arena.allocator(), fixture.source);
         var parser = Parser.init(arena.allocator(), &scanner);
         _ = try parser.parse();
+        try std.testing.expectEqual(
+            fixture.needs_prepass,
+            options.requiresGraphPrePass(&parser.ast),
+        );
+    }
+}
+
+test "class and public-field lowering independently require graph pre-pass" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct {
+        source: []const u8,
+        unsupported: @import("compat.zig").UnsupportedFeatures,
+        needs_prepass: bool,
+    }{
+        .{
+            .source = "class C { method() {} }",
+            .unsupported = .{ .class = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "const C = class { method() {} };",
+            .unsupported = .{ .class = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "const value = 1;",
+            .unsupported = .{ .class = true },
+            .needs_prepass = false,
+        },
+        .{
+            .source = "class C { value = 1; }",
+            .unsupported = .{ .class_field = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "class C { static value = 1; }",
+            .unsupported = .{ .class_field = true },
+            .needs_prepass = true,
+        },
+        .{
+            .source = "class C { method() {} }",
+            .unsupported = .{ .class_field = true },
+            .needs_prepass = false,
+        },
+        .{
+            .source = "class C { #value = 1; }",
+            .unsupported = .{ .class_field = true },
+            .needs_prepass = false,
+        },
+    };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        const options: TransformOptions = .{ .unsupported = fixture.unsupported };
         try std.testing.expectEqual(
             fixture.needs_prepass,
             options.requiresGraphPrePass(&parser.ast),
