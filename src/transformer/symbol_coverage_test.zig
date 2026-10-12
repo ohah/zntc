@@ -5325,3 +5325,104 @@ test "exact coverage detects AST cycles without treating shared children as cycl
     try std.testing.expect(!back_edge_strict_report.hasCompleteExactCoverage());
     try std.testing.expect(!back_edge_strict_report.hasCompleteSymbolIdentity());
 }
+
+fn checkFunctionNameScopeAsGenerated(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: AstNodeIndex,
+    analyzer: *SemanticAnalyzer,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    references: []const Reference,
+    first_generated_scope: usize,
+) !coverage.ExactReport {
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    return coverage.checkExactWithScopeBoundary(
+        allocator,
+        ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        scopes,
+        scope_maps,
+        &analyzer.scope_owner_map,
+        references,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &explicit_globals,
+        &origins,
+        first_generated_scope,
+    );
+}
+
+test "exact scope audit accepts a generated function-expression self-name scope only in its exact shape" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "var holder = function named(value) { return value; };");
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    // The analyzer models the self-name as a block scope around the function
+    // scope. Treat it (and everything after it) as transform-generated, the
+    // way a lowering that names a generated function expression creates it.
+    var function_raw: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_expression) function_raw = @intCast(raw);
+    }
+    const function_scope = analyzer.scope_owner_map.get(function_raw orelse return error.TestUnexpectedResult) orelse
+        return error.TestUnexpectedResult;
+    var name_scope = analyzer.scopes.items[function_scope].parent.toIndex();
+    if (analyzer.scopes.items[name_scope].kind != .block) name_scope = analyzer.scopes.items[name_scope].parent.toIndex();
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.block, analyzer.scopes.items[name_scope].kind);
+    try std.testing.expectEqual(@as(usize, 1), analyzer.scope_maps.items[name_scope].count());
+
+    const scopes = analyzer.scopes.items;
+    const scope_maps = analyzer.scope_maps.items;
+    const references = analyzer.references.items;
+    const accepted = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, root, &analyzer, scopes, scope_maps, references, name_scope);
+    try std.testing.expectEqual(@as(usize, 0), accepted.scope_owner_mismatch);
+    try std.testing.expect(accepted.isClean());
+
+    // A second binding in the self-name scope is not the analyzer's shape.
+    const crowded_maps = try allocator.dupe(std.StringHashMapUnmanaged(usize), scope_maps);
+    crowded_maps[name_scope] = try scope_maps[name_scope].clone(allocator);
+    try crowded_maps[name_scope].put(allocator, "intruder", 0);
+    const crowded = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, root, &analyzer, scopes, crowded_maps, references, name_scope);
+    try std.testing.expect(crowded.scope_owner_mismatch > 0);
+    try std.testing.expect(!crowded.isClean());
+
+    // A reference recorded directly in the self-name scope is rejected:
+    // nothing evaluates in that scope.
+    const moved_references = try allocator.dupe(Reference, references);
+    var moved_one = false;
+    for (moved_references) |*reference| {
+        if (reference.flags.declare) continue;
+        reference.scope_id = @enumFromInt(name_scope);
+        moved_one = true;
+        break;
+    }
+    try std.testing.expect(moved_one);
+    const referenced = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, root, &analyzer, scopes, scope_maps, moved_references, name_scope);
+    try std.testing.expect(referenced.scope_owner_mismatch > 0);
+    try std.testing.expect(!referenced.isClean());
+
+    // Only a block scope can hold the self-name.
+    const function_kind_scopes = try allocator.dupe(Scope, scopes);
+    function_kind_scopes[name_scope].kind = .function;
+    const wrong_kind = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, root, &analyzer, function_kind_scopes, scope_maps, references, name_scope);
+    try std.testing.expect(wrong_kind.scope_owner_mismatch > 0);
+    try std.testing.expect(!wrong_kind.isClean());
+
+    // Without its function expression in the AST the scope has no owner.
+    const empty_root = try parser.ast.addNode(.{ .tag = .program, .span = .EMPTY, .data = .{ .list = try parser.ast.addNodeList(&.{}) } });
+    try analyzer.scope_owner_map.put(allocator, @intFromEnum(empty_root), 0);
+    const detached = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, empty_root, &analyzer, scopes, scope_maps, references, name_scope);
+    try std.testing.expect(detached.scope_owner_mismatch > 0);
+    try std.testing.expect(!detached.isClean());
+}
