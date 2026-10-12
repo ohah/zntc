@@ -55,6 +55,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const binding_name = self.ast.getNode(binding).data.string_ref;
                     const id = (try self.declareSyntheticInScope(binding, binding_name, kind, self.current_scope)) orelse
                         std.debug.panic("semantic destructuring temp did not receive a SymbolId", .{});
+                    es_helpers.markStandaloneLateSyntheticTemp(self, id, self.current_scope);
                     try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(id));
                 }
             }
