@@ -503,6 +503,7 @@ fn hasFixedOutputName(sym: Symbol) bool {
     return switch (kind) {
         .cjs_runtime_internal_local,
         .esm_runtime_internal_local,
+        .esm_interop_runtime_internal_local,
         .bundler_runtime_helper,
         => true,
         // These bundler wrapper symbols can receive their final name in Phase A;

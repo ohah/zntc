@@ -469,7 +469,7 @@ pub fn emitWithTreeShaking(
     // ESM interop helper identities are shared by each module's injected
     // metadata and runtime preamble. Resolve them before the parallel emit
     // workers start so no worker lazily mutates the graph or linker caches.
-    if (linker) |l| try l.prepareEsmInteropRuntimeNamesIfNeeded();
+    if (linker) |l| try l.prepareEsmInteropRuntimeNamesForEmit();
 
     // 1. JS/JSON 모듈 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;

@@ -5235,6 +5235,7 @@ fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
         .cjs_runtime_factory,
         .cjs_runtime_internal_local,
         .esm_runtime_internal_local,
+        .esm_interop_runtime_internal_local,
         .bundler_runtime_helper,
         => true,
         else => false,

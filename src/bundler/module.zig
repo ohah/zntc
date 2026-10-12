@@ -47,6 +47,24 @@ pub const EsmRuntimeInternalSymbolIds = struct {
     init_function: SemanticSymbolId,
     factory_local: SemanticSymbolId,
 };
+
+/// Symbol identities for lexical bindings in raw ESM interop helper templates.
+pub const EsmInteropRuntimeInternalSymbolIds = struct {
+    copy_props_to: SemanticSymbolId,
+    copy_props_from: SemanticSymbolId,
+    copy_props_desc: SemanticSymbolId,
+    copy_props_keys: SemanticSymbolId,
+    copy_props_index: SemanticSymbolId,
+    copy_props_key: SemanticSymbolId,
+    copy_props_closure_key: SemanticSymbolId,
+    to_esm_module: SemanticSymbolId,
+    to_esm_node_mode: SemanticSymbolId,
+    to_esm_target: SemanticSymbolId,
+    export_target: SemanticSymbolId,
+    export_all: SemanticSymbolId,
+    export_name: SemanticSymbolId,
+    to_common_js_module: SemanticSymbolId,
+};
 const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
@@ -443,6 +461,8 @@ pub const Module = struct {
     cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds = null,
     /// Exact identities for lexical locals in the raw ESM runtime helper body.
     esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds = null,
+    /// Exact identities for lexical locals in raw ESM interop helper bodies.
+    esm_interop_runtime_internal_symbols: ?EsmInteropRuntimeInternalSymbolIds = null,
 
     /// RFC #3940 L.5a — post-link tree-shake AST mutation 후 semantic resync 시 carry-over 된
     /// rename (SymbolID→name). tree_shaker(const linker)가 resync 전 `rename_table` 에서 캡처해

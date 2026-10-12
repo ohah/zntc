@@ -2617,6 +2617,122 @@ test "ESM runtime: raw factory declarations and references use exact internal na
     }
 }
 
+test "ESM interop runtime: every raw local uses its own exact internal name" {
+    const rt = @import("runtime_helpers.zig");
+    const runtime_names = @import("../runtime_helper_names.zig");
+    const interop_internal_names: runtime_names.EsmInteropRuntimeInternalNames = .{
+        .copy_props_to = "localCopyTo",
+        .copy_props_from = "localCopyFrom",
+        .copy_props_desc = "localCopyDesc",
+        .copy_props_keys = "localKeys",
+        .copy_props_index = "localIndex",
+        .copy_props_key = "localKey",
+        .copy_props_closure_key = "localClosureKey",
+        .to_esm_module = "localEsmModule",
+        .to_esm_node_mode = "localNodeMode",
+        .to_esm_target = "localEsmTarget",
+        .export_target = "localExportTarget",
+        .export_all = "localExportAll",
+        .export_name = "localExportName",
+        .to_common_js_module = "localCommonJsModule",
+    };
+    const variants = [_]struct { minify: bool, es5: bool, configurable: bool }{
+        .{ .minify = false, .es5 = false, .configurable = false },
+        .{ .minify = false, .es5 = true, .configurable = false },
+        .{ .minify = true, .es5 = false, .configurable = false },
+        .{ .minify = true, .es5 = true, .configurable = false },
+        .{ .minify = false, .es5 = false, .configurable = true },
+        .{ .minify = true, .es5 = false, .configurable = true },
+    };
+    const custom_names = [_][]const u8{
+        "localCopyTo",    "localCopyFrom", "localCopyDesc",  "localKeys",         "localIndex",     "localKey",        "localClosureKey",
+        "localEsmModule", "localNodeMode", "localEsmTarget", "localExportTarget", "localExportAll", "localExportName", "localCommonJsModule",
+    };
+    const original_names = [_][]const u8{ "to", "from", "desc", "keys", "i", "key", "k", "mod", "isNodeMode", "target", "all", "name" };
+
+    for (variants) |variant| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        const helpers = runtime_names.defaultEsmInteropRuntimeNames(variant.minify);
+        try rt.appendToEsmRuntimeWithInternalNames(
+            &output,
+            std.testing.allocator,
+            variant.minify,
+            variant.es5,
+            variant.configurable,
+            helpers,
+            interop_internal_names,
+        );
+        try rt.appendEsmWrapRuntimeWithGraphInternalNames(
+            &output,
+            std.testing.allocator,
+            variant.minify,
+            variant.es5,
+            variant.configurable,
+            "__esm",
+            helpers,
+            .{},
+            interop_internal_names,
+        );
+        for (custom_names) |name| try std.testing.expect(containsJsIdentifier(output.items, name));
+        for (original_names) |name| try std.testing.expect(!containsJsIdentifier(output.items, name));
+    }
+}
+
+fn containsJsIdentifier(source: []const u8, name: []const u8) bool {
+    var cursor: usize = 0;
+    var previous_significant_char: u8 = 0;
+    while (cursor < source.len) {
+        const c = source[cursor];
+        if (c == '\'' or c == '"' or c == '`') {
+            const quote = c;
+            cursor += 1;
+            while (cursor < source.len) {
+                if (source[cursor] == '\\') {
+                    cursor = @min(cursor + 2, source.len);
+                    continue;
+                }
+                if (source[cursor] == quote) {
+                    cursor += 1;
+                    break;
+                }
+                cursor += 1;
+            }
+            previous_significant_char = quote;
+            continue;
+        }
+        if (c == '/' and cursor + 1 < source.len) {
+            if (source[cursor + 1] == '/') {
+                cursor += 2;
+                while (cursor < source.len and source[cursor] != '\n') : (cursor += 1) {}
+                continue;
+            }
+            if (source[cursor + 1] == '*') {
+                cursor += 2;
+                while (cursor + 1 < source.len and !(source[cursor] == '*' and source[cursor + 1] == '/')) : (cursor += 1) {}
+                cursor = @min(cursor + 2, source.len);
+                continue;
+            }
+        }
+        const identifier_start = std.ascii.isAlphabetic(c) or c == '_' or c == '$' or c >= 0x80;
+        if (!identifier_start) {
+            if (!std.ascii.isWhitespace(c)) previous_significant_char = c;
+            cursor += 1;
+            continue;
+        }
+        const start = cursor;
+        cursor += 1;
+        while (cursor < source.len) {
+            const next = source[cursor];
+            if (!(std.ascii.isAlphabetic(next) or std.ascii.isDigit(next) or next == '_' or next == '$' or next >= 0x80)) break;
+            cursor += 1;
+        }
+        if (previous_significant_char != '.' and std.mem.eql(u8, source[start..cursor], name)) return true;
+        previous_significant_char = 'a';
+    }
+    return false;
+}
+
 fn expectCjsRuntimeRetriesAfterThrow(runtime: []const u8, minified: bool) !void {
     const factory = if (minified)
         \\$c(function(exports, module) {

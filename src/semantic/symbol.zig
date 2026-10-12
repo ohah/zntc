@@ -311,6 +311,9 @@ pub const SyntheticKind = enum(u8) {
     /// its declaration/references from the final rename table. Keep appended
     /// so serialized SyntheticKind tags remain stable.
     esm_runtime_internal_local,
+    /// Lexical locals inside raw ESM interop runtime helper templates. Keep
+    /// appended so serialized SyntheticKind tags remain stable.
+    esm_interop_runtime_internal_local,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

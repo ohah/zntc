@@ -169,6 +169,25 @@ pub const EsmRuntimeInternalNames = struct {
     factory_local: []const u8 = "f",
 };
 
+/// Identifier spellings for lexical bindings in the raw ESM interop helper
+/// templates (`__copyProps`, `__toESM`, `__export`, and `__toCommonJS`).
+pub const EsmInteropRuntimeInternalNames = struct {
+    copy_props_to: []const u8 = "to",
+    copy_props_from: []const u8 = "from",
+    copy_props_desc: []const u8 = "desc",
+    copy_props_keys: []const u8 = "keys",
+    copy_props_index: []const u8 = "i",
+    copy_props_key: []const u8 = "key",
+    copy_props_closure_key: []const u8 = "k",
+    to_esm_module: []const u8 = "mod",
+    to_esm_node_mode: []const u8 = "isNodeMode",
+    to_esm_target: []const u8 = "target",
+    export_target: []const u8 = "target",
+    export_all: []const u8 = "all",
+    export_name: []const u8 = "name",
+    to_common_js_module: []const u8 = "mod",
+};
+
 /// 모든 runtime helper 의 `(base_name, short_name)` 단일 소스 테이블.
 /// 새 helper 추가는 여기에 entry 만 추가 — `helperName` 조회, mangler 예약, 테스트
 /// iteration 이 전부 이 테이블을 consume 하므로 세 곳의 drift 를 구조적으로 방지한다.

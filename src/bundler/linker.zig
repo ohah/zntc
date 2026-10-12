@@ -257,6 +257,8 @@ pub const Linker = struct {
     esm_interop_runtime_names: ?rt_names.EsmInteropRuntimeNames = null,
     esm_interop_runtime_names_owned: bool = false,
     esm_interop_runtime_symbol_ids: [rt_names.ESM_INTEROP_RUNTIME_HELPERS.len]?bundler_symbol.SymbolID = @splat(null),
+    /// Parse-backed owner for lexical locals in raw ESM interop templates.
+    esm_interop_runtime_internal_owner: ?ModuleIndex = null,
 
     /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
     /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
@@ -2007,12 +2009,37 @@ pub const Linker = struct {
             symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
+    const EsmInteropInternalRow = struct {
+        identity: []const u8,
+        kind: semantic_symbol.SymbolKind,
+    };
+
+    // These labels identify semantic bindings, not emitted spellings. Some
+    // helpers intentionally reuse names such as `mod` and `target`, so each
+    // lexical binding needs a distinct recovery key.
+    const ESM_INTEROP_INTERNAL_ROWS = [_]EsmInteropInternalRow{
+        .{ .identity = "copy_props.to", .kind = .parameter },
+        .{ .identity = "copy_props.from", .kind = .parameter },
+        .{ .identity = "copy_props.desc", .kind = .parameter },
+        .{ .identity = "copy_props.keys", .kind = .variable_var },
+        .{ .identity = "copy_props.index", .kind = .variable_var },
+        .{ .identity = "copy_props.key", .kind = .variable_var },
+        .{ .identity = "copy_props.closure_key", .kind = .parameter },
+        .{ .identity = "to_esm.module", .kind = .parameter },
+        .{ .identity = "to_esm.node_mode", .kind = .parameter },
+        .{ .identity = "to_esm.target", .kind = .parameter },
+        .{ .identity = "export.target", .kind = .parameter },
+        .{ .identity = "export.all", .kind = .parameter },
+        .{ .identity = "export.name", .kind = .variable_var },
+        .{ .identity = "to_common_js.module", .kind = .parameter },
+    };
+
     /// Resolve all raw ESM interop helper bindings from graph-level synthetic
     /// SymbolIDs. Fully semantic-less graphs retain the canonical template
     /// names; a semantic graph must have a parse-backed owner for every helper.
     pub fn esmInteropRuntimeNames(self: *const Linker) !rt_names.EsmInteropRuntimeNames {
         const mutable = @constCast(self);
-        try mutable.prepareEsmInteropRuntimeNames();
+        if (mutable.esm_interop_runtime_names == null) try mutable.prepareEsmInteropRuntimeNames();
         return mutable.esm_interop_runtime_names orelse return error.EsmInteropRuntimeNamesMissing;
     }
 
@@ -2025,17 +2052,69 @@ pub const Linker = struct {
         return self.esm_interop_runtime_names orelse rt_names.defaultEsmInteropRuntimeNames(self.minify_whitespace);
     }
 
-    pub fn prepareEsmInteropRuntimeNames(self: *Linker) !void {
-        if (self.esm_interop_runtime_names != null) return;
+    /// Return exact output spellings for lexical locals in raw ESM interop
+    /// helper templates. A semantic graph must recover every output-owned ID;
+    /// only fully semantic-less low-level callers use fixed template names.
+    pub fn esmInteropRuntimeInternalNames(self: *const Linker) !rt_names.EsmInteropRuntimeInternalNames {
+        const mutable = @constCast(self);
+        try mutable.prepareEsmInteropRuntimeNames();
+        const owner_index = mutable.esm_interop_runtime_internal_owner orelse {
+            var modules = self.graph.modulesIterator();
+            while (modules.next()) |module| {
+                if (module.semantic != null) return error.EsmInteropRuntimeInternalIdentityMissing;
+            }
+            return .{};
+        };
+        const owner = self.getModule(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+        const ids = owner.esm_interop_runtime_internal_symbols orelse return error.EsmInteropRuntimeInternalSymbolsMissing;
+        return .{
+            .copy_props_to = self.esmInteropInternalName(owner_index, ids.copy_props_to) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .copy_props_from = self.esmInteropInternalName(owner_index, ids.copy_props_from) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .copy_props_desc = self.esmInteropInternalName(owner_index, ids.copy_props_desc) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .copy_props_keys = self.esmInteropInternalName(owner_index, ids.copy_props_keys) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .copy_props_index = self.esmInteropInternalName(owner_index, ids.copy_props_index) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .copy_props_key = self.esmInteropInternalName(owner_index, ids.copy_props_key) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .copy_props_closure_key = self.esmInteropInternalName(owner_index, ids.copy_props_closure_key) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .to_esm_module = self.esmInteropInternalName(owner_index, ids.to_esm_module) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .to_esm_node_mode = self.esmInteropInternalName(owner_index, ids.to_esm_node_mode) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .to_esm_target = self.esmInteropInternalName(owner_index, ids.to_esm_target) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .export_target = self.esmInteropInternalName(owner_index, ids.export_target) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .export_all = self.esmInteropInternalName(owner_index, ids.export_all) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .export_name = self.esmInteropInternalName(owner_index, ids.export_name) orelse return error.EsmInteropRuntimeInternalNameMissing,
+            .to_common_js_module = self.esmInteropInternalName(owner_index, ids.to_common_js_module) orelse return error.EsmInteropRuntimeInternalNameMissing,
+        };
+    }
 
+    fn esmInteropInternalName(self: *const Linker, owner_index: ModuleIndex, inner: semantic_symbol.SymbolId) ?[]const u8 {
+        return self.rename_table.get(bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner)));
+    }
+
+    pub fn prepareEsmInteropRuntimeNames(self: *Linker) !void {
         var has_semantic_module = false;
         var anchor_index: ?ModuleIndex = null;
+        var internal_owner_index = self.esm_interop_runtime_internal_owner;
         var modules = self.graph.modulesIterator();
         while (modules.next()) |m| {
             if (m.semantic == null) continue;
             has_semantic_module = true;
             if (m.parse_arena != null and anchor_index == null) anchor_index = m.index;
             const sem = m.semantic orelse continue;
+            var module_has_internal_rows = m.esm_interop_runtime_internal_symbols != null;
+            if (!module_has_internal_rows) {
+                for (sem.symbols.items) |symbol| {
+                    if (symbol.synthetic_kind == .esm_interop_runtime_internal_local) {
+                        module_has_internal_rows = true;
+                        break;
+                    }
+                }
+            }
+            if (module_has_internal_rows) {
+                if (internal_owner_index) |existing| {
+                    if (existing != m.index) return error.EsmInteropRuntimeInternalOwnerAmbiguous;
+                } else {
+                    internal_owner_index = m.index;
+                }
+            }
             inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
                 const index = @intFromEnum(helper);
                 if (self.esm_interop_runtime_symbol_ids[index] == null) {
@@ -2048,8 +2127,9 @@ pub const Linker = struct {
         }
 
         if (has_semantic_module) {
-            if (anchor_index) |owner_index| {
-                var owner = self.moduleAtMut(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeOwnerMissing;
+            const owner_index = internal_owner_index orelse anchor_index orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+            if (anchor_index) |helper_owner_index| {
+                var owner = self.moduleAtMut(@intFromEnum(helper_owner_index)) orelse return error.EsmInteropRuntimeOwnerMissing;
                 const arena = if (owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeOwnerMissing;
                 const sem = if (owner.semantic) |*value| value else return error.EsmInteropRuntimeOwnerMissing;
                 inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
@@ -2064,13 +2144,20 @@ pub const Linker = struct {
                             base_name,
                             Span.EMPTY,
                         );
-                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner));
+                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(helper_owner_index, @intFromEnum(inner));
                     }
                 }
             } else {
                 inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
                     if (self.esm_interop_runtime_symbol_ids[@intFromEnum(helper)] == null) return error.EsmInteropRuntimeIdentityMissing;
                 }
+            }
+
+            self.esm_interop_runtime_internal_owner = owner_index;
+            try self.prepareEsmInteropRuntimeInternalSymbols(owner_index);
+            if (self.esm_interop_runtime_names != null) {
+                try self.restoreEsmInteropRuntimeInternalNames();
+                return;
             }
 
             var names: rt_names.EsmInteropRuntimeNames = .{};
@@ -2093,7 +2180,98 @@ pub const Linker = struct {
 
         // No semantic module exists at all. Preserve the existing low-level
         // runtime template names as the explicitly supported fallback.
-        self.esm_interop_runtime_names = rt_names.defaultEsmInteropRuntimeNames(self.minify_whitespace);
+        if (self.esm_interop_runtime_names == null) {
+            self.esm_interop_runtime_names = rt_names.defaultEsmInteropRuntimeNames(self.minify_whitespace);
+        }
+    }
+
+    fn prepareEsmInteropRuntimeInternalSymbols(self: *Linker, owner_index: ModuleIndex) !void {
+        var owner = self.moduleAtMut(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+        const sem = if (owner.semantic) |*value| value else return error.EsmInteropRuntimeInternalSymbolsMissing;
+        var recovered: [ESM_INTEROP_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
+
+        for (sem.symbols.items, 0..) |symbol, index| {
+            if (symbol.synthetic_kind != .esm_interop_runtime_internal_local) continue;
+            var matched = false;
+            inline for (ESM_INTEROP_INTERNAL_ROWS, 0..) |row, row_index| {
+                if (std.mem.eql(u8, symbol.synthetic_name, row.identity)) {
+                    if (matched or symbol.kind != row.kind or recovered[row_index] != null) return error.EsmInteropRuntimeInternalSymbolsInvalid;
+                    recovered[row_index] = @enumFromInt(index);
+                    matched = true;
+                }
+            }
+            if (!matched) return error.EsmInteropRuntimeInternalSymbolsInvalid;
+        }
+
+        var found_count: usize = 0;
+        for (recovered) |id| {
+            if (id != null) found_count += 1;
+        }
+        if (found_count == 0) {
+            const arena = if (owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeInternalOwnerMissing;
+            const start_len = sem.symbols.items.len;
+            errdefer sem.symbols.items.len = start_len;
+            inline for (ESM_INTEROP_INTERNAL_ROWS, 0..) |row, row_index| {
+                recovered[row_index] = try semantic_symbol.extendSymbol(
+                    arena,
+                    &sem.symbols,
+                    row.kind,
+                    .esm_interop_runtime_internal_local,
+                    row.identity,
+                    Span.EMPTY,
+                );
+            }
+        } else if (found_count != ESM_INTEROP_INTERNAL_ROWS.len) {
+            return error.EsmInteropRuntimeInternalSymbolsMissing;
+        }
+
+        owner.esm_interop_runtime_internal_symbols = recoveredToEsmInteropInternalIds(recovered);
+        try self.restoreEsmInteropRuntimeInternalNames();
+    }
+
+    fn recoveredToEsmInteropInternalIds(ids: [ESM_INTEROP_INTERNAL_ROWS.len]?semantic_symbol.SymbolId) @import("module.zig").EsmInteropRuntimeInternalSymbolIds {
+        return .{
+            .copy_props_to = ids[0] orelse unreachable,
+            .copy_props_from = ids[1] orelse unreachable,
+            .copy_props_desc = ids[2] orelse unreachable,
+            .copy_props_keys = ids[3] orelse unreachable,
+            .copy_props_index = ids[4] orelse unreachable,
+            .copy_props_key = ids[5] orelse unreachable,
+            .copy_props_closure_key = ids[6] orelse unreachable,
+            .to_esm_module = ids[7] orelse unreachable,
+            .to_esm_node_mode = ids[8] orelse unreachable,
+            .to_esm_target = ids[9] orelse unreachable,
+            .export_target = ids[10] orelse unreachable,
+            .export_all = ids[11] orelse unreachable,
+            .export_name = ids[12] orelse unreachable,
+            .to_common_js_module = ids[13] orelse unreachable,
+        };
+    }
+
+    fn restoreEsmInteropRuntimeInternalNames(self: *Linker) !void {
+        const owner_index = self.esm_interop_runtime_internal_owner orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+        const owner = self.getModule(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+        const ids = owner.esm_interop_runtime_internal_symbols orelse return error.EsmInteropRuntimeInternalSymbolsMissing;
+        const names: rt_names.EsmInteropRuntimeInternalNames = .{};
+        const values = .{
+            .{ ids.copy_props_to, names.copy_props_to },
+            .{ ids.copy_props_from, names.copy_props_from },
+            .{ ids.copy_props_desc, names.copy_props_desc },
+            .{ ids.copy_props_keys, names.copy_props_keys },
+            .{ ids.copy_props_index, names.copy_props_index },
+            .{ ids.copy_props_key, names.copy_props_key },
+            .{ ids.copy_props_closure_key, names.copy_props_closure_key },
+            .{ ids.to_esm_module, names.to_esm_module },
+            .{ ids.to_esm_node_mode, names.to_esm_node_mode },
+            .{ ids.to_esm_target, names.to_esm_target },
+            .{ ids.export_target, names.export_target },
+            .{ ids.export_all, names.export_all },
+            .{ ids.export_name, names.export_name },
+            .{ ids.to_common_js_module, names.to_common_js_module },
+        };
+        inline for (values) |value| {
+            try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(owner_index, @intFromEnum(value[0])), value[1]);
+        }
     }
 
     pub fn prepareEsmInteropRuntimeNamesIfNeeded(self: *const Linker) !void {
@@ -2102,8 +2280,17 @@ pub const Linker = struct {
         try mutable.prepareEsmInteropRuntimeNames();
     }
 
+    /// Emit setup runs before per-module workers start. Revalidate graph-owned
+    /// rows there even when the graph-wide helper names were cached earlier.
+    pub fn prepareEsmInteropRuntimeNamesForEmit(self: *const Linker) !void {
+        const mutable = @constCast(self);
+        if (!mutable.graphMayNeedEsmInteropRuntime()) return;
+        try mutable.prepareEsmInteropRuntimeNames();
+    }
+
     fn reserveEsmInteropRuntimeNames(self: *Linker) !void {
-        const names = try self.esmInteropRuntimeNames();
+        try self.prepareEsmInteropRuntimeNames();
+        const names = self.currentEsmInteropRuntimeNames();
         inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
             const selected_name = names.get(helper);
             try self.reserved_globals.put(self.allocator, selected_name, {});
@@ -3299,11 +3486,12 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .bundler_runtime_helper, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .bundler_runtime_helper, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;
                         if (sk == .esm_runtime_internal_local) continue;
+                        if (sk == .esm_interop_runtime_internal_local) continue;
                         // The graph-wide CJS runtime helper is emitted by the
                         // preamble; reserveCjsRuntimeName assigns its selected
                         // output spelling to the canonical helper SymbolId.
