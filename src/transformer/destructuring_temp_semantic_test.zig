@@ -7,6 +7,80 @@ const TransformOptions = @import("transformer.zig").TransformOptions;
 const ast_walk = @import("../parser/ast_walk.zig");
 const ESTarget = @import("compat.zig").ESTarget;
 
+fn checkStandaloneDestructuringTempNameMarking(source: []const u8, expected_late: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+
+    var temp_count: usize = 0;
+    var late_temp_count: usize = 0;
+    var temp_ids = transformer.destructuring_temp_symbol_ids.valueIterator();
+    while (temp_ids.next()) |raw_id| {
+        const id: usize = @intCast(raw_id.*);
+        try std.testing.expect(id >= original_symbol_count and id < edited.symbols.items.len);
+        const symbol = edited.symbols.items[id];
+        temp_count += 1;
+        const is_late = symbol.synthetic_kind == .standalone_temp_binding;
+        try std.testing.expectEqual(expected_late, is_late);
+        if (!is_late) continue;
+        late_temp_count += 1;
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+
+        var bindings: usize = 0;
+        var references: usize = 0;
+        for (reachable) |raw_node| {
+            if (transformer.ast.nodes.items[raw_node].tag != .binding_identifier) continue;
+            if (raw_node < edited.symbol_ids.len and edited.symbol_ids[raw_node] == @as(u32, @intCast(id))) bindings += 1;
+        }
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != id or reference.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            references += 1;
+        }
+        try std.testing.expect(bindings > 0);
+        try std.testing.expect(references > 0);
+    }
+    try std.testing.expect(temp_count > 0);
+    try std.testing.expectEqual(expected_late, late_temp_count > 0);
+}
+
+test "#4819 standalone lowered destructuring temps finalize by SymbolId unless dynamic lookup blocks it" {
+    try checkStandaloneDestructuringTempNameMarking(
+        "function run() { const _a = 1; const { nested: { value } } = input; return [value, _a]; }",
+        true,
+    );
+    try checkStandaloneDestructuringTempNameMarking(
+        "function run() { const { nested: { value } } = input; return value; } function sibling() { eval('typeof _a'); }",
+        false,
+    );
+}
+
 test "#4819 assignment destructuring temps have exact hoisted IDs and nested read scopes" {
     const cases = [_]struct { source: []const u8, target: ESTarget, min_temps: usize }{
         .{

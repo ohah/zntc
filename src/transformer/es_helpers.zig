@@ -1185,6 +1185,18 @@ pub fn markStandaloneLateSyntheticSymbol(self: anytype, symbol_id: symbol_mod.Sy
     editor.symbols.items[raw].synthetic_kind = kind;
 }
 
+/// Mark a generated temp for standalone SymbolId-based final naming when its
+/// exact output scope permits renaming. Dynamic scopes keep their staging name.
+pub fn markStandaloneLateSyntheticTemp(self: anytype, symbol_id: ?symbol_mod.SymbolId, scope_id: ScopeId) void {
+    if (!canUseLateStandaloneOutputName(self, scope_id)) return;
+    const id = symbol_id orelse std.debug.panic("late standalone temp has no exact SymbolId", .{});
+    const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late standalone temp has no semantic editor", .{});
+    const raw = @intFromEnum(id);
+    if (raw >= editor.symbols.items.len) std.debug.panic("late standalone temp has an invalid SymbolId", .{});
+    if (editor.symbols.items[raw].synthetic_kind == null)
+        editor.symbols.items[raw].synthetic_kind = .standalone_temp_binding;
+}
+
 /// Mark an exact standalone synthetic binding whose internal staging spelling
 /// differs from its readable output-name base.
 pub fn markStandaloneLateSyntheticOutputName(

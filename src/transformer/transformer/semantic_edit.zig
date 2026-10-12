@@ -2305,11 +2305,7 @@ pub fn declareSyntheticTempInScope(self: *Transformer, binding: NodeIndex, decla
     const id = (try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, scope)) orelse return null;
     editor.attachExistingBinding(binding, id) catch |err| return editError(err);
     try setSymbolId(self, binding, id);
-    if (es_helpers.canUseLateStandaloneOutputName(self, scope)) {
-        const raw_id = @intFromEnum(id);
-        if (editor.symbols.items[raw_id].synthetic_kind == null)
-            editor.symbols.items[raw_id].synthetic_kind = .standalone_temp_binding;
-    }
+    es_helpers.markStandaloneLateSyntheticTemp(self, id, scope);
     return id;
 }
 
