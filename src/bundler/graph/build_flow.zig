@@ -1713,7 +1713,10 @@ pub fn getMtime(io: std.Io, path: []const u8) !i128 {
 pub fn transferModulesToStore(self: *ModuleGraph, io: std.Io, store: *module_store.PersistentModuleStore) void {
     for (0..self.moduleCount()) |i| {
         const m = self.moduleAtMut(ModuleIndex.fromUsize(i)) orelse continue;
-        if (m.parse_arena == null) continue; // disabled 등 arena 없는 모듈 스킵
+        // Disabled modules have no parse payload to reuse. Some receive a
+        // parse_arena only to own graph-generated runtime SymbolIds, which must
+        // not turn them into cache entries that no discovery path can hit.
+        if (m.parse_arena == null or m.is_disabled) continue;
         // (#4557 B-precise, [3]) baked 인데 provider 를 정밀 추적 못한 모듈(다단 re-export 체인
         // 미추적 / dupe OOM / parse_arena 없음 → const_providers 비어있음)은 **crude-b 폴백**:
         // 캐시에서 제외(+과거 엔트리 evict)해 다음 warm 이 무조건 clean reparse 하도록 강제한다.

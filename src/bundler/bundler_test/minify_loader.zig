@@ -2540,6 +2540,33 @@ test "Asset loader: binary — __toBinary runtime helper" {
     try std.testing.expect(result.asset_outputs == null);
 }
 
+test "Asset loader: semantic-less binary entry keeps generated runtime names collision-safe" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.bin", .data = &.{ 0xDE, 0xAD } });
+
+    const entry = try absPath(&tmp, "entry.bin");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .esm,
+        .loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }},
+        .global_identifiers = &.{ "__commonJS", "__toBinary" },
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __commonJS$1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__commonJS$1(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __toBinary$1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "__toBinary$1(\"3q0=\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __commonJS =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "var __toBinary =") == null);
+}
+
 test "Asset loader: binary helper output name follows its graph SymbolId" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

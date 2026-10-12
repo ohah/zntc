@@ -2,8 +2,9 @@
 
 const std = @import("std");
 const types = @import("../types.zig");
-const Module = @import("../module.zig").Module;
-const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const module_mod = @import("../module.zig");
+const Module = module_mod.Module;
+const ModuleSemanticData = module_mod.ModuleSemanticData;
 const CjsRuntimeInternalSymbolIds = @import("../module.zig").CjsRuntimeInternalSymbolIds;
 const semantic_symbol = @import("../../semantic/symbol.zig");
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
@@ -326,9 +327,9 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
 
     // Asset/disabled CJS wrappers have no semantic table of their own. If the
     // graph still contains parsed JavaScript, anchor the graph-level runtime
-    // factory identity to the first semantic module so linker naming can use
-    // the ordinary SymbolID rename path instead of a source-name string scan.
-    // Keep the string fallback only for graphs with no semantic module at all.
+    // factory identity to the first semantic module. For an entirely generated
+    // graph, an AST-less module gets an empty semantic shell so the factory
+    // still has a normal SymbolID owner.
     if (!cjs_runtime_identity_registered) {
         var has_cjs_wrapper = false;
         var cjs_it = self.modules.iterator(0);
@@ -343,15 +344,28 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             while (semantic_it.next()) |m| {
                 if (m.semantic == null or m.parse_arena == null) continue;
                 registerCjsRuntimeFactorySymbol(m);
-                if (m.cjs_runtime_factory_symbol != null) break;
+                cjs_runtime_identity_registered = m.cjs_runtime_factory_symbol != null;
+                if (cjs_runtime_identity_registered) break;
+            }
+            if (!cjs_runtime_identity_registered) {
+                var synthetic_it = self.modules.iterator(0);
+                while (synthetic_it.next()) |m| {
+                    if (m.semantic != null or m.ast != null) continue;
+                    if (!ensureSyntheticRuntimeSemantic(self, m)) continue;
+                    registerCjsRuntimeFactorySymbol(m);
+                    if (m.cjs_runtime_factory_symbol != null) {
+                        cjs_runtime_identity_registered = true;
+                        break;
+                    }
+                }
             }
         }
     }
 
     // Binary loader modules are semantic-less and their call expression is
     // generated from asset bytes. Anchor the shared preamble/call identity to
-    // a parsed module so the linker can use its normal SymbolId rename path.
-    // Keep a fixed-name fallback only for graphs with no semantic module.
+    // parsed semantics when available, or to an AST-less module's synthetic
+    // semantic shell in an entirely generated graph.
     if (!to_binary_runtime_identity_registered) {
         var has_binary_asset = false;
         var binary_it = self.modules.iterator(0);
@@ -366,15 +380,25 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             while (semantic_it.next()) |m| {
                 if (m.semantic == null or m.parse_arena == null) continue;
                 registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
-                if (m.to_binary_runtime_symbol != null) break;
+                to_binary_runtime_identity_registered = m.to_binary_runtime_symbol != null;
+                if (to_binary_runtime_identity_registered) break;
+            }
+            if (!to_binary_runtime_identity_registered) {
+                var synthetic_binary_it = self.modules.iterator(0);
+                while (synthetic_binary_it.next()) |m| {
+                    if (m.loader != .binary or m.source.len == 0 or m.semantic != null or m.ast != null) continue;
+                    if (!ensureSyntheticRuntimeSemantic(self, m)) continue;
+                    registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
+                    if (m.to_binary_runtime_symbol != null) break;
+                }
             }
         }
     }
 
     // ESM wrappers can be emitted from semantic-less modules in plugin or
-    // incremental paths. Anchor their graph-level factory identity to an
-    // available parsed module, keeping fixed names only for fully semantic-less
-    // graphs.
+    // incremental paths. Anchor their graph-level factory identity to parsed
+    // semantics when available, or use an AST-less module's synthetic semantic
+    // shell in an entirely generated graph.
     if (!esm_runtime_identity_registered) {
         var has_esm_wrapper = false;
         var esm_it = self.modules.iterator(0);
@@ -389,10 +413,45 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
             while (semantic_it.next()) |m| {
                 if (m.semantic == null or m.parse_arena == null) continue;
                 registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
-                if (m.esm_runtime_factory_symbol != null) break;
+                esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
+                if (esm_runtime_identity_registered) break;
+            }
+            if (!esm_runtime_identity_registered) {
+                var synthetic_it = self.modules.iterator(0);
+                while (synthetic_it.next()) |m| {
+                    if (m.semantic != null or m.ast != null) continue;
+                    if (!ensureSyntheticRuntimeSemantic(self, m)) continue;
+                    registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+                    if (m.esm_runtime_factory_symbol != null) {
+                        esm_runtime_identity_registered = true;
+                        break;
+                    }
+                }
             }
         }
     }
+}
+
+/// Runtime helpers can be needed by graphs made entirely of generated modules
+/// (for example, a binary asset used as the entry point). Keep their virtual
+/// symbols in the usual module-owned semantic storage without pretending that
+/// the module has source scopes or an AST. `parse_arena` owns the symbol array,
+/// matching ordinary semantic data and its incremental lifetime.
+fn ensureSyntheticRuntimeSemantic(graph: *ModuleGraph, m: *Module) bool {
+    if (m.semantic != null) return true;
+    if (m.ast != null) return false;
+    if (m.parse_arena == null) {
+        m.parse_arena = module_mod.createParseArena(graph.allocator) orelse return false;
+    }
+    m.semantic = .{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    return true;
 }
 
 fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) void {

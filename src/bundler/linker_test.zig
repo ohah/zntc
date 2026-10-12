@@ -9,6 +9,7 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const graph_finalize = @import("graph/finalize.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
+const module_store_mod = @import("module_store.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 const bundler_symbol = @import("symbol.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
@@ -298,6 +299,152 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
     const source_id = bundler_symbol.SymbolID.make(entry_index, source_inner);
     const source_name = r.linker.rename_table.get(source_id) orelse "__commonJS";
     try std.testing.expect(!std.mem.eql(u8, runtime_name, source_name));
+}
+
+test "linker: semantic-less binary entry assigns exact runtime SymbolIds" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "entry.bin", .data = &.{ 0xDE, 0xAD } });
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "second.bin", .data = &.{ 0xBE, 0xEF } });
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.bin" });
+    defer std.testing.allocator.free(entry);
+    const second_entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "second.bin" });
+    defer std.testing.allocator.free(second_entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    const graph = try std.testing.allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(std.testing.allocator, &cache);
+    graph.loader_overrides = &.{.{ .ext = ".bin", .loader = .binary }};
+    graph.code_splitting = true;
+    try graph.build(std.testing.io, &.{ entry, second_entry });
+    defer {
+        graph.deinit();
+        std.testing.allocator.destroy(graph);
+    }
+
+    var linker = Linker.initWithGlobalIdentifiers(
+        std.testing.allocator,
+        graph,
+        .esm,
+        &.{ "__commonJS", "__toBinary" },
+    );
+    defer linker.deinit();
+    try linker.link();
+    try linker.computeRenames();
+
+    var factory_owner: ?*const @import("module.zig").Module = null;
+    var binary_owner: ?*const @import("module.zig").Module = null;
+    var factory_count: usize = 0;
+    var binary_count: usize = 0;
+    var module_it = graph.modulesIterator();
+    while (module_it.next()) |module| {
+        try std.testing.expect(module.ast == null);
+        if (module.cjs_runtime_factory_symbol != null) {
+            factory_count += 1;
+            factory_owner = module;
+        }
+        if (module.to_binary_runtime_symbol != null) {
+            binary_count += 1;
+            binary_owner = module;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), factory_count);
+    try std.testing.expectEqual(@as(usize, 1), binary_count);
+    const cjs_module = factory_owner orelse return error.TestUnexpectedResult;
+    const binary_module = binary_owner orelse return error.TestUnexpectedResult;
+    const factory_id = bundler_symbol.SymbolID.make(cjs_module.index, @intFromEnum(cjs_module.cjs_runtime_factory_symbol.?));
+    const binary_id = bundler_symbol.SymbolID.make(binary_module.index, @intFromEnum(binary_module.to_binary_runtime_symbol.?));
+    const factory_name = linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult;
+    const binary_name = try linker.toBinaryRuntimeName();
+    const saved_factory_name = try std.testing.allocator.dupe(u8, factory_name);
+    defer std.testing.allocator.free(saved_factory_name);
+    const saved_binary_name = try std.testing.allocator.dupe(u8, binary_name);
+    defer std.testing.allocator.free(saved_binary_name);
+
+    try std.testing.expect(!std.mem.eql(u8, "__commonJS", factory_name));
+    try std.testing.expect(!std.mem.eql(u8, "__toBinary", binary_name));
+    try std.testing.expectEqualStrings(factory_name, linker.cjsFactoryRuntimeName());
+    try std.testing.expectEqualStrings(binary_name, linker.rename_table.get(binary_id) orelse return error.TestUnexpectedResult);
+
+    // Independent chunk rename passes must restore these graph-wide aliases,
+    // including when the owning identity is outside the current chunk.
+    const first_chunk = [_]ModuleIndex{cjs_module.index};
+    try linker.computeRenamesForModules(&first_chunk, &.{});
+    try std.testing.expectEqualStrings(saved_factory_name, linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings(saved_binary_name, try linker.toBinaryRuntimeName());
+    const second_binary_index = findModuleIdx(graph, "second.bin") orelse return error.TestUnexpectedResult;
+    try std.testing.expect(second_binary_index != cjs_module.index);
+    const second_chunk = [_]ModuleIndex{second_binary_index};
+    try linker.computeRenamesForModules(&second_chunk, &.{});
+    try std.testing.expectEqualStrings(saved_factory_name, linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings(saved_binary_name, try linker.toBinaryRuntimeName());
+}
+
+test "linker: disabled CJS wrappers receive runtime SymbolIds without source semantics" {
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var store = module_store_mod.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+    const graph = try std.testing.allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(std.testing.allocator, &cache);
+    defer {
+        graph.deinit();
+        std.testing.allocator.destroy(graph);
+    }
+
+    const index = try graph.addDisabledModule("runtime-only-cjs");
+    graph_finalize.registerWrapperSymbols(graph);
+    const module = graph.getModule(index) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(module.ast == null);
+    const semantic = module.semantic orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), semantic.scopes.len);
+    try std.testing.expectEqual(@as(usize, 0), semantic.scope_maps.len);
+    const factory_inner = module.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult;
+
+    var linker = Linker.initWithGlobalIdentifiers(std.testing.allocator, graph, .esm, &.{"__commonJS"});
+    defer linker.deinit();
+    try linker.computeRenames();
+    const factory_id = bundler_symbol.SymbolID.make(index, @intFromEnum(factory_inner));
+    const factory_name = linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!std.mem.eql(u8, "__commonJS", factory_name));
+    try std.testing.expectEqualStrings(factory_name, linker.cjsFactoryRuntimeName());
+
+    graph.transferModulesToStore(std.testing.io, &store);
+    try std.testing.expectEqual(@as(usize, 0), store.modules.count());
+}
+
+test "linker: semantic-less ESM wrappers receive an exact runtime SymbolId" {
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    const graph = try std.testing.allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(std.testing.allocator, &cache);
+    defer {
+        graph.deinit();
+        std.testing.allocator.destroy(graph);
+    }
+
+    const index = try graph.addDisabledModule("runtime-only-esm");
+    const module = graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+    module.wrap_kind = .esm;
+    module.exports_kind = .esm;
+    graph_finalize.registerWrapperSymbols(graph);
+    try std.testing.expect(module.ast == null);
+    const semantic = module.semantic orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), semantic.scopes.len);
+    try std.testing.expectEqual(@as(usize, 0), semantic.scope_maps.len);
+    const factory_inner = module.esm_runtime_factory_symbol orelse return error.TestUnexpectedResult;
+
+    var linker = Linker.initWithGlobalIdentifiers(std.testing.allocator, graph, .esm, &.{"__esm"});
+    defer linker.deinit();
+    try linker.computeRenames();
+    const factory_id = bundler_symbol.SymbolID.make(index, @intFromEnum(factory_inner));
+    const factory_name = try linker.esmFactoryRuntimeName();
+    try std.testing.expect(!std.mem.eql(u8, "__esm", factory_name));
+    try std.testing.expectEqualStrings(factory_name, linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult);
 }
 
 test "linker: re-export chain resolved" {
