@@ -5,9 +5,10 @@ import {
   killAndWait,
   spawnWatchJson,
   waitForNdjsonLines,
+  ZNTC_BIN,
 } from './helpers';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 
 /**
  * Watch 메모리 누수 시뮬레이션 스트레스 테스트.
@@ -16,15 +17,35 @@ import { writeFileSync } from 'node:fs';
  * 비례한다는 전제로 압축하여 빠르게 N회 rebuild를 수행하고 RSS 궤적을 측정한다.
  */
 
-/** `ps -o rss= -p <pid>`로 RSS(KB)를 샘플링. Linux/macOS 공용. */
-async function sampleRSS(pid: number): Promise<number> {
+/**
+ * 프로세스 메모리(KB) 샘플링.
+ *
+ * macOS: `footprint` 의 phys_footprint (Activity Monitor 의 "메모리" 값). RSS 는 시스템
+ * 메모리 압박 시 압축·회수된 페이지가 빠졌다가 다시 접근하면 돌아와 궤적이 출렁인다 —
+ * 다른 무거운 프로세스와 함께 돌면 14→18→10→17MB 처럼 오르내려 누수 없이도 steady slope 가
+ * 임계를 넘었다. phys_footprint 는 압축 메모리까지 포함해 그 영향을 받지 않는다.
+ * 그 외: `ps -o rss=`.
+ */
+async function sampleMemoryKB(pid: number): Promise<number> {
+  const darwin = process.platform === 'darwin';
   const proc = Bun.spawn({
-    cmd: ['ps', '-o', 'rss=', '-p', String(pid)],
+    cmd: darwin ? ['footprint', String(pid)] : ['ps', '-o', 'rss=', '-p', String(pid)],
     stdout: 'pipe',
     stderr: 'pipe',
   });
   const stdout = await new Response(proc.stdout).text();
   await proc.exited;
+  if (darwin) {
+    const m = /Footprint:\s*([\d.]+)\s*(B|KB|MB|GB)/.exec(stdout);
+    if (!m)
+      throw new Error(
+        `failed to parse footprint for pid ${pid}: ${JSON.stringify(stdout.slice(0, 200))}`,
+      );
+    const scale = { B: 1 / 1024, KB: 1, MB: 1024, GB: 1024 * 1024 }[
+      m[2] as 'B' | 'KB' | 'MB' | 'GB'
+    ];
+    return Math.round(Number.parseFloat(m[1]) * scale);
+  }
   const rss = Number.parseInt(stdout.trim(), 10);
   if (Number.isNaN(rss)) {
     throw new Error(`failed to parse RSS for pid ${pid}: ${JSON.stringify(stdout)}`);
@@ -46,8 +67,16 @@ function linearSlope(samples: Array<{ x: number; y: number }>): number {
   return den === 0 ? 0 : num / den;
 }
 
+/**
+ * Debug 빌드는 `std.heap.DebugAllocator` 를 쓴다(release 는 mimalloc). 같은 소스에서
+ * Debug 바이너리는 메모리가 rebuild 마다 선형으로 늘지만(150회 3.4→21.5MB), ReleaseFast 는
+ * 2.6MB 로 평탄했다 — 할당자 특성이지 누수가 아니다. 누수 판정은 release 바이너리에서만
+ * 의미가 있다(CI 통합 테스트는 ReleaseFast). DebugAllocator 의 이중 해제 보고 문자열로 판별한다.
+ */
+const usesDebugAllocator = readFileSync(ZNTC_BIN).includes('Double free detected.');
+
 describe('watch 메모리 스트레스 (시뮬레이션)', () => {
-  test(
+  test.skipIf(usesDebugAllocator)(
     '연속 rebuild N회 후 RSS 궤적이 임계값 내',
     { timeout: 10 * 60 * 1000 /* 10분 — CI 느린 러너 여유 */ },
     async () => {
@@ -76,7 +105,7 @@ describe('watch 메모리 스트레스 (시뮬레이션)', () => {
         // spawnWatchJson 가 zntc 를 직접 spawn 하므로 proc.pid 가 곧 zntc PID.
         const zntcPid = proc.pid!;
         const samples: Array<{ x: number; y: number }> = [];
-        samples.push({ x: 0, y: await sampleRSS(zntcPid) });
+        samples.push({ x: 0, y: await sampleMemoryKB(zntcPid) });
 
         for (let i = 1; i <= ITERATIONS; i++) {
           // content hash 변화 유도 — 변수 값을 iter마다 바꿈
@@ -84,7 +113,7 @@ describe('watch 메모리 스트레스 (시뮬레이션)', () => {
           await waitForNdjsonLines(jsonOut, 1 + i, tail, { timeoutMs: 10000 });
 
           if (i % SAMPLE_EVERY === 0) {
-            samples.push({ x: i, y: await sampleRSS(zntcPid) });
+            samples.push({ x: i, y: await sampleMemoryKB(zntcPid) });
           }
         }
 
