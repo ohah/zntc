@@ -300,6 +300,9 @@ pub const SyntheticKind = enum(u8) {
     /// Cached function binding generated for a downlevel tagged template.
     /// Standalone output selects its spelling from the exact SymbolId.
     tagged_template_function_binding,
+    /// ES5 lexical `this` capture. Standalone output selects its spelling from
+    /// this exact SymbolId after all generated bindings are known.
+    this_capture_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

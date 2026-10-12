@@ -70,6 +70,78 @@ test "#4819 ES5 computed super assignment and update temps have exact identity" 
     try std.testing.expect(exact_temp_findings >= 5);
 }
 
+test "#4819 lexical this captures receive late names through exact SymbolIds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\var _this = "outer";
+        \\class Base { constructor() { this.value = 5; } }
+        \\class Explicit extends Base {
+        \\  read = () => this.value;
+        \\  constructor() { super(); }
+        \\}
+        \\class Default extends Base { read = () => this.value; }
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    const capture_kind = @import("../semantic/symbol.zig").SyntheticKind.this_capture_binding;
+    var capture_ids: [2]u32 = undefined;
+    var capture_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
+    var capture_count: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != capture_kind) continue;
+        try std.testing.expect(!symbol.scope_id.isNone());
+        try std.testing.expectEqualStrings(
+            "_this",
+            transformer.late_output_name_bases.get(symbol.synthetic_name) orelse return error.MissingLateThisBaseName,
+        );
+        try std.testing.expect(capture_count < capture_ids.len);
+        capture_ids[capture_count] = @intCast(raw_id);
+        capture_scopes[capture_count] = symbol.scope_id;
+        capture_count += 1;
+
+        const symbol_id: u32 = @intCast(raw_id);
+        try std.testing.expectEqual(
+            @as(?usize, symbol_id),
+            edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name),
+        );
+        var declaration_count: usize = 0;
+        var reference_count: usize = 0;
+        for (reachable) |raw| {
+            if (raw >= edited.symbol_ids.len or edited.symbol_ids[raw] != symbol_id) continue;
+            const tag = transformer.ast.nodes.items[raw].tag;
+            if (tag == .binding_identifier) declaration_count += 1;
+            if (tag == .identifier_reference) reference_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), declaration_count);
+        try std.testing.expect(reference_count > 0);
+    }
+    try std.testing.expectEqual(@as(usize, 2), capture_count);
+    try std.testing.expect(capture_ids[0] != capture_ids[1]);
+    try std.testing.expect(capture_scopes[0] != capture_scopes[1]);
+}
+
 test "#4819 class field computed-key prehoist binds temp identity exactly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

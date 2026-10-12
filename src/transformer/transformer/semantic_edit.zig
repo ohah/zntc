@@ -2611,7 +2611,14 @@ pub fn bindLexicalCaptureWithSyntheticKind(
     const item: NodeIndex = @enumFromInt(self.ast.extra_data.items[start]);
     const binding = self.readNodeIdx(self.ast.getNode(item).data.extra, 0);
     const id = (try declareSyntheticInScope(self, binding, decl.span, .variable_var, self.capture_scope)).?;
-    if (synthetic_kind) |synthetic| {
+    var effective_synthetic_kind = synthetic_kind;
+    if (effective_synthetic_kind == null and kind == .this_value and
+        es_helpers.canUseLateStandaloneOutputName(self, self.capture_scope))
+    {
+        _ = try es_helpers.deferSyntheticOutputName(self, "_this");
+        effective_synthetic_kind = .this_capture_binding;
+    }
+    if (effective_synthetic_kind) |synthetic| {
         const editor = try editorFor(self);
         editor.symbols.items[@intFromEnum(id)].synthetic_kind = synthetic;
     }

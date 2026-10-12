@@ -1239,6 +1239,7 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         symbol.synthetic_kind == .generator_state_parameter or
         symbol.synthetic_kind == .class_super_parameter or
         symbol.synthetic_kind == .new_target_capture_binding or
+        symbol.synthetic_kind == .this_capture_binding or
         symbol.synthetic_kind == .class_self_write_binding or
         symbol.synthetic_kind == .class_self_alias_binding or
         symbol.synthetic_kind == .anonymous_class_export_binding or
