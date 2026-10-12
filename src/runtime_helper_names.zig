@@ -158,6 +158,17 @@ pub const CjsRuntimeInternalNames = struct {
     require_function: []const u8 = "__require",
 };
 
+/// Identifier spellings used only inside the raw ESM runtime factory template.
+/// Their bindings are represented by graph-level synthetic SymbolIDs; output
+/// code receives these names from the linker's final rename table.
+pub const EsmRuntimeInternalNames = struct {
+    factory_parameter: []const u8 = "fn",
+    result_parameter: []const u8 = "res",
+    catch_parameter: []const u8 = "e",
+    init_function: []const u8 = "__init",
+    factory_local: []const u8 = "f",
+};
+
 /// 모든 runtime helper 의 `(base_name, short_name)` 단일 소스 테이블.
 /// 새 helper 추가는 여기에 entry 만 추가 — `helperName` 조회, mangler 예약, 테스트
 /// iteration 이 전부 이 테이블을 consume 하므로 세 곳의 drift 를 구조적으로 방지한다.

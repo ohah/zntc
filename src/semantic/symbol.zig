@@ -306,6 +306,11 @@ pub const SyntheticKind = enum(u8) {
     /// ES5 lexical `arguments` capture. Standalone output selects its spelling
     /// from this exact SymbolId after all generated bindings are known.
     arguments_capture_binding,
+    /// Lexical locals inside the raw ESM runtime factory template. The graph
+    /// records one exact identity per helper binding and the emitter rewrites
+    /// its declaration/references from the final rename table. Keep appended
+    /// so serialized SyntheticKind tags remain stable.
+    esm_runtime_internal_local,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

@@ -195,6 +195,11 @@ test "exact scope audit allows only detached graph-output symbol identities" {
     }{
         .{ .kind = .variable_var, .synthetic_kind = .cjs_runtime_factory, .name = "__commonJS" },
         .{ .kind = .parameter, .synthetic_kind = .cjs_runtime_internal_local, .name = "cb" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_runtime_internal_local, .name = "fn" },
+        .{ .kind = .parameter, .synthetic_kind = .esm_runtime_internal_local, .name = "res" },
+        .{ .kind = .catch_binding, .synthetic_kind = .esm_runtime_internal_local, .name = "e" },
+        .{ .kind = .function_decl, .synthetic_kind = .esm_runtime_internal_local, .name = "__init" },
+        .{ .kind = .variable_var, .synthetic_kind = .esm_runtime_internal_local, .name = "f" },
         .{ .kind = .function_decl, .synthetic_kind = .esm_init, .name = "init_module" },
         .{ .kind = .variable_var, .synthetic_kind = .cjs_exports, .name = "exports_module" },
         .{ .kind = .function_decl, .synthetic_kind = .cjs_require, .name = "require_module" },
@@ -213,6 +218,18 @@ test "exact scope audit allows only detached graph-output symbol identities" {
         const valid = try checkExactFixture(allocator, &ast, root, &.{}, &.{symbol}, &scopes, &scope_maps, &owners, &.{});
         try std.testing.expect(valid.isClean());
     }
+
+    const wrong_esm_internal_name = Symbol{
+        .name = span,
+        .scope_id = .none,
+        .kind = SymbolKind.parameter,
+        .decl_flags = SymbolKind.parameter.declFlags(),
+        .declaration_span = span,
+        .synthetic_kind = .esm_runtime_internal_local,
+        .synthetic_name = "unregistered",
+    };
+    const invalid_esm_internal = try checkExactFixture(allocator, &ast, root, &.{}, &.{wrong_esm_internal_name}, &scopes, &scope_maps, &owners, &.{});
+    try std.testing.expect(!invalid_esm_internal.isClean());
 
     const unclassified = Symbol{
         .name = span,

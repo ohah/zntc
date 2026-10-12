@@ -724,6 +724,115 @@ test "linker: semantic-less ESM wrappers receive exact wrapper and runtime Symbo
     try std.testing.expectEqualStrings(factory_name, linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult);
 }
 
+test "linker: ESM raw runtime locals recover by exact IDs and fail closed" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "export const value = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const module_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(module_index) orelse return error.TestUnexpectedResult;
+    // buildAndLink exercises ordinary entry linking. This test targets the
+    // graph-owned raw ESM factory preamble, which is required when a wrapped
+    // ESM module is emitted.
+    module.wrap_kind = .esm;
+    module.exports_kind = .esm;
+    try graph_finalize.registerWrapperSymbols(r.graph);
+    const ids = module.esm_runtime_internal_symbols orelse return error.TestUnexpectedResult;
+    const names: @import("../runtime_helper_names.zig").EsmRuntimeInternalNames = .{};
+    const expected = [_]struct { id: semantic_symbol.SymbolId, name: []const u8, kind: semantic_symbol.SymbolKind }{
+        .{ .id = ids.factory_parameter, .name = names.factory_parameter, .kind = .parameter },
+        .{ .id = ids.result_parameter, .name = names.result_parameter, .kind = .parameter },
+        .{ .id = ids.catch_parameter, .name = names.catch_parameter, .kind = .catch_binding },
+        .{ .id = ids.init_function, .name = names.init_function, .kind = .function_decl },
+        .{ .id = ids.factory_local, .name = names.factory_local, .kind = .variable_var },
+    };
+    for (expected) |item| {
+        const symbol = module.semantic.?.symbols.items[@intFromEnum(item.id)];
+        try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_runtime_internal_local, symbol.synthetic_kind.?);
+        try std.testing.expectEqual(item.kind, symbol.kind);
+        try std.testing.expectEqualStrings(item.name, symbol.synthetic_name);
+    }
+
+    try r.linker.finalize(.{
+        .compute_renames = true,
+        .compute_mangling = false,
+        .populate_namespace_accesses = false,
+    });
+    try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
+
+    // Cached Module convenience fields are build-scoped; exact semantic rows
+    // must recover their IDs after the field is dropped or corrupted.
+    module.esm_runtime_internal_symbols = null;
+    try r.linker.prepareEsmRuntimeInternalNames();
+    try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
+    module.esm_runtime_internal_symbols = .{
+        .factory_parameter = @enumFromInt(999_999),
+        .result_parameter = @enumFromInt(999_999),
+        .catch_parameter = @enumFromInt(999_999),
+        .init_function = @enumFromInt(999_999),
+        .factory_local = @enumFromInt(999_999),
+    };
+    try r.linker.prepareEsmRuntimeInternalNames();
+    try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
+
+    // Chunk/dev paths may reset the rename table. Recover those entries from
+    // the exact typed rows before returning names to the template emitter.
+    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.factory_parameter));
+    _ = r.linker.rename_table.map.fetchRemove(missing_name_id) orelse return error.TestUnexpectedResult;
+    try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
+
+    // Typed rows are the recovery oracle; a wrong synthetic kind must not be
+    // accepted merely because the cached Module field still names that row.
+    module.esm_runtime_internal_symbols = null;
+    const local_index = @intFromEnum(ids.factory_local);
+    const original_kind = module.semantic.?.symbols.items[local_index].synthetic_kind;
+    module.semantic.?.symbols.items[local_index].synthetic_kind = .bundler_runtime_helper;
+    try std.testing.expectError(error.EsmRuntimeInternalSymbolsMissing, r.linker.prepareEsmRuntimeInternalNames());
+    module.semantic.?.symbols.items[local_index].synthetic_kind = original_kind;
+    try r.linker.prepareEsmRuntimeInternalNames();
+    try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
+
+    // Chunk recomputation clears the whole rename table, then must re-seed
+    // these output-owned locals from the graph IDs before the emitter runs.
+    const chunk_modules = [_]ModuleIndex{module_index};
+    try r.linker.computeRenamesForModules(&chunk_modules, &.{});
+    try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
+}
+
+fn expectEsmRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids: @import("module.zig").EsmRuntimeInternalSymbolIds) !void {
+    const names = try linker.esmFactoryRuntimeInternalNames();
+    try std.testing.expectEqualStrings("fn", names.factory_parameter);
+    try std.testing.expectEqualStrings("res", names.result_parameter);
+    try std.testing.expectEqualStrings("e", names.catch_parameter);
+    try std.testing.expectEqualStrings("__init", names.init_function);
+    try std.testing.expectEqualStrings("f", names.factory_local);
+    try std.testing.expectEqualStrings(
+        names.factory_parameter,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.factory_parameter))) orelse return error.TestUnexpectedResult,
+    );
+    try std.testing.expectEqualStrings(
+        names.result_parameter,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.result_parameter))) orelse return error.TestUnexpectedResult,
+    );
+    try std.testing.expectEqualStrings(
+        names.catch_parameter,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.catch_parameter))) orelse return error.TestUnexpectedResult,
+    );
+    try std.testing.expectEqualStrings(
+        names.init_function,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.init_function))) orelse return error.TestUnexpectedResult,
+    );
+    try std.testing.expectEqualStrings(
+        names.factory_local,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.factory_local))) orelse return error.TestUnexpectedResult,
+    );
+}
+
 test "linker: re-export chain resolved" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

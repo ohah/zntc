@@ -827,6 +827,13 @@ fn exactDetachedOutputSymbolShape(symbol: *const Symbol) bool {
             .variable_var, .function_decl, .parameter, .catch_binding => true,
             else => false,
         },
+        .esm_runtime_internal_local => switch (symbol.kind) {
+            .parameter => std.mem.eql(u8, symbol.synthetic_name, "fn") or std.mem.eql(u8, symbol.synthetic_name, "res"),
+            .catch_binding => std.mem.eql(u8, symbol.synthetic_name, "e"),
+            .function_decl => std.mem.eql(u8, symbol.synthetic_name, "__init"),
+            .variable_var => std.mem.eql(u8, symbol.synthetic_name, "f"),
+            else => false,
+        },
         .esm_init, .cjs_require => symbol.kind == .function_decl,
         .cjs_exports, .bundler_runtime_helper => symbol.kind == .variable_var,
         else => false,

@@ -486,6 +486,40 @@ fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.Sy
         ) catch return error.OutOfMemory;
     }
     if (findBundlerRuntimeHelperSymbol(m, identity, name) == null) return error.MissingRuntimeHelperSymbol;
+    if (std.mem.eql(u8, name, "__esm")) try registerEsmRuntimeInternalSymbols(m, sem, arena);
+}
+
+fn registerEsmRuntimeInternalSymbols(m: *Module, sem: *ModuleSemanticData, arena: std.mem.Allocator) !void {
+    const names: runtime_helper_names.EsmRuntimeInternalNames = .{};
+    const existing = m.esm_runtime_internal_symbols;
+    m.esm_runtime_internal_symbols = .{
+        .factory_parameter = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.factory_parameter else null, names.factory_parameter, .parameter),
+        .result_parameter = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.result_parameter else null, names.result_parameter, .parameter),
+        .catch_parameter = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.catch_parameter else null, names.catch_parameter, .catch_binding),
+        .init_function = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.init_function else null, names.init_function, .function_decl),
+        .factory_local = try ensureEsmRuntimeInternalSymbol(sem, arena, if (existing) |ids| ids.factory_local else null, names.factory_local, .variable_var),
+    };
+}
+
+fn ensureEsmRuntimeInternalSymbol(
+    sem: *ModuleSemanticData,
+    arena: std.mem.Allocator,
+    existing: ?semantic_symbol.SymbolId,
+    name: []const u8,
+    kind: semantic_symbol.SymbolKind,
+) !semantic_symbol.SymbolId {
+    if (existing) |symbol_id| {
+        const raw: usize = @intFromEnum(symbol_id);
+        if (raw < sem.symbols.items.len) {
+            const symbol = sem.symbols.items[raw];
+            if (symbol.synthetic_kind == .esm_runtime_internal_local and symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name)) return symbol_id;
+        }
+    }
+    for (sem.symbols.items, 0..) |symbol, index| {
+        if (symbol.synthetic_kind != .esm_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
+        return @enumFromInt(index);
+    }
+    return try semantic_symbol.extendSymbol(arena, &sem.symbols, kind, .esm_runtime_internal_local, name, Span.EMPTY);
 }
 
 fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) ?semantic_symbol.SymbolId {

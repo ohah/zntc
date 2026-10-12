@@ -2486,6 +2486,21 @@ pub fn appendEsmWrapRuntimeWithNames(
     factory_name: []const u8,
     names: names_mod.EsmInteropRuntimeNames,
 ) !void {
+    try appendEsmWrapRuntimeWithInternalNames(buf, allocator, minify, es5_syntax, configurable, factory_name, names, .{});
+}
+
+/// Emit the ESM wrapper runtime using exact graph-selected names for its
+/// factory, interop helpers, and lexical locals inside the raw factory body.
+pub fn appendEsmWrapRuntimeWithInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    es5_syntax: bool,
+    configurable: bool,
+    factory_name: []const u8,
+    names: names_mod.EsmInteropRuntimeNames,
+    internal_names: names_mod.EsmRuntimeInternalNames,
+) !void {
     // __esm 은 서술자를 만들지 않으므로 문법 축만 본다.
     const fn_syntax = es5_syntax or configurable;
     const runtime = if (minify)
@@ -2493,7 +2508,17 @@ pub fn appendEsmWrapRuntimeWithNames(
     else
         (if (fn_syntax) ESM_RUNTIME_ES5 else ESM_RUNTIME);
     const default_factory_name = if (minify) NAMES.ESM_FACTORY_MIN else "__esm";
-    try appendRuntimeWithNamedIdentifier(buf, allocator, runtime, default_factory_name, factory_name);
+    const default_internal_names: names_mod.EsmRuntimeInternalNames = .{};
+    if (std.mem.eql(u8, internal_names.factory_parameter, default_internal_names.factory_parameter) and
+        std.mem.eql(u8, internal_names.result_parameter, default_internal_names.result_parameter) and
+        std.mem.eql(u8, internal_names.catch_parameter, default_internal_names.catch_parameter) and
+        std.mem.eql(u8, internal_names.init_function, default_internal_names.init_function) and
+        std.mem.eql(u8, internal_names.factory_local, default_internal_names.factory_local))
+    {
+        try appendRuntimeWithNamedIdentifier(buf, allocator, runtime, default_factory_name, factory_name);
+    } else {
+        try appendEsmRuntimeWithNames(buf, allocator, runtime, default_factory_name, factory_name, internal_names);
+    }
 
     const export_runtime = if (configurable)
         (if (minify) EXPORT_RUNTIME_CONFIGURABLE_MIN else EXPORT_RUNTIME_CONFIGURABLE)
@@ -2510,6 +2535,25 @@ pub fn appendEsmWrapRuntimeWithNames(
     else
         (if (minify) TOCOMMONJS_RUNTIME_MIN else TOCOMMONJS_RUNTIME);
     try appendRuntimeWithEsmInteropNames(buf, allocator, to_common_js_runtime, minify, names);
+}
+
+fn appendEsmRuntimeWithNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    default_factory_name: []const u8,
+    factory_name: []const u8,
+    internal_names: names_mod.EsmRuntimeInternalNames,
+) !void {
+    const replacements = [_]RuntimeIdentifierReplacement{
+        .{ .from = default_factory_name, .to = factory_name },
+        .{ .from = "fn", .to = internal_names.factory_parameter },
+        .{ .from = "res", .to = internal_names.result_parameter },
+        .{ .from = "e", .to = internal_names.catch_parameter },
+        .{ .from = "__init", .to = internal_names.init_function },
+        .{ .from = "f", .to = internal_names.factory_local },
+    };
+    try appendRuntimeWithIdentifierReplacements(buf, allocator, source, &replacements);
 }
 
 /// Legacy helper API kept for tests and low-level callers that do not have a

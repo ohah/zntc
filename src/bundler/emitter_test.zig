@@ -2573,6 +2573,50 @@ test "CJS runtime: raw helper declarations and references use exact internal nam
     }
 }
 
+test "ESM runtime: raw factory declarations and references use exact internal names" {
+    const rt = @import("runtime_helpers.zig");
+    const runtime_names = @import("../runtime_helper_names.zig");
+    const internal_names: runtime_names.EsmRuntimeInternalNames = .{
+        .factory_parameter = "factoryRef",
+        .result_parameter = "resultRef",
+        .catch_parameter = "caughtRef",
+        .init_function = "initializeRef",
+        .factory_local = "currentFactory",
+    };
+    const variants = [_]struct { minify: bool, es5: bool }{
+        .{ .minify = false, .es5 = false },
+        .{ .minify = false, .es5 = true },
+        .{ .minify = true, .es5 = false },
+        .{ .minify = true, .es5 = true },
+    };
+
+    for (variants) |variant| {
+        var output: std.ArrayList(u8) = .empty;
+        defer output.deinit(std.testing.allocator);
+        try rt.appendEsmWrapRuntimeWithInternalNames(
+            &output,
+            std.testing.allocator,
+            variant.minify,
+            variant.es5,
+            false,
+            "esmFactoryAlias",
+            runtime_names.defaultEsmInteropRuntimeNames(variant.minify),
+            internal_names,
+        );
+        const text = output.items;
+        try std.testing.expect(std.mem.indexOf(u8, text, "esmFactoryAlias") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "factoryRef") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "resultRef") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "caughtRef") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "initializeRef") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "currentFactory") != null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "__init") == null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "catch(e)") == null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "catch (e)") == null);
+        try std.testing.expect(std.mem.indexOf(u8, text, "var f=") == null);
+    }
+}
+
 fn expectCjsRuntimeRetriesAfterThrow(runtime: []const u8, minified: bool) !void {
     const factory = if (minified)
         \\$c(function(exports, module) {
