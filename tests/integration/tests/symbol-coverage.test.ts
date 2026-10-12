@@ -8196,14 +8196,26 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expectedOutput: '["div",{"id":"first","value":42,"tail":7}]\n',
       },
       {
-        mode: 'classic-spread-attribute-object-shadow-fallback',
-        graph: 'reanalyzed',
+        mode: 'classic-spread-attribute-unrelated-object-retained',
+        graph: 'retained',
         args: ['--jsx=classic', '--jsx-factory=h'],
         source: [
           'function unrelated(Object) { return Object; }',
           'function h(tag, props) { return [tag, props]; }',
           'var props = { value: 42 };',
           'console.log(JSON.stringify(<div {...props} />));',
+        ].join('\n'),
+        expectedOutput: '["div",{"value":42}]\n',
+      },
+      {
+        mode: 'classic-spread-attribute-same-scope-object-shadow-fallback',
+        graph: 'reanalyzed',
+        args: ['--jsx=classic', '--jsx-factory=h'],
+        source: [
+          'function h(tag, props) { return [tag, props]; }',
+          'var props = { value: 42 };',
+          'function render(Object) { return <div {...props} />; }',
+          'console.log(JSON.stringify(render({ assign() { throw new Error("shadowed Object was called"); } })));',
         ].join('\n'),
         expectedOutput: '["div",{"value":42}]\n',
       },
@@ -8259,13 +8271,19 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.tsx'),
           );
         expect(report, `${fixture.mode}: ${proc.stderr}`).toBeDefined();
+        const hasExpectedShadowedExternal =
+          fixture.mode === 'classic-spread-attribute-same-scope-object-shadow-fallback';
         for (const counter of EXACT_ZERO_COUNTERS) {
+          const expected =
+            hasExpectedShadowedExternal && counter === 'shadowed_external_reference' ? 1 : 0;
           expect(
             Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
             `${fixture.mode}: ${report}`,
-          ).toBe(0);
+          ).toBe(expected);
         }
-        expect(report, `${fixture.mode}: ${report}`).toMatch(/clean=1(?:\s|$)/);
+        expect(report, `${fixture.mode}: ${report}`).toMatch(
+          hasExpectedShadowedExternal ? /clean=0(?:\s|$)/ : /clean=1(?:\s|$)/,
+        );
 
         const graphMode = (proc.stderr ?? '')
           .split(/\r?\n/)
