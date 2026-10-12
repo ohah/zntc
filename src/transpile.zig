@@ -1269,6 +1269,7 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         .object_super_home_binding,
         .block_scoping_loop_ret_binding,
         .tagged_template_function_binding,
+        .standalone_temp_binding,
         => true,
 
         // Fixed aliases, virtual codegen identities, and graph-owned names use
@@ -4460,10 +4461,50 @@ test "#4819 standalone final-name policy separates late IDs from other output ow
 
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.runtime_helper_preamble)));
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.block_scoping_loop_ret_binding)));
+    try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.standalone_temp_binding)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.default_export)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.namespace_iife_parameter)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.require_shim_local)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(null)));
+}
+
+test "#4819 standalone temp final name is selected for its exact SymbolId around source names" {
+    const Symbol = @import("semantic/symbol.zig").Symbol;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(allocator, &ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+
+    const user_name = try transformer.ast.addString("_temp");
+    const generated_name = try transformer.ast.addString("_temp");
+    var symbols = [_]Symbol{
+        .{
+            .name = user_name,
+            .scope_id = .none,
+            .kind = .variable_let,
+            .declaration_span = user_name,
+        },
+        .{
+            .name = generated_name,
+            .scope_id = .none,
+            .kind = .variable_var,
+            .declaration_span = generated_name,
+            .synthetic_kind = .standalone_temp_binding,
+            .synthetic_name = "_temp",
+        },
+    };
+    transformer.symbols = &symbols;
+
+    var names = try buildStandaloneLateOutputNameOverrides(allocator, &transformer);
+    defer names.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), names.count());
+    try std.testing.expectEqualStrings("_temp2", names.get(1).?);
+    try std.testing.expect(names.get(0) == null);
 }
 
 test "#4819 standalone helper preamble resolves its emitted name through SymbolId" {

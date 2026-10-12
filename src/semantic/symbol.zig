@@ -319,6 +319,10 @@ pub const SyntheticKind = enum(u8) {
     /// detached identity after the output unit's source names are known.
     /// Keep appended so serialized SyntheticKind tags remain stable.
     require_shim_local,
+    /// Generated temp registered with an exact semantic SymbolId. Standalone
+    /// output may select its final spelling after all generated bindings exist.
+    /// Keep appended so serialized SyntheticKind tags remain stable.
+    standalone_temp_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
