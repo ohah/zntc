@@ -89,10 +89,11 @@ pub fn emitChunkExternalImports(
             // is_helper fallback 으로 얻으므로 local_symbol 없어도 통과시킨다.
             if (!ib.is_helper and !ib.local_symbol.isValid()) continue;
 
-            // verbatim_module_syntax=true 면 모두 보존, 아니면 type-only 는 drop.
+            // verbatim_module_syntax=true 면 모두 보존, 아니면 TS type-only 는 drop.
+            // A JS import of an external keeps it for its side effects (#5571).
             if (!verbatim) {
                 if (m.semantic) |sem| {
-                    if (isImportBindingTypeOnly(&sem, ib)) continue;
+                    if (@import("../linker/metadata.zig").isImportElided(m, &sem, ib)) continue;
                 }
             }
 

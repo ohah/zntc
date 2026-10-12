@@ -126,6 +126,17 @@ inline fn mappedExternalParam(
     }
 }
 
+/// Whether an import binding is elided, so its module is not evaluated for it.
+/// Only TypeScript elides an import used as a type alone; a JS import
+/// evaluates its module even when the binding is unused or was inlined
+/// (`import { v } from './dep'` keeps dep's effects, #5571 — esbuild and
+/// rolldown do the same). The type-only judgement is the source's.
+pub fn isImportElided(m: *const @import("../module.zig").Module, sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
+    if (!m.module_type.isTypeScript()) return false;
+    if (ib.source_type_only) |type_only| return type_only;
+    return isImportBindingTypeOnly(sem, ib);
+}
+
 pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemanticData, ib: ImportBinding) bool {
     // helper binding (JSX runtime / runtime helper) 은 런타임 호출이라 type-only 가 아니다.
     if (ib.is_helper) return false;
@@ -667,7 +678,7 @@ pub fn buildMetadataForAst(
 
             // Phase D elision: transformer 가 AST 에서 specifier 를 drop 하는 것과 대칭으로
             // linker 도 preamble 생성을 건너뛴다. verbatim_module_syntax=true 면 양쪽 모두 보존.
-            if (!self.verbatim_module_syntax and isImportBindingTypeOnly(&sem, ib)) continue;
+            if (!self.verbatim_module_syntax and isImportElided(&m, &sem, ib)) continue;
 
             // resolve 미완료: external 또는 resolve 실패.
             if (rec.resolved.isNone()) {
