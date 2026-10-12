@@ -1149,9 +1149,9 @@ test "TypeScript: external + namespace member access → preamble 유지 (namesp
     try std.testing.expect(std.mem.indexOf(u8, result.output, "forwardRef") != null);
 }
 
-test "TypeScript: external + default import → Phase D 는 default 를 elide 하지 않음" {
-    // JSX pragma / CSS-in-JS default export 등 implicit value use 가 많아 default 는
-    // elision 제외. 회귀 방지.
+test "TypeScript: external + default import used only as a type is elided (#5595)" {
+    // tsc·esbuild 처럼 타입으로만 쓴 default import 는 지운다. implicit value use(classic JSX
+    // factory, Emotion)는 별도로 유지된다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
@@ -1170,9 +1170,8 @@ test "TypeScript: external + default import → Phase D 는 default 를 elide �
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    // ESM external (#1962): default import 도 보존 — `import DefaultX from "external-mod"`.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "DefaultX") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "from \"external-mod\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DefaultX") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "external-mod") == null);
 }
 
 test "TypeScript: external + named mixed → type-only 만 elide, value-used 유지" {

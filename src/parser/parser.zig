@@ -1475,6 +1475,7 @@ pub const Parser = struct {
     pub fn parse(self: *Parser) !NodeIndex {
         var scope = profile.begin(.parse);
         defer scope.end();
+        self.ast.is_typescript = self.source_mode == .ts;
         const root = try statement.parse(self);
         try self.pruneDiagnosticsAfterDepthOverflow();
         return root;

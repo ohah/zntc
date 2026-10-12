@@ -869,7 +869,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
 test "linker: default import resolves" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "a.ts", "import myDefault from './b';");
+    try writeFile(tmp.dir, "a.ts", "import myDefault from './b';\nconsole.log(myDefault);");
     try writeFile(tmp.dir, "b.ts", "export default 42;");
 
     var r = try buildAndLink(std.testing.allocator, &tmp, "a.ts");
@@ -1550,7 +1550,7 @@ test "rename: mixed function + expression defaults — identifier collision" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     // rolldown 방식: export default val → local_name = "val" (두 모듈에서 충돌)
-    try writeFile(tmp.dir, "entry.ts", "import a from './func';\nimport b from './expr1';\nimport c from './expr2';");
+    try writeFile(tmp.dir, "entry.ts", "import a from './func';\nimport b from './expr1';\nimport c from './expr2';\nconsole.log(a, b, c);");
     try writeFile(tmp.dir, "func.ts", "export default function myFunc() { return 1; }");
     try writeFile(tmp.dir, "expr1.ts", "const val = 2;\nexport default val;");
     try writeFile(tmp.dir, "expr2.ts", "const val = 3;\nexport default val;");

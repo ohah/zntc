@@ -2803,22 +2803,32 @@ test "#1791 type-only elision: positive + negative cases" {
             .must_contain = &.{"import { A, B } from \"./lib\""},
         },
         .{
-            // default 는 JSX pragma / CSS-in-JS default 등 implicit value use 가 많아
-            // Phase D elision 대상에서 제외 — 설령 type 위치에서만 보여도 유지.
-            .name = "default binding: type-only 사용 이어도 유지",
+            // #5595: tsc·esbuild 처럼 타입으로만 쓴 default/namespace 도 지운다.
+            .name = "default binding: type-only 사용이면 drop",
             .src =
             \\import Foo from "./lib";
             \\export function f(x: Foo): void {}
             ,
-            .must_contain = &.{"import Foo from \"./lib\""},
+            .must_not_contain = &.{"./lib"},
         },
         .{
-            .name = "namespace binding: type-only 사용 이어도 유지",
+            .name = "namespace binding: type-only 사용이면 drop",
             .src =
             \\import * as NS from "./lib";
             \\export function f(x: NS.Foo): void {}
             ,
-            .must_contain = &.{"import * as NS from \"./lib\""},
+            .must_not_contain = &.{"./lib"},
+        },
+        .{
+            // JS 의 import 는 모듈을 평가한다 — 쓰지 않아도 유지.
+            .name = "JS default/namespace binding: 미사용이어도 유지",
+            .path = "input.js",
+            .src =
+            \\import Foo from "./lib";
+            \\import * as NS from "./lib";
+            \\export const x = 1;
+            ,
+            .must_contain = &.{ "import Foo from \"./lib\"", "import * as NS from \"./lib\"" },
         },
         .{
             .name = "namespace member access: value 참조로 유지",

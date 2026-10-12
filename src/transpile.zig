@@ -3552,14 +3552,13 @@ test "TS auto type-only export: top-level declare bindings elide rename specifie
         .{},
     );
 
-    // namespace import 가 선행하면 binding-lite path — 동일 결과
+    // namespace import 가 선행해도 동일 — 쓰지 않는 namespace import 는 tsc 처럼 지운다(#5595)
     try expectTranspileOutput(
         \\import * as foo from "./foo";
         \\export declare function _lte(): number;
         \\export { _lte as _max };
         \\
     ,
-        \\import * as foo from "./foo";
         \\
     ,
         "input.ts",
