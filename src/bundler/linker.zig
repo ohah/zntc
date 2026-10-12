@@ -1178,15 +1178,14 @@ pub const Linker = struct {
         try self.collectExternalParamNames();
     }
 
-    /// 한 모듈의 래퍼 심볼 이름(`require_X`/`init_X`/`exports_X` + asset `wrapper_name_synthetic`)을
-    /// `reserved_globals` 에 예약한다 — 사용자 심볼이 그 이름과 겹치면 리네임되도록(#4530/#4533).
+    /// 한 모듈의 래퍼 심볼 이름(`require_X`/`init_X`/`exports_X`)을 `reserved_globals` 에 예약한다 —
+    /// 사용자 심볼이 그 이름과 겹치면 리네임되도록(#4530/#4533).
     /// `collectReservedGlobals`(전 모듈)와 `computeRenamesForModules`(청크)가 공유하는 단일 소스.
     fn reserveWrapperNames(self: *Linker, m: *const Module) !void {
-        if (m.wrap_kind == .none and m.wrapper_name_synthetic == null) return;
+        if (m.wrap_kind == .none) return;
         if (m.getInitName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
         if (m.getExportsName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
         if (m.getRequireName(null)) |n| try self.reserved_globals.put(self.allocator, n, {});
-        if (m.wrapper_name_synthetic) |n| try self.reserved_globals.put(self.allocator, n, {});
     }
 
     /// Discover the graph-level runtime identity before emitted chunks are
@@ -1265,7 +1264,6 @@ pub const Linker = struct {
                 m.getInitName(null),
                 m.getExportsName(null),
                 m.getRequireName(null),
-                m.wrapper_name_synthetic,
             };
             for (wrapper_names) |name| {
                 if (name) |value| try self.reserved_globals.put(self.allocator, value, {});
@@ -1410,7 +1408,6 @@ pub const Linker = struct {
                 m.getInitName(null),
                 m.getExportsName(null),
                 m.getRequireName(null),
-                m.wrapper_name_synthetic,
             };
             for (wrapper_names) |wrapper_name| {
                 if (wrapper_name) |value| {
@@ -1578,7 +1575,6 @@ pub const Linker = struct {
                 m.getInitName(null),
                 m.getExportsName(null),
                 m.getRequireName(null),
-                m.wrapper_name_synthetic,
             };
             for (wrapper_names) |name| {
                 if (name) |value| try self.reserved_globals.put(self.allocator, value, {});
@@ -2064,7 +2060,6 @@ pub const Linker = struct {
                 m.getInitName(null),
                 m.getExportsName(null),
                 m.getRequireName(null),
-                m.wrapper_name_synthetic,
             };
             for (wrapper_names) |name| {
                 if (name) |value| if (std.mem.eql(u8, value, candidate)) return true;
@@ -2094,14 +2089,14 @@ pub const Linker = struct {
                     const abs = abs_opt orelse continue;
                     const wi = self.graph.path_to_module.get(abs) orelse continue;
                     const w = self.graph.getModule(wi) orelse continue;
-                    if (w.wrap_kind == .none and w.wrapper_name_synthetic == null) continue;
+                    if (w.wrap_kind == .none) continue;
                     if (try cb(ctx, w, true)) return;
                 }
                 continue;
             }
             if (rec.resolved.isNone()) continue;
             const w = self.getModule(@intFromEnum(rec.resolved)) orelse continue;
-            if (w.wrap_kind == .none and w.wrapper_name_synthetic == null) continue;
+            if (w.wrap_kind == .none) continue;
             if (try cb(ctx, w, false)) return;
         }
     }
@@ -2191,8 +2186,8 @@ pub const Linker = struct {
     /// 개명하는 것과 같은 경로).
     ///
     /// 소비자 자기 `import_records` 로 "무엇을 import 하는가" 를 본다(reverse 인접 불필요).
-    /// asset/disabled 래퍼(`wrapper_name_synthetic`)도 같은 방식으로 커버된다 — 리네임 대상이
-    /// 래퍼가 아니라 **소비자의 바인딩**이라 래퍼에 심볼 테이블이 없어도 무관하다(#4536).
+    /// AST-less asset/disabled CJS 래퍼도 `require_symbol` 이름으로 같은 방식으로 커버된다 —
+    /// 리네임 대상은 래퍼가 아니라 **소비자의 바인딩**이다(#4536).
     ///
     /// `only` 가 주어지면 그 모듈들만 소비자로 본다(code-splitting per-chunk — 소비자 바인딩은
     /// 그 소비자의 청크에서 rename_table 에 반영된다). `null` 이면 전 모듈.
@@ -2255,7 +2250,6 @@ pub const Linker = struct {
             w.getRequireName(&self.rename_table),
             w.getInitName(&self.rename_table),
             w.getExportsName(&self.rename_table),
-            w.wrapper_name_synthetic, // asset/disabled (#4536) — semantic 없어 rt 무관
             if (to_cjs) "__toCommonJS" else null,
             if (to_cjs) rt.NAMES.TOCOMMONJS_MIN else null,
             if (to_esm) "__toESM" else null,
@@ -3776,7 +3770,6 @@ pub const Linker = struct {
         if (m.getRequireName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x11, n);
         if (m.getInitName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x12, n);
         if (m.getExportsName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x13, n);
-        if (m.wrapper_name_synthetic) |n| h ^= std.hash.Wyhash.hash(0x14, n);
         // 3. export 별: exported_name + 자기 canonical local + 자기 인라인 const 값.
         //    ⚠️ **order-dependent 누산**(`h*31 +% eh`) — export 순서가 소비자의 inline namespace
         //    object 속성 순서(`{a,b}` vs `{b,a}`)를 바꾸므로 재정렬도 감지해야 한다. export_bindings

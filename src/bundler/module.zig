@@ -293,10 +293,6 @@ pub const Module = struct {
     /// 정적으로 export 안 된 named import 를 이 export 의 member 로 해석(CJS fallback 과 동형이되
     /// 대상이 namespace 가 아니라 default/named export value). parse_arena 가 backing 소유.
     synthetic_named_exports: ?[]const u8 = null,
-    /// Legacy spelling slot for AST-less CJS wrappers (#4475). New registrations promote
-    /// this name to `require_symbol` in the module's synthetic semantic storage, then clear
-    /// the slot. It remains for an allocation fallback and older in-memory graph states.
-    wrapper_name_synthetic: ?[]const u8 = null,
     /// 파싱된 AST. nodes/extra_data/string_table 의 backing 은 `parse_arena` 가 소유.
     ///
     /// ### Ownership 규약 (D1 디버그 인프라 — RFC #1672)
@@ -822,9 +818,6 @@ pub const Module = struct {
 
     pub fn allocRequireName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
         if (self.getRequireName(rt)) |n| return allocator.dupe(u8, n);
-        // Older AST-less graph states may still have only the legacy deconflicted spelling
-        // (#4475). New graphs use the exact `require_symbol` above.
-        if (self.wrapper_name_synthetic) |n| return allocator.dupe(u8, n);
         return types.makeRequireVarName(allocator, self.path);
     }
 

@@ -224,9 +224,6 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         if (m.getInitName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
         if (m.getExportsName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
         if (m.getRequireName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
-        // semantic 없는 모듈(asset/disabled)의 이름도 seed — incremental rebuild 에서
-        // 새 모듈이 같은 base 를 다시 집지 않도록 (#4475).
-        if (m.wrapper_name_synthetic) |n| _ = used_names.put(self.allocator, n, 1) catch {};
     }
 
     var cjs_runtime_identity_registered = false;
@@ -308,12 +305,8 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         }
 
         if (needs_require) {
-            const require_name = if (m.wrapper_name_synthetic) |legacy_name|
-                legacy_name
-            else blk: {
-                const require_base = types.makeRequireVarName(arena, m.path) catch continue;
-                break :blk uniqueName(arena, require_base, &used_names, self.allocator) catch continue;
-            };
+            const require_base = types.makeRequireVarName(arena, m.path) catch continue;
+            const require_name = uniqueName(arena, require_base, &used_names, self.allocator) catch continue;
             m.require_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -322,7 +315,6 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
                 require_name,
                 Span.EMPTY,
             ) catch null;
-            if (m.require_symbol != null) m.wrapper_name_synthetic = null;
         }
     }
 
