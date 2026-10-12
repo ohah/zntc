@@ -26,8 +26,9 @@ fn findLoopFunctionBody(allocator: std.mem.Allocator, ast: *const Ast, root: Nod
         if (node.tag == .variable_declarator) {
             const binding = ast.getNode(@enumFromInt(ast.extra_data.items[node.data.extra]));
             const init: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + 2]);
+            const name = if (binding.tag == .binding_identifier) ast.getText(binding.data.string_ref) else "";
             if (binding.tag == .binding_identifier and !init.isNone() and
-                std.mem.startsWith(u8, ast.getText(binding.data.string_ref), "_loop") and
+                (std.mem.startsWith(u8, name, "_loop") or std.mem.startsWith(u8, name, "__zntc_loop")) and
                 ast.getNode(init).tag == .function_expression)
             {
                 return @enumFromInt(ast.extra_data.items[ast.getNode(init).data.extra + 2]);
@@ -769,4 +770,118 @@ test "#4819 generator nested extracted loop retains copied header scope" {
         \\  }
         \\}
     , 1);
+}
+
+test "#4819 extracted loop body temps bind to the exact generated function scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function get(value) { return value; }
+        \\function run() {
+        \\  var callbacks = [];
+        \\  var i = 0;
+        \\  while (i < 2) {
+        \\    const result = get({ value: i })?.value;
+        \\    callbacks.push(() => result);
+        \\    i++;
+        \\  }
+        \\  return callbacks;
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = false,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    const loop_body = try findLoopFunctionBody(allocator, transformer.ast, root);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+
+    var function_scope: ScopeId = .none;
+    var owner_count: usize = 0;
+    var owners = edited.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const node = transformer.ast.getNode(owner);
+        if (node.tag != .function_expression or
+            @as(NodeIndex, @enumFromInt(transformer.ast.extra_data.items[node.data.extra + 2])) != loop_body or
+            !(try isReachable(transformer.ast, root, owner))) continue;
+        function_scope = @enumFromInt(entry.value_ptr.*);
+        owner_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), owner_count);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[function_scope.toIndex()].kind);
+
+    var temp_count: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, symbol_index| {
+        if (symbol.scope_id != function_scope or symbol.synthetic_kind != .standalone_temp_binding) continue;
+        temp_count += 1;
+        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[function_scope.toIndex()].get(symbol.synthetic_name));
+
+        var binding_count: usize = 0;
+        for (reachable) |raw| {
+            if (transformer.ast.nodes.items[raw].tag == .binding_identifier and
+                raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(symbol_index))) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+
+        var reference_count: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != symbol_index or reference.node_index.isNone()) continue;
+            try std.testing.expect(try isReachable(transformer.ast, root, reference.node_index));
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                @intFromEnum(reference.node_index),
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected_scope, reference.scope_id);
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            reference_count += 1;
+        }
+        try std.testing.expectEqual(symbol.reference_count, reference_count);
+    }
+    try std.testing.expect(temp_count > 0);
+
+    const unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const exact = try symbol_coverage.checkExact(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        edited.scope_maps,
+        &edited.scope_owner_map,
+        edited.references,
+        transformer.helper_ref_nodes.items,
+        &edited.helper_scope_map,
+        &unresolved_nodes,
+        &transformer.explicit_global_reference_nodes,
+        &transformer.scope_owner_origins,
+    );
+    if (!exact.isClean()) symbol_coverage.printExact("loop-body-temp-test", exact);
+    try std.testing.expect(exact.isClean());
 }

@@ -710,10 +710,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             transformed_body = try hoistVarsOutOfBody(self, transformed_body, hoist_vars, call_scope);
 
+            var body_temp_bindings: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+            defer body_temp_bindings.deinit(self.allocator);
             const before_temp_hoist = transformed_body;
             if (body_temp_start) |start| {
                 if (self.temp_var_counter > start and !transformed_body.isNone()) {
-                    transformed_body = try self.hoistTempVars(transformed_body, start, span);
+                    transformed_body = if (self.semantic_edit_enabled)
+                        try self.hoistTempVarsRecording(transformed_body, start, span, &body_temp_bindings)
+                    else
+                        try self.hoistTempVars(transformed_body, start, span);
                     self.temp_var_counter = start;
                 }
             }
@@ -789,6 +794,24 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     .header_symbol_ids = try self.allocator.dupe(u32, header_symbol_ids.items),
                     .parameter_symbol_ids = try self.allocator.dupe(u32, parameter_symbol_ids.items),
                 });
+            }
+
+            // The body temps were allocated before this extracted function
+            // had an AST owner or ScopeId. Bind them now, after the exact
+            // function scope exists, so the binding and every pending use
+            // move together into the emitted `_loop` function.
+            if (body_temp_bindings.items.len > 0 and self.semantic_edit_enabled) {
+                if (call_scope.isNone())
+                    std.debug.panic("extracted loop body temps have no exact source scope", .{});
+                const function_scope = generator_function_scope orelse
+                    try self.addGeneratedFunctionScope(call_scope, func_expr);
+                try self.bindGeneratedFunctionTemps(
+                    call_scope,
+                    function_scope,
+                    transformed_body,
+                    body_temp_bindings.items,
+                    span,
+                );
             }
 
             // --- var _loop = function(...) { ... } ---
