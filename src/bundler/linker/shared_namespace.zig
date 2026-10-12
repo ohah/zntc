@@ -12,6 +12,7 @@ const LinkingMetadata = linker_mod.LinkingMetadata;
 const ModuleIndex = @import("../types.zig").ModuleIndex;
 const CompiledModule = @import("../compiled_module.zig").CompiledModule;
 const Module = @import("../module.zig").Module;
+const WrapperNameError = @import("../module.zig").WrapperNameError;
 const rt = @import("../runtime_helpers.zig");
 const profile = @import("../../profile.zig");
 const debug_log = @import("../../debug_log.zig");
@@ -108,7 +109,7 @@ pub fn registerNamespaceRewrites(
     symbol_id: u32,
     target_mod_idx: u32,
     var_name: []const u8,
-) std.mem.Allocator.Error!?[]const u8 {
+) WrapperNameError!?[]const u8 {
     var scope = profile.begin(.metadata_register_ns_rewrites);
     defer scope.end();
 
@@ -349,7 +350,7 @@ pub fn registerNamespaceRewrites(
 pub fn ensureSharedNsVar(
     self: *const Linker,
     target: ModuleIndex,
-) std.mem.Allocator.Error![]const u8 {
+) WrapperNameError![]const u8 {
     const target_mod_idx = target.toU32();
     // 캐시 fast-path: computeCrossChunkLinks/emit 의 청크×모듈 루프에서
     // 같은 target 이 반복 호출된다. 히트 시 DFS·seen_exports 빌드를 통째로
@@ -387,7 +388,7 @@ fn appendSharedNsInlineEntry(
     symbol_id: ?u32,
     target_mod_idx: u32,
     seen_exports: *std.StringHashMapUnmanaged(void),
-) std.mem.Allocator.Error![]const u8 {
+) WrapperNameError![]const u8 {
     const ns_var_name = try getOrCreateSharedNamespaceVar(self, target_mod_idx, seen_exports);
     try ns_inline_list.append(self.allocator, .{
         .symbol_id = symbol_id,
@@ -402,7 +403,7 @@ fn getOrCreateSharedNamespaceVar(
     self: *const Linker,
     target_mod_idx: u32,
     seen_exports: *std.StringHashMapUnmanaged(void),
-) std.mem.Allocator.Error![]const u8 {
+) WrapperNameError![]const u8 {
     const mutable_self = @constCast(self);
 
     mutable_self.ns_cache_mutex.lock();
@@ -443,7 +444,7 @@ fn getOrCreateSharedNamespaceVar(
     return fresh;
 }
 
-pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8)) std.mem.Allocator.Error!void {
+pub fn appendSharedNamespacePreamble(self: *const Linker, out: *std.ArrayList(u8)) WrapperNameError!void {
     try appendSharedNamespacePreambleFiltered(self, out, null);
 }
 
@@ -455,7 +456,7 @@ pub fn appendSharedNamespacePreambleFiltered(
     self: *const Linker,
     out: *std.ArrayList(u8),
     target_filter: ?*const std.AutoHashMapUnmanaged(u32, void),
-) std.mem.Allocator.Error!void {
+) WrapperNameError!void {
     const sorted_targets = try self.allocator.dupe(u32, self.ns_shared_inline_order.items);
     defer self.allocator.free(sorted_targets);
     const SortCtx = struct {
@@ -492,7 +493,10 @@ pub fn appendSharedNamespacePreambleFiltered(
         // 1회. 단일 번들/preserve_modules(청크 컨텍스트 없음)는 frozen 유지 → byte-identical.
         // OOM 시 frozen fallback (`rebuilt == null`).
         const rebuilt: ?[]const u8 = if (self.module_to_chunk != null)
-            buildInlineObjectStr(self, target_mod_idx, target_mod_idx, 0) catch null
+            buildInlineObjectStr(self, target_mod_idx, target_mod_idx, 0) catch |err| switch (err) {
+                error.OutOfMemory => null,
+                else => return err,
+            }
         else
             null;
         defer if (rebuilt) |r| self.allocator.free(r);
@@ -939,7 +943,7 @@ pub fn buildInlineObjectStr(
     emitter_mod_idx: u32,
     target_mod_idx: u32,
     depth: u32,
-) std.mem.Allocator.Error![]const u8 {
+) WrapperNameError![]const u8 {
     if (depth > max_chain_depth) return try self.allocator.dupe(u8, "{}");
     const target_any = self.getModule(target_mod_idx) orelse
         return try self.allocator.dupe(u8, "{}");
@@ -1104,7 +1108,7 @@ pub fn buildInlineObjectStr(
     return try self.allocator.dupe(u8, result);
 }
 
-fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair, member_name: []const u8) std.mem.Allocator.Error!?[]const u8 {
+fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair, member_name: []const u8) WrapperNameError!?[]const u8 {
     const init_mod_idx = exp.init_mod orelse return null;
     const init_mod = self.graph.getModule(@enumFromInt(init_mod_idx)) orelse return null;
     if (init_mod.wrap_kind != .esm) return null;
@@ -1131,7 +1135,7 @@ fn allocNamespaceMemberRewriteValue(
     // (또는 exp.local). init 식 뒤 comma-expr 의 값 자리에 embed 된다.
     member_name: []const u8,
     source_init_cache: *std.AutoHashMapUnmanaged(u32, ?[]const u8),
-) std.mem.Allocator.Error!?[]const u8 {
+) WrapperNameError!?[]const u8 {
     const source_init: ?[]const u8 = if (exp.init_mod) |source_mod_idx| blk: {
         if (source_mod_idx == target_mod_idx) break :blk null;
         const gop = try source_init_cache.getOrPut(self.allocator, source_mod_idx);
@@ -1157,13 +1161,13 @@ fn allocNamespaceMemberRewriteValue(
     return null;
 }
 
-fn allocEsmInitExprForModuleIndex(self: *const Linker, mod_idx: u32) std.mem.Allocator.Error!?[]const u8 {
+fn allocEsmInitExprForModuleIndex(self: *const Linker, mod_idx: u32) WrapperNameError!?[]const u8 {
     const mod = self.graph.getModule(@enumFromInt(mod_idx)) orelse return null;
     if (mod.wrap_kind != .esm) return null;
     return try allocEsmInitExpr(self, mod);
 }
 
-pub fn allocEsmInitExpr(self: *const Linker, target_mod: *const Module) std.mem.Allocator.Error![]const u8 {
+pub fn allocEsmInitExpr(self: *const Linker, target_mod: *const Module) WrapperNameError![]const u8 {
     const guard = target_mod.shouldGuard(self.entry_error_guard);
     // 일반 init 식 길이가 30~90B (`__zntc_modules["..."].fn()` + guard wrap).
     // 96B 로 1회 alloc 하면 grow realloc 없이 toOwnedSlice 시 trim 만 발생.

@@ -749,7 +749,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     graph_finalize.propagateTopLevelAwait(self);
     graph_finalize.computeAsyncCone(self);
     graph_finalize.promoteAsyncConeToEsmWrap(self);
-    graph_finalize.registerWrapperSymbols(self);
+    try graph_finalize.registerWrapperSymbols(self);
     checkSelfReExport(self);
 }
 

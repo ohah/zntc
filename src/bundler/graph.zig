@@ -457,7 +457,7 @@ pub const ModuleGraph = struct {
     const graph_finalize = @import("graph/finalize.zig");
     const promoteExportsKinds = graph_finalize.promoteExportsKinds;
     const promoteRunBeforeMainModules = graph_finalize.promoteRunBeforeMainModules;
-    const registerWrapperSymbols = graph_finalize.registerWrapperSymbols;
+    pub const registerWrapperSymbols = graph_finalize.registerWrapperSymbols;
     const propagateTopLevelAwait = graph_finalize.propagateTopLevelAwait;
 
     // Loader/source helpers — graph/loaders.zig로 위임

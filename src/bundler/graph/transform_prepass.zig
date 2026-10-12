@@ -5221,6 +5221,71 @@ fn remapRenamesByNodeIdentity(
     }
 }
 
+/// Graph-level wrapper/runtime bindings have no AST declaration node to anchor
+/// their fresh SymbolIds. Their producer-owned identity is the typed synthetic
+/// kind plus declared name and scope, and it must be unique on both snapshots.
+fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
+    const kind = symbol.synthetic_kind orelse return false;
+    return switch (kind) {
+        .cjs_exports,
+        .cjs_require,
+        .esm_init,
+        .cjs_wrapper_exports_parameter,
+        .cjs_wrapper_module_parameter,
+        .cjs_runtime_factory,
+        .cjs_runtime_internal_local,
+        .bundler_runtime_helper,
+        => true,
+        else => false,
+    };
+}
+
+fn sameGraphOwnedSyntheticIdentity(a: SemanticSymbol, b: SemanticSymbol) bool {
+    if (!isGraphOwnedSyntheticRename(a) or !isGraphOwnedSyntheticRename(b)) return false;
+    return a.synthetic_kind == b.synthetic_kind and
+        a.kind == b.kind and
+        a.scope_id == b.scope_id and
+        std.mem.eql(u8, a.synthetic_name, b.synthetic_name);
+}
+
+fn remapGraphOwnedSyntheticRenames(
+    allocator: std.mem.Allocator,
+    module_index: bundler_symbol.ModuleIndex,
+    old_symbols: []const SemanticSymbol,
+    new_symbols: []const SemanticSymbol,
+    old_renames: []const ?[]const u8,
+    rebuilt: *bundler_symbol.RenameTable,
+) !void {
+    for (old_symbols, 0..) |old_symbol, old_idx| {
+        if (!isGraphOwnedSyntheticRename(old_symbol) or old_idx >= old_renames.len) continue;
+        const rename = old_renames[old_idx] orelse continue;
+
+        var old_matches: usize = 0;
+        for (old_symbols) |candidate| {
+            if (sameGraphOwnedSyntheticIdentity(old_symbol, candidate)) old_matches += 1;
+        }
+        if (old_matches != 1) continue;
+
+        var new_match: ?usize = null;
+        var new_matches: usize = 0;
+        for (new_symbols, 0..) |candidate, new_idx| {
+            if (!sameGraphOwnedSyntheticIdentity(old_symbol, candidate)) continue;
+            new_match = new_idx;
+            new_matches += 1;
+        }
+        if (new_matches != 1) continue;
+
+        const new_id = bundler_symbol.SymbolID.make(module_index, new_match.?);
+        // A source-node anchor already mapped this exact row. Keep that mapping
+        // if its evidence disagrees; never replace it with a name-based guess.
+        if (rebuilt.get(new_id)) |existing| {
+            if (std.mem.eql(u8, existing, rename)) continue;
+            continue;
+        }
+        try rebuilt.put(allocator, new_id, rename);
+    }
+}
+
 /// **RFC #3940 L.5a — carry-over 를 build-scope `rename_table` 기반으로 재설계**.
 /// post-link tree-shake (const-materialize 등) 의 semantic resync 가 symbols 배열을 재생성하면
 /// old idx 기준 rename 정보가 stale 해진다. resync 전 rename 을 읽고 같은 AST NodeIndex 의
@@ -5273,6 +5338,14 @@ fn captureRenamesToPending(
         node_tags,
         old_sem.symbol_ids,
         new_sem.symbol_ids,
+        old_sem.symbols.items,
+        new_sem.symbols.items,
+        old_renames,
+        &rebuilt,
+    );
+    try remapGraphOwnedSyntheticRenames(
+        arena,
+        module.index,
         old_sem.symbols.items,
         new_sem.symbols.items,
         old_renames,
@@ -5546,6 +5619,7 @@ pub fn resyncAfterConstMaterialization(
     _ = &(module.ast orelse return);
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
+    try self.registerWrapperSymbols();
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
@@ -5747,6 +5821,9 @@ pub fn resyncAfterAstMutation(
     // edits a second time and let the emitter drop live declarations.
     if (module.transform_cache) |*cache| cache.ref_deltas = &.{};
     try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
+    // Reanalysis drops graph-only rows. Reattach exact wrapper/runtime IDs
+    // before carrying any linker names into the new semantic snapshot.
+    try self.registerWrapperSymbols();
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 

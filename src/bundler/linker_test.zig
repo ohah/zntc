@@ -103,7 +103,7 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     mutable_owner.cjs_runtime_factory_symbol = null;
     mutable_owner.cjs_runtime_internal_symbols = null;
     mutable_owner.wrap_kind = .none;
-    graph_finalize.registerWrapperSymbols(r.graph);
+    try graph_finalize.registerWrapperSymbols(r.graph);
     try std.testing.expectEqual(inner, mutable_owner.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult);
     const recovered_internal_ids = mutable_owner.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(original_internal_ids.callback_parameter, recovered_internal_ids.callback_parameter);
@@ -328,7 +328,7 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
         module.exports_kind = .commonjs;
     }
 
-    graph_finalize.registerWrapperSymbols(graph);
+    try graph_finalize.registerWrapperSymbols(graph);
     const first = graph.moduleAtMut(first_index) orelse return error.TestUnexpectedResult;
     const second = graph.moduleAtMut(second_index) orelse return error.TestUnexpectedResult;
     try std.testing.expect(first.ast == null and second.ast == null);
@@ -350,13 +350,83 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     // A lost convenience field must be recovered from the owning semantic row,
     // and repeated finalization must not append duplicate identities.
     first.require_symbol = null;
-    graph_finalize.registerWrapperSymbols(graph);
-    graph_finalize.registerWrapperSymbols(graph);
+    try std.testing.expectError(error.MissingWrapperSymbol, first.allocRequireName(std.testing.allocator, null));
+    try graph_finalize.registerWrapperSymbols(graph);
+    try graph_finalize.registerWrapperSymbols(graph);
     try std.testing.expectEqual(first_inner, first.require_symbol orelse return error.TestUnexpectedResult);
     try std.testing.expectEqual(first_symbol_count, first.semantic.?.symbols.items.len);
     try std.testing.expectEqual(second_symbol_count, second.semantic.?.symbols.items.len);
     try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
+}
+
+test "linker: wrapped source modules fail closed without semantic identity" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "module.exports = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const index = findModuleIdx(r.graph, "entry.cjs") orelse return error.TestUnexpectedResult;
+    const module = @constCast(r.graph.getModule(index) orelse return error.TestUnexpectedResult);
+    try std.testing.expect(module.ast != null);
+    module.semantic = null;
+    try std.testing.expectError(error.MissingSemantic, graph_finalize.registerWrapperSymbols(r.graph));
+    try std.testing.expectError(error.MissingWrapperSymbol, module.allocRequireName(std.testing.allocator, null));
+}
+
+test "linker: semantic refresh restores graph-owned wrapper identities" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.cjs", "module.exports = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.cjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const index = findModuleIdx(r.graph, "entry.cjs") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(index) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(types.WrapKind.cjs, module.wrap_kind);
+    const old_require_name = module.getRequireName(&r.linker.rename_table) orelse return error.TestUnexpectedResult;
+    const old_exports_name = module.getExportsName(&r.linker.rename_table) orelse return error.TestUnexpectedResult;
+
+    // Fresh analysis replaces semantic rows but leaves stale convenience
+    // fields. Resync must rebuild those graph-owned rows and update their IDs.
+    const parse_arena = module.parse_arena orelse return error.TestUnexpectedResult;
+    try r.graph.resyncModuleMetadataAfterAstMutation(module, parse_arena.allocator(), &r.linker.rename_table);
+    try r.linker.applyPendingRenames();
+    try r.linker.prepareCjsRuntimeInternalNames();
+
+    const semantic = module.semantic orelse return error.TestUnexpectedResult;
+    const require_id = module.require_symbol orelse return error.TestUnexpectedResult;
+    const exports_id = module.exports_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        semantic_symbol.SyntheticKind.cjs_require,
+        semantic.symbols.items[@intFromEnum(require_id)].synthetic_kind.?,
+    );
+    try std.testing.expectEqual(
+        semantic_symbol.SyntheticKind.cjs_exports,
+        semantic.symbols.items[@intFromEnum(exports_id)].synthetic_kind.?,
+    );
+    try std.testing.expectEqualStrings(old_require_name, module.getRequireName(&r.linker.rename_table) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings(old_exports_name, module.getExportsName(&r.linker.rename_table) orelse return error.TestUnexpectedResult);
+
+    const factory_id = module.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        semantic_symbol.SyntheticKind.cjs_runtime_factory,
+        semantic.symbols.items[@intFromEnum(factory_id)].synthetic_kind.?,
+    );
+    const internal_ids = module.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        semantic_symbol.SyntheticKind.cjs_runtime_internal_local,
+        semantic.symbols.items[@intFromEnum(internal_ids.callback_parameter)].synthetic_kind.?,
+    );
+    const runtime_names = try r.linker.cjsFactoryRuntimeInternalNames();
+    try std.testing.expect(runtime_names.callback_parameter.len > 0);
 }
 
 test "linker: semantic-less binary entry assigns exact runtime SymbolIds" {
@@ -455,7 +525,7 @@ test "linker: disabled CJS wrappers receive runtime SymbolIds without source sem
     }
 
     const index = try graph.addDisabledModule("runtime-only-cjs");
-    graph_finalize.registerWrapperSymbols(graph);
+    try graph_finalize.registerWrapperSymbols(graph);
     const module = graph.getModule(index) orelse return error.TestUnexpectedResult;
     try std.testing.expect(module.ast == null);
     const semantic = module.semantic orelse return error.TestUnexpectedResult;
@@ -493,7 +563,7 @@ test "linker: semantic-less ESM wrappers receive exact wrapper and runtime Symbo
     module.exports_kind = .esm;
     second.wrap_kind = .esm;
     second.exports_kind = .esm;
-    graph_finalize.registerWrapperSymbols(graph);
+    try graph_finalize.registerWrapperSymbols(graph);
     try std.testing.expect(module.ast == null);
     const semantic = module.semantic orelse return error.TestUnexpectedResult;
     const second_semantic = second.semantic orelse return error.TestUnexpectedResult;
@@ -518,8 +588,8 @@ test "linker: semantic-less ESM wrappers receive exact wrapper and runtime Symbo
     module.exports_symbol = null;
     second.init_symbol = null;
     second.exports_symbol = null;
-    graph_finalize.registerWrapperSymbols(graph);
-    graph_finalize.registerWrapperSymbols(graph);
+    try graph_finalize.registerWrapperSymbols(graph);
+    try graph_finalize.registerWrapperSymbols(graph);
     try std.testing.expectEqual(init_inner, module.init_symbol orelse return error.TestUnexpectedResult);
     try std.testing.expectEqual(exports_inner, module.exports_symbol orelse return error.TestUnexpectedResult);
     try std.testing.expectEqual(second_init_inner, second.init_symbol orelse return error.TestUnexpectedResult);
