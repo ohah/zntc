@@ -1234,17 +1234,6 @@ fn isRetainableBoundStaticFieldEffectCall(
         if (raw_arg >= ast.nodes.items.len) return false;
         const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
         if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
-        if (computed_member_key_call_mode == .sequence_argument_optional_key_call and
-            ast.getNode(argument_idx).tag == .call_expression)
-        {
-            const nested_extra = ast.getNode(argument_idx).data.extra;
-            if (nested_extra > extras.len or extras.len - nested_extra < 4) return false;
-            if ((extras[nested_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) {
-                const nested_callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[nested_extra]);
-                if (nested_callee_idx.isNone() or @intFromEnum(nested_callee_idx) >= ast.nodes.items.len or
-                    ast.getNode(nested_callee_idx).tag != .identifier_reference) return false;
-            }
-        }
         if (!allow_bound_call_arguments or
             !isRetainableBoundStaticFieldEffectCall(
                 ast,
