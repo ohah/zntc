@@ -366,6 +366,9 @@ pub const TransformOptions = struct {
                 .formal_parameter => {
                     if (u.default_params and !ast.readExtraNode(node.data.extra, ast_mod.FormalParameterExtra.default).isNone()) return true;
                 },
+                // `catch {}` becomes a generated catch binding and needs its
+                // exact identity before the bundler links the transformed AST.
+                .catch_clause => if (u.optional_catch_binding and node.data.binary.left.isNone()) return true,
                 .private_identifier => if (u.requiresPrivateDownlevel()) return true,
                 .private_field_expression => {
                     if (u.requiresPrivateDownlevel()) return true;
@@ -909,6 +912,32 @@ test "ES2020 and logical-assignment lowering independently require graph pre-pas
         parser.configureFromExtension(".ts");
         _ = try parser.parse();
         const options: TransformOptions = .{ .unsupported = fixture.unsupported };
+        try std.testing.expectEqual(
+            fixture.needs_prepass,
+            options.requiresGraphPrePass(&parser.ast),
+        );
+    }
+}
+
+test "optional catch binding lowering independently requires graph pre-pass" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const UnsupportedFeatures = @import("compat.zig").UnsupportedFeatures;
+    const fixtures = [_]struct {
+        source: []const u8,
+        needs_prepass: bool,
+    }{
+        .{ .source = "try { throw 1; } catch { consume(); }", .needs_prepass = true },
+        .{ .source = "try { throw 1; } catch (error) { consume(error); }", .needs_prepass = false },
+        .{ .source = "consume();", .needs_prepass = false },
+    };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        const options: TransformOptions = .{ .unsupported = UnsupportedFeatures{ .optional_catch_binding = true } };
         try std.testing.expectEqual(
             fixture.needs_prepass,
             options.requiresGraphPrePass(&parser.ast),
