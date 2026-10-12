@@ -3998,6 +3998,59 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES2017 object spread identity keeps generated Object.assign global from source shadowing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-object-spread-symbol-prepass-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'var Object = { assign: function () { throw new Error("source Object was observed"); } };',
+        'var source = { value: 42 };',
+        'var copy = { ...source };',
+        'console.log(copy.value);',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--target=es2017',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('42\n');
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS.filter(
+        (name) => name !== 'shadowed_external_reference',
+      )) {
+        expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/shadowed_external_reference=1(?:\s|$)/);
+      expect(report).toMatch(/clean=0(?:\s|$)/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('non-minified ES5 arrow captures still receive exact bundler SymbolIds', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-arrow-capture-symbols-'));
     const output = join(dir, 'out.cjs');

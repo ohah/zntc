@@ -342,6 +342,17 @@ pub const TransformOptions = struct {
                 .for_of_statement => if (u.for_of) return true,
                 .for_await_of_statement => if (u.needsForAwaitOfDownlevel()) return true,
                 .spread_element => if (u.spread) return true,
+                .object_expression => {
+                    if (u.object_spread) {
+                        // Object spread lowers to a generated Object.assign
+                        // global reference; reserve it before linking so a
+                        // source binding named Object cannot capture the call.
+                        var properties = ast.iterateExtraList(node.data.list);
+                        while (properties.next()) |property| {
+                            if (ast.getNode(property).tag == .spread_element) return true;
+                        }
+                    }
+                },
                 .object_pattern,
                 .object_assignment_target,
                 => {
@@ -938,6 +949,33 @@ test "optional catch binding lowering independently requires graph pre-pass" {
         parser.configureFromExtension(".ts");
         _ = try parser.parse();
         const options: TransformOptions = .{ .unsupported = UnsupportedFeatures{ .optional_catch_binding = true } };
+        try std.testing.expectEqual(
+            fixture.needs_prepass,
+            options.requiresGraphPrePass(&parser.ast),
+        );
+    }
+}
+
+test "object spread expression lowering independently requires graph pre-pass" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const UnsupportedFeatures = @import("compat.zig").UnsupportedFeatures;
+    const fixtures = [_]struct {
+        source: []const u8,
+        needs_prepass: bool,
+    }{
+        .{ .source = "var source = {}; var copy = { ...source };", .needs_prepass = true },
+        .{ .source = "var copy = { value: 1 };", .needs_prepass = false },
+        .{ .source = "var copy = [...source];", .needs_prepass = false },
+        .{ .source = "var { value, ...rest } = source;", .needs_prepass = true },
+    };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        const options: TransformOptions = .{ .unsupported = UnsupportedFeatures{ .object_spread = true } };
         try std.testing.expectEqual(
             fixture.needs_prepass,
             options.requiresGraphPrePass(&parser.ast),
