@@ -10,6 +10,7 @@ const ModuleIndex = types.ModuleIndex;
 const graph_finalize = @import("graph/finalize.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const module_store_mod = @import("module_store.zig");
+const module_codec = @import("module_codec.zig");
 const writeFile = @import("test_helpers.zig").writeFile;
 const bundler_symbol = @import("symbol.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
@@ -386,11 +387,18 @@ test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
     const sem = module.semantic orelse return error.TestUnexpectedResult;
     const exports_row = sem.symbols.items[@intFromEnum(exports_id)];
     const module_row = sem.symbols.items[@intFromEnum(module_id)];
+    const wrapper_scope = sem.scopes[0].parent;
 
-    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter, exports_row.synthetic_kind.?);
-    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter, module_row.synthetic_kind.?);
-    try std.testing.expect(exports_row.scope_id.isNone());
-    try std.testing.expect(module_row.scope_id.isNone());
+    try std.testing.expect(!wrapper_scope.isNone());
+    try std.testing.expectEqual(@as(usize, sem.scopes.len - 1), @intFromEnum(wrapper_scope));
+    try std.testing.expectEqual(@as(usize, sem.scope_maps.len - 1), @intFromEnum(wrapper_scope));
+    try std.testing.expectEqual(@as(@TypeOf(wrapper_scope), .none), sem.scopes[@intFromEnum(wrapper_scope)].parent);
+    try std.testing.expectEqual(@as(@TypeOf(sem.scopes[0].kind), .function), sem.scopes[@intFromEnum(wrapper_scope)].kind);
+    try std.testing.expectEqual(wrapper_scope, exports_row.scope_id);
+    try std.testing.expectEqual(wrapper_scope, module_row.scope_id);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(exports_id)), sem.scope_maps[@intFromEnum(wrapper_scope)].get("exports"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(module_id)), sem.scope_maps[@intFromEnum(wrapper_scope)].get("module"));
+    try std.testing.expectEqual(wrapper_scope, sem.scopes[0].parent);
 
     const source_exports = sem.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult;
     const source_module = sem.scope_maps[0].get("module") orelse return error.TestUnexpectedResult;
@@ -399,12 +407,27 @@ test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
     try std.testing.expectEqualStrings("exports", sem.symbols.items[source_exports].nameText(module.source));
     try std.testing.expectEqualStrings("module", sem.symbols.items[source_module].nameText(module.source));
 
+    try r.linker.finalize(.{ .compute_renames = false, .compute_mangling = false });
+    const exports_output_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @intFromEnum(exports_id))) orelse return error.TestUnexpectedResult;
+    const module_output_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @intFromEnum(module_id))) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!std.mem.eql(u8, exports_output_name, "exports"));
+    try std.testing.expect(!std.mem.eql(u8, module_output_name, "module"));
+    try std.testing.expect(!std.mem.eql(u8, exports_output_name, module_output_name));
+
     const symbol_count = sem.symbols.items.len;
+    const scope_count = sem.scopes.len;
+    const scope_map_count = sem.scope_maps.len;
     try graph_finalize.registerWrapperSymbols(r.graph);
     try graph_finalize.registerWrapperSymbols(r.graph);
     try std.testing.expectEqual(exports_id, module.cjs_wrapper_exports_parameter_symbol.?);
     try std.testing.expectEqual(module_id, module.cjs_wrapper_module_parameter_symbol.?);
     try std.testing.expectEqual(symbol_count, module.semantic.?.symbols.items.len);
+    try std.testing.expectEqual(scope_count, module.semantic.?.scopes.len);
+    try std.testing.expectEqual(scope_map_count, module.semantic.?.scope_maps.len);
+
+    const mutable_scope_maps = @constCast(sem.scope_maps);
+    mutable_scope_maps[@intFromEnum(wrapper_scope)].putAssumeCapacity("exports", @intFromEnum(module_id));
+    try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(r.graph));
 }
 
 test "#4819: escaped CJS var redeclaration shares the wrapper parameter SymbolId" {
@@ -421,8 +444,36 @@ test "#4819: escaped CJS var redeclaration shares the wrapper parameter SymbolId
     const module = r.graph.getModule(index) orelse return error.TestUnexpectedResult;
     const exports_id = module.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
     const sem = module.semantic orelse return error.TestUnexpectedResult;
+    const wrapper_scope = sem.scopes[0].parent;
+    const escaped_source_key = "exp\\u006frts";
+    try std.testing.expect(!wrapper_scope.isNone());
+    try std.testing.expectEqual(@as(usize, @intFromEnum(exports_id)), sem.scope_maps[0].get(escaped_source_key) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqual(@as(usize, @intFromEnum(exports_id)), sem.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(@as(usize, @intFromEnum(exports_id)), sem.scope_maps[@intFromEnum(wrapper_scope)].get("exports") orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(wrapper_scope, sem.symbols.items[@intFromEnum(exports_id)].scope_id);
     try std.testing.expect(sem.symbols.items[@intFromEnum(exports_id)].synthetic_kind == null);
+    const scope_count = sem.scopes.len;
+    const scope_map_count = sem.scope_maps.len;
+    try graph_finalize.registerWrapperSymbols(r.graph);
+    try graph_finalize.registerWrapperSymbols(r.graph);
+    try std.testing.expectEqual(scope_count, module.semantic.?.scopes.len);
+    try std.testing.expectEqual(scope_map_count, module.semantic.?.scope_maps.len);
+
+    const source_ast = module.ast orelse return error.TestUnexpectedResult;
+    const source_semantic = module.semantic orelse return error.TestUnexpectedResult;
+    var encoded: std.ArrayList(u8) = .empty;
+    defer encoded.deinit(std.testing.allocator);
+    try module_codec.serialize(&source_ast, &source_semantic, &encoded, std.testing.allocator);
+    var decoded_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer decoded_arena.deinit();
+    const decoded = try module_codec.deserialize(encoded.items, decoded_arena.allocator());
+    const decoded_wrapper_scope = decoded.semantic.scopes[0].parent;
+    try std.testing.expect(!decoded_wrapper_scope.isNone());
+    const decoded_wrapper_raw: usize = @intFromEnum(decoded_wrapper_scope);
+    const decoded_exports_id = decoded.semantic.scope_maps[decoded_wrapper_raw].get("exports") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(decoded_wrapper_scope, decoded.semantic.symbols.items[decoded_exports_id].scope_id);
+    try std.testing.expectEqual(decoded_exports_id, decoded.semantic.scope_maps[0].get(escaped_source_key) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(decoded_exports_id, decoded.semantic.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult);
 }
 
 test "linker: wrapped source modules fail closed without semantic identity" {

@@ -584,10 +584,27 @@ describe('#4819: CJS wrapper parameter identity', () => {
       expected: 'escaped-local',
     },
     {
+      name: 'escaped exports with canonical reference',
+      source:
+        'let exp\\u006frts = {};\n' +
+        'exports.answer = 42;\n' +
+        'module.exports = exp\\u006frts;\n' +
+        'console.log(module.exports.answer);',
+      expected: '42',
+    },
+    {
       name: 'escaped module',
       source:
         "let modul\\u0065 = 'escaped-module';\nexports.answer = 42;\nconsole.log(modul\\u0065, exports.answer);",
       expected: 'escaped-module 42',
+    },
+    {
+      name: 'escaped module with canonical reference',
+      source:
+        'let modul\\u0065 = { exports: {} };\n' +
+        'module.exports.answer = 42;\n' +
+        'console.log(modul\\u0065.exports.answer);',
+      expected: '42',
     },
     {
       name: 'both wrapper parameters',
@@ -642,6 +659,14 @@ describe('#4819: CJS wrapper parameter identity', () => {
       name: 'exports',
       source:
         'exports.answer = 42;\nvar exports;\nmodule.exports = exports;\nconsole.log(module.exports.answer);',
+    },
+    {
+      name: 'escaped exports',
+      source:
+        'var exp\\u006frts = {};\n' +
+        'exports.answer = 42;\n' +
+        'module.exports = exp\\u006frts;\n' +
+        'console.log(module.exports.answer);',
     },
     {
       name: 'module',

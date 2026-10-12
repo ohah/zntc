@@ -778,7 +778,16 @@ pub const SemanticAnalyzer = struct {
         const is_synthetic_name = name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0;
         // transformer 가 `addString` 으로 만든 이름(string_table span)은 owned 복사 — symbol
         // `synthetic_name` / scope_map 키로 raw 슬라이스를 들고 가면 dangling (#3100).
-        const name_text = try self.ast.getTextStable(self.allocator, name_span);
+        const raw_name_text = try self.ast.getTextStable(self.allocator, name_span);
+        var name_text = raw_name_text;
+        if (!is_synthetic_name) {
+            var decode_buffer: [256]u8 = undefined;
+            if (Scanner.decodeIdentifierEscapesInto(raw_name_text, &decode_buffer)) |decoded_name| {
+                if (!std.mem.eql(u8, raw_name_text, decoded_name)) {
+                    name_text = try self.allocator.dupe(u8, decoded_name);
+                }
+            }
+        }
 
         // function-like 선언의 스코핑 규칙:
         // - var scope(global/function/module) 안에서 직접 선언: var scope에 등록 (호이스팅)
@@ -896,7 +905,13 @@ pub const SemanticAnalyzer = struct {
         // per-scope HashMap에도 등록 (O(1) 검색용)
         if (!target_scope.isNone()) {
             self.scopes.items[target_scope.toIndex()].symbol_count += 1;
-            try self.scope_maps.items[target_scope.toIndex()].put(self.allocator, name_text, sym_index);
+            const target_map = &self.scope_maps.items[target_scope.toIndex()];
+            try target_map.put(self.allocator, name_text, sym_index);
+            // Keep the original source spelling for graph/linker consumers while
+            // making canonical references resolve through the same O(1) key.
+            if (!std.mem.eql(u8, raw_name_text, name_text)) {
+                try target_map.put(self.allocator, raw_name_text, sym_index);
+            }
         }
 
         // StmtInfo 사전 수집: 선언 위치를 references 에 declare 플래그로 기록. #1669 부터 모든 scope.
@@ -954,7 +969,15 @@ pub const SemanticAnalyzer = struct {
         if (scope_id.isNone()) return null;
         const idx = scope_id.toIndex();
         if (idx >= self.scope_maps.items.len) return null;
-        const sym_idx = self.scope_maps.items[idx].get(name) orelse return null;
+        const scope_map = &self.scope_maps.items[idx];
+        if (scope_map.get(name)) |sym_idx| {
+            if (sym_idx < self.symbols.items.len) return sym_idx;
+            return null;
+        }
+        var decode_buffer: [256]u8 = undefined;
+        const decoded_name = Scanner.decodeIdentifierEscapesInto(name, &decode_buffer) orelse return null;
+        if (std.mem.eql(u8, decoded_name, name)) return null;
+        const sym_idx = scope_map.get(decoded_name) orelse return null;
         if (sym_idx >= self.symbols.items.len) return null;
         return sym_idx;
     }
@@ -1261,7 +1284,7 @@ pub const SemanticAnalyzer = struct {
             const idx = scope_id.toIndex();
             if (idx >= self.scope_maps.items.len) break;
 
-            if (self.scope_maps.items[idx].get(name)) |sym_idx| {
+            if (self.findSymbolIndexInScope(scope_id, name)) |sym_idx| {
                 // reference_count / write_count 는 value 참조만 집계 (#1791 호환).
                 // mangler / tree-shaker 는 이 카운트를 "runtime 에 살아있는 참조 수" 로
                 // 사용하므로, type 문맥 (TS type annotation 등) 의 식별자는 runtime 에

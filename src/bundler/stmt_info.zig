@@ -1422,10 +1422,26 @@ fn gatedMemberAugmentObjectNode(
 /// `X.p = v` 를 "X 를 아무도 안 읽으면 죽은 쓰기" 로 보는 전제는 X 의 객체가 X 로만 닿는다는 것이다.
 /// X 가 별칭이면(`const prototype = Ctor.prototype; prototype.append = …`) X 를 안 읽어도 쓰기가
 /// `Ctor.prototype` 으로 보인다 — 지우면 axios 의 `AxiosURLSearchParams` 가 `append` 를 잃는다 (#4747).
-fn validateMemberAugmentBaseSymbol(ast: *const Ast, symbols: []const Symbol, x_sym: u32) ?u32 {
+fn isProgramTopLevelScope(scopes: []const Scope, scope_id: ScopeId) bool {
+    if (scope_id == @as(ScopeId, @enumFromInt(0))) return true;
+    if (scopes.len == 0) return false;
+
+    // Parsed source references use Program scope 0. A parsed CommonJS module
+    // adds the emitted callback function as Program's parent; top-level var and
+    // function declarations belong to that function scope while lexical
+    // declarations remain in Program scope.
+    const wrapper_scope_id = scopes[0].parent;
+    if (wrapper_scope_id.isNone() or scope_id != wrapper_scope_id) return false;
+    const wrapper_scope_idx: usize = @intFromEnum(wrapper_scope_id);
+    if (wrapper_scope_idx >= scopes.len) return false;
+    const wrapper_scope = scopes[wrapper_scope_idx];
+    return wrapper_scope.kind == .function and wrapper_scope.parent.isNone();
+}
+
+fn validateMemberAugmentBaseSymbol(ast: *const Ast, scopes: []const Scope, symbols: []const Symbol, x_sym: u32) ?u32 {
     if (x_sym >= symbols.len) return null;
     const sym = &symbols[x_sym];
-    if (@intFromEnum(sym.scope_id) != 0) return null;
+    if (!isProgramTopLevelScope(scopes, sym.scope_id)) return null;
     if (sym.decl_flags.is_import) return null;
     // 선언 뒤 재대입(`X = other`)이 있으면 그 뒤로는 별칭일 수 있다.
     if (sym.write_count != 0) return null;
@@ -1483,10 +1499,10 @@ fn topLevelDeclaratorInit(ast: *const Ast, name: Span) ?NodeIndex {
     return null;
 }
 
-fn findUniqueTopLevelLocalSymbolByName(ast: *const Ast, symbols: []const Symbol, name: []const u8) ?u32 {
+fn findUniqueTopLevelLocalSymbolByName(ast: *const Ast, scopes: []const Scope, symbols: []const Symbol, name: []const u8) ?u32 {
     var found: ?u32 = null;
     for (symbols, 0..) |*sym, sym_idx| {
-        if (@intFromEnum(sym.scope_id) != 0) continue;
+        if (!isProgramTopLevelScope(scopes, sym.scope_id)) continue;
         if (sym.decl_flags.is_import) continue;
         if (!std.mem.eql(u8, sym.nameText(ast.source), name)) continue;
         if (found != null) return null;
@@ -1499,18 +1515,19 @@ fn memberAugmentSymbolFromObjectNode(
     ast: *const Ast,
     obj_node: NodeIndex,
     symbol_ids: []const ?u32,
+    scopes: []const Scope,
     symbols: []const Symbol,
 ) ?u32 {
     const obj_node_i = @intFromEnum(obj_node);
     if (obj_node_i < symbol_ids.len) {
         if (symbol_ids[obj_node_i]) |x_sym| {
-            return validateMemberAugmentBaseSymbol(ast, symbols, x_sym);
+            return validateMemberAugmentBaseSymbol(ast, scopes, symbols, x_sym);
         }
     }
     if (obj_node_i >= ast.nodes.items.len) return null;
     const obj = ast.nodes.items[obj_node_i];
     if (obj.tag != .identifier_reference) return null;
-    return findUniqueTopLevelLocalSymbolByName(ast, symbols, ast.getText(obj.span));
+    return findUniqueTopLevelLocalSymbolByName(ast, scopes, symbols, ast.getText(obj.span));
 }
 
 /// `build` (symbol_ids 보유) 경로용 thin wrapper.
@@ -1518,22 +1535,24 @@ fn gatedMemberAugmentSymbol(
     ast: *const Ast,
     stmt_node: Node,
     symbol_ids: []const ?u32,
+    scopes: []const Scope,
     symbols: []const Symbol,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) ?u32 {
     const obj_node = gatedMemberAugmentObjectNode(ast, stmt_node, unresolved_globals) orelse return null;
-    return memberAugmentSymbolFromObjectNode(ast, obj_node, symbol_ids, symbols);
+    return memberAugmentSymbolFromObjectNode(ast, obj_node, symbol_ids, scopes, symbols);
 }
 
 fn workletMetadataSymbol(
     ast: *const Ast,
     stmt_node: Node,
     symbol_ids: []const ?u32,
+    scopes: []const Scope,
     symbols: []const Symbol,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) ?u32 {
     const obj_node = workletMetadataObjectNode(ast, stmt_node, unresolved_globals) orelse return null;
-    return memberAugmentSymbolFromObjectNode(ast, obj_node, symbol_ids, symbols);
+    return memberAugmentSymbolFromObjectNode(ast, obj_node, symbol_ids, scopes, symbols);
 }
 
 /// 두 builder (buildFromSemantic / build) 의 per-stmt Phase 1 본체.
@@ -1733,7 +1752,7 @@ pub fn buildFromSemantic(
         // stmt 의 has_side_effects 를 해제하고 X 의 writer bucket 에 등록한다.
         if (member_augment_obj_to_stmt.fetchRemove(@intFromEnum(r.node_index))) |kv| {
             const aug_stmt = kv.value;
-            if (validateMemberAugmentBaseSymbol(ast, symbols, sym_u32)) |x_sym| {
+            if (validateMemberAugmentBaseSymbol(ast, scopes, symbols, sym_u32)) |x_sym| {
                 stmts[aug_stmt].has_side_effects = false;
                 try writer_buckets[x_sym].append(allocator, aug_stmt);
             }
@@ -1743,7 +1762,7 @@ pub fn buildFromSemantic(
             // #1669: analyzer 가 모든 scope 선언에 declare ref 를 남기므로 top-level (scope_id==0)
             // 만 bucket 분배. 함수/블록 내부 declare ref 는 `scope_stmt_idx` 와 함께 references
             // 배열에 남아 optimizer pass (single-use inline 등) 가 직접 소비.
-            if (@intFromEnum(r.scope_id) != 0) continue;
+            if (!isProgramTopLevelScope(scopes, r.scope_id)) continue;
             try declared_buckets[r.stmt_idx].append(allocator, sym_u32);
         } else {
             try referenced_buckets[r.stmt_idx].append(allocator, sym_u32);
@@ -1768,7 +1787,7 @@ pub fn buildFromSemantic(
         if (@intFromEnum(obj_idx) >= ast.nodes.items.len) continue;
         const obj = ast.nodes.items[@intFromEnum(obj_idx)];
         if (obj.tag != .identifier_reference) continue;
-        const x_sym = findUniqueTopLevelLocalSymbolByName(ast, symbols, ast.getText(obj.span)) orelse continue;
+        const x_sym = findUniqueTopLevelLocalSymbolByName(ast, scopes, symbols, ast.getText(obj.span)) orelse continue;
         const aug_stmt = entry.value_ptr.*;
         stmts[aug_stmt].has_side_effects = false;
         try writer_buckets[x_sym].append(allocator, aug_stmt);
@@ -1851,6 +1870,7 @@ pub fn build(
     allocator: std.mem.Allocator,
     ast: *const Ast,
     symbols: []const Symbol,
+    scopes: []const Scope,
     symbol_ids: []const ?u32,
     unresolved_globals: ?*const purity.GlobalRefSet,
     collect_cjs_exports: bool,
@@ -1926,9 +1946,9 @@ pub fn build(
         if (stmts[stmt_i].has_side_effects and ni < ast.nodes.items.len) {
             const stmt_node = ast.nodes.items[ni];
             const x_sym =
-                workletMetadataSymbol(ast, stmt_node, symbol_ids, symbols, unresolved_globals) orelse
+                workletMetadataSymbol(ast, stmt_node, symbol_ids, scopes, symbols, unresolved_globals) orelse
                 if (gate_member_augment)
-                    gatedMemberAugmentSymbol(ast, stmt_node, symbol_ids, symbols, unresolved_globals)
+                    gatedMemberAugmentSymbol(ast, stmt_node, symbol_ids, scopes, symbols, unresolved_globals)
                 else
                     null;
 
@@ -1983,7 +2003,7 @@ pub fn build(
         const sym_idx_u32: u32 = @intCast(sym_idx);
 
         // declared: top-level scope에 선언된 심볼
-        if (@intFromEnum(sym.scope_id) == 0 and
+        if (isProgramTopLevelScope(scopes, sym.scope_id) and
             n.span.start >= sym.declaration_span.start and
             n.span.end <= sym.declaration_span.end)
         {
@@ -2056,6 +2076,20 @@ pub fn build(
         .sym_to_writer_stmts = sym_to_writer_stmts,
         .allocator = allocator,
     };
+}
+
+test "CJS callback bindings count as Program top-level without admitting nested scopes" {
+    const scopes = [_]Scope{
+        .{ .parent = @enumFromInt(2), .kind = .global, .is_strict = false },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false },
+        .{ .parent = .none, .kind = .function, .is_strict = false },
+    };
+
+    try std.testing.expect(isProgramTopLevelScope(&scopes, @enumFromInt(0)));
+    try std.testing.expect(!isProgramTopLevelScope(&scopes, @enumFromInt(1)));
+    try std.testing.expect(isProgramTopLevelScope(&scopes, @enumFromInt(2)));
+    try std.testing.expect(!isProgramTopLevelScope(&scopes, .none));
+    try std.testing.expect(!isProgramTopLevelScope(&scopes, @enumFromInt(3)));
 }
 
 test "findStmtIndexFromInfos maps pos to containing top-level statement" {
