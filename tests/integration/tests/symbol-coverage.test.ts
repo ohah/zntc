@@ -13896,7 +13896,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class OptionalMemberNestedReadKeyArgumentField { static value = __zntcOptionalMemberNestedReadKeyArgumentHolder.outer?.receiver.fieldValue((events.push("before"), argumentSource[argumentKey?.(argumentSource.keyArgument?.())])); }',
           'console.log(OptionalMemberNestedReadKeyArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before,member-key:this,key:value,value\n',
       },
       {
