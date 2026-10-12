@@ -2512,7 +2512,9 @@ test "TLA: wraps top-level await in async IIFE when unsupported" {
     try std.testing.expect(std.mem.indexOf(u8, code, "yield") == null);
 }
 
-test "TLA: deferred export moves with a wrapped top-level local dependency" {
+test "TLA: an async __esm factory keeps the module unsplit when exports can be deferred" {
+    // The bundler evaluates such a module inside an async `__esm` factory, so
+    // no inner async IIFE splits exports from the locals they read (#5570).
     const source = "const items = [1]; await Promise.resolve(); export const OUT = { items };";
     var r = try parseAsModuleAndTransform(
         std.testing.allocator,
@@ -2526,9 +2528,9 @@ test "TLA: deferred export moves with a wrapped top-level local dependency" {
     const code = try generateCode(&r);
     defer std.testing.allocator.free(code);
 
-    try std.testing.expect(std.mem.indexOf(u8, code, "var OUT") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "OUT = { items }") != null);
-    try std.testing.expect(std.mem.indexOf(u8, code, "export const OUT") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "async") == null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "await Promise.resolve()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "export const OUT = { items }") != null);
 }
 
 test "TLA: no top-level await → no wrapping" {

@@ -19,9 +19,12 @@
 //! es2017 lowering 경로로 `__async(function*(){...})` 로 변환된다.
 //!
 //! 범위:
-//! - import_declaration / export_* 는 그대로 둔다 (ESM wrap 불가).
-//! - export + TLA 조합 (예: `export const x = await foo()`) 은 복잡하므로
-//!   이 구현에서는 wrap 을 건너뛴다 (단독 번들 entry 에서는 거의 없음).
+//! - import_declaration / export_* 는 래퍼 밖에 둔다. 첫 top-level await 보다 앞의
+//!   export 선언은 래퍼 앞(원래 순서), 뒤의 것은 래퍼 뒤에 놓인다 (#5570).
+//! - export 선언 안의 await (`export const x = await foo()`) 는 낮출 수 없다 — 번들은
+//!   analyzer 가 ZNTC0001 로 거부한다 (#5564).
+//! - 번들이 모듈을 async `__esm` factory 로 평가하면(`tla_export_decl_deferrable`)
+//!   이 변환을 하지 않는다: await 가 factory 안에 그대로 남는다 (#5570).
 //!
 //! 참고:
 //! - esbuild: internal/js_parser/js_parser.go — LowerAllStaticFields & TLA handling.
@@ -95,140 +98,6 @@ pub fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocat
     return c.found;
 }
 
-/// `export <var-decl>` 이면 내부 `variable_declaration` 인덱스. 그 외 null.
-///
-/// ⚠️ `export_named_declaration` extra 는 **6슬롯**:
-///    `[decl(0), specs_start(1), specs_len(2), source(3), attrs_start(4), attrs_len(5)]`.
-///    4슬롯으로 읽으면 인접 extra_data 를 attrs 로 오독한다.
-fn exportedVarDeclIdx(self: anytype, export_node: Node) ?NodeIndex {
-    if (export_node.tag != .export_named_declaration) return null;
-    const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[export_node.data.extra]);
-    if (decl_idx.isNone()) return null;
-    if (self.ast.getNode(decl_idx).tag != .variable_declaration) return null;
-    return decl_idx;
-}
-
-/// 모든 declarator 가 **단순 식별자**인지.
-///
-/// ⚠️ 구조분해 패턴은 대상에서 뺀다 — 초기화식 없는 `var {a,b};` 는 문법 오류이고,
-///    폐기된 시도가 정확히 그걸로 번들 전체를 파싱 불가로 만들었다.
-fn allDeclaratorsAreIdentifiers(self: anytype, decl_idx: NodeIndex) bool {
-    const decl = self.ast.getNode(decl_idx);
-    const dlist = self.ast.extra_data.items[decl.data.extra + 1];
-    const dlen = self.ast.extra_data.items[decl.data.extra + 2];
-    if (dlen == 0) return false;
-    var k: u32 = 0;
-    while (k < dlen) : (k += 1) {
-        const dcl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dlist + k]);
-        const dcl = self.ast.getNode(dcl_idx);
-        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
-        if (name_idx.isNone()) return false;
-        if (self.ast.getNode(name_idx).tag != .binding_identifier) return false;
-    }
-    return true;
-}
-
-const RefScanCtx = struct {
-    names: *const std.StringHashMapUnmanaged(void),
-    ast: *const ast_mod.Ast,
-    found: bool,
-};
-
-fn refScanVisit(ctx: *RefScanCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
-    _ = idx;
-    if (node.tag == .identifier_reference) {
-        if (ctx.names.contains(ctx.ast.getText(node.data.string_ref))) {
-            ctx.found = true;
-            return .stop;
-        }
-    }
-    return .descend;
-}
-
-/// 서브트리가 `names` 중 하나를 참조하는지 (IIFE 로 지연된 바인딩 의존 판정).
-fn referencesAny(self: anytype, idx: NodeIndex, names: *const std.StringHashMapUnmanaged(void)) bool {
-    if (names.count() == 0) return false;
-    var c = RefScanCtx{ .names = names, .ast = self.ast, .found = false };
-    ast_walk.walkPreorderIterative(self.ast.allocator, self.ast, idx, &c, refScanVisit) catch return false;
-    return c.found;
-}
-
-fn addDeferredName(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, names: *std.StringHashMapUnmanaged(void), node: NodeIndex) std.mem.Allocator.Error!void {
-    if (node.isNone() or @intFromEnum(node) >= ast.nodes.items.len) return;
-    const binding = ast.getNode(node);
-    if (binding.tag != .binding_identifier) return;
-    const name = try ast.getTextStable(allocator, binding.data.string_ref);
-    try names.put(allocator, name, {});
-}
-
-fn addDeferredPatternNames(
-    allocator: std.mem.Allocator,
-    ast: *const ast_mod.Ast,
-    names: *std.StringHashMapUnmanaged(void),
-    pattern: NodeIndex,
-) std.mem.Allocator.Error!void {
-    var walker = try ast_walk.bindingIdentifiers(allocator, ast, pattern, .{ .cover_grammar_assignment = true });
-    defer walker.deinit();
-    while (try walker.next()) |binding| try addDeferredName(allocator, ast, names, binding);
-}
-
-/// Names declared by top-level statements moved into the async wrapper. An
-/// export initializer that reads one of them must move with it when the
-/// module's evaluation promise can defer exports safely.
-fn addDeferredStatementNames(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, names: *std.StringHashMapUnmanaged(void), statement: NodeIndex) std.mem.Allocator.Error!void {
-    if (statement.isNone() or @intFromEnum(statement) >= ast.nodes.items.len) return;
-    const node = ast.getNode(statement);
-    switch (node.tag) {
-        .variable_declaration => {
-            const extra = node.data.extra;
-            if (extra + 2 >= ast.extra_data.items.len) return;
-            const start = ast.extra_data.items[extra + 1];
-            const len = ast.extra_data.items[extra + 2];
-            if (start > ast.extra_data.items.len or len > ast.extra_data.items.len - start) return;
-            for (ast.extra_data.items[start .. start + len]) |raw_declarator| {
-                if (raw_declarator >= ast.nodes.items.len) continue;
-                const declarator = ast.nodes.items[raw_declarator];
-                if (declarator.tag != .variable_declarator or declarator.data.extra >= ast.extra_data.items.len) continue;
-                try addDeferredPatternNames(allocator, ast, names, @enumFromInt(ast.extra_data.items[declarator.data.extra]));
-            }
-        },
-        .function_declaration => {
-            const extra = node.data.extra;
-            if (extra + ast_mod.FunctionExtra.name < ast.extra_data.items.len)
-                try addDeferredName(allocator, ast, names, @enumFromInt(ast.extra_data.items[extra + ast_mod.FunctionExtra.name]));
-        },
-        .class_declaration => {
-            const extra = node.data.extra;
-            if (extra + ast_mod.ClassExtra.name < ast.extra_data.items.len)
-                try addDeferredName(allocator, ast, names, @enumFromInt(ast.extra_data.items[extra + ast_mod.ClassExtra.name]));
-        },
-        else => {},
-    }
-}
-
-/// declarator 들의 초기화식을 떼어 `var a, b;` 로 만든다 (선언은 밖에 남아 export 보존).
-/// 호출 전에 `allDeclaratorsAreIdentifiers` 가 참임이 보장돼야 한다.
-fn stripVarInitializers(comptime Transformer: type, self: *Transformer, decl_idx: NodeIndex) Transformer.Error!NodeIndex {
-    const decl = self.ast.getNode(decl_idx);
-    const dl = self.ast.extra_data.items[decl.data.extra + 1];
-    const dn = self.ast.extra_data.items[decl.data.extra + 2];
-    const top = self.scratch.items.len;
-    defer self.scratch.shrinkRetainingCapacity(top);
-    var k: u32 = 0;
-    while (k < dn) : (k += 1) {
-        const dcl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dl + k]);
-        const dcl = self.ast.getNode(dcl_idx);
-        const nm: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
-        const ty: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra + 1]);
-        const ne = try self.ast.addExtras(&.{ @intFromEnum(nm), @intFromEnum(ty), @intFromEnum(NodeIndex.none) });
-        const nd = try self.ast.addNode(.{ .tag = .variable_declarator, .span = dcl.span, .data = .{ .extra = ne } });
-        try self.scratch.append(self.allocator, nd);
-    }
-    const nl = try self.ast.addNodeList(self.scratch.items[top..]);
-    const de = try self.ast.addExtras(&.{ @intFromEnum(ast_mod.VariableDeclarationKind.@"var"), nl.start, nl.len });
-    return try self.ast.addNode(.{ .tag = .variable_declaration, .span = decl.span, .data = .{ .extra = de } });
-}
-
 /// `visitNode` 가 쌓은 `pending_nodes`(앞) / `trailing_nodes`(뒤) 를 scratch 로 옮긴다.
 ///
 /// ⚠️ `lowerProgram` 은 `visitExtraList` 를 안 쓰고 직접 리스트를 조립하므로 이 배수를
@@ -273,82 +142,29 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // side-effect 가 2회 실행된다(유닛 테스트가 잡음). 플래그는 **AST** 에 둬야 한다 —
     // prepass/emit 이 각각 새 Transformer 를 만들기 때문.
     if (self.ast.tla_lowered) return null;
+    // ESM output with native async functions evaluates a top-level-await
+    // module inside an async `__esm` factory: the awaits stay where they are,
+    // and that factory hoists top-level bindings and keeps statement order.
+    // An inner async IIFE would split the module in two — exports outside it
+    // could not see its locals (`export function f() { return config }`) and
+    // ran out of order or in TDZ (#5570).
+    if (self.options.tla_export_decl_deferrable) return null;
     const list = node.data.list;
 
-    // 1. wrap 대상 TLA 존재 여부 검사.
-    // export 선언 안의 TLA (예: `export const x = await foo()`) 는 wrap 생략 (첫 패스).
+    // 1. wrap 대상 TLA 존재 여부 검사. Export declarations stay outside the
+    // wrapper: an await in one is rejected by the analyzer when bundling
+    // (#5564), and transpile reports ZNTC0001.
     var has_tla = false;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
-        const child_node = self.ast.getNode(child);
-        if (isModuleDeclaration(child_node.tag)) {
-            if (!self.options.tla_export_decl_deferrable) continue;
-            // `export const x = await f()` 도 대상. 예전엔 건너뛰어서 await 가 최상위에
-            // 남고, es2017 낮추기가 그걸 `yield` 로 바꿔 **generator 가 아닌 `__esm`
-            // factory 안의 bare yield** 가 됐다 (Hermes/acorn 모두 SyntaxError).
-            const d = exportedVarDeclIdx(self, child_node) orelse continue;
-            if (!allDeclaratorsAreIdentifiers(self, d)) continue; // 구조분해는 제외
-            if (try hasTopLevelAwait(self.ast, d)) {
-                has_tla = true;
-                break;
-            }
-            continue;
-        }
+        if (isModuleDeclaration(self.ast.getNode(child).tag)) continue;
         if (try hasTopLevelAwait(self.ast, child)) {
             has_tla = true;
             break;
         }
     }
     if (!has_tla) return null;
-
-    // 어떤 export 선언을 IIFE 로 옮길지 **미리** 정한다.
-    //
-    // 규칙: ① await 를 포함한 선언, ② 그리고 ①에서 지연된 바인딩을 참조하는 후속 선언.
-    // ⚠️ "exported 선언 전부" 로 넓히면 안 된다 — `await …;` 뒤의 `export const NAME='hello'`
-    //    처럼 **await 와 무관한** export 까지 지연돼 소비자가 `undefined` 를 읽는다(실측 회귀).
-    var deferred_names: std.StringHashMapUnmanaged(void) = .empty;
-    defer deferred_names.deinit(self.allocator);
-    var move_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer move_set.deinit(self.allocator);
-    {
-        // In ESM modes with a supported async evaluator, any export depending
-        // on a top-level local moved into the wrapper must be assigned there
-        // too. The importer waits for the returned evaluation promise.
-        if (self.options.tla_export_decl_deferrable) {
-            var local_i: u32 = 0;
-            while (local_i < list.len) : (local_i += 1) {
-                const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + local_i]);
-                if (!isModuleDeclaration(self.ast.getNode(child).tag))
-                    try addDeferredStatementNames(self.allocator, self.ast, &deferred_names, child);
-            }
-        }
-
-        var j: u32 = 0;
-        while (j < list.len) : (j += 1) {
-            const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + j]);
-            const child_node = self.ast.getNode(child);
-            if (!isModuleDeclaration(child_node.tag)) continue;
-            if (!self.options.tla_export_decl_deferrable) continue;
-            const d = exportedVarDeclIdx(self, child_node) orelse continue;
-            if (!allDeclaratorsAreIdentifiers(self, d)) continue;
-            const has_await = try hasTopLevelAwait(self.ast, d);
-            const dep = referencesAny(self, d, &deferred_names);
-            if (!has_await and !dep) continue;
-            try move_set.put(self.allocator, @intFromEnum(child), {});
-            // 이 선언의 바인딩들을 "지연됨" 으로 기록 → 뒤따르는 의존 선언도 함께 옮긴다.
-            const decl = self.ast.getNode(d);
-            const dl = self.ast.extra_data.items[decl.data.extra + 1];
-            const dn = self.ast.extra_data.items[decl.data.extra + 2];
-            var k: u32 = 0;
-            while (k < dn) : (k += 1) {
-                const dcl = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[dl + k]));
-                const nm: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
-                if (nm.isNone()) continue;
-                try deferred_names.put(self.allocator, self.ast.getText(self.ast.getNode(nm).data.string_ref), {});
-            }
-        }
-    }
 
     // 2. 자식을 두 그룹으로 분리.
     //    - 그대로 유지: import/export 문
@@ -407,31 +223,23 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     var prelude_stmts: std.ArrayList(NodeIndex) = .empty;
     defer prelude_stmts.deinit(self.allocator);
     const body_stmts_top = self.scratch.items.len;
-    var wrapper_started = self.options.tla_export_decl_deferrable;
+    var wrapper_started = false;
+    // Export declarations before the first top-level await keep their place
+    // ahead of the wrapper: code before that await may read them (#5570).
+    var prelude_exports: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer prelude_exports.deinit(self.allocator);
     i = 0;
     while (i < list.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
         if (isModuleDeclaration(child_node.tag)) {
-            // move_set 인 export 선언: `v = <init>;` 만 IIFE 안으로. 선언 자체는 아래
-            // exports 패스가 초기화식을 뗀 `var v;` 로 밖에 남겨 export 를 보존한다.
-            if (!move_set.contains(@intFromEnum(child))) continue;
-            const d = exportedVarDeclIdx(self, child_node).?;
-            const decl = self.ast.getNode(d);
-            const dl = self.ast.extra_data.items[decl.data.extra + 1];
-            const dn = self.ast.extra_data.items[decl.data.extra + 2];
-            var k2: u32 = 0;
-            while (k2 < dn) : (k2 += 1) {
-                const dcl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dl + k2]);
-                const dcl = self.ast.getNode(dcl_idx);
-                const nm: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra]);
-                const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[dcl.data.extra + 2]);
-                if (nm.isNone() or init_idx.isNone()) continue;
-                const assign = try es_helpers.makeAssignStmt(self, nm, init_idx, dcl.span, 0);
-                const av = try self.visitNode(assign);
-                if (!av.isNone()) try self.scratch.append(self.allocator, av);
-            }
+            if (wrapper_started) continue;
+            const pt = self.pending_nodes.items.len;
+            const tt = self.trailing_nodes.items.len;
+            const visited = try self.visitNode(child);
+            try drainPendingAroundTo(Transformer, self, pt, tt, visited, &prelude_stmts);
+            try prelude_exports.put(self.allocator, @intFromEnum(child), {});
             continue;
         }
         const pt = self.pending_nodes.items.len;
@@ -509,29 +317,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
         if (!isModuleDeclaration(child_node.tag)) continue;
-        if (move_set.contains(@intFromEnum(child))) {
-            // 초기화식은 위 wrap 패스가 이미 IIFE 안에 넣었다. 여기선 선언만 남긴다.
-            // ⚠️ `let` 이면 IIFE 안 할당이 선언보다 먼저 실행돼 **TDZ**. `var` 는 호이스팅
-            //    되므로 순서에 안전하다. `const` 는 초기화식 없는 선언 자체가 문법 오류.
-            const d = exportedVarDeclIdx(self, child_node).?;
-            const stripped = try stripVarInitializers(Transformer, self, d);
-            const ex = child_node.data.extra;
-            const new_ex = try self.ast.addExtras(&.{
-                @intFromEnum(stripped),
-                self.ast.extra_data.items[ex + 1],
-                self.ast.extra_data.items[ex + 2],
-                self.ast.extra_data.items[ex + 3],
-                self.ast.extra_data.items[ex + 4],
-                self.ast.extra_data.items[ex + 5],
-            });
-            const new_export = try self.ast.addNode(.{
-                .tag = .export_named_declaration,
-                .span = child_node.span,
-                .data = .{ .extra = new_ex },
-            });
-            try self.scratch.append(self.allocator, new_export);
-            continue;
-        }
+        if (prelude_exports.contains(@intFromEnum(child))) continue;
         const pt = self.pending_nodes.items.len;
         const tt = self.trailing_nodes.items.len;
         const visited = try self.visitNode(child);
