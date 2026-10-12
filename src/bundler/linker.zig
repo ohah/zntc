@@ -4080,6 +4080,35 @@ pub const Linker = struct {
         return null;
     }
 
+    /// (#5583) Whether `name` exported by `module_idx` ends at a TypeScript
+    /// type (`export interface T`, `export type U`) — through `export { T }`
+    /// of an imported name and `export { T } from`. Such an export has no
+    /// runtime value: tsc and esbuild drop it, and keeping it leaves a
+    /// dangling `export { T }` (SyntaxError).
+    pub fn exportIsTsType(self: *const Linker, module_idx: ModuleIndex, name: []const u8, depth: u32) bool {
+        if (depth > max_chain_depth) return false;
+        const m = self.graph.getModule(module_idx) orelse return false;
+        for (m.export_bindings) |eb| {
+            if (!std.mem.eql(u8, eb.exported_name, name)) continue;
+            switch (eb.kind) {
+                .re_export => {
+                    const target = resolvedRecordModule(m.import_records, eb.import_record_index) orelse return false;
+                    return self.exportIsTsType(@enumFromInt(target), eb.local_name, depth + 1);
+                },
+                .local => {
+                    for (m.import_bindings) |ib| {
+                        if (ib.kind != .named or !std.mem.eql(u8, ib.local_name, eb.local_name)) continue;
+                        const target = resolvedRecordModule(m.import_records, ib.import_record_index) orelse return false;
+                        return self.exportIsTsType(@enumFromInt(target), ib.imported_name, depth + 1);
+                    }
+                    return m.ts_type_export_names.contains(name);
+                },
+                else => return false,
+            }
+        }
+        return m.ts_type_export_names.contains(name);
+    }
+
     /// (#3978) scanner-level export 존재 여부(chain-aware). resolveExportChain 은
     /// 해석(rename/symbol) 까지 모델하느라 CJS 동적 exports·TS namespace/interface/
     /// const-enum·default-function 등을 false-null 로 떨군다. 이 함수는 semantic
@@ -4091,6 +4120,8 @@ pub const Linker = struct {
         if (depth > max_chain_depth) return true; // 불확실 → 보수적
         const m = self.graph.getModule(module_idx) orelse return true;
         if (m.wrap_kind == .cjs) return true; // CJS: 동적 exports, 정적 확인 불가 → 있다고 가정
+        // A TypeScript type export is an export too (elided at the use, #5583).
+        if (m.ts_type_export_names.contains(name)) return true;
         const sem = if (m.semantic) |*s| s else return true; // semantic 부재 → 보수적
         // exported_names: analyzer 가 기록한 named/default/re-export 이름 집합.
         if (sem.exported_names.contains(name)) return true;
@@ -5045,6 +5076,7 @@ pub const Linker = struct {
             if (eb.kind == .re_export_star) continue;
             if (seen.contains(eb.exported_name)) continue;
             try seen.put(self.allocator, eb.exported_name, {});
+            if (eb.kind != .re_export_namespace and self.exportIsTsType(module_idx, eb.exported_name, 0)) continue;
 
             const eb_local = m.exportBindingLocalName(eb);
             // ns_target_mod: hoisted ns_var 가 필요한 source 모듈 (registerNamespaceRewrites

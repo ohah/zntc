@@ -347,6 +347,11 @@ pub const Module = struct {
     legal_comments: []const []const u8 = &.{},
     /// import 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
     import_bindings: []ImportBinding = &.{},
+    /// TypeScript: names this module exports only as types (`export interface
+    /// T`, `export type U`) — judged on the source, since stripping types
+    /// drops them from the transformed semantic. An import or re-export that
+    /// resolves to one is a type and is elided, as tsc/esbuild do (#5583).
+    ts_type_export_names: std.StringHashMapUnmanaged(void) = .empty,
     /// export 바인딩 상세. graph allocator 소유 (소스 텍스트 참조).
     export_bindings: []ExportBinding = &.{},
     /// `export_bindings.exported_name` 의 평탄 slice 프리컴퓨트 (ModuleInfo 노출용 #1883).

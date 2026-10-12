@@ -76,6 +76,45 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     }
 }
 
+/// TypeScript names with no value (#5583): top-level interfaces, type aliases
+/// and `declare` declarations with no value of the same name. An import or
+/// re-export resolving to one is a type and is elided, as tsc/esbuild do.
+/// Judged on the source AST — the analyzer's export names leave type
+/// declarations out, and the parser drops the `export` wrapper of a type-only
+/// declaration (so exported and local type declarations look alike; importing
+/// an unexported one is a TS error anyway).
+fn markTypeOnlyExports(module: *module_mod.Module, ast: *const @import("../../parser/ast.zig").Ast, arena_alloc: std.mem.Allocator) void {
+    if (!module.module_type.isTypeScript()) return;
+    const sem = if (module.semantic) |*s| s else return;
+    if (sem.scope_maps.len == 0) return;
+    const module_scope = sem.scope_maps[0];
+    if (ast.nodes.items.len == 0) return;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return;
+    var it = ast.iterateExtraList(root.data.list);
+    while (it.next()) |stmt_idx| {
+        const node = ast.getNode(stmt_idx);
+        if (node.tag != .ts_interface_declaration and node.tag != .ts_type_alias_declaration) continue;
+        const name_idx: @import("../../parser/ast.zig").NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+        if (name_idx.isNone()) continue;
+        const name = ast.getText(ast.getNode(name_idx).span);
+        if (module_scope.get(name) != null) continue; // a value shares the name
+        module.ts_type_export_names.put(arena_alloc, name, {}) catch return;
+    }
+    // `declare` declarations: the parser strips them and keeps only the names.
+    var declared = ast.type_only_binding_names.keyIterator();
+    while (declared.next()) |name| {
+        if (module_scope.get(name.*) != null) continue;
+        module.ts_type_export_names.put(arena_alloc, name.*, {}) catch return;
+    }
+    // `export { T as U }` of a local type exports it under another name.
+    for (module.export_bindings) |eb| {
+        if (eb.kind != .local or std.mem.eql(u8, eb.local_name, eb.exported_name)) continue;
+        if (module.ts_type_export_names.contains(eb.local_name))
+            module.ts_type_export_names.put(arena_alloc, eb.exported_name, {}) catch return;
+    }
+}
+
 pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
     const mod_idx = @intFromEnum(idx);
     if (mod_idx >= self.modules.count()) return;
@@ -388,6 +427,7 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
 
     if (!self.materializeParserMetadata(module, &parser, arena_alloc)) return;
     markSourceTypeOnlyImports(self, module, &parser.ast, arena_alloc);
+    markTypeOnlyExports(module, &parser.ast, arena_alloc);
 
     // #1961/#1913: transformer pre-pass. helper module 을 graph 의 1급 모듈로
     // 분배하려면 helper import 가 link 단계 전에 import_records 에 등록되어야 한다.
@@ -479,6 +519,9 @@ fn tryDiskLoadHit(
         module.state = .ready;
         return true;
     };
+    // The cached AST is the parse AST, as in a cold parse.
+    markSourceTypeOnlyImports(self, module, &module.ast.?, arena_alloc);
+    markTypeOnlyExports(module, &module.ast.?, arena_alloc);
 
     {
         const run_prepass = self.shouldRunTransformerPrePass(module, plugin_transform_applied);
