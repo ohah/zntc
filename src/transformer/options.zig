@@ -350,6 +350,9 @@ pub const TransformOptions = struct {
                 .private_field_expression,
                 => if (u.requiresPrivateDownlevel()) return true,
                 .static_block => if (u.class_static_block) return true,
+                // An object literal lowered after its first computed key names
+                // its members with `__name`; discover the helper before linking.
+                .computed_property_key => if (u.object_extensions) return true,
                 // class 를 낮추는 타겟은 객체 리터럴 메서드의 `super` 도 `__superGet`/`__superSet`
                 // 으로 낮춘다 — 클래스가 없는 모듈도 헬퍼 등록이 필요하다 (#4729).
                 .super_expression => if (u.class) return true,
@@ -557,6 +560,7 @@ test "lowered syntax discovers helpers and generated globals before linking" {
         .{ .source = "const g = () => {}; { let h = 1; }", .es5_prepass = false },
         .{ .source = "{ let h; h = () => {}; }", .es5_prepass = true },
         .{ .source = "var h; h = () => {};", .es5_prepass = false },
+        .{ .source = "var o = { [k]: 1, get x() { return 1; } };", .es5_prepass = true },
     };
     for (fixtures) |fixture| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

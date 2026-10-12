@@ -404,7 +404,9 @@ function expectMethodEmit(out: string, name: string) {
   expect(out).toContain('Object.defineProperty');
   expect(out).toContain(`"${name}"`);
   expect(out).toMatch(
-    new RegExp(`Object\\.defineProperty\\([^\\n]+,\\s*"${name}"[\\s\\S]*?value:\\s*function`),
+    new RegExp(
+      `Object\\.defineProperty\\([^\\n]+,\\s*"${name}"[\\s\\S]*?value:\\s*(?:__name\\()?function`,
+    ),
   );
 }
 
