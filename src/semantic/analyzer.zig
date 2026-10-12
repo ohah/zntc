@@ -279,6 +279,12 @@ pub const SemanticAnalyzer = struct {
     /// 번들 단계(parse_module)에서만 true — esbuild/rolldown 처럼 *bundle* 시에만 에러
     /// (single-file transpile/transform 은 통과). false 면 checkImportMutation no-op.
     check_import_mutation: bool = false,
+    /// Bundling lowers top-level await into an async wrapper, but an export
+    /// declaration initialized by `await` can be deferred only with native
+    /// async functions. Set when the target supports neither: such an await
+    /// is reported as ZNTC0001 instead of leaking a top-level `yield` (#5564).
+    reject_exported_top_level_await: bool = false,
+    export_declaration_depth: u32 = 0,
     /// 현재 순회 중인 top-level statement 인덱스. visitProgram 2nd pass 에서만 설정되고
     /// 함수/블록 진입 후에도 유지 — 내부 참조를 enclosing top-level stmt 로 귀속시키는 용도.
     /// tree-shaker `stmt_info` 의 referenced_symbols 분배에 사용된다.
@@ -1850,8 +1856,16 @@ pub const SemanticAnalyzer = struct {
             },
             .switch_case => try self.visitSwitchCase(node),
             .try_statement => try self.visitTryStatement(node),
-            .export_named_declaration => try self.visitExportNamedDeclaration(node),
-            .export_default_declaration => try self.visitExportDefaultDeclaration(node, idx),
+            .export_named_declaration => {
+                self.export_declaration_depth += 1;
+                defer self.export_declaration_depth -= 1;
+                try self.visitExportNamedDeclaration(node);
+            },
+            .export_default_declaration => {
+                self.export_declaration_depth += 1;
+                defer self.export_declaration_depth -= 1;
+                try self.visitExportDefaultDeclaration(node, idx);
+            },
             .export_all_declaration => try self.visitExportAllDeclaration(node),
             .ts_export_assignment => try self.visitTsExportAssignment(node),
 
@@ -2097,6 +2111,16 @@ pub const SemanticAnalyzer = struct {
                 if (self.is_module and !self.has_top_level_await and !self.isInsideFunctionScope()) {
                     self.has_top_level_await = true;
                     try self.emitTopLevelAwaitDiag(node.span);
+                }
+                if (self.reject_exported_top_level_await and self.export_declaration_depth > 0 and
+                    self.is_module and !self.isInsideFunctionScope())
+                {
+                    try self.errors.append(self.allocator, .{
+                        .span = node.span,
+                        .message = try self.allocator.dupe(u8, "Top-level await in an export declaration is not available in the configured target environment"),
+                        .kind = .semantic,
+                        .code = .top_level_await_target,
+                    });
                 }
                 try self.visitNode(node.data.unary.operand);
             },
