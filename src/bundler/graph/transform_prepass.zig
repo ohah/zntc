@@ -4204,7 +4204,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier) {
                     if (options.unsupported.class_private_field) return false;
                 } else if (options.unsupported.class_field or options.unsupported.class) {
-                    if (source_binds_object or !isRetainableSimpleStaticClassField(allocator, ast, semantic, node)) return false;
+                    if (!isRetainableSimpleStaticClassField(allocator, ast, semantic, node)) return false;
                     found_lowered_simple_static_class_field = true;
                 }
             },
