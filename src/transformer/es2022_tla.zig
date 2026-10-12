@@ -455,6 +455,10 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
 
     // Fill the pre-registered async arrow once the visited body is available.
     self.ast.extra_data.items[arrow_extra + 1] = @intFromEnum(body_block);
+    // Scopes of the moved statements (a user arrow, a block) now nest inside
+    // the wrapper; left under the program scope, an arrow's parameter
+    // initializer lost the wrapped declarations it reads (#5562).
+    if (self.semantic_edit_enabled) try self.reparentGeneratedBodyScopes(self.programScope(), arrow_scope, body_block);
 
     // (arrow)() — 호출 (arrow 는 call-target 위치에서 codegen 이 자동 wrap)
     const call = try es_helpers.makeCallExpr(self, arrow, &.{}, node.span);

@@ -396,10 +396,12 @@ pub fn emitEsmWrappedModule(
                         // #4598: TLA promise 임시변수의 **리네임된** 이름을 포착한다.
                         // ⚠️ AST 원본 이름(`_a`)을 쓰면 minify 시 실제 방출명(`c`)과 어긋나
                         //    `ReferenceError` 다(적대적 검증이 잡음).
-                        if (module.tla_iife_stmt) |tix| {
-                            if (raw_idx == tix and module.matchesTlaPromiseReference(@intFromEnum(name_raw))) {
-                                tla_var_name = resolved;
-                            }
+                        // The promise binding is identified by symbol, not by its
+                        // statement: hoisted temps can be merged into the TLA
+                        // declaration (`var _a, _b = (async () => …)()`), which
+                        // replaces the statement (#5558).
+                        if (module.tla_iife_stmt != null and module.matchesTlaPromiseReference(@intFromEnum(name_raw))) {
+                            tla_var_name = resolved;
                         }
                         try hoisted_var_names.append(allocator, resolved);
                     } else {
