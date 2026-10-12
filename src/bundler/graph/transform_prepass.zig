@@ -999,6 +999,7 @@ const ComputedMemberKeyCallMode = enum {
     disallowed,
     sequence_final,
     sequence_argument_member_read,
+    sequence_argument_optional_key_call,
     nested_call_argument,
 };
 
@@ -1207,9 +1208,9 @@ fn isRetainableBoundStaticFieldEffectCall(
     if (call.tag != .call_expression) return false;
     const extras = ast.extra_data.items;
     const extra = call.data.extra;
-    if (extra > extras.len or extras.len - extra < 4 or
-        (!allow_optional_call and
-            (extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)) return false;
+    if (extra > extras.len or extras.len - extra < 4) return false;
+    const optional_call = (extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
+    if (!allow_optional_call and optional_call) return false;
     const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
     if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
@@ -1233,13 +1234,25 @@ fn isRetainableBoundStaticFieldEffectCall(
         if (raw_arg >= ast.nodes.items.len) return false;
         const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
         if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
+        if (computed_member_key_call_mode == .sequence_argument_optional_key_call and
+            ast.getNode(argument_idx).tag == .call_expression)
+        {
+            const nested_extra = ast.getNode(argument_idx).data.extra;
+            if (nested_extra > extras.len or extras.len - nested_extra < 4) return false;
+            if ((extras[nested_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) {
+                const nested_callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[nested_extra]);
+                if (nested_callee_idx.isNone() or @intFromEnum(nested_callee_idx) >= ast.nodes.items.len or
+                    ast.getNode(nested_callee_idx).tag != .identifier_reference) return false;
+            }
+        }
         if (!allow_bound_call_arguments or
             !isRetainableBoundStaticFieldEffectCall(
                 ast,
                 semantic,
                 argument_idx,
                 true,
-                computed_member_key_call_mode == .sequence_final,
+                computed_member_key_call_mode == .sequence_final or
+                    computed_member_key_call_mode == .sequence_argument_optional_key_call,
                 false,
                 .nested_call_argument,
             )) return false;
@@ -1354,7 +1367,10 @@ fn isRetainableBoundStaticFieldMemberRead(
                     (key_call_mode == .sequence_argument_member_read and optional_key_call),
                 key_call_mode == .sequence_final or
                     key_call_mode == .sequence_argument_member_read,
-                .disallowed,
+                if (key_call_mode == .sequence_argument_member_read and optional_key_call)
+                    .sequence_argument_optional_key_call
+                else
+                    .disallowed,
             )) return false;
         }
         saw_member = true;
