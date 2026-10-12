@@ -1787,8 +1787,7 @@ fn isRetainableStaticFieldExpression(
                 const args_start = extras[extra + 1];
                 const args_len = extras[extra + 2];
                 if (args_start > extras.len or args_len > extras.len - args_start) return false;
-                const allow_unresolved_root_sequence_arguments = work_item.allow_optional_invocations and
-                    hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, callee_idx) and
+                const allow_optional_member_chain_sequence_arguments = work_item.allow_optional_invocations and
                     isRetainableStaticFieldOptionalMemberChain(
                         allocator,
                         ast,
@@ -1801,7 +1800,7 @@ fn isRetainableStaticFieldExpression(
                     if (raw_arg >= ast.nodes.items.len) return false;
                     const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
                     if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
-                    const retainable_sequence_argument = allow_unresolved_root_sequence_arguments and
+                    const retainable_sequence_argument = allow_optional_member_chain_sequence_arguments and
                         isRetainableBoundStaticFieldSequenceExpression(
                             ast,
                             semantic,
