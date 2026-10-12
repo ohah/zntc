@@ -1073,8 +1073,11 @@ pub fn appendToBinaryRuntimeNamed(
 // intercept it, and capture it before the module body executes. As with other
 // runtime helpers, this assumes the builtin prototype has not been replaced
 // before this module starts. The factory itself uses ES5 syntax.
-pub const KEEP_NAMES_RUNTIME = "var __name = (function(defineProperty) { return function(target, value) { return defineProperty(target, \"name\", { value: value, configurable: true }); }; })(({}).constructor.defineProperty);\n";
-pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(function(d){return function(t,v){return d(t,\"name\",{value:v,configurable:true})}})(({}).constructor.defineProperty);";
+/// `__name(fn, name[, prefix])`. A runtime computed key (#5527) may be a
+/// symbol (SetFunctionName: "[description]") or a primitive; an object key is
+/// left unnamed so its toString is not called a second time.
+pub const KEEP_NAMES_RUNTIME = "var __name = (function(defineProperty) { return function(target, value, prefix) { var type = typeof value; if (type === \"symbol\") { var description = value.description; value = description === void 0 ? \"\" : \"[\" + description + \"]\"; } else if (value !== null && (type === \"object\" || type === \"function\")) return target; return defineProperty(target, \"name\", { value: prefix ? prefix + \" \" + value : \"\" + value, configurable: true }); }; })(({}).constructor.defineProperty);\n";
+pub const KEEP_NAMES_RUNTIME_MIN = "var " ++ NAMES.NAME_MIN ++ "=(function(d){return function(t,v,p){var y=typeof v;if(y==\"symbol\"){var s=v.description;v=s===void 0?\"\":\"[\"+s+\"]\"}else if(v!==null&&(y==\"object\"||y==\"function\"))return t;return d(t,\"name\",{value:p?p+\" \"+v:\"\"+v,configurable:true})}})(({}).constructor.defineProperty);";
 
 // ============================================================
 // Private Method (ES2022 downlevel)

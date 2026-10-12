@@ -144,11 +144,38 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 const val_idx = member.data.binary.right;
                 if (key_idx.isNone()) continue;
 
+                const pe = @import("parameter_environment.zig");
+                // A runtime computed key names its function/class value: evaluate
+                // it once into a temp (`_a[_b = k] = __name(fn, _b)`, #5527).
+                // An anonymous class value is named inside its lowering instead.
+                const class_key = try pe.runtimeKeyClass(self, key_idx, val_idx);
+                if (!val_idx.isNone() and (class_key or try pe.needsRuntimeKeyName(self, key_idx, val_idx))) {
+                    // Capture first: the class lowering reads the temp.
+                    const captured = try pe.captureRuntimeKey(self, try self.visitNode(self.ast.getNode(key_idx).data.unary.operand), span);
+                    const bound = if (class_key)
+                        try pe.bindRuntimeKeyClass(self, key_idx, val_idx, try es_helpers.makeIdentifierRefFromSpan(self, captured.temp))
+                    else
+                        null;
+                    var value = try self.visitNode(val_idx);
+                    value = if (class_key)
+                        try pe.finishRuntimeKeyClass(self, bound, val_idx, value, false, self.current_scope, span)
+                    else
+                        try pe.nameByTemp(self, value, captured.temp, null, span);
+                    const obj_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true });
+                    const member_expr = try es_helpers.makeComputedMember(self, obj_ref, captured.key, span);
+                    const assign = try self.ast.addNode(.{
+                        .tag = .assignment_expression,
+                        .span = span,
+                        .data = .{ .binary = .{ .left = member_expr, .right = value, .flags = 0 } },
+                    });
+                    try self.scratch.append(self.allocator, assign);
+                    continue;
+                }
                 const new_val = if (val_idx.isNone())
                     // shorthand → key 복제
                     try self.visitNode(key_idx)
                 else
-                    try @import("parameter_environment.zig").nameLoweredProperty(self, try self.visitNode(val_idx), key_idx, val_idx, span);
+                    try pe.nameLoweredProperty(self, try self.visitNode(val_idx), key_idx, val_idx, span);
 
                 // _a[key] = val. #4249: key 종류별 dot(identifier) vs computed
                 // (string/numeric/bigint/computed) 분기를 makeMemberFromKeyIdx 로
@@ -206,14 +233,25 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const me = member.data.extra;
             const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
 
-            const func_expr = try @import("parameter_environment.zig").nameLoweredMember(
+            const pe = @import("parameter_environment.zig");
+            var func_expr = try pe.nameLoweredMember(
                 self,
                 try buildAccessorFunction(self, member_idx, span),
                 member_idx,
+                .none,
                 if (is_getter) "get " else "set ",
                 self.current_scope,
                 span,
             );
+            // A runtime computed accessor key is evaluated once into a temp
+            // that also names the accessor ("get <key>", #5527).
+            var captured_key: ?NodeIndex = null;
+            const key_node = self.ast.getNode(key_idx);
+            if (key_node.tag == .computed_property_key and (try pe.keyName(self, key_idx, false)) == null) {
+                const captured = try pe.captureRuntimeKey(self, try self.visitNode(key_node.data.unary.operand), span);
+                captured_key = captured.key;
+                func_expr = try pe.nameByTemp(self, func_expr, captured.temp, if (is_getter) "get" else "set", span);
+            }
 
             const accessor_kind_span = try self.ast.addString(if (is_getter) "get" else "set");
             const accessor_kind = try es_helpers.makePropertyNameFromSpan(self, accessor_kind_span);
@@ -231,7 +269,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 .data = .{ .list = desc_list },
             });
 
-            const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
+            const key_arg = captured_key orelse try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
 
             const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true });
             const object_span = try self.ast.addString("Object");

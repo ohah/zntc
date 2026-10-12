@@ -399,7 +399,7 @@ pub fn Methods(comptime Transformer: type) type {
             const config_prop = try buildBooleanProp(self, "configurable", true, span);
             const writable_prop = try buildBooleanProp(self, "writable", true, span);
             const member = if (info.source_member_idx.isNone()) info.member_idx else info.source_member_idx;
-            const named = try @import("../parameter_environment.zig").nameLoweredMember(self, func_expr, member, "", reference_scope, span);
+            const named = try @import("../parameter_environment.zig").nameLoweredMember(self, func_expr, member, key_idx, "", reference_scope, span);
             const value_prop = try buildValueProp(self, named, span);
             const desc_list = try self.ast.addNodeList(&.{ config_prop, writable_prop, value_prop });
             const desc_obj = try self.ast.addNode(.{
@@ -453,6 +453,7 @@ pub fn Methods(comptime Transformer: type) type {
                     self,
                     func_expr,
                     if (info.source_member_idx.isNone()) info.member_idx else info.source_member_idx,
+                    key_idx,
                     if (info.is_getter) "get " else "set ",
                     reference_scope,
                     span,
@@ -489,6 +490,7 @@ pub fn Methods(comptime Transformer: type) type {
                             self,
                             pair_func,
                             if (next.source_member_idx.isNone()) next.member_idx else next.source_member_idx,
+                            next_key,
                             if (next.is_getter) "get " else "set ",
                             reference_scope,
                             span,

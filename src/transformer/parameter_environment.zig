@@ -610,7 +610,7 @@ fn bindingName(self: anytype, binding: ast_mod.NodeIndex) ?@import("../lexer/tok
     };
 }
 
-fn keyName(self: anytype, key: ast_mod.NodeIndex, object_literal: bool) std.mem.Allocator.Error!?@import("../lexer/token.zig").Span {
+pub fn keyName(self: anytype, key: ast_mod.NodeIndex, object_literal: bool) std.mem.Allocator.Error!?@import("../lexer/token.zig").Span {
     if (key.isNone()) return null;
     // A numeric key names the class with its canonical ToString form.
     var literal = key;
@@ -714,11 +714,13 @@ pub fn nameInFirstStaticBlock(self: anytype, source: ast_mod.NodeIndex, members:
 /// ES5 class lowering defines a method as `{ value: function () {} }` (or an
 /// accessor as `{ get: function () {} }`), which names it "value"/"get".
 /// Name it after the source member (`prefix` is "get "/"set " for accessors).
-/// Runtime computed keys are not known statically and stay unnamed (#5527).
-pub fn nameLoweredMember(self: anytype, func: ast_mod.NodeIndex, member: ast_mod.NodeIndex, prefix: []const u8, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+/// A runtime computed key names it through `lowered_key`, the emitted key
+/// (a hoisted temp) (#5527).
+pub fn nameLoweredMember(self: anytype, func: ast_mod.NodeIndex, member: ast_mod.NodeIndex, lowered_key: ast_mod.NodeIndex, prefix: []const u8, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
     if (func.isNone() or member.isNone()) return func;
     const key = self.ast.readExtraNode(self.ast.getNode(member).data.extra, ast_mod.MethodExtra.key);
-    const key_name = (try keyName(self, key, false)) orelse return func;
+    const key_name = (try keyName(self, key, false)) orelse
+        return nameByRuntimeKey(self, func, lowered_key, if (prefix.len == 0) null else prefix[0 .. prefix.len - 1], scope, span);
     const name = if (prefix.len == 0) key_name else blk: {
         const joined = try std.mem.concat(self.allocator, u8, &.{ prefix, self.ast.getText(key_name) });
         defer self.allocator.free(joined);
@@ -803,6 +805,155 @@ fn isPlainBindingName(name: []const u8) bool {
     return true;
 }
 
+/// Name an anonymous function or class value after a runtime computed key
+/// held in a hoisted temp (`[k]() {}` → key temp `_a`): `__name(value, _a)`,
+/// with "get"/"set" for accessors. The key is not evaluated again; a key that
+/// is not a known temp leaves the value unnamed (#5527).
+pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.NodeIndex, prefix: ?[]const u8, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    if (value.isNone() or key.isNone()) return value;
+    const key_node = self.ast.getNode(key);
+    const temp = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else key;
+    if (temp.isNone() or self.ast.getNode(temp).tag != .identifier_reference) return value;
+    const saved_scope = self.current_scope;
+    self.current_scope = scope;
+    defer self.current_scope = saved_scope;
+    // A temp hoisted by the transform is tracked by its span; a key binding
+    // declared with the class (`var _a = k`) is an ordinary read.
+    const ref = blk: {
+        const hoisted = try es_helpers.makeIdentifierRefFromSpan(self, self.ast.getNode(temp).data.string_ref);
+        if (try es_helpers.trackKnownHoistedTempRef(self, hoisted, scope, .{ .read = true })) break :blk hoisted;
+        if (self.semantic_edit_enabled and self.getSymbolIdAt(temp) == null) return value;
+        // The key position keeps the emitted node: read the binding afresh.
+        break :blk try self.makeUserRefNamedAtScope(self.ast.getText(self.ast.getNode(temp).data.string_ref), temp, scope);
+    };
+    return runtimeNameCall(self, value, ref, prefix, span);
+}
+
+/// `__name(value, key_ref[, prefix])`.
+fn runtimeNameCall(self: anytype, value: ast_mod.NodeIndex, key_ref: ast_mod.NodeIndex, prefix: ?[]const u8, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    self.runtime_helpers.keep_names = true;
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__name");
+    if (prefix) |text| {
+        const literal = try es_helpers.buildQuotedKeyLiteral(self, try self.ast.addString(text));
+        return es_helpers.makeCallExpr(self, callee, &.{ value, key_ref, literal }, span);
+    }
+    return es_helpers.makeCallExpr(self, callee, &.{ value, key_ref }, span);
+}
+
+pub const CapturedKey = struct { key: ast_mod.NodeIndex, temp: @import("../lexer/token.zig").Span };
+
+/// `_t = key`: evaluate a runtime computed key once into a temp so the value
+/// can be named after it (#5527).
+pub fn captureRuntimeKey(self: anytype, key_expr: ast_mod.NodeIndex, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!CapturedKey {
+    const temp = try es_helpers.makeTempVarSpan(self);
+    const target = try es_helpers.makeTrackedTempRef(self, temp, temp, .{ .write = true });
+    const assign = try self.ast.addNode(.{
+        .tag = .assignment_expression,
+        .span = span,
+        .data = .{ .binary = .{ .left = target, .right = key_expr, .flags = 0 } },
+    });
+    return .{ .key = assign, .temp = temp };
+}
+
+/// `__name(value, _t[, prefix])` for a key captured by `captureRuntimeKey`.
+pub fn nameByTemp(self: anytype, value: ast_mod.NodeIndex, temp: @import("../lexer/token.zig").Span, prefix: ?[]const u8, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    return runtimeNameCall(self, value, try es_helpers.makeTrackedTempRef(self, temp, temp, .{ .read = true }), prefix, span);
+}
+
+/// Whether a field or property value takes its name from a runtime computed
+/// key: an anonymous function or class under a computed key with no static
+/// spelling (a literal computed key is named statically).
+pub fn needsRuntimeKeyName(self: anytype, key: ast_mod.NodeIndex, source_value: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    if (key.isNone() or source_value.isNone()) return false;
+    if (self.ast.getNode(key).tag != .computed_property_key) return false;
+    // A literal key hoisted into a temp is already named statically.
+    if (self.parameter_inferred_names.contains(@intFromEnum(source_value))) return false;
+    if (functionRoot(self, source_value) == null) return false;
+    return (try keyName(self, key, false)) == null;
+}
+
+/// An anonymous class value of a runtime computed key is named by class
+/// lowering before its static elements run, like a static key: bind its
+/// inferred name to the lowered key (`key_ref`, an identifier) (#5527).
+/// Returns the class to pass to `finishRuntimeKeyClass`, or null.
+pub fn bindRuntimeKeyClass(self: anytype, key: ast_mod.NodeIndex, source_value: ast_mod.NodeIndex, key_ref: ast_mod.NodeIndex) std.mem.Allocator.Error!?u32 {
+    if (!(try runtimeKeyClass(self, key, source_value))) return null;
+    const class_raw = anonymousClassRoot(self, source_value).?;
+    const sentinel = try self.ast.addUniqueString(" ");
+    try self.runtime_key_class_names.put(self.allocator, sentinel.start, .{ .key = key_ref, .class_raw = class_raw });
+    try self.class_inferred_names.put(self.allocator, class_raw, sentinel);
+    if (self.parameter_inferred_names.getPtr(class_raw)) |slot| slot.* = sentinel;
+    return sentinel.start;
+}
+
+/// Whether a class has its own static `name` member.
+fn definesStaticName(self: anytype, class_idx: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    const class = self.ast.getNode(class_idx);
+    const body = self.ast.readExtraNode(class.data.extra, ast_mod.ClassExtra.body);
+    if (body.isNone()) return false;
+    const list = self.ast.getNode(body).data.list;
+    for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+        const member = self.ast.getNode(@enumFromInt(raw));
+        const key: ast_mod.NodeIndex, const is_static: bool = switch (member.tag) {
+            .method_definition => .{
+                self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key),
+                self.ast.extra_data.items[member.data.extra + ast_mod.MethodExtra.flags] & ast_mod.MethodFlags.is_static != 0,
+            },
+            .property_definition, .accessor_property => .{
+                self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.key),
+                self.ast.extra_data.items[member.data.extra + ast_mod.PropertyExtra.flags] & ast_mod.PropertyFlags.is_static != 0,
+            },
+            else => continue,
+        };
+        if (!is_static) continue;
+        const name = (try keyName(self, key, false)) orelse continue;
+        if (std.mem.eql(u8, self.ast.getText(name), "name")) return true;
+    }
+    return false;
+}
+
+/// Whether `bindRuntimeKeyClass` applies: an anonymous class that class
+/// lowering may rename, under a runtime computed key.
+pub fn runtimeKeyClass(self: anytype, key: ast_mod.NodeIndex, source_value: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
+    if (key.isNone() or source_value.isNone()) return false;
+    if (self.ast.getNode(key).tag != .computed_property_key) return false;
+    // A parameter initializer cannot read a temp hoisted into the body.
+    if (!self.native_parameter_default_root.isNone() and self.capture_frame == self.native_parameter_initializer_frame) return false;
+    const class_raw = anonymousClassRoot(self, source_value) orelse return false;
+    // A static key already gave the class its name.
+    const current = self.class_inferred_names.get(class_raw) orelse return false;
+    if (current.end != current.start) return false;
+    return (try keyName(self, key, false)) == null;
+}
+
+/// After visiting a bound class value: a class left native in a NamedEvaluation
+/// position (`native_named`, an object literal property) is named by its key;
+/// otherwise a class that did not consume the name is named here.
+/// Without a binding, a native class moved out of NamedEvaluation (a lowered
+/// field's value) still takes its static key name.
+pub fn finishRuntimeKeyClass(self: anytype, bound: ?u32, source_value: ast_mod.NodeIndex, output: ast_mod.NodeIndex, native_named: bool, scope: ScopeId, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    const start = bound orelse {
+        if (native_named or output.isNone() or self.ast.getNode(output).tag != .class_expression) return output;
+        const class_raw = anonymousClassRoot(self, source_value) orelse return output;
+        const name = self.class_inferred_names.get(class_raw) orelse return output;
+        if (name.end == name.start or try definesStaticName(self, @enumFromInt(class_raw))) return output;
+        _ = self.class_inferred_names.remove(class_raw);
+        return nameValue(self, output, name, span);
+    };
+    const entry = self.runtime_key_class_names.fetchRemove(start) orelse return output;
+    if (self.class_inferred_names.get(entry.value.class_raw)) |name| if (name.start == start) {
+        _ = self.class_inferred_names.remove(entry.value.class_raw);
+    };
+    if (self.parameter_inferred_names.get(entry.value.class_raw)) |name| if (name.start == start) {
+        _ = self.parameter_inferred_names.remove(entry.value.class_raw);
+    };
+    if (entry.value.named or output.isNone()) return output;
+    if (native_named and self.ast.getNode(output).tag == .class_expression) return output;
+    // An own static `name` member is defined after NamedEvaluation and wins.
+    if (try definesStaticName(self, @enumFromInt(entry.value.class_raw))) return output;
+    return nameByRuntimeKey(self, output, entry.value.key, null, scope, span);
+}
+
 /// An object literal lowered to `_a.k = function () {}` assignments loses the
 /// property's NamedEvaluation; name an anonymous function or arrow value after
 /// its static key. (Anonymous classes are named by class lowering.)
@@ -838,6 +989,10 @@ pub fn preserveInferredName(self: anytype, source: ast_mod.NodeIndex, output: as
 }
 
 fn nameValue(self: anytype, value: ast_mod.NodeIndex, name: @import("../lexer/token.zig").Span, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    if (self.runtime_key_class_names.getPtr(name.start)) |entry| {
+        entry.named = true;
+        return nameByRuntimeKey(self, value, entry.key, null, self.current_scope, span);
+    }
     self.runtime_helpers.keep_names = true;
     const callee = try es_helpers.makeRuntimeHelperRef(self, "__name");
     const string = try es_helpers.buildQuotedKeyLiteral(self, name);
