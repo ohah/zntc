@@ -5389,6 +5389,22 @@ test "exact scope audit accepts a generated function-expression self-name scope 
     try std.testing.expectEqual(@as(usize, 0), accepted.scope_owner_mismatch);
     try std.testing.expect(accepted.isClean());
 
+    // The transform editor anchors a generated name's declaration row in its
+    // own scope; a declaration row is not an evaluated reference.
+    var name_symbol: ?u32 = null;
+    var it_names = scope_maps[name_scope].valueIterator();
+    while (it_names.next()) |id| name_symbol = @intCast(id.*);
+    const anchored_references = try allocator.alloc(Reference, references.len + 1);
+    @memcpy(anchored_references[0..references.len], references);
+    anchored_references[references.len] = .{
+        .node_index = .none,
+        .scope_id = @enumFromInt(name_scope),
+        .symbol_id = @enumFromInt(name_symbol orelse return error.TestUnexpectedResult),
+        .flags = .{ .declare = true },
+    };
+    const anchored = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, root, &analyzer, scopes, scope_maps, anchored_references, name_scope);
+    try std.testing.expectEqual(@as(usize, 0), anchored.scope_owner_mismatch);
+
     // A second binding in the self-name scope is not the analyzer's shape.
     const crowded_maps = try allocator.dupe(std.StringHashMapUnmanaged(usize), scope_maps);
     crowded_maps[name_scope] = try scope_maps[name_scope].clone(allocator);

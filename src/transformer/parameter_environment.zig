@@ -724,10 +724,83 @@ pub fn nameLoweredMember(self: anytype, func: ast_mod.NodeIndex, member: ast_mod
         defer self.allocator.free(joined);
         break :blk try self.ast.addString(joined);
     };
+    // `{ value: function m() {} }` (Babel's shape) costs a byte or two and
+    // names stack frames; `__name` is the fallback when the name could
+    // capture a read in the body or is not a binding identifier.
+    if (prefix.len == 0 and try nameFunctionExpression(self, func, self.ast.getText(name))) return func;
     const saved_scope = self.current_scope;
     self.current_scope = scope;
     defer self.current_scope = saved_scope;
     return nameValue(self, func, name, span);
+}
+
+/// Give an anonymous function expression its own name binding when that
+/// binding cannot shadow anything the body reads (no identifier of that
+/// spelling outside property-name positions, no direct eval).
+fn nameFunctionExpression(self: anytype, func: ast_mod.NodeIndex, name: []const u8) std.mem.Allocator.Error!bool {
+    const node = self.ast.getNode(func);
+    if (node.tag != .function_expression) return false;
+    if (!self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name).isNone()) return false;
+    if (!isPlainBindingName(name)) return false;
+    if (self.semantic_edit_enabled and self.outputOwnedScope(func) == null) return false;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, func);
+    defer self.allocator.free(reachable);
+    // Property names (`a.m`, `{ m: … }`, `m() {}`) do not read bindings.
+    var property_names: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer property_names.deinit(self.allocator);
+    for (reachable) |raw| {
+        const n = self.ast.nodes.items[raw];
+        const key: ast_mod.NodeIndex = switch (n.tag) {
+            .static_member_expression => self.ast.readExtraNode(n.data.extra, 1),
+            .object_property => if (n.data.binary.right.isNone()) continue else n.data.binary.left,
+            .method_definition => self.ast.readExtraNode(n.data.extra, ast_mod.MethodExtra.key),
+            .property_definition => self.ast.readExtraNode(n.data.extra, ast_mod.PropertyExtra.key),
+            else => continue,
+        };
+        if (!key.isNone()) try property_names.put(self.allocator, @intFromEnum(key), {});
+    }
+    for (reachable) |raw| {
+        const n = self.ast.nodes.items[raw];
+        switch (n.tag) {
+            .identifier_reference, .binding_identifier, .assignment_target_identifier => {
+                if (property_names.contains(@intCast(raw))) continue;
+                const text = self.ast.getText(n.data.string_ref);
+                if (std.mem.eql(u8, text, name) or std.mem.eql(u8, text, "eval")) return false;
+            },
+            else => {},
+        }
+    }
+    const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+    if (self.semantic_edit_enabled) {
+        const name_scope = (try @import("transformer/semantic_edit.zig").addFunctionExpressionNameScope(self, func)) orelse return false;
+        const id = (try self.declareSyntheticInScope(binding, node.span, .function_decl, name_scope)) orelse return false;
+        // `.name` is observable even though nothing reads the binding: minify
+        // must neither mangle nor drop it (a native method keeps its name).
+        if (self.semantic_editor) |*editor| editor.symbols.items[@intFromEnum(id)].decl_flags.preserve_class_name = true;
+    }
+    // Reanalysis restores the flag from this list.
+    try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(binding));
+    self.ast.extra_data.items[node.data.extra + ast_mod.FunctionExtra.name] = @intFromEnum(binding);
+    return true;
+}
+
+/// An ASCII identifier that strict code accepts as a function name.
+fn isPlainBindingName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name, 0..) |c, i| {
+        const ok = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == '$' or (i > 0 and c >= '0' and c <= '9');
+        if (!ok) return false;
+    }
+    const reserved = [_][]const u8{
+        "break", "case",      "catch",  "class",      "const",     "continue", "debugger", "default",   "delete",
+        "do",    "else",      "enum",   "export",     "extends",   "false",    "finally",  "for",       "function",
+        "if",    "import",    "in",     "instanceof", "new",       "null",     "return",   "super",     "switch",
+        "this",  "throw",     "true",   "try",        "typeof",    "var",      "void",     "while",     "with",
+        "yield", "let",       "static", "implements", "interface", "package",  "private",  "protected", "public",
+        "await", "arguments", "eval",
+    };
+    for (reserved) |word| if (std.mem.eql(u8, word, name)) return false;
+    return true;
 }
 
 /// An object literal lowered to `_a.k = function () {}` assignments loses the
@@ -736,6 +809,7 @@ pub fn nameLoweredMember(self: anytype, func: ast_mod.NodeIndex, member: ast_mod
 pub fn nameLoweredProperty(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.NodeIndex, source_value: ast_mod.NodeIndex, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
     if (value.isNone() or functionRoot(self, source_value) == null) return value;
     const name = (try keyName(self, key, true)) orelse return value;
+    if (try nameFunctionExpression(self, value, self.ast.getText(name))) return value;
     return nameValue(self, value, name, span);
 }
 

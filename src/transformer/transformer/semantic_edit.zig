@@ -2118,6 +2118,24 @@ pub fn bindReservedFunctionOwner(self: *Transformer, scope: ScopeId, owner: Node
     try self.scope_owner_origins.put(self.allocator, raw, raw);
 }
 
+/// A named function expression's self-binding lives in a block scope between
+/// the function (or its parameter scope) and their parent, as the analyzer
+/// models it (and the exact gate accepts for generated names).
+pub fn addFunctionExpressionNameScope(self: *Transformer, func: NodeIndex) Transformer.Error!?ScopeId {
+    if (!self.semantic_edit_enabled) return null;
+    const function_scope = self.outputOwnedScope(func) orelse return null;
+    const editor = try editorFor(self);
+    var inner = function_scope;
+    const params = self.ast.readExtraNode(self.ast.getNode(func).data.extra, 1);
+    if (!params.isNone()) if (self.outputOwnedScope(params)) |params_scope| {
+        if (params_scope == editor.scopes.items[inner.toIndex()].parent) inner = params_scope;
+    };
+    const outer = editor.scopes.items[inner.toIndex()];
+    const block = editor.addScope(outer.parent, .none, .block, outer.is_strict) catch |err| return editError(err);
+    editor.reparentScope(inner, block) catch |err| return editError(err);
+    return block;
+}
+
 pub fn reparentGeneratedScope(self: *Transformer, source: ScopeId, parent: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);

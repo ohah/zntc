@@ -725,7 +725,7 @@ test "Expression: imported class method nullish temp is method scoped for ES5" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "function(options,hash,get) {\n\t\tvar _a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "function m(options,hash,get) {\n\t\tvar _a") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "(_a = options.queryHash)") != null or
         std.mem.indexOf(u8, result.output, "(_a=options.queryHash)") != null);
 }
