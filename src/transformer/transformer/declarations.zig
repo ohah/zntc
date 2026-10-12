@@ -273,6 +273,12 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         break :blk try self.visitParamsCollectProperties(params_list_old);
     };
     defer pp.prop_names.deinit(self.allocator);
+    // Native parameter initializers cannot see the body's `var`s: temps they
+    // allocate stay with the enclosing function, as an arrow's do (#5552).
+    const body_temp_start = if (!self.options.unsupported.default_params or self.native_parameter_list_retained_for_dynamic_lookup)
+        self.temp_var_counter
+    else
+        saved_temp_counter;
     const param_needs_this = self.needs_this_var;
     const param_needs_arguments = self.needs_arguments_var;
     const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, capture_frame.active_frame, .new_target_value);
@@ -322,15 +328,15 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
     }
 
     // 임시 변수 호이스팅: 이 함수 안에서 사용된 _a, _b, ... 선언을 body 앞에 삽입
-    if (self.temp_var_counter > saved_temp_counter and !new_body.isNone()) {
+    if (self.temp_var_counter > body_temp_start and !new_body.isNone()) {
         new_body = if (self.semantic_edit_enabled)
-            try self.hoistTempVarsInOriginalFunction(new_body, saved_temp_counter, node.span)
+            try self.hoistTempVarsInOriginalFunction(new_body, body_temp_start, node.span)
         else
-            try self.hoistTempVars(new_body, saved_temp_counter, node.span);
+            try self.hoistTempVars(new_body, body_temp_start, node.span);
     }
     // 함수 스코프 종료 — outer scope 의 hoistTempVars 가 같은 _a 를 다시 hoist 하지 않도록
     // 카운터 복원 (#1960). 다음 함수 / outer 에서 동일 이름을 안전하게 재사용 가능.
-    self.temp_var_counter = saved_temp_counter;
+    self.temp_var_counter = body_temp_start;
 
     // arrow 캡처 상태 복원
     self.arrow_this_depth = saved_arrow_depth;
