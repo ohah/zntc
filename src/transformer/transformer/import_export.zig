@@ -379,11 +379,12 @@ fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: N
     // #1791 Phase D 는 named 한정이었다 — default/namespace 의 implicit value use(JSX pragma,
     // CSS-in-JS) 가 `reference_count` 판정(#1793 revert)에 안 보였기 때문. 지금은 Reference 단위
     // value/type 판정에 JSX 태그·멤버 접근이 value 로 잡히고, classic JSX factory head 와 Emotion
-    // 은 아래에서 따로 keep 한다. tsc·esbuild 처럼 타입으로만 쓴 default/namespace 도 지운다(#5595)
-    // — TypeScript 소스만. JS 의 import 는 모듈을 평가한다.
+    // 은 아래에서 따로 keep 한다. tsc·esbuild 처럼 타입으로만 쓴 default/namespace 도 지운다(#5595).
+    // elision 은 TypeScript 소스만 — JS/Flow 의 import 는 쓰지 않아도 모듈을 평가한다(#5608).
+    if (!self.ast.is_typescript) return false;
     const local_idx: NodeIndex = switch (spec_node.tag) {
         .import_specifier => spec_node.data.binary.right,
-        .import_default_specifier, .import_namespace_specifier => if (self.ast.is_typescript) .none else return false,
+        .import_default_specifier, .import_namespace_specifier => .none,
         else => return false,
     };
     const sym_node_idx: u32 = if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
