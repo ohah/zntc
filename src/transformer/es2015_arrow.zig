@@ -122,6 +122,58 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             return captures;
         }
 
+        /// A direct eval argument that is not a statically written string can
+        /// observe any generated lexical-capture binding in this arrow's
+        /// closure. Preserve the arrow instead of guessing synthetic names.
+        /// Scan through nested functions too: their eval calls can see aliases
+        /// created by an enclosing lowered arrow.
+        pub fn hasDynamicEvalArgument(self: *Transformer, root: NodeIndex) std.mem.Allocator.Error!bool {
+            if (root.isNone() or @intFromEnum(root) >= self.ast.nodes.items.len) return false;
+
+            // The analyzer propagates direct-eval presence through ancestor
+            // scopes, so most arrows can avoid a second AST walk. If ownership
+            // is unavailable, scan and fail closed on malformed scope data.
+            if (self.outputOwnedScope(root)) |scope_id| {
+                const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+                if (scope_id.toIndex() >= scopes.len) return true;
+                if (!scopes[scope_id.toIndex()].subtree_has_direct_eval) return false;
+            }
+
+            const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
+            defer self.allocator.free(reachable);
+            const extras = self.ast.extra_data.items;
+            for (reachable) |raw| {
+                if (raw >= self.ast.nodes.items.len) return true;
+                const node = self.ast.nodes.items[raw];
+                if (node.tag != .call_expression) continue;
+                const e = node.data.extra;
+                if (e > extras.len or extras.len - e < 4) return true;
+                if ((extras[e + 3] & ast_mod.CallFlags.optional_chain) != 0) continue;
+
+                const callee_idx = self.ast.readExtraNode(e, 0);
+                if (!isDirectEvalCallee(self.ast, callee_idx)) continue;
+
+                const args_start = extras[e + 1];
+                const args_len = extras[e + 2];
+                if (args_len == 0) continue;
+                if (args_start >= extras.len or args_len > extras.len - args_start) return true;
+                const arg_raw = extras[args_start];
+                if (arg_raw >= self.ast.nodes.items.len) return true;
+
+                var arg_idx: NodeIndex = @enumFromInt(arg_raw);
+                while (!arg_idx.isNone() and @intFromEnum(arg_idx) < self.ast.nodes.items.len) {
+                    const arg = self.ast.getNode(arg_idx);
+                    if (arg.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(arg.tag)) {
+                        arg_idx = arg.data.unary.operand;
+                    } else {
+                        if (arg.tag != .string_literal) return true;
+                        break;
+                    }
+                }
+            }
+            return false;
+        }
+
         /// Downleveling a class erases the method home-object context required
         /// by a preserved arrow's lexical `super`. Keep the whole class when a
         /// `with` body can make that preservation necessary.
@@ -304,6 +356,25 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             };
         }
     };
+}
+
+fn isDirectEvalCallee(ast: *const ast_mod.Ast, source: NodeIndex) bool {
+    var idx = source;
+    while (!idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len) {
+        const node = ast.getNode(idx);
+        if (node.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) {
+            idx = node.data.unary.operand;
+            continue;
+        }
+        if (node.tag != .identifier_reference) return false;
+        const raw_name = ast.identifierNameText(node);
+        if (std.mem.eql(u8, raw_name, "eval")) return true;
+        if (std.mem.indexOfScalar(u8, raw_name, '\\') == null) return false;
+        var decode_buffer: [64]u8 = undefined;
+        const decoded = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse return false;
+        return std.mem.eql(u8, decoded, "eval");
+    }
+    return false;
 }
 
 fn isLexicalValueBoundary(tag: Tag) bool {

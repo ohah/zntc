@@ -3873,7 +3873,6 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       );
       expect(proc.status, proc.stderr).toBe(0);
-
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
         .find(
@@ -4063,6 +4062,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       );
       expect(proc.status, proc.stderr).toBe(0);
+      expect(proc.stderr).not.toContain(
+        'non-literal direct eval argument can observe generated capture bindings',
+      );
 
       const report = (proc.stderr ?? '')
         .split(/\r?\n/)
@@ -4078,6 +4080,95 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('true true 11 value undefined true 13 undefined true\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('dynamic direct eval cannot observe generated new.target capture names', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-rn-param-new-target-dynamic-eval-'));
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      join(dir, 'entry.mjs'),
+      [
+        'function Foo(_newTarget = 11, value = () => () => [new.target, eval("typeof _newTarget" + "2")]) {',
+        '  const captured = value()();',
+        '  console.log(captured[0] === Foo, captured[1]);',
+        '}',
+        'function Escaped(_newTarget = 12, value = () => () => { function read() { return ev\\u0061l("typeof _newTarget" + "2"); } return [new.target, read()]; }) {',
+        '  const captured = value()();',
+        '  console.log(captured[0] === Escaped, captured[1]);',
+        '}',
+        'function Parenthesized(_newTarget = 13, value = () => () => [new.target, (eval)("typeof _newTarget" + "2")]) {',
+        '  const captured = value()();',
+        '  console.log(captured[0] === Parenthesized, captured[1]);',
+        '}',
+        'new Foo();',
+        'new Escaped();',
+        'new Parenthesized();',
+      ].join('\n'),
+    );
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.mjs',
+          '--platform=react-native',
+          '--rn-version=0.80',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const report = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+        );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(Number(report?.match(new RegExp(counter + '=(\\d+)'))?.[1] ?? -1), report).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+
+      const code = readFileSync(output, 'utf8');
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('true undefined\ntrue undefined\ntrue undefined\n');
+      expect(code).toContain('=>');
+      expect(proc.stderr).toContain(
+        'non-literal direct eval argument can observe generated capture bindings',
+      );
+
+      const transpileOutput = join(dir, 'transpiled.cjs');
+      const transpile = spawnSync(
+        ZNTC_BIN,
+        [
+          'entry.mjs',
+          '--target=es5',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          transpileOutput,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(transpile.status, transpile.stderr).toBe(0);
+      expect(transpile.stderr).toContain(
+        'non-literal direct eval argument can observe generated capture bindings',
+      );
+      const transpiled = spawnSync('node', [transpileOutput], { encoding: 'utf8' });
+      expect(transpiled.status, transpiled.stderr).toBe(0);
+      expect(transpiled.stdout).toBe('true undefined\ntrue undefined\ntrue undefined\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

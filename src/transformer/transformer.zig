@@ -636,6 +636,10 @@ pub const Transformer = struct {
     /// a dynamic `with` scope because aliases/home-object syntax could be unsafe.
     used_unsupported_arrow_dynamic_scope: bool = false,
 
+    /// A lexical-capturing arrow was kept intact because a non-literal direct
+    /// eval argument can observe any generated capture alias.
+    used_unsupported_arrow_dynamic_eval: bool = false,
+
     /// 런타임 헬퍼를 ES5 문법으로 출력 (arrow, rest params 제거).
     /// unsupported.arrow일 때 자동 설정.
     runtime_es5_compat: bool = false,
