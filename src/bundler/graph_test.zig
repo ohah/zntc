@@ -1906,6 +1906,55 @@ test "graph: load hit — 복원 module 이 cold parse 와 동등 + parse 스킵
     for (gt_specs.items, m2.import_records) |g, r| try std.testing.expectEqualStrings(g, r.specifier);
 }
 
+/// (#5571/#5581/#5583) TypeScript type-only facts judged on the parse AST.
+const TsTypeFacts = struct { record_elided: bool, binding_type_only: ?bool, type_names: usize };
+
+fn buildTsTypeFacts(entry: []const u8, cache_root: []const u8, expect_hit: bool) !TsTypeFacts {
+    var store = try @import("disk_module_store.zig").DiskModuleStore.init(std.testing.allocator, cache_root);
+    defer store.deinit();
+    var c = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer c.deinit();
+    var g = ModuleGraph.init(std.testing.allocator, &c);
+    defer g.deinit();
+    g.disk_cache = &store;
+    g.disk_compiler_build_id = 0xABCD;
+    g.disk_load_enabled = true;
+    try g.build(std.testing.io, &.{entry});
+    try std.testing.expectEqual(expect_hit, g.disk_load_hits.load(.monotonic) > 0);
+    var facts: TsTypeFacts = .{ .record_elided = false, .binding_type_only = null, .type_names = 0 };
+    for (0..g.moduleCount()) |i| {
+        const m = g.modules.at(i);
+        if (std.mem.endsWith(u8, m.path, "entry.ts")) {
+            facts.record_elided = m.import_records[0].ts_elided;
+            facts.binding_type_only = m.import_bindings[0].source_type_only;
+        } else if (std.mem.endsWith(u8, m.path, "types.ts")) {
+            facts.type_names = m.ts_type_export_names.count();
+        }
+    }
+    return facts;
+}
+
+test "graph: load hit — TS 타입 전용 판정이 cold parse 와 같다 (#5583)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "types.ts", "export interface T { n: number }\nexport declare const g: number;\nexport type U = string;\nexport const v = 1;\n");
+    try writeFile(tmp.dir, "entry.ts", "import { T } from './types';\nexport { U, v } from './types';\nlet t: T | null = null;\nconsole.log(t);\n");
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+    const cache_root = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "cache" });
+    defer std.testing.allocator.free(cache_root);
+
+    const cold = try buildTsTypeFacts(entry, cache_root, false);
+    try std.testing.expect(cold.record_elided);
+    try std.testing.expectEqual(@as(?bool, true), cold.binding_type_only);
+    try std.testing.expectEqual(@as(usize, 3), cold.type_names); // T, g, U
+    const loaded = try buildTsTypeFacts(entry, cache_root, true);
+    try std.testing.expectEqual(cold, loaded);
+}
+
 test "graph: load hit 게이트 — legal comment 모듈은 load OFF (#4438 통합3 PR2)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
