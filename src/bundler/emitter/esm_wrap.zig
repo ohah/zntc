@@ -917,31 +917,7 @@ pub fn emitEsmWrappedModule(
         body_code = try std.fmt.allocPrint(arena_alloc, "{s}\treturn {s};\n", .{ body_code, tla_var });
     }
 
-    // 5.1. Hermes 호환: hoisted var와 같은 이름의 named function expression 이름 제거.
-    // Hermes는 "X = function X() {...}" 에서 named function expression의 이름 X가
-    // 외부 스코프의 X 변수를 덮어쓰는 비표준 동작을 보임.
-    // "= function NAME(" → "= function(" 으로 변환하여 이름 충돌 방지.
-    for (hoisted_var_names.items) |hv_name| {
-        // 리네이밍된 이름(Performance$1)에서 base name(Performance)을 추출하여 검색.
-        // body_code는 리네이밍 전 원본 이름을 사용하므로 base name으로 매칭해야 함.
-        const base_name = if (std.mem.indexOfScalar(u8, hv_name, '$')) |dollar| hv_name[0..dollar] else hv_name;
-        const needle = try std.fmt.allocPrint(arena_alloc, "= function {s}(", .{base_name});
-        const replacement = "= function(";
-        var pos: usize = 0;
-        while (std.mem.indexOf(u8, body_code[pos..], needle)) |rel| {
-            const abs_start = pos + rel;
-            // needle을 replacement로 교체 (길이가 다르므로 새 버퍼 필요)
-            const new_code = try std.fmt.allocPrint(arena_alloc, "{s}{s}{s}", .{
-                body_code[0..abs_start],
-                replacement,
-                body_code[abs_start + needle.len ..],
-            });
-            body_code = new_code;
-            pos = abs_start + replacement.len;
-        }
-    }
-
-    // 5.2. re-export default 할당문 생성.
+    // 5.1. re-export default 할당문 생성.
     // export { default } from / export { default as X } from re-export는
     // import_bindings를 생성하지 않으므로 body codegen에서 할당문이 누락됨.
     // 소스 모듈의 wrap_kind에 따라 적절한 할당문을 직접 생성.
