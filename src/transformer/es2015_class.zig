@@ -573,6 +573,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             self.pending_nodes.shrinkRetainingCapacity(pending_top);
 
+            // `export default class {}` is named "default" before its static
+            // elements run, not after its generated binding (#5519).
+            if (name_idx.isNone()) {
+                if (@import("parameter_environment.zig").takeAnonymousClassName(self, source_idx)) |inferred| {
+                    const class_ref = try self.makeCurrentClassRefAtScope(name_span, iife_scope);
+                    try self.scratch.append(self.allocator, try @import("parameter_environment.zig").classNameStatement(self, class_ref, inferred, iife_scope, span));
+                }
+            }
             // static fields/blocks 는 class evaluation 중 실행된다. extends class 의 경우 IIFE
             // 밖으로 내보내면 super lowering 이 참조하는 _super scope가 사라지므로 IIFE 내부에서
             // __extends 이후, return 이전에 실행한다.
