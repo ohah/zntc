@@ -376,12 +376,16 @@ fn collectDecoratorMetadataTypeNames(self: *Transformer, names: *std.StringHashM
 }
 
 fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: Node) bool {
-    // #1791: Phase D 를 **named specifier 한정**. default/namespace 는 JSX pragma,
-    // CSS-in-JS default export, namespace member access 같은 implicit value use 가
-    // 많아 false positive 위험이 큼 (#1793 revert 원인). bungae 의 실제 crash 경로
-    // (`import { HeaderBarButtonItem }`) 는 named 이므로 이 제한으로도 해결.
-    if (spec_node.tag != .import_specifier) return false;
-    const local_idx = spec_node.data.binary.right;
+    // #1791 Phase D 는 named 한정이었다 — default/namespace 의 implicit value use(JSX pragma,
+    // CSS-in-JS) 가 `reference_count` 판정(#1793 revert)에 안 보였기 때문. 지금은 Reference 단위
+    // value/type 판정에 JSX 태그·멤버 접근이 value 로 잡히고, classic JSX factory head 와 Emotion
+    // 은 아래에서 따로 keep 한다. tsc·esbuild 처럼 타입으로만 쓴 default/namespace 도 지운다(#5595)
+    // — TypeScript 소스만. JS 의 import 는 모듈을 평가한다.
+    const local_idx: NodeIndex = switch (spec_node.tag) {
+        .import_specifier => spec_node.data.binary.right,
+        .import_default_specifier, .import_namespace_specifier => if (self.ast.is_typescript) .none else return false,
+        else => return false,
+    };
     const sym_node_idx: u32 = if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
     const local_node = if (!local_idx.isNone()) self.ast.getNode(local_idx) else spec_node;
     const local_name = self.ast.getText(local_node.span);

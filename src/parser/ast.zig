@@ -1114,6 +1114,10 @@ pub const Ast = struct {
     /// Flow `enum X { ... }` 이 있는가. graph 단계에서 `flow-enums-runtime` synthetic
     /// require 주입 여부를 O(1) 로 결정 (linear AST walk 회피).
     has_flow_enum_declaration: bool = false,
+    /// TypeScript 소스(`.ts`/`.tsx`/`.mts`/`.cts` 또는 loader=ts/tsx). transformer 의 import
+    /// elision 이 타입으로만 쓴 default/namespace import 를 지우는 범위(#5595) — JS 는 import
+    /// 가 모듈을 평가하므로 그대로 둔다.
+    is_typescript: bool = false,
 
     /// per-file JSX pragma 주석 (D026). lexer 가 주석에서 감지해 채운다. transform
     /// 단계에서 `TransformOptions.withModuleJsxPragmas` 가 module 단위로

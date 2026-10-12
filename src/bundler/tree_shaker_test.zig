@@ -711,10 +711,11 @@ test "refcount: partial usage — only actually used import marked" {
 test "refcount: unused default import not marked as used" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    try writeFile(tmp.dir, "entry.ts", "import foo from './lib'; console.log('no foo');");
+    // JS entry: a TypeScript entry drops the unused import whole (#5595).
+    try writeFile(tmp.dir, "entry.js", "import foo from './lib'; console.log('no foo');");
     try writeFile(tmp.dir, "lib.ts", "export default function foo() { return 42; }");
 
-    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.ts");
+    var r = try buildAndShake(std.testing.allocator, &tmp, "entry.js");
     defer r.deinit();
 
     try std.testing.expect(!r.shaker.isExportUsed(r.findModule("lib.ts").?, "default"));

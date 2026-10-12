@@ -22,7 +22,7 @@ const suppressRuntimeHelperInternalUnresolved = graph_parse_helpers.suppressRunt
 const getMtime = ModuleGraph.getMtime;
 
 /// TypeScript elides an import whose binding is used only as a type. Record
-/// that on each named binding from the source references, before a transform
+/// that on each binding from the source references, before a transform
 /// (constant inlining) removes its value uses (#5571).
 ///
 /// Uses the transform adds are value uses too, as in the transformer's own
@@ -48,7 +48,7 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     }
     const classic_jsx = ast.has_jsx and options.shouldLowerJsx() and options.jsx_runtime == .classic;
     for (module.import_bindings) |*ib| {
-        if (ib.kind != .named or ib.is_helper) continue;
+        if (ib.is_helper) continue;
         if (classic_jsx and (std.mem.eql(u8, ib.local_name, options.jsxClassicFactoryHead()) or
             std.mem.eql(u8, ib.local_name, options.jsxClassicFragmentHead())))
         {
@@ -60,8 +60,9 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
         ib.source_type_only = !value_used.isSet(sym_idx);
     }
     // An import whose every binding is a type alone is dropped whole: its
-    // module is not loaded (#5581). Default and namespace bindings stay —
-    // a JSX pragma can use them implicitly (#1793).
+    // module is not loaded (#5581) — default and namespace bindings too
+    // (#5595); the classic JSX factory head above keeps an implicit
+    // `React` use (#1793).
     if (verbatim_module_syntax) return;
     for (module.import_records, 0..) |*rec, rec_i| {
         if (rec.kind != .static_import) continue;
@@ -70,7 +71,7 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
         for (module.import_bindings) |ib| {
             if (ib.import_record_index != rec_i) continue;
             bindings += 1;
-            if (ib.kind != .named or ib.is_helper or ib.source_type_only != true) type_only = false;
+            if (ib.is_helper or ib.source_type_only != true) type_only = false;
         }
         rec.ts_elided = bindings > 0 and type_only;
     }

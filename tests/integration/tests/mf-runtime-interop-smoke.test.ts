@@ -673,7 +673,10 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
     expect(warnCount).toBe(1); // dedup: remote 당 1회 (이전: spec 당 → 다중)
 
     // expose 는 per-spec 유지 — 부재 expose 는 dedup 무관하게 fail-fast.
-    const bad = await buildHost(`import X from "app/Nope";\nawait import("app/Widget");`);
+    // TS 는 쓰지 않는 import 를 지우므로(#5595) X 를 값으로 읽는다.
+    const bad = await buildHost(
+      `import X from "app/Nope";\nglobalThis.__x = X;\nawait import("app/Widget");`,
+    );
     expect(bad.exitCode).not.toBe(0);
     expect(bad.stderr).toContain('MF expose 계약 위반');
     expect(bad.stderr).toContain('"app/Nope"');
@@ -1243,9 +1246,10 @@ console.log('SAME=' + (m && m.usedHook === hostReact.useState));
       return r;
     };
     // 정적 존재 expose → 빌드 성공(정밀 — blanket 아님)
-    expect((await buildHost('import W from "app/Widget";')).exitCode).toBe(0);
+    // TS 는 쓰지 않는 import 를 지우므로(#5595) 바인딩을 값으로 읽는다.
+    expect((await buildHost('import W from "app/Widget";\nglobalThis.__w = W;')).exitCode).toBe(0);
     // 정적 부재 expose → 빌드 fail-fast(verifyOneRemoteSpec 정적 경로)
-    const bad = await buildHost('import X from "app/Missing";');
+    const bad = await buildHost('import X from "app/Missing";\nglobalThis.__x = X;');
     expect(bad.exitCode).not.toBe(0);
     expect(bad.stderr).toContain('MF expose 계약 위반');
     expect(bad.stderr).toContain('"app/Missing"');

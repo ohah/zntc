@@ -16,7 +16,8 @@ describe('배치 E: CLI 옵션', () => {
 
   test('--packages=external: bare import가 external 처리됨', async () => {
     const fixture = await createFixture({
-      'index.ts': `import React from "react";\nimport { useState } from "react";\nconst x = 1;\nconsole.log(x);`,
+      // TS 는 쓰지 않는 import 를 지우므로(#5595) 값으로 읽는다.
+      'index.ts': `import React from "react";\nimport { useState } from "react";\nconst x = 1;\nconsole.log(x, React, useState);`,
     });
     cleanup = fixture.cleanup;
     const outFile = join(fixture.dir, 'out.js');
