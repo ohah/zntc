@@ -4946,16 +4946,40 @@ test "exact coverage diagnostic findings cannot disagree with a clean report" {
     const reports = [_]ExactReport{
         .{ .first_missing_binding = finding },
         .{ .first_missing_reference = finding },
+        .{ .first_declaration_anchor_mismatch = finding },
         .{ .first_unclassified_reference = finding },
         .{ .first_scope_owner_mismatch = .{ .node_index = 1, .tag = .block_statement, .issue = "test" } },
+        .{ .first_scope_owner_parent_mismatch = .{ .node_index = 1, .tag = .block_statement, .issue = "test" } },
         .{ .first_duplicate_scope_owner = .{ .node_index = 2, .tag = .block_statement, .issue = "test", .first_owner_node_index = 1 } },
         .{ .first_scope_map_mismatch = .{ .issue = "test" } },
         .{ .first_ambiguous_ast_parent = .{ .node_index = 1, .first_parent = 2, .additional_parent = 3 } },
         .{ .first_invalid_ast_root = 9 },
         .{ .first_invalid_ast_edge = .{ .parent_node_index = 1, .parent_tag = .program, .child_node_index = 9 } },
         .{ .first_invalid_ast_layout = .{ .node_index = 1, .tag = .program, .issue = .list_range, .data_index = 9 } },
+        .{ .first_reference_statement_mismatch = .{ .node_index = 1, .reference_stmt_idx = 2, .expected_stmt_idx = 3 } },
+        .{ .first_reference_scope_statement_alias = .{
+            .node_index = 1,
+            .first_parent = 2,
+            .additional_parent = 3,
+            .first_owner = 4,
+            .additional_owner = 5,
+            .first_statement_index = 6,
+            .additional_statement_index = 7,
+        } },
+        .{ .first_reference_node_use_alias = .{
+            .node_index = 1,
+            .name = "x",
+            .tag = .identifier_reference,
+            .span_start = 0,
+            .first_parent = 2,
+            .first_parent_tag = .call_expression,
+            .additional_parent = 3,
+            .additional_parent_tag = .binary_expression,
+            .additional_uses = 1,
+        } },
         .{ .first_shadowed_external_reference = finding },
     };
+    try std.testing.expectEqual(@as(usize, reports.len), ExactReport.schemaCounts().diagnostic_fields);
     for (reports) |report| try std.testing.expect(!report.isClean());
 }
 
