@@ -1175,9 +1175,10 @@ fn isRetainableBoundStaticFieldEffectCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
     allow_computed_member_callee: bool,
-    // Optional calls are accepted only for computed member keys, where this
-    // exact-bound callee and its safe arguments are checked by the caller.
+    // Optional calls and one level of exact-bound call arguments are accepted
+    // only for computed member keys.
     allow_optional_call: bool,
+    allow_bound_call_arguments: bool,
 ) bool {
     if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
@@ -1202,8 +1203,11 @@ fn isRetainableBoundStaticFieldEffectCall(
     const args_len = extras[extra + 2];
     if (args_start > extras.len or args_len > extras.len - args_start) return false;
     for (extras[args_start .. args_start + args_len]) |raw_arg| {
-        if (raw_arg >= ast.nodes.items.len or
-            !isSafeConstructorValue(ast, semantic, @enumFromInt(raw_arg))) return false;
+        if (raw_arg >= ast.nodes.items.len) return false;
+        const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
+        if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
+        if (!allow_bound_call_arguments or
+            !isRetainableBoundStaticFieldEffectCall(ast, semantic, argument_idx, false, false, false)) return false;
     }
     return true;
 }
@@ -1237,7 +1241,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     if (list.len < 2 or list.start > extras.len or list.len > extras.len - list.start) return false;
     for (extras[list.start .. list.start + list.len - 1]) |raw_item| {
         if (raw_item >= ast.nodes.items.len or
-            !isRetainableBoundStaticFieldEffectCall(ast, semantic, @enumFromInt(raw_item), false, false)) return false;
+            !isRetainableBoundStaticFieldEffectCall(ast, semantic, @enumFromInt(raw_item), false, false, false)) return false;
     }
     const last_raw = extras[list.start + list.len - 1];
     if (last_raw >= ast.nodes.items.len) return false;
@@ -1246,7 +1250,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
         (allow_bound_member_read_last_value and
             isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx, false)) or
         (allow_bound_call_last_value and
-            isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx, true, false)) or
+            isRetainableBoundStaticFieldEffectCall(ast, semantic, last_idx, true, false, false)) or
         (allow_unresolved_last_value and
             isRetainableUnresolvedStaticFieldIdentifier(ast, semantic, last_idx));
 }
@@ -1283,8 +1287,20 @@ fn isRetainableBoundStaticFieldMemberRead(
             if (ast.getNode(property_idx).tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
             if (!allow_effectful_computed_key_calls or
-                ast.getNode(property_idx).tag != .call_expression or
-                !isRetainableBoundStaticFieldEffectCall(ast, semantic, property_idx, false, true)) return false;
+                ast.getNode(property_idx).tag != .call_expression) return false;
+            const key_call_extra = ast.getNode(property_idx).data.extra;
+            if (key_call_extra > extras.len or extras.len - key_call_extra < 4) return false;
+            const optional_key_call =
+                (extras[key_call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
+            const allow_bound_call_arguments = optional_key_call;
+            if (!isRetainableBoundStaticFieldEffectCall(
+                ast,
+                semantic,
+                property_idx,
+                false,
+                true,
+                allow_bound_call_arguments,
+            )) return false;
         }
         saw_member = true;
         current_idx = receiver_idx;
