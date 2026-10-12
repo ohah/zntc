@@ -7,7 +7,10 @@ const Module = module_mod.Module;
 const ModuleSemanticData = module_mod.ModuleSemanticData;
 const CjsRuntimeInternalSymbolIds = @import("../module.zig").CjsRuntimeInternalSymbolIds;
 const semantic_symbol = @import("../../semantic/symbol.zig");
-const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+const scope_mod = @import("../../semantic/scope.zig");
+const Scope = scope_mod.Scope;
+const ScopeId = scope_mod.ScopeId;
+const Ast = @import("../../parser/ast.zig").Ast;
 const Span = @import("../../lexer/token.zig").Span;
 const runtime_helper_names = @import("../../runtime_helper_names.zig");
 const graph_mod = @import("../graph.zig");
@@ -237,45 +240,45 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
         // still represents the same graph identity, so recover it before
         // considering a new CJS owner.
         if (findCjsRuntimeFactorySymbol(m) != null) {
-            registerCjsRuntimeFactorySymbol(m);
+            try registerCjsRuntimeFactorySymbol(m);
             cjs_runtime_identity_registered = true;
         }
         if (!to_binary_runtime_identity_registered and findBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary") != null) {
-            registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
-            to_binary_runtime_identity_registered = m.to_binary_runtime_symbol != null;
+            try registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
+            to_binary_runtime_identity_registered = true;
         }
         if (!esm_runtime_identity_registered and findBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm") != null) {
-            registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
-            esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
+            try registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+            esm_runtime_identity_registered = true;
         }
         if (cjs_runtime_identity_registered and to_binary_runtime_identity_registered and esm_runtime_identity_registered) break;
     }
     var it = self.modules.iterator(0);
     while (it.next()) |m| {
         if (m.wrap_kind == .none) continue;
+        // Runtime helpers are graph-owned symbols too. Establish the semantic
+        // shell before registering them for AST-less wrappers, and reject an
+        // AST-bearing module whose analysis data disappeared.
+        if (m.semantic == null) {
+            if (m.ast != null) return error.MissingSemantic;
+            try ensureSyntheticModuleSemantic(self, m);
+        }
         if (m.wrap_kind == .cjs) {
-            registerCjsWrapperParameters(m);
-            if (!cjs_runtime_identity_registered) {
-                registerCjsRuntimeFactorySymbol(m);
-                cjs_runtime_identity_registered = m.cjs_runtime_factory_symbol != null;
+            try registerCjsWrapperParameters(m);
+            if (!cjs_runtime_identity_registered and m.ast != null) {
+                try registerCjsRuntimeFactorySymbol(m);
+                cjs_runtime_identity_registered = true;
             }
         }
-        if (m.wrap_kind == .esm and !esm_runtime_identity_registered) {
-            registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
-            esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
+        if (m.wrap_kind == .esm and !esm_runtime_identity_registered and m.ast != null) {
+            try registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+            esm_runtime_identity_registered = true;
         }
         const needs_init = (m.ast != null or m.wrap_kind == .esm) and m.init_symbol == null;
         const needs_exports = (m.ast != null or m.wrap_kind == .esm) and m.exports_symbol == null;
         const needs_require = m.wrap_kind == .cjs and m.require_symbol == null;
         if (!needs_init and !needs_exports and !needs_require) continue;
 
-        // semantic 이 없는 AST-less 모듈(asset / disabled / optional-missing 등)은
-        // JS 파싱을 거치지 않아 심볼 테이블이 없다. 그래프 생성 래퍼 이름을 문자열
-        // fallback으로 남기지 않고 빈 semantic 저장소의 정확한 SymbolId로 등록한다.
-        if (m.semantic == null) {
-            if (m.ast != null) return error.MissingSemantic;
-            if (!ensureSyntheticModuleSemantic(self, m)) return error.OutOfMemory;
-        }
         const arena = if (m.parse_arena) |a| a.allocator() else return error.OutOfMemory;
         const sem_ptr = if (m.semantic) |*s| s else return error.MissingSemantic;
 
@@ -336,22 +339,21 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
             var semantic_it = self.modules.iterator(0);
             while (semantic_it.next()) |m| {
                 if (m.ast == null or m.semantic == null or m.parse_arena == null) continue;
-                registerCjsRuntimeFactorySymbol(m);
-                cjs_runtime_identity_registered = m.cjs_runtime_factory_symbol != null;
-                if (cjs_runtime_identity_registered) break;
+                try registerCjsRuntimeFactorySymbol(m);
+                cjs_runtime_identity_registered = true;
+                break;
             }
             if (!cjs_runtime_identity_registered) {
                 var synthetic_it = self.modules.iterator(0);
                 while (synthetic_it.next()) |m| {
                     if (m.ast != null) continue;
-                    if (!ensureSyntheticModuleSemantic(self, m)) continue;
-                    registerCjsRuntimeFactorySymbol(m);
-                    if (m.cjs_runtime_factory_symbol != null) {
-                        cjs_runtime_identity_registered = true;
-                        break;
-                    }
+                    try ensureSyntheticModuleSemantic(self, m);
+                    try registerCjsRuntimeFactorySymbol(m);
+                    cjs_runtime_identity_registered = true;
+                    break;
                 }
             }
+            if (!cjs_runtime_identity_registered) return error.MissingRuntimeHelperSymbol;
         }
     }
 
@@ -372,19 +374,21 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
             var semantic_it = self.modules.iterator(0);
             while (semantic_it.next()) |m| {
                 if (m.ast == null or m.semantic == null or m.parse_arena == null) continue;
-                registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
-                to_binary_runtime_identity_registered = m.to_binary_runtime_symbol != null;
-                if (to_binary_runtime_identity_registered) break;
+                try registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
+                to_binary_runtime_identity_registered = true;
+                break;
             }
             if (!to_binary_runtime_identity_registered) {
                 var synthetic_binary_it = self.modules.iterator(0);
                 while (synthetic_binary_it.next()) |m| {
                     if (m.loader != .binary or m.source.len == 0 or m.ast != null) continue;
-                    if (!ensureSyntheticModuleSemantic(self, m)) continue;
-                    registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
-                    if (m.to_binary_runtime_symbol != null) break;
+                    try ensureSyntheticModuleSemantic(self, m);
+                    try registerBundlerRuntimeHelperSymbol(m, &m.to_binary_runtime_symbol, "__toBinary");
+                    to_binary_runtime_identity_registered = true;
+                    break;
                 }
             }
+            if (!to_binary_runtime_identity_registered) return error.MissingRuntimeHelperSymbol;
         }
     }
 
@@ -405,22 +409,21 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
             var semantic_it = self.modules.iterator(0);
             while (semantic_it.next()) |m| {
                 if (m.ast == null or m.semantic == null or m.parse_arena == null) continue;
-                registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
-                esm_runtime_identity_registered = m.esm_runtime_factory_symbol != null;
-                if (esm_runtime_identity_registered) break;
+                try registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+                esm_runtime_identity_registered = true;
+                break;
             }
             if (!esm_runtime_identity_registered) {
                 var synthetic_it = self.modules.iterator(0);
                 while (synthetic_it.next()) |m| {
                     if (m.ast != null) continue;
-                    if (!ensureSyntheticModuleSemantic(self, m)) continue;
-                    registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
-                    if (m.esm_runtime_factory_symbol != null) {
-                        esm_runtime_identity_registered = true;
-                        break;
-                    }
+                    try ensureSyntheticModuleSemantic(self, m);
+                    try registerBundlerRuntimeHelperSymbol(m, &m.esm_runtime_factory_symbol, "__esm");
+                    esm_runtime_identity_registered = true;
+                    break;
                 }
             }
+            if (!esm_runtime_identity_registered) return error.MissingRuntimeHelperSymbol;
         }
     }
 }
@@ -430,11 +433,11 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
 /// the usual module-owned semantic storage without pretending that the module
 /// has source scopes or an AST. `parse_arena` owns the symbol array, matching
 /// ordinary semantic data and its incremental lifetime.
-fn ensureSyntheticModuleSemantic(graph: *ModuleGraph, m: *Module) bool {
-    if (m.semantic != null) return true;
-    if (m.ast != null) return false;
+fn ensureSyntheticModuleSemantic(graph: *ModuleGraph, m: *Module) !void {
+    if (m.semantic != null) return;
+    if (m.ast != null) return error.MissingSemantic;
     if (m.parse_arena == null) {
-        m.parse_arena = module_mod.createParseArena(graph.allocator) orelse return false;
+        m.parse_arena = module_mod.createParseArena(graph.allocator) orelse return error.OutOfMemory;
     }
     m.semantic = .{
         .symbols = .empty,
@@ -444,7 +447,6 @@ fn ensureSyntheticModuleSemantic(graph: *ModuleGraph, m: *Module) bool {
         .symbol_ids = &.{},
         .unresolved_references = .empty,
     };
-    return true;
 }
 
 fn findWrapperSymbol(
@@ -469,9 +471,9 @@ fn findWrapperSymbol(
     return null;
 }
 
-fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) void {
-    const sem = if (m.semantic) |*value| value else return;
-    const arena = if (m.parse_arena) |value| value.allocator() else return;
+fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) !void {
+    const sem = if (m.semantic) |*value| value else return error.MissingSemantic;
+    const arena = if (m.parse_arena) |value| value.allocator() else return error.MissingSemantic;
     if (findBundlerRuntimeHelperSymbol(m, identity, name) == null) {
         identity.* = semantic_symbol.extendSymbol(
             arena,
@@ -480,9 +482,9 @@ fn registerBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.Sy
             .bundler_runtime_helper,
             name,
             Span.EMPTY,
-        ) catch null;
+        ) catch return error.OutOfMemory;
     }
-    _ = findBundlerRuntimeHelperSymbol(m, identity, name);
+    if (findBundlerRuntimeHelperSymbol(m, identity, name) == null) return error.MissingRuntimeHelperSymbol;
 }
 
 fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) ?semantic_symbol.SymbolId {
@@ -509,9 +511,9 @@ fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.Symbol
 /// body and wrapper callsites are emitted outside source AST nodes, so this is
 /// a virtual bundler symbol like the other wrapper symbols. The cached semantic
 /// row remains the graph identity if its original module stops being CJS.
-fn registerCjsRuntimeFactorySymbol(m: *Module) void {
-    const sem = if (m.semantic) |*value| value else return;
-    const arena = if (m.parse_arena) |value| value.allocator() else return;
+fn registerCjsRuntimeFactorySymbol(m: *Module) !void {
+    const sem = if (m.semantic) |*value| value else return error.MissingSemantic;
+    const arena = if (m.parse_arena) |value| value.allocator() else return error.MissingSemantic;
     if (findCjsRuntimeFactorySymbol(m) == null) {
         m.cjs_runtime_factory_symbol = semantic_symbol.extendSymbol(
             arena,
@@ -520,9 +522,9 @@ fn registerCjsRuntimeFactorySymbol(m: *Module) void {
             .cjs_runtime_factory,
             "__commonJS",
             Span.EMPTY,
-        ) catch null;
+        ) catch return error.OutOfMemory;
     }
-    if (m.cjs_runtime_factory_symbol == null) return;
+    if (m.cjs_runtime_factory_symbol == null) return error.MissingRuntimeHelperSymbol;
 
     const names: runtime_helper_names.CjsRuntimeInternalNames = .{};
     const callback_parameter = ensureCjsRuntimeInternalSymbol(
@@ -531,28 +533,28 @@ fn registerCjsRuntimeFactorySymbol(m: *Module) void {
         if (m.cjs_runtime_internal_symbols) |ids| ids.callback_parameter else null,
         names.callback_parameter,
         .parameter,
-    ) orelse return;
+    ) catch return error.OutOfMemory;
     const module_parameter = ensureCjsRuntimeInternalSymbol(
         sem,
         arena,
         if (m.cjs_runtime_internal_symbols) |ids| ids.module_parameter else null,
         names.module_parameter,
         .parameter,
-    ) orelse return;
+    ) catch return error.OutOfMemory;
     const catch_parameter = ensureCjsRuntimeInternalSymbol(
         sem,
         arena,
         if (m.cjs_runtime_internal_symbols) |ids| ids.catch_parameter else null,
         names.catch_parameter,
         .catch_binding,
-    ) orelse return;
+    ) catch return error.OutOfMemory;
     const require_function = ensureCjsRuntimeInternalSymbol(
         sem,
         arena,
         if (m.cjs_runtime_internal_symbols) |ids| ids.require_function else null,
         names.require_function,
         .function_decl,
-    ) orelse return;
+    ) catch return error.OutOfMemory;
     m.cjs_runtime_internal_symbols = .{
         .callback_parameter = callback_parameter,
         .module_parameter = module_parameter,
@@ -567,7 +569,7 @@ fn ensureCjsRuntimeInternalSymbol(
     existing: ?semantic_symbol.SymbolId,
     name: []const u8,
     kind: semantic_symbol.SymbolKind,
-) ?semantic_symbol.SymbolId {
+) !semantic_symbol.SymbolId {
     if (existing) |symbol_id| {
         const raw: usize = @intFromEnum(symbol_id);
         if (raw < sem.symbols.items.len) {
@@ -581,14 +583,14 @@ fn ensureCjsRuntimeInternalSymbol(
         if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
         return @enumFromInt(index);
     }
-    return semantic_symbol.extendSymbol(
+    return try semantic_symbol.extendSymbol(
         arena,
         &sem.symbols,
         kind,
         .cjs_runtime_internal_local,
         name,
         Span.EMPTY,
-    ) catch null;
+    );
 }
 
 fn findCjsRuntimeFactorySymbol(m: *Module) ?semantic_symbol.SymbolId {
@@ -610,11 +612,11 @@ fn findCjsRuntimeFactorySymbol(m: *Module) ?semantic_symbol.SymbolId {
 /// A source top-level declaration already has the right identity (including
 /// `var`/function redeclarations); otherwise add a generated parameter SymbolId
 /// to the module scope and bind unresolved source references to it.
-fn registerCjsWrapperParameters(m: *Module) void {
-    const sem_ptr = if (m.semantic) |*sem| sem else return;
+fn registerCjsWrapperParameters(m: *Module) !void {
     const ast_ptr = if (m.ast) |*ast| ast else return;
-    if (sem_ptr.scopes.len == 0 or sem_ptr.scope_maps.len == 0) return;
-    const arena = if (m.parse_arena) |a| a.allocator() else return;
+    const sem_ptr = if (m.semantic) |*sem| sem else return error.MissingSemantic;
+    if (sem_ptr.scopes.len == 0 or sem_ptr.scope_maps.len == 0) return error.MissingSemantic;
+    const arena = if (m.parse_arena) |a| a.allocator() else return error.MissingSemantic;
     const root_scope_ptr = @constCast(&sem_ptr.scopes[0]);
     const root_map = @constCast(&sem_ptr.scope_maps[0]);
 
@@ -636,16 +638,18 @@ fn registerCjsWrapperParameters(m: *Module) void {
         @as(usize, @intFromBool(existing_module == null));
     const new_map_count: usize = @as(usize, @intFromBool(!root_map.contains("exports"))) +
         @as(usize, @intFromBool(!root_map.contains("module")));
-    if (new_symbol_count > 0 and @as(usize, root_scope_ptr.symbol_count) > std.math.maxInt(u16) - new_symbol_count) return;
+    if (new_symbol_count > 0 and @as(usize, root_scope_ptr.symbol_count) > std.math.maxInt(u16) - new_symbol_count) {
+        return error.CjsWrapperParameterScopeOverflow;
+    }
 
     // Reserve both structures before publishing either parameter. This keeps
     // the pair atomic on allocation failure and avoids cloning all semantic
     // arrays/maps once per CJS module.
-    sem_ptr.symbols.ensureUnusedCapacity(arena, new_symbol_count) catch return;
-    root_map.ensureUnusedCapacity(arena, @intCast(new_map_count)) catch return;
+    try sem_ptr.symbols.ensureUnusedCapacity(arena, new_symbol_count);
+    try root_map.ensureUnusedCapacity(arena, @intCast(new_map_count));
 
     const old_symbol_count = sem_ptr.symbols.items.len;
-    const exports_symbol = existing_exports orelse addCjsWrapperParameter(
+    const exports_symbol = existing_exports orelse try addCjsWrapperParameter(
         sem_ptr,
         root_scope_ptr,
         root_map,
@@ -653,7 +657,7 @@ fn registerCjsWrapperParameters(m: *Module) void {
         "exports",
         .cjs_wrapper_exports_parameter,
     );
-    const module_symbol = existing_module orelse addCjsWrapperParameter(
+    const module_symbol = existing_module orelse try addCjsWrapperParameter(
         sem_ptr,
         root_scope_ptr,
         root_map,
@@ -741,15 +745,15 @@ fn addCjsWrapperParameter(
     allocator: std.mem.Allocator,
     name: []const u8,
     kind: semantic_symbol.SyntheticKind,
-) semantic_symbol.SymbolId {
-    const id = semantic_symbol.extendSymbol(
+) !semantic_symbol.SymbolId {
+    const id = try semantic_symbol.extendSymbol(
         allocator,
         &sem.symbols,
         .parameter,
         kind,
         name,
         Span.EMPTY,
-    ) catch unreachable; // Capacity was reserved for both IDs above.
+    );
     const raw: usize = @intFromEnum(id);
     sem.symbols.items[raw].scope_id = @enumFromInt(0);
     sem.symbols.items[raw].origin_scope = @enumFromInt(0);
@@ -1175,4 +1179,61 @@ fn hasOnlyReExportImporters(self: *ModuleGraph, target: *const Module) bool {
         }
     }
     return saw_any;
+}
+
+test "finalize: runtime synthetic symbol registration propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var arena = std.heap.ArenaAllocator.init(failing.allocator());
+    defer arena.deinit();
+
+    var module = Module.init(@enumFromInt(0), "generated.cjs");
+    module.parse_arena = &arena;
+    module.semantic = .{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+
+    try std.testing.expectError(
+        error.OutOfMemory,
+        registerBundlerRuntimeHelperSymbol(&module, &module.to_binary_runtime_symbol, "__toBinary"),
+    );
+    try std.testing.expectError(error.OutOfMemory, registerCjsRuntimeFactorySymbol(&module));
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expect(module.to_binary_runtime_symbol == null);
+    try std.testing.expect(module.cjs_runtime_factory_symbol == null);
+    try std.testing.expectEqual(@as(usize, 0), module.semantic.?.symbols.items.len);
+}
+
+test "finalize: CJS wrapper parameter allocation propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var arena = std.heap.ArenaAllocator.init(failing.allocator());
+    defer arena.deinit();
+
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+    var scopes = [_]Scope{.{
+        .parent = ScopeId.none,
+        .kind = .module,
+        .is_strict = true,
+    }};
+    var scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    var module = Module.init(@enumFromInt(0), "entry.cjs");
+    module.ast = ast;
+    module.parse_arena = &arena;
+    module.semantic = .{
+        .symbols = .empty,
+        .scopes = &scopes,
+        .scope_maps = &scope_maps,
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+
+    try std.testing.expectError(error.OutOfMemory, registerCjsWrapperParameters(&module));
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expectEqual(@as(usize, 0), module.semantic.?.symbols.items.len);
 }
