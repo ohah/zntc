@@ -303,6 +303,9 @@ pub const SyntheticKind = enum(u8) {
     /// ES5 lexical `this` capture. Standalone output selects its spelling from
     /// this exact SymbolId after all generated bindings are known.
     this_capture_binding,
+    /// ES5 lexical `arguments` capture. Standalone output selects its spelling
+    /// from this exact SymbolId after all generated bindings are known.
+    arguments_capture_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)
