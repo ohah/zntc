@@ -480,6 +480,9 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         // name already registered there, even if it was generated (and thus
         // absent from the original analyzer symbol slice).
         if (collidesWithCurrentVarScopeSymbol(self, name)) continue;
+        // Direct eval can read generated bindings by name. Reserve names
+        // found in source strings and statically computable string expressions.
+        if (try nameAppearsInDynamicEvalString(self, self.current_scope, name)) continue;
         const span = try self.ast.addUniqueString(name);
         try self.temp_span_by_counter.put(self.allocator, idx, span);
         try self.generated_temp_spans.append(self.allocator, span);
@@ -585,10 +588,10 @@ pub fn canUseLateStandaloneOutputName(self: anytype, scope_id: ScopeId) bool {
     return scope.isNone();
 }
 
-/// A generated catch parameter is visible to direct eval in its catch body.
-/// Also reserve names written inside string literals that eval can parse as
-/// identifiers. This is intentionally conservative: a matching token in an
-/// unrelated string can only skip one candidate.
+/// Direct eval can observe generated bindings by local name. Reserve names
+/// written inside strings or statically computable string expressions that
+/// eval can parse as identifiers. This is intentionally conservative: a
+/// matching token in an unrelated literal can only skip one candidate.
 pub fn nameAppearsInDynamicEvalString(self: anytype, scope_id: ScopeId, name: []const u8) !bool {
     if (scope_id.isNone()) return false;
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
@@ -606,17 +609,103 @@ pub fn nameAppearsInDynamicEvalString(self: anytype, scope_id: ScopeId, name: []
     }
     if (!has_direct_eval) return false;
 
-    for (self.ast.nodes.items) |node| {
-        if (node.tag != .string_literal) continue;
-        const raw = self.ast.getText(node.span);
-        const decoded = string_escape.decodeJsStringLiteral(self.allocator, raw) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => continue,
-        };
-        defer self.allocator.free(decoded);
-        if (try jsSourceContainsIdentifier(self.allocator, decoded, name)) return true;
+    for (self.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .string_literal) {
+            const literal = self.ast.getText(node.span);
+            const decoded = string_escape.decodeJsStringLiteral(self.allocator, literal) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => continue,
+            };
+            defer self.allocator.free(decoded);
+            if (try jsSourceContainsIdentifier(self.allocator, decoded, name)) return true;
+        }
+
+        switch (node.tag) {
+            .template_literal, .binary_expression, .parenthesized_expression => {
+                const idx: NodeIndex = @enumFromInt(raw);
+                const static_source = try staticStringExpressionValue(self, idx, 0) orelse continue;
+                defer self.allocator.free(static_source);
+                if (try jsSourceContainsIdentifier(self.allocator, static_source, name)) return true;
+            },
+            else => {},
+        }
     }
     return false;
+}
+
+/// Evaluate the string-producing subset without running user code: string
+/// literals, string-only `+`, and templates with statically known strings.
+fn staticStringExpressionValue(self: anytype, idx: NodeIndex, depth: u8) !?[]u8 {
+    if (idx.isNone() or depth >= 32) return null;
+    const node = self.ast.getNode(idx);
+    switch (node.tag) {
+        .string_literal => return string_escape.decodeJsStringLiteral(self.allocator, self.ast.getText(node.span)) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => null,
+        },
+        .parenthesized_expression => return staticStringExpressionValue(self, node.data.unary.operand, depth + 1),
+        .template_literal => {
+            if (node.data.list.len == 0) return string_escape.decodeJsStringLiteral(self.allocator, self.ast.getText(node.span)) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => null,
+            };
+
+            const list = node.data.list;
+            const extras = self.ast.extra_data.items;
+            if (list.start > extras.len or list.len > extras.len - list.start or list.len % 2 == 0) return null;
+            var output: std.ArrayList(u8) = .empty;
+            defer output.deinit(self.allocator);
+            for (0..list.len) |part_idx| {
+                const part_node_idx: NodeIndex = @enumFromInt(extras[list.start + part_idx]);
+                const part_node = self.ast.getNode(part_node_idx);
+                const part = if (part_idx % 2 == 0)
+                    try decodeTemplateElementText(self, part_node, part_idx == 0, part_idx + 1 == list.len)
+                else
+                    try staticStringExpressionValue(self, part_node_idx, depth + 1);
+                const text = part orelse return null;
+                defer self.allocator.free(text);
+                try output.appendSlice(self.allocator, text);
+            }
+            return try output.toOwnedSlice(self.allocator);
+        },
+        .binary_expression => {
+            if (node.data.binary.flags != @as(u16, @intFromEnum(token_mod.Kind.plus))) return null;
+            const left = try staticStringExpressionValue(self, node.data.binary.left, depth + 1) orelse return null;
+            defer self.allocator.free(left);
+            const right = try staticStringExpressionValue(self, node.data.binary.right, depth + 1) orelse return null;
+            defer self.allocator.free(right);
+            const output = try self.allocator.alloc(u8, left.len + right.len);
+            @memcpy(output[0..left.len], left);
+            @memcpy(output[left.len..], right);
+            return output;
+        },
+        else => return null,
+    }
+}
+
+fn decodeTemplateElementText(self: anytype, node: Node, is_first: bool, is_last: bool) !?[]u8 {
+    if (node.tag != .template_element) return null;
+    const span = node.span;
+    if (span.start > span.end or span.end > self.ast.source.len) return null;
+    const token = self.ast.source[span.start..span.end];
+    const prefix_len: usize = 1;
+    const suffix_len: usize = if (is_last) 1 else 2;
+    const expected_prefix: u8 = if (is_first) '`' else '}';
+    if (token.len < prefix_len + suffix_len or token[0] != expected_prefix) return null;
+    if (is_last) {
+        if (token[token.len - 1] != '`') return null;
+    } else if (!std.mem.endsWith(u8, token, "${")) return null;
+
+    const raw_text = token[prefix_len .. token.len - suffix_len];
+    const quoted = try self.allocator.alloc(u8, raw_text.len + 2);
+    defer self.allocator.free(quoted);
+    quoted[0] = '`';
+    @memcpy(quoted[1 .. raw_text.len + 1], raw_text);
+    quoted[quoted.len - 1] = '`';
+    return string_escape.decodeJsStringLiteral(self.allocator, quoted) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => null,
+    };
 }
 
 fn jsSourceContainsIdentifier(allocator: std.mem.Allocator, source: []const u8, name: []const u8) !bool {
