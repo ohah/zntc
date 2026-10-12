@@ -3102,6 +3102,7 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
     if (self.getSymbolIdAt(binding)) |existing| {
         if (existing != @intFromEnum(id)) std.debug.panic("hoisted temp binding changed its exact SymbolId", .{});
     } else try setSymbolId(self, binding, id);
+    es_helpers.markStandaloneLateSyntheticTemp(self, id, expected_scope);
     if (chain) |found| {
         var i: ?usize = found.value.first;
         while (i) |index| {
@@ -3141,6 +3142,7 @@ pub fn bindSyntheticTempInScope(
         return bindHoistedTemp(self, binding, name_span, declaration_span, scope);
     const chain = self.pending_temp_ref_chains.fetchRemove(name_span.start);
     const id = (try declareSyntheticInScope(self, binding, declaration_span, kind, scope)) orelse return;
+    es_helpers.markStandaloneLateSyntheticTemp(self, id, scope);
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
