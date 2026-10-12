@@ -103,11 +103,11 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
     try std.testing.expectEqual(temp_reads, registered_reads);
 }
 
-test "#4819 Flow match temp does not use a late standalone name in a direct-eval scope" {
+test "#4819 Flow match temp reserves a computed eval name and keeps the dynamic scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "// @flow\nmatch (input) { _ => eval(sourceText) };";
+    const source = "// @flow\nmatch (input) { _ => eval(`_${\"a\"}`) };";
 
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -145,5 +145,6 @@ test "#4819 Flow match temp does not use a late standalone name in a direct-eval
     const parameter: @TypeOf(source_match) = @enumFromInt(transformer.ast.extra_data.items[params.start]);
     const parameter_id = transformer.getSymbolIdAt(parameter) orelse return error.TestUnexpectedResult;
     const symbol = transformer.semantic_editor.?.symbols.items[@intCast(parameter_id)];
+    try std.testing.expectEqualStrings("_b", symbol.synthetic_name);
     try std.testing.expectEqual(@as(?SyntheticKind, null), symbol.synthetic_kind);
 }
