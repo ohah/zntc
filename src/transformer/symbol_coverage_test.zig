@@ -5120,11 +5120,11 @@ test "#4819 static private accessor and method temps have exact semantic referen
     }
 }
 
-test "#4819 static private for-in target temp binds in the method scope" {
+fn checkPrivateForInTargetTemp(source: []const u8, expect_late_name: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "class Counter { static #method() {} static run() { for (this.#method in {x: 1}) {} } } Counter.run();");
+    var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
     _ = try parser.parse();
@@ -5132,8 +5132,18 @@ test "#4819 static private for-in target temp binds in the method scope" {
     analyzer.is_module = true;
     try analyzer.analyze();
     const original_symbol_count = analyzer.symbols.items.len;
+    var expected_method_scope: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .method_definition) continue;
+        const key: AstNodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").MethodExtra.key]);
+        if (!std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(key).span), "run")) continue;
+        expected_method_scope = analyzer.scope_owner_map.get(@intCast(raw));
+    }
+    const method_scope = expected_method_scope orelse return error.MissingMethodScope;
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = false,
+        .defer_runtime_helper_name_resolution = true,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
@@ -5154,6 +5164,9 @@ test "#4819 static private for-in target temp binds in the method scope" {
         const name = transformer.ast.getText(symbol.name);
         if (name.len != 2 or name[0] != '_' or name[1] < 'a' or name[1] > 'z') continue;
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
+        try std.testing.expectEqual(method_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expect_late_name, symbol.synthetic_kind == .standalone_temp_binding);
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name));
         var exact_refs: usize = 0;
         for (edited.references) |ref| {
             if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone()) continue;
@@ -5164,9 +5177,26 @@ test "#4819 static private for-in target temp binds in the method scope" {
             exact_refs += 1;
         }
         try std.testing.expectEqual(@as(usize, 1), exact_refs);
+        var binding_count: usize = 0;
+        for (transformer.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
+            if (edited.symbol_ids[raw] == @as(?u32, @intCast(id))) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
         temp_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), temp_count);
+}
+
+test "#4819 private for-in target temp uses exact var-owner scope and late-name gate" {
+    try checkPrivateForInTargetTemp(
+        "class Counter { static #method() {} static run() { { for (this.#method in {x: 1}) {} } } } Counter.run();",
+        true,
+    );
+    try checkPrivateForInTargetTemp(
+        "class Counter { static #method() {} static run() { eval(''); { for (this.#method in {x: 1}) {} } } } Counter.run();",
+        false,
+    );
 }
 
 test "strict inventory does not infer generated global identity from spelling" {
