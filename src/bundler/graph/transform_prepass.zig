@@ -1194,7 +1194,7 @@ fn isRetainableBoundStaticFieldEffectCall(
     call_idx: ast_mod.NodeIndex,
     allow_computed_member_callee: bool,
     // Optional calls and one level of exact-bound call arguments are accepted
-    // only for computed member keys.
+    // only in call-key or sequence-final modes selected by their callers.
     allow_optional_call: bool,
     allow_bound_call_arguments: bool,
     // Nested argument calls may use safe computed-member callees, but not
@@ -1300,7 +1300,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
                 last_idx,
                 true,
                 false,
-                false,
+                true,
                 .sequence_final,
             )) or
         (allow_unresolved_last_value and
