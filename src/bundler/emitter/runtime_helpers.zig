@@ -90,7 +90,11 @@ pub fn emitBundleRuntimeHelpers(
             try l.esmInteropRuntimeNames()
         else
             rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
-        try rt.appendEsmWrapRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names);
+        const internal_names = if (linker) |l|
+            try l.esmFactoryRuntimeInternalNames()
+        else
+            rt_names.EsmRuntimeInternalNames{};
+        try rt.appendEsmWrapRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names);
     }
     // Legacy decorators use the transformer's named virtual-module import.
     // An option-wide preamble would define __decorateClass a second time.
@@ -474,7 +478,11 @@ pub fn emitChunkRuntimeHelpers(
             try l.esmInteropRuntimeNames()
         else
             rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
-        try rt.appendEsmWrapRuntimeWithNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names);
+        const internal_names = if (linker) |l|
+            try l.esmFactoryRuntimeInternalNames()
+        else
+            rt_names.EsmRuntimeInternalNames{};
+        try rt.appendEsmWrapRuntimeWithInternalNames(output, allocator, options.minify_whitespace, options.unsupported.arrow, options.configurable_exports, factory_name, helper_names, internal_names);
     }
     // The virtual decorator module is distributed with its importing chunk.
     // #1961: RuntimeHelpers 비트맵 기반 helper (es_decorator / async_helper / generator

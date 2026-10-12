@@ -1828,7 +1828,10 @@ pub const Linker = struct {
 
     /// Select a graph-wide ESM factory name before chunk helper preambles emit.
     pub fn prepareEsmRuntimeName(self: *Linker) !void {
-        if (self.esm_factory_runtime_name != null) return;
+        if (self.esm_factory_runtime_name != null) {
+            try self.prepareEsmRuntimeInternalNames();
+            return;
+        }
         if (self.esm_factory_runtime_symbol_id == null) {
             var modules = self.graph.modulesIterator();
             while (modules.next()) |m| {
@@ -1848,6 +1851,7 @@ pub const Linker = struct {
         const base = rt_names.helperName("__esm", self.minify_whitespace);
         if (self.esm_factory_runtime_symbol_id) |symbol_id| {
             self.esm_factory_runtime_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base, null);
+            try self.prepareEsmRuntimeInternalNames();
             return;
         }
         var runtime_it = self.graph.modulesIterator();
@@ -1855,6 +1859,7 @@ pub const Linker = struct {
             if (m.semantic != null) return error.EsmRuntimeFactoryIdentityMissing;
         }
         self.esm_factory_runtime_name = try self.allocRuntimeFactoryName(base);
+        try self.prepareEsmRuntimeInternalNames();
     }
 
     fn reserveEsmRuntimeName(self: *Linker) !void {
@@ -1865,6 +1870,141 @@ pub const Linker = struct {
                 try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, name));
             }
         }
+    }
+
+    /// Return the final names for lexical bindings in the raw ESM helper body.
+    /// Recover missing per-pass mappings from exact typed rows; graphs with no
+    /// semantic owner retain the fixed template spellings.
+    pub fn esmFactoryRuntimeInternalNames(self: *const Linker) !rt_names.EsmRuntimeInternalNames {
+        if (!self.hasIncludedEsmRuntime()) return .{};
+        // Chunk/dev emitters can arrive here after a rename-table reset that
+        // did not pass through the ordinary rename preparation path. Restore
+        // names from the exact semantic rows before giving them to the raw
+        // runtime-template emitter.
+        try @constCast(self).prepareEsmRuntimeInternalNames();
+        const factory_id = self.esm_factory_runtime_symbol_id orelse {
+            var module_it = self.graph.modulesIterator();
+            while (module_it.next()) |module| {
+                if (module.semantic != null) return error.EsmRuntimeFactoryIdentityMissing;
+            }
+            return .{};
+        };
+        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
+        const ids = owner.esm_runtime_internal_symbols orelse return error.EsmRuntimeInternalSymbolsMissing;
+        return .{
+            .factory_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
+            .result_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.result_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
+            .catch_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
+            .init_function = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.init_function))) orelse return error.EsmRuntimeInternalNameMissing,
+            .factory_local = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_local))) orelse return error.EsmRuntimeInternalNameMissing,
+        };
+    }
+
+    fn restoreEsmRuntimeInternalNames(self: *Linker) !void {
+        const factory_id = self.esm_factory_runtime_symbol_id orelse return;
+        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
+        const ids = owner.esm_runtime_internal_symbols orelse return error.EsmRuntimeInternalSymbolsMissing;
+        const names: rt_names.EsmRuntimeInternalNames = .{};
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_parameter)), names.factory_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.result_parameter)), names.result_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter)), names.catch_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.init_function)), names.init_function);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_local)), names.factory_local);
+    }
+
+    /// Recover cached ESM helper-local IDs, then restore their fixed spellings
+    /// after a rename-table reset (for example each split chunk pass).
+    pub fn prepareEsmRuntimeInternalNames(self: *Linker) !void {
+        if (!self.hasIncludedEsmRuntime()) return;
+
+        if (self.esm_factory_runtime_symbol_id) |cached| {
+            const owner = self.getModule(@intFromEnum(cached.module));
+            const semantic = if (owner) |module| module.semantic else null;
+            const raw: usize = @intFromEnum(cached.inner);
+            const current = if (owner) |module| module.esm_runtime_factory_symbol else null;
+            const valid = if (semantic) |sem|
+                raw < sem.symbols.items.len and
+                    sem.symbols.items[raw].synthetic_kind == .bundler_runtime_helper and
+                    std.mem.eql(u8, sem.symbols.items[raw].synthetic_name, "__esm") and
+                    current == cached.inner
+            else
+                false;
+            if (!valid) self.esm_factory_runtime_symbol_id = null;
+        }
+
+        if (self.esm_factory_runtime_symbol_id == null) {
+            var module_it = self.graph.modulesIterator();
+            while (module_it.next()) |module| {
+                const sem = module.semantic orelse continue;
+                const cached_id: ?semantic_symbol.SymbolId = blk: {
+                    if (module.esm_runtime_factory_symbol) |existing| {
+                        const raw: usize = @intFromEnum(existing);
+                        if (raw < sem.symbols.items.len and
+                            sem.symbols.items[raw].synthetic_kind == .bundler_runtime_helper and
+                            std.mem.eql(u8, sem.symbols.items[raw].synthetic_name, "__esm")) break :blk existing;
+                    }
+                    break :blk null;
+                };
+                const inner = cached_id orelse findBundlerRuntimeHelperSymbol(&sem, "__esm") orelse continue;
+                self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module.index, @intFromEnum(inner));
+                break;
+            }
+        }
+
+        const factory_id = self.esm_factory_runtime_symbol_id orelse {
+            var module_it = self.graph.modulesIterator();
+            while (module_it.next()) |module| {
+                if (module.semantic != null) return error.EsmRuntimeFactoryIdentityMissing;
+            }
+            return;
+        };
+        const owner = self.moduleAtMut(@intFromEnum(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
+        const sem = if (owner.semantic) |*value| value else return error.EsmRuntimeInternalSymbolsMissing;
+        var ids_valid = false;
+        if (owner.esm_runtime_internal_symbols) |ids| {
+            const names: rt_names.EsmRuntimeInternalNames = .{};
+            ids_valid = isEsmRuntimeInternalSymbol(sem, ids.factory_parameter, names.factory_parameter, .parameter) and
+                isEsmRuntimeInternalSymbol(sem, ids.result_parameter, names.result_parameter, .parameter) and
+                isEsmRuntimeInternalSymbol(sem, ids.catch_parameter, names.catch_parameter, .catch_binding) and
+                isEsmRuntimeInternalSymbol(sem, ids.init_function, names.init_function, .function_decl) and
+                isEsmRuntimeInternalSymbol(sem, ids.factory_local, names.factory_local, .variable_var);
+        }
+        if (!ids_valid) {
+            const names: rt_names.EsmRuntimeInternalNames = .{};
+            owner.esm_runtime_internal_symbols = .{
+                .factory_parameter = findEsmRuntimeInternalSymbol(sem, names.factory_parameter, .parameter) orelse return error.EsmRuntimeInternalSymbolsMissing,
+                .result_parameter = findEsmRuntimeInternalSymbol(sem, names.result_parameter, .parameter) orelse return error.EsmRuntimeInternalSymbolsMissing,
+                .catch_parameter = findEsmRuntimeInternalSymbol(sem, names.catch_parameter, .catch_binding) orelse return error.EsmRuntimeInternalSymbolsMissing,
+                .init_function = findEsmRuntimeInternalSymbol(sem, names.init_function, .function_decl) orelse return error.EsmRuntimeInternalSymbolsMissing,
+                .factory_local = findEsmRuntimeInternalSymbol(sem, names.factory_local, .variable_var) orelse return error.EsmRuntimeInternalSymbolsMissing,
+            };
+        }
+        try self.restoreEsmRuntimeInternalNames();
+    }
+
+    fn findEsmRuntimeInternalSymbol(
+        sem: *const ModuleSemanticData,
+        name: []const u8,
+        kind: semantic_symbol.SymbolKind,
+    ) ?semantic_symbol.SymbolId {
+        for (sem.symbols.items, 0..) |symbol, index| {
+            if (symbol.synthetic_kind != .esm_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
+            return @enumFromInt(index);
+        }
+        return null;
+    }
+
+    fn isEsmRuntimeInternalSymbol(
+        sem: *const ModuleSemanticData,
+        symbol_id: semantic_symbol.SymbolId,
+        name: []const u8,
+        kind: semantic_symbol.SymbolKind,
+    ) bool {
+        const raw: usize = @intFromEnum(symbol_id);
+        if (raw >= sem.symbols.items.len) return false;
+        const symbol = sem.symbols.items[raw];
+        return symbol.synthetic_kind == .esm_runtime_internal_local and
+            symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
     /// Resolve all raw ESM interop helper bindings from graph-level synthetic
@@ -3159,10 +3299,11 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .bundler_runtime_helper, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .bundler_runtime_helper, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;
+                        if (sk == .esm_runtime_internal_local) continue;
                         // The graph-wide CJS runtime helper is emitted by the
                         // preamble; reserveCjsRuntimeName assigns its selected
                         // output spelling to the canonical helper SymbolId.
@@ -5350,6 +5491,7 @@ pub const Linker = struct {
         if (self.cjs_factory_runtime_symbol_id != null or !opts.compute_renames) {
             try self.prepareCjsRuntimeInternalNames();
         }
+        try self.prepareEsmRuntimeInternalNames();
         // Keep legacy whitespace-only aliases, and also give virtual
         // parameters a collision-free exact name when a source lexical/import
         // binding owns `exports` or `module` in the body scope.
