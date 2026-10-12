@@ -13,6 +13,8 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
+const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const transformer_mod = @import("transformer.zig");
@@ -53,6 +55,212 @@ fn checkEmptyExactGraph(allocator: std.mem.Allocator, ast: *const Ast, root: @im
         &explicit_globals,
         &origins,
     );
+}
+
+fn checkExactFixture(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: AstNodeIndex,
+    symbol_ids: []const ?u32,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owners: *const std.AutoHashMapUnmanaged(u32, u32),
+    references: []const Reference,
+) !coverage.ExactReport {
+    const helpers: std.StringHashMapUnmanaged(usize) = .empty;
+    const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    return coverage.checkExact(
+        allocator,
+        ast,
+        root,
+        @intCast(ast.nodes.items.len),
+        symbol_ids,
+        symbols,
+        scopes,
+        scope_maps,
+        scope_owners,
+        references,
+        &.{},
+        &helpers,
+        &unresolved,
+        &explicit_globals,
+        &origins,
+    );
+}
+
+test "exact scope audit permits only the verified CommonJS callback boundary" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const span = try ast.addString("cjs");
+    const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{}));
+
+    const program_scope: ScopeId = @enumFromInt(0);
+    const wrapper_scope: ScopeId = @enumFromInt(1);
+    var scopes = [_]Scope{
+        .{ .parent = wrapper_scope, .kind = .global, .is_strict = false },
+        .{ .parent = .none, .kind = .function, .is_strict = false, .symbol_count = 2 },
+    };
+    var root_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer root_names.deinit(allocator);
+    var wrapper_names: std.StringHashMapUnmanaged(usize) = .empty;
+    defer wrapper_names.deinit(allocator);
+    try root_names.put(allocator, "exports", 0);
+    try root_names.put(allocator, "module", 1);
+    try wrapper_names.put(allocator, "exports", 0);
+    try wrapper_names.put(allocator, "module", 1);
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_names, wrapper_names };
+    const symbols = [_]Symbol{
+        .{
+            .name = span,
+            .scope_id = wrapper_scope,
+            .kind = .parameter,
+            .decl_flags = .{ .is_parameter = true },
+            .declaration_span = span,
+            .synthetic_kind = .cjs_wrapper_exports_parameter,
+            .synthetic_name = "exports",
+        },
+        .{
+            .name = span,
+            .scope_id = wrapper_scope,
+            .kind = .parameter,
+            .decl_flags = .{ .is_parameter = true },
+            .declaration_span = span,
+            .synthetic_kind = .cjs_wrapper_module_parameter,
+            .synthetic_name = "module",
+        },
+    };
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), @intFromEnum(program_scope));
+
+    const valid = try checkExactFixture(allocator, &ast, root, &.{}, &symbols, &scopes, &scope_maps, &owners, &.{});
+    try std.testing.expect(valid.isClean());
+
+    // A name-compatible map is not enough: each callback parameter must keep
+    // its dedicated synthetic kind and exact SymbolId.
+    var wrong_parameter = symbols;
+    wrong_parameter[0].synthetic_kind = .cjs_wrapper_module_parameter;
+    const wrong_parameter_report = try checkExactFixture(allocator, &ast, root, &.{}, &wrong_parameter, &scopes, &scope_maps, &owners, &.{});
+    try std.testing.expect(!wrong_parameter_report.isClean());
+
+    // The historical Program aliases can point only to their corresponding
+    // callback parameter, never to a same-shaped sibling identity.
+    try root_names.put(allocator, "exports", 1);
+    const wrong_alias_maps = [_]std.StringHashMapUnmanaged(usize){ root_names, wrapper_names };
+    const wrong_alias = try checkExactFixture(allocator, &ast, root, &.{}, &symbols, &scopes, &wrong_alias_maps, &owners, &.{});
+    try std.testing.expect(wrong_alias.scope_map_mismatch > 0);
+    try std.testing.expect(!wrong_alias.isClean());
+    try root_names.put(allocator, "exports", 0);
+
+    // The one accepted parentless function scope cannot be widened to a
+    // general exemption for unrelated parentless scopes.
+    const extra_scopes = [_]Scope{
+        scopes[0],
+        scopes[1],
+        .{ .parent = .none, .kind = .function, .is_strict = false },
+    };
+    const extra_scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_names, wrapper_names, .empty };
+    const extra_parentless = try checkExactFixture(allocator, &ast, root, &.{}, &symbols, &extra_scopes, &extra_scope_maps, &owners, &.{});
+    try std.testing.expect(extra_parentless.invalid_scope > 0);
+    try std.testing.expect(!extra_parentless.isClean());
+
+    // A callback scope with any extra binding no longer matches the linker
+    // contract, even if the two required names remain present.
+    try wrapper_names.put(allocator, "intruder", 0);
+    const extra_binding_maps = [_]std.StringHashMapUnmanaged(usize){ root_names, wrapper_names };
+    const extra_binding = try checkExactFixture(allocator, &ast, root, &.{}, &symbols, &scopes, &extra_binding_maps, &owners, &.{});
+    try std.testing.expect(!extra_binding.isClean());
+}
+
+test "exact scope audit allows only detached graph-output symbol identities" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const span = try ast.addString("output");
+    const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{}));
+    const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
+    const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
+    var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, @intFromEnum(root), 0);
+
+    const detached_cases = [_]struct {
+        kind: SymbolKind,
+        synthetic_kind: SyntheticKind,
+        name: []const u8,
+    }{
+        .{ .kind = .variable_var, .synthetic_kind = .cjs_runtime_factory, .name = "__commonJS" },
+        .{ .kind = .parameter, .synthetic_kind = .cjs_runtime_internal_local, .name = "cb" },
+        .{ .kind = .function_decl, .synthetic_kind = .esm_init, .name = "init_module" },
+        .{ .kind = .variable_var, .synthetic_kind = .cjs_exports, .name = "exports_module" },
+        .{ .kind = .function_decl, .synthetic_kind = .cjs_require, .name = "require_module" },
+        .{ .kind = .variable_var, .synthetic_kind = .bundler_runtime_helper, .name = "__esm" },
+    };
+    for (detached_cases) |case| {
+        const symbol = Symbol{
+            .name = span,
+            .scope_id = .none,
+            .kind = case.kind,
+            .decl_flags = case.kind.declFlags(),
+            .declaration_span = span,
+            .synthetic_kind = case.synthetic_kind,
+            .synthetic_name = case.name,
+        };
+        const valid = try checkExactFixture(allocator, &ast, root, &.{}, &.{symbol}, &scopes, &scope_maps, &owners, &.{});
+        try std.testing.expect(valid.isClean());
+    }
+
+    const unclassified = Symbol{
+        .name = span,
+        .scope_id = .none,
+        .kind = .function_decl,
+        .decl_flags = SymbolKind.function_decl.declFlags(),
+        .declaration_span = span,
+        .synthetic_kind = .runtime_helper_preamble,
+        .synthetic_name = "helper",
+    };
+    const unclassified_report = try checkExactFixture(allocator, &ast, root, &.{}, &.{unclassified}, &scopes, &scope_maps, &owners, &.{});
+    try std.testing.expectEqual(@as(usize, 1), unclassified_report.invalid_scope);
+    try std.testing.expect(!unclassified_report.isClean());
+
+    // A detached identity must remain absent from AST SymbolIds, reference
+    // rows, and lexical maps. Any one of those edges invalidates the exception.
+    const output_symbol = Symbol{
+        .name = span,
+        .scope_id = .none,
+        .kind = .variable_var,
+        .decl_flags = SymbolKind.variable_var.declFlags(),
+        .declaration_span = span,
+        .synthetic_kind = .cjs_runtime_factory,
+        .synthetic_name = "__commonJS",
+    };
+    const root_mapped_ids = [_]?u32{0};
+    const mapped_output = try checkExactFixture(allocator, &ast, root, &root_mapped_ids, &.{output_symbol}, &scopes, &scope_maps, &owners, &.{});
+    try std.testing.expectEqual(@as(usize, 1), mapped_output.invalid_scope);
+    try std.testing.expect(!mapped_output.isClean());
+
+    const output_reference = [_]Reference{.{
+        .node_index = .none,
+        .scope_id = @enumFromInt(0),
+        .symbol_id = @enumFromInt(0),
+        .flags = .{ .declare = true },
+    }};
+    const referenced_output = try checkExactFixture(allocator, &ast, root, &.{}, &.{output_symbol}, &scopes, &scope_maps, &owners, &output_reference);
+    try std.testing.expectEqual(@as(usize, 1), referenced_output.invalid_scope);
+    try std.testing.expect(!referenced_output.isClean());
+
+    var output_map: std.StringHashMapUnmanaged(usize) = .empty;
+    defer output_map.deinit(allocator);
+    try output_map.put(allocator, "__commonJS", 0);
+    const output_map_scope_maps = [_]std.StringHashMapUnmanaged(usize){output_map};
+    const mapped_scope_output = try checkExactFixture(allocator, &ast, root, &.{}, &.{output_symbol}, &scopes, &output_map_scope_maps, &owners, &.{});
+    try std.testing.expectEqual(@as(usize, 1), mapped_scope_output.invalid_scope);
+    try std.testing.expect(mapped_scope_output.scope_map_mismatch > 0);
+    try std.testing.expect(!mapped_scope_output.isClean());
 }
 
 test "exact coverage rejects invalid root, child indices, and truncated child layouts" {

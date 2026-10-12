@@ -22,6 +22,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
@@ -758,6 +759,99 @@ fn spanKey(span: Span) u64 {
 fn exactSymbolName(ast: *const Ast, symbol: *const Symbol) []const u8 {
     if (symbol.synthetic_kind == .enum_iife_parameter) return ast.getText(symbol.name);
     return if (symbol.synthetic_name.len > 0) symbol.synthetic_name else ast.getText(symbol.name);
+}
+
+const ExactCjsWrapperBindings = struct {
+    scope_id: u32,
+    exports_symbol_id: u32,
+    module_symbol_id: u32,
+};
+
+/// Bundling a parsed CommonJS Program gives its original body scope a virtual
+/// callback parent. Accept that one parentless function scope only when its
+/// two exact parameter identities and owner shape match the linker contract.
+fn exactCjsWrapperBindings(
+    ast: *const Ast,
+    root: NodeIndex,
+    symbols: []const Symbol,
+    scopes: []const Scope,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+    scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
+) ?ExactCjsWrapperBindings {
+    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len or ast.nodes.items[@intFromEnum(root)].tag != .program)
+        return null;
+    if (scopes.len < 2 or scope_maps.len != scopes.len or scope_maps.len == 0) return null;
+    if (scope_owner_map.get(@intFromEnum(root)) != 0) return null;
+
+    const wrapper_id = scopes[0].parent;
+    if (!exactValidScope(scopes, wrapper_id) or wrapper_id.toIndex() == 0) return null;
+    const wrapper_raw = wrapper_id.toIndex();
+    const wrapper_scope = scopes[wrapper_raw];
+    if (wrapper_scope.kind != .function or !wrapper_scope.parent.isNone() or wrapper_scope.symbol_count != 2)
+        return null;
+    if (scopeOwnerNode(scope_owner_map, wrapper_raw) != null) return null;
+
+    const wrapper_map = scope_maps[wrapper_raw];
+    if (wrapper_map.count() != 2) return null;
+    const exports_id = wrapper_map.get("exports") orelse return null;
+    const module_id = wrapper_map.get("module") orelse return null;
+    if (exports_id == module_id or exports_id >= symbols.len or module_id >= symbols.len) return null;
+
+    const params = .{
+        .{ .id = exports_id, .name = "exports", .kind = SyntheticKind.cjs_wrapper_exports_parameter },
+        .{ .id = module_id, .name = "module", .kind = SyntheticKind.cjs_wrapper_module_parameter },
+    };
+    inline for (params) |param| {
+        const symbol = symbols[param.id];
+        if (symbol.scope_id != wrapper_id or symbol.kind != .parameter or !symbol.decl_flags.is_parameter or
+            symbol.synthetic_kind != param.kind or symbol.synthetic_name.len == 0 or
+            !std.mem.eql(u8, exactSymbolName(ast, &symbol), param.name)) return null;
+    }
+
+    return .{
+        .scope_id = wrapper_raw,
+        .exports_symbol_id = @intCast(exports_id),
+        .module_symbol_id = @intCast(module_id),
+    };
+}
+
+/// Graph-wide runtime identities are intentionally outside a module's lexical
+/// scope tree. Keep this exception to the exact output-owned synthetic kinds,
+/// and reject them if they acquire any source AST or lexical-scope edge.
+fn exactDetachedOutputSymbolShape(symbol: *const Symbol) bool {
+    if (symbol.synthetic_name.len == 0) return false;
+    const kind = symbol.synthetic_kind orelse return false;
+    return switch (kind) {
+        .cjs_runtime_factory => symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "__commonJS"),
+        .cjs_runtime_internal_local => switch (symbol.kind) {
+            .variable_var, .function_decl, .parameter, .catch_binding => true,
+            else => false,
+        },
+        .esm_init, .cjs_require => symbol.kind == .function_decl,
+        .cjs_exports, .bundler_runtime_helper => symbol.kind == .variable_var,
+        else => false,
+    };
+}
+
+fn exactDetachedOutputSymbolHasNoLexicalEdges(
+    symbol_id: u32,
+    symbol_ids: []const ?u32,
+    references: []const Reference,
+    scope_maps: []const std.StringHashMapUnmanaged(usize),
+) bool {
+    for (symbol_ids) |mapped_symbol| {
+        if (mapped_symbol == symbol_id) return false;
+    }
+    for (references) |reference| {
+        if (@intFromEnum(reference.symbol_id) == symbol_id) return false;
+    }
+    for (scope_maps) |scope_map| {
+        var bindings = scope_map.valueIterator();
+        while (bindings.next()) |mapped_symbol| {
+            if (mapped_symbol.* == symbol_id) return false;
+        }
+    }
+    return true;
 }
 
 fn collectBindingPatternNodes(
@@ -2760,12 +2854,22 @@ fn checkExactImpl(
         if (sid < symbols.len) ast_declaration_counts[sid] += 1;
     }
 
+    const cjs_wrapper = exactCjsWrapperBindings(ast, root, symbols, scopes, scope_maps, scope_owner_map);
     if (scope_maps.len != scopes.len) recordScopeMapMismatch(&report, "scope-map-count", null, null, null);
     for (scopes, 0..) |scope, scope_i| {
         if (scope_i == 0) {
-            if (!scope.parent.isNone()) report.invalid_scope += 1;
-        } else if (!exactValidScope(scopes, scope.parent) or scope.parent.toIndex() == scope_i) {
-            report.invalid_scope += 1;
+            const is_cjs_wrapper_parent = if (cjs_wrapper) |wrapper|
+                scope.parent == @as(ScopeId, @enumFromInt(wrapper.scope_id))
+            else
+                false;
+            if (!scope.parent.isNone() and !is_cjs_wrapper_parent) report.invalid_scope += 1;
+        } else {
+            const is_cjs_wrapper_scope = if (cjs_wrapper) |wrapper| scope_i == wrapper.scope_id else false;
+            if (scope.parent.isNone()) {
+                if (!is_cjs_wrapper_scope) report.invalid_scope += 1;
+            } else if (!exactValidScope(scopes, scope.parent) or scope.parent.toIndex() == scope_i) {
+                report.invalid_scope += 1;
+            }
         }
         var ancestor: ScopeId = @enumFromInt(@as(u32, @intCast(scope_i)));
         var hops: usize = 0;
@@ -2786,15 +2890,25 @@ fn checkExactImpl(
             }
             const mapped_symbol = symbols[entry.value_ptr.*];
             const mapped_scope: ScopeId = @enumFromInt(@as(u32, @intCast(scope_i)));
+            const is_cjs_root_alias = if (cjs_wrapper) |wrapper| blk: {
+                if (scope_i != 0) break :blk false;
+                break :blk (std.mem.eql(u8, entry.key_ptr.*, "exports") and entry.value_ptr.* == wrapper.exports_symbol_id) or
+                    (std.mem.eql(u8, entry.key_ptr.*, "module") and entry.value_ptr.* == wrapper.module_symbol_id);
+            } else false;
             if (!std.mem.eql(u8, entry.key_ptr.*, exactSymbolName(ast, &mapped_symbol)) or
-                mapped_symbol.scope_id != mapped_scope)
+                (mapped_symbol.scope_id != mapped_scope and !is_cjs_root_alias))
             {
                 recordScopeMapMismatch(&report, "entry-name-or-owner", @intCast(scope_i), @intCast(entry.value_ptr.*), entry.key_ptr.*);
             }
         }
     }
-    for (symbols) |symbol| {
-        if (!exactValidScope(scopes, symbol.scope_id)) report.invalid_scope += 1;
+    for (symbols, 0..) |symbol, sid| {
+        if (!exactValidScope(scopes, symbol.scope_id)) {
+            const id: u32 = @intCast(sid);
+            const valid_detached_output = symbol.scope_id.isNone() and exactDetachedOutputSymbolShape(&symbol) and
+                exactDetachedOutputSymbolHasNoLexicalEdges(id, symbol_ids, references, scope_maps);
+            if (!valid_detached_output) report.invalid_scope += 1;
+        }
     }
 
     if (pre_transform_scope_count) |source_scope_count| {
@@ -3031,7 +3145,11 @@ fn checkExactImpl(
         if (raw == @intFromEnum(root)) {
             // A non-Program root can be a fragment nested inside an implicit
             // outer scope, so only a Program owner is required to be parentless.
-            if (ast.nodes.items[raw].tag == .program and !owner_scope.parent.isNone())
+            const is_cjs_wrapper_parent = if (cjs_wrapper) |wrapper|
+                scope_raw == 0 and owner_scope.parent == @as(ScopeId, @enumFromInt(wrapper.scope_id))
+            else
+                false;
+            if (ast.nodes.items[raw].tag == .program and !owner_scope.parent.isNone() and !is_cjs_wrapper_parent)
                 recordScopeOwnerParentMismatch(
                     &report,
                     raw,
