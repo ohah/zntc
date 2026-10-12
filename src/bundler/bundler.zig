@@ -1746,6 +1746,11 @@ pub const Bundler = struct {
                     // rename_table 에 반영한다. tree_shaker 의 *const linker 는 put 불가라 capture(read)는
                     // tree_shaker, apply(write)는 여기 mutable linker 로 분리.
                     try l.applyPendingRenames();
+                    // Semantic refresh can reassign graph-owned CJS runtime
+                    // SymbolIds. Re-discover the factory and restore its
+                    // helper-local rename entries after stale module entries
+                    // have been replaced.
+                    try l.prepareCjsRuntimeInternalNames();
                 }
             }
             break :blk s;

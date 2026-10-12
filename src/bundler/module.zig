@@ -26,6 +26,8 @@ const binding_scanner = @import("binding_scanner.zig");
 pub const ImportBinding = binding_scanner.ImportBinding;
 pub const ExportBinding = binding_scanner.ExportBinding;
 
+pub const WrapperNameError = std.mem.Allocator.Error || error{MissingWrapperSymbol};
+
 /// Symbol identities for lexical bindings in the raw CJS runtime helper body.
 /// `callback_parameter`/`module_parameter` are captured by the returned require
 /// function; `catch_parameter` belongs to its catch clause; `require_function`
@@ -402,7 +404,7 @@ pub const Module = struct {
     const_providers: []const []const u8 = &.{},
 
     /// 래핑 모듈의 `init_<path>` 함수 SymbolId. owner는 parsed semantic 또는 AST-less shell.
-    /// null = 미등록 (allocInitName은 makeInitVarName fallback을 사용).
+    /// null = exact wrapper identity 미등록 (allocInitName은 MissingWrapperSymbol로 실패).
     init_symbol: ?SemanticSymbolId = null,
     /// 래핑 모듈의 `exports_<path>` 객체 SymbolId.
     exports_symbol: ?SemanticSymbolId = null,
@@ -804,21 +806,21 @@ pub const Module = struct {
         return self.cjsWrapperParameterName(self.cjs_wrapper_module_parameter_symbol, "module", rt);
     }
 
-    /// `getInitName()`의 할당 버전 — 등록된 경우 dupe, 아니면 fresh 생성.
-    /// 기존 `types.makeInitVarName(alloc, path)` 호출지의 drop-in 대체.
-    pub fn allocInitName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
+    /// 등록된 exact wrapper SymbolId의 이름만 반환한다. 심볼이 빠진 상태에서
+    /// 경로 문자열로 이름을 추측하면 rename graph 밖의 참조가 생기므로 실패한다.
+    pub fn allocInitName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) WrapperNameError![]const u8 {
         if (self.getInitName(rt)) |n| return allocator.dupe(u8, n);
-        return types.makeInitVarName(allocator, self.path);
+        return error.MissingWrapperSymbol;
     }
 
-    pub fn allocExportsName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
+    pub fn allocExportsName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) WrapperNameError![]const u8 {
         if (self.getExportsName(rt)) |n| return allocator.dupe(u8, n);
-        return types.makeExportsVarName(allocator, self.path);
+        return error.MissingWrapperSymbol;
     }
 
-    pub fn allocRequireName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) ![]const u8 {
+    pub fn allocRequireName(self: *const Module, allocator: std.mem.Allocator, rt: ?*const RenameTable) WrapperNameError![]const u8 {
         if (self.getRequireName(rt)) |n| return allocator.dupe(u8, n);
-        return types.makeRequireVarName(allocator, self.path);
+        return error.MissingWrapperSymbol;
     }
 
     /// Semantic 심볼 배열 slice. semantic이 없으면 빈 slice.

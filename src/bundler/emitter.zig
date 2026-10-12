@@ -2327,12 +2327,12 @@ pub fn emitModule(
                 // .esm 모듈은 `(init_X(), <toCommonJS>(exports_X))` (minify 시 `$tC`).
                 switch (tgt.wrap_kind) {
                     .cjs => {
-                        const req_name = tgt.allocRequireName(arena_alloc, &l.rename_table) catch continue;
+                        const req_name = try tgt.allocRequireName(arena_alloc, &l.rename_table);
                         per[mi] = std.fmt.allocPrint(arena_alloc, "{s}()", .{req_name}) catch null;
                     },
                     .esm => {
-                        const init_name = tgt.allocInitName(arena_alloc, &l.rename_table) catch continue;
-                        const exp_name = tgt.allocExportsName(arena_alloc, &l.rename_table) catch continue;
+                        const init_name = try tgt.allocInitName(arena_alloc, &l.rename_table);
+                        const exp_name = try tgt.allocExportsName(arena_alloc, &l.rename_table);
                         const to_cjs = try l.esmInteropRuntimeHelperName(.to_common_js);
                         per[mi] = std.fmt.allocPrint(arena_alloc, "({s}(),{s}({s}))", .{ init_name, to_cjs, exp_name }) catch null;
                     },

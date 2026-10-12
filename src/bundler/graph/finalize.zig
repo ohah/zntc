@@ -195,7 +195,8 @@ pub fn promoteRunBeforeMainModules(self: *ModuleGraph) void {
 /// wrap_kind 확정 후 모든 래핑 모듈에 `init_<path>` + `exports_<path>` 합성
 /// 심볼을 semantic 공간에 등록한다. Emitter/linker가 Module.getInitName/
 /// getExportsName으로 이름을 조회해 중복 할당을 피한다.
-/// OOM/semantic 없음 → 조용히 skip, fallback 경로가 기존 동작 유지.
+/// OOM/semantic 누락은 그래프 빌드 오류로 전파한다. fallback 이름으로 진행하면
+/// wrapper declaration/reference가 rename graph 밖에 남는다.
 ///
 /// `makeVarNameWithPrefix` 는 path 의 마지막 `node_modules/` 이후만 사용해 이름을
 /// 생성하므로, bun lockfile 처럼 `node_modules/.bun/<HASH>/node_modules/<pkg>/...`
@@ -203,7 +204,7 @@ pub fn promoteRunBeforeMainModules(self: *ModuleGraph) void {
 /// 변수 이름이 동일해진다. emitter 가 같은 변수를 두 번 선언 + 같은 export object 의
 /// getter 를 두 번 정의 → 두번째가 첫번째를 덮어써서 사용처에서 undefined 참조.
 /// 충돌 감지 시 `$<N>` suffix 로 deconflict.
-pub fn registerWrapperSymbols(self: *ModuleGraph) void {
+pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
     // key 들은 module 의 parse_arena (graph teardown 까지 살아있음 — `Module.deinit`
     // 까지) 에서 빌리거나 본 함수 안의 arena 에서 새로 할당. used_names 는 이 함수
     // 안에서 defer deinit 되므로 모든 키가 map 보다 오래 산다.
@@ -221,9 +222,9 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         _ = findWrapperSymbol(m, &m.exports_symbol, .cjs_exports);
         _ = findWrapperSymbol(m, &m.require_symbol, .cjs_require);
         // RFC #3940 L.4c-2a-i: mangle 전 단계 (canonical 미설정) → rt null, synthetic_name 조회.
-        if (m.getInitName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
-        if (m.getExportsName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
-        if (m.getRequireName(null)) |n| _ = used_names.put(self.allocator, n, 1) catch {};
+        if (m.getInitName(null)) |n| try used_names.put(self.allocator, n, 1);
+        if (m.getExportsName(null)) |n| try used_names.put(self.allocator, n, 1);
+        if (m.getRequireName(null)) |n| try used_names.put(self.allocator, n, 1);
     }
 
     var cjs_runtime_identity_registered = false;
@@ -272,15 +273,15 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
         // JS 파싱을 거치지 않아 심볼 테이블이 없다. 그래프 생성 래퍼 이름을 문자열
         // fallback으로 남기지 않고 빈 semantic 저장소의 정확한 SymbolId로 등록한다.
         if (m.semantic == null) {
-            if (m.ast != null or (!needs_init and !needs_exports and !needs_require)) continue;
-            if (!ensureSyntheticModuleSemantic(self, m)) continue;
+            if (m.ast != null) return error.MissingSemantic;
+            if (!ensureSyntheticModuleSemantic(self, m)) return error.OutOfMemory;
         }
-        const arena = if (m.parse_arena) |a| a.allocator() else continue;
-        const sem_ptr = if (m.semantic) |*s| s else continue;
+        const arena = if (m.parse_arena) |a| a.allocator() else return error.OutOfMemory;
+        const sem_ptr = if (m.semantic) |*s| s else return error.MissingSemantic;
 
         if (needs_init) {
-            const init_base = types.makeInitVarName(arena, m.path) catch continue;
-            const init_name = uniqueName(arena, init_base, &used_names, self.allocator) catch continue;
+            const init_base = try types.makeInitVarName(arena, m.path);
+            const init_name = try uniqueName(arena, init_base, &used_names, self.allocator);
             m.init_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -288,12 +289,12 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
                 .esm_init,
                 init_name,
                 Span.EMPTY,
-            ) catch null;
+            ) catch return error.OutOfMemory;
         }
 
         if (needs_exports) {
-            const exports_base = types.makeExportsVarName(arena, m.path) catch continue;
-            const exports_name = uniqueName(arena, exports_base, &used_names, self.allocator) catch continue;
+            const exports_base = try types.makeExportsVarName(arena, m.path);
+            const exports_name = try uniqueName(arena, exports_base, &used_names, self.allocator);
             m.exports_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -301,12 +302,12 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
                 .cjs_exports,
                 exports_name,
                 Span.EMPTY,
-            ) catch null;
+            ) catch return error.OutOfMemory;
         }
 
         if (needs_require) {
-            const require_base = types.makeRequireVarName(arena, m.path) catch continue;
-            const require_name = uniqueName(arena, require_base, &used_names, self.allocator) catch continue;
+            const require_base = try types.makeRequireVarName(arena, m.path);
+            const require_name = try uniqueName(arena, require_base, &used_names, self.allocator);
             m.require_symbol = semantic_symbol.extendSymbol(
                 arena,
                 &sem_ptr.symbols,
@@ -314,7 +315,7 @@ pub fn registerWrapperSymbols(self: *ModuleGraph) void {
                 .cjs_require,
                 require_name,
                 Span.EMPTY,
-            ) catch null;
+            ) catch return error.OutOfMemory;
         }
     }
 

@@ -26,6 +26,7 @@ const types = @import("types.zig");
 const ModuleIndex = types.ModuleIndex;
 const BundlerDiagnostic = types.BundlerDiagnostic;
 const Module = @import("module.zig").Module;
+const WrapperNameError = @import("module.zig").WrapperNameError;
 const ModuleSemanticData = @import("module.zig").ModuleSemanticData;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
@@ -1700,6 +1701,19 @@ pub const Linker = struct {
     /// Recover helper-local IDs and fixed output names after a cached rename
     /// reuse, where a fresh Linker may not have run `prepareCjsRuntimeName`.
     pub fn prepareCjsRuntimeInternalNames(self: *Linker) !void {
+        if (self.cjs_factory_runtime_symbol_id) |cached| {
+            const owner = self.getModule(@intFromEnum(cached.module));
+            const semantic = if (owner) |module| module.semantic else null;
+            const raw: usize = @intFromEnum(cached.inner);
+            const current = if (owner) |module| module.cjs_runtime_factory_symbol else null;
+            const valid = if (semantic) |sem|
+                raw < sem.symbols.items.len and
+                    sem.symbols.items[raw].synthetic_kind == .cjs_runtime_factory and
+                    current == cached.inner
+            else
+                false;
+            if (!valid) self.cjs_factory_runtime_symbol_id = null;
+        }
         if (self.cjs_factory_runtime_symbol_id == null) {
             var module_it = self.graph.modulesIterator();
             while (module_it.next()) |module| {
@@ -4835,7 +4849,7 @@ pub const Linker = struct {
         return name;
     }
 
-    fn cjsNamespaceExportAccess(self: *const Linker, ref: SymbolRef) std.mem.Allocator.Error!?[]const u8 {
+    fn cjsNamespaceExportAccess(self: *const Linker, ref: SymbolRef) WrapperNameError!?[]const u8 {
         const target = self.graph.getModule(ref.module_index) orelse return null;
         if (target.wrap_kind != .cjs) return null;
         if (std.mem.eql(u8, ref.export_name, "default")) return null;
@@ -5008,7 +5022,7 @@ pub const Linker = struct {
         visited: *std.AutoHashMapUnmanaged(u32, void),
         module_idx: ModuleIndex,
         depth: u32,
-    ) std.mem.Allocator.Error!void {
+    ) WrapperNameError!void {
         if (depth > max_chain_depth) return;
         const mod_i = @intFromEnum(module_idx);
         const m = self.graph.getModule(module_idx) orelse return;
