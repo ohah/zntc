@@ -2128,6 +2128,7 @@ test "#4819 tracked temp references reserve exact symbols in known scopes" {
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
@@ -2146,6 +2147,8 @@ test "#4819 tracked temp references reserve exact symbols in known scopes" {
     var temp_scopes = [_]u32{ std.math.maxInt(u32), std.math.maxInt(u32) };
     var temp_names: [2][]const u8 = undefined;
     for (edited.symbols.items[original_symbols..], original_symbols..) |generated, symbol_index| {
+        try std.testing.expect(generated.synthetic_kind == .standalone_temp_binding);
+        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@intFromEnum(generated.scope_id)].get(generated.synthetic_name));
         try std.testing.expectEqual(@as(u32, 3), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
         var bindings: usize = 0;
@@ -2167,6 +2170,105 @@ test "#4819 tracked temp references reserve exact symbols in known scopes" {
     try std.testing.expect(temp_scopes[0] != temp_scopes[1]);
     try std.testing.expectEqualStrings(temp_names[0], temp_names[1]);
     try std.testing.expectEqualStrings("_b", temp_names[0]);
+}
+
+fn checkTrackedTempsStayFixedWhenDynamicLookupCanObserveThem(source: []const u8, extension: []const u8, is_module: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(extension);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = is_module;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndices(allocator, transformer.ast);
+
+    var temp_count: usize = 0;
+    var temp_ids = transformer.synthetic_temp_symbol_ids.valueIterator();
+    while (temp_ids.next()) |raw_id| {
+        const id: usize = @intCast(raw_id.*);
+        try std.testing.expect(id >= original_symbols and id < edited.symbols.items.len);
+        const symbol = edited.symbols.items[id];
+        try std.testing.expect(symbol.synthetic_kind != .standalone_temp_binding);
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+        var references: usize = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != id or reference.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            references += 1;
+        }
+        try std.testing.expect(references > 0);
+        temp_count += 1;
+    }
+    try std.testing.expect(temp_count > 0);
+}
+
+test "#4819 tracked temp names stay fixed when eval or with can observe them" {
+    try checkTrackedTempsStayFixedWhenDynamicLookupCanObserveThem(
+        "function build(key) { return { before: 0, [key]: 1 }; } function sibling() { eval(''); } build('value');",
+        ".mjs",
+        true,
+    );
+    try checkTrackedTempsStayFixedWhenDynamicLookupCanObserveThem(
+        "function build(key) { with (globalThis) { return { before: 0, [key]: 1 }; } } build('value');",
+        ".js",
+        false,
+    );
+}
+
+test "#4819 lexical synthetic temps finalize only through their exact binding ID" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse return error.MissingProgramScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    const name_span = try transformer.ast.addUniqueString("_lexicalTemp");
+    const binding = try @import("es_helpers.zig").makeSyntheticBinding(&transformer, name_span);
+    try transformer.bindSyntheticTempInScope(binding, name_span, .EMPTY, .variable_const, @enumFromInt(program_scope));
+    const id = transformer.getSymbolIdAt(binding) orelse return error.MissingSyntheticTempSymbol;
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const symbol = edited.symbols.items[id];
+    try std.testing.expectEqual(SymbolKind.variable_const, symbol.kind);
+    try std.testing.expect(symbol.synthetic_kind == .standalone_temp_binding);
+    try std.testing.expectEqual(@as(u32, program_scope), @intFromEnum(symbol.scope_id));
+    try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[program_scope].get(symbol.synthetic_name));
+    try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@intFromEnum(binding)]);
 }
 
 test "#4819 tracked captures attach the write SymbolId before reads" {
