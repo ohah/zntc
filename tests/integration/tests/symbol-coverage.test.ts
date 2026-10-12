@@ -13181,14 +13181,14 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           '9 undefined outer,receiver,method,before-argument,argument,this,missing,type-outer,type-receiver,before-argument,argument,type-error\n',
       },
       {
-        name: 'bound-root deep optional member calls with effectful argument sequences stay on semantic reanalysis',
+        name: 'bound-root deep optional member calls retain exact-bound effectful argument sequences',
         source: [
           'var events = [];',
           'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
           'class BoundEffectfulDeepOptionalArgumentField { static value = holder.outer?.receiver.fieldValue((events.push("before-argument"), events.push("argument"), 8)); }',
           'console.log(BoundEffectfulDeepOptionalArgumentField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before-argument,argument\n',
       },
       {
@@ -13489,7 +13489,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 before,deep,nested:value,key:value\n',
       },
       {
-        name: 'bound-root deep optional member calls with safe computed final-call sequences stay on semantic reanalysis',
+        name: 'bound-root deep optional member calls retain safe computed final-call sequences',
         source: [
           'var events = [];',
           'var argumentKey = "valueCall";',
@@ -13498,7 +13498,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootComputedCallSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.receiver[argumentKey](1))); }',
           'console.log(BoundRootComputedCallSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before\n',
       },
       {
@@ -13541,17 +13541,81 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 before\n',
       },
       {
-        name: 'bound-root deep optional member calls with exact-bound call argument sequences stay on semantic reanalysis',
+        name: 'bound-root deep optional member calls retain exact-bound call argument sequences and evaluation order',
         source: [
           'var events = [];',
-          'function argumentValue() { events.push("argument"); return 1; }',
-          'var argumentSource = { valueCall(input) { return input + 7; } };',
+          'var argumentSource = { base: 7, get valueCall() { events.push("argument-getter"); return function (input) { events.push(this === argumentSource ? "argument-this" : "argument-wrong-this"); return this.base + input; }; } };',
+          'var holder = { get outer() { events.push("outer"); return { get receiver() { events.push("receiver"); return { base: 1, get fieldValue() { events.push("method"); return function (input) { events.push(this.base === 1 ? "this" : "wrong-this"); return this.base + input; }; } }; } }; } };',
+          'var absentHolder = { get outer() { events.push("absent"); return null; } };',
+          'var missingMethodHolder = { get outer() { events.push("type-outer"); return { get receiver() { events.push("type-receiver"); return {}; } }; } };',
+          'class BoundRootCallSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall(1))); static absent = absentHolder.outer?.receiver.fieldValue((events.push("null-before"), argumentSource.valueCall(1))); }',
+          'function failAtMissingBoundRootSequenceMethod() { class MissingBoundRootSequenceMethodField { static value = missingMethodHolder.outer?.receiver.fieldValue((events.push("before-missing"), argumentSource.valueCall(1))); } }',
+          'try { failAtMissingBoundRootSequenceMethod(); } catch (error) { events.push(error instanceof TypeError ? "type-error" : "wrong-error"); }',
+          'console.log(BoundRootCallSequenceField.value, BoundRootCallSequenceField.absent, events.join(","));',
+        ].join('\n'),
+        graph: 'retained',
+        output:
+          '9 undefined outer,receiver,method,before,argument-getter,argument-this,this,absent,type-outer,type-receiver,before-missing,argument-getter,argument-this,type-error\n',
+      },
+      {
+        name: 'bound-root deep optional member calls keep an unbound final sequence call on reanalysis',
+        source: [
+          'var events = [];',
+          'globalThis.__zntcBoundRootUnboundSequenceCall = function () { events.push("unbound"); return 8; };',
           'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
-          'class BoundRootCallSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall(1))); }',
-          'console.log(BoundRootCallSequenceField.value, events.join(","));',
+          'class BoundRootUnboundSequenceCallField { static value = holder.outer?.receiver.fieldValue((events.push("before"), __zntcBoundRootUnboundSequenceCall())); }',
+          'console.log(BoundRootUnboundSequenceCallField.value, events.join(","));',
         ].join('\n'),
         graph: 'reanalyzed',
-        output: '9 before\n',
+        output: '9 before,unbound\n',
+      },
+      {
+        name: 'bound-root deep optional member calls keep an unbound prefix call in an argument sequence on reanalysis',
+        source: [
+          'var events = [];',
+          'globalThis.__zntcBoundRootUnboundSequencePrefix = function () { events.push("unbound-prefix"); return 0; };',
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class BoundRootUnboundSequencePrefixField { static value = holder.outer?.receiver.fieldValue((events.push("before"), __zntcBoundRootUnboundSequencePrefix(), 8)); }',
+          'console.log(BoundRootUnboundSequencePrefixField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,unbound-prefix\n',
+      },
+      {
+        name: 'bound-root deep optional member calls keep an optional prefix call in an argument sequence on reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { optionalCall() { events.push("optional-prefix"); return 0; } };',
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class BoundRootOptionalSequencePrefixField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.optionalCall?.(), 8)); }',
+          'console.log(BoundRootOptionalSequencePrefixField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,optional-prefix\n',
+      },
+      {
+        name: 'bound-root deep optional member calls keep an update in an argument sequence on reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentValue = 7;',
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class BoundRootUpdateSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentValue++, 8)); }',
+          'console.log(BoundRootUpdateSequenceField.value, argumentValue, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 8 before\n',
+      },
+      {
+        name: 'bound-root deep optional member calls keep an optional call in an argument sequence on reanalysis',
+        source: [
+          'var events = [];',
+          'var argumentSource = { valueCall() { events.push("optional"); return 8; } };',
+          'var holder = { outer: { receiver: { fieldValue(input) { return input + 1; } } } };',
+          'class BoundRootOptionalSequenceCallField { static value = holder.outer?.receiver.fieldValue((events.push("before"), argumentSource.valueCall?.())); }',
+          'console.log(BoundRootOptionalSequenceCallField.value, events.join(","));',
+        ].join('\n'),
+        graph: 'reanalyzed',
+        output: '9 before,optional\n',
       },
       {
         name: 'unresolved deep optional member calls with an unbound final sequence call stay on semantic reanalysis',
@@ -13603,7 +13667,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '9 before,effectful-value,argument-this\n',
       },
       {
-        name: 'bound-root deep optional member calls with member-read argument sequences stay on semantic reanalysis',
+        name: 'bound-root deep optional member calls retain member-read argument sequences',
         source: [
           'var events = [];',
           'var argumentSource = { get value() { events.push("value"); return 8; } };',
@@ -13611,7 +13675,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           'class BoundRootMemberSequenceField { static value = holder.outer?.receiver.fieldValue((events.push("before-argument"), argumentSource.value)); }',
           'console.log(BoundRootMemberSequenceField.value, events.join(","));',
         ].join('\n'),
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '9 before-argument,value\n',
       },
       {
