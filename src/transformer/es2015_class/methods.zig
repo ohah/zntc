@@ -398,7 +398,9 @@ pub fn Methods(comptime Transformer: type) type {
 
             const config_prop = try buildBooleanProp(self, "configurable", true, span);
             const writable_prop = try buildBooleanProp(self, "writable", true, span);
-            const value_prop = try buildValueProp(self, func_expr, span);
+            const member = if (info.source_member_idx.isNone()) info.member_idx else info.source_member_idx;
+            const named = try @import("../parameter_environment.zig").nameLoweredMember(self, func_expr, member, "", reference_scope, span);
+            const value_prop = try buildValueProp(self, named, span);
             const desc_list = try self.ast.addNodeList(&.{ config_prop, writable_prop, value_prop });
             const desc_obj = try self.ast.addNode(.{
                 .tag = .object_expression,
@@ -447,10 +449,18 @@ pub fn Methods(comptime Transformer: type) type {
                     reference_scope,
                 );
                 const accessor_key = try es_helpers.makePropertyName(self, if (info.is_getter) "get" else "set");
+                const named_func = try @import("../parameter_environment.zig").nameLoweredMember(
+                    self,
+                    func_expr,
+                    if (info.source_member_idx.isNone()) info.member_idx else info.source_member_idx,
+                    if (info.is_getter) "get " else "set ",
+                    reference_scope,
+                    span,
+                );
                 const prop1 = try self.ast.addNode(.{
                     .tag = .object_property,
                     .span = info.member_span,
-                    .data = .{ .binary = .{ .left = accessor_key, .right = func_expr, .flags = 0 } },
+                    .data = .{ .binary = .{ .left = accessor_key, .right = named_func, .flags = 0 } },
                 });
 
                 // 전체 리스트에서 같은 key의 짝(getter↔setter) 찾기
@@ -475,10 +485,18 @@ pub fn Methods(comptime Transformer: type) type {
                             reference_scope,
                         );
                         const pair_key = try es_helpers.makePropertyName(self, if (next.is_getter) "get" else "set");
+                        const named_pair = try @import("../parameter_environment.zig").nameLoweredMember(
+                            self,
+                            pair_func,
+                            if (next.source_member_idx.isNone()) next.member_idx else next.source_member_idx,
+                            if (next.is_getter) "get " else "set ",
+                            reference_scope,
+                            span,
+                        );
                         paired_prop = try self.ast.addNode(.{
                             .tag = .object_property,
                             .span = next.member_span,
-                            .data = .{ .binary = .{ .left = pair_key, .right = pair_func, .flags = 0 } },
+                            .data = .{ .binary = .{ .left = pair_key, .right = named_pair, .flags = 0 } },
                         });
                         break;
                     }

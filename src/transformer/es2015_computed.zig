@@ -148,7 +148,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // shorthand → key 복제
                     try self.visitNode(key_idx)
                 else
-                    try self.visitNode(val_idx);
+                    try @import("parameter_environment.zig").nameLoweredProperty(self, try self.visitNode(val_idx), key_idx, val_idx, span);
 
                 // _a[key] = val. #4249: key 종류별 dot(identifier) vs computed
                 // (string/numeric/bigint/computed) 분기를 makeMemberFromKeyIdx 로
@@ -206,7 +206,14 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const me = member.data.extra;
             const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
 
-            const func_expr = try buildAccessorFunction(self, member_idx, span);
+            const func_expr = try @import("parameter_environment.zig").nameLoweredMember(
+                self,
+                try buildAccessorFunction(self, member_idx, span),
+                member_idx,
+                if (is_getter) "get " else "set ",
+                self.current_scope,
+                span,
+            );
 
             const accessor_kind_span = try self.ast.addString(if (is_getter) "get" else "set");
             const accessor_kind = try es_helpers.makePropertyNameFromSpan(self, accessor_kind_span);

@@ -2006,7 +2006,9 @@ test "ES2015: arrow simple params — no unnecessary lowering" {
 test "ES2015: class method destructuring params lowered" {
     var r = try e2eTarget(std.testing.allocator, "class Foo { method({x,...rest}:any) { return rest; } }", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "function(_") != null);
+    // The lowered method keeps its name (`value: __name(function () {}, "method")`).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(_") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, ",\"method\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__rest") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "...rest") == null);
 }
@@ -2821,8 +2823,9 @@ test "ES2015: class getter/setter paired" {
     // configurable: true — ES6 class getter/setter는 스펙상 configurable
     try std.testing.expect(std.mem.indexOf(u8, r.output, "configurable:true") != null);
     // "get:" 와 "set:" 가 같은 호출 안에 있어야 함
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "get:function()") != null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "set:function(x)") != null);
+    // Accessors are named "get v"/"set v" (not "get"/"set").
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(){return 1;},\"get v\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(x){},\"set v\")") != null);
 }
 
 test "ES2015: class method descriptor는 enumerable false" {
@@ -3754,7 +3757,7 @@ test "ES2020: temp var hoisted for ?? in function" {
 test "ES2020: temp var hoisted for ?? in class method" {
     var r = try e2eTarget(std.testing.allocator, "class C{m(options){var queryHash=options.queryHash??hash(options.queryKey);return queryHash;}}", .es5);
     defer r.deinit();
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "value:function(options){var _a;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "(function(options){var _a;") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.output, "(_a=options.queryHash)") != null);
 }
 
