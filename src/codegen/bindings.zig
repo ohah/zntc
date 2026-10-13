@@ -151,7 +151,7 @@ pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void 
     // __esm 호이스팅: top-level 변수 선언은 래퍼 밖 `var`에 대응하는 할당문으로 변환.
     // indent_level == 0: factory body의 top-level에서만 적용.
     // 함수 안의 const/let/var는 그대로 유지해야 함.
-    if (self.options.esm_var_assign_only and self.indent_level == 0 and !self.in_for_init) {
+    if (self.options.esm_var_assign_only and self.indent_level == 0 and self.namespace_body_depth == 0 and !self.in_for_init) {
         const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
         var has_output = false;
         for (declarators) |raw_decl_idx| {

@@ -420,6 +420,22 @@ pub fn emitEsmWrappedModule(
                 // body에 넣어서 할당문으로 변환
                 try body_stmts.append(allocator, raw_idx);
             },
+            .ts_module_declaration => {
+                // TS namespace → IIFE. codegen 은 factory 안에서 `var N;` 를 생략하므로
+                // (#5663) factory 밖 top-level 에 선언한다 — `__export` 의 getter 가 읽는다.
+                const ns_node = if (export_inner) |idx|
+                    esm_ast.nodes.items[@intFromEnum(idx)]
+                else
+                    stmt_node;
+                const ns_name_idx = ns_node.data.binary.left;
+                if (!ns_name_idx.isNone()) {
+                    const ns_name_node = esm_ast.nodes.items[@intFromEnum(ns_name_idx)];
+                    const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(ns_name_node.span));
+                    const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(ns_name_idx), raw_name));
+                    try hoisted_var_names.append(allocator, resolved);
+                }
+                try body_stmts.append(allocator, raw_idx);
+            },
             .ts_enum_declaration => {
                 // TS enum → IIFE. codegen이 `var Name = ((Name) => {...})(Name || {})` 출력.
                 // __esm factory 밖 top-level에 var Name; 선언 필요.

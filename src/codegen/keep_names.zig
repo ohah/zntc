@@ -101,7 +101,7 @@ pub fn hoistedFunctionName(self: anytype, raw: u32) ?struct { name: NodeIndex, o
 pub fn convertsToAssignment(self: anytype, node: ast_mod.Node) bool {
     return self.options.esm_var_assign_only and node.tag == .function_declaration and
         !self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name).isNone() and
-        self.indent_level == 0;
+        self.indent_level == 0 and self.namespace_body_depth == 0;
 }
 
 /// A static `name` member defines the class's own `name` (esbuild skips
