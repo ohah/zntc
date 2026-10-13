@@ -11635,6 +11635,49 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
+  test('Stage 3 anonymous class wrapper gets its final name from its exact SymbolId', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-anonymous-class-name-'));
+    const input = join(dir, 'entry.flow');
+    const output = join(dir, 'out.js');
+    writeFileSync(
+      input,
+      [
+        '// @flow',
+        'const _Class = 17;',
+        'function identity(value, context) { return value; }',
+        'const Decorated = @identity class { static read() { return _Class; } };',
+        'console.log(Decorated.read(), Decorated.name);',
+      ].join('\n'),
+    );
+
+    try {
+      for (const minify of [false, true]) {
+        const args = [input, '--flow', '--target=es5'];
+        if (minify) args.push('--minify-identifiers');
+        args.push('-o', output);
+        const proc = spawnSync(ZNTC_BIN, args, {
+          env: {
+            ...process.env,
+            ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+            ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+          },
+          encoding: 'utf8',
+        });
+        expect(proc.status, `${minify ? 'minified' : 'plain'}: ${proc.stderr}`).toBe(0);
+        const identity = proc.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, `${minify ? 'minified' : 'plain'}: missing exact report`).toBeDefined();
+        expect(exactSchemaProblems(identity!), identity).toEqual([]);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${minify ? 'minified' : 'plain'}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout).toBe('17 Decorated\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('Reanimated worklet preserves generated SymbolIds on the bundler prepass path', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-symbol-identity-'));
     const entry = join(dir, 'entry.js');

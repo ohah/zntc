@@ -2445,7 +2445,10 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
     analyzer.is_module = true;
     try analyzer.analyze();
 
-    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
@@ -2462,14 +2465,18 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
     var wrapper_symbol: ?usize = null;
     var constructor_symbol: ?usize = null;
     for (edited.symbols.items, 0..) |symbol, id| {
-        if (!std.mem.eql(u8, symbol.synthetic_name, "_Class") or symbol.synthetic_kind != null) continue;
-        if (symbol.kind == .variable_var) wrapper_symbol = id;
-        if (symbol.kind == .function_decl) constructor_symbol = id;
+        if (!std.mem.eql(u8, symbol.synthetic_name, "_Class")) continue;
+        if (symbol.kind == .variable_var and symbol.synthetic_kind == .anonymous_class_export_binding) wrapper_symbol = id;
+        if (symbol.kind == .function_decl and symbol.synthetic_kind == .anonymous_class_expression_binding) constructor_symbol = id;
     }
     const wrapper_id = wrapper_symbol orelse return error.TestUnexpectedResult;
     const constructor_id = constructor_symbol orelse return error.TestUnexpectedResult;
     try std.testing.expect(wrapper_id != constructor_id);
     try std.testing.expect(edited.symbols.items[wrapper_id].scope_id != edited.symbols.items[constructor_id].scope_id);
+    try std.testing.expectEqualStrings(
+        "_Class",
+        transformer.late_output_name_bases.get("_Class") orelse return error.MissingStage3AnonymousClassOutputNameBase,
+    );
 
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
     var wrapper_binding_count: usize = 0;
