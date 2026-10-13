@@ -11,16 +11,7 @@
 import { describe, test, expect } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  closeSync,
-  mkdirSync,
-  mkdtempSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import ts from 'typescript';
@@ -55,6 +46,75 @@ const LOOP_BINDING_MANIFEST = [
     stdout: '0:10,2:32:99\n',
   },
 ] as const;
+type ProducerReport = 'exact' | 'strict';
+type ProducerObservationRequirement = {
+  report: ProducerReport;
+  field: string;
+  minimum: number;
+};
+const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
+  file: string;
+  target: (typeof TARGETS)[number];
+  observations: readonly ProducerObservationRequirement[];
+}> = [
+  {
+    file: '4819-generator-state-scopes.mjs',
+    target: TARGETS[0],
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 1 },
+      { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
+  },
+  {
+    file: '4819-for-in-loop-capture.mjs',
+    target: TARGETS[0],
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 1 },
+      { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
+  },
+  {
+    file: '4819-private-generator.mjs',
+    target: TARGETS[0],
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 1 },
+      { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
+  },
+  {
+    file: '4801-static-field-arrow-this.mjs',
+    target: TARGETS[0],
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 1 },
+      { report: 'exact', field: 'generated_references', minimum: 1 },
+      { report: 'strict', field: 'marked_synthetic', minimum: 1 },
+    ],
+  },
+  {
+    file: '4819-import-equals-transform-graph.ts',
+    target: TARGETS[0],
+    observations: [
+      { report: 'exact', field: 'generated_bindings', minimum: 1 },
+      { report: 'exact', field: 'generated_references', minimum: 1 },
+    ],
+  },
+  {
+    file: '4819-namespace-iife-params.ts',
+    target: TARGETS[0],
+    observations: [
+      { report: 'exact', field: 'namespace_iife_params', minimum: 1 },
+      { report: 'exact', field: 'generated_references', minimum: 1 },
+    ],
+  },
+  {
+    file: '4819-enum-iife-params.ts',
+    target: TARGETS[0],
+    observations: [{ report: 'exact', field: 'enum_iife_params', minimum: 1 }],
+  },
+];
 const EXACT_ZERO_COUNTERS = [
   'invalid_id',
   'invalid_reference_node',
@@ -311,6 +371,33 @@ function exactIdentityObservationProblems(identity: string): string[] {
     : ['exact identity audit checked no binding or reference observations'];
 }
 
+function requiredProducerObservationProblems(
+  reports: { exact: string; strict: string },
+  requirements: readonly ProducerObservationRequirement[],
+): string[] {
+  const problems: string[] = [];
+  for (const requirement of requirements) {
+    const report = reports[requirement.report];
+    const matches =
+      report.match(new RegExp(`(?:^| )${requirement.field}=(\\d+)(?=\\s|$)`, 'g')) ?? [];
+    if (matches.length !== 1) {
+      problems.push(
+        `${requirement.report}.${requirement.field} observations=${matches.length}, expected 1`,
+      );
+      continue;
+    }
+    const value = Number(matches[0].match(/=(\d+)/)?.[1]);
+    if (!Number.isSafeInteger(value)) {
+      problems.push(`${requirement.report}.${requirement.field} is not a safe integer`);
+    } else if (value < requirement.minimum) {
+      problems.push(
+        `${requirement.report}.${requirement.field}=${value}, required >=${requirement.minimum}`,
+      );
+    }
+  }
+  return problems;
+}
+
 function postMinifySchemaProblems(report: string): string[] {
   const isReportLine = report.startsWith('zntc: symbol-identity-post-minify ');
   const payloadMarker = ': bindings=';
@@ -525,12 +612,18 @@ function runCoverage(
   outDir: string,
   minifyIdentifiers = false,
 ): { stderr: string; exitCode: number } {
-  const stderrPath = join(outDir, 'stderr.log');
   const isFlow = file.endsWith('.flow.mjs') || file.endsWith('.flow');
-  const stderrFd = openSync(stderrPath, 'w');
+  const stderrPath = join(outDir, 'stderr.log');
+  // Capture CLI diagnostics through the shell because Bun's Node-compatible
+  // child stdio is empty in this TypeScript-importing test module.
   const proc = spawnSync(
-    ZNTC_BIN,
+    '/bin/sh',
     [
+      '-c',
+      'export ZNTC_DEBUG_SYMBOL_COVERAGE=1 ZNTC_DEBUG_SYNTHETIC_COVERAGE=1; stderr_path=$1; shift; "$@" 2>"$stderr_path"',
+      'zntc-symbol-coverage',
+      stderrPath,
+      ZNTC_BIN,
       file,
       target.arg,
       ...(isFlow ? ['--flow'] : []),
@@ -538,18 +631,10 @@ function runCoverage(
       '-o',
       join(outDir, 'out.js'),
     ],
-    {
-      env: {
-        ...process.env,
-        ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
-        ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
-      },
-      stdio: ['ignore', 'ignore', stderrFd],
-    },
+    { encoding: 'utf8' },
   );
-  closeSync(stderrFd);
   return {
-    stderr: readFileSync(stderrPath, 'utf8'),
+    stderr: readFileSync(stderrPath, 'utf8') + (proc.stderr ?? ''),
     exitCode: proc.status ?? -1,
   };
 }
@@ -728,6 +813,114 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(fingerprintAfter).not.toBe(fingerprintBefore);
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('required producer observation inventory cannot shrink or pass vacuously', () => {
+    expect(
+      REQUIRED_PRODUCER_OBSERVATIONS.map(
+        (entry) =>
+          `${entry.file}:${entry.target.name}:${entry.observations.map(({ report, field, minimum }) => `${report}.${field}>=${minimum}`).join(',')}`,
+      ),
+    ).toEqual([
+      '4819-generator-state-scopes.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
+      '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
+      '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
+      '4801-static-field-arrow-this.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
+      '4819-import-equals-transform-graph.ts:es5:exact.generated_bindings>=1,exact.generated_references>=1',
+      '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=1,exact.generated_references>=1',
+      '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
+    ]);
+    expect(
+      new Set(REQUIRED_PRODUCER_OBSERVATIONS.map((entry) => `${entry.file}:${entry.target.name}`))
+        .size,
+    ).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length);
+
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-required-producer-observations-'));
+    let runs = 0;
+    try {
+      for (const entry of REQUIRED_PRODUCER_OBSERVATIONS) {
+        const file = join(FIXTURE_DIR, entry.file);
+        expect(
+          fixtures,
+          `required producer fixture ${entry.file} must stay in the oracle`,
+        ).toContain(file);
+        for (const minifyIdentifiers of [false, true]) {
+          const label = `${entry.file} ${entry.target.name}${minifyIdentifiers ? ' identifier-minified' : ''}`;
+          const { stderr, exitCode } = runCoverage(file, entry.target, outDir, minifyIdentifiers);
+          expect(exitCode, `${label}: ${stderr}`).toBe(0);
+          expect(transformIdentityAuditProblems(stderr), `${label}: ${stderr}`).toEqual([]);
+
+          const lines = stderr.split(/\r?\n/);
+          const exact = lines.find((line) => line.startsWith('zntc: symbol-identity '));
+          const strict = lines.find((line) => line.startsWith('zntc: synthetic-coverage '));
+          expect(exact, `${label}: exact identity report missing`).toBeDefined();
+          expect(exact, `${label}: exact report must identify its fixture`).toContain(entry.file);
+          expect(strict, `${label}: strict identity report missing`).toBeDefined();
+          const reports = { exact: exact ?? '', strict: strict ?? '' };
+          expect(
+            requiredProducerObservationProblems(reports, entry.observations),
+            `${label}: required producer observations missing`,
+          ).toEqual([]);
+
+          // Negative control: erase each required positive observation from an
+          // otherwise valid real report. The same gate used by the matrix must
+          // reject a transform that silently stops producing that identity.
+          for (const requirement of entry.observations) {
+            const report = reports[requirement.report];
+            const value = report.match(
+              new RegExp(`(?:^| )${requirement.field}=(\\d+)(?=\\s|$)`),
+            )?.[1];
+            expect(value, `${label}: ${requirement.report}.${requirement.field}`).toBeDefined();
+            const corruptedReport = report.replace(
+              `${requirement.field}=${value}`,
+              `${requirement.field}=0`,
+            );
+            expect(corruptedReport, `${label}: ${requirement.field} negative control`).not.toBe(
+              report,
+            );
+            const corruptedReports = { ...reports, [requirement.report]: corruptedReport };
+            expect(
+              requiredProducerObservationProblems(corruptedReports, [requirement]),
+              `${label}: ${requirement.field} negative control`,
+            ).toContain(
+              `${requirement.report}.${requirement.field}=0, required >=${requirement.minimum}`,
+            );
+
+            const duplicateReport = report.replace(
+              `${requirement.field}=${value}`,
+              `${requirement.field}=${value} ${requirement.field}=${value}`,
+            );
+            expect(
+              requiredProducerObservationProblems(
+                { ...reports, [requirement.report]: duplicateReport },
+                [requirement],
+              ),
+              `${label}: ${requirement.field} duplicate-field negative control`,
+            ).toContain(`${requirement.report}.${requirement.field} observations=2, expected 1`);
+
+            const unsafeReport = report.replace(
+              `${requirement.field}=${value}`,
+              `${requirement.field}=9007199254740992`,
+            );
+            expect(
+              requiredProducerObservationProblems(
+                { ...reports, [requirement.report]: unsafeReport },
+                [requirement],
+              ),
+              `${label}: ${requirement.field} unsafe-integer negative control`,
+            ).toContain(`${requirement.report}.${requirement.field} is not a safe integer`);
+          }
+
+          if (minifyIdentifiers) {
+            expect(postMinifyAuditProblems(stderr), `${label}: post-minify audit`).toEqual([]);
+          }
+          runs += 1;
+        }
+      }
+      expect(runs).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length * 2);
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
     }
   });
 
