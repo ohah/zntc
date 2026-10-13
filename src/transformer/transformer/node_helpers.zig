@@ -40,7 +40,7 @@ pub fn tryRenameIdentifierLike(
     idx: NodeIndex,
     comptime tag: Tag,
 ) Error!?NodeIndex {
-    if (!self.options.unsupported.block_scoping and !self.options.unsupported.object_spread) return null;
+    if (self.block_rename_map == null) return null;
     const new_name = renamedNameOf(self, idx) orelse return null;
     // 생성된 참조를 generator 등이 다시 방문해도 이름이 같으면 정체성을 유지한다.
     // 새 노드가 필요하지 않은데 복사하면 기존 Reference와 사용 횟수가 끊긴다.
@@ -79,12 +79,19 @@ pub fn renamedNameOf(self: anytype, idx: NodeIndex) ?[]const u8 {
 pub fn buildBlockRenameMap(self: anytype) Error!void {
     const lower_block_scoping = self.options.unsupported.block_scoping;
     const lower_parameter_object_rest = self.options.unsupported.object_spread;
-    if (!lower_block_scoping and !lower_parameter_object_rest) return;
+    const lower_class_fields = self.options.unsupported.class_field or !self.options.use_define_for_class_fields;
+    if (!lower_block_scoping and !lower_parameter_object_rest and !lower_class_fields) return;
     if (self.scopes.len == 0) return;
     var parameter_renames = try @import("../parameter_environment.zig").splitMergedParameterBodyVars(self);
     defer parameter_renames.deinit(self.allocator);
     var existing_parameter_renames = try @import("../parameter_environment.zig").collectRenames(self);
     defer existing_parameter_renames.deinit(self.allocator);
+    // Constructor bindings that hide a name a lowered field initializer reads
+    // are renamed like a split parameter environment (#5668).
+    var field_capture_renames = try @import("../parameter_environment.zig").collectFieldCaptureRenames(self);
+    defer field_capture_renames.deinit(self.allocator);
+    var field_captures = field_capture_renames.keyIterator();
+    while (field_captures.next()) |id| try parameter_renames.put(self.allocator, id.*, {});
     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
     var existing_renames = existing_parameter_renames.keyIterator();
     while (existing_renames.next()) |id| try parameter_renames.put(self.allocator, id.*, {});
