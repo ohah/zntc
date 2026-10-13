@@ -212,6 +212,9 @@ pub fn deinitExceptAst(self: *Transformer) void {
         self.allocator.free(decl.members);
     }
     self.const_enums.deinit(self.allocator);
+    for (self.namespaced_const_enums.items) |entry| self.allocator.free(entry.path);
+    self.namespaced_const_enums.deinit(self.allocator);
+    self.namespace_path.deinit(self.allocator);
     for (self.enum_values.items) |decl| {
         self.allocator.free(decl.name);
         for (decl.members) |m| {

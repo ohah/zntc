@@ -682,6 +682,12 @@ pub const Transformer = struct {
     const_enums: std.ArrayList(ConstEnumDecl) = .empty,
     /// 런타임 enum 의 상수 멤버 값 — 병합된 뒤 선언·계산식 뒤 자동 증가 멤버용 (#5601).
     enum_values: std.ArrayList(ConstEnumDecl) = .empty,
+    /// namespace 안에서 수집한 const enum 의 경로(`N.E`, `O.I.E`) — namespace 밖에서
+    /// `N.E.A` 로 읽는 멤버를 인라인한다. 선언은 지워지므로 인라인하지 않으면 정의가 없다 (#5600).
+    namespaced_const_enums: std.ArrayList(NamespacedConstEnum) = .empty,
+    /// 방문 중인 namespace 이름 스택(바깥 → 안쪽)과 최상위 namespace 바인딩의 SymbolId.
+    namespace_path: std.ArrayList([]const u8) = .empty,
+    namespace_root_symbol_id: ?u32 = null,
 
     /// `const re = /.../;` 형태로 선언된 regex literal 추적.
     /// key=symbol_id, value=pattern 텍스트 (`/`/flags 제외 owned slice).
@@ -694,6 +700,7 @@ pub const Transformer = struct {
     pub const ConstEnumValue = state_mod.ConstEnumValue;
     pub const ConstEnumMember = state_mod.ConstEnumMember;
     pub const ConstEnumDecl = state_mod.ConstEnumDecl;
+    pub const NamespacedConstEnum = state_mod.NamespacedConstEnum;
     pub const PrivateFieldMapping = state_mod.PrivateFieldMapping;
     pub const PrivateMethodMapping = state_mod.PrivateMethodMapping;
     pub const AstOwnership = state_mod.AstOwnership;
