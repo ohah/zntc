@@ -53,6 +53,85 @@ describe('번들 스모크 테스트', () => {
     expect(result.runOutput).toBe('3');
   });
 
+  test('named import with Unicode escape resolves the same exported identifier', async () => {
+    const result = await bundleAndRun({
+      'index.ts': `import { c\\u0073s as value } from './dep'; console.log(value);`,
+      'dep.ts': `export const css = 'OK';`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('OK');
+  });
+
+  test('exported name with Unicode escape resolves from a plain import', async () => {
+    const result = await bundleAndRun({
+      'index.ts': `import { css } from './dep'; console.log(css);`,
+      'dep.ts': `const css = 'OK'; export { css as c\\u0073s };`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('OK');
+  });
+
+  test('local import alias with Unicode escape keeps its SymbolId binding', async () => {
+    const result = await bundleAndRun({
+      'index.ts': `import { css as c\\u0073s } from './dep'; console.log(c\\u0073s);`,
+      'dep.ts': `export const css = 'OK';`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('OK');
+  });
+
+  test('namespace import alias with Unicode escape keeps property access live', async () => {
+    const result = await bundleAndRun({
+      'index.ts': `import * as n\\u0073 from './dep'; console.log(n\\u0073.a);`,
+      'dep.ts': `export const a = 'A'; export const b = 'B';`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('A');
+  });
+
+  test('escaped import alias survives a barrel export scan', async () => {
+    const result = await bundleAndRun({
+      'index.ts': `import { result } from './barrel'; console.log(result);`,
+      'barrel.ts': `import { c\\u0073s as v\\u0061lue } from './dep'; export { v\\u0061lue as result };`,
+      'dep.ts': `export const css = 'BARREL';`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('BARREL');
+  });
+
+  test('escaped declaration export name resolves from its canonical spelling', async () => {
+    const result = await bundleAndRun({
+      'index.ts': `import { direct } from './dep'; console.log(direct);`,
+      'dep.ts': `export const d\\u0069rect = 'DECL';`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('DECL');
+  });
+
+  test('escaped namespace re-export name resolves from a plain import', async () => {
+    const result = await bundleAndRun({
+      'index.ts': `import { ns } from './barrel'; console.log(ns.value);`,
+      'barrel.ts': `export * as n\\u0073 from './dep';`,
+      'dep.ts': `export const value = 'NAMESPACE'; export const unused = 'DROP';`,
+    });
+    cleanup = result.cleanup;
+
+    expect(result.exitCode).toBe(0);
+    expect(result.runOutput).toBe('NAMESPACE');
+  });
+
   test('TS 타입 스트리핑', async () => {
     const result = await bundleAndRun({
       'index.ts': `

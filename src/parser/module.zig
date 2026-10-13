@@ -24,6 +24,7 @@ const ast_walk = @import("ast_walk.zig");
 const import_scanner = @import("../bundler/import_scanner.zig");
 const import_specifier_unescape = @import("import_specifier.zig");
 const profile = @import("../profile.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 
 /// `import_declaration` extra slot 3에 저장되는 phase modifier.
 /// Stage 3 proposals: `import defer` / `import source`.
@@ -409,7 +410,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
                     const raw = self.ast.source[src_node.span.start..src_node.span.end];
                     const specifier = extractImportSpecifier(self, raw);
                     const rec_idx = appendImportRecord(self, specifier, .static_import, src_node.span);
-                    collectImportBindings(self, scratch_top, rec_idx);
+                    try collectImportBindings(self, scratch_top, rec_idx);
                     self.scan_result.has_esm_syntax = true;
                 }
 
@@ -473,7 +474,7 @@ pub fn parseImportDeclaration(self: *Parser) ParseError2!NodeIndex {
         const raw = self.ast.source[src_node.span.start..src_node.span.end];
         const spec = extractImportSpecifier(self, raw);
         const rec_idx = appendImportRecord(self, spec, .static_import, src_node.span);
-        collectImportBindings(self, scratch_top, rec_idx);
+        try collectImportBindings(self, scratch_top, rec_idx);
         self.scan_result.has_esm_syntax = true;
     }
 
@@ -693,7 +694,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
                         if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
                             const name_node = self.ast.getNode(name_idx);
-                            const n = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                            const n = try stableModuleExportName(self, name_node);
                             if (n.len > 0) {
                                 local_name = n;
                                 local_symbol_node_index = @intFromEnum(name_idx);
@@ -701,7 +702,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         }
                     }
                 } else if (inner.tag == .identifier_reference) {
-                    const n = self.ast.getText(inner.span);
+                    const n = try stableModuleExportName(self, inner);
                     if (n.len > 0) {
                         local_name = n;
                         local_symbol_node_index = @intFromEnum(decl);
@@ -763,7 +764,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             if (!exported_name.isNone() and @intFromEnum(exported_name) < self.ast.nodes.items.len) {
                 // export * as ns from "module"
                 const name_node = self.ast.getNode(exported_name);
-                const name_text = self.ast.source[name_node.data.string_ref.start..name_node.data.string_ref.end];
+                const name_text = try stableModuleExportName(self, name_node);
                 self.scan_export_bindings.append(self.allocator, .{
                     .exported_name = name_text,
                     .local_name = name_text,
@@ -866,13 +867,13 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 if (local_idx.isNone()) continue;
 
                 const local_node = self.ast.getNode(local_idx);
-                const local_name = self.ast.source[local_node.span.start..local_node.span.end];
+                const local_name = try stableModuleExportName(self, local_node);
 
                 const exported_node = if (!exported_idx.isNone() and @intFromEnum(exported_idx) != @intFromEnum(local_idx))
                     self.ast.getNode(exported_idx)
                 else
                     local_node;
-                const exported_name = self.ast.source[exported_node.span.start..exported_node.span.end];
+                const exported_name = try stableModuleExportName(self, exported_node);
 
                 if (has_source) {
                     // export { a } from "module" → re-export
@@ -968,7 +969,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
     // Inline scan: export var/let/const/function/class
     if (self.enable_scan) {
         self.scan_result.has_esm_syntax = true;
-        collectDeclExportBindings(self, decl);
+        try collectDeclExportBindings(self, decl);
     }
 
     if (!is_export_equals) self.has_module_syntax = true;
@@ -1260,9 +1261,26 @@ fn extractImportSpecifier(self: *Parser, raw: []const u8) []const u8 {
     return import_specifier_unescape.extract(self.allocator, raw);
 }
 
+/// Parser scan metadata is consumed before the AST binding scanner runs, so
+/// these names must use the same identifier StringValue as semantic symbols.
+/// ModuleExportName string literals intentionally keep their source spelling.
+fn stableModuleExportName(self: *Parser, node: Node) ParseError2![]const u8 {
+    const raw = self.ast.getText(node.span);
+    return switch (node.tag) {
+        .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier => try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw),
+        else => raw,
+    };
+}
+
+/// Default and namespace import specifier nodes store the binding span
+/// directly, without a child identifier node.
+fn stableModuleImportBindingName(self: *Parser, span: Span) ParseError2![]const u8 {
+    return Scanner.decodeIdentifierEscapesAlloc(self.allocator, self.ast.source[span.start..span.end]);
+}
+
 /// import 선언에서 수집한 specifier들의 바인딩을 scan_import_bindings에 추가한다.
 /// scratch_top..scratch.items.len 범위의 specifier 노드를 순회한다.
-fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) void {
+fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseError2!void {
     for (self.scratch.items[scratch_top..]) |spec_idx| {
         if (spec_idx.isNone()) continue;
         if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
@@ -1271,7 +1289,7 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) void {
             .import_default_specifier => {
                 self.scan_import_bindings.append(self.allocator, .{
                     .kind = .default,
-                    .local_name = self.ast.source[spec_node.span.start..spec_node.span.end],
+                    .local_name = try stableModuleImportBindingName(self, spec_node.span),
                     .imported_name = "default",
                     .local_span = spec_node.span,
                     .import_record_index = rec_idx,
@@ -1280,7 +1298,7 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) void {
             .import_namespace_specifier => {
                 self.scan_import_bindings.append(self.allocator, .{
                     .kind = .namespace,
-                    .local_name = self.ast.source[spec_node.span.start..spec_node.span.end],
+                    .local_name = try stableModuleImportBindingName(self, spec_node.span),
                     .imported_name = "*",
                     .local_span = spec_node.span,
                     .import_record_index = rec_idx,
@@ -1294,13 +1312,13 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) void {
                 if (imported_idx.isNone()) continue;
 
                 const imported_node = self.ast.getNode(imported_idx);
-                const imported_name = self.ast.source[imported_node.span.start..imported_node.span.end];
+                const imported_name = try stableModuleExportName(self, imported_node);
 
                 const local_node = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
                     self.ast.getNode(local_idx)
                 else
                     imported_node;
-                const local_name = self.ast.source[local_node.span.start..local_node.span.end];
+                const local_name = try stableModuleExportName(self, local_node);
 
                 self.scan_import_bindings.append(self.allocator, .{
                     .kind = .named,
@@ -1328,7 +1346,7 @@ fn appendImportRecord(self: *Parser, specifier: []const u8, kind: scan_results_m
 
 /// export 선언 내부의 declaration 노드에서 export binding을 추출한다.
 /// variable_declaration, function_declaration, class_declaration을 처리한다.
-fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
+fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) ParseError2!void {
     if (decl_idx.isNone()) return;
     if (@intFromEnum(decl_idx) >= self.ast.nodes.items.len) return;
     const decl_node = self.ast.getNode(decl_idx);
@@ -1371,7 +1389,7 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
                         };
                     }
                 }
-                collectPatternExportBindings(self, name_idx, via_pattern, init_fn_class);
+                try collectPatternExportBindings(self, name_idx, via_pattern, init_fn_class);
             }
         },
         .function_declaration, .class_declaration => {
@@ -1380,7 +1398,7 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
             if (name_idx.isNone()) return;
             const name_node = self.ast.getNode(name_idx);
-            const name = self.ast.source[name_node.span.start..name_node.span.end];
+            const name = try stableModuleExportName(self, name_node);
             self.scan_export_bindings.append(self.allocator, .{
                 .exported_name = name,
                 .local_name = name,
@@ -1394,12 +1412,12 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) void {
 }
 
 /// declaration binding pattern의 BoundNames를 export binding으로 수집한다.
-fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex, via_pattern: bool, init_fn_class: bool) void {
+fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex, via_pattern: bool, init_fn_class: bool) ParseError2!void {
     var w = ast_walk.bindingIdentifiers(self.allocator, &self.ast, pattern_idx, .{}) catch return;
     defer w.deinit();
     while (w.next() catch null) |name_idx| {
         const name_node = self.ast.getNode(name_idx);
-        const name = self.ast.getText(name_node.span);
+        const name = try stableModuleExportName(self, name_node);
         self.scan_export_bindings.append(self.allocator, .{
             .exported_name = name,
             .local_name = name,
