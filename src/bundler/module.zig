@@ -227,6 +227,13 @@ pub const ModuleSemanticData = struct {
 /// 위반) 이 캐시 값을 그대로 사용. parse_arena 가 backing — symbol_ids slice 도 그 안.
 /// transformed root 는 `ast.transformed_root` 가 보유 — emitter 의 transformer.transform()
 /// 이 cache hit 분기로 그 root 를 그대로 반환하므로 별도 캐시 불필요.
+pub const WorkletFactoryLocalBinding = struct {
+    /// Exact generated function-name binding node. Reanalysis restores producer
+    /// metadata through this node's fresh SymbolId rather than by name lookup.
+    node_index: u32,
+    output_name_hint: []const u8,
+};
+
 pub const TransformCache = struct {
     /// transformer 가 set 한 RuntimeHelpers 비트맵.
     /// emitter 의 chunk-level helper preamble 결정에 사용.
@@ -246,6 +253,9 @@ pub const TransformCache = struct {
     /// Exact emitted binding nodes whose source SymbolId preserved a class
     /// constructor name. Post-transform analysis must restore that flag.
     preserved_class_name_nodes: []const u32 = &.{},
+    /// Exact Reanimated class-factory bindings whose linker naming metadata
+    /// must survive post-transform semantic reanalysis.
+    worklet_factory_local_bindings: []const WorkletFactoryLocalBinding = &.{},
     /// #3267 N-step4 follow-up: prepass minify 의 cascade ref decrement 결과
     /// (`MinifyCtx.ref_deltas` snapshot, length == sem.symbols.len). emitter 의 minify
     /// 가 fresh ctx 에 hydrate 하여 prepass 에서 fold 된 dead branch 안 ref 감산

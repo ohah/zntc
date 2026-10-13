@@ -239,6 +239,22 @@ fn checkWorkletClassFactoryExactCoverage(
     if (!report.hasCompleteExactCoverage()) coverage.printStrict(target_name, &report);
     try std.testing.expect(report.hasCompleteExactCoverage());
 
+    const class_factory_output_name = try std.fmt.allocPrint(allocator, "{s}__classFactory", .{class_name});
+    var class_factory_symbol_id: ?u32 = null;
+    for (edited.symbols.items, 0..) |symbol, raw_symbol_id| {
+        if (symbol.synthetic_kind != .worklet_factory_local or
+            !std.mem.eql(u8, symbol.output_name_hint, class_factory_output_name)) continue;
+        try std.testing.expect(class_factory_symbol_id == null);
+        class_factory_symbol_id = @intCast(raw_symbol_id);
+        try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, class_factory_output_name));
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, symbol.kind);
+        try std.testing.expectEqual(
+            @import("../semantic/scope.zig").ScopeKind.function,
+            edited.scopes[symbol.scope_id.toIndex()].kind,
+        );
+    }
+    try std.testing.expect(class_factory_symbol_id != null);
+
     // The source class keeps its original inner-name identity. The class
     // reconstructed by the worklet factory owns a different immutable name,
     // while the factory's mutable `var Clazz` remains in the parent function.
