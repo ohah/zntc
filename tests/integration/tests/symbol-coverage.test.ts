@@ -17695,10 +17695,45 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
       }
       expect(report).toMatch(/clean=1(?:\s|$)/);
       const graphMode = lines.find((line) => line.includes('symbol-identity-prepass-mode '));
-      expect(graphMode).toMatch(/semantic_graph=(?:retained|reanalyzed)/);
+      expect(graphMode).toContain('semantic_graph=retained');
       const actual = spawnSync('node', [output], { encoding: 'utf8' });
       expect(actual.status, actual.stderr).toBe(0);
       expect(actual.stdout).toBe('2\n');
+
+      // Syntax minification edits the AST, so the same source must take the
+      // explicit reanalysis path even though identifier-only minification can
+      // retain its unchanged graph.
+      const syntaxOutput = join(dir, 'out-syntax.cjs');
+      const syntaxProc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          entry,
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '--minify-syntax',
+          '-o',
+          syntaxOutput,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' }, encoding: 'utf8' },
+      );
+      expect(syntaxProc.status, syntaxProc.stderr).toBe(0);
+      const syntaxLines = (syntaxProc.stderr ?? '').replaceAll('\0', '\n').split(/\r?\n/);
+      const syntaxReport = syntaxLines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+      );
+      expect(syntaxReport, syntaxProc.stderr).toBeDefined();
+      expect(exactSchemaProblems(syntaxReport ?? ''), syntaxReport).toEqual([]);
+      const syntaxMode = syntaxLines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+      );
+      expect(syntaxMode, syntaxProc.stderr).toContain('semantic_graph=reanalyzed');
+      const syntaxActual = spawnSync('node', [syntaxOutput], { encoding: 'utf8' });
+      expect(syntaxActual.status, syntaxActual.stderr).toBe(0);
+      expect(syntaxActual.stdout).toBe('2\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

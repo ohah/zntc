@@ -4778,7 +4778,15 @@ fn canKeepPrepassSemanticGraph(
             else => {},
         }
     }
-    return found_transform;
+    // If the exhaustive preflight found no lowering or plugin edits, the
+    // parser's graph is already the exact graph for this module. Retaining it
+    // avoids an otherwise unnecessary semantic rescan for ordinary JavaScript
+    // (including identifier-only minification, which happens after this pass).
+    const unchanged_graph_is_safe = !options.unsupported.hasAny() and
+        !ast.has_jsx and !ast.has_decorator and
+        !options.react_refresh and !options.emotion and !options.styled_components and
+        !safe_builtin_worklet;
+    return found_transform or unchanged_graph_is_safe;
 }
 
 fn isBuiltinWorkletPluginSet(plugins: anytype) bool {
