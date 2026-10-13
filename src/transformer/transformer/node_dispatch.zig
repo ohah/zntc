@@ -683,7 +683,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             // `export default X;` 형태로 분리한다 (#1538). 익명/class_expression은 iife_call을 직접 반환해
             // 아래 visitNode 재방문이 arrow/let/static block을 ES5로 마저 다운레벨링한다.
             if (try self.tryTransformStage3(idx, target_node)) |stage3_result| {
-                if (self.options.unsupported.class) return self.visitNode(stage3_result);
+                if (self.options.unsupported.class or
+                    @import("stage3_decorator_transform.zig").stage3OutputNeedsClassLowering(self))
+                    return self.visitNode(stage3_result);
                 return stage3_result;
             }
             const pre_legacy_hoist_idx = target_node_idx;
@@ -712,7 +714,9 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             var target_node_idx = replacement_idx orelse idx;
             var target_node = self.ast.getNode(target_node_idx);
             if (try self.tryTransformStage3(idx, target_node)) |stage3_result| {
-                if (self.options.unsupported.class) return self.visitNode(stage3_result);
+                if (self.options.unsupported.class or
+                    @import("stage3_decorator_transform.zig").stage3OutputNeedsClassLowering(self))
+                    return self.visitNode(stage3_result);
                 return stage3_result;
             }
             const pre_legacy_hoist_idx = target_node_idx;

@@ -1369,7 +1369,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // `export default Named;` / `export { Named };`로 분리되는 pattern을 유지한다.
     // ES5 target은 outer_var_decl 내부의 arrow/let/class/static block을 추가 다운레벨링하기
     // 위해 pending에 push하기 전에 visitNode로 재방문한다.
-    const to_hoist = if (self.options.unsupported.class)
+    const to_hoist = if (self.options.unsupported.class or stage3OutputNeedsClassLowering(self))
         try self.visitNode(outer_var_decl)
     else
         outer_var_decl;
@@ -1452,4 +1452,12 @@ fn decoratedKeyRead(self: *Transformer, temp: Span) Transformer.Error!NodeIndex 
     const read = try es_helpers.makeSyntheticRefFromSpan(self, temp);
     try self.trackSyntheticTempReference(temp, temp, read, .{ .read = true });
     return self.ast.addNode(.{ .tag = .computed_property_key, .span = temp, .data = .{ .unary = .{ .operand = read, .flags = 0 } } });
+}
+
+/// The decorated class comes out with private storage (`#x`, accessors),
+/// class fields and a static block; a target that lacks one of them lowers
+/// the output again (#5669), as an ES5 target does for the whole class.
+pub fn stage3OutputNeedsClassLowering(self: *Transformer) bool {
+    const u = self.options.unsupported;
+    return u.requiresPrivateDownlevel() or u.class_field or u.class_static_block;
 }
