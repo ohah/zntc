@@ -600,6 +600,8 @@ pub fn emitEsmWrappedModule(
         const StarEntry = struct { name: []const u8, getter_value: []const u8 };
         var star_entries: std.ArrayList(StarEntry) = .empty;
         defer star_entries.deinit(allocator);
+        var local_entries: std.ArrayList(StarEntry) = .empty;
+        defer local_entries.deinit(allocator);
         var star_owned: std.ArrayList([]const u8) = .empty;
         defer {
             for (star_owned.items) |s| allocator.free(s);
@@ -691,108 +693,119 @@ pub fn emitEsmWrappedModule(
                     // 그 binding 은 emit 안 되어 mangle 가드도 함께 long source name 으로
                     // 남게 되어 size 회귀.
                     if (eb.kind == .local and !module.isLocalBindingAlive(module.exportBindingLocalName(eb))) continue;
-                    try appendExportGetter(&wrapped, allocator, eb.exported_name, blk: {
-                        // Symbol table이 단축 경로의 source of truth.
-                        // binding_scanner가 `_default = <expr>`가 실제로 emit되는 default만
-                        // synthetic_default로 표시하고, 나머지 re-export는 re_export_alias로
-                        // 표현 → linker가 canonical_name을 채운다. barrel `export { X }`같은
-                        // kind 오분류에도 영향받지 않음 (#1321 방어).
-                        if (isSyntheticDefault(eb.symbol, module)) {
-                            break :blk defaultExportName(metadata);
-                        }
-                        // direct re-export는 현재 모듈에 로컬 변수가 선언되지 않으므로
-                        // source module의 getter/value를 직접 참조해야 한다 (#1425).
-                        // barrel alias(`import X from './y'; export { X }`)는 binding_scanner가
-                        // .re_export + local_name=ib.imported_name으로 정규화하므로(#1321),
-                        // 매칭되는 import binding이 있으면 기존 경로로 폴백.
-                        if (isReExportLike(eb)) re_export: {
-                            const l = linker orelse break :re_export;
-                            const rec_idx = eb.import_record_index orelse break :re_export;
-                            if (rec_idx >= module.import_records.len) break :re_export;
-                            const src_idx = module.import_records[rec_idx].resolved;
-                            if (src_idx.isNone()) break :re_export;
-                            // self-cycle 폴백: graph가 진단으로 거부했지만 codegen이 호출되어도
-                            // 자기 참조 getter를 만들지 않도록.
-                            if (src_idx == module.index) break :re_export;
-                            const si = @intFromEnum(src_idx);
-                            const src_mod = l.graph.getModule(src_idx) orelse break :re_export;
-
-                            const local_name = module.exportBindingLocalName(eb);
-                            const exported_local_name = if (module.ast) |*module_ast|
-                                module_ast.getText(eb.local_span)
-                            else
-                                local_name;
-                            for (module.import_bindings) |ib| {
-                                if (ib.import_record_index != rec_idx) continue;
-                                if (std.mem.eql(u8, ib.imported_name, local_name) or
-                                    std.mem.eql(u8, ib.local_name, exported_local_name) or
-                                    (std.mem.eql(u8, local_name, "default") and
-                                        std.mem.eql(u8, ib.local_name, eb.exported_name)))
-                                {
-                                    // `import Path from './Path'; export { Path };`
-                                    // 형태의 alias barrel 은 RN ESM wrap 에서 현재 모듈에
-                                    // 실제 local storage 를 남기지 않는다. Non-CJS source 는
-                                    // source module getter/local 에서 직접 읽어야 한다. CJS
-                                    // default interop 은 현재 모듈 local binding 을 만들기 때문에
-                                    // 기존 경로를 유지해야 한다.
-                                    if (src_mod.wrap_kind != .cjs) {
-                                        const getter_val = (try makeStarGetterValue(allocator, l, src_mod, si, ib.imported_name, options)) orelse continue;
-                                        try star_owned.append(allocator, getter_val);
-                                        break :blk getter_val;
-                                    }
-                                    break :blk l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
-                                }
+                    try local_entries.append(allocator, .{
+                        .name = eb.exported_name,
+                        .getter_value = blk: {
+                            // Symbol table이 단축 경로의 source of truth.
+                            // binding_scanner가 `_default = <expr>`가 실제로 emit되는 default만
+                            // synthetic_default로 표시하고, 나머지 re-export는 re_export_alias로
+                            // 표현 → linker가 canonical_name을 채운다. barrel `export { X }`같은
+                            // kind 오분류에도 영향받지 않음 (#1321 방어).
+                            if (isSyntheticDefault(eb.symbol, module)) {
+                                break :blk defaultExportName(metadata);
                             }
+                            // direct re-export는 현재 모듈에 로컬 변수가 선언되지 않으므로
+                            // source module의 getter/value를 직접 참조해야 한다 (#1425).
+                            // barrel alias(`import X from './y'; export { X }`)는 binding_scanner가
+                            // .re_export + local_name=ib.imported_name으로 정규화하므로(#1321),
+                            // 매칭되는 import binding이 있으면 기존 경로로 폴백.
+                            if (isReExportLike(eb)) re_export: {
+                                const l = linker orelse break :re_export;
+                                const rec_idx = eb.import_record_index orelse break :re_export;
+                                if (rec_idx >= module.import_records.len) break :re_export;
+                                const src_idx = module.import_records[rec_idx].resolved;
+                                if (src_idx.isNone()) break :re_export;
+                                // self-cycle 폴백: graph가 진단으로 거부했지만 codegen이 호출되어도
+                                // 자기 참조 getter를 만들지 않도록.
+                                if (src_idx == module.index) break :re_export;
+                                const si = @intFromEnum(src_idx);
+                                const src_mod = l.graph.getModule(src_idx) orelse break :re_export;
 
-                            const getter_val = (try makeStarGetterValue(allocator, l, src_mod, si, local_name, options)) orelse continue;
-                            try star_owned.append(allocator, getter_val);
-                            break :blk getter_val;
-                        }
-                        // Some default-import alias barrels can remain `.local`
-                        // because the export points at the importer-side semantic
-                        // symbol. In RN ESM wrap the import declaration is still
-                        // removed, so its getter must not return the importer-side
-                        // renamed symbol either.
-                        if (eb.kind == .local) imported_local: {
-                            const l = linker orelse break :imported_local;
-                            const exported_local_name = if (module.ast) |*module_ast|
-                                module_ast.getText(eb.local_span)
-                            else
-                                module.exportBindingLocalName(eb);
-                            for (module.import_bindings) |ib| {
-                                if (!std.mem.eql(u8, ib.local_name, exported_local_name) and
-                                    !std.mem.eql(u8, ib.local_name, eb.exported_name))
-                                    continue;
-                                if (ib.kind == .namespace) break :imported_local;
-                                if (ib.import_record_index >= module.import_records.len) break :imported_local;
-                                const src_idx = module.import_records[ib.import_record_index].resolved;
-                                if (src_idx.isNone() or src_idx == module.index) break :imported_local;
-                                const src_i = @intFromEnum(src_idx);
-                                const src_mod = l.graph.getModule(src_idx) orelse break :imported_local;
-                                if (src_mod.wrap_kind == .cjs) break :imported_local;
-                                const getter_val = (try makeStarGetterValue(allocator, l, src_mod, src_i, ib.imported_name, options)) orelse continue;
+                                const local_name = module.exportBindingLocalName(eb);
+                                const exported_local_name = if (module.ast) |*module_ast|
+                                    module_ast.getText(eb.local_span)
+                                else
+                                    local_name;
+                                for (module.import_bindings) |ib| {
+                                    if (ib.import_record_index != rec_idx) continue;
+                                    if (std.mem.eql(u8, ib.imported_name, local_name) or
+                                        std.mem.eql(u8, ib.local_name, exported_local_name) or
+                                        (std.mem.eql(u8, local_name, "default") and
+                                            std.mem.eql(u8, ib.local_name, eb.exported_name)))
+                                    {
+                                        // `import Path from './Path'; export { Path };`
+                                        // 형태의 alias barrel 은 RN ESM wrap 에서 현재 모듈에
+                                        // 실제 local storage 를 남기지 않는다. Non-CJS source 는
+                                        // source module getter/local 에서 직접 읽어야 한다. CJS
+                                        // default interop 은 현재 모듈 local binding 을 만들기 때문에
+                                        // 기존 경로를 유지해야 한다.
+                                        if (src_mod.wrap_kind != .cjs) {
+                                            const getter_val = (try makeStarGetterValue(allocator, l, src_mod, si, ib.imported_name, options)) orelse continue;
+                                            try star_owned.append(allocator, getter_val);
+                                            break :blk getter_val;
+                                        }
+                                        break :blk l.getCanonicalByRef(ib.local_symbol) orelse module.importBindingLocalName(ib);
+                                    }
+                                }
+
+                                const getter_val = (try makeStarGetterValue(allocator, l, src_mod, si, local_name, options)) orelse continue;
                                 try star_owned.append(allocator, getter_val);
                                 break :blk getter_val;
                             }
-                        }
-                        if (reExportAliasCanonicalName(eb.symbol, module)) |canon| {
-                            break :blk canon;
-                        }
-                        const local_name = module.exportBindingLocalName(eb);
-                        // live binding override: import binding이 canonical name으로 변경된 경우
-                        if (metadata) |md| {
-                            if (md.export_getter_overrides.get(local_name)) |override|
-                                break :blk override;
-                        }
-                        if (linker) |l| {
-                            const mi: u32 = module.index.toU32();
-                            break :blk l.getCanonicalForExport(eb, mi);
-                        }
-                        break :blk local_name;
-                    }, options);
+                            // Some default-import alias barrels can remain `.local`
+                            // because the export points at the importer-side semantic
+                            // symbol. In RN ESM wrap the import declaration is still
+                            // removed, so its getter must not return the importer-side
+                            // renamed symbol either.
+                            if (eb.kind == .local) imported_local: {
+                                const l = linker orelse break :imported_local;
+                                const exported_local_name = if (module.ast) |*module_ast|
+                                    module_ast.getText(eb.local_span)
+                                else
+                                    module.exportBindingLocalName(eb);
+                                for (module.import_bindings) |ib| {
+                                    if (!std.mem.eql(u8, ib.local_name, exported_local_name) and
+                                        !std.mem.eql(u8, ib.local_name, eb.exported_name))
+                                        continue;
+                                    if (ib.kind == .namespace) break :imported_local;
+                                    if (ib.import_record_index >= module.import_records.len) break :imported_local;
+                                    const src_idx = module.import_records[ib.import_record_index].resolved;
+                                    if (src_idx.isNone() or src_idx == module.index) break :imported_local;
+                                    const src_i = @intFromEnum(src_idx);
+                                    const src_mod = l.graph.getModule(src_idx) orelse break :imported_local;
+                                    if (src_mod.wrap_kind == .cjs) break :imported_local;
+                                    const getter_val = (try makeStarGetterValue(allocator, l, src_mod, src_i, ib.imported_name, options)) orelse continue;
+                                    try star_owned.append(allocator, getter_val);
+                                    break :blk getter_val;
+                                }
+                            }
+                            if (reExportAliasCanonicalName(eb.symbol, module)) |canon| {
+                                break :blk canon;
+                            }
+                            const local_name = module.exportBindingLocalName(eb);
+                            // live binding override: import binding이 canonical name으로 변경된 경우
+                            if (metadata) |md| {
+                                if (md.export_getter_overrides.get(local_name)) |override|
+                                    break :blk override;
+                            }
+                            if (linker) |l| {
+                                const mi: u32 = module.index.toU32();
+                                break :blk l.getCanonicalForExport(eb, mi);
+                            }
+                            break :blk local_name;
+                        },
+                    });
                 }
             }
-            for (star_entries.items) |entry| {
+            // Module namespace keys are sorted by code unit (ModuleNamespaceCreate);
+            // `Object.keys(ns)` follows this definition order (#5633).
+            try local_entries.appendSlice(allocator, star_entries.items);
+            std.mem.sort(StarEntry, local_entries.items, {}, struct {
+                fn lessThan(_: void, a: StarEntry, b: StarEntry) bool {
+                    return std.mem.lessThan(u8, a.name, b.name);
+                }
+            }.lessThan);
+            for (local_entries.items) |entry| {
                 try appendExportGetter(&wrapped, allocator, entry.name, entry.getter_value, options);
             }
 

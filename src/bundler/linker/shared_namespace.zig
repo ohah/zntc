@@ -136,6 +136,13 @@ pub fn registerNamespaceRewrites(
         var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer visited.deinit(self.allocator);
         try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+        // Module namespace keys are sorted by code unit (ModuleNamespaceCreate);
+        // the getter object's key order is what `Object.keys(ns)` returns (#5633).
+        std.mem.sort(NsExportPair, exports.items, {}, struct {
+            fn lessThan(_: void, a: NsExportPair, b: NsExportPair) bool {
+                return std.mem.lessThan(u8, a.exported, b.exported);
+            }
+        }.lessThan);
 
         mutable_self.ns_cache_mutex.lock();
         defer mutable_self.ns_cache_mutex.unlock();
@@ -971,6 +978,13 @@ pub fn buildInlineObjectStr(
     var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer visited.deinit(self.allocator);
     try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+    // Module namespace keys are sorted by code unit (ModuleNamespaceCreate);
+    // the getter object's key order is what `Object.keys(ns)` returns (#5633).
+    std.mem.sort(NsExportPair, exports.items, {}, struct {
+        fn lessThan(_: void, a: NsExportPair, b: NsExportPair) bool {
+            return std.mem.lessThan(u8, a.exported, b.exported);
+        }
+    }.lessThan);
 
     // export * as ns 패턴 수집 (별도 처리 — 재귀 인라인 필요)
     const target = target_any;

@@ -940,8 +940,9 @@ test "Default: shared namespace preamble has no runtime helper overhead (#1940)"
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.startsWith(u8, result.output, "var lib_ns = {get foo()"));
-    try std.testing.expect(std.mem.count(u8, result.output, "var lib_ns = {get foo()") == 1);
+    // Namespace keys are sorted (#5633): `bar` comes before `foo`.
+    try std.testing.expect(std.mem.startsWith(u8, result.output, "var lib_ns = {get bar()"));
+    try std.testing.expect(std.mem.count(u8, result.output, "var lib_ns = {get bar()") == 1);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "console.log(foo)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__export") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "__defProp") == null);

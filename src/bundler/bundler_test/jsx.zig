@@ -1154,7 +1154,9 @@ test "JSX: preserve — 실체화된 namespace 변수는 컴포넌트로 해석�
     try std.testing.expect(!result.hasErrors());
     // 전제 검증 — JSX 가 원형으로 남았고 namespace 가 실체화됐는지 먼저 확인한다.
     // 이게 없으면 (실체화가 아예 안 되는 회귀에서도) 아래 단언이 공허하게 통과한다.
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "_ns = {get Root()") != null);
+    // Namespace keys are sorted (#5633): `Other` comes before `Root`.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_ns = {get Other()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "get Root()") != null);
 
     // 소문자로 시작하는 태그가 남아 있으면 안 된다.
     try std.testing.expect(std.mem.indexOf(u8, result.output, "<ns_ns>") == null);
