@@ -3458,9 +3458,9 @@ fn isRetainableAsyncFunctionNode(
 }
 
 /// Async arrows keep their source arrow scope while the lowered generator is
-/// nested inside it. `arguments` references are safe once the transformer has
-/// represented them with exact capture bindings; lexical `this`, `super`, and
-/// `new.target` remain outside this retained-graph subset.
+/// nested inside it. Lexical `this` and `arguments` references are safe once
+/// the transformer has represented them with exact capture bindings;
+/// `super` and `new.target` remain outside this retained-graph subset.
 fn isRetainableAsyncArrowNode(
     ast: *const ast_mod.Ast,
     arrow_idx: ast_mod.NodeIndex,
@@ -3480,7 +3480,7 @@ fn isRetainableAsyncArrowNode(
         if (raw_idx >= ast.nodes.items.len) return false;
         const child = ast.nodes.items[raw_idx];
         switch (child.tag) {
-            .this_expression, .super_expression => return false,
+            .super_expression => return false,
             .meta_property => if (child.data.none == 1) return false,
             else => {},
         }

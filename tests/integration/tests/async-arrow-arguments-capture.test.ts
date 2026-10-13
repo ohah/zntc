@@ -104,19 +104,22 @@ const cases = [
     expectsRetainedGraph: false,
   },
   {
-    name: 'keeps lexical this captures on the conservative graph path',
+    name: 'retains lexical this capture identity through _this name collisions',
     source: `
-      function read() {
+      function read(_this) {
+        const outer = _this;
         return (async () => {
+          const _this = 99;
           await Promise.resolve();
-          return this.value;
+          return [this.value, _this, outer].join(':');
         })();
       }
-      read.call({ value: 42 }).then(console.log);
+      read.call({ value: 42 }, 7).then(console.log);
     `,
-    expected: '42\n',
+    expected: '42:99:7\n',
     expectsSyntheticBinding: false,
-    expectsRetainedGraph: false,
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
     name: 'keeps direct eval on the conservative graph path',
@@ -200,6 +203,8 @@ describe('async arrow arguments capture (#4819)', () => {
             .find((line) => line.startsWith(auditPrefix) && line.includes(inputFile));
           expect(report, result.stderr).toBeDefined();
           if (scenario.expectsSyntheticBinding)
+            expect(report).toMatch(/generated_bindings=[1-9]\d*/);
+          if (bundle && scenario.expectsBundleSyntheticBinding)
             expect(report).toMatch(/generated_bindings=[1-9]\d*/);
           expect(report).toMatch(/generated_references=[1-9]\d*/);
           if (scenario.expectsCleanIdentity !== false) {
