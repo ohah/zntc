@@ -354,7 +354,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 const assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = field.span,
-                    .data = .{ .binary = .{ .left = temp_ref, .right = actual_key, .flags = 0 } },
+                    .data = .{ .binary = .{ .left = temp_ref, .right = try es_helpers.makeToPropertyKey(self, actual_key, field.span), .flags = 0 } },
                 });
                 if (as_expression) {
                     try key_assigns.append(self.allocator, assign);
@@ -836,7 +836,12 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
             continue;
         }
         const key_node = self.ast.getNode(key_idx);
-        const value = try self.visitNode(key_node.data.unary.operand);
+        const visited_key = try self.visitNode(key_node.data.unary.operand);
+        // Field keys move into the constructor or after the class (#5553).
+        const value = if (member.tag == .property_definition)
+            try es_helpers.makeToPropertyKey(self, visited_key, key_node.span)
+        else
+            visited_key;
         const temp_span = try es_helpers.makeTempVarSpan(self);
         const write_ref = try es_helpers.makeSyntheticRefFromSpan(self, temp_span);
         if (self.semantic_edit_enabled) try self.trackSyntheticTempReference(temp_span, key_node.span, write_ref, .{ .write = true });

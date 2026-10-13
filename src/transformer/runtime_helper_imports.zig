@@ -68,6 +68,7 @@ const HelperBit = enum {
     wrap_regex,
     yield_star,
     public_field,
+    to_property_key,
 };
 
 const BitDef = struct {
@@ -116,6 +117,7 @@ const BIT_DEFS = [_]BitDef{
     .{ .bit = .async_generator, .bases = &.{"__asyncGenerator"} },
     .{ .bit = .yield_star, .bases = &.{"__yieldStar"} },
     .{ .bit = .public_field, .bases = &.{"__publicField"} },
+    .{ .bit = .to_property_key, .bases = &.{"__toPropertyKey"} },
     .{ .bit = .await_helper, .bases = &.{"__await"} },
     .{ .bit = .tdz, .bases = &.{"__tdz"} },
     .{ .bit = .read, .bases = &.{"__read"} },
