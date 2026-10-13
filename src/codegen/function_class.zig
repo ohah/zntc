@@ -121,6 +121,9 @@ pub fn emitFunction(self: anytype, node: Node) !void {
         self.indent_level == 0;
     const suppress_name = self.suppress_next_function_name;
     self.suppress_next_function_name = false;
+    // An anonymous `export default function` emitted as a declaration (#5670).
+    const default_name = if (name.isNone() and node.tag == .function_declaration) self.default_function_name else null;
+    self.default_function_name = null;
 
     // The assignment runs in place, so name the value it assigns.
     const assigned_original = if (convert_fn_to_assign) keep_names.renamedOriginal(self, name) else null;
@@ -139,6 +142,9 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     if (!name.isNone() and !convert_fn_to_assign and !suppress_name) {
         try self.writeByte(' ');
         try self.emitNode(name);
+    } else if (default_name) |text| {
+        try self.writeByte(' ');
+        try self.write(text);
     }
     try self.writeByte('(');
     try self.emitNodeList(params_start, params_len, ",");

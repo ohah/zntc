@@ -104,6 +104,9 @@ pub const Codegen = struct {
     /// 다음 emitFunction 이 함수 이름을 생략한다. 블록 함수 선언을
     /// `let f = function(){}` 로 낮출 때만 켠다 (#5454).
     suppress_next_function_name: bool = false,
+    /// Name for the next anonymous function declaration: a default export
+    /// emitted as `function _default() {}` in a bundle (#5670).
+    default_function_name: ?[]const u8 = null,
     /// 다음 braced block 이 함수 본문이다. 본문 최상위 함수 선언은 var 처럼 함수 스코프에
     /// 묶이므로 블록 함수 낮추기(#5454) 대상이 아니다. emitBracedList 진입 시 소비한다.
     next_block_is_function_body: bool = false,
