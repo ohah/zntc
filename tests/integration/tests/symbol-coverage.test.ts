@@ -288,6 +288,29 @@ function exactSchemaProblems(identity: string): string[] {
   return problems;
 }
 
+function exactIdentityObservationProblems(identity: string): string[] {
+  const observationFields = [
+    'generated_bindings',
+    'generated_references',
+    'external',
+    'declaration_anchors_checked',
+    'namespace_iife_params',
+    'enum_iife_params',
+  ] as const;
+  let hasObservation = false;
+  for (const field of observationFields) {
+    const value = identity.match(new RegExp(`(?:^| )${field}=(\\d+)(?: |$)`))?.[1];
+    if (value === undefined) return [`missing exact identity observation ${field}`];
+    const count = Number(value);
+    if (!Number.isSafeInteger(count))
+      return [`malformed exact identity observation ${field}=${value}`];
+    if (count > 0) hasObservation = true;
+  }
+  return hasObservation
+    ? []
+    : ['exact identity audit checked no binding or reference observations'];
+}
+
 function postMinifySchemaProblems(report: string): string[] {
   const isReportLine = report.startsWith('zntc: symbol-identity-post-minify ');
   const payloadMarker = ': bindings=';
@@ -1213,6 +1236,23 @@ describe('symbol identity coverage gate (#4819)', () => {
     expect(exactSchemaProblems(complete.replace(' namespace_iife_params=4', ''))).toContain(
       'namespace_iife_params occurrences=0, expected 1',
     );
+    const emptyIdentityObservations = complete
+      .replace('generated_bindings=1', 'generated_bindings=0')
+      .replace('generated_references=2', 'generated_references=0')
+      .replace('external=3', 'external=0')
+      .replace('declaration_anchors_checked=4', 'declaration_anchors_checked=0')
+      .replace('namespace_iife_params=4', 'namespace_iife_params=0')
+      .replace('enum_iife_params=5', 'enum_iife_params=0');
+    expect(exactIdentityObservationProblems(complete)).toEqual([]);
+    expect(exactIdentityObservationProblems(emptyIdentityObservations)).toContain(
+      'exact identity audit checked no binding or reference observations',
+    );
+    const oversizedObservation = '9'.repeat(400);
+    expect(
+      exactIdentityObservationProblems(
+        complete.replace('external=3', `external=${oversizedObservation}`),
+      ),
+    ).toContain(`malformed exact identity observation external=${oversizedObservation}`);
     expect(
       exactSchemaProblems(
         complete.replace(' generated_bindings=1', ' generated_bindings=1 generated_bindings=0'),
@@ -13422,6 +13462,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
           for (const schemaProblem of exactSchemaProblems(identity)) {
             problems.push(
               `${name} ${target.name}: exact report schema ${schemaProblem}: ${identity}`,
+            );
+          }
+          for (const observationProblem of exactIdentityObservationProblems(identity)) {
+            problems.push(
+              `${name} ${target.name}: exact report ${observationProblem}: ${identity}`,
             );
           }
           const generatedBindingsMatch = identity.match(/generated_bindings=(\d+)/);
