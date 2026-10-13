@@ -3450,6 +3450,45 @@ test "#4819 bundler runtime helper import consumes its callsite SymbolId" {
     try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[raw_helper_id].reference_count);
 }
 
+test "#4819 private field runtime import keeps its producer-selected alias under a user collision" {
+    const source = "const __zntcClassPrivateFieldSet = 'user'; class Fields { #value = 0; write(next) { return this.#value = next; } }";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const user_id = analyzer.scope_maps.items[0].get("__zntcClassPrivateFieldSet") orelse return error.MissingUserCollisionBinding;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const helper_id = transformer.runtime_helper_symbol_ids.get("__classPrivateFieldSet") orelse return error.MissingCallsiteRuntimeHelperSymbolId;
+    const helper_raw: u32 = @intFromEnum(helper_id);
+    try std.testing.expect(helper_raw != user_id);
+    try std.testing.expectEqual(@as(?usize, helper_raw), edited.helper_scope_map.get("__zntcClassPrivateFieldSet"));
+    const import_node_raw = transformer.runtime_helper_import_bindings.get(helper_raw) orelse return error.MissingRuntimeHelperImportBinding;
+    const import_node = transformer.ast.getNode(@enumFromInt(import_node_raw));
+    try std.testing.expectEqualStrings("__zntcClassPrivateFieldSet", transformer.ast.getText(import_node.data.string_ref));
+    try std.testing.expectEqual(@as(?u32, helper_raw), transformer.getSymbolIdAt(@enumFromInt(import_node_raw)));
+}
+
 test "#4819 JSX runtime imports bind exact helper symbols before resync" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
