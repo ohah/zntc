@@ -6036,8 +6036,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
       expect(nativeOutput.stdout).toBe('42\n');
 
-      // Downlevel async transforms replace the source function body and must
-      // remain on the established semantic reanalysis path.
+      // Ordinary async function lowering now keeps its edited generator scope
+      // and helper identity without replacing the source semantic graph.
       const downlevel = run('--target=es2015');
       expect(downlevel.status, downlevel.stderr).toBe(0);
       const downlevelMode = (downlevel.stderr ?? '')
@@ -6046,7 +6046,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=reanalyzed');
+      expect(downlevelMode, downlevel.stderr).toContain('semantic_graph=retained');
+      const downlevelReport = (downlevel.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(downlevelReport, downlevel.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(downlevelReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${downlevelReport}`,
+        ).toBe(0);
+      }
+      expect(downlevelReport).toMatch(/clean=1(?:\s|$)/);
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('42\n');
@@ -6267,6 +6280,163 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const asyncOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(asyncOutput.status, asyncOutput.stderr).toBe(0);
       expect(asyncOutput.stdout).toBe('42 false\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES2015 async function lowering retains its exact graph for plain and minified bundles', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2015-async-retained-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'type Count = number;',
+        'async function calculate(value: Count) {',
+        '  const _this = 5, _arguments = 6;',
+        '  const captured = () => this.base + arguments[0] + _this + _arguments;',
+        '  await Promise.resolve(value);',
+        '  return captured() + value;',
+        '}',
+        'const expression = async function (value: Count) { await Promise.resolve(value); return value + 2; };',
+        'Promise.all([calculate.call({ base: 1 }, 40), expression(40)]).then(([captured, result]) => console.log(captured + ":" + result));',
+      ].join('\n'),
+    );
+
+    const run = (minifyIdentifiers: boolean) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es2015',
+          '--platform=node',
+          '--format=cjs',
+          ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+
+    try {
+      for (const minifyIdentifiers of [false, true]) {
+        const proc = run(minifyIdentifiers);
+        expect(proc.status, proc.stderr).toBe(0);
+        const mode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(mode, proc.stderr).toContain('semantic_graph=retained');
+        const report = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, proc.stderr).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        const execution = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(execution.status, execution.stderr).toBe(0);
+        expect(execution.stdout).toBe('92:42\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES2015 async arrows, methods, and direct eval stay on semantic reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2015-async-fallback-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    writeFileSync(
+      input,
+      [
+        'const task = { async run(value: number) { await Promise.resolve(value); return value + 1; } };',
+        'task.run(41).then(result => console.log(result));',
+      ].join('\n'),
+    );
+
+    const run = (target = '--target=es2015') =>
+      spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, target, '--platform=node', '--format=cjs', '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    const expectReanalyzedAndRuns = (proc: ReturnType<typeof run>, expectedOutput: string) => {
+      expect(proc.status, proc.stderr).toBe(0);
+      const mode = (proc.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, proc.stderr).toContain('semantic_graph=reanalyzed');
+      const execution = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execution.status, execution.stderr).toBe(0);
+      expect(execution.stdout).toBe(expectedOutput);
+    };
+
+    try {
+      expectReanalyzedAndRuns(run(), '42\n');
+
+      writeFileSync(
+        input,
+        [
+          'async function read(value: number) { await Promise.resolve(value); return value + 1; }',
+          'read(41).then(result => console.log(result));',
+        ].join('\n'),
+      );
+      expectReanalyzedAndRuns(run('--target=es5'), '42\n');
+
+      writeFileSync(
+        input,
+        [
+          'async function drain(values: number[]) {',
+          '  for await (const value of values) console.log(value);',
+          '}',
+          'drain([42]);',
+        ].join('\n'),
+      );
+      expectReanalyzedAndRuns(run(), '42\n');
+
+      writeFileSync(
+        input,
+        [
+          'const read = async (value: number) => { await Promise.resolve(value); return value + 1; };',
+          'read(41).then(result => console.log(result));',
+        ].join('\n'),
+      );
+      expectReanalyzedAndRuns(run(), '42\n');
+
+      writeFileSync(
+        input,
+        [
+          'async function read(value: number) {',
+          "  eval('console.log(value + 1)');",
+          '  await Promise.resolve(value);',
+          '}',
+          'read(41);',
+        ].join('\n'),
+      );
+      expectReanalyzedAndRuns(run(), '42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
