@@ -258,6 +258,8 @@ pub fn ES2015Params(comptime Transformer: type) type {
             }.call;
 
             var object_rest_seen = false;
+            // Unlinked parameters (#5668) from the first default on read `arguments`.
+            var unlinked_after_default = false;
             var i_loop: u32 = 0;
             while (i_loop < params.len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[params.start + i_loop];
@@ -276,10 +278,65 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     }
                     // rest parameter: ...args → var args = [].slice.call(arguments, N)
                     const rest_binding = try maybeVisit(self, param.data.unary.operand);
+                    const rest_tag = self.ast.getNode(rest_binding).tag;
+                    if (rest_tag == .object_pattern or rest_tag == .array_pattern) {
+                        // `...[c, d = c]`: the slice goes to a temp and the pattern
+                        // reads it, like a destructured parameter. A pattern left on
+                        // the `var` stayed ES2015 syntax (#5668).
+                        try buildRestPatternParam(self, rest_binding, param_index, &body_stmts, span);
+                        continue;
+                    }
                     const rest_stmt = try buildRestSlice(self, rest_binding, param_index, span);
                     try body_stmts.append(self.allocator, rest_stmt);
                     // rest를 params에 넣지 않음
                     continue;
+                }
+
+                if (self.unlinked_parameter_bindings) |unlinked| {
+                    if (unlinkableParameter(self, param, @enumFromInt(raw_idx))) |parts| {
+                        // Before the first default: formal `_x`, body `var x = _x`.
+                        // From it on (outside `length`, like native): body
+                        // `var a = arguments[i] === void 0 ? d : arguments[i]`.
+                        const binding = try maybeVisit(self, parts.binding);
+                        const default_value = if (parts.default.isNone()) NodeIndex.none else blk: {
+                            const visited_default = try maybeVisit(self, parts.default);
+                            try es_helpers.rewriteTDZReferences(self, visited_default, param_tdz_names.items[name_starts[i_loop]..]);
+                            break :blk visited_default;
+                        };
+                        if (!default_value.isNone()) unlinked_after_default = true;
+                        var temp_span: Span = undefined;
+                        if (!unlinked_after_default) {
+                            temp_span = try es_helpers.makeTempVarSpan(self);
+                            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+                            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .parameter);
+                            es_helpers.consumeTempVarSpan(self, temp_span);
+                            try self.scratch.append(self.allocator, temp_binding);
+                        }
+                        const read = struct {
+                            fn call(t: *Transformer, from_arguments: bool, temp: Span, index: usize, at: Span) Transformer.Error!NodeIndex {
+                                if (!from_arguments) return es_helpers.makeTrackedTempRef(t, temp, at, .{ .read = true });
+                                return es_helpers.makeComputedMember(t, try es_helpers.makeGlobalRef(t, "arguments"), try es_helpers.makeNumericLiteral(t, @intCast(index)), at);
+                            }
+                        }.call;
+                        const value = if (default_value.isNone())
+                            try read(self, unlinked_after_default, temp_span, param_index, span)
+                        else blk: {
+                            const is_undefined = try self.ast.addNode(.{
+                                .tag = .binary_expression,
+                                .span = span,
+                                .data = .{ .binary = .{ .left = try read(self, true, temp_span, param_index, span), .right = try es_helpers.makeVoidZero(self, span), .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                            });
+                            break :blk try self.ast.addNode(.{
+                                .tag = .conditional_expression,
+                                .span = span,
+                                .data = .{ .ternary = .{ .a = is_undefined, .b = default_value, .c = try read(self, true, temp_span, param_index, span) } },
+                            });
+                        };
+                        try body_stmts.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, span)}, .@"var", span));
+                        try unlinked.append(self.allocator, binding);
+                        param_index += 1;
+                        continue;
+                    }
                 }
 
                 // ES2016/2017 keep native default/destructuring parameters. Only
@@ -582,6 +639,61 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
             });
+        }
+
+        const UnlinkableParameter = struct { binding: NodeIndex, default: NodeIndex };
+
+        /// An identifier parameter, with or without a default.
+        fn unlinkableParameter(self: *Transformer, param: Node, raw: NodeIndex) ?UnlinkableParameter {
+            switch (param.tag) {
+                .binding_identifier => return .{ .binding = raw, .default = .none },
+                .formal_parameter => {
+                    const pe = param.data.extra;
+                    const pattern = self.readNodeIdx(pe, ast_mod.FormalParameterExtra.pattern);
+                    if (pattern.isNone() or self.ast.getNode(pattern).tag != .binding_identifier) return null;
+                    return .{ .binding = pattern, .default = self.readNodeIdx(pe, ast_mod.FormalParameterExtra.default) };
+                },
+                .assignment_pattern => {
+                    const left = param.data.binary.left;
+                    if (left.isNone() or self.ast.getNode(left).tag != .binding_identifier) return null;
+                    return .{ .binding = left, .default = param.data.binary.right };
+                },
+                else => return null,
+            }
+        }
+
+        /// `...<pattern>` → `var _a = [].slice.call(arguments, N)` and the
+        /// pattern's declarators reading `_a`.
+        fn buildRestPatternParam(
+            self: *Transformer,
+            pattern_idx: NodeIndex,
+            start_index: usize,
+            body_stmts: *std.ArrayList(NodeIndex),
+            span: Span,
+        ) Transformer.Error!void {
+            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
+            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .variable_var);
+            es_helpers.consumeTempVarSpan(self, temp_span);
+            try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span));
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            const pattern = self.ast.getNode(pattern_idx);
+            const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+            const read_span = if (pattern.tag == .array_pattern) blk: {
+                const read_span = try es_helpers.makeTempVarSpan(self);
+                const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
+                try registerDestructuringTempAtCreation(self, read_binding, read_span, span, .variable_var);
+                es_helpers.consumeTempVarSpan(self, read_span);
+                const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+                const read_init = try es2015_destruct.buildArrayRead(self, temp_ref, pattern, span);
+                try self.scratch.append(self.allocator, try es_helpers.makeDeclarator(self, read_binding, read_init, span));
+                break :blk read_span;
+            } else temp_span;
+            try emitParameterPatternDeclarators(self, pattern, read_span, span);
+            const declarators = self.scratch.items[scratch_top..];
+            if (declarators.len > 0) try body_stmts.append(self.allocator, try es_helpers.makeVarDeclaration(self, declarators, .@"var", span));
         }
 
         /// var rest = [].slice.call(arguments, N)

@@ -123,19 +123,31 @@ pub fn build(allocator: std.mem.Allocator, in: Input) std.mem.Allocator.Error!Ta
         const gop = try hoisted.getOrPut(allocator, var_scope.toIndex());
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         const outside = outside_refs.getPtr(var_scope.toIndex());
-        const parameter_outside = if (in.parameter_scopes) |map|
-            if (map.get(var_scope.toIndex())) |parameter_scope| outside_refs.getPtr(parameter_scope) else null
-        else
-            null;
+        const parameter_scope: ?u32 = if (in.parameter_scopes) |map| map.get(var_scope.toIndex()) else null;
+        const parameter_outside = if (parameter_scope) |ps| outside_refs.getPtr(ps) else null;
         // 같은 스코프 안 순서는 해시 순서 — 한 블록 안 이름끼리는 겹칠 수 없어 결과가 같다.
         var it = in.scope_maps[si].iterator();
         while (it.next()) |entry| {
             const name = entry.key_ptr.*;
             const sym_idx: u32 = @intCast(entry.value_ptr.*);
             if (sym_idx >= in.symbols.len or !isHoistedLexical(in.symbols[sym_idx])) continue;
+            // A block function declaration that aliases the function-scope
+            // binding of the same name (#2714) is that outer binding, not a
+            // block one: renaming it split the declaration from references
+            // outside the block under identifier minification (#5668).
+            if (in.symbols[sym_idx].scope_id.toIndex() != si) continue;
             const is_captured = captured.isSet(sym_idx);
             const sibling_conflict = if (gop.value_ptr.get(name)) |earlier_captured| earlier_captured or is_captured else false;
+            // A non-simple parameter list has its own scope. Its defaults move
+            // into the body when lowered, so a block binding hoisted to the
+            // function body there would capture a parameter of the same name
+            // (`function g(p, q = () => p) { { let p } }`, #5668).
+            const parameter_conflict = if (parameter_scope) |ps|
+                ps < in.scope_maps.len and in.scope_maps[ps].contains(name)
+            else
+                false;
             const conflict = boundBetween(in, sc.parent, var_scope, name) or
+                parameter_conflict or
                 sibling_conflict or
                 (outside != null and outside.?.contains(name)) or
                 (parameter_outside != null and parameter_outside.?.contains(name)) or
