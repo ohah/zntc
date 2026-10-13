@@ -924,10 +924,10 @@ describe('manualChunks NAPI bridge', () => {
     if (cssEntry) expect(cssEntry[1]).toBe(true);
   });
 
-  test('meta.getModuleInfo: hasModuleSideEffects — 사용자 앱 코드는 package.json 영향 안 받음 (ZNTC 정책)', async () => {
-    // 프로젝트 루트의 package.json 은 node_modules 밖 모듈에 적용 안 됨.
-    // 사용자 코드는 tree-shaker auto-purity 만 영향.
-    // 이게 미래에 바뀌어도 lock — 변경하면 테스트로 신호.
+  test('meta.getModuleInfo: hasModuleSideEffects — 사용자 앱 코드도 가장 가까운 package.json 을 따른다 (#5634)', async () => {
+    // #5634 부터 node_modules 밖 모듈도 가장 가까운 package.json 의 sideEffects 를
+    // 적용한다(esbuild·rolldown·webpack 동일). 예전 ZNTC 정책(사용자 코드는 auto-purity 만)
+    // 은 이 테스트가 lock 하던 동작이었다 — 다시 바꾸면 여기서 신호가 난다.
     const fixture = await createFixture({
       'package.json': '{"name":"app","sideEffects":true}',
       'entry.ts': `import { x } from "./pure-lib"; console.log(x);`,
@@ -937,8 +937,8 @@ describe('manualChunks NAPI bridge', () => {
 
     const seen = await collectMeta(fixture.dir, ['entry.ts'], (info) => info.hasModuleSideEffects);
     const libFlag = [...seen.entries()].find(([k]) => k.endsWith('pure-lib.ts'))![1];
-    // 사용자 코드 `pure-lib.ts` — package.json sideEffects=true 무시되고 auto-purity 가 false 로.
-    expect(libFlag).toBe(false);
+    // 사용자 코드 `pure-lib.ts` — package.json sideEffects=true 가 auto-purity 보다 우선.
+    expect(libFlag).toBe(true);
   });
 
   // ============================================================
