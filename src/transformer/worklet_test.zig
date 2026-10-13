@@ -128,6 +128,43 @@ test "Worklet semantic-less class factory avoids a captured source binding" {
     }
 }
 
+test "#4819 Worklet method factory does not capture an escaped same-name local" {
+    const source =
+        \\const read = 73;
+        \\const handlers = {
+        \\  r\u0065ad() { "worklet"; return read; }
+        \\};
+        \\console.log(handlers.read());
+    ;
+
+    var result = try transformWorklet(std.testing.allocator, source);
+    defer result.deinit();
+    const code = try generateCode(&result);
+    defer std.testing.allocator.free(code);
+
+    const actual = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", code },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    switch (actual.term) {
+        .exited => |code_status| if (code_status != 0) {
+            std.debug.print("node stderr:\n{s}\n", .{actual.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => {
+            std.debug.print("node stderr:\n{s}\n", .{actual.stderr});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try std.testing.expectEqualStrings("73\n", actual.stdout);
+}
+
 test "Worklet class factory accepts long class identifier names" {
     const allocator = std.testing.allocator;
     const class_name = try allocator.alloc(u8, 120);

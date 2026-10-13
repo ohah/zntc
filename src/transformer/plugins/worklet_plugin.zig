@@ -21,6 +21,7 @@ const AstTransformCtx = ast_plugin.AstTransformCtx;
 const FunctionInfo = ast_plugin.FunctionInfo;
 const worklet_mod = @import("../transformer/worklet.zig");
 const es_helpers = @import("../es_helpers.zig");
+const cooked_name = @import("../cooked_name.zig");
 const plugin_mod = @import("../../bundler/plugin.zig");
 const Plugin = plugin_mod.Plugin;
 const PluginError = plugin_mod.PluginError;
@@ -515,7 +516,7 @@ fn chooseFactoryLocalName(
     var needs_unique = force_unique;
     if (!needs_unique) {
         for (closure_vars) |closure| {
-            if (std.mem.eql(u8, closure.name, func_name)) {
+            if (cooked_name.eql(closure.name, func_name)) {
                 needs_unique = true;
                 break;
             }

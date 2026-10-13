@@ -18,6 +18,7 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const symbol_mod = @import("../semantic/symbol.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const string_escape = @import("../string_escape.zig");
+const cooked_name = @import("cooked_name.zig");
 
 /// Whether standalone output assigns this generated binding's final spelling
 /// from its exact SymbolId after all lowering has established the output scopes.
@@ -764,14 +765,12 @@ fn decodeTemplateElementText(self: anytype, node: Node, is_first: bool, is_last:
 fn jsSourceContainsIdentifier(allocator: std.mem.Allocator, source: []const u8, name: []const u8) !bool {
     var scanner = try Scanner.init(allocator, source);
     defer scanner.deinit();
-    const decode_scratch = try allocator.alloc(u8, name.len);
-    defer allocator.free(decode_scratch);
     while (true) {
         try scanner.next();
         const token = scanner.token;
         if (token.kind == .eof) return false;
         if (token.kind != .identifier or token.span.end > source.len or token.span.start > token.span.end) continue;
-        if (Scanner.identifierTextEqualsAscii(source[token.span.start..token.span.end], name, decode_scratch)) return true;
+        if (cooked_name.eql(source[token.span.start..token.span.end], name)) return true;
     }
 }
 
@@ -781,10 +780,29 @@ fn jsSourceContainsIdentifier(allocator: std.mem.Allocator, source: []const u8, 
 pub fn nameAppearsInSource(self: anytype, name: []const u8) !bool {
     const source = self.ast.source;
     if (rawNameAppearsInSource(source, name)) return true;
-    // The common path remains a byte scan. Only lex sources that may contain
-    // escaped identifier spellings after the readable name was not found.
-    if (std.mem.indexOf(u8, source, "\\u") == null) return false;
+    // The common path remains a byte scan. Lex when either side may contain an
+    // escaped identifier spelling: the source can be canonical while the
+    // candidate is escaped, or vice versa.
+    if (std.mem.indexOf(u8, source, "\\u") == null and std.mem.indexOf(u8, name, "\\u") == null) return false;
     return try jsSourceContainsIdentifier(self.allocator, source, name);
+}
+
+test "nameAppearsInSource compares escaped identifier names in either spelling" {
+    const TestHost = struct {
+        allocator: std.mem.Allocator,
+        ast: struct { source: []const u8 },
+    };
+    var host = TestHost{
+        .allocator = std.testing.allocator,
+        .ast = .{ .source = "const read2 = 1;" },
+    };
+
+    try std.testing.expect(try nameAppearsInSource(&host, "r\\u0065ad2"));
+    try std.testing.expect(!try nameAppearsInSource(&host, "r\\u0065ad3"));
+
+    host.ast.source = "const r\\u0065ad2 = 1;";
+    try std.testing.expect(try nameAppearsInSource(&host, "read2"));
+    try std.testing.expect(!try nameAppearsInSource(&host, "read3"));
 }
 
 fn rawNameAppearsInSource(source: []const u8, name: []const u8) bool {
