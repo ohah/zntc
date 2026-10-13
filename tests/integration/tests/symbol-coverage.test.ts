@@ -11814,16 +11814,18 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
-  test('Reanimated class factory closure key does not capture same-named source locals', () => {
+  test('Reanimated class factory closure key does not capture same-named source locals', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-class-factory-name-collision-'));
     const entry = join(dir, 'entry.js');
+    const outputPath = join(dir, 'out.cjs');
+    const resultPath = join(dir, 'result.json');
     writeFileSync(
       entry,
       [
-        'class Clazz { __workletClass = true; value() { return 1; } }',
-        'class Other { __workletClass = true; value() { return 2; } }',
         'const Clazz__classFactory = 73;',
         'const Other__classFactory = 74;',
+        'class Clazz { __workletClass = true; static capturedFactoryName() { return Clazz__classFactory; } value() { return 1; } }',
+        'class Other { __workletClass = true; value() { return 2; } }',
         'const __zntcWorkletClosure0 = 88;',
         'export function capturedName() {',
         '  "worklet";',
@@ -11841,36 +11843,45 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         '  const instance = new Clazz();',
         '  return [instance.value(), Clazz__classFactory];',
         '}',
+        'globalThis.__zntcWorkletClassFactoryResult = () => ({ closureMatchesSource: Clazz.Clazz__classFactory.__closure.Clazz__classFactory === 73, name: Clazz.Clazz__classFactory.name });',
       ].join('\n'),
     );
 
     const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const { build } = await import(coreEntry);
     try {
       for (const minifyIdentifiers of [false, true]) {
-        const runner = [
-          `import { build } from ${JSON.stringify(coreEntry)};`,
-          `const result = await build(${JSON.stringify({
-            entryPoints: [entry],
-            platform: 'react-native',
-            format: 'cjs',
-            target: 'esnext',
-            workletTransform: true,
-            minifyIdentifiers,
-            write: false,
-          })});`,
-          'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
-          'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
-        ].join('\n');
-        const proc = spawnSync('bun', ['-e', runner], {
-          cwd: join(import.meta.dir, '../../..'),
-          encoding: 'utf8',
+        const result = await build({
+          entryPoints: [entry],
+          platform: 'react-native',
+          format: 'cjs',
+          target: 'esnext',
+          workletTransform: true,
+          minifyIdentifiers,
+          write: false,
         });
-        expect(proc.status, proc.stderr).toBe(0);
-        const outputs = JSON.parse(proc.stdout) as string[];
-        expect(outputs).toHaveLength(1);
-        const output = outputs[0]!;
+        expect(result.errors).toEqual([]);
+        expect(result.outputFiles).toHaveLength(1);
+        const output = result.outputFiles[0]!.text;
         expect(output).toMatch(/Clazz__classFactory:\s*[A-Za-z_$][\w$]*\.Clazz__classFactory/);
         expect(output).toMatch(/Other__classFactory:\s*[A-Za-z_$][\w$]*\.Other__classFactory/);
+        writeFileSync(outputPath, output);
+        const actual = spawnSync(
+          'node',
+          [
+            '-e',
+            `require(${JSON.stringify(outputPath)}); require('node:fs').writeFileSync(${JSON.stringify(resultPath)}, JSON.stringify(globalThis.__zntcWorkletClassFactoryResult()));`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(actual.status, actual.stderr).toBe(0);
+        const classFactoryResult = JSON.parse(readFileSync(resultPath, 'utf8')) as {
+          closureMatchesSource: boolean;
+          name: string;
+        };
+        expect(classFactoryResult.closureMatchesSource).toBe(true);
+        if (!minifyIdentifiers) expect(classFactoryResult.name).toBe('Clazz__classFactory$1');
+        expect(classFactoryResult.name).not.toContain('__zntcWorkletClassFactory');
         const userClosureAlias = output.match(/(__zntcWorkletClosure1):\s*[A-Za-z_$][\w$]*/)?.[1];
         const otherClosureAlias = output.match(/(__zntcWorkletClosure2):\s*[A-Za-z_$][\w$]*/)?.[1];
         expect(userClosureAlias).toBeDefined();
@@ -11918,6 +11929,19 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
               name === 'capturedName' ? [2, 1, 73, 74, 88] : name === 'plainName' ? 73 : [1, 19];
             expect(value, `${name}, minifyIdentifiers=${minifyIdentifiers}`).toEqual(expectedValue);
           }
+        }
+
+        const classFactoryInitCode = initDataCodes.find((code) =>
+          code.startsWith('function Clazz__classFactory('),
+        );
+        expect(classFactoryInitCode).toBeDefined();
+        if (classFactoryInitCode) {
+          expect(classFactoryInitCode).toContain('Clazz__classFactory}=this.__closure;');
+          const generated = new Function(`return (${classFactoryInitCode});`)() as (this: {
+            __closure: Record<string, unknown>;
+          }) => { capturedFactoryName: () => unknown };
+          const reconstructed = generated.call({ __closure: { Clazz__classFactory: 73 } });
+          expect(reconstructed.capturedFactoryName()).toBe(73);
         }
       }
     } finally {

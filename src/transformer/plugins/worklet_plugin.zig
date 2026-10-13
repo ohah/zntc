@@ -178,6 +178,11 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     if (info.body_idx.isNone()) return;
 
     const has_directive = api.hasDirective(info.body_idx, "worklet");
+    const display_name = api.transformer.plugins.worklet.class_factory_display_names.fetchRemove(
+        @intFromEnum(info.original_body_idx),
+    );
+    if (display_name != null and !has_directive)
+        std.debug.panic("class factory worklet lost its directive", .{});
     if (!has_directive and !info.is_auto_worklet) return;
 
     // 두 body를 별도 strip해야 함 (각각 다른 AST):
@@ -198,7 +203,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
     // 같은 이름의 worklet이 동일 파일에서 충돌해도 sequence index로 구분 가능.
     var anon_name_buf: [256]u8 = undefined;
     var sanitize_buf: [128]u8 = undefined;
-    const func_name = if (info.name) |n| n else blk: {
+    const func_name = if (display_name) |name| api.transformer.ast.getText(name.value) else if (info.name) |n| n else blk: {
         const idx = api.transformer.plugins.worklet.anonymous_counter;
         api.transformer.plugins.worklet.anonymous_counter += 1;
         const file_marker = sanitizeFilename(info.source_path, &sanitize_buf);
@@ -1070,7 +1075,18 @@ fn buildClassFactoryAssignment(
     const factory_name_span = try t.ast.addString(factory_name);
     const class_name_span = try t.ast.addString(class_name);
 
-    const binding_node = try es_helpers.makeSyntheticBinding(t, factory_name_span);
+    // The generated function name is visible from its body. If it uses the
+    // public factory spelling, a same-named source capture inside the
+    // reconstructed class resolves to this function instead of the source
+    // binding. Keep the identity exact, but use a private staging spelling
+    // until the linker can choose a collision-safe output name.
+    var factory_name_counter: u32 = 0;
+    const binding_name = if (t.semantic_edit_enabled)
+        try es_helpers.uniqueSyntheticName(t, "__zntcWorkletClassFactory", &factory_name_counter)
+    else
+        try es_helpers.uniqueSyntheticName(t, factory_name, &factory_name_counter);
+    const binding_name_span = try t.ast.addString(binding_name);
+    const binding_node = try es_helpers.makeExactSyntheticBindingFromSpan(t, binding_name_span);
     const empty_params = try t.ast.addNodeList(&.{});
     const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
     const none = @intFromEnum(NodeIndex.none);
@@ -1094,12 +1110,22 @@ fn buildClassFactoryAssignment(
         try t.addGeneratedFunctionScope(wrapper_scope, inner_fn)
     else
         @as(@import("../../semantic/scope.zig").ScopeId, .none);
-    const factory_symbol = try t.declareSyntheticInScope(binding_node, factory_name_span, .function_decl, wrapper_scope);
+    const factory_symbol = try t.declareSyntheticInScope(binding_node, binding_name_span, .function_decl, wrapper_scope);
+    if (factory_symbol) |symbol_id| {
+        const editor = if (t.semantic_editor) |*existing| existing else unreachable;
+        const symbol = &editor.symbols.items[@intFromEnum(symbol_id)];
+        symbol.synthetic_kind = .worklet_factory_local;
+        symbol.output_name_hint = try t.allocator.dupe(u8, t.ast.getText(factory_name_span));
+    }
     const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope);
     t.ast.extra_data.items[t.ast.getNode(inner_fn).data.extra + ast_mod.FunctionExtra.body] = @intFromEnum(factory_body.node);
+    const body_raw = @intFromEnum(factory_body.node);
+    if (t.plugins.worklet.class_factory_display_names.contains(body_raw))
+        std.debug.panic("class factory display name was registered twice", .{});
+    try t.plugins.worklet.class_factory_display_names.put(t.allocator, body_raw, factory_name_span);
 
     // IIFE: (function() { function <fn>(){...} return <fn>; })()
-    const fn_ref = try es_helpers.makeSyntheticRefFromSpan(t, factory_name_span);
+    const fn_ref = try es_helpers.makeExactSyntheticRefFromSpan(t, binding_name_span);
     try t.addSyntheticRefInScope(fn_ref, factory_symbol, wrapper_scope, .{ .read = true });
     const ret_stmt = try t.ast.addNode(.{
         .tag = .return_statement,

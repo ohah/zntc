@@ -26,6 +26,12 @@ pub const WorkletState = struct {
     /// 익명 worklet 함수 이름 생성 시 사용하는 sequential counter (Babel `null<N>` 호환).
     anonymous_counter: u32 = 0,
 
+    /// A class factory binding can use a collision-free staging identifier in
+    /// the output AST while its serialized worklet function keeps the stable
+    /// `<Class>__classFactory` display name. Key by its original body node so
+    /// function-node rebuilding does not lose this exact producer metadata.
+    class_factory_display_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
+
     /// worklet 함수 body 방문 중 깊이. > 0 이면 define 치환(`--define:global=...`) 억제.
     /// worklet body는 UI 런타임에서 실행되므로 JS 전용 global polyfill 심볼로 치환하면 안 된다.
     body_depth: u32 = 0,

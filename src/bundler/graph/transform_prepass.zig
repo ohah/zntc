@@ -3,6 +3,7 @@
 const std = @import("std");
 const Module = @import("../module.zig").Module;
 const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const WorkletFactoryLocalBinding = @import("../module.zig").WorkletFactoryLocalBinding;
 const AliasTable = @import("../module.zig").AliasTable;
 const binding_scanner_mod = @import("../binding_scanner.zig");
 const bundler_symbol = @import("../symbol.zig");
@@ -4750,6 +4751,36 @@ fn collectParserUnresolvedNodes(
 /// final AST 기준 분석 데이터 refresh.
 /// 실패 시 error diagnostic 을 남기고 모듈 파싱을 중단한다. stale semantic/binding
 /// 데이터로 tree-shaker/linker 가 진행하는 silent bug 를 막기 위한 정책 (#1913).
+fn captureWorkletFactoryLocalBindings(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+) ![]const WorkletFactoryLocalBinding {
+    var binding_nodes: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer binding_nodes.deinit(allocator);
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or raw >= semantic.symbol_ids.len) continue;
+        const raw_symbol_id = semantic.symbol_ids[raw] orelse continue;
+        if (raw_symbol_id >= semantic.symbols.items.len) return error.InvalidWorkletFactorySymbolId;
+        if (semantic.symbols.items[raw_symbol_id].synthetic_kind != .worklet_factory_local) continue;
+        if (try binding_nodes.fetchPut(allocator, raw_symbol_id, @intCast(raw)) != null)
+            return error.AmbiguousWorkletFactoryBinding;
+    }
+
+    var bindings: std.ArrayListUnmanaged(WorkletFactoryLocalBinding) = .empty;
+    for (semantic.symbols.items, 0..) |symbol, symbol_index| {
+        if (symbol.synthetic_kind != .worklet_factory_local) continue;
+        if (symbol.output_name_hint.len == 0) return error.MissingWorkletFactoryOutputName;
+        const raw_symbol_id: u32 = @intCast(symbol_index);
+        const raw = binding_nodes.get(raw_symbol_id) orelse return error.MissingWorkletFactoryBinding;
+        try bindings.append(allocator, .{
+            .node_index = raw,
+            .output_name_hint = symbol.output_name_hint,
+        });
+    }
+    return bindings.toOwnedSlice(allocator);
+}
+
 pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void {
     if (module.ast == null) return;
     const ast_ptr = &(module.ast.?);
@@ -4990,6 +5021,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // tree shaking after semantic resync.
     const owned_preserved_class_names = transformer.preserved_simple_class_names.toOwnedSlice(arena_alloc) catch return;
     const owned_symbol_ids = transformer.symbol_ids.toOwnedSlice(arena_alloc) catch &[_]?u32{};
+    const owned_worklet_factory_local_bindings = if (module.semantic) |*semantic|
+        captureWorkletFactoryLocalBindings(arena_alloc, transformer.ast, semantic) catch return
+    else
+        &[_]WorkletFactoryLocalBinding{};
     // #2869 helper marker sidecar — sorted u32 slice. resync analyzer 가 binary search.
     const owned_helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch &[_]u32{};
     const owned_explicit_global_ref_nodes = transformer.ownedExplicitGlobalRefNodes(arena_alloc) catch {
@@ -5012,6 +5047,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .explicit_global_ref_nodes = owned_explicit_global_ref_nodes,
         .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
         .preserved_class_name_nodes = owned_preserved_class_names,
+        .worklet_factory_local_bindings = owned_worklet_factory_local_bindings,
         .ref_deltas = prepass_ref_deltas,
     };
 
@@ -5428,6 +5464,20 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 const id = analyzer.symbol_ids.items[raw] orelse continue;
                 if (id >= analyzer.symbols.items.len) continue;
                 analyzer.symbols.items[id].decl_flags.preserve_class_name = true;
+            }
+            for (cache.worklet_factory_local_bindings) |factory_binding| {
+                const raw = factory_binding.node_index;
+                if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len or
+                    ast.nodes.items[raw].tag != .binding_identifier)
+                    return error.InvalidWorkletFactoryBindingProvenance;
+                const id = analyzer.symbol_ids.items[raw] orelse continue;
+                if (id >= analyzer.symbols.items.len) return error.InvalidWorkletFactorySymbolId;
+                const symbol = &analyzer.symbols.items[id];
+                if (symbol.synthetic_kind != null and symbol.synthetic_kind != .worklet_factory_local)
+                    return error.WorkletFactoryBindingKindConflict;
+                symbol.synthetic_kind = .worklet_factory_local;
+                symbol.synthetic_name = ast.getText(ast.nodes.items[raw].data.string_ref);
+                symbol.output_name_hint = factory_binding.output_name_hint;
             }
         }
 
