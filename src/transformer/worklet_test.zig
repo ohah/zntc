@@ -100,6 +100,34 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     try std.testing.expect(report.hasCompleteExactCoverage());
 }
 
+test "Worklet semantic-less class factory avoids a captured source binding" {
+    const sources = [_][]const u8{
+        \\const Clazz_\u005fclassFactory = 73;
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  static capturedFactoryName() { return Clazz_\u005fclassFactory; }
+        \\}
+        ,
+        \\const Clazz_\u{5f}classFactory = 73;
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  static capturedFactoryName() { return Clazz_\u{5f}classFactory; }
+        \\}
+    };
+    const closure_keys = [_][]const u8{
+        "__closure = { Clazz_\\u005fclassFactory:",
+        "__closure = { Clazz_\\u{5f}classFactory:",
+    };
+    for (sources, closure_keys) |source, closure_key| {
+        var result = try transformWorklet(std.testing.allocator, source);
+        defer result.deinit();
+        const code = try generateCode(&result);
+        defer std.testing.allocator.free(code);
+        try std.testing.expect(std.mem.indexOf(u8, code, "function Clazz__classFactory2()") != null);
+        try std.testing.expect(std.mem.indexOf(u8, code, closure_key) != null);
+    }
+}
+
 test "Worklet init code uses the exact semantic enum IIFE parameter" {
     const Scanner = @import("../lexer/scanner.zig").Scanner;
     const Parser = @import("../parser/parser.zig").Parser;
@@ -213,6 +241,9 @@ fn checkWorkletClassFactoryExactCoverage(
     var codegen = @import("../codegen/codegen.zig").Codegen.init(allocator, transformer.ast);
     defer codegen.deinit();
     const output = try codegen.generate(root);
+    if (std.mem.indexOf(u8, source, "\\u0046") != null) {
+        try std.testing.expect(std.mem.indexOf(u8, output, "function __zntcWorkletClassFactory2()") != null);
+    }
     try std.testing.expect(std.mem.indexOf(u8, output, "__closure = { instanceValue:") == null);
     try std.testing.expect(std.mem.indexOf(u8, output, "__closure = { value:") == null);
     if (std.mem.indexOf(u8, source, "[computedKey]") != null)
@@ -382,6 +413,17 @@ test "#4819 Worklet class factories bind reconstructed class identity exactly" {
         \\let observed = Clazz;
     ;
     try checkWorkletClassFactoryExactCoverage(compat.fromESTarget(.es2022), "worklet-class-factory-computed-key-es2022.ts", "Clazz", computed_key_source);
+}
+
+test "#4819 Worklet class factory staging name avoids escaped source bindings" {
+    const escaped_source =
+        \\const __zntcWorkletClass\u0046actory = 73;
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  static capturedFactoryName() { return __zntcWorkletClass\u0046actory; }
+        \\}
+    ;
+    try checkWorkletClassFactoryExactCoverage(.{}, "worklet-class-factory-escaped-source.ts", "Clazz", escaped_source);
 }
 
 fn checkBlockFunctionWorkletSemanticEdit(is_module: bool) !void {

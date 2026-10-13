@@ -102,7 +102,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 var collide = false;
                 for (bases, 0..) |b, k| {
                     names[k] = if (n == 1) b else std.fmt.bufPrint(&bufs[k], "{s}{d}", .{ b, n }) catch unreachable;
-                    if (es_helpers.nameAppearsInSource(self, names[k])) collide = true;
+                    if (try es_helpers.nameAppearsInSource(self, names[k])) collide = true;
                 }
                 if (collide) continue;
                 return .{
@@ -435,7 +435,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 counter.* += 1;
                 const n = counter.*;
                 const name = if (n == 1) try self.allocator.dupe(u8, base) else try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, n });
-                if (!es_helpers.nameAppearsInSource(self, name)) return name;
+                if (!try es_helpers.nameAppearsInSource(self, name)) return name;
                 self.allocator.free(name);
             }
         }
@@ -444,7 +444,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             var n: u32 = 1;
             while (true) : (n += 1) {
                 const name = if (n == 1) try self.allocator.dupe(u8, base) else try std.fmt.allocPrint(self.allocator, "{s}{d}", .{ base, n });
-                if (!es_helpers.nameAppearsInSource(self, name)) return name;
+                if (!try es_helpers.nameAppearsInSource(self, name)) return name;
                 self.allocator.free(name);
             }
         }

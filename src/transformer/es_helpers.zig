@@ -622,7 +622,7 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
     if (self.unresolved_references) |unresolved| return unresolved.contains(name);
     // semantic 정보가 없는 경로에서는 전역 참조를 판별할 수 없으므로 소스에서
     // 식별자 경계를 확인한다. 속성/주석의 오탐은 이름을 하나 더 건너뛰게 할 뿐이다.
-    return nameAppearsInSource(self, name);
+    return try nameAppearsInSource(self, name);
 }
 
 /// Late standalone output names are safe only when the exact output scope is
@@ -775,18 +775,25 @@ fn jsSourceContainsIdentifier(allocator: std.mem.Allocator, source: []const u8, 
     }
 }
 
-/// 소스 텍스트에 `name` 이 식별자로 나오는지 (#4729 후속).
-/// `collidesWithUserSymbol` 은 temp 패턴(`_a`, `_b2`)만 보므로 `_obj`·`_stack` 같은
-/// 이름은 검사하지 못한다. 선언 여부와 무관하게(전역 참조 포함) 소스에 한 번이라도 나오면
-/// 참으로 본다 — 속성 이름 등으로 오탐하면 이름을 한 칸 더 옮길 뿐이라 안전하다.
-pub fn nameAppearsInSource(self: anytype, name: []const u8) bool {
-    const src = self.ast.source;
+/// 소스의 식별자 StringValue가 `name`과 같은지 검사한다.
+/// `\uXXXX`와 `\u{...}` escape를 포함한 이름도 같은 binding으로 취급해야
+/// 합성 binding이 escaped source binding과 충돌하지 않는다.
+pub fn nameAppearsInSource(self: anytype, name: []const u8) !bool {
+    const source = self.ast.source;
+    if (rawNameAppearsInSource(source, name)) return true;
+    // The common path remains a byte scan. Only lex sources that may contain
+    // escaped identifier spellings after the readable name was not found.
+    if (std.mem.indexOf(u8, source, "\\u") == null) return false;
+    return try jsSourceContainsIdentifier(self.allocator, source, name);
+}
+
+fn rawNameAppearsInSource(source: []const u8, name: []const u8) bool {
     var from: usize = 0;
-    while (std.mem.indexOfPos(u8, src, from, name)) |at| {
+    while (std.mem.indexOfPos(u8, source, from, name)) |at| {
         from = at + 1;
-        if (at > 0 and isIdentChar(src[at - 1])) continue;
+        if (at > 0 and isIdentChar(source[at - 1])) continue;
         const end = at + name.len;
-        if (end < src.len and isIdentChar(src[end])) continue;
+        if (end < source.len and isIdentChar(source[end])) continue;
         return true;
     }
     return false;
@@ -1417,11 +1424,11 @@ pub fn resolveGeneratedName(self: anytype, name: []const u8) ![]const u8 {
     // `name` 은 string_table 조각일 수 있다 — 다음 addString 전에 고정한다.
     const key = try arena.dupe(u8, name);
     var resolved: []const u8 = key;
-    if (nameAppearsInSource(self, key) or self.synthetic_taken.contains(key)) {
+    if (try nameAppearsInSource(self, key) or self.synthetic_taken.contains(key)) {
         var n: u32 = 2;
         while (true) : (n += 1) {
             const cand = try std.fmt.allocPrint(arena, "{s}{d}", .{ key, n });
-            if (nameAppearsInSource(self, cand) or self.synthetic_taken.contains(cand) or self.synthetic_names.contains(cand)) continue;
+            if (try nameAppearsInSource(self, cand) or self.synthetic_taken.contains(cand) or self.synthetic_names.contains(cand)) continue;
             resolved = cand;
             break;
         }
@@ -1441,7 +1448,7 @@ pub fn resolveGeneratedNameAvoidingDynamicEval(self: anytype, name: []const u8, 
     const key = try arena.dupe(u8, name);
     var resolved: []const u8 = key;
     var suffix: usize = 2;
-    while (nameAppearsInSource(self, resolved) or self.synthetic_taken.contains(resolved) or
+    while (try nameAppearsInSource(self, resolved) or self.synthetic_taken.contains(resolved) or
         self.synthetic_names.contains(resolved) or
         try nameAppearsInDynamicEvalString(self, scope_id, resolved)) : (suffix += 1)
     {
@@ -1456,14 +1463,23 @@ pub fn resolveGeneratedNameAvoidingDynamicEval(self: anytype, name: []const u8, 
 /// 속성 이름(`obj._state`)·주석은 가리지 않으므로 세지 않는다. 분석 결과가 없는 경로(심볼 없음)는
 /// 소스 텍스트로 보수적으로 판정한다.
 fn syntheticNameInUse(self: anytype, name: []const u8) !bool {
-    if (self.symbols.len == 0) return nameAppearsInSource(self, name);
+    if (self.symbols.len == 0) return try nameAppearsInSource(self, name);
     if (self.unresolved_references) |u| {
         if (u.contains(name)) return true;
-    } else if (nameAppearsInSource(self, name)) return true;
+    } else if (try nameAppearsInSource(self, name)) return true;
     if (self.user_symbol_names == null) {
         var set: std.StringHashMapUnmanaged(void) = .empty;
         errdefer set.deinit(self.allocator);
-        for (self.symbols) |sym| try set.put(self.allocator, self.ast.getText(sym.name), {});
+        if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+        const name_allocator = self.name_arena.?.allocator();
+        for (self.symbols) |sym| {
+            const raw_name = self.ast.getText(sym.name);
+            const normalized_name = if (std.mem.indexOfScalar(u8, raw_name, '\\') != null) blk: {
+                const decode_buffer = try name_allocator.alloc(u8, raw_name.len);
+                break :blk Scanner.decodeIdentifierEscapesInto(raw_name, decode_buffer) orelse raw_name;
+            } else raw_name;
+            try set.put(self.allocator, normalized_name, {});
+        }
         self.user_symbol_names = set;
     }
     return self.user_symbol_names.?.contains(name);

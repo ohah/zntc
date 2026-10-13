@@ -11822,9 +11822,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     writeFileSync(
       entry,
       [
+        'const __zntcWorkletClass\\u0046actory = 75;',
         'const Clazz__classFactory = 73;',
         'const Other__classFactory = 74;',
-        'class Clazz { __workletClass = true; static capturedFactoryName() { return Clazz__classFactory; } value() { return 1; } }',
+        'class Clazz { __workletClass = true; static capturedFactoryName() { return Clazz__classFactory; } static capturedStagingName() { return __zntcWorkletClass\\u0046actory; } value() { return 1; } }',
         'class Other { __workletClass = true; value() { return 2; } }',
         'const __zntcWorkletClosure0 = 88;',
         'export function capturedName() {',
@@ -11843,7 +11844,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         '  const instance = new Clazz();',
         '  return [instance.value(), Clazz__classFactory];',
         '}',
-        'globalThis.__zntcWorkletClassFactoryResult = () => ({ closureMatchesSource: Clazz.Clazz__classFactory.__closure.Clazz__classFactory === 73, name: Clazz.Clazz__classFactory.name });',
+        'globalThis.__zntcWorkletClassFactoryResult = () => ({ closureMatchesSource: Clazz.Clazz__classFactory.__closure.Clazz__classFactory === 73, stagingCaptureValue: Clazz.Clazz__classFactory().capturedStagingName(), name: Clazz.Clazz__classFactory.name });',
       ].join('\n'),
     );
 
@@ -11877,9 +11878,11 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         expect(actual.status, actual.stderr).toBe(0);
         const classFactoryResult = JSON.parse(readFileSync(resultPath, 'utf8')) as {
           closureMatchesSource: boolean;
+          stagingCaptureValue: number;
           name: string;
         };
         expect(classFactoryResult.closureMatchesSource).toBe(true);
+        expect(classFactoryResult.stagingCaptureValue).toBe(75);
         if (!minifyIdentifiers) expect(classFactoryResult.name).toBe('Clazz__classFactory$1');
         expect(classFactoryResult.name).not.toContain('__zntcWorkletClassFactory');
         const userClosureAlias = output.match(/(__zntcWorkletClosure1):\s*[A-Za-z_$][\w$]*/)?.[1];
@@ -11936,7 +11939,9 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         );
         expect(classFactoryInitCode).toBeDefined();
         if (classFactoryInitCode) {
-          expect(classFactoryInitCode).toContain('Clazz__classFactory}=this.__closure;');
+          expect(classFactoryInitCode).toMatch(
+            /const \{[^}]*\bClazz__classFactory\b[^}]*\}=this\.__closure;/,
+          );
           const generated = new Function(`return (${classFactoryInitCode});`)() as (this: {
             __closure: Record<string, unknown>;
           }) => { capturedFactoryName: () => unknown };

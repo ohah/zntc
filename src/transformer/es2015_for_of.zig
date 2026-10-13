@@ -394,7 +394,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 var ib: [32]u8 = undefined;
                 const k = if (n == 1) "_keys" else std.fmt.bufPrint(&kb, "_keys{d}", .{n}) catch unreachable;
                 const i = if (n == 1) "_idx" else std.fmt.bufPrint(&ib, "_idx{d}", .{n}) catch unreachable;
-                if (es_helpers.nameAppearsInSource(self, k) or es_helpers.nameAppearsInSource(self, i)) continue;
+                if (try es_helpers.nameAppearsInSource(self, k) or try es_helpers.nameAppearsInSource(self, i)) continue;
                 return .{ .keys = try self.ast.addString(k), .idx = try self.ast.addString(i) };
             }
         }
@@ -471,7 +471,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     try self.buildUniqueName(prefix, &self.forof_step_counter)
                 else
                     try self.buildUniqueNameAvoidingDynamicEval(prefix, &self.forof_step_counter, scope);
-                if (es_helpers.nameAppearsInSource(self, name)) continue;
+                if (try es_helpers.nameAppearsInSource(self, name)) continue;
                 const span = try self.ast.addString(name);
                 try self.generated_temp_spans.append(self.allocator, span);
                 return span;
