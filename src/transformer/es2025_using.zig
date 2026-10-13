@@ -347,6 +347,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) {
                 const loop_scope = self.outputOwnedScope(idx) orelse std.debug.panic("missing using for-of scope", .{});
                 const symbol = try self.declareSyntheticInScope(tmp_binding, ln.span, .variable_const, loop_scope);
+                es_helpers.markStandaloneLateSyntheticTemp(self, symbol, loop_scope);
                 try self.addSyntheticRefInScope(tmp_ref, symbol, loop_scope, .{ .read = true });
                 const stable_owner = bind_stable and node.tag == .for_of_statement and self.pending_loop_extraction_depth == 0;
                 if (!stable_owner) try self.trackGeneratorStateReference(tmp_ref, symbol, loop_scope, .{ .read = true });

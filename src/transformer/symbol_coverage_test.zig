@@ -4523,13 +4523,17 @@ test "#4819 for-of using head keeps one generated binding and reference" {
     const var_scope = analyzer.scopes.items[loop_scope.toIndex()].parent;
     const original_symbols = analyzer.symbols.items.len;
 
-    var transformer = try Transformer.init(allocator, &parser.ast, .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) });
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
     transformer.references = analyzer.references.items;
     transformer.scopes = analyzer.scopes.items;
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
@@ -4542,11 +4546,12 @@ test "#4819 for-of using head keeps one generated binding and reference" {
     try std.testing.expectEqual(var_scope, edited.symbols.items[id].scope_id);
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[var_scope.toIndex()].kind);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_const, edited.symbols.items[id].kind);
+    try std.testing.expectEqual(@as(?SyntheticKind, .standalone_temp_binding), edited.symbols.items[id].synthetic_kind);
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[id].reference_count);
     var bindings: usize = 0;
     var reads: usize = 0;
     for (edited.symbol_ids, 0..) |maybe_id, raw| {
-        if (maybe_id != id) continue;
+        if (maybe_id != @as(?u32, @intCast(id))) continue;
         const tag = transformer.ast.nodes.items[raw].tag;
         if (tag == .binding_identifier) bindings += 1;
         if (tag == .identifier_reference) reads += 1;
@@ -4558,6 +4563,62 @@ test "#4819 for-of using head keeps one generated binding and reference" {
         try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, loop_scope));
         try std.testing.expect(ref.flags.read);
     }
+}
+
+test "#4819 for-of using head keeps its staging name when descendant eval can observe it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\export function consume(resources, suffix) {
+        \\  for (using item of resources) { eval("_" + suffix); globalThis.item = item; }
+        \\}
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var head_id: ?usize = null;
+    for (edited.symbols.items[original_symbols..], original_symbols..) |symbol, id| {
+        if (symbol.kind != .variable_const or !std.mem.startsWith(u8, symbol.synthetic_name, "_using")) continue;
+        try std.testing.expect(head_id == null);
+        head_id = id;
+    }
+    const id = head_id orelse return error.TestUnexpectedResult;
+    const symbol = edited.symbols.items[id];
+    try std.testing.expectEqual(@as(?SyntheticKind, null), symbol.synthetic_kind);
+    try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name));
+    var bindings: usize = 0;
+    var reads: usize = 0;
+    for (edited.symbol_ids, 0..) |maybe_id, raw| {
+        if (maybe_id != @as(?u32, @intCast(id))) continue;
+        switch (transformer.ast.nodes.items[raw].tag) {
+            .binding_identifier => bindings += 1,
+            .identifier_reference => reads += 1,
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), bindings);
+    try std.testing.expectEqual(@as(usize, 1), reads);
 }
 
 test "#4819 downlevel using lowering preserves exact transform identities" {
