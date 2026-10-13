@@ -1364,6 +1364,89 @@ test "exact identity audit catches same-name binding IDs swapped across scopes" 
     try std.testing.expect(!report.isClean());
 }
 
+test "exact identity audit rejects a `$N` source name routed to its unsuffixed sibling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "let x = 1; let x$1 = 2; let y = x$1;");
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var unsuffixed_symbol: ?u32 = null;
+    var suffixed_symbol: ?u32 = null;
+    var suffixed_reference_node: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        const name = switch (node.tag) {
+            .binding_identifier, .identifier_reference => parser.ast.getText(node.data.string_ref),
+            else => continue,
+        };
+        if (node.tag == .binding_identifier and std.mem.eql(u8, name, "x")) {
+            unsuffixed_symbol = analyzer.symbol_ids.items[raw] orelse return error.TestUnexpectedResult;
+        } else if (node.tag == .binding_identifier and std.mem.eql(u8, name, "x$1")) {
+            suffixed_symbol = analyzer.symbol_ids.items[raw] orelse return error.TestUnexpectedResult;
+        } else if (node.tag == .identifier_reference and std.mem.eql(u8, name, "x$1")) {
+            suffixed_reference_node = @intCast(raw);
+        }
+    }
+    const unsuffixed_id = unsuffixed_symbol orelse return error.TestUnexpectedResult;
+    const suffixed_id = suffixed_symbol orelse return error.TestUnexpectedResult;
+    const reference_raw = suffixed_reference_node orelse return error.TestUnexpectedResult;
+    try std.testing.expect(unsuffixed_id != suffixed_id);
+
+    const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    const correct = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        analyzer.symbol_ids.items,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        analyzer.references.items,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expect(correct.isClean());
+
+    const wrong_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+    wrong_ids[reference_raw] = unsuffixed_id;
+    const wrong_references = try allocator.dupe(Reference, analyzer.references.items);
+    var corrupted_reference_rows: usize = 0;
+    for (wrong_references) |*reference| {
+        if (@intFromEnum(reference.node_index) != reference_raw) continue;
+        reference.symbol_id = @enumFromInt(unsuffixed_id);
+        corrupted_reference_rows += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), corrupted_reference_rows);
+
+    const corrupted = try coverage.checkExact(
+        allocator,
+        &parser.ast,
+        root,
+        @intCast(parser.ast.nodes.items.len),
+        wrong_ids,
+        analyzer.symbols.items,
+        analyzer.scopes.items,
+        analyzer.scope_maps.items,
+        &analyzer.scope_owner_map,
+        wrong_references,
+        analyzer.helper_ref_nodes,
+        &analyzer.helper_scope_map,
+        &analyzer.unresolved_reference_nodes,
+        &.{},
+        &origins,
+    );
+    try std.testing.expectEqual(@as(usize, 1), corrupted.scope_resolution_mismatch);
+    try std.testing.expect(!corrupted.isClean());
+}
+
 test "exact scope audit rejects owner scopes detached from their AST parent scopes" {
     const allocator = std.testing.allocator;
     var ast = Ast.init(allocator, "");
