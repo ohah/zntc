@@ -52,6 +52,7 @@ pub const NAMES = struct {
     /// __publicField — class field 하나마다 한 번씩 호출되므로 출현 빈도가 매우 높다.
     /// 축약이 빠져 있어 minify 산출물에서 13자 × 필드 수만큼 더 나갔다 (#4629 후속).
     pub const PUBLIC_FIELD_MIN = "$pb";
+    pub const TO_PROPERTY_KEY_MIN = "$pk"; // __toPropertyKey (computed class key, #5553)
     pub const GENERATOR_MIN = "$gn"; // __generator
     pub const REST_MIN = "$rs"; // __rest (object rest destructure)
     pub const TAGGED_TEMPLATE_MIN = "$tt"; // __taggedTemplateLiteral
@@ -221,6 +222,7 @@ pub const PAIRS = [_]struct { base: []const u8, short: []const u8 }{
     .{ .base = "__asyncValues", .short = NAMES.ASYNC_VALUES_MIN },
     .{ .base = "__yieldStar", .short = NAMES.YIELD_STAR_MIN },
     .{ .base = "__publicField", .short = NAMES.PUBLIC_FIELD_MIN },
+    .{ .base = "__toPropertyKey", .short = NAMES.TO_PROPERTY_KEY_MIN },
     .{ .base = "__generator", .short = NAMES.GENERATOR_MIN },
     .{ .base = "__rest", .short = NAMES.REST_MIN },
     .{ .base = "__taggedTemplateLiteral", .short = NAMES.TAGGED_TEMPLATE_MIN },

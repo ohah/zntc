@@ -48,6 +48,7 @@ pub const StandaloneRuntimeHelperLocalNames = struct {
     values: ?[]const u8 = null,
     read: ?[]const u8 = null,
     public_field: ?[]const u8 = null,
+    to_property_key: ?[]const u8 = null,
     wrap_regex: ?[]const u8 = null,
     yield_star: ?[]const u8 = null,
     keep_names: ?[]const u8 = null,
@@ -938,6 +939,17 @@ pub const PUBLIC_FIELD_RUNTIME =
     \\};
     \\
 ;
+/// __toPropertyKey: 낮춘 class 의 computed key 를 **정의 시점에 한 번** ToPropertyKey 한다 (#5553).
+/// 필드 key 는 생성자 안 `__publicField(this, _a, …)` 로 옮겨져, temp 에 원래 값을 담아 두면
+/// 인스턴스마다 다시 변환된다(`toString` 이 여러 번 불리고 함수 이름도 빠진다). 스펙은 클래스
+/// 정의 때 각 key 를 평가한 직후 한 번 변환한다. `String()` 은 hint "string" ToPrimitive 다.
+pub const TO_PROPERTY_KEY_RUNTIME =
+    \\var __toPropertyKey = function(key) {
+    \\  return typeof key === "symbol" ? key : String(key);
+    \\};
+    \\
+;
+pub const TO_PROPERTY_KEY_RUNTIME_MIN = "var " ++ NAMES.TO_PROPERTY_KEY_MIN ++ "=function(key){return typeof key===\"symbol\"?key:String(key)};";
 pub const PUBLIC_FIELD_RUNTIME_MIN = "var " ++ NAMES.PUBLIC_FIELD_MIN ++ "=function(obj,key,value){return Object.defineProperty(obj,typeof key===\"symbol\"?key:key+\"\",{enumerable:true,configurable:true,writable:true,value:value}),value};";
 
 /// __yieldStar: async generator 안의 `yield* X` 를 위임한다 (esbuild 호환).
@@ -1993,6 +2005,16 @@ fn appendRuntimeHelpersInternal(
             if (minify) PUBLIC_FIELD_RUNTIME_MIN else PUBLIC_FIELD_RUNTIME,
             default_name,
             local_names.public_field orelse default_name,
+        );
+    }
+    if (helpers.to_property_key) {
+        const default_name = helperName("__toPropertyKey", minify);
+        try appendRuntimeTemplateWithLocalName(
+            buf,
+            allocator,
+            if (minify) TO_PROPERTY_KEY_RUNTIME_MIN else TO_PROPERTY_KEY_RUNTIME,
+            default_name,
+            local_names.to_property_key orelse default_name,
         );
     }
     if (helpers.to_binary) {

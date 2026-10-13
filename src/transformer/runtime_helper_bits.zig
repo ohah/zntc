@@ -67,7 +67,9 @@ pub const RuntimeHelpers = packed struct(u32) {
     public_field: bool = false,
     /// __metadata: emitDecoratorMetadata의 Reflect.metadata wrapper.
     metadata: bool = false,
-    _padding: u2 = 0,
+    /// __toPropertyKey: 낮춘 class 의 computed key 를 정의 시점에 한 번 변환 (#5553).
+    to_property_key: bool = false,
+    _padding: u1 = 0,
 
     /// 어떤 helper flag 라도 set 됐는지 - emitter 의 prepend 분기에서 빈 helper 시
     /// no-op 결정에 사용.

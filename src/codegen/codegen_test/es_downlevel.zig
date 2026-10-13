@@ -3287,8 +3287,9 @@ test "ES2015: instance computed field uses computed key expression" {
     // `__publicField(this,k,` 는 키를 생성자 안에서 **인스턴스마다 재평가**하는 출력을
     // 고정하고 있었다(#4629 에서 들어간 회귀). 이제 클래스 앞에서 temp 로 평가한다.
     try std.testing.expect(std.mem.indexOf(u8, r.output, "__publicField(this,k,") == null);
-    try std.testing.expect(std.mem.indexOf(u8, r.output, "=k;") != null or
-        std.mem.indexOf(u8, r.output, "=k,") != null);
+    // 정의 시점에 한 번 property key 로 변환까지 한다(#5553).
+    try std.testing.expect(std.mem.indexOf(u8, r.output, "=__toPropertyKey(k);") != null or
+        std.mem.indexOf(u8, r.output, "=__toPropertyKey(k),") != null);
     try std.testing.expectEqual(std.mem.indexOf(u8, r.output, "this.[k]"), null);
 }
 

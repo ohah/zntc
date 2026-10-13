@@ -962,6 +962,20 @@ pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span) !Compu
     };
 }
 
+/// 낮춘 class field 의 computed key 를 temp 에 담기 전에 `__toPropertyKey(key)` 로 한 번
+/// 변환한다 (#5553). 필드는 생성자(`__publicField(this, _a, …)`)나 클래스 뒤 대입으로 옮겨져,
+/// 원래 값을 담아 두면 인스턴스마다 다시 변환된다 — 스펙은 정의 때 각 key 를 평가한 직후
+/// 한 번 변환한다. 문자열·숫자 리터럴은 변환해도 같으므로 그대로 둔다.
+pub fn makeToPropertyKey(self: anytype, key: NodeIndex, span: Span) !NodeIndex {
+    switch (self.ast.getNode(key).tag) {
+        .string_literal, .numeric_literal => return key,
+        else => {},
+    }
+    self.runtime_helpers.to_property_key = true;
+    const callee = try makeRuntimeHelperRef(self, "__toPropertyKey");
+    return makeCallExpr(self, callee, &.{key}, span);
+}
+
 /// 기존 method_definition 의 key 만 새 노드로 교체한 사본을 반환.
 /// 나머지 extra slot (params/body/flags/deco_start/deco_len) 은 그대로 복사.
 /// computed key memoization 결과를 method/accessor 에 끼워넣을 때 호출자 양쪽에서 공유.

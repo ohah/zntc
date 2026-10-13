@@ -2024,6 +2024,8 @@ fn transpileWithCallbackInternal(
             local_names.read = try helper_name_resolver.resolve("__read", options.minify_whitespace);
         if (transformer.runtime_helpers.public_field)
             local_names.public_field = try helper_name_resolver.resolve("__publicField", options.minify_whitespace);
+        if (transformer.runtime_helpers.to_property_key)
+            local_names.to_property_key = try helper_name_resolver.resolve("__toPropertyKey", options.minify_whitespace);
         if (transformer.runtime_helpers.wrap_regex)
             local_names.wrap_regex = try helper_name_resolver.resolve("__wrapRegExp", options.minify_whitespace);
         if (transformer.runtime_helpers.yield_star)

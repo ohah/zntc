@@ -128,6 +128,11 @@ const MODULES = [_]HelperModule{
         .body = .{ .plain = rt.PUBLIC_FIELD_RUNTIME, .min = rt.PUBLIC_FIELD_RUNTIME_MIN },
     },
     .{
+        .short = "to-property-key",
+        .helpers = &.{"__toPropertyKey"},
+        .body = .{ .plain = rt.TO_PROPERTY_KEY_RUNTIME, .min = rt.TO_PROPERTY_KEY_RUNTIME_MIN },
+    },
+    .{
         .short = "values",
         .helpers = &.{"__values"},
         .body = .{ .plain = rt.VALUES_RUNTIME, .min = rt.VALUES_RUNTIME_MIN },
