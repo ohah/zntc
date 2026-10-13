@@ -193,6 +193,10 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     if (pattern_node.tag == .object_pattern or pattern_node.tag == .array_pattern) return true;
                 }
                 if (param.tag == .assignment_pattern) return true;
+                // An arrow's cover-grammar parameter `(a = 1) =>` stays an
+                // assignment expression; in a parameter list it is a default (#5659).
+                if (param.tag == .assignment_expression and
+                    param.data.binary.flags == @intFromEnum(token_mod.Kind.eq)) return true;
             }
             return false;
         }
