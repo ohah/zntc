@@ -467,12 +467,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             for (cm.private_fields.items) |pf| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span, pf.binding_node));
             }
-            // static private field → descriptor 객체 선언: var _x = { writable: true, value: initValue }
-            for (cm.static_private_fields.items) |pf| {
-                // V1 fix: class_name_span 전달 → static_receiver 보정
-                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span, pf.binding_node));
-                self.runtime_helpers.class_static_private_field = true;
-            }
             const source_ctor = originalConstructorOwner(self, cm.constructor_idx);
             const ctor_scope = if (!self.semantic_edit_enabled)
                 self.current_scope
@@ -602,6 +596,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, static_assign);
                     },
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
+                    // static private field → descriptor 객체 선언 `var _x = { writable: true, value: init }`.
+                    // 소스 자리에서 초기화한다 (#5696). class_name_span 은 static receiver 보정용 (V1 fix).
+                    .private_field => |i| {
+                        const pf = cm.static_private_fields.items[i];
+                        try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span, pf.binding_node));
+                        self.runtime_helpers.class_static_private_field = true;
+                    },
                     .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
             }
@@ -1021,12 +1022,6 @@ pub fn ES2015Class(comptime Transformer: type) type {
             for (cm.private_fields.items) |pf| {
                 try self.scratch.append(self.allocator, try es_helpers.buildWeakCollectionDecl(self, "WeakMap", pf.name, span, pf.binding_node));
             }
-            // static private field → descriptor 객체 선언
-            for (cm.static_private_fields.items) |pf| {
-                // V1 fix: class_name_span 전달
-                try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span, pf.binding_node));
-                self.runtime_helpers.class_static_private_field = true;
-            }
             try emitPrivateMethodArtifacts(self, cm.private_methods.items, null, &post_private_method_initializers, span, name_span);
 
             try self.scratch.append(self.allocator, func_node);
@@ -1080,6 +1075,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         try self.scratch.append(self.allocator, try buildStaticFieldDefinePropertyWithCtx(self, try self.makeCurrentClassRefAtScope(name_span, iife_scope), field.key, field.init, name_span, span));
                     },
                     .stmt => |sb_stmt| try self.scratch.append(self.allocator, sb_stmt),
+                    // static private field → descriptor 객체 선언 `var _x = { writable: true, value: init }`.
+                    // 소스 자리에서 초기화한다 (#5696). class_name_span 은 static receiver 보정용 (V1 fix).
+                    .private_field => |i| {
+                        const pf = cm.static_private_fields.items[i];
+                        try self.scratch.append(self.allocator, try es_helpers.buildStaticPrivateFieldDescriptor(self, pf.name, pf.init, span, name_span, pf.binding_node));
+                        self.runtime_helpers.class_static_private_field = true;
+                    },
                     .raw_stmt => unreachable, // visitDeferredStaticBlocks 가 호출됐어야 함
                 }
             }

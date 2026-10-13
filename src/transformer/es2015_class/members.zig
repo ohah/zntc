@@ -35,6 +35,9 @@ pub fn Members(comptime Transformer: type) type {
             /// caller 가 setupPrivateFieldMappings 로 매핑을 set 한 뒤 `visitDeferredStaticBlocks`
             /// 가 visit 해서 `.stmt` 로 in-place 대체한다 — 이 방식으로 source order 가 보존된다.
             raw_stmt: NodeIndex,
+            /// `cm.static_private_fields` 안의 위치 — descriptor 선언이 앞선 static block 보다
+            /// 먼저 초기화되지 않도록 소스 자리에 낸다 (#5696).
+            private_field: usize,
         };
 
         const PrivateFieldInfo = struct {
@@ -133,6 +136,11 @@ pub fn Members(comptime Transformer: type) type {
         };
 
         /// classifyMembers 가 보류한 `.raw_stmt` static block entry 를 visit 해서 `.stmt` 로 변환한다.
+        fn appendStaticPrivateField(self: *Transformer, cm: *ClassifiedMembers, field: PrivateFieldInfo) Transformer.Error!void {
+            try cm.static_elements.append(self.allocator, .{ .private_field = cm.static_private_fields.items.len });
+            try cm.static_private_fields.append(self.allocator, field);
+        }
+
         /// caller 는 이 함수 호출 전에 setupPrivateFieldMappings 로 매핑을 set 해야 한다 — 그래야 본문
         /// 안의 `this.#x` / `super.x` 등이 정확히 lowering 된다. 본문 visit 시 transformer state 를 static
         /// block 컨텍스트로 set (this_depth=0, current_super_is_static=true, receiver/class_name = class span).
@@ -423,7 +431,7 @@ pub fn Members(comptime Transformer: type) type {
                             .init = init_val,
                         };
                         if (is_static) {
-                            try cm.static_private_fields.append(self.allocator, field_info);
+                            try appendStaticPrivateField(self, &cm, field_info);
                         } else {
                             const idx = cm.private_fields.items.len;
                             try cm.private_fields.append(self.allocator, field_info);
@@ -535,7 +543,7 @@ pub fn Members(comptime Transformer: type) type {
                 .init = init_idx,
             };
             if (is_static) {
-                try cm.static_private_fields.append(self.allocator, pfi);
+                try appendStaticPrivateField(self, cm, pfi);
             } else {
                 const idx = cm.private_fields.items.len;
                 try cm.private_fields.append(self.allocator, pfi);
@@ -586,7 +594,7 @@ pub fn Members(comptime Transformer: type) type {
                     .original_name = orig_name,
                     .init = init_idx,
                 };
-                try cm.static_private_fields.append(self.allocator, pfi);
+                try appendStaticPrivateField(self, cm, pfi);
                 return;
             }
 
@@ -681,7 +689,7 @@ pub fn Members(comptime Transformer: type) type {
                 .init = init_idx,
             };
             if (is_static) {
-                try cm.static_private_fields.append(self.allocator, pfi);
+                try appendStaticPrivateField(self, cm, pfi);
             } else {
                 const idx = cm.private_fields.items.len;
                 try cm.private_fields.append(self.allocator, pfi);
