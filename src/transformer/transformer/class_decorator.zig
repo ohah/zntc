@@ -12,6 +12,7 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
+const Span = @import("../../lexer/token.zig").Span;
 const class_visit_mod = @import("class_visit.zig");
 pub const visitClass = class_visit_mod.visitClass;
 const shouldDropClassExprName = class_visit_mod.shouldDropClassExprName;
@@ -35,21 +36,69 @@ fn trackPrivateHelperPrelude(
     field_mappings: []const Transformer.PrivateFieldMapping,
 ) Error!void {
     if (!self.semantic_edit_enabled or (method_mappings.len == 0 and field_mappings.len == 0)) return;
-    const class_scope = self.outputOwnedScope(source_idx) orelse
-        std.debug.panic("private helper class has no source scope", .{});
-    const root_scope = self.outputScopeParent(class_scope);
     var statements: std.ArrayList(NodeIndex) = .empty;
     defer statements.deinit(self.allocator);
     try statements.appendSlice(self.allocator, pre_stmts);
     try statements.appendSlice(self.allocator, static_descriptors);
     try statements.append(self.allocator, class_result);
     try statements.appendSlice(self.allocator, static_block_iifes);
+    try trackPrivateHelperStatements(self, source_idx, statements.items, self.ast.getNode(class_result).span, method_mappings, field_mappings);
+}
+
+fn trackPrivateHelperStatements(
+    self: *Transformer,
+    source_idx: NodeIndex,
+    statements: []const NodeIndex,
+    span: Span,
+    method_mappings: []const PrivateMethodMapping,
+    field_mappings: []const Transformer.PrivateFieldMapping,
+) Error!void {
+    if (!self.semantic_edit_enabled or (method_mappings.len == 0 and field_mappings.len == 0)) return;
+    const class_scope = self.outputOwnedScope(source_idx) orelse
+        std.debug.panic("private helper class has no source scope", .{});
+    const root_scope = self.outputScopeParent(class_scope);
     const root = try self.ast.addNode(.{
         .tag = .block_statement,
-        .span = self.ast.getNode(class_result).span,
-        .data = .{ .list = try self.ast.addNodeList(statements.items) },
+        .span = span,
+        .data = .{ .list = try self.ast.addNodeList(statements) },
     });
     try class_private_fields.PrivateFields(Transformer).trackPrivateMethodSymbols(self, root, method_mappings, field_mappings, root_scope);
+}
+
+const StaticParts = struct {
+    descriptors: []const NodeIndex,
+    descriptor_orders: []const es2022.StaticDescriptorOrder,
+    fields: []const FieldAssignment,
+    block_field_counts: []const u32,
+    blocks: []const NodeIndex,
+};
+
+/// 클래스 뒤에 올 문장들: private static descriptor(V_ASSIGN fix — class 뒤라
+/// receiver=D 의 TDZ 회피), static field, static block. 셋은 **소스 순서**대로
+/// 평가돼야 한다 (#4629, #5696) — `static a = …; static { … } static #b = …` 에서
+/// 순서가 밀리면 block 이 보는 값이 달라진다.
+fn appendStaticStatements(
+    self: *Transformer,
+    out: *std.ArrayListUnmanaged(NodeIndex),
+    class_name: NodeIndex,
+    field_ref_scope: ScopeId,
+    parts: StaticParts,
+) Error!void {
+    var static_elements: std.ArrayList(es2022.StaticElement) = .empty;
+    defer static_elements.deinit(self.allocator);
+    try es2022.orderStaticElements(
+        self.allocator,
+        &static_elements,
+        parts.descriptor_orders,
+        parts.fields.len,
+        parts.block_field_counts,
+        parts.blocks.len,
+    );
+    for (static_elements.items) |element| try out.append(self.allocator, switch (element) {
+        .descriptor => |i| parts.descriptors[i],
+        .field => |i| try self.buildStaticFieldAssignment(class_name, parts.fields[i], field_ref_scope),
+        .block => |i| parts.blocks[i],
+    });
 }
 
 /// useDefineForClassFields=false / experimentalDecorators 처리.
@@ -428,9 +477,24 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         const old_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
 
         if (has_any_decorator) {
+            const static_field_ref_scope = if (self.semantic_edit_enabled) blk: {
+                const class_scope = self.outputOwnedScope(source_idx) orelse
+                    std.debug.panic("static class field has no source class scope", .{});
+                break :blk self.outputScopeParent(class_scope);
+            } else self.current_scope;
+            var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            defer post.deinit(self.allocator);
+            try appendStaticStatements(self, &post, new_name, static_field_ref_scope, .{
+                .descriptors = assign_static_descriptors.items,
+                .descriptor_orders = static_descriptor_orders.items,
+                .fields = static_field_assignments.items,
+                .block_field_counts = static_block_field_counts.items,
+                .blocks = static_block_iifes.items,
+            });
             // #3/#4: private weakset 선언은 `let Foo = class {...}` 분해 앞에 와야 한다.
+            const pending_start = self.pending_nodes.items.len;
             for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
-            return try self.transformExperimentalDecorators(
+            const result = try self.transformExperimentalDecorators(
                 source_idx,
                 node,
                 new_name,
@@ -440,11 +504,18 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 old_deco_start,
                 old_deco_len,
                 member_decorators.items,
-                static_block_iifes.items,
-                static_field_assignments.items,
+                post.items,
                 ctor_param_decos.items,
                 ctor_params,
             );
+            // The private helpers the class body and its static statements
+            // reference resolve against everything just emitted (#5711).
+            const scratch_top_t = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top_t);
+            try self.scratch.appendSlice(self.allocator, self.pending_nodes.items[pending_start..]);
+            if (!result.isNone()) try self.scratch.append(self.allocator, result);
+            try trackPrivateHelperStatements(self, source_idx, self.scratch.items[scratch_top_t..], node.span, pm_mappings.items, pf_mappings.items);
+            return result;
         }
     }
 
@@ -475,26 +546,14 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             new_decos.start,        new_decos.len,
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
-        // 클래스 뒤에 올 문장들: private static descriptor(V_ASSIGN fix — class 뒤라
-        // receiver=D 의 TDZ 회피), static field, static block. 셋은 **소스 순서**대로
-        // 평가돼야 한다 (#4629, #5696) — `static a = …; static { … } static #b = …` 에서
-        // 순서가 밀리면 block 이 보는 값이 달라진다.
         var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
         defer post.deinit(self.allocator);
-        var static_elements: std.ArrayList(es2022.StaticElement) = .empty;
-        defer static_elements.deinit(self.allocator);
-        try es2022.orderStaticElements(
-            self.allocator,
-            &static_elements,
-            static_descriptor_orders.items,
-            static_field_assignments.items.len,
-            static_block_field_counts.items,
-            static_block_iifes.items.len,
-        );
-        for (static_elements.items) |element| try post.append(self.allocator, switch (element) {
-            .descriptor => |i| assign_static_descriptors.items[i],
-            .field => |i| try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[i], static_field_ref_scope),
-            .block => |i| static_block_iifes.items[i],
+        try appendStaticStatements(self, &post, new_name, static_field_ref_scope, .{
+            .descriptors = assign_static_descriptors.items,
+            .descriptor_orders = static_descriptor_orders.items,
+            .fields = static_field_assignments.items,
+            .block_field_counts = static_block_field_counts.items,
+            .blocks = static_block_iifes.items,
         });
 
         // 클래스 **식**은 값 자리라 문장을 앞뒤에 끼울 수 없다 — IIFE 로 감싸 클래스를
