@@ -158,6 +158,13 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         const function = self.ast.nodes.items[function_raw];
         const params = self.ast.functionParamsList(function);
         if (params.len == 0 or !Params.hasDefaultOrRest(self, params)) continue;
+        // Native defaults keep the parameter environment native. Only an object
+        // rest parameter, lowered into the body, moves the list there — like
+        // `collectRenames`. Splitting anything else renamed the parameter and
+        // left a same-named body `var` undefined (#5668:
+        // `function g(a = 1) { var a; return a }` at es2015).
+        if (!self.options.unsupported.default_params and
+            (try Params.firstObjectRestParamIndex(self, params)) == null) continue;
         const scope_raw = self.scope_owner_map.get(@intCast(function_raw)) orelse continue;
         if (scope_raw >= scopes.len) continue;
         const function_scope: ScopeId = @enumFromInt(scope_raw);
@@ -349,6 +356,77 @@ fn canonicalIdentifier(allocator: std.mem.Allocator, name: []const u8) std.mem.A
         try decoded.appendSlice(allocator, bytes[0..len]);
     }
     return decoded.toOwnedSlice(allocator);
+}
+
+/// Bindings of a class constructor that hide a name its instance field
+/// initializers read (#5668). Lowered fields run at the top of the
+/// constructor body, so `class K { f = x; constructor() { var x } }` read the
+/// constructor's `x`. Renaming those constructor bindings keeps the
+/// initializers on the outer binding, as esbuild does (`var x2`).
+pub fn collectFieldCaptureRenames(self: anytype) std.mem.Allocator.Error!Table {
+    var result: Table = .empty;
+    errdefer result.deinit(self.allocator);
+    if (!self.options.unsupported.class_field and self.options.use_define_for_class_fields) return result;
+    const scope_maps = scopeMapsOf(self);
+    const scope_owners = scopeOwnersOf(self);
+    var names: std.StringHashMapUnmanaged(void) = .empty;
+    defer names.deinit(self.allocator);
+    for (self.ast.nodes.items) |body| {
+        if (body.tag != .class_body) continue;
+        names.clearRetainingCapacity();
+        var constructor: ?u32 = null;
+        var members = self.ast.iterateExtraList(body.data.list);
+        while (members.next()) |member_idx| {
+            const member = self.ast.getNode(member_idx);
+            switch (member.tag) {
+                .method_definition => {
+                    const key = self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
+                    if (@import("es_helpers.zig").isConstructorKey(self, key)) constructor = @intFromEnum(member_idx);
+                },
+                .property_definition => {
+                    const flags = self.ast.readExtra(member.data.extra, ast_mod.PropertyExtra.flags);
+                    if ((flags & ast_mod.PropertyFlags.is_static) != 0) continue;
+                    const init = self.ast.readExtraNode(member.data.extra, ast_mod.PropertyExtra.init);
+                    if (!init.isNone()) try collectReferenceNames(self, init, &names);
+                },
+                else => {},
+            }
+        }
+        const ctor = constructor orelse continue;
+        if (names.count() == 0) continue;
+        const scopes_to_check = [_]?u32{ scope_owners.get(ctor), if (functionParamsNode(self, ctor)) |p| scope_owners.get(p) else null };
+        for (scopes_to_check) |maybe_scope| {
+            const scope_raw = maybe_scope orelse continue;
+            if (scope_raw >= scope_maps.len) continue;
+            var bindings = scope_maps[scope_raw].iterator();
+            while (bindings.next()) |entry| {
+                if (names.contains(entry.key_ptr.*)) try result.put(self.allocator, @intCast(entry.value_ptr.*), {});
+            }
+        }
+    }
+    return result;
+}
+
+fn collectReferenceNames(self: anytype, root: ast_mod.NodeIndex, names: *std.StringHashMapUnmanaged(void)) std.mem.Allocator.Error!void {
+    const Ctx = struct {
+        ast: *const ast_mod.Ast,
+        allocator: std.mem.Allocator,
+        names: *std.StringHashMapUnmanaged(void),
+        oom: bool = false,
+        fn visit(ctx: *@This(), idx: ast_mod.NodeIndex, node: ast_mod.Node) ast_walk.WalkAction {
+            _ = idx;
+            if (node.tag == .identifier_reference) {
+                ctx.names.put(ctx.allocator, ctx.ast.identifierNameText(node), {}) catch {
+                    ctx.oom = true;
+                    return .stop;
+                };
+            }
+            return .descend;
+        }
+    };
+    var ctx = Ctx{ .ast = self.ast, .allocator = self.allocator, .names = names };
+    try ast_walk.walkPreorderIterative(self.allocator, self.ast, root, &ctx, Ctx.visit);
+    if (ctx.oom) return error.OutOfMemory;
 }
 
 pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {

@@ -93,7 +93,12 @@ pub fn extractImportsWithCjsDetectionAndDefines(
 
     for (reachable) |ni| {
         const node = ast.nodes.items[ni];
-        if (isInsideAnySpan(node.span, dead_ranges.items)) continue;
+        // A top-level statement is never inside an `if` branch. Spans cannot
+        // tell: a transform-generated branch (the generator state machine of
+        // `if (true) { await 0 }`) can carry the whole program's span, and
+        // the prepended runtime helper imports have an anchored empty span
+        // inside it — ES5 bundles lost `__async` (#5668).
+        if (!top_level.isSet(ni) and isInsideAnySpan(node.span, dead_ranges.items)) continue;
         switch (node.tag) {
             .import_declaration => {
                 if (!top_level.isSet(ni)) continue;
