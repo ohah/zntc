@@ -1501,6 +1501,146 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Stage 3 decorator-only lowering retains its exact prepass graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-graph-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    writeFileSync(
+      input,
+      [
+        'const _metadata = 17, _classThis = 19;',
+        'function classTag(value, context) { value.tag = context.kind; return value; }',
+        [
+          'function tweak(value, context) {',
+          "  if (context.kind === 'field') return initial => initial + 1;",
+          "  if (context.kind === 'method') return function() { return value.call(this) + 1; };",
+          "  if (context.kind === 'accessor') return { get() { return value.get.call(this) + 1; }, set(v) { value.set.call(this, v); }, init(v) { return v + 1; } };",
+          '  return value;',
+          '}',
+        ].join('\n'),
+        '@classTag class Example {',
+        '  @tweak field = 40;',
+        '  @tweak method() { return this.field; }',
+        '  @tweak accessor count = 1;',
+        '  @tweak static staticValue = 8;',
+        '}',
+        '@classTag class Other {}',
+        'console.log(Example.tag, Other.tag, new Example().method(), new Example().count, Example.staticValue, _metadata, _classThis);',
+      ].join('\n'),
+    );
+
+    try {
+      const proc = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.ts',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: {
+            ...process.env,
+            ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+          },
+          encoding: 'utf8',
+        },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const stderr = proc.stderr ?? '';
+      const modes = stderr
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(modes, stderr).toHaveLength(1);
+      expect(modes[0]).toContain('semantic_graph=retained');
+
+      const reports = stderr
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(reports, stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0])).toEqual([]);
+      expect(Number(reports[0].match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+      expect(Number(reports[0].match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+
+      const owners = stderr
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('zntc: symbol-source-scope-owner '));
+      expect(owners, stderr).toHaveLength(1);
+      expect(scopeOwnerAuditProblems(owners[0])).toEqual([]);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('class class 42 3 9 17 19\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('Stage 3 decorator graph retention keeps downlevel, direct-eval, and legacy cases on reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-negative-'));
+    const input = join(dir, 'entry.ts');
+    const output = join(dir, 'out.cjs');
+    const stage3Source = [
+      'function mark(value, context) { return value; }',
+      '@mark class Example { @mark method() { return 42; } }',
+      'console.log(new Example().method());',
+    ].join('\n');
+    const cases = [
+      { name: 'ES5 class lowering', args: ['--target=es5'], source: stage3Source },
+      {
+        name: 'direct eval',
+        args: ['--target=esnext'],
+        source: [
+          'function observe() { return eval("typeof _classThis"); }',
+          ...stage3Source.split('\n'),
+          'console.log(observe());',
+        ].join('\n'),
+      },
+      {
+        name: 'legacy decorators',
+        args: ['--target=esnext', '--experimental-decorators'],
+        source: stage3Source,
+      },
+    ];
+
+    try {
+      for (const fixture of cases) {
+        writeFileSync(input, fixture.source);
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.ts',
+            ...fixture.args,
+            '--platform=node',
+            '--format=cjs',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const modes = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        const sourceMode = modes.find((line) => line.includes('entry.ts'));
+        expect(sourceMode, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+        expect(sourceMode, fixture.name).toContain('semantic_graph=reanalyzed');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('styled-components display-name transform retains its exact prepass graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-styled-prepass-exact-'));
     const output = join(dir, 'out.cjs');
