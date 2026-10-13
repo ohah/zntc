@@ -534,9 +534,21 @@ pub fn ES2017(comptime Transformer: type) type {
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
             const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
 
+            // A nested async arrow inside an already extracted body must share
+            // that body's capture frame. Otherwise its initializer would read
+            // the generated generator's own empty `arguments` object.
+            const nested_in_extracted_body = self.in_extracted_fn_body;
+            const arrow_env = if (nested_in_extracted_body) null else es_helpers.pushArrowEnv(self);
+            defer if (arrow_env) |env| es_helpers.popArrowEnv(self, env);
+            if (!nested_in_extracted_body) self.outermost_lowered_arrow_scope = self.current_scope;
+
+            const saved_extracted_body = self.in_extracted_fn_body;
+            self.in_extracted_fn_body = nested_in_extracted_body;
             const new_params = try self.visitNode(params_idx);
             const saved_temp_counter = self.temp_var_counter;
+            self.in_extracted_fn_body = true;
             const new_body = try self.visitBodyWorkletAware(body_idx);
+            self.in_extracted_fn_body = saved_extracted_body;
             // body visit 중 for-await 다운레벨이 새로 만든 await 정리 (#4488, lowerAsyncFunction 동일).
             try rewriteRemainingAwaitToYield(self, new_body);
 
@@ -568,10 +580,34 @@ pub fn ES2017(comptime Transformer: type) type {
             try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, hoisted_body);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
 
+            const arrow_body = blk: {
+                const scratch_top = self.scratch.items.len;
+                defer self.scratch.shrinkRetainingCapacity(scratch_top);
+                var capture_stmts: [3]NodeIndex = undefined;
+                const capture_count = if (nested_in_extracted_body)
+                    0
+                else
+                    try es_helpers.fillThisArgumentsCaptures(self, &capture_stmts, node.span);
+                if (capture_count == 0) break :blk async_call;
+                const return_stmt = try self.ast.addNode(.{
+                    .tag = .return_statement,
+                    .span = node.span,
+                    .data = .{ .unary = .{ .operand = async_call, .flags = 0 } },
+                });
+                try self.scratch.appendSlice(self.allocator, capture_stmts[0..capture_count]);
+                try self.scratch.append(self.allocator, return_stmt);
+                const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                break :blk try self.ast.addNode(.{
+                    .tag = .block_statement,
+                    .span = node.span,
+                    .data = .{ .list = body_list },
+                });
+            };
+
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
             const new_extra = try self.ast.addExtras(&.{
                 @intFromEnum(new_params),
-                @intFromEnum(async_call),
+                @intFromEnum(arrow_body),
                 new_flags,
             });
             return self.ast.addNode(.{
