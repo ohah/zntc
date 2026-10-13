@@ -182,11 +182,72 @@ fn isNodePureDepth(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
             return isExprPureDepth(ast, @enumFromInt(ast.readExtra(e, 0)), unresolved_globals, d);
         },
 
-        // 멤버 접근 — getter side effect는 무시 (esbuild 동일)
-        .static_member_expression, .computed_member_expression => true,
+        // 멤버 접근은 순수로 본다 — 단, getter 가 있는 객체 리터럴(또는 그것으로 초기화한
+        // 모듈 최상위 바인딩)을 읽으면 getter 가 돈다 (#5665, rollup 동일). esbuild 는 모든
+        // 속성 읽기를 보존하지만, 그만큼 보수적이면 tree shaking 이 크게 약해진다.
+        .static_member_expression, .computed_member_expression => !memberReadMayRunGetter(ast, node),
 
         else => false,
     };
+}
+
+/// Whether a member read targets an object literal with a getter: written in
+/// place, or a module top-level binding initialized with one. Only modules
+/// whose parser saw an object getter pay for the scan.
+fn memberReadMayRunGetter(ast: *const Ast, node: Node) bool {
+    if (!ast.has_object_getter) return false;
+    const e = node.data.extra;
+    if (!ast.hasExtra(e, 0)) return true;
+    var object = ast.readExtraNode(e, 0);
+    while (!object.isNone() and ast.getNode(object).tag == .parenthesized_expression) object = ast.getNode(object).data.unary.operand;
+    if (object.isNone()) return false;
+    const object_node = ast.getNode(object);
+    return switch (object_node.tag) {
+        .object_expression => objectLiteralHasGetter(ast, object_node),
+        .identifier_reference => topLevelBindingHasGetter(ast, ast.getText(object_node.span)),
+        else => false,
+    };
+}
+
+fn objectLiteralHasGetter(ast: *const Ast, node: Node) bool {
+    var it = ast.iterateExtraList(node.data.list);
+    while (it.next()) |prop_idx| {
+        const prop = ast.getNode(prop_idx);
+        if (prop.tag != .method_definition) continue;
+        if (!ast.hasExtra(prop.data.extra, 3)) continue;
+        if ((ast.readExtra(prop.data.extra, 3) & ast_mod.MethodFlags.is_getter) != 0) return true;
+    }
+    return false;
+}
+
+fn topLevelBindingHasGetter(ast: *const Ast, name: []const u8) bool {
+    if (ast.nodes.items.len == 0) return false;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return false;
+    var it = ast.iterateExtraList(root.data.list);
+    while (it.next()) |stmt_idx| {
+        var stmt = ast.getNode(stmt_idx);
+        if (stmt.tag == .export_named_declaration) {
+            const decl: NodeIndex = @enumFromInt(ast.extra_data.items[stmt.data.extra]);
+            if (decl.isNone()) continue;
+            stmt = ast.getNode(decl);
+        }
+        if (stmt.tag != .variable_declaration) continue;
+        const e = stmt.data.extra;
+        var j: u32 = 0;
+        const len = ast.extra_data.items[e + 2];
+        while (j < len) : (j += 1) {
+            const declarator = ast.getNode(@enumFromInt(ast.extra_data.items[ast.extra_data.items[e + 1] + j]));
+            const binding: NodeIndex = @enumFromInt(ast.extra_data.items[declarator.data.extra]);
+            if (binding.isNone()) continue;
+            const binding_node = ast.getNode(binding);
+            if (binding_node.tag != .binding_identifier or !std.mem.eql(u8, ast.getText(binding_node.span), name)) continue;
+            var init: NodeIndex = @enumFromInt(ast.extra_data.items[declarator.data.extra + 2]);
+            while (!init.isNone() and ast.getNode(init).tag == .parenthesized_expression) init = ast.getNode(init).data.unary.operand;
+            if (!init.isNone() and ast.getNode(init).tag == .object_expression and objectLiteralHasGetter(ast, ast.getNode(init))) return true;
+        }
+    }
+    return false;
 }
 
 /// call/new expression 순수성. (oxc `known_globals.rs` 포팅)

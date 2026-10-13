@@ -29,7 +29,7 @@ pub const MAGIC: u32 = 0x5A4E5443; // "ZNTC"
 // v2: #4438 필드별 결정적 직렬화 + leaf sub-variant 폭(none=4/wide=8). v1(통째 memcpy)과
 // 바이트 레이아웃이 완전히 달라 구버전 캐시를 읽으면 위험 → bump 로 version mismatch=miss degrade.
 // cache_key.CODEC_FORMAT 가 이 값을 키에 접으므로 구 캐시는 키 자체가 달라져 무효화된다.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 
 /// null `?[]const u8` 표식 (jsx_pragma offset 자리).
 const NULL_OFFSET: u32 = std.math.maxInt(u32);
@@ -55,7 +55,8 @@ comptime {
     // `preserve_const_declaration_indices`: **직렬화 불필요**. 합성 class-self alias 가 만든
     // minifier 예외 목록이며 parse-cache Ast 에는 비어 있어야 한다.
     // #5595 `is_typescript`: **직렬화**(메타 플래그). transformer 의 import elision 범위를 정한다.
-    if (@typeInfo(Ast).@"struct".fields.len != 27)
+    // #5665 `has_object_getter`: **직렬화**(메타 플래그). tree shaking 의 속성 읽기 순수성 판정.
+    if (@typeInfo(Ast).@"struct".fields.len != 28)
         @compileError("Ast 필드 수가 바뀜 — 새 필드의 직렬화 필요 여부를 판정해 ast_codec 갱신 후 이 수를 갱신할 것.");
 }
 
@@ -135,12 +136,13 @@ pub fn serialize(ast: *const Ast, out: *std.ArrayList(u8), alloc: std.mem.Alloca
     // 항상 같은 byte stream (캐시 결정성). deserialize 는 순서 무관(키 set 복원).
     try putSortedKeySet(&payload, alloc, &ast.type_only_binding_names);
 
-    // 메타 플래그 8개 (1바이트씩)
+    // 메타 플래그 9개 (1바이트씩)
     const flags = [_]bool{
         ast.has_jsx,                   ast.has_jsx_key_after_spread,
         ast.has_decorator,             ast.has_ts_namespace_or_enum,
         ast.has_ts_import_equals,      ast.has_ts_export_equals,
         ast.has_flow_enum_declaration, ast.is_typescript,
+        ast.has_object_getter,
     };
     for (flags) |f| try payload.append(alloc, if (f) @as(u8, 1) else 0);
 
@@ -257,6 +259,7 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
     ast.has_ts_export_equals = (try r.byte()) != 0;
     ast.has_flow_enum_declaration = (try r.byte()) != 0;
     ast.is_typescript = (try r.byte()) != 0;
+    ast.has_object_getter = (try r.byte()) != 0;
 
     ast.jsx_pragma_factory = try readPragma(&r, source);
     ast.jsx_pragma_fragment = try readPragma(&r, source);
