@@ -1567,6 +1567,22 @@ pub fn freshClassNameText(self: anytype, stored: []const u8, node: NodeIndex) []
 }
 
 pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
+    if (self.semantic_edit_enabled) {
+        if (self.runtime_helper_symbol_ids.get(base_name)) |symbol_id| {
+            const editor = self.semantic_editor orelse std.debug.panic("runtime helper SymbolId has no semantic editor", .{});
+            const raw_id = @intFromEnum(symbol_id);
+            if (raw_id >= editor.symbols.items.len)
+                std.debug.panic("runtime helper SymbolId is out of range", .{});
+            // Once the first callsite has selected the helper identity, later
+            // callsites reuse its exact spelling and graph edge. Name resolution
+            // is only needed to reserve the first callsite's SymbolId.
+            const idx = try makeExactSyntheticRefFromSpan(self, editor.symbols.items[raw_id].name);
+            try self.markRuntimeHelperRef(idx);
+            try self.trackRuntimeHelperRefWithId(idx, symbol_id);
+            return idx;
+        }
+    }
+
     const names = @import("../runtime_helper_names.zig");
     const local_name = names.helperName(base_name, self.options.minify_whitespace);
     const resolved = try resolveRuntimeHelperName(self, local_name);
