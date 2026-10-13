@@ -6359,7 +6359,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES2015 async arrows with captures, methods, and direct eval stay on semantic reanalysis', () => {
+  test('ES2015 async-arrow this captures retain exact graphs while unsupported cases reanalyze', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2015-async-fallback-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -6387,6 +6387,29 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(execution.status, execution.stderr).toBe(0);
       expect(execution.stdout).toBe(expectedOutput);
     };
+    const expectRetainedAndRuns = (proc: ReturnType<typeof run>, expectedOutput: string) => {
+      expect(proc.status, proc.stderr).toBe(0);
+      const lines = (proc.stderr ?? '').split(/\r?\n/);
+      const mode = lines.find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+      );
+      expect(mode, proc.stderr).toContain('semantic_graph=retained');
+      const report = lines.find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+      );
+      expect(report, proc.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+      const execution = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(execution.status, execution.stderr).toBe(0);
+      expect(execution.stdout).toBe(expectedOutput);
+    };
 
     try {
       writeFileSync(
@@ -6398,7 +6421,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'readThis.call({ base: 40 }).then(result => console.log(result + 2));',
         ].join('\n'),
       );
-      expectReanalyzedAndRuns(run(), '42\n');
+      expectRetainedAndRuns(run(), '42\n');
 
       writeFileSync(
         input,
