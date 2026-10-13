@@ -568,13 +568,29 @@ pub fn ES2022(comptime Transformer: type) type {
                             // visitNode(fast path) 가 decorator + field 를 함께 처리한다.
                             const field_deco_len = self.readU32(pe, ast_mod.PropertyExtra.deco_len);
                             if (field_deco_len == 0) {
-                                const lowered_key = if (key_node.tag == .computed_property_key) blk: {
+                                const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
+                                var key_ref: NodeIndex = .none;
+                                var name_ref: NodeIndex = .none;
+                                if (key_node.tag == .computed_property_key) {
                                     const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span, true);
                                     try pre_stmts.append(self.allocator, memo.decl);
-                                    break :blk memo.computed_key;
-                                } else key;
-                                const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
-                                const init_stmt = try buildPublicFieldSetInit(self, lowered_key, init_val, span);
+                                    // `var _a = …` sits beside the private helpers; the
+                                    // constructor's key read (and `__name(fn, _a)`) bind to it.
+                                    const temp_name = self.ast.getText(self.ast.getNode(memo.binding).data.string_ref);
+                                    var temp_symbol: ?u32 = null;
+                                    if (self.semantic_edit_enabled) {
+                                        const id = (try self.declareSyntheticInScope(memo.binding, span, .variable_var, private_helper_scope)) orelse
+                                            std.debug.panic("computed field key temp has no direct SymbolId", .{});
+                                        temp_symbol = @intFromEnum(id);
+                                    }
+                                    key_ref = try exactTempRef(self, temp_name, temp_symbol);
+                                    // Define semantics name the value like `[k] = fn` does; an
+                                    // assignment (`this[_a] = fn`) does not.
+                                    if (self.options.use_define_for_class_fields and
+                                        try @import("parameter_environment.zig").needsRuntimeKeyName(self, key, init_val))
+                                        name_ref = try exactTempRef(self, temp_name, temp_symbol);
+                                }
+                                const init_stmt = try buildPublicFieldSetInit(self, key, key_ref, init_val, name_ref, span);
                                 try ctor_init_stmts.append(self.allocator, init_stmt);
                                 continue;
                             }
@@ -625,30 +641,46 @@ pub fn ES2022(comptime Transformer: type) type {
             return true;
         }
 
-        fn buildPublicFieldSetInit(self: *Transformer, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        /// A read of an already-named temp: no second collision rename.
+        fn exactTempRef(self: *Transformer, name: []const u8, symbol: ?u32) Transformer.Error!NodeIndex {
+            if (!self.semantic_edit_enabled) return es_helpers.makeExactSyntheticRef(self, name);
+            return es_helpers.makeDeferredExactSyntheticRef(self, name, symbol);
+        }
+
+        /// `key_ref`: the emitted read of a memoized computed key (`.none` keeps
+        /// `key_idx`). `name_ref`: a read of that key naming an anonymous
+        /// function value, as in the other field lowering (`__name(fn, _a)`).
+        fn buildPublicFieldSetInit(self: *Transformer, key_idx: NodeIndex, key_ref: NodeIndex, init_idx: NodeIndex, name_ref: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const this_node = try self.ast.addNode(.{
                 .tag = .this_expression,
                 .span = span,
                 .data = .{ .none = 0 },
             });
+            const visited = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try self.visitNode(init_idx);
+            const value = if (name_ref.isNone()) visited else blk: {
+                self.runtime_helpers.keep_names = true;
+                const callee = try es_helpers.makeRuntimeHelperRef(self, "__name");
+                break :blk try es_helpers.makeCallExpr(self, callee, &.{ visited, name_ref }, span);
+            };
             // define 의미론이면 own property 를 정의한다 — assign 은 상위 클래스의
             // 같은 이름 setter 를 타버린다 (#4629). class_member_helpers 의
             // buildThisAssignment 와 같은 판단이며, private member 가 있는 클래스는
             // 이 경로로 들어온다.
             if (self.options.use_define_for_class_fields) {
                 self.runtime_helpers.public_field = true;
-                const key_arg = try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
-                const value = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try self.visitNode(init_idx);
+                const key_arg = if (key_ref.isNone()) try es_helpers.buildDefinePropertyKeyArg(self, key_idx) else key_ref;
                 const callee = try es_helpers.makeRuntimeHelperRef(self, "__publicField");
                 const call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, key_arg, value }, span);
                 return es_helpers.makeExprStmt(self, call, span);
             }
-            const member = try es_helpers.makeMemberFromKeyIdx(self, this_node, key_idx, span);
-            const init = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try self.visitNode(init_idx);
+            const member = if (key_ref.isNone())
+                try es_helpers.makeMemberFromKeyIdx(self, this_node, key_idx, span)
+            else
+                try es_helpers.makeComputedMember(self, this_node, key_ref, span);
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = member, .right = init, .flags = 0 } },
+                .data = .{ .binary = .{ .left = member, .right = value, .flags = 0 } },
             });
             return es_helpers.makeExprStmt(self, assign, span);
         }

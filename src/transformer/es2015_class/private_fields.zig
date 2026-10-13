@@ -257,26 +257,23 @@ pub fn PrivateFields(comptime Transformer: type) type {
             }
         }
 
-        /// Private method lowering creates references before the enclosing
+        /// Private member lowering creates references before the enclosing
         /// class tree is complete. Finalize those exact node/SymbolId pairs once
-        /// the emitted scope ancestry is available.
+        /// the emitted scope ancestry is available: the private helpers and
+        /// the computed field key temps declared beside them. Every producer of
+        /// a pending exact reference is class private lowering, and a nested
+        /// class finalizes its own first, so whatever is pending under `root`
+        /// belongs to this class.
         pub fn trackPrivateMethodSymbols(self: *Transformer, root: NodeIndex, pms: []const Transformer.PrivateMethodMapping, pfs: []const Transformer.PrivateFieldMapping, root_scope: ScopeId) Transformer.Error!void {
             if (!self.semantic_edit_enabled or (pms.len == 0 and pfs.len == 0)) return;
-            var private_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
-            defer private_symbol_ids.deinit(self.allocator);
             for (pms) |pm| {
-                const weakset_id = pm.weakset_symbol_id orelse
+                if (pm.weakset_symbol_id == null)
                     std.debug.panic("private method mapping has no direct WeakSet SymbolId", .{});
-                try private_symbol_ids.put(self.allocator, weakset_id, {});
-                const function_id = pm.func_symbol_id orelse
+                if (pm.func_symbol_id == null)
                     std.debug.panic("private method mapping has no direct function SymbolId", .{});
-                try private_symbol_ids.put(self.allocator, function_id, {});
-                if (pm.func_outer_symbol_id) |outer_id|
-                    try private_symbol_ids.put(self.allocator, outer_id, {});
             }
             for (pfs) |pf| {
-                const raw_id = pf.symbol_id orelse std.debug.panic("private field mapping has no direct SymbolId", .{});
-                try private_symbol_ids.put(self.allocator, raw_id, {});
+                if (pf.symbol_id == null) std.debug.panic("private field mapping has no direct SymbolId", .{});
             }
 
             var pending_exact_refs: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -284,10 +281,9 @@ pub fn PrivateFields(comptime Transformer: type) type {
             var finalized_exact_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer finalized_exact_refs.deinit(self.allocator);
             for (self.pending_exact_symbol_refs.items) |pending| {
-                if (!private_symbol_ids.contains(pending.symbol_id)) continue;
                 const gop = try pending_exact_refs.getOrPut(self.allocator, @intFromEnum(pending.node));
                 if (gop.found_existing)
-                    std.debug.panic("private helper reference node is pending more than once", .{});
+                    std.debug.panic("generated reference node is pending more than once", .{});
                 gop.value_ptr.* = pending.symbol_id;
             }
 
@@ -323,7 +319,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (finalized_exact_refs.count() > 0) {
                 var kept: usize = 0;
                 for (self.pending_exact_symbol_refs.items) |pending| {
-                    if (private_symbol_ids.contains(pending.symbol_id) and finalized_exact_refs.contains(@intFromEnum(pending.node))) continue;
+                    if (finalized_exact_refs.contains(@intFromEnum(pending.node))) continue;
                     self.pending_exact_symbol_refs.items[kept] = pending;
                     kept += 1;
                 }
