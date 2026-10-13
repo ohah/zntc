@@ -1270,6 +1270,7 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
         .block_scoping_loop_ret_binding,
         .tagged_template_function_binding,
         .standalone_temp_binding,
+        .standalone_generated_binding,
         => true,
 
         // Fixed aliases, virtual codegen identities, and graph-owned names use
@@ -2771,6 +2772,129 @@ test "#4819 Flow component and JSX lowering retain generated and source identiti
         if (output_analyzer.symbol_ids.items[raw] == source_collision_symbol) source_collision_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), source_collision_reads);
+}
+
+test "#4819 Flow ref-component helper is finalized through its exact SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\// @flow
+        \\const View_withRef = 'source';
+        \\const React = { forwardRef: (fn) => fn };
+        \\component View(ref?: mixed, ...props: { label?: string }) { return props.label; }
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+    try std.testing.expect(parser.is_flow);
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.is_flow = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .defer_runtime_helper_name_resolution = true,
+        .jsx_filename = "/src/input.js",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const SyntheticKind = @import("semantic/symbol.zig").SyntheticKind;
+    const SymbolKind = @import("semantic/symbol.zig").SymbolKind;
+    var helper_id: ?u32 = null;
+    var source_collision_id: ?u32 = null;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind == .standalone_generated_binding) helper_id = @intCast(raw_id);
+        if (symbol.kind == .variable_const and
+            std.mem.eql(u8, transformer.ast.getText(symbol.name), "View_withRef"))
+        {
+            source_collision_id = @intCast(raw_id);
+        }
+    }
+    const helper = helper_id orelse return error.MissingFlowComponentHelperSymbol;
+    const helper_symbol = edited.symbols.items[helper];
+    try std.testing.expectEqual(SymbolKind.function_decl, helper_symbol.kind);
+    try std.testing.expectEqual(@as(?SyntheticKind, .standalone_generated_binding), helper_symbol.synthetic_kind);
+    try std.testing.expect(source_collision_id != null);
+    try std.testing.expect(source_collision_id.? != helper);
+    try std.testing.expectEqualStrings("View_withRef2", helper_symbol.synthetic_name);
+    try std.testing.expectEqualStrings(
+        "View_withRef",
+        transformer.late_output_name_bases.get(helper_symbol.synthetic_name) orelse return error.MissingFlowComponentHelperOutputNameBase,
+    );
+
+    var binding_count: usize = 0;
+    var read_count: usize = 0;
+    var reference_count: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw_node| {
+        if (node.tag != .binding_identifier or raw_node >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[raw_node] == helper) binding_count += 1;
+    }
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != helper) continue;
+        reference_count += 1;
+        if (reference.flags.read) read_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), binding_count);
+    try std.testing.expect(reference_count > 0);
+    try std.testing.expect(read_count > 0);
+}
+
+test "#4819 Flow ref-component standalone output applies the helper SymbolId name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\// @flow
+        \\const View_withRef = 'source';
+        \\const React = { forwardRef: (fn) => fn };
+        \\component View(ref?: mixed, ...props: { label?: string }) { return props.label; }
+    ;
+    var result = try transpile(allocator, source, "/src/input.js", .{ .flow = true });
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "function View_withRef2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "React.forwardRef(View_withRef2)") != null);
+
+    var output_scanner = try Scanner.init(allocator, result.code);
+    var output_parser = Parser.init(allocator, &output_scanner);
+    output_parser.configureFromExtension(".mjs");
+    _ = try output_parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), output_parser.errors.items.len);
+    var output_analyzer = SemanticAnalyzer.init(allocator, &output_parser.ast);
+    output_analyzer.is_module = true;
+    try output_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 0), output_analyzer.unresolved_references.count());
+}
+
+test "#4819 Flow ref-component helper keeps direct-eval candidate names reserved" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\// @flow
+        \\const View_withRef = 'source';
+        \\const React = { forwardRef: (fn) => fn };
+        \\component View(ref?: mixed, ...props: { label?: string }) { eval('View_withRef2'); return props.label; }
+    ;
+    var result = try transpile(allocator, source, "/src/input.js", .{ .flow = true });
+    defer result.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "function View_withRef3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "React.forwardRef(View_withRef3)") != null);
 }
 
 test "#4819 Flow component and JSX lowering retain graph in classic runtime" {
@@ -4483,6 +4607,7 @@ test "#4819 standalone final-name policy separates late IDs from other output ow
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.runtime_helper_preamble)));
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.block_scoping_loop_ret_binding)));
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.standalone_temp_binding)));
+    try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.standalone_generated_binding)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.default_export)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.namespace_iife_parameter)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.require_shim_local)));
