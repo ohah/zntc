@@ -547,7 +547,20 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_params = try self.visitNode(params_idx);
             const saved_temp_counter = self.temp_var_counter;
             self.in_extracted_fn_body = true;
-            const new_body = try self.visitBodyWorkletAware(body_idx);
+            // The async arrow body moves into an ordinary generator function.
+            // Native `super` is lexical to the enclosing method and is invalid
+            // across that new function boundary, so lower it through the
+            // method's existing exact super-base/runtime-helper path while the
+            // source home-object context is still active.
+            const new_body = blk: {
+                const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
+                const saved_super_is_static = self.current_super_is_static;
+                self.current_super_in_extracted_fn = true;
+                if (self.current_method_is_static) self.current_super_is_static = true;
+                defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
+                defer self.current_super_is_static = saved_super_is_static;
+                break :blk try self.visitBodyWorkletAware(body_idx);
+            };
             self.in_extracted_fn_body = saved_extracted_body;
             // body visit 중 for-await 다운레벨이 새로 만든 await 정리 (#4488, lowerAsyncFunction 동일).
             try rewriteRemainingAwaitToYield(self, new_body);

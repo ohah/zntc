@@ -352,6 +352,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const saved_super_old_idx = self.current_super_class_old_idx;
             const saved_super_static = self.current_super_is_static;
             const saved_super_static_receiver = self.current_super_static_receiver;
+            const saved_method_is_static = self.current_method_is_static;
             // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
             const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
             self.current_super_class = super_span;
@@ -359,6 +360,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.current_super_class_old_idx = .none;
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
+            self.current_method_is_static = false;
             self.current_super_in_extracted_fn = false;
             // 클래스 안의 `super` 는 이 클래스 기준 — 바깥 객체 메서드의 home 을 끊는다 (#4729).
             const saved_super_home = self.current_super_home_object;
@@ -368,6 +370,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class_old_idx = saved_super_old_idx;
             defer self.current_super_is_static = saved_super_static;
             defer self.current_super_static_receiver = saved_super_static_receiver;
+            defer self.current_method_is_static = saved_method_is_static;
             defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
             // 클래스 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).
@@ -755,6 +758,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const saved_super_old_idx = self.current_super_class_old_idx;
             const saved_super_static = self.current_super_is_static;
             const saved_super_static_receiver = self.current_super_static_receiver;
+            const saved_method_is_static = self.current_method_is_static;
             // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
             const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
             self.current_super_class = super_span;
@@ -762,6 +766,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.current_super_class_old_idx = .none;
             self.current_super_is_static = false;
             self.current_super_static_receiver = null;
+            self.current_method_is_static = false;
             self.current_super_in_extracted_fn = false;
             // 클래스 안의 `super` 는 이 클래스 기준 — 바깥 객체 메서드의 home 을 끊는다 (#4729).
             const saved_super_home = self.current_super_home_object;
@@ -771,6 +776,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer self.current_super_class_old_idx = saved_super_old_idx;
             defer self.current_super_is_static = saved_super_static;
             defer self.current_super_static_receiver = saved_super_static_receiver;
+            defer self.current_method_is_static = saved_method_is_static;
             defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
 
             // 바디 멤버 분류 (visitNode 호출 없이 metadata 만 수집).

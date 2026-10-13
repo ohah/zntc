@@ -797,7 +797,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .none = 0 },
             });
-            const visited = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try self.visitNode(init_idx);
+            const visited = if (init_idx.isNone()) try es_helpers.makeVoidZero(self, span) else try visitInstanceFieldInitValue(self, init_idx);
             const value = if (name_ref.isNone()) visited else blk: {
                 self.runtime_helpers.keep_names = true;
                 const callee = try es_helpers.makeRuntimeHelperRef(self, "__name");
@@ -1032,13 +1032,26 @@ pub fn ES2022(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .none = 0 },
             });
-            const new_init = if (!init_idx.isNone()) try self.visitNode(init_idx) else try es_helpers.makeVoidZero(self, span);
+            const new_init = if (!init_idx.isNone()) try visitInstanceFieldInitValue(self, init_idx) else try es_helpers.makeVoidZero(self, span);
             const call = try es_helpers.makeCallExpr(self, callee, &.{ this_node, new_init }, span);
             return self.ast.addNode(.{
                 .tag = .expression_statement,
                 .span = span,
                 .data = .{ .unary = .{ .operand = call, .flags = 0 } },
             });
+        }
+
+        /// Deferred instance initializers can be visited after their enclosing
+        /// class traversal has returned to a static method. Their `super` base
+        /// is always the instance prototype, and they are not method bodies.
+        fn visitInstanceFieldInitValue(self: *Transformer, init_idx: NodeIndex) Transformer.Error!NodeIndex {
+            const saved_super_is_static = self.current_super_is_static;
+            const saved_method_is_static = self.current_method_is_static;
+            self.current_super_is_static = false;
+            self.current_method_is_static = false;
+            defer self.current_super_is_static = saved_super_is_static;
+            defer self.current_method_is_static = saved_method_is_static;
+            return self.visitNode(init_idx);
         }
 
         /// static block의 body를 IIFE `(() => { ...body... })()`로 변환.

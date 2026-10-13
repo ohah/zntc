@@ -237,6 +237,9 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         self.current_super_static_receiver = null;
         defer self.current_super_is_static = saved_super_is_static;
         defer self.current_super_static_receiver = saved_super_static_receiver;
+        const saved_method_is_static = self.current_method_is_static;
+        self.current_method_is_static = false;
+        defer self.current_method_is_static = saved_method_is_static;
         // #3680: 우리가 outer standalone fn body 안에서 visit 중이라도 inner class body 의
         // `super` 는 lexical 로 valid 하므로 flag 를 reset. (inner private method 가 다시
         // 추출되면 buildStandaloneFunc 가 다시 true 로 set.)
