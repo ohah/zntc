@@ -11954,6 +11954,52 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('Reanimated class factory supports long legal class names', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-long-class-factory-'));
+    const entry = join(dir, 'entry.js');
+    const outputPath = join(dir, 'out.cjs');
+    const className = `Long${'A'.repeat(116)}`;
+    writeFileSync(
+      entry,
+      [
+        `class ${className} { __workletClass = true; value() { return 42; } }`,
+        `const Recreated = ${className}.${className}__classFactory();`,
+        'globalThis.__zntcLongWorkletClassFactory = new Recreated().value();',
+      ].join('\n'),
+    );
+
+    const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+    const { build } = await import(coreEntry);
+    try {
+      for (const minifyIdentifiers of [false, true]) {
+        const result = await build({
+          entryPoints: [entry],
+          platform: 'react-native',
+          format: 'cjs',
+          target: 'esnext',
+          workletTransform: true,
+          minifyIdentifiers,
+          write: false,
+        });
+        expect(result.errors).toEqual([]);
+        expect(result.outputFiles).toHaveLength(1);
+        writeFileSync(outputPath, result.outputFiles[0]!.text);
+
+        const actual = spawnSync(
+          'node',
+          [
+            '-e',
+            `require(${JSON.stringify(outputPath)}); if (globalThis.__zntcLongWorkletClassFactory !== 42) process.exitCode = 1;`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(actual.status, actual.stderr).toBe(0);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test('Reanimated worklet retains its graph when the body has an ordinary nested function', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-worklet-nested-helper-retained-'));
     const entry = join(dir, 'entry.js');

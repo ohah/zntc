@@ -1070,8 +1070,8 @@ fn buildClassFactoryAssignment(
     const zero_span = Span{ .start = 0, .end = 0 };
 
     // factory 이름: `<ClassName>__classFactory`
-    var factory_name_buf: [128]u8 = undefined;
-    const factory_name = std.fmt.bufPrint(&factory_name_buf, "{s}__classFactory", .{class_name}) catch return error.OutOfMemory;
+    const factory_name = std.fmt.allocPrint(t.allocator, "{s}__classFactory", .{class_name}) catch return error.OutOfMemory;
+    defer t.allocator.free(factory_name);
     const factory_name_span = try t.ast.addString(factory_name);
     const class_name_span = try t.ast.addString(class_name);
 
