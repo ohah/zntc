@@ -87,6 +87,14 @@ pub const TransformOptions = struct {
     /// config }`) 순서가 뒤집혀 TDZ 가 났다(#5570). 기다려 줄 기계가 **없는 빌드 위상**
     /// (splitting·preserve-modules·비-ESM·async 미지원)에서는 기존 IIFE 경로를 쓴다.
     tla_export_decl_deferrable: bool = false,
+    /// #5575: a top-level-await module lowered to an async IIFE whose result the
+    /// bundle waits for before running later modules (single-file ESM output
+    /// awaits `__zntc_tla`). Like webpack's async module, every statement after
+    /// the first await then runs inside the wrapper in source order — export
+    /// declarations included — and only bindings stay outside. Without that
+    /// wait, exports keep their place after the wrapper so importers that run
+    /// right away still see a value.
+    tla_module_awaited: bool = false,
     /// TS 타입 스트리핑 활성화 (기본: true)
     strip_types: bool = true,
     /// console.* 호출 제거 (--drop=console)
