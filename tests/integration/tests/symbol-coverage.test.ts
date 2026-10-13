@@ -1603,6 +1603,76 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('unmatched dropped labels retain the graph while matched labels reanalyze', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-unmatched-drop-label-retained-graph-'));
+    const input = join(dir, 'entry.ts');
+    const retainedOutput = join(dir, 'retained.cjs');
+    const reanalyzedOutput = join(dir, 'reanalyzed.cjs');
+    writeFileSync(
+      input,
+      [
+        'const base = 40;',
+        'function addTwo(value: number) {',
+        '  const result = value + 2;',
+        '  return result;',
+        '}',
+        'DEV: {',
+        '  const discarded = base + 1;',
+        '  console.log(discarded);',
+        '}',
+        'console.log(addTwo(base));',
+      ].join('\n'),
+    );
+    const bundle = (output: string, label: string) =>
+      spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--platform=node',
+          '--format=cjs',
+          `--drop-labels=${label}`,
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    const expectPrepass = (stderr: string, graph: 'retained' | 'reanalyzed') => {
+      const lines = stderr.split(/\r?\n/);
+      const scopeAudits = lines.filter((line) =>
+        line.startsWith('zntc: symbol-source-scope-owner '),
+      );
+      expect(scopeAudits, stderr).toHaveLength(1);
+      expect(scopeOwnerAuditProblems(scopeAudits[0]), stderr).toEqual([]);
+      const reports = lines.filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      expect(reports, stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reports[0]), stderr).toEqual([]);
+      const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      expect(mode, stderr).toContain(`semantic_graph=${graph}`);
+    };
+    try {
+      const retained = bundle(retainedOutput, 'TEST');
+      expect(retained.status, retained.stderr).toBe(0);
+      expectPrepass(retained.stderr ?? '', 'retained');
+      const retainedRun = spawnSync('node', [retainedOutput], { encoding: 'utf8' });
+      expect(retainedRun.status, retainedRun.stderr).toBe(0);
+      expect(retainedRun.stdout).toBe('41\n42\n');
+
+      const reanalyzed = bundle(reanalyzedOutput, 'DEV');
+      expect(reanalyzed.status, reanalyzed.stderr).toBe(0);
+      expectPrepass(reanalyzed.stderr ?? '', 'reanalyzed');
+      const reanalyzedRun = spawnSync('node', [reanalyzedOutput], { encoding: 'utf8' });
+      expect(reanalyzedRun.status, reanalyzedRun.stderr).toBe(0);
+      expect(reanalyzedRun.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   for (const minifyIdentifiers of [false, true]) {
     test(`Stage 3 decorator-only lowering retains its exact prepass graph${minifyIdentifiers ? ' with identifier minification' : ''}`, () => {
       const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-graph-'));
