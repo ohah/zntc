@@ -147,6 +147,96 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
+    name: 'lowers instance lexical super before the async body enters its generator',
+    source: `
+      class Base {
+        read(suffix) { return this.prefix + suffix; }
+      }
+      class Child extends Base {
+        readAsync(suffix, _a) {
+          this.prefix = 'instance:';
+          return (async () => {
+            await Promise.resolve();
+            return super.read(suffix);
+          })();
+        }
+      }
+      new Child().readAsync('instance', 42).then(console.log);
+    `,
+    expected: 'instance:instance\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'lowers static lexical super through the constructor base',
+    source: `
+      class Base {
+        static read(suffix) { return this.prefix + suffix; }
+      }
+      class Child extends Base {
+        static readAsync(suffix, _a) {
+          this.prefix = 'static:';
+          return (async () => {
+            await Promise.resolve();
+            return super.read(suffix);
+          })();
+        }
+      }
+      Child.readAsync('static', 42).then(console.log);
+    `,
+    expected: 'static:static\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'keeps an instance-field super base out of an enclosing static method',
+    source: `
+      class Base {
+        read() { return this.prefix; }
+      }
+      class Outer {
+        static build() {
+          class Inner extends Base {
+            constructor() {
+              super();
+              this.prefix = 'inner:';
+            }
+            value = (async () => {
+              await Promise.resolve();
+              return super.read();
+            })();
+          }
+          return new Inner().value;
+        }
+      }
+      Outer.build().then(console.log);
+    `,
+    expected: 'inner:\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'lowers object-method lexical super through its home object',
+    source: `
+      const Base = { read(suffix) { return this.prefix + suffix; } };
+      const Child = {
+        __proto__: Base,
+        readAsync(suffix, _a) {
+          const _obj = 'object:';
+          this.prefix = _obj;
+          return (async () => {
+            await Promise.resolve();
+            return super.read(suffix);
+          })();
+        },
+      };
+      Child.readAsync('object', 42).then(console.log);
+    `,
+    expected: 'object:object\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: true,
+  },
+  {
     name: 'keeps direct eval on the conservative graph path',
     source: `
       function read() {

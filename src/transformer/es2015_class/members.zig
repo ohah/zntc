@@ -189,10 +189,19 @@ pub fn Members(comptime Transformer: type) type {
 
             const saved_field_alias = self.super_call_this_alias;
             const saved_needs_this = self.needs_this_var;
+            // Deferred field initializers are visited after class traversal may
+            // have returned to an enclosing static method. Their lexical super
+            // base is always the instance prototype, regardless of that caller.
+            const saved_super_is_static = self.current_super_is_static;
+            const saved_method_is_static = self.current_method_is_static;
+            self.current_super_is_static = false;
+            self.current_method_is_static = false;
             if (self.current_super_class != null) {
                 self.super_call_this_alias = true;
             }
             defer self.super_call_this_alias = saved_field_alias;
+            defer self.current_super_is_static = saved_super_is_static;
+            defer self.current_method_is_static = saved_method_is_static;
 
             for (cm.instance_inits.items) |entry| {
                 const init_stmt = switch (entry) {

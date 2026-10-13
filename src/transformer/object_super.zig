@@ -44,6 +44,56 @@ fn superMustBeLowered(self: *const Transformer, flags: u32) bool {
     return members.methodNeedsAsyncOrGeneratorLowering(self, flags);
 }
 
+/// ES2015 async-arrow lowering moves the arrow body into an ordinary generator.
+/// A lexical `super` in that body must use the object method's home object too,
+/// even when the containing method itself remains native.
+fn hasDownleveledAsyncArrowSuper(self: *Transformer, method: Node) bool {
+    if (!self.options.unsupported.async_await) return false;
+
+    const Work = struct {
+        node: NodeIndex,
+        inside_async_arrow: bool,
+    };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    const e = method.data.extra;
+    stack.append(self.allocator, .{
+        .node = self.readNodeIdx(e, ast_mod.MethodExtra.params),
+        .inside_async_arrow = false,
+    }) catch return true;
+    stack.append(self.allocator, .{
+        .node = self.readNodeIdx(e, ast_mod.MethodExtra.body),
+        .inside_async_arrow = false,
+    }) catch return true;
+
+    while (stack.pop()) |work| {
+        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(work.node);
+        if (work.inside_async_arrow and node.tag == .super_expression) return true;
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .class_declaration,
+            .class_expression,
+            .method_definition,
+            => continue,
+            else => {},
+        }
+        const inside_async_arrow = work.inside_async_arrow or
+            (node.tag == .arrow_function_expression and
+                (self.readU32(node.data.extra, ast_mod.ArrowExtra.flags) & ast_mod.ArrowFlags.is_async) != 0);
+        var children = ast_walk.children(self.ast, node);
+        while (children.next()) |child| {
+            stack.append(self.allocator, .{
+                .node = child,
+                .inside_async_arrow = inside_async_arrow,
+            }) catch return true;
+        }
+    }
+    return false;
+}
+
 /// 메서드의 params/body 에 이 메서드를 home 으로 하는 `super` 가 있는지.
 /// 일반 함수·클래스·다른 메서드는 경계 — 그 안의 `super` 는 다른 home 을 가진다(일반
 /// 함수 안에선 애초에 문법 오류). arrow 는 경계가 아니다.
@@ -188,7 +238,7 @@ pub fn prepareHome(self: *Transformer, node: Node, allow_late_output_name: bool)
         const m = self.ast.getNode(m_idx);
         if (m.tag != .method_definition) continue;
         const flags = self.readU32(m.data.extra, ast_mod.MethodExtra.flags);
-        if (!superMustBeLowered(self, flags)) continue;
+        if (!superMustBeLowered(self, flags) and !hasDownleveledAsyncArrowSuper(self, m)) continue;
         if (!methodUsesSuper(self, m)) continue;
         if (home == null) home = try allocHome(self, node, allow_late_output_name);
         try self.object_super_homes.append(self.allocator, .{ .method_extra = m.data.extra, .home = home.?.span });

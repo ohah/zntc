@@ -190,6 +190,10 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     const home_saved = object_super.enterMethod(self, object_super.lookup(self, e));
     defer object_super.leaveMethod(self, home_saved);
 
+    const saved_method_is_static = self.current_method_is_static;
+    self.current_method_is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
+    defer self.current_method_is_static = saved_method_is_static;
+
     // 파라미터 방문 — parameter property 감지
     const params_idx_old = self.readNodeIdx(e, 1);
     var params_span = node.span;

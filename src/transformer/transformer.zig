@@ -467,6 +467,10 @@ pub const Transformer = struct {
     /// super.method() → Parent.prototype.method.call(this) 변환에 사용.
     current_super_class: ?Span = null,
     current_super_class_old_idx: NodeIndex = .none,
+    /// Staticness of the nearest source method body. Kept separately from
+    /// `current_super_is_static`, which requests lowering for operations such
+    /// as extracted callbacks and static field initializers.
+    current_method_is_static: bool = false,
     /// 현재 super member 접근이 static class element 안에서 발생하는지 여부.
     /// static method/field/block 에서는 super base가 Parent.prototype이 아니라 Parent constructor다.
     current_super_is_static: bool = false,

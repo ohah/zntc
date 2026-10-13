@@ -175,6 +175,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     self.current_super_static_receiver = null;
     defer self.current_super_is_static = saved_super_is_static;
     defer self.current_super_static_receiver = saved_super_static_receiver;
+    const saved_method_is_static = self.current_method_is_static;
+    self.current_method_is_static = false;
+    defer self.current_method_is_static = saved_method_is_static;
     // #3680: inner class body 안의 super 는 lexical 로 valid — outer standalone fn flag reset.
     const saved_super_in_extracted_fn = self.current_super_in_extracted_fn;
     self.current_super_in_extracted_fn = false;
