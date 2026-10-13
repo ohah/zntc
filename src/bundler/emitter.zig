@@ -1133,6 +1133,16 @@ pub fn emitWithTreeShaking(
     // sequential CJS var wrap 합치기를 위한 직전 모듈 상태 추적 (minify only).
     var prev_was_cjs_var_minify = false;
 
+    var early_cjs_inits: std.ArrayList(EarlyCjsInit) = .empty;
+    defer early_cjs_inits.deinit(allocator);
+    if (!skip_bundle_concat) {
+        for (sorted.items, 0..) |m, i| {
+            if (results[i].code == null) continue;
+            try collectEarlyCjsInits(allocator, graph, linker, m, null, &early_cjs_inits);
+        }
+        sortEarlyCjsInits(early_cjs_inits.items);
+    }
+
     for (sorted.items, 0..) |m, i| {
         // helpers 합산 (bitwise OR)
         collected_helpers = @bitCast(@as(u32, @bitCast(collected_helpers)) | @as(u32, @bitCast(results[i].helpers)));
@@ -1149,6 +1159,15 @@ pub fn emitWithTreeShaking(
             try appendRunBeforeMainCalls(&module_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
             module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
             rbm_calls_emitted = true;
+        }
+
+        if (early_cjs_inits.items.len > 0) {
+            const before_len = module_output.items.len;
+            try appendEarlyCjsInitsBefore(&module_output, allocator, early_cjs_inits.items, m, linker, options.minify_whitespace);
+            if (module_output.items.len != before_len) {
+                module_line += @intCast(std.mem.count(u8, module_output.items[before_len..], "\n"));
+                prev_was_cjs_var_minify = false;
+            }
         }
 
         const is_entry = if (entry_idx) |ei| m.index.toU32() == ei else false;
@@ -1843,6 +1862,85 @@ fn findLastRunBeforeMainPosition(sorted: []const *const Module, closure: *const 
 
 pub fn shouldInsertRunBeforeMainBefore(position: usize, insert_after_pos: ?usize) bool {
     return if (insert_after_pos) |last| position > last else true;
+}
+
+/// A CommonJS module that a scope-hoisted ESM module imports runs where it is
+/// imported (Node, esbuild, rolldown): `import './a'; import c from './c.cjs';
+/// import './b'` logs a1 c b1. The importer's own `var c = require_c()` sits
+/// in its region, after b's, so the output calls `require_c();` right before
+/// the next hoisted module that runs after c (#5666). The factory caches its
+/// exports: the importer's later call returns them.
+pub const EarlyCjsInit = struct {
+    /// `exec_index` of the CommonJS module.
+    slot: u32,
+    importer_exec: u32,
+    target: *const Module,
+    done: bool = false,
+
+    fn lessThan(_: void, a: EarlyCjsInit, b: EarlyCjsInit) bool {
+        return a.slot < b.slot;
+    }
+};
+
+/// The CommonJS modules `importer` evaluates through its static imports.
+/// `in_output` limits them to modules emitted in the same output (a chunk):
+/// only there is `require_x` the factory's own name.
+pub fn collectEarlyCjsInits(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    linker: ?*const Linker,
+    importer: *const Module,
+    in_output: ?*const std.DynamicBitSet,
+    out: *std.ArrayList(EarlyCjsInit),
+) !void {
+    const l = linker orelse return;
+    // RN inlineRequires defers requires to their use sites on purpose; the dev
+    // registry resolves CommonJS through module ids.
+    if (l.inline_requires or l.useDevModuleRegistry()) return;
+    if (importer.wrap_kind != .none) return;
+    for (importer.import_records) |rec| {
+        if (!rec.kind.isEagerEvalDependency() or rec.resolved.isNone()) continue;
+        const target = graph.getModule(rec.resolved) orelse continue;
+        if (target.wrap_kind != .cjs or target.exec_index >= importer.exec_index) continue;
+        if (l.tree_shaker_active and !target.is_included) continue;
+        if (in_output) |set| {
+            const ti = target.index.toUsize();
+            if (ti >= set.capacity() or !set.isSet(ti)) continue;
+        }
+        try out.append(allocator, .{ .slot = target.exec_index, .importer_exec = importer.exec_index, .target = target });
+    }
+}
+
+pub fn sortEarlyCjsInits(entries: []EarlyCjsInit) void {
+    std.mem.sort(EarlyCjsInit, entries, {}, EarlyCjsInit.lessThan);
+}
+
+/// Emits the pending `require_x();` calls whose CommonJS module runs before
+/// the hoisted module `next` (and whose importer comes later).
+pub fn appendEarlyCjsInitsBefore(
+    output: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    entries: []EarlyCjsInit,
+    next: *const Module,
+    linker: ?*const Linker,
+    minify_whitespace: bool,
+) !void {
+    if (next.wrap_kind != .none) return;
+    const l = linker orelse return;
+    for (entries) |*entry| {
+        if (entry.done) continue;
+        if (next.exec_index >= entry.importer_exec) {
+            // The importer's own preamble runs it from here on.
+            entry.done = true;
+            continue;
+        }
+        if (entry.slot >= next.exec_index) continue;
+        entry.done = true;
+        const name = entry.target.allocRequireName(allocator, &l.rename_table) catch continue;
+        defer allocator.free(name);
+        try output.appendSlice(allocator, name);
+        try output.appendSlice(allocator, if (minify_whitespace) "();" else "();\n");
+    }
 }
 
 /// 한 워커가 sorted_items[lo..hi) 모듈을 순차 emit 해 각자의 results[i] 슬롯에 쓴다(#4007 —
