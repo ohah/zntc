@@ -48,6 +48,7 @@ export default (() => {
 	var _Class = class {
 		static {
 			_classThis = this;
+			__setFunctionName(_classThis, "default");
 		}
 		static {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
@@ -318,6 +319,7 @@ export default (() => {
 	var _Class = class {
 		static {
 			_classThis = this;
+			__setFunctionName(_classThis, "default");
 		}
 		static {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
@@ -595,6 +597,7 @@ export default (() => {
 	var _Class = class {
 		static {
 			_classThis = this;
+			__setFunctionName(_classThis, "default");
 		}
 		static {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
@@ -660,6 +663,7 @@ export default (() => {
 	var _Class = class {
 		static {
 			_classThis = this;
+			__setFunctionName(_classThis, "default");
 		}
 		static {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
@@ -738,6 +742,7 @@ export default (() => {
 	var _Class = class {
 		static {
 			_classThis = this;
+			__setFunctionName(_classThis, "default");
 		}
 		static {
 			const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;

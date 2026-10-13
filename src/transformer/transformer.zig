@@ -371,6 +371,9 @@ pub const Transformer = struct {
     /// from placeholder formals, so assigning one no longer writes the mapped
     /// `arguments` slot. Collects those bindings for the caller.
     unlinked_parameter_bindings: ?*std.ArrayList(NodeIndex) = null,
+    /// The operand of the `export default` being visited: an anonymous class
+    /// there is named "default" (#5669).
+    default_export_operand: NodeIndex = .none,
     /// Source initializer NodeIndex -> original inferred function/class name.
     parameter_inferred_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
     /// Anonymous source class NodeIndex -> the name its NamedEvaluation would

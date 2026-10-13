@@ -629,6 +629,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer class_extra_initializers_refs.deinit(self.allocator);
     var class_this_initialization_refs: std.ArrayList(NodeIndex) = .empty;
     defer class_this_initialization_refs.deinit(self.allocator);
+    var class_this_initialization_read_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_this_initialization_read_refs.deinit(self.allocator);
     var class_this_static_write_refs: std.ArrayList(NodeIndex) = .empty;
     defer class_this_static_write_refs.deinit(self.allocator);
     var class_this_static_read_refs: std.ArrayList(NodeIndex) = .empty;
@@ -675,7 +677,23 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .span = zero_span,
             .data = .{ .unary = .{ .operand = assign, .flags = 0 } },
         });
-        const static_body_list = try self.ast.addNodeList(&.{assign_stmt});
+        // `export default @d class {}` is named "default" before its
+        // decorators run (`ctx.name`), as tsc does; the wrapper `var _Class`
+        // would name it `_Class` (#5669). Lowered ES5/ES2015 classes are named
+        // by the class lowering already, which this call agrees with.
+        const anonymous_default = class_name_origin.isNone() and source_idx == self.default_export_operand;
+        const name_stmt = if (anonymous_default) blk: {
+            const class_this_read = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
+            try class_this_initialization_read_refs.append(self.allocator, class_this_read);
+            const callee = try es_helpers.makeRuntimeHelperRef(self, "__setFunctionName");
+            const name_literal = try es_helpers.buildQuotedKeyLiteral(self, try self.ast.addString("default"));
+            const call = try es_helpers.makeCallExpr(self, callee, &.{ class_this_read, name_literal }, zero_span);
+            break :blk try es_helpers.makeExprStmt(self, call, zero_span);
+        } else NodeIndex.none;
+        const static_body_list = if (name_stmt.isNone())
+            try self.ast.addNodeList(&.{assign_stmt})
+        else
+            try self.ast.addNodeList(&.{ assign_stmt, name_stmt });
         const static_body = try self.ast.addNode(.{
             .tag = .block_statement,
             .span = zero_span,
@@ -1198,6 +1216,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         if (class_this_initialization_scope.isNone()) std.debug.panic("Stage 3 class this has no initialization block scope", .{});
         for (class_this_initialization_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_this_symbol, class_this_initialization_scope, .{ .write = true });
+        }
+        for (class_this_initialization_read_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_this_symbol, class_this_initialization_scope, .{ .read = true });
         }
         for (class_this_static_write_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_this_symbol, metadata_block_scope, .{ .write = true });
