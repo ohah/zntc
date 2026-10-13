@@ -3543,6 +3543,7 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     defer arena.deinit();
     const allocator = arena.allocator();
     const source = "import { css as cx } from '@emotion/react'; " ++
+        "const _emotionCss = 1; const _emotionCss2 = 2; " ++
         "function render(cx) { return <div css={{ color: 'red' }} />; }";
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -3585,6 +3586,7 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
         .emotion = true,
         .jsx_transform = true,
         .jsx_runtime = .classic,
+        .defer_runtime_helper_name_resolution = true,
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
     transformer.symbols = analyzer.symbols.items;
@@ -3609,6 +3611,13 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     const alias_symbol = transformer.getSymbolIdAt(alias_binding) orelse
         return error.MissingEmotionCssAliasSymbol;
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[alias_symbol].kind);
+    try std.testing.expectEqual(@as(?SyntheticKind, .runtime_helper_import), edited.symbols.items[alias_symbol].synthetic_kind);
+    const alias_staging_name = transformer.ast.getText(transformer.ast.getNode(alias_binding).span);
+    try std.testing.expectEqualStrings("_emotionCss3", alias_staging_name);
+    try std.testing.expectEqualStrings(
+        "_emotionCss",
+        transformer.late_output_name_bases.get(alias_staging_name) orelse return error.MissingEmotionCssOutputNameBase,
+    );
     try std.testing.expect(transformer.plugins.emotion.css_prop_use_alias);
     try std.testing.expect(!transformer.plugins.emotion.css_prop_import_required);
     const alias_import = transformer.plugins.emotion.css_prop_alias_import orelse
@@ -3654,6 +3663,49 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[import_symbol].reference_count);
     try std.testing.expectEqual(@as(u32, 1), edited.symbols.items[alias_symbol].reference_count);
     try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[shadow_id].reference_count);
+}
+
+test "#4819 Emotion css prop import keeps its staging name when descendant eval can observe it" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { css as cx } from '@emotion/react'; " ++
+        "function render(cx, suffix) { eval('_emotionCss' + suffix); return <div css={{ color: 'red' }} />; }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .emotion = true,
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const binding = transformer.plugins.emotion.css_prop_alias_binding orelse
+        return error.MissingEmotionCssAliasBinding;
+    const symbol_id = transformer.getSymbolIdAt(binding) orelse return error.MissingEmotionCssAliasSymbol;
+    try std.testing.expectEqual(@as(?SyntheticKind, null), edited.symbols.items[symbol_id].synthetic_kind);
+    try std.testing.expectEqualStrings("_emotionCss2", transformer.ast.getText(transformer.ast.getNode(binding).span));
 }
 
 test "#4819 Flow component classic JSX reads are recorded in the transform graph" {

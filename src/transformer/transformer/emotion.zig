@@ -368,7 +368,11 @@ fn hasShadowingBindingName(self: *Transformer, name: []const u8, owner: NodeInde
 fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
     if (self.plugins.emotion.css_prop_alias_binding) |binding| return binding;
 
-    const name = try es_helpers.resolveSyntheticName(self, "_emotionCss");
+    const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution)
+        try es_helpers.resolveScopedSyntheticOutputName(self, "_emotionCss", self.programScope())
+    else
+        .{ .name = try es_helpers.resolveSyntheticName(self, "_emotionCss"), .late = false };
+    const name = output_name.name;
     const binding = try es_helpers.makeExactSyntheticBinding(self, name);
     const program_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
     const program_span = self.ast.getNode(program_idx).span;
@@ -376,8 +380,10 @@ fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
     const imported_source = self.plugins.emotion.css_import_source_node orelse
         @panic("Emotion css alias has no exact source-module node");
     if (self.semantic_edit_enabled) {
-        const symbol = try self.declareSyntheticInScope(binding, anchor, .import_binding, self.programScope());
-        if (symbol == null) @panic("Emotion css alias has no exact SymbolId");
+        const symbol = try self.declareSyntheticInScope(binding, anchor, .import_binding, self.programScope()) orelse
+            @panic("Emotion css alias has no exact SymbolId");
+        if (output_name.late)
+            es_helpers.markStandaloneLateSyntheticSymbol(self, symbol, .runtime_helper_import);
     }
 
     const imported = try es_helpers.makePropertyName(self, "css");
