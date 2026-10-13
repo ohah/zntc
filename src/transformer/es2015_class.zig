@@ -397,33 +397,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 es_helpers.markStandaloneLateSyntheticSymbol(self, alias_id orelse std.debug.panic("late class-self alias has no SymbolId", .{}), .class_self_alias_binding);
             }
 
-            // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
-            // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
-            const saved_private_fields = self.current_private_fields;
-            const total_private = try setupPrivateFieldMappings(self, &cm, name_span, iife_scope, span);
-            const method_capture_fields: []const Transformer.PrivateFieldMapping = if (total_private > 0)
-                self.current_private_fields
-            else
-                &.{};
-            try es_helpers.reservePrivateMethodFunctionSymbols(self, cm.private_methods.items, method_capture_fields, iife_scope, span);
-            defer {
-                if (total_private > 0) self.allocator.free(self.current_private_fields);
-                self.current_private_fields = saved_private_fields;
-            }
-            try visitDeferredStaticBlocks(self, &cm, name_span);
-
-            const saved_private_methods = self.current_private_methods;
-            if (cm.private_methods.items.len > 0) {
-                self.current_private_methods = cm.private_methods.items;
-            }
-            defer self.current_private_methods = saved_private_methods;
-
-            // --- IIFE 패턴 ---
-            // class X extends P { ... }
-            // → var X = (function(_super) { __extends(X, _super); function X() {...} return X; })(P)
-            // parent class는 IIFE 매개변수로 전달하여 스코프 격리.
-
             // IIFE 내부 함수 바인딩은 원본 class self SymbolId를 사용한다.
+            // static block 의 `this` 가 이 바인딩을 가리키므로 그 방문 전에 정한다 (#5669).
             // 바깥 var 선언 SymbolId와 분리해야 바깥 재할당 후에도 self 참조가 안쪽
             // 생성자를 가리키고, generated constructor/helper 참조도 같이 rename된다.
             // name_span은 stable Span이므로 재사용. getText slice는 이후 addString
@@ -451,6 +426,32 @@ pub fn ES2015Class(comptime Transformer: type) type {
             }
             if (inner != null and (write_binding != null or has_self_alias or renamed_outer))
                 try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
+
+            // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
+            // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
+            const saved_private_fields = self.current_private_fields;
+            const total_private = try setupPrivateFieldMappings(self, &cm, name_span, iife_scope, span);
+            const method_capture_fields: []const Transformer.PrivateFieldMapping = if (total_private > 0)
+                self.current_private_fields
+            else
+                &.{};
+            try es_helpers.reservePrivateMethodFunctionSymbols(self, cm.private_methods.items, method_capture_fields, iife_scope, span);
+            defer {
+                if (total_private > 0) self.allocator.free(self.current_private_fields);
+                self.current_private_fields = saved_private_fields;
+            }
+            try visitDeferredStaticBlocks(self, &cm, name_span);
+
+            const saved_private_methods = self.current_private_methods;
+            if (cm.private_methods.items.len > 0) {
+                self.current_private_methods = cm.private_methods.items;
+            }
+            defer self.current_private_methods = saved_private_methods;
+
+            // --- IIFE 패턴 ---
+            // class X extends P { ... }
+            // → var X = (function(_super) { __extends(X, _super); function X() {...} return X; })(P)
+            // parent class는 IIFE 매개변수로 전달하여 스코프 격리.
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);

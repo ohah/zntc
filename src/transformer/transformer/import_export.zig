@@ -20,7 +20,10 @@ const Error = Transformer.Error;
 /// 클래스/함수 이름(또는 익명의 합성 이름 _Class)의 identifier reference를 operand로 사용.
 pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const operand_idx = node.data.unary.operand;
+    const saved_default_operand = self.default_export_operand;
+    self.default_export_operand = operand_idx;
     const new_operand = try self.visitNode(operand_idx);
+    self.default_export_operand = saved_default_operand;
 
     if (new_operand.isNone()) {
         const operand_node = self.ast.getNode(operand_idx);
