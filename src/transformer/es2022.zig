@@ -332,7 +332,10 @@ pub fn ES2022(comptime Transformer: type) type {
                         const key_node = self.ast.getNode(key);
                         if (key_node.tag != .private_identifier) continue;
 
-                        const orig_name = self.ast.getText(key_node.span);
+                        // A synthetic private name (`#_x_accessor_storage` of a decorated
+                        // accessor) lives in `string_table`, which later `addString`
+                        // calls move: keep a stable copy (#5669).
+                        const orig_name = try self.stableName(self.ast.getText(key_node.span));
                         const pm_kind = es_helpers.privateMethodKindFromFlags(flags);
                         const names = try private_names.makePrivateMethodNames(orig_name, pm_kind);
                         try method_mappings.append(self.allocator, .{
@@ -359,7 +362,10 @@ pub fn ES2022(comptime Transformer: type) type {
                         if (is_static and class_name_text == null) continue;
 
                         const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
-                        const orig_name = self.ast.getText(key_node.span);
+                        // A synthetic private name (`#_x_accessor_storage` of a decorated
+                        // accessor) lives in `string_table`, which later `addString`
+                        // calls move: keep a stable copy (#5669).
+                        const orig_name = try self.stableName(self.ast.getText(key_node.span));
                         const var_name = try private_names.makePrivateVarName(orig_name);
 
                         try field_mappings.append(self.allocator, .{
