@@ -65,6 +65,14 @@ fn trackPrivateHelperStatements(
     try class_private_fields.PrivateFields(Transformer).trackPrivateMethodSymbols(self, root, method_mappings, field_mappings, root_scope);
 }
 
+fn classBodyHasStaticBlock(self: *Transformer, body_idx: NodeIndex) bool {
+    const body = self.ast.getNode(body_idx);
+    for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
+        if (self.ast.getNode(@enumFromInt(raw)).tag == .static_block) return true;
+    }
+    return false;
+}
+
 const StaticParts = struct {
     descriptors: []const NodeIndex,
     descriptor_orders: []const es2022.StaticDescriptorOrder,
@@ -342,6 +350,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         .static_block_iifes = if (lowers_static_blocks) &static_block_iifes else null,
         .static_block_field_counts = if (lowers_static_blocks) &static_block_field_counts else null,
         .static_field_assignments = if (lowers_static_fields) &static_field_assignments else null,
+        .static_fields_as_blocks = lowers_static_fields and !lowers_static_blocks and
+            !self.options.use_define_for_class_fields and classBodyHasStaticBlock(self, body_idx),
         .ctor_param_decos = &ctor_param_decos,
         .has_super = has_super,
         .ctor_params = &ctor_params,
@@ -352,7 +362,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // `.none` 이름을 역참조해 **컴파일러가 죽는다**(#4723 — #4629 가 es2015~es2021 에서
     // field 를 낮추기 시작하며 드러남). 분류(static block 의 this 치환) **전에** 붙인다.
     if (as_expression and new_name.isNone() and
-        classBodyNeedsNameForStatics(self, body_idx, ctx.static_field_assignments != null))
+        classBodyNeedsNameForStatics(self, body_idx, ctx.static_field_assignments != null and !ctx.static_fields_as_blocks))
     {
         const tmp_span = try es_helpers.makeTempVarSpan(self);
         new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
