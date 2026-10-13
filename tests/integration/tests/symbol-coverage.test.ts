@@ -41,6 +41,14 @@ const MINIFY_MODES = [
   ['--minify-identifiers'],
   ['--minify-syntax', '--minify-identifiers'],
 ] as const;
+const LOOP_BINDING_MANIFEST = [
+  {
+    file: '4819-generator-loop-callers.mjs',
+    target: { name: 'es5', arg: '--target=es5' },
+    emittedBindings: ['_loop2', '_loop3'],
+    stdout: '0:while,1:while,2:while|0:do,1:do,2:do\n',
+  },
+] as const;
 const EXACT_ZERO_COUNTERS = [
   'invalid_id',
   'invalid_reference_node',
@@ -682,6 +690,45 @@ describe('symbol identity coverage gate (#4819)', () => {
       expect(fingerprintAfter).not.toBe(fingerprintBefore);
     } finally {
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('필수 `_loop` 바인딩 목록은 exact 심볼·스코프와 실행 결과를 유지한다', () => {
+    const outDir = mkdtempSync(join(tmpdir(), 'zntc-loop-identity-'));
+    try {
+      for (const entry of LOOP_BINDING_MANIFEST) {
+        const file = join(FIXTURE_DIR, entry.file);
+        expect(fixtures, `required loop fixture ${entry.file} must stay in the oracle`).toContain(
+          file,
+        );
+
+        const { stderr, exitCode } = runCoverage(file, entry.target, outDir);
+        expect(exitCode, `${entry.file} ${entry.target.name}: ${stderr}`).toBe(0);
+        expect(transformIdentityAuditProblems(stderr), `${entry.file}: ${stderr}`).toEqual([]);
+
+        const identity = stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity '));
+        expect(identity, stderr).toMatch(/generated_bindings=[1-9]\d*/);
+        expect(identity).toMatch(/binding_scope_mismatch=0(?:\s|$)/);
+        expect(identity).toMatch(/reference_scope_mismatch=0(?:\s|$)/);
+
+        const output = join(outDir, 'out.js');
+        const code = readFileSync(output, 'utf8');
+        const emittedBindings = Array.from(
+          code.matchAll(/\b(_loop\d+)\s*=\s*function\b/g),
+          (match) => match[1],
+        );
+        expect(emittedBindings, `${entry.file} emitted loop binding list`).toEqual([
+          ...entry.emittedBindings,
+        ]);
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(entry.stdout);
+      }
+    } finally {
+      rmSync(outDir, { recursive: true, force: true });
     }
   });
 
