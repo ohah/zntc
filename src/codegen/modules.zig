@@ -522,6 +522,12 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                     !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
                 if (is_named_decl) {
                     try self.emitNode(inner);
+                } else if (inner_node.tag == .function_declaration and !self.options.esm_var_assign_only) {
+                    // `export default function () {}` is a hoisted declaration: a
+                    // module in an import cycle may call it before this module
+                    // runs (#5670). `var _default = function () {}` only
+                    // initialized it in place.
+                    try emitDefaultFunctionDeclaration(self, lm.default_export_name, inner, inner_node);
                 } else {
                     const def_name = lm.default_export_name;
                     if (!self.isExportDefaultSelfRef(inner, def_name)) {
@@ -593,6 +599,27 @@ pub fn tryEmitNsVarAssignment(self: anytype, def_name: []const u8, inner: NodeIn
 }
 
 /// `var <name> = <inner>;` 출력 (export default 변환용).
+/// `function <name>() {}` for an anonymous default-exported function
+/// declaration, named "default" when names are kept.
+fn emitDefaultFunctionDeclaration(self: anytype, name: []const u8, inner: NodeIndex, inner_node: Node) !void {
+    const saved = self.default_function_name;
+    self.default_function_name = name;
+    defer self.default_function_name = saved;
+    try self.emitNode(inner);
+    _ = inner_node;
+    if (keep_names.defaultExportHint(self, inner)) |hint| {
+        try self.writeNewline();
+        try self.write(keep_names.helperName(self));
+        try self.writeByte('(');
+        try self.write(name);
+        try self.writeByte(',');
+        try self.writeSpace();
+        try keep_names.writeQuoted(self, hint);
+        try self.write(");");
+        self.keep_names_used = true;
+    }
+}
+
 pub fn emitDefaultVarAssignment(self: anytype, name: []const u8, inner: NodeIndex) !void {
     if (self.options.minify_whitespace) {
         try self.write("var ");
