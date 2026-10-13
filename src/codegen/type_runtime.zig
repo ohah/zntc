@@ -130,9 +130,8 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     // factory 안에서는 할당만 출력.
     if (!self.options.esm_var_assign_only or self.namespace_body_depth > 0) try self.write("var ");
     try self.emitNode(name_idx);
-    try self.write(" = /* @__PURE__ */ ((");
-    try self.write(param_name);
-    try self.write(") => {");
+    try self.write(" = /* @__PURE__ */ ");
+    try writeIifeHead(self, param_name);
 
     // 2차 패스: 각 멤버 출력
     var auto_value: i64 = 0;
@@ -487,9 +486,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
             try self.write(local_name);
             try self.writeByte(';');
         }
-        try self.write("((");
-        try self.write(iife_param_name);
-        try self.write(") => {");
+        try writeIifeHead(self, iife_param_name);
         const outer_declared_names = self.declared_names;
         self.declared_names = .empty;
         defer {
@@ -582,9 +579,7 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     };
 
     // ((Foo) => { ... })(Foo || (Foo = {}));
-    try self.write("((");
-    try self.write(param_name);
-    try self.write(") => {");
+    try writeIifeHead(self, param_name);
 
     var frame: NamespaceFrame = .{
         .prefix = namespace_prefix,
@@ -1071,4 +1066,19 @@ fn emitInt(self: anytype, value: i64) !void {
     var buf: [20]u8 = undefined;
     const result = std.fmt.bufPrint(&buf, "{d}", .{value}) catch unreachable;
     try self.buf.appendSlice(self.allocator, result);
+}
+
+/// `((N) => {`, or `(function(N) {` when the target lacks arrow functions
+/// (#4797). Both close with `})(…)`. The IIFE body never reads `this` or
+/// `arguments`, so the two forms behave alike.
+fn writeIifeHead(self: anytype, param_name: []const u8) !void {
+    if (self.options.lower_arrow) {
+        try self.write("(function(");
+        try self.write(param_name);
+        try self.write(") {");
+    } else {
+        try self.write("((");
+        try self.write(param_name);
+        try self.write(") => {");
+    }
 }
