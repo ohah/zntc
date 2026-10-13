@@ -629,7 +629,11 @@ pub fn buildMetadataForAst(
             if (eb.kind == .local) try exported_locals.put(self.allocator, m.exportBindingLocalName(eb), {});
         }
 
-        if (self.strict_execution_order and m.wrap_kind == .esm) {
+        // A module waiting on a top-level-await dependency (`in_async_cone`)
+        // runs its imports in source order too: otherwise named-import inits
+        // came before side-effect and re-export inits, and a module imported
+        // after the awaited one ran first (#5662).
+        if (m.wrap_kind == .esm and (self.strict_execution_order or m.in_async_cone)) {
             // 정적 import/export-from의 평가 효과는 모든 importer 본문보다 먼저, 그리고
             // 소스에 나타난 순서대로 발생해야 한다. 단, RN inlineRequires 가 값 사용
             // 지점으로 내리는 named import 는 Metro 와 같이 여기서 선행 실행하지 않는다.

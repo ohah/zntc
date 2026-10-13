@@ -1543,19 +1543,29 @@ fn promoteModulesAfterFirstAsync(self: *ModuleGraph) void {
     }
     const threshold = first_async orelse return;
 
-    it = self.modules.iterator(0);
-    while (it.next()) |m| {
-        if (m.only_dynamically_reached or m.is_entry_point) continue;
-        if (m.exec_index <= threshold) continue;
-        if (!m.module_type.isJavaScriptLike()) continue;
-        if (m.wrap_kind != .none) continue;
-        if (hasOnlyReExportImporters(self, m)) continue;
-        if (m.exports_kind == .none) m.exports_kind = .esm;
-        if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
+    // A module re-exported by a barrel this loop wraps becomes reachable
+    // through that barrel's init (#5662): repeat until nothing changes.
+    var changed = true;
+    while (changed) {
+        changed = false;
+        it = self.modules.iterator(0);
+        while (it.next()) |m| {
+            if (m.only_dynamically_reached or m.is_entry_point) continue;
+            if (m.exec_index <= threshold) continue;
+            if (!m.module_type.isJavaScriptLike()) continue;
+            if (m.wrap_kind != .none) continue;
+            if (hasOnlyReExportImporters(self, m)) continue;
+            if (m.exports_kind == .none) m.exports_kind = .esm;
+            if (m.exports_kind.isEsm()) {
+                m.wrap_kind = .esm;
+                changed = true;
+            }
+        }
     }
 }
 
-/// #4598: 이 모듈을 소비하는 importer 가 **전부 re-export 뿐**인지.
+/// #4598: 이 모듈을 소비하는 importer 가 **전부 re-export 뿐**이고, 그 re-export 모듈도
+/// 래핑되지 않았는지(래핑된 배럴은 init 이 소스 init 을 부른다, #5662).
 /// 그 위상엔 `init_X()` 호출 경로가 없어 승격하면 factory 가 영영 안 돈다.
 fn hasOnlyReExportImporters(self: *ModuleGraph, target: *const Module) bool {
     const t_idx = blk: {
@@ -1574,6 +1584,8 @@ fn hasOnlyReExportImporters(self: *ModuleGraph, target: *const Module) bool {
             if (@intFromEnum(rec.resolved) != t_idx) continue;
             saw_any = true;
             if (rec.kind != .re_export) return false;
+            // A wrapped barrel's init runs its re-export sources' inits (#5662).
+            if (m.wrap_kind == .esm) return false;
         }
     }
     return saw_any;
