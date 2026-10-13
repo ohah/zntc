@@ -497,12 +497,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// assignment destructuring을 sequence expression으로 변환.
         /// ({a, b} = obj) → (_ref = obj, a = _ref.a, b = _ref.b, _ref)
         pub fn lowerDestructuringAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
+            return lowerDestructuringAssignmentWithRight(self, node, try self.visitNode(node.data.binary.right));
+        }
+
+        /// `new_right` is the right side already in the output AST (a state
+        /// machine replaced its `yield`s, #5728).
+        pub fn lowerDestructuringAssignmentWithRight(self: *Transformer, node: Node, new_right: NodeIndex) Transformer.Error!NodeIndex {
             const span = node.span;
             const left_idx = node.data.binary.left;
-            const right_idx = node.data.binary.right;
 
             const left_node = self.ast.getNode(left_idx);
-            const new_right = try self.visitNode(right_idx);
             const assignment_right = if (left_node.tag == .array_assignment_target or left_node.tag == .array_pattern)
                 try buildArrayRead(self, new_right, left_node, span)
             else

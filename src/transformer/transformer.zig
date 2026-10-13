@@ -836,6 +836,7 @@ pub const Transformer = struct {
     }
 
     const node_dispatch_mod = @import("transformer/node_dispatch.zig");
+    pub const needsDestructuringAssignmentLowering = node_dispatch_mod.needsDestructuringAssignmentLowering;
     const visitNodeInner = node_dispatch_mod.visitNodeInner;
 
     // ================================================================
