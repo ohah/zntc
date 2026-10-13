@@ -336,6 +336,23 @@ fn hasStableRuntimeImports(ast: *const ast_mod.Ast, options: TransformOptions) b
     return true;
 }
 
+/// A configured label only changes the AST when a labeled statement has that
+/// exact source spelling. Missing labels are treated as a potential edit so a
+/// malformed AST fails closed to semantic reanalysis.
+fn hasDroppedLabeledStatement(ast: *const ast_mod.Ast, labels: []const []const u8) bool {
+    if (labels.len == 0) return false;
+    for (ast.nodes.items) |node| {
+        if (node.tag != .labeled_statement) continue;
+        const label_idx = node.data.binary.left;
+        if (label_idx.isNone() or @intFromEnum(label_idx) >= ast.nodes.items.len) return true;
+        const label_name = ast.getText(ast.getNode(label_idx).span);
+        for (labels) |dropped| {
+            if (std.mem.eql(u8, label_name, dropped)) return true;
+        }
+    }
+    return false;
+}
+
 /// Static named re-exports preserve the same loader record if every exported
 /// name is an identifier and the declaration has no attributes. Inline
 /// type-only specifiers are allowed because their re-export still evaluates
@@ -4675,7 +4692,8 @@ fn canKeepPrepassSemanticGraph(
     // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
         options.drop_console or
-        options.drop_labels.len != 0 or define_mod.astUsesDefine(ast, options.define) or options.module_specifier_map.len != 0 or
+        hasDroppedLabeledStatement(ast, options.drop_labels) or define_mod.astUsesDefine(ast, options.define) or
+        options.module_specifier_map.len != 0 or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable or
         options.tla_module_awaited) return false;
