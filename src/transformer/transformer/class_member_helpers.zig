@@ -322,7 +322,20 @@ pub fn classifyPropertyDefinition(
     if (lower_fields and is_static and !is_private_key) {
         const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
         const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
-        if (init_idx.isNone()) return; // 초기값 없음 → 타입 선언만, 제거
+        // 초기값 없음: assign 의미론에선 타입 선언일 뿐이라 제거(TS 규칙), define 의미론에선
+        // 필드가 **존재해야** 한다(`'u' in C === true`) → `void 0` 으로 정의 (#5714).
+        if (init_idx.isNone() and !self.options.use_define_for_class_fields) return;
+        if (init_idx.isNone()) {
+            if (ctx.static_field_assignments) |sfa| {
+                try sfa.append(self.allocator, .{
+                    .key = try self.visitNode(key_idx),
+                    .value = try es_helpers.makeVoidZero(self, member.span),
+                    .is_computed = self.ast.getNode(key_idx).tag == .computed_property_key,
+                    .span = member.span,
+                });
+            }
+            return;
+        }
         if (ctx.static_fields_as_blocks) {
             try ctx.class_members.append(self.allocator, try buildStaticFieldBlock(self, key_idx, init_idx, member.span));
             return;

@@ -257,14 +257,16 @@ pub fn ES2022(comptime Transformer: type) type {
             return (flags & ast_mod.PropertyFlags.is_static) != 0;
         }
 
-        /// A static public field with an initializer: the field the class
-        /// lowering moves out as a `C.x = …` statement (`classifyPropertyDefinition`).
+        /// A static public field the class lowering moves out as a `C.x = …`
+        /// statement (`classifyPropertyDefinition`): one with an initializer,
+        /// or any under define semantics (#5714).
         fn isLoweredStaticFieldWithInit(self: *Transformer, member: Node) bool {
             if (!isPublicStaticField(self, member)) return false;
             const flags = self.readU32(member.data.extra, ast_mod.PropertyExtra.flags);
             const type_only_mask = ast_mod.PropertyFlags.is_abstract | ast_mod.PropertyFlags.is_declare | ast_mod.PropertyFlags.flow_variance;
             if (self.options.strip_types and (flags & type_only_mask) != 0) return false;
-            return !self.readNodeIdx(member.data.extra, ast_mod.PropertyExtra.init).isNone();
+            return self.options.use_define_for_class_fields or
+                !self.readNodeIdx(member.data.extra, ast_mod.PropertyExtra.init).isNone();
         }
 
         fn lookupKeyMemo(memos: anytype, raw_idx: u32) ?NodeIndex {
