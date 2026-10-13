@@ -20,6 +20,7 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const transformer_mod = @import("transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const TransformOptions = transformer_mod.TransformOptions;
+const es_helpers = @import("es_helpers.zig");
 const coverage = @import("symbol_coverage.zig");
 const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
 
@@ -3397,6 +3398,47 @@ test "#4819 runtime helper reference owns its SymbolId before its import exists"
     try std.testing.expectEqual(@as(?u32, helper_id), transformer.getSymbolIdAt(local));
     try std.testing.expectEqual(@as(?usize, user_id), editor.scope_maps.items[0].get("__extends"));
     try std.testing.expectEqual(@as(?u32, @intCast(@intFromEnum(local))), transformer.runtime_helper_import_bindings.get(helper_id));
+}
+
+test "#4819 later runtime helper callsites reuse their already selected SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const value = 1;");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+
+    const first = try es_helpers.makeRuntimeHelperRef(&transformer, "__extends");
+    const first_id = transformer.getSymbolIdAt(first) orelse return error.MissingFirstRuntimeHelperId;
+
+    // Simulate later name-resolution state discovering a collision after the
+    // producer already selected the helper identity. Subsequent callsites must
+    // follow the existing SymbolId instead of resolving the helper spelling again.
+    transformer.runtime_helper_aliases.clearRetainingCapacity();
+    try transformer.synthetic_taken.put(allocator, "__extends", {});
+
+    const second = try es_helpers.makeRuntimeHelperRef(&transformer, "__extends");
+    try std.testing.expectEqual(@as(?u32, first_id), transformer.getSymbolIdAt(second));
+    try std.testing.expectEqualStrings("__extends", transformer.ast.getText(transformer.ast.getNode(second).data.string_ref));
+    const editor = &transformer.semantic_editor.?;
+    const first_reference = (try editor.referenceForNode(first)) orelse return error.MissingFirstRuntimeHelperReference;
+    const second_reference = (try editor.referenceForNode(second)) orelse return error.MissingSecondRuntimeHelperReference;
+    try std.testing.expectEqual(first_id, @intFromEnum(first_reference.symbol_id));
+    try std.testing.expectEqual(first_id, @intFromEnum(second_reference.symbol_id));
+    try std.testing.expect(first_reference.flags.read and second_reference.flags.read);
 }
 
 test "#4819 bundler runtime helper import consumes its callsite SymbolId" {
