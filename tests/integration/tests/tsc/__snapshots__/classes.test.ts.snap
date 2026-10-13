@@ -2704,6 +2704,8 @@ class DerivedWithDecoratorOnClass extends Base {
 					if (_metadata) {
 						Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 					}
+				}
+				static {
 					__runInitializers(_classThis, _classExtraInitializers);
 				}
 			};
@@ -5486,10 +5488,12 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
-			__runInitializers(_classThis, _classExtraInitializers);
 		}
 		static a = 1;
 		static b = this.a + 1;
+		static {
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
 	};
 	return C = _classThis;
 })();
@@ -5509,7 +5513,6 @@ let D = (() => {
 			if (_metadata2) {
 				Object.defineProperty(_classThis2, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata2 });
 			}
-			__runInitializers(_classThis2, _classExtraInitializers2);
 		}
 		static c = 2;
 		static d = this.c + 1;
@@ -5526,6 +5529,9 @@ let D = (() => {
 		}
 		static set fa(v) {
 			this.c = v + 1;
+		}
+		static {
+			__runInitializers(_classThis2, _classExtraInitializers2);
 		}
 	};
 	return D = _classThis2;
@@ -5612,10 +5618,12 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
-			__runInitializers(_classThis, _classExtraInitializers);
 		}
 		static a = 1;
 		static b = this.a + 1;
+		static {
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
 	};
 	return C = _classThis;
 })();
@@ -5635,7 +5643,6 @@ let D = (() => {
 			if (_metadata2) {
 				Object.defineProperty(_classThis2, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata2 });
 			}
-			__runInitializers(_classThis2, _classExtraInitializers2);
 		}
 		static c = 2;
 		static d = this.c + 1;
@@ -5652,6 +5659,9 @@ let D = (() => {
 		}
 		static set fa(v) {
 			this.c = v + 1;
+		}
+		static {
+			__runInitializers(_classThis2, _classExtraInitializers2);
 		}
 	};
 	return D = _classThis2;
@@ -9829,19 +9839,22 @@ let C1 = (() => {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
 		}
-		#_a_accessor_storage = __runInitializers(this, _instanceExtraInitializers);
+		#_a_accessor_storage = (__runInitializers(this, _instanceExtraInitializers),__runInitializers(this, _a_initializers, void 0));
 		get a() {
 			return this.#_a_accessor_storage;
 		}
 		set a(value) {
 			this.#_a_accessor_storage = value;
 		}
-		static #_b_accessor_storage;
+		static #_b_accessor_storage = __runInitializers(this, _b_initializers, void 0);
 		static get b() {
 			return this.#_b_accessor_storage;
 		}
 		static set b(value) {
 			this.#_b_accessor_storage = value;
+		}
+		static {
+			__runInitializers(this, _b_extraInitializers);
 		}
 		constructor() {
 			__runInitializers(this, _a_extraInitializers);
@@ -9877,19 +9890,22 @@ let C2 = (() => {
 				Object.defineProperty(_classThis2, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata2 });
 			}
 		}
-		#_a_accessor_storage = __runInitializers(this, _instanceExtraInitializers2);
+		#_a_accessor_storage = (__runInitializers(this, _instanceExtraInitializers2),__runInitializers(this, _a_initializers2, void 0));
 		get #a() {
 			return this.#_a_accessor_storage;
 		}
 		set #a(value) {
 			this.#_a_accessor_storage = value;
 		}
-		static #_b_accessor_storage;
+		static #_b_accessor_storage = __runInitializers(this, _b_initializers2, void 0);
 		static get #b() {
 			return this.#_b_accessor_storage;
 		}
 		static set #b(value) {
 			this.#_b_accessor_storage = value;
+		}
+		static {
+			__runInitializers(this, _b_extraInitializers2);
 		}
 		constructor() {
 			__runInitializers(this, _a_extraInitializers2);
@@ -10889,6 +10905,9 @@ let A = (() => {
 		}
 		set y(value) {
 			this.#_y_accessor_storage = value;
+		}
+		static {
+			__runInitializers(this, _x_extraInitializers);
 		}
 		constructor() {
 			__runInitializers(this, _y_extraInitializers);

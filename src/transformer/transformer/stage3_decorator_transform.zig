@@ -193,6 +193,17 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     var instance_extra_initializer_field_refs: std.ArrayList(NodeIndex) = .empty;
     defer instance_extra_initializer_field_refs.deinit(self.allocator);
 
+    // Static elements chain extra initializers the same way (tsc): a static
+    // field first runs the pending ones (static method decorators', then the
+    // previous decorated field's), and a static block or the class end runs
+    // them in a generated `static { __runInitializers(this, …) }` (#5712).
+    var pending_static_extra: ?StaticExtra = if (hasStaticMethodDecorator(self, body_idx))
+        .{ .name = "_staticExtraInitializers" }
+    else
+        null;
+    var static_extra_refs: std.ArrayList(StaticExtraRef) = .empty;
+    defer static_extra_refs.deinit(self.allocator);
+
     {
         var i: u32 = 0;
         while (i < body_len) : (i += 1) {
@@ -415,9 +426,19 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         }
                         break :blk result;
                     } else {
-                        break :blk init_call;
+                        const result = try runPendingStaticExtra(self, &pending_static_extra, init_call, class_parent_scope, &static_extra_refs);
+                        if (field_member_info_index) |member_info_index| {
+                            pending_static_extra = .{
+                                .name = member_infos.items[member_info_index].extra_initializers_name.?,
+                                .info_index = member_info_index,
+                            };
+                        }
+                        break :blk result;
                     }
-                } else raw_init;
+                } else if (is_static and (flags & type_only_property_flags) == 0)
+                    try runPendingStaticExtra(self, &pending_static_extra, raw_init, class_parent_scope, &static_extra_refs)
+                else
+                    raw_init;
                 const empty_list = try self.ast.addNodeList(&.{});
                 const new_prop = try self.addExtraNode(.property_definition, member.span, &.{
                     @intFromEnum(new_key),
@@ -489,7 +510,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     });
                     // 초기값: TypeScript 패턴 — (runInit(this, _prevExtra), runInit(this, _x_initializers, val))
                     const init_val = blk: {
-                        const init_call = if (!new_init.isNone()) init_blk: {
+                        // Without an initializer the decorators' `init` still runs on
+                        // `void 0` (`__runInitializers` checks `arguments.length > 2`).
+                        const init_call = init_blk: {
                             const this_node = try self.ast.addNode(.{
                                 .tag = .this_expression,
                                 .span = zero_span,
@@ -498,11 +521,12 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                             const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
                             const init_arr_ref = try es_helpers.makeSyntheticRef(self, names.init_name);
                             member_infos.items[accessor_member_info_index].initializers_field_ref = init_arr_ref;
-                            const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, new_init });
+                            const value = if (new_init.isNone()) try es_helpers.makeVoidZero(self, zero_span) else new_init;
+                            const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, value });
                             break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
                                 @intFromEnum(callee), args.start, args.len, 0,
                             });
-                        } else NodeIndex.none;
+                        };
 
                         // instance accessor만 initializer 체이닝 적용
                         if (!is_static) {
@@ -522,7 +546,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                             last_instance_field_info_index = accessor_member_info_index;
                             break :blk result;
                         } else {
-                            break :blk init_call;
+                            const result = try runPendingStaticExtra(self, &pending_static_extra, init_call, class_parent_scope, &static_extra_refs);
+                            pending_static_extra = .{ .name = names.extra_name, .info_index = accessor_member_info_index };
+                            break :blk result;
                         }
                     };
 
@@ -590,6 +616,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     try new_members.append(self.allocator, new_acc);
                 }
             } else {
+                if (member.tag == .static_block)
+                    try flushStaticExtra(self, &pending_static_extra, &new_members, class_parent_scope, &static_extra_refs);
                 // static_block 등 그대로 방문하여 추가
                 const visited = try self.visitNode(member_idx);
                 if (!visited.isNone()) {
@@ -597,6 +625,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 }
             }
         }
+        try flushStaticExtra(self, &pending_static_extra, &new_members, class_parent_scope, &static_extra_refs);
     }
 
     // ---- IIFE 구조 생성 ----
@@ -806,20 +835,38 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         try static_block_stmts.append(self.allocator, metadata_define);
     }
 
-    // __runInitializers(_classThis, _classExtraInitializers);
+    // static { __runInitializers(_classThis, _classExtraInitializers); } — class
+    // extra initializers run once the class is fully defined: after every
+    // static element (tsc, #5712).
+    var class_extra_run_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_extra_run_refs.deinit(self.allocator);
+    var class_this_run_refs: std.ArrayList(NodeIndex) = .empty;
+    defer class_this_run_refs.deinit(self.allocator);
+    var class_extra_run_scope: ScopeId = .none;
     if (class_deco_len > 0) {
         const run_init = try self.buildRunInitializersCall(
             classThis_span,
             "_classExtraInitializers",
-            &class_extra_initializers_refs,
-            &class_this_static_read_refs,
+            &class_extra_run_refs,
+            &class_this_run_refs,
         );
         const run_init_stmt = try self.ast.addNode(.{
             .tag = .expression_statement,
             .span = zero_span,
             .data = .{ .unary = .{ .operand = run_init, .flags = 0 } },
         });
-        try static_block_stmts.append(self.allocator, run_init_stmt);
+        const run_body = try self.ast.addNode(.{
+            .tag = .block_statement,
+            .span = zero_span,
+            .data = .{ .list = try self.ast.addNodeList(&.{run_init_stmt}) },
+        });
+        if (self.semantic_edit_enabled)
+            class_extra_run_scope = try self.addGeneratedScope(class_parent_scope, run_body, .block);
+        try new_members.append(self.allocator, try self.ast.addNode(.{
+            .tag = .static_block,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = run_body, .flags = 0 } },
+        }));
     }
 
     // 2번째 static { } 블록 생성
@@ -1198,6 +1245,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         for (class_extra_initializers_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
         }
+        for (class_extra_run_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_extra_initializers_symbol, class_extra_run_scope, .{ .read = true });
+        }
     }
     if (self.semantic_edit_enabled and !class_this_binding.isNone()) {
         const class_this_symbol = (try self.declareSyntheticInScope(
@@ -1226,6 +1276,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         for (class_this_static_read_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_this_symbol, metadata_block_scope, .{ .read = true });
         }
+        for (class_this_run_refs.items) |reference| {
+            try self.addSyntheticRefInScope(reference, class_this_symbol, class_extra_run_scope, .{ .read = true });
+        }
         for (class_this_return_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_this_symbol, arrow_scope, .{ .read = true });
         }
@@ -1241,6 +1294,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 static extra initializers has no output static block scope", .{});
         for (static_extra_initializer_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, static_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
+        }
+        for (static_extra_refs.items) |reference| {
+            if (reference.info_index != null) continue;
+            try self.addSyntheticRefInScope(reference.node, static_extra_initializers_symbol, reference.scope, .{ .read = true });
         }
     }
     if (self.semantic_edit_enabled and !instance_extra_initializers_binding.isNone()) {
@@ -1288,7 +1345,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         }
     }
     if (self.semantic_edit_enabled) {
-        for (member_infos.items) |info| {
+        for (member_infos.items, 0..) |info, info_index| {
             if (info.extra_initializers_binding.isNone()) continue;
             const extra_initializers_symbol = (try self.declareSyntheticInScope(
                 info.extra_initializers_binding,
@@ -1300,6 +1357,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             if (info.extra_initializers_decorate_ref.isNone() or metadata_block_scope.isNone())
                 std.debug.panic("Stage 3 member extra initializers has no exact decorator reference or output block scope", .{});
             try self.addSyntheticRefInScope(info.extra_initializers_decorate_ref, extra_initializers_symbol, metadata_block_scope, .{ .read = true });
+            for (static_extra_refs.items) |reference| {
+                if (reference.info_index != info_index) continue;
+                try self.addSyntheticRefInScope(reference.node, extra_initializers_symbol, reference.scope, .{ .read = true });
+            }
             if (!info.extra_initializers_chain_field_ref.isNone()) {
                 try self.addSyntheticRefInScope(info.extra_initializers_chain_field_ref, extra_initializers_symbol, class_parent_scope, .{ .read = true });
             }
@@ -1403,6 +1464,99 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 /// field/accessor 초기화에 이전 extra initializers를 piggyback하는 sequence expression 생성.
 /// TypeScript 패턴: `(__runInitializers(this, _prevExtra), __runInitializers(this, _x_initializers, val))`
 /// init_call이 .none이면 prevCall만 반환 (초기값 없는 accessor).
+/// Extra initializers waiting to run at the next static element.
+const StaticExtra = struct {
+    name: []const u8,
+    /// `member_infos` index of the decorated member; null for the static
+    /// method decorators' `_staticExtraInitializers`.
+    info_index: ?usize = null,
+};
+
+const StaticExtraRef = struct {
+    node: NodeIndex,
+    info_index: ?usize,
+    scope: ScopeId,
+};
+
+const type_only_property_flags = ast_mod.PropertyFlags.is_abstract | ast_mod.PropertyFlags.is_declare | ast_mod.PropertyFlags.flow_variance;
+
+fn hasStaticMethodDecorator(self: *Transformer, body_idx: NodeIndex) bool {
+    const body = self.ast.getNode(body_idx);
+    for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
+        const member = self.ast.getNode(@enumFromInt(raw));
+        if (member.tag != .method_definition) continue;
+        const flags = self.readU32(member.data.extra, ast_mod.MethodExtra.flags);
+        if ((flags & ast_mod.MethodFlags.is_static) != 0 and
+            self.readU32(member.data.extra, ast_mod.MethodExtra.deco_len) > 0) return true;
+    }
+    return false;
+}
+
+fn takeStaticExtraCall(
+    self: *Transformer,
+    pending_out: *?StaticExtra,
+    reference_scope: ScopeId,
+    refs: *std.ArrayList(StaticExtraRef),
+) Error!?NodeIndex {
+    const pending = pending_out.* orelse return null;
+    pending_out.* = null;
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const this_node = try self.ast.addNode(.{ .tag = .this_expression, .span = zero_span, .data = .{ .none = 0 } });
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__runInitializers");
+    const extra_ref = try es_helpers.makeSyntheticRef(self, pending.name);
+    try refs.append(self.allocator, .{ .node = extra_ref, .info_index = pending.info_index, .scope = reference_scope });
+    const args = try self.ast.addNodeList(&.{ this_node, extra_ref });
+    return try self.addExtraNode(.call_expression, zero_span, &.{ @intFromEnum(callee), args.start, args.len, 0 });
+}
+
+/// `(__runInitializers(this, _pending), init)` — a static field runs the
+/// pending extra initializers before its own initializer.
+fn runPendingStaticExtra(
+    self: *Transformer,
+    pending_out: *?StaticExtra,
+    init: NodeIndex,
+    reference_scope: ScopeId,
+    refs: *std.ArrayList(StaticExtraRef),
+) Error!NodeIndex {
+    const run_call = (try takeStaticExtraCall(self, pending_out, reference_scope, refs)) orelse return init;
+    if (init.isNone()) return run_call;
+    return self.ast.addNode(.{
+        .tag = .sequence_expression,
+        .span = .{ .start = 0, .end = 0 },
+        .data = .{ .list = try self.ast.addNodeList(&.{ run_call, init }) },
+    });
+}
+
+/// `static { __runInitializers(this, _pending); }` before a static block or
+/// at the class end.
+fn flushStaticExtra(
+    self: *Transformer,
+    pending_out: *?StaticExtra,
+    new_members: *std.ArrayList(NodeIndex),
+    class_parent_scope: ScopeId,
+    refs: *std.ArrayList(StaticExtraRef),
+) Error!void {
+    if (pending_out.* == null) return;
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const refs_start = refs.items.len;
+    const run_call = (try takeStaticExtraCall(self, pending_out, .none, refs)).?;
+    const stmt = try self.ast.addNode(.{ .tag = .expression_statement, .span = zero_span, .data = .{ .unary = .{ .operand = run_call, .flags = 0 } } });
+    const body = try self.ast.addNode(.{
+        .tag = .block_statement,
+        .span = zero_span,
+        .data = .{ .list = try self.ast.addNodeList(&.{stmt}) },
+    });
+    if (self.semantic_edit_enabled) {
+        const block_scope = try self.addGeneratedScope(class_parent_scope, body, .block);
+        for (refs.items[refs_start..]) |*reference| reference.scope = block_scope;
+    }
+    try new_members.append(self.allocator, try self.ast.addNode(.{
+        .tag = .static_block,
+        .span = zero_span,
+        .data = .{ .unary = .{ .operand = body, .flags = 0 } },
+    }));
+}
+
 fn buildPiggybackedInitCall(
     self: *Transformer,
     prev_extra_name: []const u8,

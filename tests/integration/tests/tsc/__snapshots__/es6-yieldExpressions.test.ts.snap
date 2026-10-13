@@ -695,6 +695,8 @@ function* g() {
 				if (_metadata) {
 					Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 				}
+			}
+			static {
 				__runInitializers(_classThis, _classExtraInitializers);
 			}
 		};
