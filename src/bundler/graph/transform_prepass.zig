@@ -4790,11 +4790,13 @@ fn canKeepPrepassSemanticGraph(
                         @enumFromInt(@as(u32, @intCast(raw_node_idx))),
                     )) continue;
                     // Unbound escaped references can leave source-name keyed
-                    // external-name reservations ambiguous. Keep them
-                    // on reanalysis, except for eval when semantic analysis
-                    // confirmed its dynamic-scope marker.
-                    var decode_buffer: [64]u8 = undefined;
-                    const decoded_name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse return false;
+                    // external-name reservations ambiguous. A raw or decoded name
+                    // in the analyzer's unresolved set is exact external evidence;
+                    // otherwise admit only eval with its dynamic-scope marker.
+                    const decoded_name = Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw_name) catch return false;
+                    defer if (decoded_name.ptr != raw_name.ptr) self.allocator.free(decoded_name);
+                    if (semantic.unresolved_references.contains(raw_name) or
+                        semantic.unresolved_references.contains(decoded_name)) continue;
                     if (!std.mem.eql(u8, decoded_name, "eval") or !has_direct_eval) return false;
                 } else if (std.mem.eql(u8, raw_name, "eval")) {
                     has_direct_eval = true;
@@ -4916,7 +4918,12 @@ fn collectParserUnresolvedNodes(
     for (ast.nodes.items[0..parser_len], 0..) |node, raw| {
         if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
         if (raw >= symbol_ids.len or symbol_ids[raw] != null) continue;
-        if (!unresolved_references.contains(ast.getText(node.span))) continue;
+        const raw_name = ast.getText(node.span);
+        if (!unresolved_references.contains(raw_name)) {
+            if (std.mem.indexOfScalar(u8, raw_name, '\\') == null) continue;
+            const decoded_name = try Scanner.decodeIdentifierEscapesAlloc(allocator, raw_name);
+            if (!unresolved_references.contains(decoded_name)) continue;
+        }
         try unresolved_nodes.put(allocator, @intCast(raw), {});
     }
 }
