@@ -651,26 +651,81 @@ fn registerCjsWrapperParameters(m: *Module) !void {
     const sem_ptr = if (m.semantic) |*sem| sem else return error.MissingSemantic;
     const arena = if (m.parse_arena) |a| a.allocator() else return error.MissingSemantic;
 
-    // AST-less CJS wrappers have no body scope tree. Keep their output
-    // identities detached; the parsed path below always assigns a real scope.
+    // AST-less CJS wrappers have no source AST. Model their empty body and
+    // emitted callback with exact ScopeIds, plus the same parameter aliases
+    // in the body map that parsed CJS modules expose.
     const ast_ptr = if (m.ast) |*ast| ast else {
+        const wrapper_scope = try ensureAstlessCjsWrapperParameterScopes(sem_ptr, arena);
+        const wrapper_scope_raw: usize = @intFromEnum(wrapper_scope);
+        const root_scope_ptr = @constCast(&sem_ptr.scopes[0]);
+        const wrapper_scope_ptr = @constCast(&sem_ptr.scopes[wrapper_scope_raw]);
+        const root_map = @constCast(&sem_ptr.scope_maps[0]);
+        const wrapper_map = @constCast(&sem_ptr.scope_maps[wrapper_scope_raw]);
         const existing_exports = findCjsWrapperParameter(sem_ptr.symbols.items, .cjs_wrapper_exports_parameter, "exports");
         const existing_module = findCjsWrapperParameter(sem_ptr.symbols.items, .cjs_wrapper_module_parameter, "module");
+        if (existing_exports != null and existing_exports == existing_module) return error.CjsWrapperParameterIdentityCollision;
         const new_symbol_count: usize = @as(usize, @intFromBool(existing_exports == null)) +
             @as(usize, @intFromBool(existing_module == null));
+        const new_root_map_count: usize =
+            @as(usize, @intFromBool(!root_map.contains("exports"))) +
+            @as(usize, @intFromBool(!root_map.contains("module")));
+        const new_wrapper_map_count: usize =
+            @as(usize, @intFromBool(!wrapper_map.contains("exports"))) +
+            @as(usize, @intFromBool(!wrapper_map.contains("module")));
+        const wrapper_owner_count: usize =
+            @as(usize, @intFromBool(existing_exports == null or sem_ptr.symbols.items[@intFromEnum(existing_exports.?)].scope_id != wrapper_scope)) +
+            @as(usize, @intFromBool(existing_module == null or sem_ptr.symbols.items[@intFromEnum(existing_module.?)].scope_id != wrapper_scope));
+        if (@as(usize, wrapper_scope_ptr.symbol_count) > std.math.maxInt(u16) - wrapper_owner_count)
+            return error.CjsWrapperParameterScopeOverflow;
         try sem_ptr.symbols.ensureUnusedCapacity(arena, new_symbol_count);
+        try root_map.ensureUnusedCapacity(arena, @intCast(new_root_map_count));
+        try wrapper_map.ensureUnusedCapacity(arena, @intCast(new_wrapper_map_count));
         const old_symbol_count = sem_ptr.symbols.items.len;
-        m.cjs_wrapper_exports_parameter_symbol = existing_exports orelse try addDetachedCjsWrapperParameter(
+        m.cjs_wrapper_exports_parameter_symbol = existing_exports orelse try addCjsWrapperParameter(
             sem_ptr,
             arena,
             "exports",
             .cjs_wrapper_exports_parameter,
         );
-        m.cjs_wrapper_module_parameter_symbol = existing_module orelse try addDetachedCjsWrapperParameter(
+        m.cjs_wrapper_module_parameter_symbol = existing_module orelse try addCjsWrapperParameter(
             sem_ptr,
             arena,
             "module",
             .cjs_wrapper_module_parameter,
+        );
+        try attachCjsWrapperParameter(
+            sem_ptr,
+            root_scope_ptr,
+            wrapper_scope_ptr,
+            root_map,
+            wrapper_map,
+            wrapper_scope,
+            m.cjs_wrapper_exports_parameter_symbol.?,
+            "exports",
+        );
+        try attachCjsWrapperParameter(
+            sem_ptr,
+            root_scope_ptr,
+            wrapper_scope_ptr,
+            root_map,
+            wrapper_map,
+            wrapper_scope,
+            m.cjs_wrapper_module_parameter_symbol.?,
+            "module",
+        );
+        const exports_raw: usize = @intFromEnum(m.cjs_wrapper_exports_parameter_symbol.?);
+        const module_raw: usize = @intFromEnum(m.cjs_wrapper_module_parameter_symbol.?);
+        if (root_map.get("exports")) |existing| {
+            if (existing != exports_raw) return error.CjsWrapperParameterScopeMismatch;
+        } else root_map.putAssumeCapacity("exports", exports_raw);
+        if (root_map.get("module")) |existing| {
+            if (existing != module_raw) return error.CjsWrapperParameterScopeMismatch;
+        } else root_map.putAssumeCapacity("module", module_raw);
+        try validateAstlessCjsWrapperParameterScope(
+            sem_ptr,
+            wrapper_scope,
+            m.cjs_wrapper_exports_parameter_symbol.?,
+            m.cjs_wrapper_module_parameter_symbol.?,
         );
         if (new_symbol_count > 0) extendCachedRefDeltas(arena, m, old_symbol_count, sem_ptr.symbols.items.len);
         return;
@@ -798,6 +853,79 @@ fn registerCjsWrapperParameters(m: *Module) !void {
     m.cjs_wrapper_module_parameter_symbol = module_symbol;
 }
 
+/// A disabled/AST-less CommonJS module still emits a function callback. Model
+/// its empty body and callback as the same two-scope shape used for parsed CJS
+/// modules; the body map can contain only the two callback parameter aliases.
+fn ensureAstlessCjsWrapperParameterScopes(sem: *ModuleSemanticData, allocator: std.mem.Allocator) !ScopeId {
+    if (sem.scopes.len == 0 and sem.scope_maps.len == 0) {
+        const scopes = try allocator.alloc(Scope, 2);
+        const scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), 2);
+        scopes[0] = .{
+            .parent = @enumFromInt(1),
+            .kind = .global,
+            .is_strict = false,
+        };
+        scopes[1] = .{
+            .parent = .none,
+            .kind = .function,
+            .is_strict = false,
+        };
+        scope_maps[0] = .empty;
+        scope_maps[1] = .empty;
+        sem.scopes = scopes;
+        sem.scope_maps = scope_maps;
+    }
+
+    if (sem.scopes.len != 2 or sem.scope_maps.len != 2) return error.CjsWrapperParameterScopeMismatch;
+    const wrapper_scope: ScopeId = @enumFromInt(1);
+    const body_scope = sem.scopes[0];
+    const callback_scope = sem.scopes[1];
+    if (body_scope.parent != wrapper_scope or body_scope.kind != .global or body_scope.symbol_count != 0 or
+        sem.scope_maps[0].count() > 2 or callback_scope.parent != .none or callback_scope.kind != .function)
+    {
+        return error.CjsWrapperParameterScopeMismatch;
+    }
+    return wrapper_scope;
+}
+
+fn validateAstlessCjsWrapperParameterScope(
+    sem: *const ModuleSemanticData,
+    wrapper_scope_id: ScopeId,
+    exports_id: semantic_symbol.SymbolId,
+    module_id: semantic_symbol.SymbolId,
+) !void {
+    if (sem.scopes.len != 2 or sem.scope_maps.len != 2 or wrapper_scope_id != @as(ScopeId, @enumFromInt(1)) or
+        sem.scopes[0].parent != wrapper_scope_id or sem.scopes[0].kind != .global or sem.scopes[0].symbol_count != 0 or
+        sem.scope_maps[0].count() != 2)
+    {
+        return error.CjsWrapperParameterScopeMismatch;
+    }
+    const callback_scope = sem.scopes[@intFromEnum(wrapper_scope_id)];
+    const callback_map = sem.scope_maps[@intFromEnum(wrapper_scope_id)];
+    if (callback_scope.parent != .none or callback_scope.kind != .function or callback_scope.symbol_count != 2 or
+        callback_map.count() != 2 or exports_id == module_id)
+    {
+        return error.CjsWrapperParameterScopeMismatch;
+    }
+
+    const params = .{
+        .{ .id = exports_id, .name = "exports", .kind = semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter },
+        .{ .id = module_id, .name = "module", .kind = semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter },
+    };
+    inline for (params) |param| {
+        const raw: usize = @intFromEnum(param.id);
+        if (raw >= sem.symbols.items.len or callback_map.get(param.name) != raw or sem.scope_maps[0].get(param.name) != raw)
+            return error.CjsWrapperParameterScopeMismatch;
+        const symbol = sem.symbols.items[raw];
+        if (symbol.scope_id != wrapper_scope_id or symbol.origin_scope != wrapper_scope_id or symbol.kind != .parameter or
+            !symbol.decl_flags.is_parameter or symbol.synthetic_kind != param.kind or
+            !std.mem.eql(u8, symbol.synthetic_name, param.name))
+        {
+            return error.CjsWrapperParameterScopeMismatch;
+        }
+    }
+}
+
 fn ensureCjsWrapperParameterScope(sem: *ModuleSemanticData, allocator: std.mem.Allocator) !ScopeId {
     if (sem.scopes.len == 0 or sem.scope_maps.len != sem.scopes.len) return error.MissingSemantic;
     const root_parent = sem.scopes[0].parent;
@@ -871,22 +999,6 @@ fn cjsWrapperIdentifierEquals(raw: []const u8, expected: []const u8) bool {
 }
 
 fn addCjsWrapperParameter(
-    sem: *@import("../module.zig").ModuleSemanticData,
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    kind: semantic_symbol.SyntheticKind,
-) !semantic_symbol.SymbolId {
-    return semantic_symbol.extendSymbol(
-        allocator,
-        &sem.symbols,
-        .parameter,
-        kind,
-        name,
-        Span.EMPTY,
-    );
-}
-
-fn addDetachedCjsWrapperParameter(
     sem: *@import("../module.zig").ModuleSemanticData,
     allocator: std.mem.Allocator,
     name: []const u8,
