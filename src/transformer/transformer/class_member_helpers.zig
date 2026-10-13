@@ -89,6 +89,37 @@ fn visitStaticFieldInit(self: anytype, init_idx: NodeIndex, class_name_span: Spa
     return init;
 }
 
+/// `static { this.key = init; }` for an assign-semantics static field kept in
+/// the class: native static blocks run in source order with it (tsc, #5713).
+fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex, span: Span) Error!NodeIndex {
+    const class_scope = self.current_scope;
+    const new_key = try self.visitNode(key_idx);
+    const pe = @import("../parameter_environment.zig");
+    const bound = try pe.bindRuntimeKeyClass(self, key_idx, init_idx, new_key);
+    // The block body exists before its statement so the statement's
+    // references and the initializer's scopes can live in the block scope.
+    const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = .{ .start = 0, .len = 0 } } });
+    const block_scope = if (self.semantic_edit_enabled) try self.addGeneratedScope(class_scope, body, .block) else class_scope;
+    const visited_init = try self.visitNode(init_idx);
+    if (self.semantic_edit_enabled)
+        try self.reparentMovedStaticInitializerScopes(visited_init, class_scope, block_scope);
+    self.current_scope = block_scope;
+    defer self.current_scope = class_scope;
+    const new_init = try pe.finishRuntimeKeyClass(self, bound, init_idx, visited_init, false, block_scope, span);
+    const key_node = self.ast.getNode(key_idx);
+    const is_computed = key_node.tag == .computed_property_key;
+    if (is_computed) try es_helpers.trackKnownHoistedComputedKeyRef(self, new_key, block_scope);
+    const stmt = try buildThisAssignment(self, .{
+        .key = new_key,
+        .value = new_init,
+        .is_computed = is_computed,
+        .span = span,
+        .name_by_key = try pe.needsRuntimeKeyName(self, key_idx, init_idx),
+    });
+    self.ast.nodes.items[@intFromEnum(body)].data = .{ .list = try self.ast.addNodeList(&.{stmt}) };
+    return self.ast.addNode(.{ .tag = .static_block, .span = span, .data = .{ .unary = .{ .operand = body, .flags = 0 } } });
+}
+
 /// 단일 클래스 멤버를 분류하여 적절한 목록에 추가한다.
 /// - property_definition: assign semantics 대상이면 field_assignments에, 아니면 class_members에
 /// - method_definition: constructor면 기록, 일반 메서드면 class_members에
@@ -111,6 +142,10 @@ pub const ClassMemberContext = struct {
     class_name_span: ?Span = null,
     /// useDefineForClassFields=false: static field → class 밖 할당문
     static_field_assignments: ?*std.ArrayList(FieldAssignment) = null,
+    /// Native static blocks stay in the class: an assign-semantics static
+    /// field becomes `static { this.x = … }` in place so both run in source
+    /// order (tsc, #5713).
+    static_fields_as_blocks: bool = false,
     /// constructor parameter decorator → class-level __decorateClass에 포함
     ctor_param_decos: *std.ArrayList(NodeIndex),
     /// super class가 있으면 field initializer visit 시 this → _this 치환
@@ -288,6 +323,10 @@ pub fn classifyPropertyDefinition(
         const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
         const init_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.init);
         if (init_idx.isNone()) return; // 초기값 없음 → 타입 선언만, 제거
+        if (ctx.static_fields_as_blocks) {
+            try ctx.class_members.append(self.allocator, try buildStaticFieldBlock(self, key_idx, init_idx, member.span));
+            return;
+        }
         // 초기값 있음 → class 밖 할당문으로 이동 (Foo.z = 2)
         if (ctx.static_field_assignments) |sfa| {
             const new_key = try self.visitNode(key_idx);
