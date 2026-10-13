@@ -555,6 +555,52 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
     try std.testing.expect(callback_scope_found);
 }
 
+test "#4819 generator state-machine keeps late using temps for exact final naming" {
+    const source =
+        \\function* gen(sourceValue) {
+        \\  for (using resource of sourceValue) {
+        \\    yield resource;
+        \\  }
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expect(!root.isNone());
+
+    var late_temps: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != .standalone_temp_binding or
+            !std.mem.startsWith(u8, symbol.synthetic_name, "_using")) continue;
+        late_temps += 1;
+        if (transformer.block_rename_map) |*renames|
+            try std.testing.expect(renames.get(@intCast(raw_id)) == null);
+    }
+    try std.testing.expect(late_temps > 0);
+}
+
 fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.compat.ESTarget, disable_top_level_await: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

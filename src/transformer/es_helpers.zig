@@ -19,6 +19,58 @@ const symbol_mod = @import("../semantic/symbol.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const string_escape = @import("../string_escape.zig");
 
+/// Whether standalone output assigns this generated binding's final spelling
+/// from its exact SymbolId after all lowering has established the output scopes.
+/// Keep this policy shared with transforms that otherwise assign an earlier
+/// block-scoping rename to the same generated identity.
+pub fn isStandaloneLateOutputNameSymbol(symbol: symbol_mod.Symbol) bool {
+    const kind = symbol.synthetic_kind orelse return false;
+    return switch (kind) {
+        .runtime_helper_preamble,
+        .runtime_helper_import,
+        .optional_catch_binding,
+        .stage3_metadata_binding,
+        .stage3_class_this_binding,
+        .stage3_class_decorator_binding,
+        .stage3_member_decorator_binding,
+        .generator_state_parameter,
+        .class_super_parameter,
+        .new_target_capture_binding,
+        .this_capture_binding,
+        .arguments_capture_binding,
+        .class_self_write_binding,
+        .class_self_alias_binding,
+        .anonymous_class_export_binding,
+        .anonymous_class_expression_binding,
+        .block_scoping_loop_binding,
+        .for_of_step_binding,
+        .object_super_home_binding,
+        .block_scoping_loop_ret_binding,
+        .tagged_template_function_binding,
+        .standalone_temp_binding,
+        .standalone_generated_binding,
+        => true,
+
+        .default_export,
+        .namespace_iife_parameter,
+        .enum_iife_parameter,
+        .enum_iife_member,
+        .cjs_exports,
+        .cjs_require,
+        .esm_init,
+        .worklet_factory_local,
+        .cjs_wrapper_exports_parameter,
+        .cjs_wrapper_module_parameter,
+        .cjs_runtime_factory,
+        .cjs_runtime_internal_local,
+        .bundler_runtime_helper,
+        .esm_runtime_internal_local,
+        .esm_interop_runtime_internal_local,
+        .require_shim_local,
+        => false,
+    };
+}
+
 /// static private field descriptor 선언 생성: `var _x = { writable: true, value: initValue };`
 /// __classStaticPrivateFieldSpecGet/Set 헬퍼가 descriptor 객체의 value/get/set 슬롯을 읽는다.
 ///
