@@ -122,6 +122,25 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
+    name: 'shares lexical this capture through nested async arrows',
+    source: `
+      function read() {
+        return (async () => {
+          await Promise.resolve();
+          return (async () => {
+            await Promise.resolve();
+            return this.value;
+          })();
+        })();
+      }
+      read.call({ value: 42 }).then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
     name: 'keeps direct eval on the conservative graph path',
     source: `
       function read() {
