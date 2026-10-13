@@ -1245,54 +1245,7 @@ fn buildStandaloneLateOutputNameOverrides(
 }
 
 fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbol) bool {
-    const kind = symbol.synthetic_kind orelse return false;
-    return switch (kind) {
-        // These standalone bindings receive their final spelling from their exact SymbolId.
-        .runtime_helper_preamble,
-        .runtime_helper_import,
-        .optional_catch_binding,
-        .stage3_metadata_binding,
-        .stage3_class_this_binding,
-        .stage3_class_decorator_binding,
-        .stage3_member_decorator_binding,
-        .generator_state_parameter,
-        .class_super_parameter,
-        .new_target_capture_binding,
-        .this_capture_binding,
-        .arguments_capture_binding,
-        .class_self_write_binding,
-        .class_self_alias_binding,
-        .anonymous_class_export_binding,
-        .anonymous_class_expression_binding,
-        .block_scoping_loop_binding,
-        .for_of_step_binding,
-        .object_super_home_binding,
-        .block_scoping_loop_ret_binding,
-        .tagged_template_function_binding,
-        .standalone_temp_binding,
-        .standalone_generated_binding,
-        => true,
-
-        // Fixed aliases, virtual codegen identities, and graph-owned names use
-        // their own output contract and must not enter the standalone pass.
-        .default_export,
-        .namespace_iife_parameter,
-        .enum_iife_parameter,
-        .enum_iife_member,
-        .cjs_exports,
-        .cjs_require,
-        .esm_init,
-        .worklet_factory_local,
-        .cjs_wrapper_exports_parameter,
-        .cjs_wrapper_module_parameter,
-        .cjs_runtime_factory,
-        .cjs_runtime_internal_local,
-        .bundler_runtime_helper,
-        .esm_runtime_internal_local,
-        .esm_interop_runtime_internal_local,
-        .require_shim_local,
-        => false,
-    };
+    return es_helpers.isStandaloneLateOutputNameSymbol(symbol);
 }
 
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
@@ -1960,7 +1913,8 @@ fn transpileWithCallbackInternal(
         var entries = standalone_late_output_name_overrides.iterator();
         while (entries.next()) |entry| {
             if (codegen_symbol_name_overrides_storage.get(entry.key_ptr.*)) |existing| {
-                if (!std.mem.eql(u8, existing, entry.value_ptr.*)) return error.TransformError;
+                if (!std.mem.eql(u8, existing, entry.value_ptr.*))
+                    return error.TransformError;
             } else {
                 try codegen_symbol_name_overrides_storage.put(arena_alloc, entry.key_ptr.*, entry.value_ptr.*);
             }

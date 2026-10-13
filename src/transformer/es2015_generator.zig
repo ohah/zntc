@@ -2662,6 +2662,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
                     continue;
                 };
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution and
+                    !self.options.emit_runtime_helper_imports and sid < symbols.len and
+                    es_helpers.isStandaloneLateOutputNameSymbol(symbols[sid]))
+                {
+                    // The standalone exact-ID naming pass owns this symbol's
+                    // final spelling. A second name$N choice here conflicts
+                    // with that pass when the generated loop temp is hoisted.
+                    try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
+                    continue;
+                }
                 const new_name = self.tableRenameOf(binding) orelse blk: {
                     const name = self.ast.getText(self.ast.getNode(binding).span);
                     self.block_rename_counter += 1;
