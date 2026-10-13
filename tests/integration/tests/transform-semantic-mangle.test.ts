@@ -1224,6 +1224,90 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(native.stdout);
   });
 
+  test('bundler retains an unchanged direct-eval graph but reanalyzes edited or escaped cases', async () => {
+    const fixture = await createFixture({
+      'plain-eval.js': [
+        'function readSecret() {',
+        '  const longSecretValue = 41;',
+        "  return eval('longSecretValue + 1');",
+        '}',
+        'console.log(readSecret());',
+      ].join('\n'),
+      'syntax-eval.js': [
+        'function readSecret() {',
+        '  const longSecretValue = 41;',
+        "  return eval('longSecretValue + 1');",
+        '}',
+        'console.log(readSecret());',
+      ].join('\n'),
+      'escaped-eval.js': [
+        'const longSecretValue = 6;',
+        "console.log(\\u0065val('longSecretValue'));",
+      ].join('\n'),
+      'typed-eval.ts': [
+        'function readTypedSecret(): number {',
+        '  const longSecretValue: number = 41;',
+        "  return eval('longSecretValue + 1');",
+        '}',
+        'console.log(readTypedSecret());',
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+
+    async function bundle(
+      entry: string,
+      extraArgs: string[] = [],
+      expectedMode: 'retained' | 'reanalyzed' = 'retained',
+    ) {
+      const input = join(fixture.dir, entry);
+      const output = join(fixture.dir, entry + '.out.cjs');
+      const result = await runZntc(
+        [
+          '--bundle',
+          input,
+          '-o',
+          output,
+          '--platform=node',
+          '--format=cjs',
+          '--target=esnext',
+          '--minify-identifiers',
+          ...extraArgs,
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, result.stderr).toBe(0);
+      const identity = expectPrepassGraph(result.stderr, entry, expectedMode);
+      expect(identity).toMatch(/clean=1(?:\s|$)/);
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(identity).toMatch(new RegExp(counter + '=0(?:\\s|$)'));
+      }
+      return { output, stderr: result.stderr };
+    }
+
+    const retained = await bundle('plain-eval.js');
+    const retainedOutput = readFileSync(retained.output, 'utf8');
+    expect(retainedOutput).toMatch(/(?:const|let|var) longSecretValue\s*=/);
+    expect(retainedOutput).toContain('eval("longSecretValue + 1")');
+    const retainedRun = await runNode(retained.output);
+    expect(retainedRun.stderr).toBe('');
+    expect(retainedRun.stdout).toBe('42');
+
+    const syntaxEdited = await bundle('syntax-eval.js', ['--minify-syntax'], 'reanalyzed');
+    const syntaxRun = await runNode(syntaxEdited.output);
+    expect(syntaxRun.stderr).toBe('');
+    expect(syntaxRun.stdout).toBe('42');
+
+    const escaped = await bundle('escaped-eval.js', [], 'reanalyzed');
+    const escapedRun = await runNode(escaped.output);
+    expect(escapedRun.stderr).toBe('');
+    expect(escapedRun.stdout).toBe('6');
+
+    const typed = await bundle('typed-eval.ts', [], 'reanalyzed');
+    const typedRun = await runNode(typed.output);
+    expect(typedRun.stderr).toBe('');
+    expect(typedRun.stdout).toBe('42');
+  });
+
   test('standalone downlevel helpers avoid user bindings in normal and minified output', async () => {
     const cases = [
       {
