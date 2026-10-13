@@ -417,14 +417,17 @@ pub fn ES2025Using(comptime Transformer: type) type {
         /// `local as exported` 지정자. exported 가 null 이면 local 과 같은 이름. `local_origin` 은
         /// local 의 원래 바인딩(합성 `_default` 면 `.none`) — 심볼을 물려준다 (#4760).
         fn makeExportSpec(self: *Transformer, local: []const u8, local_origin: NodeIndex, exported: ?[]const u8, local_symbol: ?SymbolId) Transformer.Error!NodeIndex {
-            const local_ref = if (local_origin.isNone())
-                try es_helpers.makeSyntheticRef(self, local)
-            else blk: {
+            const local_ref = if (local_origin.isNone()) blk: {
+                if (self.semantic_edit_enabled) {
+                    const symbol = local_symbol orelse std.debug.panic("generated default export has no exact SymbolId", .{});
+                    break :blk try self.makeSyntheticRefForSymbol(symbol, self.programScope(), .{ .read = true });
+                }
+                break :blk try es_helpers.makeSyntheticRef(self, local);
+            } else blk: {
                 const ref = try self.makeIdentifierRefWithSymbol(try self.ast.addString(local), local_origin);
                 if (self.semantic_edit_enabled) try self.trackUserReadFromBinding(ref, local_origin, self.programScope());
                 break :blk ref;
             };
-            if (local_origin.isNone()) if (local_symbol) |id| try self.addSyntheticRefInScope(local_ref, id, self.programScope(), .{ .read = true });
             const exported_ref = if (exported) |e| try es_helpers.makePropertyName(self, e) else local_ref;
             return self.ast.addNode(.{ .tag = .export_specifier, .span = Span{ .start = 0, .end = 0 }, .data = .{ .binary = .{ .left = local_ref, .right = exported_ref, .flags = 0 } } });
         }

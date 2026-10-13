@@ -4840,6 +4840,137 @@ test "#4760 모듈 최상위 using 이 export 를 지정자로 바꿀 때 로컬
     , .es2022));
 }
 
+test "#4819 generated default-export reference keeps its exact allocated name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\const _default = 1;
+        \\using handle = open();
+        \\export default 2;
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbols = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2022),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    // uniqueSourceName intentionally selects _default2 because that spelling is
+    // absent from source text. Simulate an earlier generated owner reserving it:
+    // an identity-known reference must still use the binding's exact spelling.
+    try transformer.synthetic_taken.put(allocator, "_default2", {});
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    var local_ref: ?AstNodeIndex = null;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .export_specifier) continue;
+        const candidate = node.data.binary.left;
+        if (candidate.isNone()) continue;
+        if (transformer.ast.getNode(candidate).tag == .identifier_reference) {
+            local_ref = candidate;
+            break;
+        }
+    }
+    const reference_node = local_ref orelse return error.TestUnexpectedResult;
+    const reference_name = transformer.ast.getText(transformer.ast.getNode(reference_node).data.string_ref);
+    try std.testing.expectEqualStrings("_default22", reference_name);
+
+    const raw_symbol_id = edited.symbol_ids[@intFromEnum(reference_node)] orelse return error.TestUnexpectedResult;
+    const symbol_id: SymbolId = @enumFromInt(raw_symbol_id);
+    const symbol = edited.symbols.items[raw_symbol_id];
+    try std.testing.expectEqualStrings("_default22", transformer.ast.getText(symbol.name));
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+    try std.testing.expect(raw_symbol_id >= original_symbols);
+
+    var matched_reference = false;
+    for (edited.references) |reference| {
+        if (reference.node_index != reference_node) continue;
+        try std.testing.expectEqual(symbol_id, reference.symbol_id);
+        try std.testing.expectEqual(transformer.programScope(), reference.scope_id);
+        try std.testing.expect(reference.flags.read);
+        matched_reference = true;
+    }
+    try std.testing.expect(matched_reference);
+}
+
+test "#4819 SymbolId reference helper ignores resolver reservations for its exact name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator,
+        \\const _default = 1;
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    const scope = transformer.programScope();
+    transformer.current_scope = scope;
+
+    // The binding resolver chooses _default22 because a previous generated
+    // owner reserved _default2. Then reserve the selected spelling too: a
+    // string-based second resolution would incorrectly change it to _default222.
+    try transformer.synthetic_taken.put(allocator, "_default2", {});
+    const binding_span = try transformer.ast.addString("_default2");
+    const binding = try @import("es_helpers.zig").makeSyntheticBinding(&transformer, binding_span);
+    const symbol_id = (try transformer.declareSyntheticInScope(
+        binding,
+        transformer.ast.getNode(binding).span,
+        .variable_var,
+        scope,
+    )) orelse return error.TestUnexpectedResult;
+    const raw_symbol_id = @intFromEnum(symbol_id);
+    const editor = transformer.semantic_editor orelse return error.TestUnexpectedResult;
+    const selected_name_span = editor.symbols.items[raw_symbol_id].name;
+    const selected_name = transformer.ast.getText(selected_name_span);
+    try std.testing.expectEqualStrings("_default22", selected_name);
+    try transformer.synthetic_taken.put(allocator, selected_name, {});
+
+    const reference_node = try transformer.makeSyntheticRefForSymbol(symbol_id, scope, .{ .read = true });
+    try std.testing.expectEqualStrings(
+        selected_name,
+        transformer.ast.getText(transformer.ast.getNode(reference_node).data.string_ref),
+    );
+    try std.testing.expectEqual(@as(?u32, raw_symbol_id), transformer.getSymbolIdAt(reference_node));
+
+    var matched_reference = false;
+    for (transformer.semantic_editor.?.references.items) |reference| {
+        if (reference.node_index != reference_node) continue;
+        try std.testing.expectEqual(symbol_id, reference.symbol_id);
+        try std.testing.expectEqual(scope, reference.scope_id);
+        try std.testing.expect(reference.flags.read);
+        matched_reference = true;
+    }
+    try std.testing.expect(matched_reference);
+}
+
 test "#4763 es5 클래스의 _super 참조는 부모 클래스 심볼을 갖지 않는다" {
     // es5 는 부모를 IIFE 매개변수 `_super` 로 넘긴다. `super.x()` 를 낮춘 `_super` 참조에 부모
     // 클래스의 심볼이 붙으면, 심볼 기준 리네임이 `_super` 대신 바깥 부모 바인딩을 가리킨다.

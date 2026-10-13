@@ -2469,6 +2469,19 @@ pub fn addSyntheticRef(self: *Transformer, node: NodeIndex, id: ?SymbolId) Trans
     return addSyntheticRefInScope(self, node, id, self.current_scope, .{ .read = true });
 }
 
+/// Build a generated reference from its owner's exact SymbolId and register the
+/// graph edge in one operation. The symbol's selected spelling is authoritative;
+/// do not run the source-name collision resolver on it again.
+pub fn makeSyntheticRefForSymbol(self: *Transformer, id: SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!NodeIndex {
+    if (!self.semantic_edit_enabled) std.debug.panic("exact synthetic reference has no semantic editor", .{});
+    const editor = try editorFor(self);
+    const raw_id = @intFromEnum(id);
+    if (raw_id >= editor.symbols.items.len) std.debug.panic("exact synthetic reference has an invalid SymbolId", .{});
+    const node = try es_helpers.makeExactSyntheticRefFromSpan(self, editor.symbols.items[raw_id].name);
+    try addSyntheticRefInScope(self, node, id, scope, flags);
+    return node;
+}
+
 pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
     const symbol = id orelse return;
     const editor = try editorFor(self);
