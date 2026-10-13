@@ -228,7 +228,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
                 // key를 한 번만 방문 (decorator info + stripped method 공용)
                 const key_idx = self.readNodeIdx(me, ast_mod.MethodExtra.key);
-                const new_key = try self.visitNode(key_idx);
+                const decorated_key = try memoizeDecoratedKey(self, try self.visitNode(key_idx), deco_len > 0);
+                const new_key = decorated_key.key;
                 // private identifier 감지
                 const is_private = blk: {
                     const orig_key = self.ast.getNode(key_idx);
@@ -239,9 +240,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
                 if (deco_len > 0) {
                     const kind = if (is_getter) "getter" else if (is_setter) "setter" else "method";
-                    const name_node_idx = try self.memberKeyToStringLiteral(new_key);
+                    const name_node_idx = if (decorated_key.temp != null) .none else try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
-                    const var_n = extractCleanVarName(self, name_node_idx);
+                    const var_n = if (decorated_key.temp) |temp| self.ast.getText(temp) else extractCleanVarName(self, name_node_idx);
                     // getter/setter는 같은 이름에 다른 kind → kind prefix로 충돌 방지
                     const kind_prefix = if (is_getter) "get_" else if (is_setter) "set_" else "";
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}{s}_decorators", .{ kind_prefix, var_n });
@@ -270,6 +271,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     try member_infos.append(self.allocator, .{
                         .kind = kind,
                         .name = name_node_idx,
+                        .name_temp = decorated_key.temp,
                         .is_static = is_static,
                         .is_private = is_private,
                         .decorators = decos,
@@ -320,15 +322,16 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
                 // key를 한 번만 방문
                 const key_idx_prop = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
-                const new_key = try self.visitNode(key_idx_prop);
+                const decorated_key = try memoizeDecoratedKey(self, try self.visitNode(key_idx_prop), deco_len > 0);
+                const new_key = decorated_key.key;
                 const is_private_field = self.ast.getNode(key_idx_prop).tag == .private_identifier;
 
                 var field_init_name: ?[]const u8 = null;
                 var field_member_info_index: ?usize = null;
                 if (deco_len > 0) {
-                    const name_node_idx = try self.memberKeyToStringLiteral(new_key);
+                    const name_node_idx = if (decorated_key.temp != null) .none else try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
-                    const var_n = extractCleanVarName(self, name_node_idx);
+                    const var_n = if (decorated_key.temp) |temp| self.ast.getText(temp) else extractCleanVarName(self, name_node_idx);
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
                     defer self.allocator.free(deco_base_name);
                     const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
@@ -341,7 +344,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         if (is_static) "_staticExtraInitializers" else "_instanceExtraInitializers",
                     );
 
-                    const names = try self.buildFieldInitNames(name_node_idx);
+                    const names = try self.buildFieldInitNames(name_node_idx, decorated_key.temp);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.init_name);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.extra_name);
                     field_init_name = names.init_name;
@@ -349,6 +352,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     field_member_info_index = member_infos.items.len;
                     try member_infos.append(self.allocator, .{
                         .kind = "field",
+                        .name_temp = decorated_key.temp,
                         .name = name_node_idx,
                         .is_static = is_static,
                         .is_private = is_private_field,
@@ -430,14 +434,15 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
 
                 const key_idx = self.readNodeIdx(me, ast_mod.PropertyExtra.key);
-                const new_key = try self.visitNode(key_idx);
+                const decorated_key = try memoizeDecoratedKey(self, try self.visitNode(key_idx), deco_len > 0);
+                const new_key = decorated_key.key;
                 const new_init = try self.visitNode(self.readNodeIdx(me, ast_mod.PropertyExtra.init));
                 const is_private_accessor = self.ast.getNode(key_idx).tag == .private_identifier;
 
                 if (deco_len > 0) {
-                    const name_node_idx = try self.memberKeyToStringLiteral(new_key);
+                    const name_node_idx = if (decorated_key.temp != null) .none else try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
-                    const var_n = extractCleanVarName(self, name_node_idx);
+                    const var_n = if (decorated_key.temp) |temp| self.ast.getText(temp) else extractCleanVarName(self, name_node_idx);
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
                     defer self.allocator.free(deco_base_name);
                     const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
@@ -450,7 +455,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         if (is_static) "_staticExtraInitializers" else "_instanceExtraInitializers",
                     );
 
-                    const names = try self.buildFieldInitNames(name_node_idx);
+                    const names = try self.buildFieldInitNames(name_node_idx, decorated_key.temp);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.init_name);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.extra_name);
 
@@ -458,6 +463,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     try member_infos.append(self.allocator, .{
                         .kind = "accessor",
                         .name = name_node_idx,
+                        .name_temp = decorated_key.temp,
                         .is_static = is_static,
                         .is_private = is_private_accessor,
                         .decorators = decos,
@@ -556,7 +562,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     // set x(value) { this.#_x_accessor_storage = value; }
                     {
                         const assign_target = try makeThisPrivateField(self, storage_span);
-                        const setter = try self.buildSetterMethodWithHandles(new_key, assign_target, is_static, zero_span);
+                        const setter_key = if (decorated_key.temp) |temp| try decoratedKeyRead(self, temp) else new_key;
+                        const setter = try self.buildSetterMethodWithHandles(setter_key, assign_target, is_static, zero_span);
                         if (self.semantic_edit_enabled) {
                             const setter_scope = try self.addGeneratedFunctionScope(class_parent_scope, setter.method);
                             const parameter_span = self.ast.getNode(setter.parameter).span;
@@ -1408,4 +1415,41 @@ fn buildPiggybackedInitCall(
     } else {
         return prev_call;
     }
+}
+
+const DecoratedKey = struct { key: NodeIndex, temp: ?Span = null };
+
+/// A decorated member's runtime computed key `[expr]` runs once, at its place
+/// in the class: `[_a = __toPropertyKey(expr)]` (#5669). The decorator
+/// context name and access functions, and an accessor's setter, read `_a`
+/// instead of evaluating `expr` again. Literal keys need no temp.
+fn memoizeDecoratedKey(self: *Transformer, key: NodeIndex, decorated: bool) Transformer.Error!DecoratedKey {
+    if (!decorated or key.isNone()) return .{ .key = key };
+    const key_node = self.ast.getNode(key);
+    if (key_node.tag != .computed_property_key) return .{ .key = key };
+    const inner = key_node.data.unary.operand;
+    switch (self.ast.getNode(inner).tag) {
+        .string_literal, .numeric_literal, .bigint_literal => return .{ .key = key },
+        else => {},
+    }
+    const temp = try es_helpers.makeTempVarSpan(self);
+    const write = try es_helpers.makeSyntheticRefFromSpan(self, temp);
+    try self.trackSyntheticTempReference(temp, key_node.span, write, .{ .write = true });
+    self.runtime_helpers.to_property_key = true;
+    const callee = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
+    const converted = try es_helpers.makeCallExpr(self, callee, &.{inner}, key_node.span);
+    const assign = try es_helpers.makeAssignExpr(self, write, converted, key_node.span, 0);
+    const new_key = try self.ast.addNode(.{
+        .tag = .computed_property_key,
+        .span = key_node.span,
+        .data = .{ .unary = .{ .operand = assign, .flags = key_node.data.unary.flags } },
+    });
+    return .{ .key = new_key, .temp = temp };
+}
+
+/// `[_a]` reading a memoized decorated key.
+fn decoratedKeyRead(self: *Transformer, temp: Span) Transformer.Error!NodeIndex {
+    const read = try es_helpers.makeSyntheticRefFromSpan(self, temp);
+    try self.trackSyntheticTempReference(temp, temp, read, .{ .read = true });
+    return self.ast.addNode(.{ .tag = .computed_property_key, .span = temp, .data = .{ .unary = .{ .operand = read, .flags = 0 } } });
 }
