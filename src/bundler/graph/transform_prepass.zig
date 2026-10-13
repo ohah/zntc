@@ -22,6 +22,7 @@ const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
+const drop_mod = @import("../../transformer/transformer/drop.zig");
 const worklet_mod = @import("../../transformer/transformer/worklet.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
@@ -349,6 +350,13 @@ fn hasDroppedLabeledStatement(ast: *const ast_mod.Ast, labels: []const []const u
         for (labels) |dropped| {
             if (std.mem.eql(u8, label_name, dropped)) return true;
         }
+    }
+    return false;
+}
+
+fn hasDroppedConsoleStatement(ast: *const ast_mod.Ast) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag == .expression_statement and drop_mod.isConsoleCallInAst(ast, node)) return true;
     }
     return false;
 }
@@ -4691,7 +4699,7 @@ fn canKeepPrepassSemanticGraph(
     // transformer records those helper identities in the edited graph. Unlike
     // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
-        options.drop_console or
+        (options.drop_console and hasDroppedConsoleStatement(ast)) or
         hasDroppedLabeledStatement(ast, options.drop_labels) or define_mod.astUsesDefine(ast, options.define) or
         options.module_specifier_map.len != 0 or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
