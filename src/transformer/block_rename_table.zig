@@ -33,6 +33,10 @@ pub const Input = struct {
     scope_maps: []const std.StringHashMapUnmanaged(usize),
     references: []const symbol_mod.Reference,
     unresolved: *const std.StringHashMapUnmanaged(void),
+    /// Function body scope → separate parameter scope. Lowering moves
+    /// parameter expressions into the body, so their outside references count
+    /// for (3) as if they were in the body (#5648).
+    parameter_scopes: ?*const std.AutoHashMapUnmanaged(u32, u32) = null,
     /// 심볼 이름 텍스트 (`ast.getText(sym.name)`).
     ctx: *const anyopaque,
     nameOf: *const fn (ctx: *const anyopaque, sym: Symbol) []const u8,
@@ -119,6 +123,10 @@ pub fn build(allocator: std.mem.Allocator, in: Input) std.mem.Allocator.Error!Ta
         const gop = try hoisted.getOrPut(allocator, var_scope.toIndex());
         if (!gop.found_existing) gop.value_ptr.* = .empty;
         const outside = outside_refs.getPtr(var_scope.toIndex());
+        const parameter_outside = if (in.parameter_scopes) |map|
+            if (map.get(var_scope.toIndex())) |parameter_scope| outside_refs.getPtr(parameter_scope) else null
+        else
+            null;
         // 같은 스코프 안 순서는 해시 순서 — 한 블록 안 이름끼리는 겹칠 수 없어 결과가 같다.
         var it = in.scope_maps[si].iterator();
         while (it.next()) |entry| {
@@ -130,6 +138,7 @@ pub fn build(allocator: std.mem.Allocator, in: Input) std.mem.Allocator.Error!Ta
             const conflict = boundBetween(in, sc.parent, var_scope, name) or
                 sibling_conflict or
                 (outside != null and outside.?.contains(name)) or
+                (parameter_outside != null and parameter_outside.?.contains(name)) or
                 in.unresolved.contains(name);
             if (conflict) {
                 try table.put(allocator, sym_idx, {});

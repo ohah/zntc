@@ -99,9 +99,12 @@ pub fn buildBlockRenameMap(self: anytype) Error!void {
     };
     var table: @import("../block_rename_table.zig").Table = .empty;
     defer table.deinit(self.allocator);
+    var parameter_scopes = try @import("../parameter_environment.zig").parameterScopesByBody(self);
+    defer parameter_scopes.deinit(self.allocator);
     if (lower_block_scoping) {
         const unresolved = self.unresolved_references orelse return;
         table = try @import("../block_rename_table.zig").build(self.allocator, .{
+            .parameter_scopes = &parameter_scopes,
             .scopes = scopes,
             .symbols = symbols,
             .scope_maps = scope_maps,
