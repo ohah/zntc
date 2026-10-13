@@ -953,6 +953,13 @@ pub const Bundler = struct {
                 !self.options.code_splitting and
                 !self.options.preserve_modules and
                 format == .esm,
+            // #5575: without async functions the module stays scope-hoisted and
+            // the single-file emitter awaits its wrapper promise (emitter.zig).
+            .tla_module_awaited = self.options.unsupported.top_level_await and
+                self.options.unsupported.async_await and
+                !self.options.code_splitting and
+                !self.options.preserve_modules and
+                format == .esm,
             .define = self.options.define,
             .experimental_decorators = self.options.experimental_decorators,
             .emit_decorator_metadata = self.options.emit_decorator_metadata,

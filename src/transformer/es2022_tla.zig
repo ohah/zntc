@@ -21,8 +21,15 @@
 //! 범위:
 //! - import_declaration / export_* 는 래퍼 밖에 둔다. 첫 top-level await 보다 앞의
 //!   export 선언은 래퍼 앞(원래 순서), 뒤의 것은 래퍼 뒤에 놓인다 (#5570).
-//! - 첫 await 뒤의 함수 선언은 래퍼에 선언된 바인딩을 읽지 않으면 래퍼 앞으로
-//!   끌어올린다 — 네이티브처럼 await 앞 코드가 호출할 수 있다 (#5575).
+//! - 첫 await 뒤의 최상위 선언은 바인딩만 래퍼 앞(`var x;`)으로 빼고 래퍼 안에서
+//!   소스 순서대로 대입한다(webpack async module 과 같은 모양, #5575). 래퍼 밖의
+//!   함수·export·뒤 모듈이 같은 바인딩을 본다. 래퍼에 남는 이름(중첩 `var`, 지역
+//!   바인딩)을 읽지 않는 함수 선언은 래퍼 앞으로 끌어올린다 — 네이티브처럼 await 앞
+//!   코드가 호출할 수 있다.
+//! - 번들이 래퍼 promise 를 기다리면(`tla_module_awaited`, 단일 파일 ESM 출력) 첫
+//!   await 뒤의 export 선언·`export default <식>` 도 래퍼 안에서 순서대로 초기화한다.
+//!   기다릴 수단이 없는 출력(cjs/iife)은 export 를 래퍼 뒤에 둔다 — importer 가 바로
+//!   값을 읽는다.
 //! - export 선언 안의 await (`export const x = await foo()`) 는 낮출 수 없다 — 번들은
 //!   analyzer 가 ZNTC0001 로 거부한다 (#5564).
 //! - 번들이 모듈을 async `__esm` factory 로 평가하면(`tla_export_decl_deferrable`)
@@ -45,6 +52,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
 /// statement가 import/export 인지 판별 (program 최상단만 허용되는 모듈 선언).
 fn isModuleDeclaration(tag: Tag) bool {
@@ -141,6 +149,32 @@ fn collectNames(ast: *const ast_mod.Ast, allocator: std.mem.Allocator, root: Nod
     return !ctx.opaque_names;
 }
 
+/// Names a top-level statement declares in the program scope: the bindings of
+/// a variable declaration's declarators and a class declaration's name.
+fn collectTopLevelDeclaredNames(ast: *const ast_mod.Ast, allocator: std.mem.Allocator, stmt: NodeIndex, names: *NameSet) std.mem.Allocator.Error!bool {
+    const node = ast.getNode(stmt);
+    switch (node.tag) {
+        .variable_declaration => {
+            const e = node.data.extra;
+            const start = ast.extra_data.items[e + 1];
+            const len = ast.extra_data.items[e + 2];
+            var i: u32 = 0;
+            while (i < len) : (i += 1) {
+                const declarator = ast.getNode(@enumFromInt(ast.extra_data.items[start + i]));
+                const binding: NodeIndex = @enumFromInt(ast.extra_data.items[declarator.data.extra]);
+                if (!binding.isNone() and !try collectNames(ast, allocator, binding, .binding_identifier, names)) return false;
+            }
+            return true;
+        },
+        .class_declaration => {
+            const name = ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name);
+            if (!name.isNone()) try names.put(allocator, ast.identifierNameText(ast.getNode(name)), {});
+            return true;
+        },
+        else => return true,
+    }
+}
+
 /// 첫 top-level await 뒤의 함수 선언 중 래퍼 앞으로 끌어올려도 되는 것을 고른다.
 ///
 /// 네이티브 모듈에서 함수 선언은 모듈 평가 전에 초기화되므로, await 앞 코드도 await
@@ -148,10 +182,15 @@ fn collectNames(ast: *const ast_mod.Ast, allocator: std.mem.Allocator, root: Nod
 /// (`ReferenceError`, #5575). 래퍼에 선언된 바인딩(변수·클래스·끌어올리지 못한 함수)을
 /// 이름으로 하나라도 읽는 함수는 래퍼 밖에서 그 바인딩을 볼 수 없으므로 그대로 둔다.
 /// 판정은 이름 기준이라 보수적이다 — 같은 이름의 지역 변수만 있어도 남긴다.
+///
+/// `hoist_bindings`: the wrapper's top-level declarations move ahead of it
+/// (`WrappedBindings`), so only names left inside it — a nested `var`, a
+/// local binding — keep a function in the wrapper.
 fn collectHoistableFunctions(
     ast: *const ast_mod.Ast,
     allocator: std.mem.Allocator,
     list: ast_mod.NodeList,
+    hoist_bindings: bool,
     out: *std.AutoHashMapUnmanaged(u32, void),
 ) std.mem.Allocator.Error!void {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
@@ -185,7 +224,18 @@ fn collectHoistableFunctions(
                 continue;
             }
         }
-        if (!try collectNames(ast, arena, child, .binding_identifier, &blocked)) return;
+        if (!hoist_bindings) {
+            if (!try collectNames(ast, arena, child, .binding_identifier, &blocked)) return;
+            continue;
+        }
+        var local: NameSet = .empty;
+        if (!try collectNames(ast, arena, child, .binding_identifier, &local)) return;
+        var declared: NameSet = .empty;
+        if (!try collectTopLevelDeclaredNames(ast, arena, child, &declared)) return;
+        var it = local.keyIterator();
+        while (it.next()) |name| {
+            if (!declared.contains(name.*)) try blocked.put(arena, name.*, {});
+        }
     }
 
     // 래퍼 안에 같은 이름의 선언이 남는 함수(`var f` + `function f`)와, 끌어올리지
@@ -246,6 +296,241 @@ fn drainPendingAroundTo(
     if (self.trailing_nodes.items.len > trailing_top) {
         try destination.appendSlice(self.allocator, self.trailing_nodes.items[trailing_top..]);
         self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+    }
+}
+
+/// #5575: like webpack's async module, a binding the async wrapper would
+/// declare is declared ahead of it instead (`var x;`, or `export var x;`) and
+/// the wrapper assigns it in source order. Code outside the wrapper — hoisted
+/// functions, exports, the modules after this one — reads that binding, which a
+/// declaration inside the wrapper hid (`export function f() { return config }`
+/// threw `config is not defined`).
+const WrappedBindings = struct {
+    /// Binding nodes declared with `var` ahead of the wrapper.
+    locals: std.ArrayList(NodeIndex) = .empty,
+    /// Binding nodes declared with `export var` ahead of the wrapper.
+    exported: std.ArrayList(NodeIndex) = .empty,
+
+    fn deinit(self: *WrappedBindings, allocator: std.mem.Allocator) void {
+        self.locals.deinit(allocator);
+        self.exported.deinit(allocator);
+    }
+
+    fn list(self: *WrappedBindings, exported: bool) *std.ArrayList(NodeIndex) {
+        return if (exported) &self.exported else &self.locals;
+    }
+};
+
+/// The program scope, when the module carries the semantic data that tells a
+/// source binding from a generated temp. Without it nothing is hoisted.
+fn programScopeForHoist(comptime Transformer: type, self: *Transformer) ?ScopeId {
+    if (self.symbols.len == 0 and self.semantic_editor == null) return null;
+    if (self.parser_node_count == 0) return null;
+    const raw = self.scope_owner_map.get(self.parser_node_count - 1) orelse return null;
+    return @enumFromInt(raw);
+}
+
+fn isProgramBinding(comptime Transformer: type, self: *Transformer, binding: NodeIndex, program_scope: ScopeId) bool {
+    if (binding.isNone() or self.ast.getNode(binding).tag != .binding_identifier) return false;
+    const raw = self.getSymbolIdAt(binding) orelse return false;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    if (raw >= symbols.len) return false;
+    return symbols[raw].scope_id == program_scope;
+}
+
+/// Collects every identifier a binding (pattern) declares. False when one of
+/// them is not a source binding of the program scope (a lowering temp).
+fn collectProgramBindings(comptime Transformer: type, self: *Transformer, idx: NodeIndex, program_scope: ScopeId, out: *std.ArrayList(NodeIndex)) Transformer.Error!bool {
+    if (idx.isNone()) return true;
+    const node = self.ast.getNode(idx);
+    switch (node.tag) {
+        .binding_identifier => {
+            if (!isProgramBinding(Transformer, self, idx, program_scope)) return false;
+            try out.append(self.allocator, idx);
+            return true;
+        },
+        .object_pattern, .array_pattern => {
+            const split = self.ast.nodeListSplitRest(node.data.list);
+            const elements = try self.allocator.dupe(u32, split.elements);
+            defer self.allocator.free(elements);
+            for (elements) |raw| {
+                const elem: NodeIndex = @enumFromInt(raw);
+                if (elem.isNone()) continue;
+                const elem_node = self.ast.getNode(elem);
+                const target = switch (elem_node.tag) {
+                    .elision => continue,
+                    .binding_property => elem_node.data.binary.right,
+                    else => elem,
+                };
+                if (!try collectProgramBindings(Transformer, self, target, program_scope, out)) return false;
+            }
+            if (split.rest_operand) |rest| return collectProgramBindings(Transformer, self, rest, program_scope, out);
+            return true;
+        },
+        .assignment_pattern => return collectProgramBindings(Transformer, self, node.data.binary.left, program_scope, out),
+        .rest_element, .binding_rest_element => return collectProgramBindings(Transformer, self, node.data.unary.operand, program_scope, out),
+        else => return false,
+    }
+}
+
+/// A write of a hoisted source binding from inside the wrapper.
+fn bindingWriteTarget(comptime Transformer: type, self: *Transformer, binding: NodeIndex) Transformer.Error!NodeIndex {
+    const target = try self.makeIdentifierRefWithSymbol(self.ast.getNode(binding).data.string_ref, binding);
+    if (self.getSymbolIdAt(binding) != null) try self.trackUserWriteFromBinding(target, binding, self.current_scope);
+    return target;
+}
+
+/// `<kind> a = 1, [b] = c, _t = d` → `a = 1;` `(_r = c, b = _r[0], _r);` with
+/// `a`, `b` declared ahead of the wrapper. A generated temp keeps its
+/// declaration inside the wrapper, in its place.
+fn splitWrappedDeclaration(comptime Transformer: type, self: *Transformer, decl_idx: NodeIndex, exported: bool, program_scope: ScopeId, bindings: *WrappedBindings, body: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+    const decl = self.ast.getNode(decl_idx);
+    const e = decl.data.extra;
+    const kind: ast_mod.VariableDeclarationKind = @enumFromInt(self.ast.extra_data.items[e]);
+    const list_start = self.ast.extra_data.items[e + 1];
+    const list_len = self.ast.extra_data.items[e + 2];
+    var kept: std.ArrayList(NodeIndex) = .empty;
+    defer kept.deinit(self.allocator);
+    var names: std.ArrayList(NodeIndex) = .empty;
+    defer names.deinit(self.allocator);
+    var i: u32 = 0;
+    while (i < list_len) : (i += 1) {
+        const declarator_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+        const declarator = self.ast.getNode(declarator_idx);
+        const binding: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+        const init: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra + 2]);
+        names.clearRetainingCapacity();
+        // A lowering temp (`_ref` of a lowered pattern, even in an export)
+        // keeps its declaration inside the wrapper.
+        if (!try collectProgramBindings(Transformer, self, binding, program_scope, &names)) {
+            try kept.append(self.allocator, declarator_idx);
+            continue;
+        }
+        if (kept.items.len > 0) {
+            try body.append(self.allocator, try es_helpers.makeVarDeclaration(self, kept.items, kind, decl.span));
+            kept.clearRetainingCapacity();
+        }
+        try bindings.list(exported).appendSlice(self.allocator, names.items);
+        if (init.isNone()) continue;
+        const binding_node = self.ast.getNode(binding);
+        const expr = if (binding_node.tag == .binding_identifier)
+            try es_helpers.makeAssignExpr(self, try bindingWriteTarget(Transformer, self, binding), init, declarator.span, 0)
+        else
+            try @import("es2015_destructuring.zig").ES2015Destructuring(Transformer).lowerBindingPatternAssignment(self, binding_node, init, declarator.span);
+        try body.append(self.allocator, try es_helpers.makeExprStmt(self, expr, declarator.span));
+    }
+    if (kept.items.len > 0) try body.append(self.allocator, try es_helpers.makeVarDeclaration(self, kept.items, kind, decl.span));
+}
+
+/// `class C {}` → `C = class {}` with `C` declared ahead of the wrapper (the
+/// assignment names the class). False when the class keeps its declaration.
+fn splitWrappedClass(comptime Transformer: type, self: *Transformer, class_idx: NodeIndex, exported: bool, program_scope: ScopeId, bindings: *WrappedBindings, body: *std.ArrayList(NodeIndex)) Transformer.Error!bool {
+    const class = self.ast.getNode(class_idx);
+    var slots: [8]u32 = undefined;
+    for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[class.data.extra + slot];
+    const name: NodeIndex = @enumFromInt(slots[ast_mod.ClassExtra.name]);
+    if (!isProgramBinding(Transformer, self, name, program_scope)) return false;
+    slots[ast_mod.ClassExtra.name] = @intFromEnum(NodeIndex.none);
+    const expr_extra = try self.ast.addExtras(&slots);
+    const expr = try self.ast.addNode(.{ .tag = .class_expression, .span = class.span, .data = .{ .extra = expr_extra } });
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(class_idx, expr);
+    const assign = try es_helpers.makeAssignExpr(self, try bindingWriteTarget(Transformer, self, name), expr, class.span, 0);
+    try body.append(self.allocator, try es_helpers.makeExprStmt(self, assign, class.span));
+    try bindings.list(exported).append(self.allocator, name);
+    return true;
+}
+
+/// Places one visited statement from after the first await: a function
+/// declaration `collectHoistableFunctions` chose (`hoist_function`) and an
+/// exported one ahead of the wrapper, declarations split by `splitWrapped*`,
+/// export lists after the wrapper, and the rest inside it.
+fn placeWrappedStatement(comptime Transformer: type, self: *Transformer, stmt: NodeIndex, hoist_function: bool, program_scope: ScopeId, bindings: *WrappedBindings, prelude: *std.ArrayList(NodeIndex), body: *std.ArrayList(NodeIndex), post: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+    const node = self.ast.getNode(stmt);
+    switch (node.tag) {
+        .function_declaration => try (if (hoist_function) prelude else body).append(self.allocator, stmt),
+        .variable_declaration => try splitWrappedDeclaration(Transformer, self, stmt, false, program_scope, bindings, body),
+        .class_declaration => if (!try splitWrappedClass(Transformer, self, stmt, false, program_scope, bindings, body)) try body.append(self.allocator, stmt),
+        .export_named_declaration => {
+            const declaration: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            if (declaration.isNone()) return post.append(self.allocator, stmt);
+            switch (self.ast.getNode(declaration).tag) {
+                .variable_declaration => try splitWrappedDeclaration(Transformer, self, declaration, true, program_scope, bindings, body),
+                .class_declaration => if (!try splitWrappedClass(Transformer, self, declaration, true, program_scope, bindings, body)) try post.append(self.allocator, stmt),
+                else => try prelude.append(self.allocator, stmt),
+            }
+        },
+        else => if (isModuleDeclaration(node.tag)) try post.append(self.allocator, stmt) else try body.append(self.allocator, stmt),
+    }
+}
+
+/// `export default <expr>` after the first await → `_default = <expr>;` in
+/// the wrapper, with `var _default;` ahead of it and
+/// `export { _default as default }` after it (the `using` lowering's facade).
+/// A function or class keeps its declaration: hoisted, or named `default`.
+fn moveDefaultExport(comptime Transformer: type, self: *Transformer, stmt: NodeIndex, program_scope: ScopeId, bindings: *WrappedBindings, body: *std.ArrayList(NodeIndex), post: *std.ArrayList(NodeIndex)) Transformer.Error!bool {
+    const node = self.ast.getNode(stmt);
+    const operand = node.data.unary.operand;
+    switch (self.ast.getNode(operand).tag) {
+        .function_declaration, .class_declaration, .function_expression, .arrow_function_expression, .class_expression => return false,
+        else => {},
+    }
+    var n: u32 = 1;
+    const name = while (true) : (n += 1) {
+        const candidate = if (n == 1) try self.allocator.dupe(u8, "_default") else try std.fmt.allocPrint(self.allocator, "_default{d}", .{n});
+        if (!try es_helpers.nameAppearsInSource(self, candidate)) break candidate;
+        self.allocator.free(candidate);
+    };
+    defer self.allocator.free(name);
+    const name_span = try self.ast.addString(name);
+    const binding = try es_helpers.makeSyntheticBinding(self, name_span);
+    if (self.semantic_edit_enabled) {
+        if (std.mem.eql(u8, name, "_default")) {
+            const raw_id = self.getSymbolIdAt(stmt) orelse std.debug.panic("default export facade has no SymbolId", .{});
+            try self.setGeneratedSymbolId(binding, raw_id);
+            try self.ensureSymbolDeclarationAtNode(raw_id, program_scope, binding);
+        } else {
+            _ = try self.declareSyntheticInScope(binding, node.span, .variable_var, program_scope);
+        }
+    }
+    const binding_span = self.ast.getNode(binding).data.string_ref;
+
+    const pt = self.pending_nodes.items.len;
+    const tt = self.trailing_nodes.items.len;
+    const value = try self.visitNode(operand);
+    const target = try self.makeIdentifierRefWithSymbol(binding_span, binding);
+    if (self.getSymbolIdAt(binding) != null) try self.trackUserWriteFromBinding(target, binding, self.current_scope);
+    const assign = try es_helpers.makeExprStmt(self, try es_helpers.makeAssignExpr(self, target, value, node.span, 0), node.span);
+    try drainPendingAroundTo(Transformer, self, pt, tt, assign, body);
+    try bindings.locals.append(self.allocator, binding);
+
+    const local_ref = try self.makeIdentifierRefWithSymbol(binding_span, binding);
+    if (self.getSymbolIdAt(binding) != null) try self.trackUserReadFromBinding(local_ref, binding, program_scope);
+    const spec = try self.ast.addNode(.{
+        .tag = .export_specifier,
+        .span = node.span,
+        .data = .{ .binary = .{ .left = local_ref, .right = try es_helpers.makePropertyName(self, "default"), .flags = 0 } },
+    });
+    const specs = try self.ast.addNodeList(&.{spec});
+    const none = @intFromEnum(NodeIndex.none);
+    try post.append(self.allocator, try self.addExtraNode(.export_named_declaration, node.span, &.{ none, specs.start, specs.len, none, 0, 0 }));
+    return true;
+}
+
+/// `var a, b;` / `export var c;` for the bindings the wrapper assigns.
+fn appendHoistedDeclarations(comptime Transformer: type, self: *Transformer, bindings: *WrappedBindings, span: Span, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
+    for ([_]bool{ false, true }) |exported| {
+        const names = bindings.list(exported).items;
+        if (names.len == 0) continue;
+        const declarators = try self.allocator.alloc(NodeIndex, names.len);
+        defer self.allocator.free(declarators);
+        for (names, declarators) |name, *declarator| declarator.* = try es_helpers.makeDeclarator(self, name, .none, span);
+        const decl = try es_helpers.makeVarDeclaration(self, declarators, .@"var", span);
+        if (!exported) {
+            try out.append(self.allocator, decl);
+            continue;
+        }
+        const none = @intFromEnum(NodeIndex.none);
+        try out.append(self.allocator, try self.addExtraNode(.export_named_declaration, span, &.{ @intFromEnum(decl), 0, 0, none, 0, 0 }));
     }
 }
 
@@ -350,14 +635,46 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // module runs, so earlier code may call them (#5575).
     var hoisted_functions: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer hoisted_functions.deinit(self.allocator);
-    try collectHoistableFunctions(self.ast, self.allocator, list, &hoisted_functions);
+    // #5575: with semantic data, the wrapper's bindings are declared ahead of
+    // it (`WrappedBindings`); without, its declarations stay inside.
+    const program_scope = programScopeForHoist(Transformer, self);
+    try collectHoistableFunctions(self.ast, self.allocator, list, program_scope != null, &hoisted_functions);
+    var bindings: WrappedBindings = .{};
+    defer bindings.deinit(self.allocator);
+    var post_exports: std.ArrayList(NodeIndex) = .empty;
+    defer post_exports.deinit(self.allocator);
+    var moved: std.ArrayList(NodeIndex) = .empty;
+    defer moved.deinit(self.allocator);
     i = 0;
     while (i < list.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
         if (isModuleDeclaration(child_node.tag)) {
-            if (wrapper_started) continue;
+            if (wrapper_started) {
+                // When the bundle waits for the wrapper, an export declaration
+                // after the first await runs inside it in source order, like
+                // a native module; its binding stays outside. Otherwise it
+                // keeps its place after the wrapper so importers that run
+                // right away still see a value.
+                const scope = program_scope orelse continue;
+                if (!self.options.tla_module_awaited) continue;
+                if (child_node.tag == .export_default_declaration) {
+                    if (try moveDefaultExport(Transformer, self, child, scope, &bindings, &self.scratch, &post_exports))
+                        try prelude_exports.put(self.allocator, @intFromEnum(child), {});
+                    continue;
+                }
+                if (child_node.tag != .export_named_declaration) continue;
+                if (self.ast.extra_data.items[child_node.data.extra] == @intFromEnum(NodeIndex.none)) continue;
+                const pt = self.pending_nodes.items.len;
+                const tt = self.trailing_nodes.items.len;
+                const visited = try self.visitNode(child);
+                moved.clearRetainingCapacity();
+                try drainPendingAroundTo(Transformer, self, pt, tt, visited, &moved);
+                for (moved.items) |stmt| try placeWrappedStatement(Transformer, self, stmt, true, scope, &bindings, &prelude_stmts, &self.scratch, &post_exports);
+                try prelude_exports.put(self.allocator, @intFromEnum(child), {});
+                continue;
+            }
             const pt = self.pending_nodes.items.len;
             const tt = self.trailing_nodes.items.len;
             const visited = try self.visitNode(child);
@@ -369,6 +686,13 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const tt = self.trailing_nodes.items.len;
         const visited = try self.visitNode(child);
         if (!wrapper_started and try hasTopLevelAwait(self.ast, child)) wrapper_started = true;
+        if (wrapper_started) if (program_scope) |scope| {
+            moved.clearRetainingCapacity();
+            try drainPendingAroundTo(Transformer, self, pt, tt, visited, &moved);
+            const hoist_function = hoisted_functions.contains(@intFromEnum(child));
+            for (moved.items) |stmt| try placeWrappedStatement(Transformer, self, stmt, hoist_function, scope, &bindings, &prelude_stmts, &self.scratch, &post_exports);
+            continue;
+        };
         const destination = if (wrapper_started and !hoisted_functions.contains(@intFromEnum(child))) &self.scratch else &prelude_stmts;
         try drainPendingAroundTo(Transformer, self, pt, tt, visited, destination);
     }
@@ -431,7 +755,9 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // body_stmts_top 이후를 drop 하고 새 리스트를 구성.
     self.scratch.shrinkRetainingCapacity(imports_end);
     try self.scratch.appendSlice(self.allocator, prelude_stmts.items);
+    try appendHoistedDeclarations(Transformer, self, &bindings, node.span, &self.scratch);
     if (!visited_iife.isNone()) try self.scratch.append(self.allocator, visited_iife);
+    try self.scratch.appendSlice(self.allocator, post_exports.items);
 
     // exports pass-through
     i = 0;
