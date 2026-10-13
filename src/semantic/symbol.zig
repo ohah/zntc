@@ -323,6 +323,10 @@ pub const SyntheticKind = enum(u8) {
     /// output may select its final spelling after all generated bindings exist.
     /// Keep appended so serialized SyntheticKind tags remain stable.
     standalone_temp_binding,
+    /// Parser-generated Flow component helper registered with an exact
+    /// semantic SymbolId. Standalone output selects its spelling after all
+    /// source and generated bindings are known. Keep appended to preserve tags.
+    standalone_generated_binding,
 };
 
 /// 컴파일 타임 상수 값. 번들러 cross-module 인라인 맵 (`linker.buildCrossModuleConstValues`)

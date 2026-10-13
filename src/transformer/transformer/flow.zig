@@ -512,10 +512,16 @@ pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex
     const func_decl = self.ast.getNode(func_decl_idx);
     const name_idx = self.readNodeIdx(func_decl.data.extra, ast_mod.FunctionExtra.name);
     const forward_ref_argument = flowComponentForwardRefArgument(self, const_decl_idx);
+    var helper_output_name: ?es_helpers.ScopedSyntheticOutputName = null;
     if (!name_idx.isNone() and !forward_ref_argument.isNone()) {
         const old_name_span = self.ast.getNode(name_idx).data.string_ref;
         const old_name = self.ast.getText(old_name_span);
-        const resolved_name = try es_helpers.resolveGeneratedName(self, old_name);
+        const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution)
+            try es_helpers.resolveScopedGeneratedOutputName(self, old_name, self.current_scope)
+        else
+            .{ .name = try es_helpers.resolveGeneratedName(self, old_name), .late = false };
+        helper_output_name = output_name;
+        const resolved_name = output_name.name;
         if (!std.mem.eql(u8, old_name, resolved_name)) {
             // The analyzer saw the parser-created argument before this generated
             // binding existed, so it may have resolved the name to a user binding.
@@ -539,6 +545,14 @@ pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex
             const output_ref = flowComponentForwardRefArgument(self, new_const);
             if (!output_name.isNone() and !output_ref.isNone()) {
                 const symbol = try self.declareSyntheticInScope(output_name, node.span, .function_decl, self.current_scope);
+                if (helper_output_name) |generated_name| {
+                    if (generated_name.late)
+                        es_helpers.markStandaloneLateSyntheticSymbol(
+                            self,
+                            symbol orelse std.debug.panic("Flow component helper has no exact SymbolId", .{}),
+                            .standalone_generated_binding,
+                        );
+                }
                 try self.addSyntheticRefInScope(output_ref, symbol, self.current_scope, .{ .read = true });
             }
         }
