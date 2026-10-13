@@ -77,7 +77,7 @@ fn getOrCreateCjsRequireRef(
     if (cache.get(mod_idx)) |cached| return cached;
 
     const target_mod = self.getModule(mod_idx).?;
-    const ref = try types.fmtDevRequireRef(self.allocator, target_mod.dev_id);
+    const ref = try types.fmtDevRequireRefNamed(self.allocator, target_mod.dev_id, self.currentHmrRuntimeInternalNames().modules);
     try cache.put(self.allocator, mod_idx, ref);
     return ref;
 }
@@ -479,6 +479,7 @@ pub fn buildMetadataForAst(
 
     const m = m_opt.?.*;
     try self.prepareEsmInteropRuntimeNamesIfNeeded();
+    try @constCast(self).prepareHmrRuntimeInternalNames();
 
     // 래핑 모듈 + semantic 없음: require_rewrites만 구축하고 조기 반환.
     // semantic 있으면 import_bindings 처리 경로로 진행하여
@@ -1508,7 +1509,8 @@ pub fn buildMetadataForAst(
                     if (is_tla) try preamble.write("await ");
                     if (guard) try preamble.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
                     if (self.dev_mode and !self.code_splitting) {
-                        try preamble.write("__zntc_modules[\"");
+                        try preamble.write(self.currentHmrRuntimeInternalNames().modules);
+                        try preamble.write("[\"");
                         try preamble.write(target_mod.dev_id);
                         try preamble.write("\"].fn()");
                     } else {
@@ -1674,7 +1676,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
                 self.allocator.free(old);
             }
             const req_ref = if (self.useDevModuleRegistry())
-                try types.fmtDevRequireCallExpr(self.allocator, target_mod.dev_id)
+                try types.fmtDevRequireCallExprNamed(self.allocator, target_mod.dev_id, self.currentHmrRuntimeInternalNames().modules)
             else
                 try target_mod.allocRequireName(self.allocator, &self.rename_table);
             try require_rewrites.put(self.allocator, rec.specifier, req_ref);
@@ -1685,10 +1687,11 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
             }
             if (self.useDevModuleRegistry()) {
                 const to_cjs_name = try self.esmInteropRuntimeHelperName(.to_common_js);
-                const call_expr = try std.fmt.allocPrint(
+                const call_expr = try types.fmtDevRequireExprNamed(
                     self.allocator,
-                    "(__zntc_modules[\"{s}\"].fn(), {s}(__zntc_modules[\"{s}\"].exports))",
-                    .{ target_mod.dev_id, to_cjs_name, target_mod.dev_id },
+                    target_mod.dev_id,
+                    self.currentHmrRuntimeInternalNames().modules,
+                    to_cjs_name,
                 );
                 try require_rewrites.put(self.allocator, rec.specifier, call_expr);
             } else {
@@ -2076,6 +2079,7 @@ pub fn buildDevMetadataForAst(
 
     const m = m_opt.?.*;
     try self.prepareEsmInteropRuntimeNamesIfNeeded();
+    try @constCast(self).prepareHmrRuntimeInternalNames();
 
     // CJS 래핑 모듈은 dev mode에서도 기존대로 유지
     if (m.wrap_kind == .cjs) {

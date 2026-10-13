@@ -180,6 +180,10 @@ pub const CodegenOptions = struct {
     force_var_for_cycle: bool = false,
     /// dev mode 모듈 ID. 설정 시 import.meta.hot -> __zntc_make_hot("id") 변환.
     dev_module_id: ?[]const u8 = null,
+    /// Graph-selected lexical name emitted by the raw HMR runtime.
+    dev_hmr_make_hot_name: []const u8 = "__zntc_make_hot",
+    /// Graph-selected lexical name for the HMR module registry.
+    dev_hmr_modules_name: []const u8 = "__zntc_modules",
     /// require.context match 의 abs path -> module ID 변환 base.
     /// `__zntc_modules[<id>]` lookup 이 모듈 등록 ID 와 일치해야 하므로 emitter 가 동일
     /// `root_dir` 을 전달. null 이면 변환 없음 (legacy 절대 경로).

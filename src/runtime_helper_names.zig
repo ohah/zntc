@@ -189,6 +189,26 @@ pub const EsmInteropRuntimeInternalNames = struct {
     to_common_js_module: []const u8 = "mod",
 };
 
+/// Output spellings for top-level bindings declared by the raw HMR preamble.
+/// Public global-object keys stay canonical; these are only lexical locals
+/// used inside the generated bundle and by generated callsites.
+pub const HmrRuntimeInternalNames = struct {
+    global: []const u8 = "__zntc_g",
+    modules: []const u8 = "__zntc_modules",
+    hot_callbacks: []const u8 = "__zntc_hot_cbs",
+    hot_data: []const u8 = "__zntc_hot_data",
+    schedule: []const u8 = "__zntc_schedule",
+    reload: []const u8 = "__zntc_reload",
+    resolve_refresh: []const u8 = "__zntc_resolveRefresh",
+    refresh_boundary: []const u8 = "__zntc_isReactRefreshBoundary",
+    refresh_timer: []const u8 = "__zntc_refreshTimer",
+    enqueue_update: []const u8 = "__zntc_enqueueUpdate",
+    make_hot: []const u8 = "__zntc_make_hot",
+    original_commonjs: []const u8 = "__zntc_orig_commonJS",
+    original_esm: []const u8 = "__zntc_orig_esm",
+    apply_update: []const u8 = "__zntc_apply_update",
+};
+
 /// 모든 runtime helper 의 `(base_name, short_name)` 단일 소스 테이블.
 /// 새 helper 추가는 여기에 entry 만 추가 — `helperName` 조회, mangler 예약, 테스트
 /// iteration 이 전부 이 테이블을 consume 하므로 세 곳의 drift 를 구조적으로 방지한다.

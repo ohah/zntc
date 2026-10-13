@@ -195,6 +195,30 @@ pub const ExternalParamNames = struct {
     parameter_name: []const u8,
 };
 
+const HmrRuntimeInternalRow = struct {
+    field_name: []const u8,
+    identity: []const u8,
+    emitted_name: []const u8,
+    kind: semantic_symbol.SymbolKind,
+};
+
+const HMR_RUNTIME_INTERNAL_ROWS = [_]HmrRuntimeInternalRow{
+    .{ .field_name = "global", .identity = "hmr.global", .emitted_name = "__zntc_g", .kind = .variable_var },
+    .{ .field_name = "modules", .identity = "hmr.modules", .emitted_name = "__zntc_modules", .kind = .variable_var },
+    .{ .field_name = "hot_callbacks", .identity = "hmr.hot_callbacks", .emitted_name = "__zntc_hot_cbs", .kind = .variable_var },
+    .{ .field_name = "hot_data", .identity = "hmr.hot_data", .emitted_name = "__zntc_hot_data", .kind = .variable_var },
+    .{ .field_name = "schedule", .identity = "hmr.schedule", .emitted_name = "__zntc_schedule", .kind = .function_decl },
+    .{ .field_name = "reload", .identity = "hmr.reload", .emitted_name = "__zntc_reload", .kind = .variable_var },
+    .{ .field_name = "resolve_refresh", .identity = "hmr.resolve_refresh", .emitted_name = "__zntc_resolveRefresh", .kind = .function_decl },
+    .{ .field_name = "refresh_boundary", .identity = "hmr.refresh_boundary", .emitted_name = "__zntc_isReactRefreshBoundary", .kind = .function_decl },
+    .{ .field_name = "refresh_timer", .identity = "hmr.refresh_timer", .emitted_name = "__zntc_refreshTimer", .kind = .variable_var },
+    .{ .field_name = "enqueue_update", .identity = "hmr.enqueue_update", .emitted_name = "__zntc_enqueueUpdate", .kind = .function_decl },
+    .{ .field_name = "make_hot", .identity = "hmr.make_hot", .emitted_name = "__zntc_make_hot", .kind = .function_decl },
+    .{ .field_name = "original_commonjs", .identity = "hmr.original_commonjs", .emitted_name = "__zntc_orig_commonJS", .kind = .variable_var },
+    .{ .field_name = "original_esm", .identity = "hmr.original_esm", .emitted_name = "__zntc_orig_esm", .kind = .variable_var },
+    .{ .field_name = "apply_update", .identity = "hmr.apply_update", .emitted_name = "__zntc_apply_update", .kind = .function_decl },
+};
+
 pub const Linker = struct {
     allocator: std.mem.Allocator,
     /// Module storage 접근 포인터 (#1779 PR #2). 기존 `[]const Module` slice
@@ -260,6 +284,10 @@ pub const Linker = struct {
     esm_interop_runtime_symbol_ids: [rt_names.ESM_INTEROP_RUNTIME_HELPERS.len]?bundler_symbol.SymbolID = @splat(null),
     /// Parse-backed owner for lexical locals in raw ESM interop templates.
     esm_interop_runtime_internal_owner: ?ModuleIndex = null,
+    /// Graph-wide exact names for top-level locals in raw HMR templates.
+    hmr_runtime_internal_names: ?rt_names.HmrRuntimeInternalNames = null,
+    hmr_runtime_internal_names_owned: bool = false,
+    hmr_runtime_internal_owner: ?ModuleIndex = null,
 
     /// 외부에서 전달된 예약 전역 식별자 (--global-identifier).
     /// RN의 polyfillGlobal()로 등록되는 이름(Performance, EventCounts 등)을
@@ -560,6 +588,13 @@ pub const Linker = struct {
         if (self.esm_interop_runtime_names_owned) {
             if (self.esm_interop_runtime_names) |names| {
                 for (names.names) |name| self.allocator.free(name);
+            }
+        }
+        if (self.hmr_runtime_internal_names_owned) {
+            if (self.hmr_runtime_internal_names) |names| {
+                inline for (std.meta.fields(rt_names.HmrRuntimeInternalNames)) |field| {
+                    self.allocator.free(@field(names, field.name));
+                }
             }
         }
         // nested-binding 캐시: inner set 해제(computeRenames 에러 경로 안전망; 정상 경로는 defer 가 이미 clear).
@@ -1159,6 +1194,7 @@ pub const Linker = struct {
         if (self.esm_interop_runtime_names != null or self.graphMayNeedEsmInteropRuntime()) {
             try self.reserveEsmInteropRuntimeNames();
         }
+        if (self.dev_mode) try self.reserveHmrRuntimeInternalNames();
 
         // (#4530) **생성된 래퍼 심볼 이름도 예약**한다 — CJS `require_X`, ESM-wrap
         // `init_X`/`exports_X`. 이들은 emitter 가 직접 찍는 top-level 선언인데
@@ -2281,6 +2317,171 @@ pub const Linker = struct {
 
     fn esmInteropInternalName(self: *const Linker, owner_index: ModuleIndex, inner: semantic_symbol.SymbolId) ?[]const u8 {
         return self.rename_table.get(bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner)));
+    }
+
+    pub fn hmrRuntimeInternalNames(self: *const Linker) !rt_names.HmrRuntimeInternalNames {
+        const mutable = @constCast(self);
+        // Low-level emitter tests may enable HMR on EmitOptions while using a
+        // linker that has no dev graph state. Preserve the canonical template
+        // fallback for that legacy caller shape.
+        if (!mutable.dev_mode and mutable.hmr_runtime_internal_names == null) return .{};
+        try mutable.prepareHmrRuntimeInternalNames();
+        return mutable.hmr_runtime_internal_names orelse return error.HmrRuntimeInternalNamesMissing;
+    }
+
+    /// Current selected names for synchronous output helpers. Emit entry points
+    /// prepare this cache before building metadata or chunks.
+    pub fn currentHmrRuntimeInternalNames(self: *const Linker) rt_names.HmrRuntimeInternalNames {
+        return self.hmr_runtime_internal_names orelse .{};
+    }
+
+    /// Raw HMR templates declare locals in the output bundle's shared scope.
+    /// Give each declaration an exact graph SymbolId and choose its output name
+    /// against every source scope, unresolved global, and other generated name.
+    pub fn prepareHmrRuntimeInternalNames(self: *Linker) !void {
+        if (!self.dev_mode) return;
+
+        var semantic_owner: ?ModuleIndex = null;
+        var parse_backed_anchor: ?ModuleIndex = null;
+        var has_semantic_module = false;
+        var modules = self.graph.modulesIterator();
+        while (modules.next()) |module| {
+            const sem = module.semantic orelse continue;
+            has_semantic_module = true;
+            if (module.parse_arena != null and parse_backed_anchor == null) parse_backed_anchor = module.index;
+            var has_rows = module.hmr_runtime_internal_symbols != null;
+            if (!has_rows) {
+                for (sem.symbols.items) |symbol| {
+                    if (symbol.synthetic_kind == .hmr_runtime_internal_local) {
+                        has_rows = true;
+                        break;
+                    }
+                }
+            }
+            if (!has_rows) continue;
+            if (semantic_owner) |existing| {
+                if (existing != module.index) return error.HmrRuntimeInternalOwnerAmbiguous;
+            } else {
+                semantic_owner = module.index;
+            }
+        }
+
+        if (!has_semantic_module) {
+            if (self.hmr_runtime_internal_names == null) self.hmr_runtime_internal_names = .{};
+            return;
+        }
+
+        const owner_index = semantic_owner orelse parse_backed_anchor orelse return error.HmrRuntimeInternalOwnerMissing;
+        var owner = self.moduleAtMut(@intFromEnum(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
+        const sem = if (owner.semantic) |*value| value else return error.HmrRuntimeInternalSymbolsMissing;
+        const arena = if (owner.parse_arena) |value| value.allocator() else return error.HmrRuntimeInternalOwnerMissing;
+        var recovered: [HMR_RUNTIME_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
+
+        for (sem.symbols.items, 0..) |symbol, index| {
+            if (symbol.synthetic_kind != .hmr_runtime_internal_local) {
+                if (std.mem.startsWith(u8, symbol.synthetic_name, "hmr.")) return error.HmrRuntimeInternalSymbolsInvalid;
+                continue;
+            }
+            var matched = false;
+            inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, row_index| {
+                if (std.mem.eql(u8, symbol.synthetic_name, row.identity)) {
+                    if (matched or symbol.kind != row.kind or recovered[row_index] != null)
+                        return error.HmrRuntimeInternalSymbolsInvalid;
+                    recovered[row_index] = @enumFromInt(index);
+                    matched = true;
+                }
+            }
+            if (!matched) return error.HmrRuntimeInternalSymbolsInvalid;
+        }
+
+        var found_count: usize = 0;
+        for (recovered) |id| {
+            if (id != null) found_count += 1;
+        }
+        if (found_count == 0) {
+            const start_len = sem.symbols.items.len;
+            errdefer sem.symbols.items.len = start_len;
+            inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, row_index| {
+                recovered[row_index] = try semantic_symbol.extendSymbol(
+                    arena,
+                    &sem.symbols,
+                    row.kind,
+                    .hmr_runtime_internal_local,
+                    row.identity,
+                    Span.EMPTY,
+                );
+            }
+        } else if (found_count != HMR_RUNTIME_INTERNAL_ROWS.len) {
+            return error.HmrRuntimeInternalSymbolsMissing;
+        }
+
+        const ids = recoveredHmrRuntimeInternalIds(recovered);
+        owner.hmr_runtime_internal_symbols = ids;
+        self.hmr_runtime_internal_owner = owner_index;
+
+        if (self.hmr_runtime_internal_names != null) {
+            try self.restoreHmrRuntimeInternalNames();
+            return;
+        }
+
+        var names: rt_names.HmrRuntimeInternalNames = .{};
+        var selected_names: [HMR_RUNTIME_INTERNAL_ROWS.len]?[]const u8 = @splat(null);
+        errdefer for (selected_names) |selected| if (selected) |name| self.allocator.free(name);
+        inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, row_index| {
+            const inner = @field(ids, row.field_name);
+            const symbol_id = bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner));
+            const selected = try self.calculateGraphWideRuntimeHelperName(symbol_id, row.emitted_name, null);
+            selected_names[row_index] = selected;
+            @field(names, row.field_name) = selected;
+        }
+        self.hmr_runtime_internal_names = names;
+        self.hmr_runtime_internal_names_owned = true;
+    }
+
+    fn restoreHmrRuntimeInternalNames(self: *Linker) !void {
+        const owner_index = self.hmr_runtime_internal_owner orelse return error.HmrRuntimeInternalOwnerMissing;
+        const owner = self.getModule(@intFromEnum(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
+        const ids = owner.hmr_runtime_internal_symbols orelse return error.HmrRuntimeInternalSymbolsMissing;
+        const names = self.hmr_runtime_internal_names orelse return error.HmrRuntimeInternalNamesMissing;
+        inline for (HMR_RUNTIME_INTERNAL_ROWS) |row| {
+            const inner = @field(ids, row.field_name);
+            const symbol_id = bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner));
+            const selected = @field(names, row.field_name);
+            const already_assigned = if (self.rename_table.get(symbol_id)) |current|
+                std.mem.eql(u8, current, selected)
+            else
+                false;
+            if (!already_assigned) {
+                try self.assignSymbolCanonical(symbol_id, try self.allocator.dupe(u8, selected));
+            }
+        }
+    }
+
+    fn reserveHmrRuntimeInternalNames(self: *Linker) !void {
+        try self.prepareHmrRuntimeInternalNames();
+        const names = self.hmr_runtime_internal_names orelse return error.HmrRuntimeInternalNamesMissing;
+        inline for (std.meta.fields(rt_names.HmrRuntimeInternalNames)) |field| {
+            try self.reserved_globals.put(self.allocator, @field(names, field.name), {});
+        }
+    }
+
+    fn recoveredHmrRuntimeInternalIds(ids: [HMR_RUNTIME_INTERNAL_ROWS.len]?semantic_symbol.SymbolId) @import("module.zig").HmrRuntimeInternalSymbolIds {
+        return .{
+            .global = ids[0] orelse unreachable,
+            .modules = ids[1] orelse unreachable,
+            .hot_callbacks = ids[2] orelse unreachable,
+            .hot_data = ids[3] orelse unreachable,
+            .schedule = ids[4] orelse unreachable,
+            .reload = ids[5] orelse unreachable,
+            .resolve_refresh = ids[6] orelse unreachable,
+            .refresh_boundary = ids[7] orelse unreachable,
+            .refresh_timer = ids[8] orelse unreachable,
+            .enqueue_update = ids[9] orelse unreachable,
+            .make_hot = ids[10] orelse unreachable,
+            .original_commonjs = ids[11] orelse unreachable,
+            .original_esm = ids[12] orelse unreachable,
+            .apply_update = ids[13] orelse unreachable,
+        };
     }
 
     pub fn prepareEsmInteropRuntimeNames(self: *Linker) !void {
@@ -3675,12 +3876,13 @@ pub const Linker = struct {
                     for (sem.symbols.items, 0..) |*sym, si| {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
-                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .bundler_runtime_helper, .require_shim_local, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding, .standalone_temp_binding, .standalone_generated_binding => {},
+                            .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .hmr_runtime_internal_local, .bundler_runtime_helper, .require_shim_local, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding, .standalone_temp_binding, .standalone_generated_binding => {},
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;
                         if (sk == .esm_runtime_internal_local) continue;
                         if (sk == .esm_interop_runtime_internal_local) continue;
+                        if (sk == .hmr_runtime_internal_local) continue;
                         // The graph-wide CJS runtime helper is emitted by the
                         // preamble; reserveCjsRuntimeName assigns its selected
                         // output spelling to the canonical helper SymbolId.

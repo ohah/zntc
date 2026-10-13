@@ -2710,6 +2710,19 @@ pub fn appendHmrRuntimeWithNames(
     esm_factory_name: []const u8,
     esm_interop_names: names_mod.EsmInteropRuntimeNames,
 ) !void {
+    try appendHmrRuntimeWithInternalNames(buf, allocator, minify, cjs_factory_name, esm_factory_name, esm_interop_names, .{});
+}
+
+/// Emit HMR with exact names for its graph-owned top-level lexical bindings.
+pub fn appendHmrRuntimeWithInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    minify: bool,
+    cjs_factory_name: []const u8,
+    esm_factory_name: []const u8,
+    esm_interop_names: names_mod.EsmInteropRuntimeNames,
+    hmr_names: names_mod.HmrRuntimeInternalNames,
+) !void {
     const source = if (minify) HMR_RUNTIME_MIN else HMR_RUNTIME;
     var named_template: std.ArrayList(u8) = .empty;
     defer named_template.deinit(allocator);
@@ -2720,8 +2733,46 @@ pub fn appendHmrRuntimeWithNames(
         named_template.items[0 .. named_template.items.len - 1]
     else
         named_template.items;
-    try appendRuntimeWithEsmInteropNames(buf, allocator, terminated, minify, esm_interop_names);
+
+    var internal_named_template: std.ArrayList(u8) = .empty;
+    defer internal_named_template.deinit(allocator);
+    const internal_replacements = hmrInternalReplacements(hmr_names);
+    try appendRuntimeWithIdentifierReplacements(&internal_named_template, allocator, terminated, &internal_replacements);
+    try appendRuntimeWithEsmInteropNames(buf, allocator, internal_named_template.items, minify, esm_interop_names);
     try buf.append(allocator, ';');
+}
+
+fn hmrInternalReplacements(names: names_mod.HmrRuntimeInternalNames) [16]RuntimeIdentifierReplacement {
+    return .{
+        .{ .from = "__zntc_g", .to = names.global },
+        .{ .from = "__zntc_modules", .to = names.modules },
+        .{ .from = "__zntc_hot_cbs", .to = names.hot_callbacks },
+        .{ .from = "__zntc_hot_data", .to = names.hot_data },
+        .{ .from = "__zntc_schedule", .to = names.schedule },
+        .{ .from = "__zntc_reload", .to = names.reload },
+        .{ .from = "__zntc_resolveRefresh", .to = names.resolve_refresh },
+        .{ .from = "__zntc_isReactRefreshBoundary", .to = names.refresh_boundary },
+        .{ .from = "__zntc_refreshTimer", .to = names.refresh_timer },
+        .{ .from = "__zntc_enqueueUpdate", .to = names.enqueue_update },
+        .{ .from = "__zntc_make_hot", .to = names.make_hot },
+        .{ .from = "__zntc_orig_commonJS", .to = names.original_commonjs },
+        .{ .from = "__zntc_oc", .to = names.original_commonjs },
+        .{ .from = "__zntc_orig_esm", .to = names.original_esm },
+        .{ .from = "__zntc_oe", .to = names.original_esm },
+        .{ .from = "__zntc_apply_update", .to = names.apply_update },
+    };
+}
+
+/// Rewrite only HMR lexical references in a compiler-owned template fragment.
+/// The scanner leaves property keys such as `g.__zntc_modules` canonical.
+pub fn appendHmrInternalNameReferences(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    hmr_names: names_mod.HmrRuntimeInternalNames,
+) !void {
+    const replacements = hmrInternalReplacements(hmr_names);
+    try appendRuntimeWithIdentifierReplacements(buf, allocator, source, &replacements);
 }
 
 test "HMR helper aliasing preserves canonical global property keys" {
@@ -2742,6 +2793,50 @@ test "HMR helper aliasing preserves canonical global property keys" {
     try std.testing.expect(std.mem.indexOf(u8, output.items, "g.__toCommonJS = __toCommonJS$1;") != null);
 }
 
+test "HMR runtime internal aliases preserve public property keys" {
+    const allocator = std.testing.allocator;
+    var hmr_names: names_mod.HmrRuntimeInternalNames = .{};
+    hmr_names.global = "hmr_global_local";
+    hmr_names.modules = "hmr_modules_local";
+    hmr_names.hot_callbacks = "hmr_callbacks_local";
+    hmr_names.hot_data = "hmr_data_local";
+    hmr_names.schedule = "hmr_schedule_local";
+    hmr_names.reload = "hmr_reload_local";
+    hmr_names.resolve_refresh = "hmr_resolve_refresh_local";
+    hmr_names.refresh_boundary = "hmr_refresh_boundary_local";
+    hmr_names.refresh_timer = "hmr_refresh_timer_local";
+    hmr_names.enqueue_update = "hmr_enqueue_update_local";
+    hmr_names.make_hot = "hmr_make_hot_local";
+    hmr_names.original_commonjs = "hmr_original_commonjs_local";
+    hmr_names.original_esm = "hmr_original_esm_local";
+    hmr_names.apply_update = "hmr_apply_update_local";
+
+    var runtime: std.ArrayList(u8) = .empty;
+    defer runtime.deinit(allocator);
+    try appendHmrRuntimeWithInternalNames(
+        &runtime,
+        allocator,
+        false,
+        "__commonJS",
+        "__esm",
+        names_mod.defaultEsmInteropRuntimeNames(false),
+        hmr_names,
+    );
+    try std.testing.expect(std.mem.indexOf(u8, runtime.items, "var hmr_global_local =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.items, "var hmr_modules_local = hmr_global_local.__zntc_modules") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.items, "function hmr_schedule_local") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.items, "g.__zntc_apply_update = hmr_apply_update_local") != null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.items, "var __zntc_g =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, runtime.items, "function __zntc_schedule") == null);
+
+    var chunk_register: std.ArrayList(u8) = .empty;
+    defer chunk_register.deinit(allocator);
+    try appendHmrChunkRegisterWithInternalNames(&chunk_register, allocator, "__commonJS", "__esm", hmr_names);
+    try std.testing.expect(std.mem.indexOf(u8, chunk_register.items, "var hmr_global_local =") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chunk_register.items, "hmr_global_local.__zntc_modules") != null);
+    try std.testing.expect(std.mem.indexOf(u8, chunk_register.items, "var __zntc_modules =") == null);
+}
+
 /// Dev-split non-entry chunks only register their local factories with HMR.
 pub fn appendHmrChunkRegisterNamed(
     buf: *std.ArrayList(u8),
@@ -2749,7 +2844,31 @@ pub fn appendHmrChunkRegisterNamed(
     cjs_factory_name: []const u8,
     esm_factory_name: []const u8,
 ) !void {
-    try appendHmrTemplateNamed(buf, allocator, HMR_CHUNK_REGISTER, cjs_factory_name, esm_factory_name);
+    try appendHmrChunkRegisterWithInternalNames(buf, allocator, cjs_factory_name, esm_factory_name, .{});
+}
+
+/// Emit a dev-split registration prelude with the same graph-owned names as
+/// the entry HMR runtime.
+pub fn appendHmrChunkRegisterWithInternalNames(
+    buf: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    cjs_factory_name: []const u8,
+    esm_factory_name: []const u8,
+    hmr_names: names_mod.HmrRuntimeInternalNames,
+) !void {
+    var named_template: std.ArrayList(u8) = .empty;
+    defer named_template.deinit(allocator);
+    var internal_named_template: std.ArrayList(u8) = .empty;
+    defer internal_named_template.deinit(allocator);
+    try appendHmrTemplateNamed(&named_template, allocator, HMR_CHUNK_REGISTER, cjs_factory_name, esm_factory_name);
+    const terminated = if (named_template.items.len > 0 and named_template.items[named_template.items.len - 1] == ';')
+        named_template.items[0 .. named_template.items.len - 1]
+    else
+        named_template.items;
+    const replacements = hmrInternalReplacements(hmr_names);
+    try appendRuntimeWithIdentifierReplacements(&internal_named_template, allocator, terminated, &replacements);
+    try buf.appendSlice(allocator, internal_named_template.items);
+    try buf.append(allocator, ';');
 }
 
 fn appendHmrTemplateNamed(

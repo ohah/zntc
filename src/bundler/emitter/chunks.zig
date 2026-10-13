@@ -488,10 +488,15 @@ pub fn emitChunks(
         @constCast(l).use_shared_ns_preamble = true;
         @constCast(l).ns_preamble_chunked = true;
         try @constCast(l).prepareEsmInteropRuntimeNamesIfNeeded();
+        try @constCast(l).prepareHmrRuntimeInternalNames();
         try @constCast(l).prepareCjsRuntimeName();
         try @constCast(l).prepareToBinaryRuntimeName();
         try @constCast(l).prepareEsmRuntimeName();
     }
+    const hmr_runtime_names = if (options.dev_mode) blk: {
+        if (linker) |l| break :blk try l.hmrRuntimeInternalNames();
+        break :blk rt_names.HmrRuntimeInternalNames{};
+    } else rt_names.HmrRuntimeInternalNames{};
 
     var outputs: std.ArrayList(OutputFile) = .empty;
     errdefer {
@@ -764,9 +769,9 @@ pub fn emitChunks(
                     l.currentEsmInteropRuntimeNames()
                 else
                     rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
-                try rt.appendHmrRuntimeWithNames(&chunk_output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name, helper_names);
+                try rt.appendHmrRuntimeWithInternalNames(&chunk_output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name, helper_names, hmr_runtime_names);
             } else {
-                try rt.appendHmrChunkRegisterNamed(&chunk_output, allocator, cjs_factory_name, esm_factory_name);
+                try rt.appendHmrChunkRegisterWithInternalNames(&chunk_output, allocator, cjs_factory_name, esm_factory_name, hmr_runtime_names);
             }
         }
 
@@ -1583,7 +1588,7 @@ pub fn emitChunks(
             // 레지스트리 부트스트랩/클라이언트 적용은 후속 PR. sourcemap 은 후속(PR 범위 축소).
             if (collect_dev_codes) {
                 const mod_id = parent.makeModuleId(m.path, options.root_dir);
-                const hmr_code = try parent.wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable);
+                const hmr_code = try parent.wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable, hmr_runtime_names);
                 errdefer allocator.free(hmr_code);
                 const id_dup = try allocator.dupe(u8, mod_id);
                 errdefer allocator.free(id_dup);

@@ -743,7 +743,8 @@ pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlag
         if (self.resolveImportMetaProp(object, property)) |prop_text| {
             if (self.options.dev_module_id) |dev_id| {
                 if (std.mem.eql(u8, prop_text, "hot")) {
-                    try self.write("__zntc_make_hot(\"");
+                    try self.write(self.options.dev_hmr_make_hot_name);
+                    try self.write("(\"");
                     try self.write(dev_id);
                     try self.write("\")");
                     return;

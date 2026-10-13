@@ -72,6 +72,21 @@ describe('NAPI lazy dev split HMR runtime (RFC_LAZY_DEV_MODULE_HMR PR-2)', () =>
     };
   }
 
+  test('dev_split HMR aliases do not capture source globals across chunks', async () => {
+    const { exports } = await loadDevSplitLazy(
+      {
+        'entry.ts': 'export function loadLazy(){ return import("./lazy"); }',
+        'lazy.ts': [
+          `globalThis.__zntc_hot_cbs = "external-callbacks";`,
+          `export const value = __zntc_hot_cbs;`,
+        ].join('\n'),
+      },
+      'lazy.ts',
+    );
+
+    expect(exports.value).toBe('external-callbacks');
+  });
+
   test('cross-chunk init 이 글로벌 per-module 레지스트리로 동작 + apply_update hot-replace+state 보존', async () => {
     // 2개 entry(a,b)가 같은 shared 를 import → shared 는 *별도* 청크로 분리되어
     // cross-chunk static dep 가 된다 (#4038 의 정확한 형상).
