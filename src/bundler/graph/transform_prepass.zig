@@ -4431,6 +4431,9 @@ fn runtimeHelpersSafeForRetainedGraph(
     other_helpers.spread_array = false;
     other_helpers.tagged_template_literal = false;
     other_helpers.keep_names = false;
+    // `__toPropertyKey(key)` wraps a hoisted computed field key (#5553); like
+    // the class-call check it is a plain helper call with a tracked reference.
+    other_helpers.to_property_key = false;
     return !other_helpers.hasAny();
 }
 
