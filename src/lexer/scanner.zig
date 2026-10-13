@@ -2109,60 +2109,85 @@ pub const Scanner = struct {
         return string_escape.decodeUnicodeHexEscape(raw, &p);
     }
 
-    /// 이스케이프가 포함된 식별자 텍스트를 디코딩하여 실제 문자열을 반환한다.
-    /// \uXXXX 와 \u{XXXX} 형태를 처리. BMP 문자만 지원 (키워드 매칭에 충분).
-    /// 인스턴스의 decode_buf를 사용하여 dangling pointer 방지.
+    /// 이스케이프가 포함된 식별자 텍스트를 디코딩하여 StringValue를 반환한다.
+    /// \uXXXX 와 \u{XXXX} 형태를 UTF-8로 처리한다.
+    /// 인스턴스의 decode_buf를 사용하여 dangling pointer를 방지한다.
     pub fn decodeIdentifierEscapes(self: *Scanner, raw: []const u8) ?[]const u8 {
         return decodeIdentifierEscapesInto(raw, &self.decode_buf);
     }
 
-    /// Caller-owned scratch buffer를 사용해 이스케이프된 identifier를 디코딩한다.
-    /// Scanner 전체 초기화 없이 semantic analysis 같은 cold path에서 재사용한다.
+    /// Caller-owned scratch buffer를 사용해 identifier의 Unicode escape를
+    /// StringValue UTF-8 표기로 디코딩한다. 이스케이프가 없으면 원본 슬라이스를 반환한다.
     pub fn decodeIdentifierEscapesInto(raw: []const u8, decode_buf: []u8) ?[]const u8 {
-        // 이스케이프가 없으면 그대로 반환 (소스 텍스트 포인터, 항상 유효)
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
 
         var out: usize = 0;
         var i: usize = 0;
-
         while (i < raw.len) {
-            if (raw[i] == '\\' and i + 1 < raw.len and raw[i + 1] == 'u') {
-                i += 2; // skip \u
-                var codepoint: u32 = 0;
-                if (i < raw.len and raw[i] == '{') {
-                    i += 1; // skip {
-                    while (i < raw.len and raw[i] != '}') {
-                        const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
-                        codepoint = codepoint * 16 + digit;
-                        i += 1;
-                    }
-                    if (i < raw.len) i += 1; // skip }
+            var codepoint: u21 = undefined;
+            if (raw[i] == '\\') {
+                const escaped = readIdentifierUnicodeEscape(raw, &i) orelse return null;
+                if (escaped >= 0xD800 and escaped <= 0xDBFF) {
+                    const low = readIdentifierUnicodeEscape(raw, &i) orelse return null;
+                    if (low < 0xDC00 or low > 0xDFFF) return null;
+                    codepoint = @intCast(0x10000 + ((escaped - 0xD800) << 10) + (low - 0xDC00));
                 } else {
-                    // \uXXXX — 4자리 고정
-                    var j: usize = 0;
-                    while (j < 4 and i < raw.len) : (j += 1) {
-                        const digit = std.fmt.charToDigit(raw[i], 16) catch return null;
-                        codepoint = codepoint * 16 + digit;
-                        i += 1;
-                    }
-                }
-                // BMP 문자만 (키워드는 전부 ASCII)
-                if (codepoint < 0x80) {
-                    if (out >= decode_buf.len) return null;
-                    decode_buf[out] = @intCast(codepoint);
-                    out += 1;
-                } else {
-                    return null; // non-ASCII codepoint → 키워드 아님
+                    if (escaped >= 0xDC00 and escaped <= 0xDFFF) return null;
+                    codepoint = @intCast(escaped);
                 }
             } else {
-                if (out >= decode_buf.len) return null;
-                decode_buf[out] = raw[i];
-                out += 1;
-                i += 1;
+                const sequence_len = std.unicode.utf8ByteSequenceLength(raw[i]) catch return null;
+                if (i + sequence_len > raw.len) return null;
+                codepoint = std.unicode.utf8Decode(raw[i .. i + sequence_len]) catch return null;
+                i += sequence_len;
             }
+
+            var encoded: [4]u8 = undefined;
+            const encoded_len = std.unicode.utf8Encode(codepoint, &encoded) catch return null;
+            if (out + encoded_len > decode_buf.len) return null;
+            @memcpy(decode_buf[out .. out + encoded_len], encoded[0..encoded_len]);
+            out += encoded_len;
         }
 
         return decode_buf[0..out];
+    }
+
+    /// 필요할 때만 source identifier를 소유된 StringValue로 복사한다.
+    /// 이스케이프가 없거나 잘못된 spelling이면 원문 슬라이스를 반환한다.
+    pub fn decodeIdentifierEscapesAlloc(allocator: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const u8 {
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
+        const scratch = try allocator.alloc(u8, raw.len);
+        defer allocator.free(scratch);
+        const decoded = decodeIdentifierEscapesInto(raw, scratch) orelse return raw;
+        if (std.mem.eql(u8, raw, decoded)) return raw;
+        return try allocator.dupe(u8, decoded);
+    }
+
+    fn readIdentifierUnicodeEscape(raw: []const u8, i: *usize) ?u32 {
+        if (i.* + 2 > raw.len or raw[i.*] != '\\' or raw[i.* + 1] != 'u') return null;
+        i.* += 2;
+
+        var codepoint: u32 = 0;
+        if (i.* < raw.len and raw[i.*] == '{') {
+            i.* += 1;
+            const first_digit = i.*;
+            while (i.* < raw.len and raw[i.*] != '}') : (i.* += 1) {
+                const digit: u32 = std.fmt.charToDigit(raw[i.*], 16) catch return null;
+                if (codepoint > (0x10FFFF - digit) / 16) return null;
+                codepoint = codepoint * 16 + digit;
+            }
+            if (i.* == first_digit or i.* >= raw.len) return null;
+            i.* += 1;
+        } else {
+            if (i.* + 4 > raw.len) return null;
+            for (raw[i.* .. i.* + 4]) |byte| {
+                const digit: u32 = std.fmt.charToDigit(byte, 16) catch return null;
+                codepoint = codepoint * 16 + digit;
+            }
+            i.* += 4;
+        }
+        if (codepoint > 0x10FFFF) return null;
+        return codepoint;
     }
 
     /// Compare an identifier's source spelling with an ASCII StringValue.

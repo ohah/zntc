@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const Span = @import("../../lexer/token.zig").Span;
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const Ast = @import("../../parser/ast.zig").Ast;
 const ast_walk = @import("../../parser/ast_walk.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
@@ -188,7 +189,7 @@ pub const NamespaceAccessIndex = struct {
                 // text fallback 색인: obj 가 identifier_reference 인 경우만.
                 const obj_node = ast.nodes.items[obj_idx];
                 if (obj_node.tag != .identifier_reference) continue;
-                const obj_text = ast.getText(obj_node.span);
+                const obj_text = try Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(obj_node.span));
                 if (obj_text.len == 0) continue;
                 if (interest_text_set) |s| if (!s.contains(obj_text)) continue;
                 const gop = try self.accesses_by_obj_text.getOrPut(allocator, obj_text);
@@ -219,7 +220,7 @@ pub const NamespaceAccessIndex = struct {
                 // 이미 기록한다(static_member 의 non-identifier obj skip 과 동일 규칙).
                 const obj_node = ast.nodes.items[obj_idx];
                 if (obj_node.tag != .jsx_identifier) continue;
-                const obj_text = ast.getText(obj_node.span);
+                const obj_text = try Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(obj_node.span));
                 if (obj_text.len == 0) continue;
                 if (interest_text_set) |s| if (!s.contains(obj_text)) continue;
                 const gop = try self.accesses_by_obj_text.getOrPut(allocator, obj_text);
@@ -247,7 +248,7 @@ pub const NamespaceAccessIndex = struct {
                 if (name_idx >= node_count) continue;
                 const name_node = ast.nodes.items[name_idx];
                 if (name_node.tag != .jsx_identifier) continue;
-                const name_text = ast.getText(name_node.span);
+                const name_text = try Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(name_node.span));
                 if (name_text.len == 0) continue;
                 // 소문자 시작 = intrinsic element (`<div>`) — jsx_lowering 이 string literal 로
                 // 낮추므로 값 참조가 아니다 (lowerTagName 의 판정 규칙과 동일하게 유지).
@@ -267,7 +268,7 @@ pub const NamespaceAccessIndex = struct {
                 if (obj_idx >= node_count) continue;
                 const obj_node = ast.nodes.items[obj_idx];
                 if (obj_node.tag != .identifier_reference) continue;
-                const obj_text = ast.getText(obj_node.span);
+                const obj_text = try Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(obj_node.span));
                 if (obj_text.len == 0) continue;
                 if (interest_text_set) |s| if (!s.contains(obj_text)) continue;
                 const gop = try self.computed_by_obj_text.getOrPut(allocator, obj_text);
@@ -277,7 +278,7 @@ pub const NamespaceAccessIndex = struct {
                 });
             } else if (node.tag == .identifier_reference) {
                 // F1 fix: escape 검사용 — 모든 identifier_reference 의 text 색인.
-                const text = ast.getText(node.span);
+                const text = try Scanner.decodeIdentifierEscapesAlloc(allocator, ast.getText(node.span));
                 if (text.len == 0) continue;
                 if (interest_text_set) |s| if (!s.contains(text)) continue;
                 const gop = try self.idents_by_text.getOrPut(allocator, text);

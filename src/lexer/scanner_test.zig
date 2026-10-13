@@ -1589,3 +1589,13 @@ test "Scanner: ASCII identifier StringValue comparison resolves Unicode escapes"
     try std.testing.expect(!Scanner.identifierTextEqualsAscii("\\u0024e", "$e2", &scratch));
     try std.testing.expect(!Scanner.identifierTextEqualsAscii("\\u{1F600}", "😀", &scratch));
 }
+
+test "Scanner: identifier escapes decode full Unicode StringValue" {
+    var scratch: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("css", Scanner.decodeIdentifierEscapesInto("c\\u0073s", &scratch).?);
+    try std.testing.expectEqualStrings("é", Scanner.decodeIdentifierEscapesInto("\\u{E9}", &scratch).?);
+    try std.testing.expectEqualStrings("𝒜", Scanner.decodeIdentifierEscapesInto("\\u{1D49C}", &scratch).?);
+    try std.testing.expectEqualStrings("𝒜", Scanner.decodeIdentifierEscapesInto("\\uD835\\uDC9C", &scratch).?);
+    try std.testing.expect(Scanner.decodeIdentifierEscapesInto("\\u{}", &scratch) == null);
+    try std.testing.expect(Scanner.decodeIdentifierEscapesInto("\\u{110000}", &scratch) == null);
+}

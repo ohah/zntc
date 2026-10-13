@@ -5,6 +5,7 @@ const ExportBinding = binding_scanner.ExportBinding;
 const extractImportBindings = binding_scanner.extractImportBindings;
 const extractExportBindings = binding_scanner.extractExportBindings;
 const types = @import("types.zig");
+const scan_results_mod = @import("../parser/scan_results.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const ts_auto_export = @import("../parser/ts_auto_export.zig");
@@ -53,7 +54,6 @@ test "import binding: named import" {
     defer alloc.free(r.import_bindings);
     defer alloc.free(r.export_bindings);
     defer alloc.free(r.import_records);
-
     try std.testing.expectEqual(@as(usize, 1), r.import_bindings.len);
     try std.testing.expectEqualStrings("foo", r.import_bindings[0].local_name);
     try std.testing.expectEqualStrings("foo", r.import_bindings[0].imported_name);
@@ -71,6 +71,55 @@ test "import binding: named import with alias" {
     try std.testing.expectEqual(@as(usize, 1), r.import_bindings.len);
     try std.testing.expectEqualStrings("bar", r.import_bindings[0].local_name);
     try std.testing.expectEqualStrings("foo", r.import_bindings[0].imported_name);
+}
+
+test "import binding: escaped names use identifier StringValue" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc, "import { c\\u0073s as v\\u0061lue } from './dep';");
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+    defer alloc.free(r.import_bindings[0].local_name);
+    defer alloc.free(r.import_bindings[0].imported_name);
+
+    try std.testing.expectEqual(@as(usize, 1), r.import_bindings.len);
+    try std.testing.expectEqualStrings("value", r.import_bindings[0].local_name);
+    try std.testing.expectEqualStrings("css", r.import_bindings[0].imported_name);
+}
+
+test "parser scan metadata canonicalizes escaped identifiers and preserves string export names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { c\\u0073s as v\\u0061lue } from './dep'; import { \"hy-phen\" as str\\u0069ngName } from './dep'; import \\u0064efaultLocal from './dep'; export { v\\u0061lue as c\\u0073s, str\\u0069ngName as \"hy-phen\" }; export * as n\\u0073 from './dep'; export const d\\u0069rect = 1;";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.enable_scan = true;
+    parser.configureForBundler(".mjs");
+    _ = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 3), parser.scan_import_bindings.items.len);
+    try std.testing.expectEqualStrings("value", parser.scan_import_bindings.items[0].local_name);
+    try std.testing.expectEqualStrings("css", parser.scan_import_bindings.items[0].imported_name);
+    try std.testing.expectEqualStrings("stringName", parser.scan_import_bindings.items[1].local_name);
+    try std.testing.expectEqualStrings("\"hy-phen\"", parser.scan_import_bindings.items[1].imported_name);
+    try std.testing.expectEqualStrings("defaultLocal", parser.scan_import_bindings.items[2].local_name);
+    try std.testing.expectEqualStrings("default", parser.scan_import_bindings.items[2].imported_name);
+
+    try std.testing.expectEqual(@as(usize, 4), parser.scan_export_bindings.items.len);
+    try std.testing.expectEqual(scan_results_mod.ExportBindingKind.re_export, parser.scan_export_bindings.items[0].kind);
+    try std.testing.expectEqualStrings("css", parser.scan_export_bindings.items[0].local_name);
+    try std.testing.expectEqualStrings("css", parser.scan_export_bindings.items[0].exported_name);
+    try std.testing.expectEqual(scan_results_mod.ExportBindingKind.re_export, parser.scan_export_bindings.items[1].kind);
+    try std.testing.expectEqualStrings("\"hy-phen\"", parser.scan_export_bindings.items[1].local_name);
+    try std.testing.expectEqualStrings("\"hy-phen\"", parser.scan_export_bindings.items[1].exported_name);
+    try std.testing.expectEqual(scan_results_mod.ExportBindingKind.re_export_namespace, parser.scan_export_bindings.items[2].kind);
+    try std.testing.expectEqualStrings("ns", parser.scan_export_bindings.items[2].exported_name);
+    try std.testing.expectEqualStrings("ns", parser.scan_export_bindings.items[2].local_name);
+    try std.testing.expectEqual(scan_results_mod.ExportBindingKind.local, parser.scan_export_bindings.items[3].kind);
+    try std.testing.expectEqualStrings("direct", parser.scan_export_bindings.items[3].exported_name);
+    try std.testing.expectEqualStrings("direct", parser.scan_export_bindings.items[3].local_name);
 }
 
 test "import binding: default import" {
@@ -154,6 +203,20 @@ test "export binding: export { a as b }" {
     try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
     try std.testing.expectEqualStrings("b", r.export_bindings[0].exported_name);
     try std.testing.expectEqualStrings("a", r.export_bindings[0].local_name);
+}
+
+test "export binding: escaped public name uses identifier StringValue" {
+    const alloc = std.testing.allocator;
+    var r = try parseAndExtractBindings(alloc, "const css = 1; export { css as c\\u0073s };");
+    defer r.arena.deinit();
+    defer alloc.free(r.import_bindings);
+    defer alloc.free(r.export_bindings);
+    defer alloc.free(r.import_records);
+    defer alloc.free(r.export_bindings[0].exported_name);
+
+    try std.testing.expectEqual(@as(usize, 1), r.export_bindings.len);
+    try std.testing.expectEqualStrings("css", r.export_bindings[0].exported_name);
+    try std.testing.expectEqualStrings("css", r.export_bindings[0].local_name);
 }
 
 test "export binding: inferred type-only local aliases are omitted from scan and graph metadata" {

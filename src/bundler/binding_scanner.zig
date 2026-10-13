@@ -20,6 +20,7 @@ const Span = @import("../lexer/token.zig").Span;
 const preamble_writer = @import("linker/preamble_writer.zig");
 const types = @import("types.zig");
 const module_parser = @import("../parser/module.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const ModuleIndex = types.ModuleIndex;
 const symbol_mod = @import("symbol.zig");
 const AliasTable = symbol_mod.AliasTable;
@@ -183,6 +184,19 @@ pub const ExportBinding = struct {
     }
 };
 
+fn stableIdentifierText(allocator: std.mem.Allocator, ast: *const Ast, node: Node) ![]const u8 {
+    const raw = try ast.getTextStable(allocator, node.span);
+    return switch (node.tag) {
+        .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier => try Scanner.decodeIdentifierEscapesAlloc(allocator, raw),
+        else => raw,
+    };
+}
+
+fn stableIdentifierTextFromSpan(allocator: std.mem.Allocator, ast: *const Ast, span: Span) ![]const u8 {
+    const raw = try ast.getTextStable(allocator, span);
+    return try Scanner.decodeIdentifierEscapesAlloc(allocator, raw);
+}
+
 /// AST에서 import 바인딩 상세를 추출한다.
 /// import_record_map: import source span → ImportRecord 인덱스 매핑
 /// `helper_ref_nodes` 가 non-null 이면 import_specifier 의 local_node idx 가 그 slice 에
@@ -241,7 +255,7 @@ pub fn extractImportBindings(
             const spec_node = ast.getNode(spec);
             switch (spec_node.tag) {
                 .import_default_specifier => {
-                    const name = try ast.getTextStable(allocator, spec_node.span);
+                    const name = try stableIdentifierTextFromSpan(allocator, ast, spec_node.span);
                     try bindings.append(allocator, .{
                         .kind = .default,
                         .local_name = name,
@@ -251,7 +265,7 @@ pub fn extractImportBindings(
                     });
                 },
                 .import_namespace_specifier => {
-                    const name = try ast.getTextStable(allocator, spec_node.span);
+                    const name = try stableIdentifierTextFromSpan(allocator, ast, spec_node.span);
                     try bindings.append(allocator, .{
                         .kind = .namespace,
                         .local_name = name,
@@ -269,14 +283,14 @@ pub fn extractImportBindings(
                     if (imported_idx.isNone()) continue;
 
                     const imported_node = ast.getNode(imported_idx);
-                    const imported_name = try ast.getTextStable(allocator, imported_node.span);
+                    const imported_name = try stableIdentifierText(allocator, ast, imported_node);
 
                     const local_node_idx = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
                         local_idx
                     else
                         imported_idx;
                     const local_node = ast.getNode(local_node_idx);
-                    const local_name = try ast.getTextStable(allocator, local_node.span);
+                    const local_name = try stableIdentifierText(allocator, ast, local_node);
 
                     const is_helper = if (helper_ref_nodes) |refs|
                         std.sort.binarySearch(u32, refs, @intFromEnum(local_node_idx), struct {
@@ -396,13 +410,13 @@ pub fn extractExportBindings(
                         if (local_idx.isNone()) continue;
 
                         const local_node = ast.getNode(local_idx);
-                        const local_name = ast.getText(local_node.span);
+                        const local_name = try stableIdentifierText(allocator, ast, local_node);
 
                         const exported_node = if (!exported_idx.isNone() and @intFromEnum(exported_idx) != @intFromEnum(local_idx))
                             ast.getNode(exported_idx)
                         else
                             local_node;
-                        const exported_name = ast.getText(exported_node.span);
+                        const exported_name = try stableIdentifierText(allocator, ast, exported_node);
 
                         // Rolldown 방식: from 절이 없어도 local_name이 import binding이면
                         // barrel re-export로 분류 (import { X } from './a'; export { X })
@@ -450,13 +464,13 @@ pub fn extractExportBindings(
                             const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
                             if (!name_idx.isNone()) {
                                 const name_node = ast.getNode(name_idx);
-                                local_name = ast.getText(name_node.data.string_ref);
+                                local_name = try stableIdentifierText(allocator, ast, name_node);
                                 local_symbol_node = name_idx;
                             }
                         }
                     } else if (inner.tag == .identifier_reference) {
                         // export default someVar → 해당 변수의 심볼을 default export로 재사용
-                        const name = ast.getText(inner.span);
+                        const name = try stableIdentifierText(allocator, ast, inner);
                         if (name.len > 0) {
                             local_name = name;
                             local_symbol_node = inner_idx;
@@ -498,7 +512,7 @@ pub fn extractExportBindings(
                     // export * as ns from './mod' — namespace re-export
                     // exported_name = "ns", local_name = "ns" (preamble에서 var ns = {...} 생성)
                     const name_node = ast.getNode(exported_name_idx);
-                    const name_text = ast.getText(name_node.data.string_ref);
+                    const name_text = try stableIdentifierText(allocator, ast, name_node);
                     try bindings.append(allocator, .{
                         .exported_name = name_text,
                         .local_name = name_text,
@@ -596,7 +610,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
             if (name_idx.isNone()) return names.toOwnedSlice(allocator);
             const name_node = ast.getNode(name_idx);
             try names.append(allocator, .{
-                .name = ast.getText(name_node.span),
+                .name = try stableIdentifierText(allocator, ast, name_node),
                 .span = name_node.span,
                 .node_index = name_idx,
             });
@@ -606,7 +620,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
             if (!name_idx.isNone()) {
                 const name_node = ast.getNode(name_idx);
                 try names.append(allocator, .{
-                    .name = ast.getText(name_node.span),
+                    .name = try stableIdentifierText(allocator, ast, name_node),
                     .span = name_node.span,
                     .node_index = name_idx,
                 });
@@ -634,7 +648,7 @@ fn extractBindingPatternNames(
     while (try w.next()) |name_idx| {
         const name_node = ast.getNode(name_idx);
         try names.append(allocator, .{
-            .name = ast.getText(name_node.span),
+            .name = try stableIdentifierText(allocator, ast, name_node),
             .span = name_node.span,
             .node_index = name_idx,
             .via_pattern = via_pattern,
