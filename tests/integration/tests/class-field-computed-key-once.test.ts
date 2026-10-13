@@ -43,6 +43,35 @@ const c = new C();
 console.log(c[s], c.ab, c[3]);`,
     expected: '1 2 3\n',
   },
+  'class with private members': {
+    source: `${keyed}
+class C { #p = 1; [ev(k1, 1)] = 5; get p() { return this.#p; } }
+new C(); new C(); const c = new C();
+console.log(calls, c.k1, c.p, log.join());`,
+    expected: '1 5 1 ev1,str1\n',
+  },
+  'Symbol.toPrimitive returning a symbol': {
+    source: `const s = Symbol('s');
+const k = { [Symbol.toPrimitive]() { return s; } };
+class C { [k] = 1; }
+console.log(new C()[s]);`,
+    expected: '1\n',
+  },
+  'a shadowed global String': {
+    source: `var String = function () { throw new Error('shadowed'); };
+const k = { toString() { return 'x'; } };
+class C { [k] = 1; }
+console.log(new C().x);`,
+    expected: '1\n',
+  },
+  '__proto__ and valueOf keys': {
+    source: `const k = { toString() { return '__proto__'; } };
+const n = { valueOf() { return 7; }, toString() { return '8'; } };
+class C { [k] = 1; [n] = 2; }
+const c = new C();
+console.log(Object.getPrototypeOf(c) === C.prototype, Object.keys(c).join());`,
+    expected: 'true 8,__proto__\n',
+  },
 } as const;
 
 describe('lowered computed class field keys are converted once (#5553)', () => {
@@ -75,5 +104,41 @@ describe('lowered computed class field keys are converted once (#5553)', () => {
         });
       }
     }
+  }
+});
+
+// TypeScript's assign semantics (`useDefineForClassFields: false`) write
+// `this[_a] = …` in the constructor, so the key converts per instance; tsc 6
+// prints the expected output (the converted-once key is define semantics only).
+describe('assign semantics keep the per-instance key conversion (#5553)', () => {
+  let cleanup: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    await cleanup?.();
+    cleanup = undefined;
+  });
+
+  for (const target of ['es2022', 'es2021', 'es5']) {
+    test(`instance field, ${target}`, async () => {
+      const created = await createFixture({
+        'entry.ts': `let n = 0;
+const key: any = { toString() { n++; return 'k'; } };
+class C { [key] = 1; #p = 2; get p() { return this.#p; } }
+new C(); new C();
+console.log(n, Object.keys(new C()).join());`,
+      });
+      cleanup = created.cleanup;
+      const out = join(created.dir, 'out.js');
+      const result = await runZntcInDir(created.dir, [
+        'entry.ts',
+        `--target=${target}`,
+        '--use-define-for-class-fields=false',
+        '-o',
+        out,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const run = spawnSync('node', [out], { encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toBe('2 k\n');
+    });
   }
 });

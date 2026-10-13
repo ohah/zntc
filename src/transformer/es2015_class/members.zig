@@ -735,7 +735,7 @@ pub fn Members(comptime Transformer: type) type {
         }
 
         fn memoizeStaticComputedFieldKey(self: *Transformer, cm: anytype, key_expr: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const memo = try es_helpers.memoizeComputedKey(self, key_expr, span);
+            const memo = try es_helpers.memoizeComputedKey(self, key_expr, span, false);
             try cm.accessor_key_memos.append(self.allocator, memo.decl);
             try cm.computed_key_temp_bindings.append(self.allocator, memo);
             try cm.computed_key_temp_reads.append(self.allocator, memo.value_ref);

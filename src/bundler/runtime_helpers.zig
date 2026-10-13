@@ -942,14 +942,18 @@ pub const PUBLIC_FIELD_RUNTIME =
 /// __toPropertyKey: 낮춘 class 의 computed key 를 **정의 시점에 한 번** ToPropertyKey 한다 (#5553).
 /// 필드 key 는 생성자 안 `__publicField(this, _a, …)` 로 옮겨져, temp 에 원래 값을 담아 두면
 /// 인스턴스마다 다시 변환된다(`toString` 이 여러 번 불리고 함수 이름도 빠진다). 스펙은 클래스
-/// 정의 때 각 key 를 평가한 직후 한 번 변환한다. `String()` 은 hint "string" ToPrimitive 다.
+/// 정의 때 각 key 를 평가한 직후 한 번 변환한다. 객체 key 는 `Object.defineProperty` 에
+/// 맡겨 엔진의 ToPropertyKey 를 그대로 쓴다 — `Symbol.toPrimitive` 가 symbol 을 돌려줘도
+/// 되고(`String()` 은 그때 throw), 사용자가 전역 `String` 을 가려도 영향이 없다.
 pub const TO_PROPERTY_KEY_RUNTIME =
     \\var __toPropertyKey = function(key) {
-    \\  return typeof key === "symbol" ? key : String(key);
+    \\  if (typeof key !== "object" && typeof key !== "function" || key === null) return typeof key === "symbol" ? key : key + "";
+    \\  var o = Object.defineProperty({}, key, { enumerable: true, value: 0 }), k = Object.keys(o);
+    \\  return k.length ? k[0] : Object.getOwnPropertySymbols(o)[0];
     \\};
     \\
 ;
-pub const TO_PROPERTY_KEY_RUNTIME_MIN = "var " ++ NAMES.TO_PROPERTY_KEY_MIN ++ "=function(key){return typeof key===\"symbol\"?key:String(key)};";
+pub const TO_PROPERTY_KEY_RUNTIME_MIN = "var " ++ NAMES.TO_PROPERTY_KEY_MIN ++ "=function(key){if(typeof key!==\"object\"&&typeof key!==\"function\"||key===null)return typeof key===\"symbol\"?key:key+\"\";var o=Object.defineProperty({},key,{enumerable:true,value:0}),k=Object.keys(o);return k.length?k[0]:Object.getOwnPropertySymbols(o)[0]};";
 pub const PUBLIC_FIELD_RUNTIME_MIN = "var " ++ NAMES.PUBLIC_FIELD_MIN ++ "=function(obj,key,value){return Object.defineProperty(obj,typeof key===\"symbol\"?key:key+\"\",{enumerable:true,configurable:true,writable:true,value:value}),value};";
 
 /// __yieldStar: async generator 안의 `yield* X` 를 위임한다 (esbuild 호환).

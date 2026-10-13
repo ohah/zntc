@@ -116,7 +116,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     const key_node = self.ast.getNode(key);
                     if (key_node.tag != .computed_property_key) continue;
 
-                    const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span);
+                    const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span, member.tag == .property_definition);
                     try static_key_memos_out.append(self.allocator, memo.decl);
                     try static_key_memos.append(self.allocator, .{ .raw_idx = raw_idx, .key_ref = memo.computed_key });
                 }
@@ -569,7 +569,7 @@ pub fn ES2022(comptime Transformer: type) type {
                             const field_deco_len = self.readU32(pe, ast_mod.PropertyExtra.deco_len);
                             if (field_deco_len == 0) {
                                 const lowered_key = if (key_node.tag == .computed_property_key) blk: {
-                                    const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span);
+                                    const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span, true);
                                     try pre_stmts.append(self.allocator, memo.decl);
                                     break :blk memo.computed_key;
                                 } else key;
