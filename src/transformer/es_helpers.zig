@@ -1006,10 +1006,12 @@ pub const ComputedKeyMemo = struct {
     computed_ref: NodeIndex,
     value_ref: NodeIndex,
 };
-pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span) !ComputedKeyMemo {
+/// `field_key` 면 값을 `makeToPropertyKey` 로 감싼다 — 필드 정의는 생성자/클래스 뒤로 옮겨진다.
+pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span, field_key: bool) !ComputedKeyMemo {
     const temp_span = try makeTempVarSpan(self);
     const temp_binding = try makeSyntheticBinding(self, temp_span);
-    const temp_init = try self.visitNode(key_expr);
+    const visited = try self.visitNode(key_expr);
+    const temp_init = if (field_key) try makeToPropertyKey(self, visited, span) else visited;
     const temp_decl = try makeDeclarator(self, temp_binding, temp_init, span);
     const computed_key = try makeComputedKeyRef(self, temp_span, span);
     return .{
@@ -1025,8 +1027,11 @@ pub fn memoizeComputedKey(self: anytype, key_expr: NodeIndex, span: Span) !Compu
 /// 낮춘 class field 의 computed key 를 temp 에 담기 전에 `__toPropertyKey(key)` 로 한 번
 /// 변환한다 (#5553). 필드는 생성자(`__publicField(this, _a, …)`)나 클래스 뒤 대입으로 옮겨져,
 /// 원래 값을 담아 두면 인스턴스마다 다시 변환된다 — 스펙은 정의 때 각 key 를 평가한 직후
-/// 한 번 변환한다. 문자열·숫자 리터럴은 변환해도 같으므로 그대로 둔다.
+/// 한 번 변환한다. 문자열·숫자 리터럴은 변환해도 같으므로 그대로 둔다. assign 의미론
+/// (`useDefineForClassFields: false`)은 `this[_a] = …` 대입이 인스턴스마다 key 를 변환하는
+/// TypeScript 동작이라 tsc 처럼 원래 값을 담는다.
 pub fn makeToPropertyKey(self: anytype, key: NodeIndex, span: Span) !NodeIndex {
+    if (!self.options.use_define_for_class_fields) return key;
     switch (self.ast.getNode(key).tag) {
         .string_literal, .numeric_literal => return key,
         else => {},
