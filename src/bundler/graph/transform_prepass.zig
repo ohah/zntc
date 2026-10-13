@@ -15,6 +15,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const ast_walk = @import("../../parser/ast_walk.zig");
 const module_parser = @import("../../parser/module.zig");
 const token_mod = @import("../../lexer/token.zig");
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
@@ -4689,6 +4690,12 @@ fn canKeepPrepassSemanticGraph(
     var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
+    for (semantic.scopes) |scope| {
+        if (scope.subtree_has_direct_eval) {
+            has_direct_eval = true;
+            break;
+        }
+    }
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
@@ -4770,14 +4777,18 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .identifier_reference => {
-                const name = ast.getText(node.span);
-                // The parser's semantic graph records the dynamic scope flag
-                // for direct eval, and the linker keeps all names visible to it.
-                // Retain that graph only if no earlier or later pass edits it.
-                // Escaped identifiers stay on the conservative resync path:
-                // their source spelling can hide an eval reference here.
-                if (std.mem.indexOfScalar(u8, name, '\\') != null) return false;
-                if (std.mem.eql(u8, name, "eval")) has_direct_eval = true;
+                const raw_name = ast.identifierNameText(node);
+                if (std.mem.indexOfScalar(u8, raw_name, '\\') != null) {
+                    // Escaped local references can leave source-name keyed
+                    // scope maps stale. Only an escaped eval reference is
+                    // admitted, and only when semantic analysis confirmed its
+                    // dynamic scope marker.
+                    var decode_buffer: [64]u8 = undefined;
+                    const decoded_name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse return false;
+                    if (!std.mem.eql(u8, decoded_name, "eval") or !has_direct_eval) return false;
+                } else if (std.mem.eql(u8, raw_name, "eval")) {
+                    has_direct_eval = true;
+                }
             },
             else => {},
         }
