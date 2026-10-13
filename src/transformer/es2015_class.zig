@@ -440,6 +440,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const class_self_id = try self.declareSyntheticInScope(fresh_name, span, .function_decl, iife_scope) orelse
                     std.debug.panic("anonymous ES5 class declaration has no exact class-self SymbolId", .{});
                 self.current_class_self_symbol_id = @intFromEnum(class_self_id);
+                // The inner constructor shares the deferred `_Class` spelling of
+                // the outer export binding; it needs its own late-name identity
+                // like the class-expression path, or the final-name pass rejects
+                // the deferred request.
+                if (anonymous_export_name) |output_name| {
+                    if (output_name.late)
+                        es_helpers.markStandaloneLateSyntheticSymbol(self, class_self_id, .anonymous_class_expression_binding);
+                }
             }
             if (inner != null and (write_binding != null or has_self_alias or renamed_outer))
                 try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
