@@ -335,6 +335,25 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
         /// lowerAsyncArrowToStateMachine 등에서 arrow를 function으로 변환할 때 사용.
         /// visitNode로 자식을 방문한다.
         pub fn arrowParamsToList(self: *Transformer, params_idx: NodeIndex) Transformer.Error!NodeList {
+            const list = try arrowParamsToListRaw(self, params_idx);
+            // A cover-grammar parameter `(a = 1) =>` stays an assignment
+            // expression. As a function parameter it is a default value: give
+            // it the assignment-pattern shape the parameter lowering handles,
+            // or ES5 output kept `function(a = 1)` (#5659).
+            for (self.ast.extra_data.items[list.start .. list.start + list.len]) |*raw| {
+                const param = self.ast.getNode(@enumFromInt(raw.*));
+                if (param.tag != .assignment_expression) continue;
+                if (param.data.binary.flags != @intFromEnum(@import("../lexer/token.zig").Kind.eq)) continue;
+                raw.* = @intFromEnum(try self.ast.addNode(.{
+                    .tag = .assignment_pattern,
+                    .span = param.span,
+                    .data = .{ .binary = .{ .left = param.data.binary.left, .right = param.data.binary.right, .flags = 0 } },
+                }));
+            }
+            return list;
+        }
+
+        fn arrowParamsToListRaw(self: *Transformer, params_idx: NodeIndex) Transformer.Error!NodeList {
             if (params_idx.isNone()) return self.ast.addNodeList(&.{});
             const params_node = self.ast.getNode(params_idx);
             return switch (params_node.tag) {
