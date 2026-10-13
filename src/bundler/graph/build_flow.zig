@@ -29,6 +29,8 @@ pub fn build(self: *ModuleGraph, io: std.Io, entry_points: []const []const u8) !
     // #1961: ZNTC builtin runtime helper plugin 을 plugin slice 앞에 prepend.
     // 워커 스레드에서 호출하기 전 단일 thread 진입점에서 1회만.
     graph_plugins.ensureBuiltinPlugins(self);
+    // Discovery workers must not run the graph-wide wrapper registration (#5604).
+    self.wrapper_symbols_registered = false;
 
     // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용).
     // esbuild `outbase` 자동 추론과 동치 — 모든 entry 의 dirname 의 longest
@@ -943,6 +945,7 @@ pub fn buildIncremental(
 ) !IncrementalBuildResult {
     // #1961: builtin runtime helper plugin prepend (build() 와 동일).
     graph_plugins.ensureBuiltinPlugins(self);
+    self.wrapper_symbols_registered = false;
 
     // entry_dir 계산: entry point들의 공통 부모 디렉토리 ([dir] 패턴용).
     // 매 buildIncremental 시 entry_points 로부터 재계산 — watch 모드에서 entry
@@ -1291,6 +1294,7 @@ pub fn buildIncrementalPreserved(
         self.project_root_auto = true;
     }
     graph_plugins.ensureBuiltinPlugins(self);
+    self.wrapper_symbols_registered = false;
 
     // 변경 모듈 인덱스 수집 — changed path 가 *현재 graph 에 있는* 모듈이어야 한다.
     // 그래프에 없는 changed path = 신규 파일(모듈 추가 후보) → 위상 변화 → full fallback.

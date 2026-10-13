@@ -209,6 +209,7 @@ pub fn promoteRunBeforeMainModules(self: *ModuleGraph) void {
 /// getter 를 두 번 정의 → 두번째가 첫번째를 덮어써서 사용처에서 undefined 참조.
 /// 충돌 감지 시 `$<N>` suffix 로 deconflict.
 pub fn registerWrapperSymbols(self: *ModuleGraph) !void {
+    self.wrapper_symbols_registered = true;
     // key 들은 module 의 parse_arena (graph teardown 까지 살아있음 — `Module.deinit`
     // 까지) 에서 빌리거나 본 함수 안의 arena 에서 새로 할당. used_names 는 이 함수
     // 안에서 defer deinit 되므로 모든 키가 map 보다 오래 산다.
