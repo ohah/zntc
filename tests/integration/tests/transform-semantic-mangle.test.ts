@@ -638,15 +638,15 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         expect(identity).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
       }
       const emitted = readFileSync(output, 'utf8');
-      if (target === 'es5') {
+      if (target !== 'esnext') {
+        // Every target but esnext lowers auto-accessors, as esbuild does (#5695).
         expect(emitted).not.toContain('accessor value');
         expect(emitted).not.toContain('static accessor count');
         const transformed = await runNode(output);
         expect(transformed.stderr, target).toBe('');
         expect(transformed.stdout.trim(), target).toBe(reference.stdout.trim());
       } else {
-        // Current class lowering only expands auto-accessors on the ES5 path.
-        // Keep higher-target syntax intact; Node does not parse this proposal yet.
+        // esnext keeps the proposal syntax; Node does not parse it yet.
         expect(emitted).toMatch(/\baccessor\s+value/);
         expect(emitted).toMatch(/\bstatic\s+accessor\s+count/);
       }

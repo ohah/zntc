@@ -118,6 +118,9 @@ pub const Feature = enum(u6) {
     /// es2015~es2021 은 class 자체는 네이티브지만 필드는 아니다. 예전엔 필드 낮추기가
     /// class→IIFE 낮추기에만 얹혀 있어 그 7개 타겟에서 필드가 그대로 샜다 (#4629).
     class_field,
+    /// Stage 3 decorators 의 auto-accessor (`accessor x = 1`). 어느 ES 버전·엔진에도 아직
+    /// 없어 esnext 만 그대로 둔다 — esbuild 와 같은 판정 (#5695).
+    decorator_auto_accessor,
 
     /// 이 feature가 도입된 ES 버전.
     pub fn esVersion(self: Feature) ESTarget {
@@ -132,6 +135,7 @@ pub const Feature = enum(u6) {
             .class_static_block, .class_private_method, .class_private_field, .top_level_await, .class_field => .es2022,
             .hashbang => .es2023,
             .using, .regex_duplicate_named_groups, .regex_modifiers => .es2025,
+            .decorator_auto_accessor => .esnext,
         };
     }
 };
@@ -217,10 +221,12 @@ pub const UnsupportedFeatures = packed struct(Bits) {
     async_generator: bool = false,
     /// ES2022 public class field. `class` 와 독립 (#4629).
     class_field: bool = false,
+    /// Stage 3 auto-accessor (`accessor x`) — esnext 외 전부 미지원 (#5695).
+    decorator_auto_accessor: bool = false,
 
     /// 나머지 비트는 예약. 새 feature 는 **끝에만** 추가한다 (Feature enum 과 비트
     /// 위치가 1:1 이라 중간 삽입은 기존 비트 의미를 통째로 어긋나게 한다).
-    _: u31 = 0,
+    _: u30 = 0,
 
     /// regex literal lowering 이 필요한 비트가 하나라도 set 인지.
     /// node_dispatch 조기탈출/graph prepass 게이트가 공유 — 새 regex 비트는
@@ -775,6 +781,7 @@ pub fn fromHermesPreset() UnsupportedFeatures {
         .generator = true,
         .async_await = true,
         .async_generator = true,
+        .decorator_auto_accessor = true,
         .new_target = true,
         // Hermes 미지원
         .class_static_block = true,
@@ -1203,7 +1210,8 @@ test "unsupportedFeatures — 최신 엔진은 모두 지원" {
         // 모든 feature 지원이 아니다 (dup-named 의 17.4 와 다른 경계).
         .{ .engine = .safari, .major = 26 },
     });
-    try std.testing.expectEqual(@as(Bits, 0), @as(Bits, @bitCast(f)));
+    // No engine runs auto-accessors yet (#5695).
+    try std.testing.expectEqual(@as(Bits, @bitCast(UnsupportedFeatures{ .decorator_auto_accessor = true })), @as(Bits, @bitCast(f)));
 }
 
 test "unsupportedFeatures — hermes 0.7 지원/미지원 구분" {

@@ -1424,6 +1424,13 @@ const DecoratedKey = struct { key: NodeIndex, temp: ?Span = null };
 /// context name and access functions, and an accessor's setter, read `_a`
 /// instead of evaluating `expr` again. Literal keys need no temp.
 fn memoizeDecoratedKey(self: *Transformer, key: NodeIndex, decorated: bool) Transformer.Error!DecoratedKey {
+    return memoizeComputedMemberKey(self, key, decorated, true);
+}
+
+/// `to_property_key`: convert the key once (`__toPropertyKey`) — the decorator
+/// context exposes it as `name`. A plain auto-accessor only shares the value
+/// between its getter and setter, as esbuild does.
+fn memoizeComputedMemberKey(self: *Transformer, key: NodeIndex, decorated: bool, to_property_key: bool) Transformer.Error!DecoratedKey {
     if (!decorated or key.isNone()) return .{ .key = key };
     const key_node = self.ast.getNode(key);
     if (key_node.tag != .computed_property_key) return .{ .key = key };
@@ -1435,9 +1442,11 @@ fn memoizeDecoratedKey(self: *Transformer, key: NodeIndex, decorated: bool) Tran
     const temp = try es_helpers.makeTempVarSpan(self);
     const write = try es_helpers.makeSyntheticRefFromSpan(self, temp);
     try self.trackSyntheticTempReference(temp, key_node.span, write, .{ .write = true });
-    self.runtime_helpers.to_property_key = true;
-    const callee = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
-    const converted = try es_helpers.makeCallExpr(self, callee, &.{inner}, key_node.span);
+    const converted = if (to_property_key) blk: {
+        self.runtime_helpers.to_property_key = true;
+        const callee = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
+        break :blk try es_helpers.makeCallExpr(self, callee, &.{inner}, key_node.span);
+    } else inner;
     const assign = try es_helpers.makeAssignExpr(self, write, converted, key_node.span, 0);
     const new_key = try self.ast.addNode(.{
         .tag = .computed_property_key,
@@ -1460,4 +1469,113 @@ fn decoratedKeyRead(self: *Transformer, temp: Span) Transformer.Error!NodeIndex 
 pub fn stage3OutputNeedsClassLowering(self: *Transformer) bool {
     const u = self.options.unsupported;
     return u.requiresPrivateDownlevel() or u.class_field or u.class_static_block;
+}
+
+fn isPlainAutoAccessor(self: *Transformer, member_idx: NodeIndex) bool {
+    if (member_idx.isNone()) return false;
+    const member = self.ast.getNode(member_idx);
+    if (member.tag != .accessor_property) return false;
+    const pe = member.data.extra;
+    if ((self.readU32(pe, ast_mod.PropertyExtra.flags) & ast_mod.PropertyFlags.is_declare) != 0) return false;
+    return self.readU32(pe, ast_mod.PropertyExtra.deco_len) == 0;
+}
+
+/// `accessor x = 1` → `#_x_accessor_storage = 1; get x() {…} set x(value) {…}`
+/// for targets without auto-accessors (every one but esnext, as esbuild does)
+/// (#5695). Runs before the class is visited, so the decorated-class path and
+/// private lowering see ordinary members; ES5 lowers accessors itself. A
+/// runtime computed key is evaluated once, like a decorated member's. Returns
+/// the rewritten class, or null when it has no undecorated accessor.
+pub fn lowerPlainAutoAccessors(self: *Transformer, class_idx: NodeIndex, source_idx: NodeIndex) Error!?NodeIndex {
+    if (!self.options.unsupported.decorator_auto_accessor or self.options.unsupported.class) return null;
+    const node = self.ast.getNode(class_idx);
+    const body_idx = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.body);
+    if (body_idx.isNone()) return null;
+    const body_list = self.ast.getNode(body_idx).data.list;
+    const has_accessor = for (self.ast.extra_data.items[body_list.start .. body_list.start + body_list.len]) |raw| {
+        if (isPlainAutoAccessor(self, @enumFromInt(raw))) break true;
+    } else false;
+    if (!has_accessor) return null;
+
+    const zero_span = Span{ .start = 0, .end = 0 };
+    var private_name_allocator = try es_helpers.PrivateNameAllocator.init(self.allocator, self.ast);
+    defer private_name_allocator.deinit();
+    const class_scope = if (self.semantic_edit_enabled)
+        self.outputOwnedScope(source_idx) orelse return null
+    else
+        self.current_scope;
+
+    var members: std.ArrayList(NodeIndex) = .empty;
+    defer members.deinit(self.allocator);
+    var i: u32 = 0;
+    while (i < body_list.len) : (i += 1) {
+        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body_list.start + i]);
+        if (!isPlainAutoAccessor(self, member_idx)) {
+            try members.append(self.allocator, member_idx);
+            continue;
+        }
+        const member = self.ast.getNode(member_idx);
+        const pe = member.data.extra;
+        const key = self.readNodeIdx(pe, ast_mod.PropertyExtra.key);
+        const init = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
+        const flags = self.readU32(pe, ast_mod.PropertyExtra.flags);
+        const is_static = (flags & ast_mod.PropertyFlags.is_static) != 0;
+
+        const key_node = self.ast.getNode(key);
+        const key_text = switch (key_node.tag) {
+            .identifier_reference, .binding_identifier => self.ast.getText(key_node.data.string_ref),
+            .private_identifier => self.ast.getText(key_node.data.string_ref)[1..],
+            else => "",
+        };
+        const storage_base = try std.fmt.allocPrint(self.allocator, "_{s}_accessor_storage", .{key_text});
+        defer self.allocator.free(storage_base);
+        const storage_local = try private_name_allocator.makeUniqueName(storage_base);
+        defer self.allocator.free(storage_local);
+        const storage_name = try std.fmt.allocPrint(self.allocator, "#{s}", .{storage_local});
+        defer self.allocator.free(storage_name);
+        const storage_span = try self.ast.addString(storage_name);
+        const storage_key = try self.ast.addNode(.{ .tag = .private_identifier, .span = storage_span, .data = .{ .string_ref = storage_span } });
+        const empty_decos = try self.ast.addNodeList(&.{});
+        try members.append(self.allocator, try self.addExtraNode(.property_definition, member.span, &.{
+            @intFromEnum(storage_key), @intFromEnum(init), flags, empty_decos.start, empty_decos.len,
+        }));
+
+        // A runtime computed key is visited here, as the decorated path does
+        // before memoizing: its temp is bound once.
+        const computed = key_node.tag == .computed_property_key;
+        const decorated_key = try memoizeComputedMemberKey(self, if (computed) try self.visitNode(key) else key, true, false);
+        const getter = try self.buildGetterMethod(decorated_key.key, try makeThisPrivateField(self, storage_span), is_static, member.span);
+        if (self.semantic_edit_enabled) _ = try self.addGeneratedFunctionScope(class_scope, getter);
+        try members.append(self.allocator, getter);
+
+        // The setter's `[_a]` is tracked when the class visits the method
+        // (`trackKnownMethodComputedKey`), not here.
+        const setter_key = if (decorated_key.temp) |temp| try self.ast.addNode(.{
+            .tag = .computed_property_key,
+            .span = temp,
+            .data = .{ .unary = .{ .operand = try es_helpers.makeSyntheticRefFromSpan(self, temp), .flags = 0 } },
+        }) else key;
+        const setter = try self.buildSetterMethodWithHandles(setter_key, try makeThisPrivateField(self, storage_span), is_static, member.span);
+        if (self.semantic_edit_enabled) {
+            const setter_scope = try self.addGeneratedFunctionScope(class_scope, setter.method);
+            const parameter_symbol = (try self.declareSyntheticInScope(
+                setter.parameter,
+                self.ast.getNode(setter.parameter).span,
+                .parameter,
+                setter_scope,
+            )) orelse std.debug.panic("auto-accessor setter has no exact parameter SymbolId", .{});
+            try self.addSyntheticRefInScope(setter.value_reference, parameter_symbol, setter_scope, .{ .read = true });
+        }
+        try members.append(self.allocator, setter.method);
+    }
+    _ = zero_span;
+
+    const new_body = try self.ast.addNode(.{ .tag = .class_body, .span = self.ast.getNode(body_idx).span, .data = .{ .list = try self.ast.addNodeList(members.items) } });
+    var slots: [8]u32 = undefined;
+    const ce = self.ast.getNode(class_idx).data.extra;
+    for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[ce + slot];
+    slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+    const new_class = try self.addExtraNode(node.tag, node.span, &slots);
+    if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(class_idx, new_class);
+    return new_class;
 }
