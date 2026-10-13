@@ -240,6 +240,10 @@ pub const ModuleGraph = struct {
     plugins: []const plugin_mod.Plugin = &.{},
     /// 최대 워커 스레드 수. 0이면 기본값(CPU 코어 수). 1이면 단일 스레드 (플러그인 IPC 디버깅용).
     max_threads: u32 = 0,
+    /// `registerWrapperSymbols` 가 한 번 이상 실행됐는지. 그 전(discovery 워커의 transform
+    /// pre-pass)에는 재분석이 떨어뜨릴 wrapper/runtime 행이 없고, 그래프 전체를 고치는
+    /// 등록을 워커에서 부르면 다른 모듈의 semantic 과 경합한다 (#5604).
+    wrapper_symbols_registered: bool = false,
     /// Flow 모드 강제 활성화 (--flow). bundler에서 전파.
     flow: bool = false,
     /// .js 파일에서도 JSX 파싱 활성화 (--platform=react-native 프리셋).

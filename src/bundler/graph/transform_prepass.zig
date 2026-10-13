@@ -5625,7 +5625,7 @@ pub fn resyncAfterConstMaterialization(
     _ = &(module.ast orelse return);
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
-    try self.registerWrapperSymbols();
+    if (self.wrapper_symbols_registered) try self.registerWrapperSymbols();
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
@@ -5828,8 +5828,10 @@ pub fn resyncAfterAstMutation(
     if (module.transform_cache) |*cache| cache.ref_deltas = &.{};
     try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
     // Reanalysis drops graph-only rows. Reattach exact wrapper/runtime IDs
-    // before carrying any linker names into the new semantic snapshot.
-    try self.registerWrapperSymbols();
+    // before carrying any linker names into the new semantic snapshot. Before
+    // finalize registers them there are none, and this runs on discovery
+    // workers where the graph-wide registration races other modules (#5604).
+    if (self.wrapper_symbols_registered) try self.registerWrapperSymbols();
     try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
 }
 
