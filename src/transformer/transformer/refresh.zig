@@ -142,6 +142,7 @@ fn appendRefreshRegistration(self: *Transformer, name: []const u8, component_idx
         .variable_var,
         self.programScope(),
     );
+    es_helpers.markStandaloneLateSyntheticTemp(self, handle_symbol, self.programScope());
     try self.plugins.refresh.registrations.append(self.allocator, .{
         .handle_span = handle_span,
         .handle_binding_node = handle_binding_node,
@@ -156,7 +157,15 @@ pub fn makeRefreshHandle(self: *Transformer) Error!Span {
     const idx = self.plugins.refresh.registrations.items.len;
     var buf: [16]u8 = undefined;
     const base_name = if (idx == 0) "_c" else std.fmt.bufPrint(&buf, "_c{d}", .{idx + 1}) catch return error.OutOfMemory;
-    return self.ast.addString(try es_helpers.resolveGeneratedName(self, base_name));
+    return self.ast.addString(try resolveRefreshHandleName(self, base_name));
+}
+
+fn resolveRefreshHandleName(self: *Transformer, base_name: []const u8) Error![]const u8 {
+    if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution) {
+        const output_name = try es_helpers.resolveScopedGeneratedOutputName(self, base_name, self.programScope());
+        return output_name.name;
+    }
+    return es_helpers.resolveGeneratedName(self, base_name);
 }
 
 /// 프로그램 끝에 var _c, _c2; $RefreshReg$(_c, "Name"); ... 를 추가한다.
@@ -559,7 +568,7 @@ pub fn makeSigHandle(self: *Transformer) Error!Span {
     const idx = self.plugins.refresh.signatures.items.len;
     var buf: [16]u8 = undefined;
     const base_name = if (idx == 0) "_s" else std.fmt.bufPrint(&buf, "_s{d}", .{idx + 1}) catch return error.OutOfMemory;
-    return self.ast.addString(try es_helpers.resolveGeneratedName(self, base_name));
+    return self.ast.addString(try resolveRefreshHandleName(self, base_name));
 }
 
 /// Hook 시그니처가 있는 컴포넌트를 등록하고, body에 _s() 호출을 삽입한다.
@@ -588,6 +597,7 @@ pub fn maybeRegisterRefreshSignature(
         .variable_var,
         self.programScope(),
     );
+    es_helpers.markStandaloneLateSyntheticTemp(self, handle_symbol, self.programScope());
     try self.plugins.refresh.signatures.append(self.allocator, .{
         .handle_span = handle_span,
         .handle_binding_node = handle_binding_node,
@@ -734,6 +744,7 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .react_refresh = true,
         .react_refresh_hook_signatures = true,
+        .defer_runtime_helper_name_resolution = true,
         .jsx_filename = "/src/App.tsx",
     });
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -762,14 +773,22 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
     var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
     defer output_parents.deinit(allocator);
     const program_scope = transformer.programScope();
+    const expected_handle_bases = [_][]const u8{ "_c", "_c2", "_c3", "_c4", "_c5" };
+    const expected_signature_bases = [_][]const u8{ "_s", "_s2", "_s3" };
 
     var saw_nested_signature_ref = false;
-    for (registrations) |reg| {
+    for (registrations, 0..) |reg, registration_index| {
         const raw_id = reg.handle_symbol_id orelse return error.TestUnexpectedResult;
         const symbol = edited.symbols.items[raw_id];
         try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
         try std.testing.expectEqual(program_scope, symbol.scope_id);
         try std.testing.expectEqualStrings(transformer.ast.getText(reg.handle_span), symbol.synthetic_name);
+        try std.testing.expectEqual(
+            @as(?@import("../../semantic/symbol.zig").SyntheticKind, .standalone_temp_binding),
+            symbol.synthetic_kind,
+        );
+        const output_name_base = transformer.late_output_name_bases.get(symbol.synthetic_name) orelse symbol.synthetic_name;
+        try std.testing.expectEqualStrings(expected_handle_bases[registration_index], output_name_base);
         try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_c"));
         try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_c2"));
         try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_c3"));
@@ -798,12 +817,18 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
         try std.testing.expectEqual(@as(usize, 1), write_count);
     }
 
-    for (signatures) |sig| {
+    for (signatures, 0..) |sig, signature_index| {
         const raw_id = sig.handle_symbol_id orelse return error.TestUnexpectedResult;
         const symbol = edited.symbols.items[raw_id];
         try std.testing.expectEqual(@import("../../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
         try std.testing.expectEqual(program_scope, symbol.scope_id);
         try std.testing.expectEqualStrings(transformer.ast.getText(sig.handle_span), symbol.synthetic_name);
+        try std.testing.expectEqual(
+            @as(?@import("../../semantic/symbol.zig").SyntheticKind, .standalone_temp_binding),
+            symbol.synthetic_kind,
+        );
+        const output_name_base = transformer.late_output_name_bases.get(symbol.synthetic_name) orelse symbol.synthetic_name;
+        try std.testing.expectEqualStrings(expected_signature_bases[signature_index], output_name_base);
         try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_s"));
         try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_s2"));
 
@@ -829,6 +854,57 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
         try std.testing.expectEqual(@as(usize, 2), refs);
     }
     try std.testing.expect(saw_nested_signature_ref);
+}
+
+test "#4819 React Refresh handles keep staging names when descendant eval can observe them" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+    const Symbol = @import("../../semantic/symbol.zig").Symbol;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function App(suffix) { eval('_c' + suffix); useState(0); return null; }
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .react_refresh = true,
+        .react_refresh_hook_signatures = true,
+        .defer_runtime_helper_name_resolution = true,
+        .jsx_filename = "/src/App.tsx",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 1), transformer.plugins.refresh.registrations.items.len);
+    try std.testing.expectEqual(@as(usize, 1), transformer.plugins.refresh.signatures.items.len);
+    try std.testing.expect(!es_helpers.canUseLateStandaloneOutputName(&transformer, transformer.programScope()));
+
+    const registration_id = transformer.plugins.refresh.registrations.items[0].handle_symbol_id.?;
+    const signature_id = transformer.plugins.refresh.signatures.items[0].handle_symbol_id.?;
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const handle_ids = [_]u32{ registration_id, signature_id };
+    for (handle_ids) |raw_id| {
+        const symbol: Symbol = edited.symbols.items[raw_id];
+        try std.testing.expectEqual(@as(?@import("../../semantic/symbol.zig").SyntheticKind, null), symbol.synthetic_kind);
+    }
 }
 
 test "computeRefreshEnabled: react_refresh=true + matching path" {

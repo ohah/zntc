@@ -1248,6 +1248,26 @@ pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
     return staging;
 }
 
+/// Defer a readable generated name after staging it through the full source
+/// collision check, including temp-like spellings excluded by
+/// `resolveSyntheticName`.
+pub fn deferGeneratedOutputName(self: anytype, name: []const u8) ![]const u8 {
+    if (self.synthetic_names.get(name)) |resolved| {
+        try self.synthetic_taken.put(self.allocator, resolved, {});
+        if (!std.mem.eql(u8, resolved, name) and !self.late_output_name_bases.contains(resolved)) {
+            const base = try self.name_arena.?.allocator().dupe(u8, name);
+            try self.late_output_name_bases.put(self.allocator, resolved, base);
+        }
+        return resolved;
+    }
+    const staging = try resolveGeneratedName(self, name);
+    if (!std.mem.eql(u8, staging, name) and !self.late_output_name_bases.contains(staging)) {
+        const base = try self.name_arena.?.allocator().dupe(u8, name);
+        try self.late_output_name_bases.put(self.allocator, staging, base);
+    }
+    return staging;
+}
+
 pub const ScopedSyntheticOutputName = struct {
     name: []const u8,
     late: bool,
@@ -1263,6 +1283,18 @@ pub fn resolveScopedSyntheticOutputName(self: anytype, name: []const u8, scope_i
         try deferSyntheticOutputName(self, name)
     else
         try resolveSyntheticNameAvoidingDynamicEval(self, name, scope_id);
+    return .{ .name = resolved, .late = late };
+}
+
+/// Resolve a readable generated binding whose name can also look like a
+/// transformer temp (for example `_c` or `_s`). Those names must still avoid
+/// source bindings before the semantic editor registers their exact SymbolId.
+pub fn resolveScopedGeneratedOutputName(self: anytype, name: []const u8, scope_id: ScopeId) !ScopedSyntheticOutputName {
+    const late = canUseLateStandaloneOutputName(self, scope_id);
+    const resolved = if (late)
+        try deferGeneratedOutputName(self, name)
+    else
+        try resolveGeneratedNameAvoidingDynamicEval(self, name, scope_id);
     return .{ .name = resolved, .late = late };
 }
 
@@ -1324,6 +1356,27 @@ pub fn resolveGeneratedName(self: anytype, name: []const u8) ![]const u8 {
             resolved = cand;
             break;
         }
+    }
+    try self.synthetic_names.put(self.allocator, key, resolved);
+    try self.synthetic_taken.put(self.allocator, resolved, {});
+    return resolved;
+}
+
+/// Resolve a readable generated binding while also reserving statically
+/// visible names in direct-eval strings. Unlike `resolveSyntheticName`, this
+/// path deliberately does not exempt temp-like names such as `_c` and `_s`.
+pub fn resolveGeneratedNameAvoidingDynamicEval(self: anytype, name: []const u8, scope_id: ScopeId) ![]const u8 {
+    if (self.synthetic_names.get(name)) |resolved| return resolved;
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    const key = try arena.dupe(u8, name);
+    var resolved: []const u8 = key;
+    var suffix: usize = 2;
+    while (nameAppearsInSource(self, resolved) or self.synthetic_taken.contains(resolved) or
+        self.synthetic_names.contains(resolved) or
+        try nameAppearsInDynamicEvalString(self, scope_id, resolved)) : (suffix += 1)
+    {
+        resolved = try std.fmt.allocPrint(arena, "{s}{d}", .{ name, suffix });
     }
     try self.synthetic_names.put(self.allocator, key, resolved);
     try self.synthetic_taken.put(self.allocator, resolved, {});
