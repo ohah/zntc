@@ -55,11 +55,13 @@ type ProducerObservationRequirement = {
 const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
   file: string;
   target: (typeof TARGETS)[number];
+  expectedStdout: string;
   observations: readonly ProducerObservationRequirement[];
 }> = [
   {
-    file: '4819-generator-state-scopes.mjs',
+    file: '4819-generator-state-observation.mjs',
     target: TARGETS[0],
+    expectedStdout: '1,2\n',
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
@@ -69,6 +71,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
   {
     file: '4819-for-in-loop-capture.mjs',
     target: TARGETS[0],
+    expectedStdout: 'first,second,inherited\n',
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
@@ -78,6 +81,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
   {
     file: '4819-private-generator.mjs',
     target: TARGETS[0],
+    expectedStdout: '2,3\n',
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
@@ -85,25 +89,27 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
     ],
   },
   {
-    file: '4801-static-field-arrow-this.mjs',
+    file: '4801-static-field-arrow-this-observation.mjs',
     target: TARGETS[0],
+    expectedStdout: '7\n',
     observations: [
       { report: 'exact', field: 'generated_bindings', minimum: 1 },
-      { report: 'exact', field: 'generated_references', minimum: 1 },
+      // The isolated fixture produces 8 generated references without the
+      // captured class-this reference and 9 with it.
+      { report: 'exact', field: 'generated_references', minimum: 9 },
       { report: 'strict', field: 'marked_synthetic', minimum: 1 },
     ],
   },
   {
-    file: '4819-import-equals-transform-graph.ts',
+    file: '4819-import-equals-producer-observation.ts',
     target: TARGETS[0],
-    observations: [
-      { report: 'exact', field: 'generated_bindings', minimum: 1 },
-      { report: 'exact', field: 'generated_references', minimum: 1 },
-    ],
+    expectedStdout: 'function\n',
+    observations: [{ report: 'exact', field: 'generated_bindings', minimum: 1 }],
   },
   {
     file: '4819-namespace-iife-params.ts',
     target: TARGETS[0],
+    expectedStdout: '[109,102]\n',
     observations: [
       { report: 'exact', field: 'namespace_iife_params', minimum: 1 },
       { report: 'exact', field: 'generated_references', minimum: 1 },
@@ -112,6 +118,7 @@ const REQUIRED_PRODUCER_OBSERVATIONS: ReadonlyArray<{
   {
     file: '4819-enum-iife-params.ts',
     target: TARGETS[0],
+    expectedStdout: '[3,1,3,23]\n',
     observations: [{ report: 'exact', field: 'enum_iife_params', minimum: 1 }],
   },
 ];
@@ -606,6 +613,23 @@ function fixtureContentFingerprint(files: string[], directory: string): string {
   return fingerprint.digest('hex');
 }
 
+function runFixtureReference(file: string, outDir: string) {
+  let referenceFile = file;
+  if (file.endsWith('.ts')) {
+    referenceFile = join(outDir, 'reference.js');
+    writeFileSync(
+      referenceFile,
+      ts.transpileModule(readFileSync(file, 'utf8'), {
+        compilerOptions: {
+          module: ts.ModuleKind.CommonJS,
+          target: ts.ScriptTarget.ES5,
+        },
+      }).outputText,
+    );
+  }
+  return spawnSync('node', [referenceFile], { encoding: 'utf8' });
+}
+
 function runCoverage(
   file: string,
   target: (typeof TARGETS)[number],
@@ -774,12 +798,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(299);
+    expect(fixtureNames).toHaveLength(302);
     expect(fixtureInventory).toBe(
-      'ca743449ecde57d86f4cc9cec5dce1fbec71c9a4d1f5858f923abdaf0888be7e',
+      'fdadbf1a4ab11bab9c5ddd73cae07d5407134cd2a675538b8118ed4836a00b52',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      '8a8eb57d5be9669d785dee14133f491f808cf8a7faffcd84a0a37bd62b077766',
+      '79faf3127e06801d57f70e87b2ffd86871add4ecea7b483082a0de80c0290384',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
@@ -823,11 +847,11 @@ describe('symbol identity coverage gate (#4819)', () => {
           `${entry.file}:${entry.target.name}:${entry.observations.map(({ report, field, minimum }) => `${report}.${field}>=${minimum}`).join(',')}`,
       ),
     ).toEqual([
-      '4819-generator-state-scopes.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
+      '4819-generator-state-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
       '4819-for-in-loop-capture.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
       '4819-private-generator.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
-      '4801-static-field-arrow-this.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=1,strict.marked_synthetic>=1',
-      '4819-import-equals-transform-graph.ts:es5:exact.generated_bindings>=1,exact.generated_references>=1',
+      '4801-static-field-arrow-this-observation.mjs:es5:exact.generated_bindings>=1,exact.generated_references>=9,strict.marked_synthetic>=1',
+      '4819-import-equals-producer-observation.ts:es5:exact.generated_bindings>=1',
       '4819-namespace-iife-params.ts:es5:exact.namespace_iife_params>=1,exact.generated_references>=1',
       '4819-enum-iife-params.ts:es5:exact.enum_iife_params>=1',
     ]);
@@ -845,6 +869,9 @@ describe('symbol identity coverage gate (#4819)', () => {
           fixtures,
           `required producer fixture ${entry.file} must stay in the oracle`,
         ).toContain(file);
+        const reference = runFixtureReference(file, outDir);
+        expect(reference.status, entry.file + ' reference: ' + reference.stderr).toBe(0);
+        expect(reference.stdout, entry.file + ' reference output').toBe(entry.expectedStdout);
         for (const minifyIdentifiers of [false, true]) {
           const label = `${entry.file} ${entry.target.name}${minifyIdentifiers ? ' identifier-minified' : ''}`;
           const { stderr, exitCode } = runCoverage(file, entry.target, outDir, minifyIdentifiers);
@@ -915,7 +942,35 @@ describe('symbol identity coverage gate (#4819)', () => {
           if (minifyIdentifiers) {
             expect(postMinifyAuditProblems(stderr), `${label}: post-minify audit`).toEqual([]);
           }
+          const actual = spawnSync('node', [join(outDir, 'out.js')], { encoding: 'utf8' });
+          expect(actual.status, label + ': ' + actual.stderr).toBe(0);
+          expect(actual.stdout, label + ' runtime output').toBe(reference.stdout);
           runs += 1;
+        }
+        if (entry.file === '4801-static-field-arrow-this-observation.mjs') {
+          // Removing only the captured class-this expression leaves a clean
+          // generic report, but drops this fixture's reference count from 9 to 8.
+          const source = readFileSync(file, 'utf8');
+          const withoutCapture = source.replace('() => this.count', '() => 7');
+          expect(withoutCapture).not.toBe(source);
+          const mutantFile = join(outDir, 'static-field-arrow-without-capture.mjs');
+          writeFileSync(mutantFile, withoutCapture);
+          const mutant = runCoverage(mutantFile, entry.target, outDir);
+          expect(mutant.exitCode, mutant.stderr).toBe(0);
+          expect(transformIdentityAuditProblems(mutant.stderr), mutant.stderr).toEqual([]);
+          const mutantLines = mutant.stderr.split(/\r?\n/);
+          const mutantExact = mutantLines.find((line) => line.startsWith('zntc: symbol-identity '));
+          const mutantStrict = mutantLines.find((line) =>
+            line.startsWith('zntc: synthetic-coverage '),
+          );
+          expect(mutantExact, mutant.stderr).toBeDefined();
+          expect(mutantStrict, mutant.stderr).toBeDefined();
+          expect(
+            requiredProducerObservationProblems(
+              { exact: mutantExact ?? '', strict: mutantStrict ?? '' },
+              entry.observations,
+            ),
+          ).toContain('exact.generated_references=8, required >=9');
         }
       }
       expect(runs).toBe(REQUIRED_PRODUCER_OBSERVATIONS.length * 2);
