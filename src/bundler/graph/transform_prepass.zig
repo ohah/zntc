@@ -4688,6 +4688,7 @@ fn canKeepPrepassSemanticGraph(
     const safe_styled_components = options.styled_components;
     var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
+    var has_direct_eval = false;
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
         const is_flow_match_tag = std.mem.startsWith(u8, tag_name, "flow_match_");
@@ -4770,10 +4771,13 @@ fn canKeepPrepassSemanticGraph(
             },
             .identifier_reference => {
                 const name = ast.getText(node.span);
-                // Escaped identifiers can decode to `eval` while their source
-                // spelling differs. Keep all escaped references on the full
-                // resync path instead of risking a missed direct-eval scope.
-                if (std.mem.eql(u8, name, "eval") or std.mem.indexOfScalar(u8, name, '\\') != null) return false;
+                // The parser's semantic graph records the dynamic scope flag
+                // for direct eval, and the linker keeps all names visible to it.
+                // Retain that graph only if no earlier or later pass edits it.
+                // Escaped identifiers stay on the conservative resync path:
+                // their source spelling can hide an eval reference here.
+                if (std.mem.indexOfScalar(u8, name, '\\') != null) return false;
+                if (std.mem.eql(u8, name, "eval")) has_direct_eval = true;
             },
             else => {},
         }
@@ -4786,6 +4790,10 @@ fn canKeepPrepassSemanticGraph(
         !ast.has_jsx and !ast.has_decorator and
         !options.react_refresh and !options.emotion and !options.styled_components and
         !safe_builtin_worklet;
+    // Dynamic lookup is safe with the parser graph only when this module has
+    // no graph-changing work. If any transform edits bindings or scopes, keep
+    // the existing full semantic rescan as the recovery boundary.
+    if (has_direct_eval) return !found_transform and unchanged_graph_is_safe;
     return found_transform or unchanged_graph_is_safe;
 }
 
