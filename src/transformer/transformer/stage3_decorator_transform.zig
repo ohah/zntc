@@ -142,7 +142,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // allocator로 복사하여 안전하게 보관한다.
     // makeTempVarSpan을 사용하지 않음 — hoistTempVars가 불필요한 var 선언을 추가하므로.
     const class_name_origin: NodeIndex = if (name_idx.isNone() or std.mem.eql(u8, self.ast.getText(self.ast.getNode(name_idx).data.string_ref), "default")) .none else name_idx;
-    const class_name_base = if (class_name_origin.isNone())
+    // An anonymous class's wrapper `var _Class` takes the late output-name
+    // path like the other Stage 3 bindings: the ES5 lowering of the inner class
+    // defers the same `_Class` spelling, and a non-late symbol with a deferred
+    // spelling is rejected by the final-name pass.
+    const anonymous_late_name = class_name_origin.isNone() and late_standalone_output_names;
+    const class_name_base = if (anonymous_late_name)
+        try es_helpers.deferSyntheticOutputName(self, ANON_CLASS_NAME)
+    else if (class_name_origin.isNone())
         try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, ANON_CLASS_NAME, class_parent_scope)
     else
         self.ast.getText(self.ast.getNode(name_idx).data.string_ref);
@@ -1090,8 +1097,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         // addition to the distinct ES5 constructor self binding. Register the
         // wrapper storage at its actual output scope before attaching writes.
         if (class_name_origin.isNone()) {
-            _ = try self.declareSyntheticInScope(inner_binding, node.span, .variable_var, arrow_scope) orelse
+            const wrapper_id = try self.declareSyntheticInScope(inner_binding, node.span, .variable_var, arrow_scope) orelse
                 std.debug.panic("Stage 3 anonymous class wrapper binding has no SymbolId", .{});
+            markStandaloneLateStage3Symbol(self, anonymous_late_name, wrapper_id, .anonymous_class_export_binding);
         }
         const inner_symbol_id = self.getSymbolIdAt(inner_binding) orelse
             std.debug.panic("Stage 3 class wrapper binding has no exact SymbolId", .{});
