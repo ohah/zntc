@@ -233,7 +233,8 @@ pub fn emitImportCJS(self: anytype, source: NodeIndex, specs_start: u32, specs_l
     const wrap_toesm = self.options.esm_var_assign_only and (has_default or has_namespace);
     if (wrap_toesm) {
         // #1621: minify 시 __toESM → $tE 축약.
-        try self.write(if (self.options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM");
+        const linked_name = if (self.options.linking_metadata) |lm| lm.to_esm_name else null;
+        try self.write(linked_name orelse if (self.options.minify_whitespace) rt.NAMES.TOESM_MIN else "__toESM");
         try self.writeByte('(');
     }
     _ = try self.emitRequireRewriteOrCall(source);

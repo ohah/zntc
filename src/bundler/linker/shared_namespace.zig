@@ -1043,13 +1043,7 @@ pub fn buildInlineObjectStr(
         const needs_quote = needsPropertyQuoteForExport(exp.exported);
         // export * as ns 패턴이면 재귀 인라인 (값으로 참조)
         if (ns_re_exports.get(exp.exported)) |src_mod| {
-            if (needs_quote) {
-                try buf.appendSlice(self.allocator, "\"");
-                try buf.appendSlice(self.allocator, exp.exported);
-                try buf.appendSlice(self.allocator, "\"");
-            } else {
-                try buf.appendSlice(self.allocator, exp.exported);
-            }
+            try appendNamespaceKey(self.allocator, &buf, exp.exported, needs_quote, true);
             try buf.appendSlice(self.allocator, colon_sep);
             // (#3975) `export * as inner from <CJS>`: CJS 멤버는 정적 열거 불가 →
             // 빈 `{}` 대신 `__toESM(require())` 로 런타임 namespace 를 만든다. 이 literal 은
@@ -1074,13 +1068,7 @@ pub fn buildInlineObjectStr(
         } else {
             // getter: get prop() { return local; }
             try buf.appendSlice(self.allocator, "get ");
-            if (needs_quote) {
-                try buf.appendSlice(self.allocator, "\"");
-                try buf.appendSlice(self.allocator, exp.exported);
-                try buf.appendSlice(self.allocator, "\"");
-            } else {
-                try buf.appendSlice(self.allocator, exp.exported);
-            }
+            try appendNamespaceKey(self.allocator, &buf, exp.exported, needs_quote, false);
             try buf.appendSlice(self.allocator, get_open);
             // getter 본문 이름은 **이 리터럴을 담는 청크(emitter)** 기준으로 해석한다.
             //  - 선언이 다른 청크(#4101): 그 청크가 import 해 오는 cross-chunk 전역 공개명(provider
@@ -1228,6 +1216,22 @@ const ArrayListWriter = struct {
 };
 
 /// JS 예약어인 export 이름은 프로퍼티 키에 따옴표 필요.
+/// An export name as an object-literal key. A string literal name is already
+/// quoted (#4510). `__proto__: v` sets the prototype instead of defining a
+/// property, so the colon form computes that key (#5664); an accessor named
+/// `__proto__` is an ordinary property.
+fn appendNamespaceKey(allocator: std.mem.Allocator, buf: *std.ArrayList(u8), name: []const u8, needs_quote: bool, colon: bool) !void {
+    if (colon and std.mem.eql(u8, name, "__proto__")) {
+        try buf.appendSlice(allocator, "[\"__proto__\"]");
+    } else if (@import("preamble_writer.zig").isQuotedName(name) or !needs_quote) {
+        try buf.appendSlice(allocator, name);
+    } else {
+        try buf.append(allocator, '"');
+        try buf.appendSlice(allocator, name);
+        try buf.append(allocator, '"');
+    }
+}
+
 fn needsPropertyQuoteForExport(name: []const u8) bool {
     if (name.len == 0) return true;
     const reserved = [_][]const u8{

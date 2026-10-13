@@ -1605,6 +1605,7 @@ pub fn buildMetadataForAst(
         .require_rewrites = require_rewrites,
         .default_export_name = default_export_name,
         .default_export_is_synthetic = default_export_is_synthetic,
+        .to_esm_name = self.currentEsmInteropRuntimeNames().get(.to_esm),
         .ns_member_rewrites = ns_rewrites,
         .ns_inline_objects = ns_inlines,
         .const_values = const_values,

@@ -1263,13 +1263,38 @@ fn extractImportSpecifier(self: *Parser, raw: []const u8) []const u8 {
 
 /// Parser scan metadata is consumed before the AST binding scanner runs, so
 /// these names must use the same identifier StringValue as semantic symbols.
-/// ModuleExportName string literals intentionally keep their source spelling.
+/// ModuleExportName string literals take `moduleExportName`'s spelling.
 fn stableModuleExportName(self: *Parser, node: Node) ParseError2![]const u8 {
     const raw = self.ast.getText(node.span);
     return switch (node.tag) {
         .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier => try Scanner.decodeIdentifierEscapesAlloc(self.allocator, raw),
+        .string_literal => try moduleExportName(self.allocator, raw),
         else => raw,
     };
+}
+
+/// One spelling per ModuleExportName string literal (#5664). A string that
+/// is a plain identifier is the identifier (`'v'` is `v`); any other is a
+/// double-quoted literal (`'a-b'` is `"a-b"`), which emitters write back
+/// verbatim into export clauses and property keys (#4510). Spelling both
+/// forms the same lets `import { 'v' as w }` find `export const v`. Escapes
+/// and embedded quotes keep the source spelling.
+pub fn moduleExportName(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (raw.len < 2 or (raw[0] != '"' and raw[0] != '\'')) return raw;
+    const inner = raw[1 .. raw.len - 1];
+    if (std.mem.indexOfAny(u8, inner, "\\\"'") != null) return raw;
+    if (isPlainIdentifierName(inner)) return inner;
+    if (raw[0] == '"') return raw;
+    return std.fmt.allocPrint(allocator, "\"{s}\"", .{inner});
+}
+
+fn isPlainIdentifierName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name, 0..) |c, i| {
+        const ok = std.ascii.isAlphabetic(c) or c == '_' or c == '$' or (i > 0 and std.ascii.isDigit(c));
+        if (!ok) return false;
+    }
+    return true;
 }
 
 /// Default and namespace import specifier nodes store the binding span

@@ -188,6 +188,7 @@ fn stableIdentifierText(allocator: std.mem.Allocator, ast: *const Ast, node: Nod
     const raw = try ast.getTextStable(allocator, node.span);
     return switch (node.tag) {
         .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier => try Scanner.decodeIdentifierEscapesAlloc(allocator, raw),
+        .string_literal => try module_parser.moduleExportName(allocator, raw),
         else => raw,
     };
 }
