@@ -3458,10 +3458,9 @@ fn isRetainableAsyncFunctionNode(
 }
 
 /// Async arrows keep their source arrow scope while the lowered generator is
-/// nested inside it. That graph shape is safe only when the moved generator
-/// body does not acquire a new dynamic `this`, `arguments`, `super`, or
-/// `new.target` binding. Keep those lexical-capture cases on reanalysis until
-/// the capture references are explicitly represented in the edited graph.
+/// nested inside it. `arguments` references are safe once the transformer has
+/// represented them with exact capture bindings; lexical `this`, `super`, and
+/// `new.target` remain outside this retained-graph subset.
 fn isRetainableAsyncArrowNode(
     ast: *const ast_mod.Ast,
     arrow_idx: ast_mod.NodeIndex,
@@ -3483,10 +3482,6 @@ fn isRetainableAsyncArrowNode(
         switch (child.tag) {
             .this_expression, .super_expression => return false,
             .meta_property => if (child.data.none == 1) return false,
-            .identifier_reference => {
-                const name = ast.identifierNameText(child);
-                if (std.mem.eql(u8, name, "arguments")) return false;
-            },
             else => {},
         }
     }
