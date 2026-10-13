@@ -48,6 +48,12 @@ const LOOP_BINDING_MANIFEST = [
     emittedBindings: ['_loop2', '_loop3'],
     stdout: '0:while,1:while,2:while|0:do,1:do,2:do\n',
   },
+  {
+    file: '4819-generator-shadowed-loop-header.mjs',
+    target: { name: 'es5', arg: '--target=es5' },
+    emittedBindings: ['_loop'],
+    stdout: '0:10,2:32:99\n',
+  },
 ] as const;
 const EXACT_ZERO_COUNTERS = [
   'invalid_id',
@@ -651,12 +657,12 @@ describe('symbol identity coverage gate (#4819)', () => {
     const fixtureInventory = createHash('sha256')
       .update(fixtureNames.join('\n') + '\n')
       .digest('hex');
-    expect(fixtureNames).toHaveLength(298);
+    expect(fixtureNames).toHaveLength(299);
     expect(fixtureInventory).toBe(
-      'e87df13e5570d8a5f69589ee7758090627a211ad12ab003968362d28a75bf879',
+      'ca743449ecde57d86f4cc9cec5dce1fbec71c9a4d1f5858f923abdaf0888be7e',
     );
     expect(fixtureContentFingerprint(fixtures, FIXTURE_DIR)).toBe(
-      '72466bb609b5ea43fd2562d6e6777c540f704c22c3ffa937c082f5b5aff7d423',
+      '8a8eb57d5be9669d785dee14133f491f808cf8a7faffcd84a0a37bd62b077766',
     );
     expect(TARGETS).toEqual([
       { name: 'es5', arg: '--target=es5' },
@@ -716,7 +722,7 @@ describe('symbol identity coverage gate (#4819)', () => {
         const output = join(outDir, 'out.js');
         const code = readFileSync(output, 'utf8');
         const emittedBindings = Array.from(
-          code.matchAll(/\b(_loop\d+)\s*=\s*function\b/g),
+          code.matchAll(/\b(_loop\d*)\s*=\s*function\b/g),
           (match) => match[1],
         );
         expect(emittedBindings, `${entry.file} emitted loop binding list`).toEqual([
@@ -13064,7 +13070,7 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     // 검사기가 실제로 돌았는지(출력 형식이 바뀌어 전부 건너뛰면 공허하게 통과한다).
     expect(fixtures.length).toBeGreaterThan(0);
     expect(problems).toEqual([]);
-    expect(runs).toBe(298 * 6);
+    expect(runs).toBe(fixtures.length * TARGETS.length);
     expect(generatedBindings).toBeGreaterThan(0);
     expect(generatedReferences).toBeGreaterThan(0);
     expect(declarationAnchorsChecked).toBeGreaterThan(0);
