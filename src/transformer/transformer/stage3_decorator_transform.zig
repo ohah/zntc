@@ -464,6 +464,11 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const name_node_idx = if (decorated_key.temp != null) .none else try self.memberKeyToStringLiteral(new_key);
                     const decos = try self.collectStage3Decorators(deco_start, deco_len);
                     const var_n = if (decorated_key.temp) |temp| self.ast.getText(temp) else extractCleanVarName(self, name_node_idx);
+                    // `var_n` points into `string_table`, which later `addString` calls move.
+                    const private_descriptor_name: ?[]const u8 = if (is_private_accessor)
+                        try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n})
+                    else
+                        null;
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
                     defer self.allocator.free(deco_base_name);
                     const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
@@ -577,7 +582,19 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     // These methods are synthesized after source semantic scopes
                     // exist, so register exact function and parameter bindings
                     // before later class lowering rewrites their references.
-                    {
+                    if (is_private_accessor) {
+                        try buildPrivateAccessorDescriptor(
+                            self,
+                            &member_infos.items[accessor_member_info_index],
+                            new_key,
+                            storage_span,
+                            is_static,
+                            class_parent_scope,
+                            late_standalone_output_names,
+                            private_descriptor_name.?,
+                            &new_members,
+                        );
+                    } else {
                         const return_expr = try makeThisPrivateField(self, storage_span);
                         const getter = try self.buildGetterMethod(new_key, return_expr, is_static, zero_span);
                         if (self.semantic_edit_enabled)
@@ -586,7 +603,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     }
 
                     // set x(value) { this.#_x_accessor_storage = value; }
-                    {
+                    if (!is_private_accessor) {
                         const assign_target = try makeThisPrivateField(self, storage_span);
                         const setter_key = if (decorated_key.temp) |temp| try decoratedKeyRead(self, temp) else new_key;
                         const setter = try self.buildSetterMethodWithHandles(setter_key, assign_target, is_static, zero_span);
@@ -1408,6 +1425,12 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 std.debug.panic("Stage 3 private descriptor has missing exact reference or getter scope handle", .{});
             try self.addSyntheticRefInScope(info.descriptor_assignment_ref, descriptor_symbol, metadata_block_scope, .{ .write = true });
             try self.addSyntheticRefInScope(info.descriptor_getter_ref, descriptor_symbol, info.descriptor_getter_scope, .{ .read = true });
+            if (!info.descriptor_setter_ref.isNone())
+                try self.addSyntheticRefInScope(info.descriptor_setter_ref, descriptor_symbol, info.descriptor_setter_scope, .{ .read = true });
+            // The accessor's original get/set functions run in the decorate block.
+            for (info.accessor_fn_scopes) |scope| {
+                if (!scope.isNone()) try self.reparentGeneratedScope(scope, metadata_block_scope);
+            }
         }
     }
     // (() => { ... })()
@@ -1464,6 +1487,129 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 /// field/accessor 초기화에 이전 extra initializers를 piggyback하는 sequence expression 생성.
 /// TypeScript 패턴: `(__runInitializers(this, _prevExtra), __runInitializers(this, _x_initializers, val))`
 /// init_call이 .none이면 prevCall만 반환 (초기값 없는 accessor).
+/// A decorated private accessor reaches its storage through a descriptor
+/// (tsc): `__esDecorate(this, _desc = { get: function () { return this.#s; },
+/// set: function (value) { this.#s = value; } }, …)` hands the decorators the
+/// original pair, and `get #a() { return _desc.get.call(this); }` /
+/// `set #a(value) { _desc.set.call(this, value); }` run what they return (#5669).
+fn buildPrivateAccessorDescriptor(
+    self: *Transformer,
+    info: *Stage3MemberInfo,
+    key: NodeIndex,
+    storage_span: Span,
+    is_static: bool,
+    class_parent_scope: ScopeId,
+    late_standalone_output_names: bool,
+    desc_name: []const u8,
+    new_members: *std.ArrayList(NodeIndex),
+) Error!void {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, desc_name);
+    info.descriptor_name = desc_name;
+
+    // function () { return this.#s; }
+    {
+        const body = try blockOf(self, &.{try self.ast.addNode(.{
+            .tag = .return_statement,
+            .span = zero_span,
+            .data = .{ .unary = .{ .operand = try makeThisPrivateField(self, storage_span), .flags = 0 } },
+        })});
+        const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), zero_span);
+        info.accessor_fns[0] = try functionExpression(self, params, body);
+        if (self.semantic_edit_enabled)
+            info.accessor_fn_scopes[0] = try self.addGeneratedFunctionScope(class_parent_scope, info.accessor_fns[0]);
+    }
+    // function (value) { this.#s = value; }
+    {
+        const param = try valueParam(self);
+        const assign = try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = zero_span,
+            .data = .{ .binary = .{ .left = try makeThisPrivateField(self, storage_span), .right = param.reference, .flags = 0 } },
+        });
+        const body = try blockOf(self, &.{try es_helpers.makeExprStmt(self, assign, zero_span)});
+        info.accessor_fns[1] = try functionExpression(self, param.params, body);
+        if (self.semantic_edit_enabled) {
+            info.accessor_fn_scopes[1] = try self.addGeneratedFunctionScope(class_parent_scope, info.accessor_fns[1]);
+            try bindValueParam(self, param, info.accessor_fn_scopes[1]);
+        }
+    }
+    info.accessor_fn_names = .{ try self.memberKeyToStringLiteral(key), try self.memberKeyToStringLiteral(key) };
+
+    // get #a() { return _desc.get.call(this); }
+    {
+        const desc_ref = try es_helpers.makeSyntheticRef(self, desc_name);
+        info.descriptor_getter_ref = desc_ref;
+        const call = try descriptorCall(self, desc_ref, "get", &.{});
+        const getter = try self.buildGetterMethod(key, call, is_static, zero_span);
+        if (self.semantic_edit_enabled)
+            info.descriptor_getter_scope = try self.addGeneratedFunctionScope(class_parent_scope, getter);
+        try new_members.append(self.allocator, getter);
+    }
+    // set #a(value) { _desc.set.call(this, value); }
+    {
+        const param = try valueParam(self);
+        const desc_ref = try es_helpers.makeSyntheticRef(self, desc_name);
+        info.descriptor_setter_ref = desc_ref;
+        const call = try descriptorCall(self, desc_ref, "set", &.{param.reference});
+        const body = try blockOf(self, &.{try es_helpers.makeExprStmt(self, call, zero_span)});
+        const empty_decos = try self.ast.addNodeList(&.{});
+        const setter = try self.addExtraNode(.method_definition, zero_span, &.{
+            @intFromEnum(key),
+            @intFromEnum(param.params),
+            @intFromEnum(body),
+            0x04 | (if (is_static) @as(u32, 0x01) else 0),
+            empty_decos.start,
+            empty_decos.len,
+        });
+        if (self.semantic_edit_enabled) {
+            info.descriptor_setter_scope = try self.addGeneratedFunctionScope(class_parent_scope, setter);
+            try bindValueParam(self, param, info.descriptor_setter_scope);
+        }
+        try new_members.append(self.allocator, setter);
+    }
+}
+
+const ValueParam = struct { params: NodeIndex, binding: NodeIndex, reference: NodeIndex };
+
+/// `(value)` and one read of it.
+fn valueParam(self: *Transformer) Error!ValueParam {
+    const value_span = try self.ast.addString("value");
+    const binding = try es_helpers.makeSyntheticBinding(self, value_span);
+    return .{
+        .params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{binding}), .{ .start = 0, .end = 0 }),
+        .binding = binding,
+        .reference = try es_helpers.makeSyntheticRefFromSpan(self, value_span),
+    };
+}
+
+fn bindValueParam(self: *Transformer, param: ValueParam, scope: ScopeId) Error!void {
+    const symbol = (try self.declareSyntheticInScope(param.binding, self.ast.getNode(param.binding).span, .parameter, scope)) orelse
+        std.debug.panic("Stage 3 private accessor has no exact parameter SymbolId", .{});
+    try self.addSyntheticRefInScope(param.reference, symbol, scope, .{ .read = true });
+}
+
+fn blockOf(self: *Transformer, statements: []const NodeIndex) Error!NodeIndex {
+    return self.ast.addNode(.{ .tag = .block_statement, .span = .{ .start = 0, .end = 0 }, .data = .{ .list = try self.ast.addNodeList(statements) } });
+}
+
+fn functionExpression(self: *Transformer, params: NodeIndex, body: NodeIndex) Error!NodeIndex {
+    return self.addExtraNode(.function_expression, .{ .start = 0, .end = 0 }, &.{
+        @intFromEnum(NodeIndex.none), @intFromEnum(params), @intFromEnum(body), 0, @intFromEnum(NodeIndex.none),
+    });
+}
+
+/// `_desc.get.call(this, …args)`
+fn descriptorCall(self: *Transformer, desc_ref: NodeIndex, slot: []const u8, args: []const NodeIndex) Error!NodeIndex {
+    const zero_span = Span{ .start = 0, .end = 0 };
+    const slot_member = try es_helpers.makeStaticMember(self, desc_ref, try es_helpers.makePropertyName(self, slot), zero_span);
+    const callee = try es_helpers.makeStaticMember(self, slot_member, try es_helpers.makePropertyName(self, "call"), zero_span);
+    var call_args: [2]NodeIndex = undefined;
+    call_args[0] = try es_helpers.makeThisExpr(self, zero_span);
+    for (args, 1..) |arg, i| call_args[i] = arg;
+    return es_helpers.makeCallExpr(self, callee, call_args[0 .. args.len + 1], zero_span);
+}
+
 /// Extra initializers waiting to run at the next static element.
 const StaticExtra = struct {
     name: []const u8,

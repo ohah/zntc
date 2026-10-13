@@ -884,9 +884,14 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 es_helpers.markStandaloneLateSyntheticSymbol(self, alias_id orelse std.debug.panic("late class-self alias has no SymbolId", .{}), .class_self_alias_binding);
             }
 
-            // private method 초기화 → constructor body에 삽입
-            for (cm.private_methods.items) |pm| {
+            // private method 초기화 → constructor body에 삽입. A getter/setter pair
+            // shares one brand WeakSet: brand an instance once (#5695).
+            for (cm.private_methods.items, 0..) |pm, i| {
                 if (pm.class_name != null) continue;
+                const first = for (cm.private_methods.items[0..i]) |previous| {
+                    if (std.mem.eql(u8, previous.weakset_name, pm.weakset_name)) break false;
+                } else true;
+                if (!first) continue;
                 const init_stmt = try es_helpers.buildPrivateMethodInit(self, pm.weakset_name, pm.weakset_symbol_id, span);
                 try cm.instance_fields.append(self.allocator, init_stmt);
             }

@@ -9867,9 +9867,11 @@ let C2 = (() => {
 	let _instanceExtraInitializers2 = [];
 	let _staticExtraInitializers2 = [];
 	let _a_decorators2;
+	let _private_a_descriptor;
 	let _a_initializers2 = [];
 	let _a_extraInitializers2 = [];
 	let _b_decorators2;
+	let _private_b_descriptor;
 	let _b_initializers2 = [];
 	let _b_extraInitializers2 = [];
 	var C2 = class {
@@ -9880,10 +9882,18 @@ let C2 = (() => {
 			const _metadata2 = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
 			_a_decorators2 = [dec];
 			_b_decorators2 = [dec];
-			__esDecorate(this, null, _b_decorators2, { kind: "accessor", name: "#b", static: true, private: true, access: { has: (obj) => #b in obj, get: (obj) => obj.#b, set: function(obj,value) {
+			__esDecorate(this, _private_b_descriptor = { get: __setFunctionName(function() {
+				return this.#_b_accessor_storage;
+			}, "#b", "get"), set: __setFunctionName(function(value) {
+				this.#_b_accessor_storage = value;
+			}, "#b", "set") }, _b_decorators2, { kind: "accessor", name: "#b", static: true, private: true, access: { has: (obj) => #b in obj, get: (obj) => obj.#b, set: function(obj,value) {
 				obj.#b = value;
 			} }, metadata: _metadata2 }, _b_initializers2, _b_extraInitializers2);
-			__esDecorate(this, null, _a_decorators2, { kind: "accessor", name: "#a", static: false, private: true, access: { has: (obj) => #a in obj, get: (obj) => obj.#a, set: function(obj,value) {
+			__esDecorate(this, _private_a_descriptor = { get: __setFunctionName(function() {
+				return this.#_a_accessor_storage;
+			}, "#a", "get"), set: __setFunctionName(function(value) {
+				this.#_a_accessor_storage = value;
+			}, "#a", "set") }, _a_decorators2, { kind: "accessor", name: "#a", static: false, private: true, access: { has: (obj) => #a in obj, get: (obj) => obj.#a, set: function(obj,value) {
 				obj.#a = value;
 			} }, metadata: _metadata2 }, _a_initializers2, _a_extraInitializers2);
 			if (_metadata2) {
@@ -9892,17 +9902,17 @@ let C2 = (() => {
 		}
 		#_a_accessor_storage = (__runInitializers(this, _instanceExtraInitializers2),__runInitializers(this, _a_initializers2, void 0));
 		get #a() {
-			return this.#_a_accessor_storage;
+			return _private_a_descriptor.get.call(this);
 		}
 		set #a(value) {
-			this.#_a_accessor_storage = value;
+			_private_a_descriptor.set.call(this, value);
 		}
 		static #_b_accessor_storage = __runInitializers(this, _b_initializers2, void 0);
 		static get #b() {
-			return this.#_b_accessor_storage;
+			return _private_b_descriptor.get.call(this);
 		}
 		static set #b(value) {
-			this.#_b_accessor_storage = value;
+			_private_b_descriptor.set.call(this, value);
 		}
 		static {
 			__runInitializers(this, _b_extraInitializers2);
