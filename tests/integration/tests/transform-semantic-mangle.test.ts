@@ -1224,7 +1224,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout).toBe(native.stdout);
   });
 
-  test('bundler retains an unchanged direct-eval graph but reanalyzes edited or escaped cases', async () => {
+  test('bundler retains unchanged direct-eval graphs and resyncs unsafe cases', async () => {
     const fixture = await createFixture({
       'plain-eval.js': [
         'function readSecret() {',
@@ -1244,12 +1244,17 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         'const longSecretValue = 6;',
         "console.log(\\u0065val('longSecretValue'));",
       ].join('\n'),
+      'escaped-global.js': ["\\u0063onsole.log('escaped global');"].join('\n'),
       'typed-eval.ts': [
         'function readTypedSecret(): number {',
         '  const longSecretValue: number = 41;',
         "  return eval('longSecretValue + 1');",
         '}',
         'console.log(readTypedSecret());',
+      ].join('\n'),
+      'typed-escaped-eval.ts': [
+        'const longSecretValue: number = 6;',
+        "console.log(\\u0065val('longSecretValue'));",
       ].join('\n'),
     });
     cleanup = fixture.cleanup;
@@ -1297,15 +1302,27 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(syntaxRun.stderr).toBe('');
     expect(syntaxRun.stdout).toBe('42');
 
-    const escaped = await bundle('escaped-eval.js', [], 'reanalyzed');
+    const escaped = await bundle('escaped-eval.js');
+    const escapedOutput = readFileSync(escaped.output, 'utf8');
+    expect(escapedOutput).toMatch(/longSecretValue/);
     const escapedRun = await runNode(escaped.output);
     expect(escapedRun.stderr).toBe('');
     expect(escapedRun.stdout).toBe('6');
+
+    const escapedGlobal = await bundle('escaped-global.js', [], 'reanalyzed');
+    const escapedGlobalRun = await runNode(escapedGlobal.output);
+    expect(escapedGlobalRun.stderr).toBe('');
+    expect(escapedGlobalRun.stdout).toBe('escaped global');
 
     const typed = await bundle('typed-eval.ts', [], 'reanalyzed');
     const typedRun = await runNode(typed.output);
     expect(typedRun.stderr).toBe('');
     expect(typedRun.stdout).toBe('42');
+
+    const typedEscaped = await bundle('typed-escaped-eval.ts', [], 'reanalyzed');
+    const typedEscapedRun = await runNode(typedEscaped.output);
+    expect(typedEscapedRun.stderr).toBe('');
+    expect(typedEscapedRun.stdout).toBe('6');
   });
 
   test('standalone downlevel helpers avoid user bindings in normal and minified output', async () => {
