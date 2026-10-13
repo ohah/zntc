@@ -200,13 +200,42 @@ fn emitOne(
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
     for (bases) |base| {
-        const local = helper_names.helperName(base, self.options.minify_whitespace);
+        const callsite_symbol_id = self.runtime_helper_symbol_ids.get(base);
+        const callsite_symbol_name_span = if (callsite_symbol_id) |symbol_id| blk: {
+            const editor = self.semantic_editor orelse std.debug.panic("runtime helper import has a SymbolId without a semantic editor", .{});
+            const raw_id = @intFromEnum(symbol_id);
+            if (raw_id >= editor.symbols.items.len)
+                std.debug.panic("runtime helper import has an out-of-range callsite SymbolId", .{});
+            const symbol = editor.symbols.items[raw_id];
+            if (symbol.kind != .import_binding or symbol.scope_id != self.programScope())
+                std.debug.panic("runtime helper import callsite SymbolId has an invalid owner", .{});
+            break :blk symbol.name;
+        } else null;
+        // `Ast.getText` returns a slice into its string table, which later
+        // `addString` calls can relocate. Keep the producer-selected spelling
+        // stable while constructing the remaining import nodes.
+        const local_storage = if (callsite_symbol_name_span) |name_span|
+            try self.allocator.dupe(u8, self.ast.getText(name_span))
+        else
+            null;
+        defer if (local_storage) |name| self.allocator.free(name);
+        const local: []const u8 = if (local_storage) |name|
+            name
+        else
+            helper_names.helperName(base, self.options.minify_whitespace);
 
         // imported(`__generator`)는 헬퍼 모듈이 내보낸 이름, local 은 변환기가 만든 지역 이름.
         const imported_node = try es_helpers.makePropertyName(self, base);
 
         // local == base 면 같은 노드 재사용 (parser 패턴 — module.zig:516).
-        const local_node = if (std.mem.eql(u8, local, base)) imported_node else try es_helpers.makeSyntheticRef(self, local);
+        // A callsite-backed helper already owns its exact local spelling. Do not
+        // run the generic synthetic-name resolver again while materializing the
+        // import binding; it can suffix the alias and disconnect it from that ID.
+        const local_node = if (std.mem.eql(u8, local, base))
+            imported_node
+        else if (callsite_symbol_name_span) |name_span| blk: {
+            break :blk try es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
+        } else try es_helpers.makeExactSyntheticRef(self, local);
 
         // #2869 import_specifier 의 local_node 를 helper marker 에 등록 → resync 의
         // visitImportDeclaration 이 user scope 가 아닌 helper_scope_map 으로 binding.
@@ -221,7 +250,7 @@ fn emitOne(
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
         if (self.semantic_edit_enabled) {
-            const symbol_id = self.runtime_helper_symbol_ids.get(base) orelse
+            const symbol_id = callsite_symbol_id orelse
                 try self.declareRuntimeHelperImportId(local_node, local, anchor);
             try self.bindRuntimeHelperImportById(local_node, local, symbol_id, anchor);
         } else {
