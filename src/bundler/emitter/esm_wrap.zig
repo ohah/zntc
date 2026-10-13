@@ -1437,7 +1437,13 @@ fn appendExportGetter(
     const es5 = options.unsupported.arrow or options.configurable_exports;
     const min = options.minify_whitespace;
     if (!min) try buf.appendSlice(allocator, "\t");
-    if (needsPropertyQuote(name)) {
+    // `__proto__: () => v` would set the prototype (#5664); a string literal
+    // name is already quoted (#4510).
+    if (std.mem.eql(u8, name, "__proto__")) {
+        try buf.appendSlice(allocator, "[\"__proto__\"]");
+    } else if (@import("../linker/preamble_writer.zig").isQuotedName(name)) {
+        try buf.appendSlice(allocator, name);
+    } else if (needsPropertyQuote(name)) {
         try buf.appendSlice(allocator, "\"");
         try buf.appendSlice(allocator, name);
         try buf.appendSlice(allocator, "\"");

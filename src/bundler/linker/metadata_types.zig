@@ -32,6 +32,9 @@ pub const LinkingMetadata = struct {
     /// codegen 분기(var 선언+할당 vs 기존 binding 할당) 선택용 — 과거엔 이름이 "_default" 로
     /// 시작하는지로 재추론했으나 mangler/linker 가 그 이름을 쓰면 오판하므로 의도를 flag 로 명시.
     default_export_is_synthetic: bool = false,
+    /// Output spelling of the `__toESM` helper (borrowed from the linker): a
+    /// user binding of that name moves the helper to `__toESM$1` (#5664).
+    to_esm_name: ?[]const u8 = null,
     /// namespace import의 member access 직접 치환 맵 (esbuild 방식).
     /// key: namespace 식별자의 symbol_id, value: export_name → canonical_local_name.
     /// codegen이 `ns.prop`를 만나면 이 맵으로 직접 치환 (namespace 객체 생성 불필요).
