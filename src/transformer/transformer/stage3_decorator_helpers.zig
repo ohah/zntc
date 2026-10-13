@@ -15,6 +15,9 @@ pub const Stage3MemberInfo = struct {
     kind: []const u8,
     /// 멤버 이름 (문자열 리터럴 또는 computed)
     name: NodeIndex,
+    /// A runtime computed key evaluated once into this temp (`[_a = …]`,
+    /// #5669): the context name and access functions read the temp.
+    name_temp: ?Span = null,
     /// static 여부
     is_static: bool,
     /// private 여부
@@ -329,7 +332,12 @@ pub fn buildContextObject(
 
     // name
     const name_key = try es_helpers.makePropertyName(self, "name");
-    try props.append(self.allocator, try makeObjProp(self, name_key, info.name));
+    const name_value = if (info.name_temp) |temp| blk: {
+        const read = try es_helpers.makeSyntheticRefFromSpan(self, temp);
+        try self.trackSyntheticTempReference(temp, temp, read, .{ .read = true });
+        break :blk read;
+    } else info.name;
+    try props.append(self.allocator, try makeObjProp(self, name_key, name_value));
 
     // static
     const static_key = try es_helpers.makePropertyName(self, "static");
@@ -360,7 +368,7 @@ pub fn buildContextObject(
 /// - method/getter: has + get
 /// - setter: has + set
 /// - field/accessor: has + get + set
-fn bindAccessParameters(self: anytype, owner: NodeIndex, bindings: []const NodeIndex, refs: []const NodeIndex) Error!void {
+fn bindAccessParameters(self: anytype, owner: NodeIndex, bindings: []const NodeIndex, refs: []const NodeIndex, name_temp: ?Span, temp_read: NodeIndex) Error!void {
     if (!self.semantic_edit_enabled) return;
     std.debug.assert(bindings.len == refs.len);
     const scope = try self.addGeneratedFunctionScope(self.current_scope, owner);
@@ -368,6 +376,19 @@ fn bindAccessParameters(self: anytype, owner: NodeIndex, bindings: []const NodeI
         const id = try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, .parameter, scope);
         try self.addSyntheticRefInScope(ref, id, scope, .{ .read = true });
     }
+    _ = name_temp;
+    _ = temp_read;
+}
+
+/// The key of an access function: a read of the memoized computed key, or
+/// the member name literal.
+fn accessKey(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
+    const temp = info.name_temp orelse return info.name;
+    // Resolved from the class like the key write: the temp is declared
+    // outside the access function, which has no binding of its own for it.
+    const read = try es_helpers.makeSyntheticRefFromSpan(self, temp);
+    try self.trackSyntheticTempReference(temp, temp, read, .{ .read = true });
+    return read;
 }
 
 pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
@@ -376,9 +397,13 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
     var access_props: std.ArrayList(NodeIndex) = .empty;
     defer access_props.deinit(self.allocator);
 
-    // 멤버 이름 텍스트 추출 (string_literal "\"name\"" → "name")
-    const name_node = self.ast.getNode(info.name);
-    const raw_name = self.ast.getText(name_node.data.string_ref);
+    // 멤버 이름 텍스트 추출 (string_literal "\"name\"" → "name"). A memoized
+    // computed key has no text: every access reads its temp.
+    const name_node: ast_mod.Node = if (info.name_temp != null)
+        .{ .tag = .string_literal, .span = zero_span, .data = .{ .string_ref = zero_span } }
+    else
+        self.ast.getNode(info.name);
+    const raw_name = if (info.name_temp != null) "" else self.ast.getText(name_node.data.string_ref);
     // 따옴표 제거: "\"foo\"" → "foo"
     const stripped = if (raw_name.len >= 2 and raw_name[0] == '"')
         raw_name[1 .. raw_name.len - 1]
@@ -396,7 +421,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
     // obj.name (static) vs obj["name"] or obj[0] (computed)
     const needs_computed = blk: {
         if (info.is_private) break :blk false; // private은 항상 obj.#name
-        if (member_name.len == 0) break :blk true;
+        if (info.name_temp != null or member_name.len == 0) break :blk true;
         const first = member_name[0];
         if (first >= '0' and first <= '9') break :blk true; // 숫자로 시작
         // JS 식별자가 아닌 문자가 있으면 computed
@@ -422,7 +447,9 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
                 .span = priv_span,
                 .data = .{ .string_ref = priv_span },
             });
-        } else blk: {
+        } else if (info.name_temp != null)
+            try accessKey(self, info)
+        else blk: {
             // "name" (string_literal)
             break :blk try self.ast.addNode(.{
                 .tag = .string_literal,
@@ -439,7 +466,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const has_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @intFromEnum(obj_param), @intFromEnum(in_expr), 0,
         });
-        try bindAccessParameters(self, has_arrow, &.{obj_param}, &.{obj_ref});
+        try bindAccessParameters(self, has_arrow, &.{obj_param}, &.{obj_ref}, if (info.is_private) null else info.name_temp, in_left);
         try access_props.append(self.allocator, try makeObjProp(self, has_key, has_arrow));
     }
 
@@ -452,9 +479,11 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
 
         // obj.name (public) / obj.#name (private) / obj["name"] or obj[0] (computed key)
         const obj_ref = try es_helpers.makeSyntheticRefFromSpan(self, obj_param_span);
+        var get_temp_read: NodeIndex = .none;
         const obj_member = if (needs_computed) blk: {
             // obj["name"] 또는 obj[0]
-            const key_node = info.name; // 이미 string_literal "\"name\"" 형태
+            const key_node = try accessKey(self, info); // string_literal "\"name\"" 또는 temp 읽기
+            get_temp_read = key_node;
             break :blk try es_helpers.makeComputedMember(self, obj_ref, key_node, zero_span);
         } else blk: {
             const member_key_span = try self.ast.addString(member_name);
@@ -479,7 +508,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const get_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @intFromEnum(obj_param), @intFromEnum(obj_member), 0,
         });
-        try bindAccessParameters(self, get_arrow, &.{obj_param}, &.{obj_ref});
+        try bindAccessParameters(self, get_arrow, &.{obj_param}, &.{obj_ref}, info.name_temp, get_temp_read);
         try access_props.append(self.allocator, try makeObjProp(self, get_key, get_arrow));
     }
 
@@ -500,8 +529,10 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
 
         // body: { obj.name = value; } / { obj.#name = value; } / { obj["name"] = value; }
         const obj_ref = try es_helpers.makeSyntheticRefFromSpan(self, obj_param_span);
+        var set_temp_read: NodeIndex = .none;
         const obj_member = if (needs_computed) blk: {
-            break :blk try es_helpers.makeComputedMember(self, obj_ref, info.name, zero_span);
+            set_temp_read = try accessKey(self, info);
+            break :blk try es_helpers.makeComputedMember(self, obj_ref, set_temp_read, zero_span);
         } else blk: {
             const set_key_span = try self.ast.addString(member_name);
             const set_key_node = if (info.is_private)
@@ -546,7 +577,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
             0, // flags
             none, // ret_type
         });
-        try bindAccessParameters(self, set_fn, &.{ obj_param, val_param }, &.{ obj_ref, val_ref });
+        try bindAccessParameters(self, set_fn, &.{ obj_param, val_param }, &.{ obj_ref, val_ref }, info.name_temp, set_temp_read);
         try access_props.append(self.allocator, try makeObjProp(self, set_key, set_fn));
     }
 
@@ -845,11 +876,12 @@ pub const FieldInitNames = struct {
     clean_name: []const u8,
 };
 
-pub fn buildFieldInitNames(self: anytype, name_node_idx: NodeIndex) Error!FieldInitNames {
-    const var_name = extractCleanVarName(self, name_node_idx);
+pub fn buildFieldInitNames(self: anytype, name_node_idx: NodeIndex, name_temp: ?Span) Error!FieldInitNames {
+    // A memoized computed key (#5669) names its locals after the key temp.
+    const var_name = if (name_temp) |temp| self.ast.getText(temp) else extractCleanVarName(self, name_node_idx);
     // clean_name은 #을 포함 (private field identity), var_name은 # 제거 (JS 변수명)
-    const name_node = self.ast.getNode(name_node_idx);
-    const raw_name = self.ast.getText(name_node.data.string_ref);
+    // A memoized computed key (#5669) has no name node.
+    const raw_name = if (name_node_idx.isNone()) "" else self.ast.getText(self.ast.getNode(name_node_idx).data.string_ref);
     const clean_name = if (raw_name.len >= 2 and raw_name[0] == '"')
         raw_name[1 .. raw_name.len - 1]
     else
