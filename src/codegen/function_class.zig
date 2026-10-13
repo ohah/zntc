@@ -118,7 +118,7 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     // var foo; 선언은 esm_wrap에서 hoisted_var_names로 이미 top-level에 배치됨.
     const convert_fn_to_assign = self.options.esm_var_assign_only and
         node.tag == .function_declaration and !name.isNone() and
-        self.indent_level == 0;
+        self.indent_level == 0 and self.namespace_body_depth == 0;
     const suppress_name = self.suppress_next_function_name;
     self.suppress_next_function_name = false;
     // An anonymous `export default function` emitted as a declaration (#5670).
@@ -288,7 +288,7 @@ pub fn emitClass(self: anytype, node: Node) !void {
     const convert_to_assign = self.options.esm_var_assign_only and
         node.tag == .class_declaration and
         !name.isNone() and
-        self.indent_level == 0;
+        self.indent_level == 0 and self.namespace_body_depth == 0;
 
     // #2198: cycle 모듈의 top-level class declaration → `var X = class { ... }`.
     // class declaration 자체가 block-scoped 라 `var` 강등으로는 부족, class
@@ -300,7 +300,7 @@ pub fn emitClass(self: anytype, node: Node) !void {
         !convert_to_assign and
         node.tag == .class_declaration and
         !name.isNone() and
-        self.indent_level == 0;
+        self.indent_level == 0 and self.namespace_body_depth == 0;
 
     if (convert_to_assign) {
         try self.emitNode(name);

@@ -128,7 +128,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     // var Color = /* @__PURE__ */ ((Color) => { ...; return Color; })(Color || {});
     // esm_var_assign_only: var 선언은 이미 __esm 밖 top-level에 hoisted.
     // factory 안에서는 할당만 출력.
-    if (!self.options.esm_var_assign_only) try self.write("var ");
+    if (!self.options.esm_var_assign_only or self.namespace_body_depth > 0) try self.write("var ");
     try self.emitNode(name_idx);
     try self.write(" = /* @__PURE__ */ ((");
     try self.write(param_name);
@@ -456,6 +456,8 @@ fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind
 }
 
 fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, placement: NamespacePlacement) !void {
+    self.namespace_body_depth += 1;
+    defer self.namespace_body_depth -= 1;
     try self.addSourceMapping(node.span);
     const name_idx = node.data.binary.left;
     const body_idx = node.data.binary.right;
@@ -474,13 +476,17 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         };
 
         // A nested namespace is block-scoped whether it is private or exported.
+        // In an `__esm` factory the emitter declares a top-level one outside
+        // the factory (#5663): a `var` here would hide it from `__export`.
         if (namespacePlacementIsNested(placement)) {
             try self.write("let ");
-        } else {
+            try self.write(local_name);
+            try self.writeByte(';');
+        } else if (!self.options.esm_var_assign_only or self.namespace_body_depth > 1) {
             try self.write("var ");
+            try self.write(local_name);
+            try self.writeByte(';');
         }
-        try self.write(local_name);
-        try self.writeByte(';');
         try self.write("((");
         try self.write(iife_param_name);
         try self.write(") => {");
@@ -506,11 +512,14 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
     if (!self.declared_names.contains(name_text) and !self.declared_names.contains(local_name)) {
         if (namespacePlacementIsNested(placement)) {
             try self.write("let ");
-        } else {
+            try self.write(local_name);
+            try self.writeByte(';');
+        } else if (!self.options.esm_var_assign_only or self.namespace_body_depth > 1) {
+            // `__esm` factory: declared outside by the emitter (#5663).
             try self.write("var ");
+            try self.write(local_name);
+            try self.writeByte(';');
         }
-        try self.write(local_name);
-        try self.writeByte(';');
     }
     self.declared_names.put(self.allocator, name_text, {}) catch {};
     self.declared_names.put(self.allocator, local_name, {}) catch {};

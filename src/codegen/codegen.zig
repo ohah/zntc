@@ -104,6 +104,10 @@ pub const Codegen = struct {
     /// 다음 emitFunction 이 함수 이름을 생략한다. 블록 함수 선언을
     /// `let f = function(){}` 로 낮출 때만 켠다 (#5454).
     suppress_next_function_name: bool = false,
+    /// Inside a TS namespace IIFE body: its declarations stay declarations even
+    /// under `esm_var_assign_only`, which only turns the factory's top-level
+    /// declarations into assignments (#5663).
+    namespace_body_depth: u32 = 0,
     /// Name for the next anonymous function declaration: a default export
     /// emitted as `function _default() {}` in a bundle (#5670).
     default_function_name: ?[]const u8 = null,
