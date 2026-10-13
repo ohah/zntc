@@ -66,6 +66,15 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
         if (self.namespace_declaration_owners) |owners| break :blk owners.get(symbol_id) orelse symbol_id;
         break :blk symbol_id;
     } else null;
+    const name_node = self.ast.getNode(node.data.binary.left);
+    const is_root_namespace = self.namespace_path.items.len == 0;
+    const saved_root_symbol = self.namespace_root_symbol_id;
+    if (is_root_namespace) self.namespace_root_symbol_id = self.getSymbolIdAt(node.data.binary.left);
+    try self.namespace_path.append(self.allocator, self.ast.getText(name_node.span));
+    defer {
+        _ = self.namespace_path.pop();
+        if (is_root_namespace) self.namespace_root_symbol_id = saved_root_symbol;
+    }
     const new_name = try self.visitNode(node.data.binary.left);
     const saved_namespace_scope = self.namespace_iife_scope;
     const saved_temp_counter = self.temp_var_counter;

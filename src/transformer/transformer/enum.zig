@@ -147,12 +147,20 @@ fn refersToPriorMember(self: *const Transformer, expr_idx: NodeIndex, prior: []c
     return false;
 }
 
-/// Exported from the module (not from a namespace, whose const enums stay erased).
+/// Exported from the module, directly or through an exported namespace.
 fn constEnumIsExported(self: *const Transformer, node: Node) bool {
     const sym_id = self.getSymbolIdAt(self.readNodeIdx(node.data.extra, 0)) orelse return false;
     if (sym_id >= self.symbols.len) return false;
     const sym = self.symbols[sym_id];
-    return sym.isExported() and !sym.scope_id.isNone() and sym.scope_id.toIndex() == 0;
+    if (!sym.isExported() or sym.scope_id.isNone()) return false;
+    if (sym.scope_id.toIndex() == 0) return true;
+    // Exported from a namespace that the module exports: another module reads
+    // it as `N.E.A`, which this module cannot inline (#5600).
+    if (self.namespace_path.items.len == 0) return false;
+    const root_id = self.namespace_root_symbol_id orelse return false;
+    if (root_id >= self.symbols.len) return false;
+    const root = self.symbols[root_id];
+    return root.isExported() and !root.scope_id.isNone() and root.scope_id.toIndex() == 0;
 }
 
 /// 한 enum 선언의 멤버 값 평가 결과.
@@ -315,6 +323,31 @@ fn collectConstEnum(self: *Transformer, node: Node) Error!void {
     defer ev.deinit(self.allocator);
     if (!ev.complete) return;
     try storeEnumValues(self, &self.const_enums, node, prior_index, &ev);
+    try recordNamespacedConstEnum(self, id.name, id.sym);
+}
+
+/// Remember the dotted path of a const enum declared inside a namespace so a
+/// `N.E.A` read outside the namespace can be inlined (#5600).
+fn recordNamespacedConstEnum(self: *Transformer, enum_name: []const u8, enum_sym: ?u32) Error!void {
+    if (self.namespace_path.items.len == 0) return;
+    for (self.namespaced_const_enums.items) |entry| {
+        if (entry.enum_symbol_id == enum_sym and std.mem.eql(u8, entry.enum_name, enum_name)) return;
+    }
+    var path: std.ArrayList(u8) = .empty;
+    errdefer path.deinit(self.allocator);
+    for (self.namespace_path.items) |segment| {
+        try path.appendSlice(self.allocator, segment);
+        try path.append(self.allocator, '.');
+    }
+    try path.appendSlice(self.allocator, enum_name);
+    const owned = try path.toOwnedSlice(self.allocator);
+    errdefer self.allocator.free(owned);
+    try self.namespaced_const_enums.append(self.allocator, .{
+        .path = owned,
+        .root_symbol_id = self.namespace_root_symbol_id,
+        .enum_name = enum_name,
+        .enum_symbol_id = enum_sym,
+    });
 }
 
 /// 평가 컨텍스트: 현재 collecting 중인 enum의 정보 (self-reference 해결용).
@@ -485,17 +518,79 @@ pub fn tryInlineConstEnumMember(self: *Transformer, node: Node) Error!?NodeIndex
     if (obj_idx.isNone() or prop_idx.isNone()) return null;
 
     const obj_node = self.ast.getNode(obj_idx);
+    const prop_name = memberPropertyName(self, node.tag, prop_idx) orelse return null;
+    if (obj_node.tag == .static_member_expression) return inlineNamespacedConstEnumMember(self, obj_idx, prop_name, node.span);
     if (obj_node.tag != .identifier_reference) return null;
     const obj_name = self.ast.getText(obj_node.span);
     const obj_sym = self.getSymbolIdAt(obj_idx);
-
-    const prop_name = memberPropertyName(self, node.tag, prop_idx) orelse return null;
 
     for (self.const_enums.items) |decl| {
         if (!enumDeclMatches(decl, obj_name, obj_sym)) continue;
         for (decl.members) |m| {
             if (!cooked_name.eql(m.name, prop_name)) continue;
             return try makeConstEnumLiteralNode(self, m.value, node.span);
+        }
+    }
+    return null;
+}
+
+/// `N.E.A` / `O.I.E["B"]`: the object is a static member chain rooted at the
+/// namespace binding that declared const enum `E` (#5600). The const enum
+/// declaration itself is erased, so inlining is the only way the read works.
+fn inlineNamespacedConstEnumMember(self: *Transformer, obj_idx: NodeIndex, prop_name: []const u8, span: Span) Error!?NodeIndex {
+    if (self.namespaced_const_enums.items.len == 0) return null;
+    var segments: [16][]const u8 = undefined;
+    var count: usize = 0;
+    var cursor = obj_idx;
+    while (true) {
+        const n = self.ast.getNode(cursor);
+        if (count == segments.len) return null;
+        switch (n.tag) {
+            .static_member_expression => {
+                const e = n.data.extra;
+                if (e + 1 >= self.ast.extra_data.items.len) return null;
+                const prop = self.readNodeIdx(e, 1);
+                if (prop.isNone() or self.ast.getNode(prop).tag != .identifier_reference) return null;
+                segments[count] = self.ast.getText(self.ast.getNode(prop).span);
+                count += 1;
+                cursor = self.readNodeIdx(e, 0);
+                if (cursor.isNone()) return null;
+            },
+            .identifier_reference => {
+                segments[count] = self.ast.getText(n.span);
+                count += 1;
+                break;
+            },
+            else => return null,
+        }
+    }
+    const root_sym = self.getSymbolIdAt(cursor);
+    for (self.namespaced_const_enums.items) |entry| {
+        // Compare the dotted path without allocating: segments are innermost-first.
+        var rest = entry.path;
+        var i = count;
+        var matched = true;
+        while (i > 0) : (i -= 1) {
+            const seg = segments[i - 1];
+            if (!std.mem.startsWith(u8, rest, seg)) {
+                matched = false;
+                break;
+            }
+            rest = rest[seg.len..];
+            if (i > 1) {
+                if (rest.len == 0 or rest[0] != '.') {
+                    matched = false;
+                    break;
+                }
+                rest = rest[1..];
+            }
+        }
+        if (!matched or rest.len != 0) continue;
+        if (entry.root_symbol_id != null and root_sym != null and entry.root_symbol_id.? != root_sym.?) continue;
+        const decl_index = findEnumDecl(self.const_enums.items, entry.enum_name, entry.enum_symbol_id) orelse continue;
+        for (self.const_enums.items[decl_index].members) |m| {
+            if (!cooked_name.eql(m.name, prop_name)) continue;
+            return try makeConstEnumLiteralNode(self, m.value, span);
         }
     }
     return null;

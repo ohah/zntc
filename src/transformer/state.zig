@@ -64,6 +64,16 @@ pub const ConstEnumDecl = struct {
     symbol_id: ?u32,
 };
 
+/// A const enum declared inside a namespace, reachable as `<path>.<member>`
+/// from outside (#5600). `path` is the dotted namespace path including the
+/// enum name; `root_symbol_id` is the outermost namespace binding.
+pub const NamespacedConstEnum = struct {
+    path: []const u8,
+    root_symbol_id: ?u32,
+    enum_name: []const u8,
+    enum_symbol_id: ?u32,
+};
+
 /// `class_name` distinguishes instance vs static private fields.
 /// null -> instance WeakMap, non-null -> static descriptor + class brand check.
 pub const PrivateFieldMapping = struct {
