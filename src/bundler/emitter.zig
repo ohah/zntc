@@ -2583,6 +2583,7 @@ pub fn emitModule(
         .ascii_only = false,
         // #4243: es5 타겟에서 identifier 의 `\u{...}` brace escape 다운레벨.
         .lower_unicode_brace = options.unsupported.unicode_brace_escape,
+        .lower_arrow = options.unsupported.arrow,
         // 소스맵 옵션 전달
         .sourcemap = options.sourcemap.enable,
         .source_root = options.sourcemap.source_root orelse "",

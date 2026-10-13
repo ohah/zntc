@@ -99,6 +99,9 @@ pub const CodegenOptions = struct {
     /// codegen 이 모든 identifier/property/key emit funnel 에서 일괄 적용(소스/
     /// 합성/디스트럭처링/클래스필드 구분 없이 한 지점).
     lower_unicode_brace: bool = false,
+    /// The target lacks arrow functions: a namespace/enum IIFE the codegen
+    /// writes itself is a `function` expression (#4797).
+    lower_arrow: bool = false,
     /// 소스맵 sourceRoot 필드
     source_root: []const u8 = "",
     /// 소스맵에 sourcesContent 포함 여부 (기본: true)
