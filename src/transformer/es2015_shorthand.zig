@@ -14,6 +14,7 @@
 //! - SWC: crates/swc_ecma_compat_es2015/src/shorthand_property.rs (~41줄)
 
 const ast_mod = @import("../parser/ast.zig");
+const es_helpers = @import("es_helpers.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 
@@ -29,9 +30,10 @@ pub fn ES2015Shorthand(comptime Transformer: type) type {
             const left_idx = node.data.binary.left;
             const original_left = self.ast.getNode(left_idx);
 
-            // key: 원본 이름 그대로. property name 이라 rename 대상 아님.
-            // scope hoisting 등 다른 후속 transform 이 symbol 을 따라가도록 심볼을 물려준다.
-            const new_key = try self.makeIdentifierRefWithSymbolAt(original_left.data.string_ref, original_left.span, left_idx);
+            // key: 원본 이름 그대로. property name 이라 rename·인라인 대상이 아니다 —
+            // 심볼을 물려주면 minify 가 key 를 참조로 보고 상수로 바꿨다
+            // (`const x = 1; ({x})` → `{1: x}`, #5668).
+            const new_key = try es_helpers.makePropertyNameAt(self, original_left.data.string_ref, original_left.span);
 
             // value: visitNode 가 block_rename / scope hoist 를 적용.
             const new_value = try self.visitNode(left_idx);

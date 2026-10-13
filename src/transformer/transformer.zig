@@ -366,6 +366,11 @@ pub const Transformer = struct {
     /// 변환 시작에 `block_rename_table` 로 만든다 (#4760). 없으면(스코프 정보 없는 경로)
     /// 예전 이름 스택 판정을 쓴다.
     block_rename_map: ?std.AutoHashMapUnmanaged(u32, []const u8) = null,
+    /// Set while lowering the parameters of a sloppy function whose body reads
+    /// `arguments` (#5668): its identifier parameters bind body `var`s fed
+    /// from placeholder formals, so assigning one no longer writes the mapped
+    /// `arguments` slot. Collects those bindings for the caller.
+    unlinked_parameter_bindings: ?*std.ArrayList(NodeIndex) = null,
     /// Source initializer NodeIndex -> original inferred function/class name.
     parameter_inferred_names: std.AutoHashMapUnmanaged(u32, Span) = .empty,
     /// Anonymous source class NodeIndex -> the name its NamedEvaluation would

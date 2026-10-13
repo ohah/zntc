@@ -310,6 +310,51 @@ fn moveLoweredPatternParameterBindings(
     }
 }
 
+/// Bindings of identifier parameters lowered into body `var`s move to the
+/// body scope, like lowered pattern bindings.
+fn moveUnlinkedParameterBindings(
+    self: anytype,
+    bindings: []const NodeIndex,
+    body_scope: @import("../../semantic/scope.zig").ScopeId,
+) Error!void {
+    if (!self.semantic_edit_enabled or body_scope.isNone() or bindings.len == 0) return;
+    const editor = if (self.semantic_editor) |*existing| existing else return;
+    if (body_scope.toIndex() >= editor.scopes.items.len) return;
+    const parameter_scope = editor.scopes.items[body_scope.toIndex()].parent;
+    if (parameter_scope.isNone()) return;
+    for (bindings) |binding| {
+        const id = self.getSymbolIdAt(binding) orelse continue;
+        if (id >= editor.symbols.items.len) continue;
+        if (editor.symbols.items[id].scope_id != parameter_scope) continue;
+        try self.moveSymbolToOutputScope(id, body_scope);
+    }
+}
+
+/// A sloppy-mode body that reads its own `arguments` (not a nested
+/// function's).
+fn sloppyBodyReadsArguments(self: anytype, scope: @import("../../semantic/scope.zig").ScopeId, body: NodeIndex) Error!bool {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].is_strict) return false;
+    const Scan = struct {
+        ast: *const ast_mod.Ast,
+        found: bool = false,
+        fn visit(ctx: *@This(), _: NodeIndex, n: ast_mod.Node) ast_walk.WalkAction {
+            switch (n.tag) {
+                .identifier_reference => if (std.mem.eql(u8, ctx.ast.getText(n.data.string_ref), "arguments")) {
+                    ctx.found = true;
+                    return .stop;
+                },
+                .function_declaration, .function_expression, .function, .method_definition, .class_declaration, .class_expression => return .skip_children,
+                else => {},
+            }
+            return .descend;
+        }
+    };
+    var scan = Scan{ .ast = self.ast };
+    try ast_walk.walkPreorderIterative(self.allocator, self.ast, body, &scan, Scan.visit);
+    return scan.found;
+}
+
 /// The object/array pattern of a parameter, if it has one.
 fn loweredParameterPattern(self: anytype, param_idx: NodeIndex) ?NodeIndex {
     if (param_idx.isNone() or @intFromEnum(param_idx) >= self.ast.nodes.items.len) return null;
@@ -542,9 +587,18 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (body_has_dynamic_lookup and
                     !supportsDynamicBodyWrapper(self, self.current_scope, function_flags)) continue;
 
+                // A non-simple parameter list gives a sloppy function unmapped
+                // `arguments`; lowered parameters would be mapped again (#5668).
+                var unlinked_parameters: std.ArrayList(NodeIndex) = .empty;
+                defer unlinked_parameters.deinit(self.allocator);
+                if (self.options.unsupported.default_params and
+                    try sloppyBodyReadsArguments(self, self.current_scope, source_body_idx))
+                    self.unlinked_parameter_bindings = &unlinked_parameters;
                 var lr = try es2015_params.ES2015Params(Self).lowerParamsPass2(self, params_list, node.span);
+                self.unlinked_parameter_bindings = null;
                 defer lr.body_stmts.deinit(self.allocator);
                 try moveLoweredPatternParameterBindings(self, params_list, self.current_scope);
+                try moveUnlinkedParameterBindings(self, unlinked_parameters.items, self.current_scope);
                 const parameter_initializer_len = lr.body_stmts.items.len;
                 const body_wrapper_scope = if (lr.body_stmts.items.len > 0)
                     if (body_has_dynamic_lookup)
