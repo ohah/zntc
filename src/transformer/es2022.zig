@@ -385,6 +385,10 @@ pub fn ES2022(comptime Transformer: type) type {
             /// Parallel to `static_descriptors_out`: each descriptor's place
             /// among the static blocks and fields, for source-order emit (#5696).
             static_descriptor_orders: ?*std.ArrayList(StaticDescriptorOrder),
+            /// Every computed member key already sits in a temp evaluated in
+            /// source order before the class (`hoistAllComputedKeys`): a field
+            /// key is read from it, not memoized again (#5669).
+            keys_prehoisted: bool,
         ) Transformer.Error!bool {
             const body_node = self.ast.getNode(body_idx);
             const body_start = body_node.data.list.start;
@@ -698,7 +702,17 @@ pub fn ES2022(comptime Transformer: type) type {
                                 const init_val: NodeIndex = self.readNodeIdx(pe, ast_mod.PropertyExtra.init);
                                 var key_ref: NodeIndex = .none;
                                 var name_ref: NodeIndex = .none;
-                                if (key_node.tag == .computed_property_key) {
+                                if (key_node.tag == .computed_property_key and keys_prehoisted) {
+                                    const temp_ref = key_node.data.unary.operand;
+                                    try es_helpers.trackKnownHoistedComputedKeyRef(self, temp_ref, self.current_scope);
+                                    key_ref = temp_ref;
+                                    if (self.options.use_define_for_class_fields and
+                                        try @import("parameter_environment.zig").needsRuntimeKeyName(self, key, init_val))
+                                    {
+                                        name_ref = try es_helpers.makeSyntheticRefFromSpan(self, self.ast.getNode(temp_ref).span);
+                                        try es_helpers.trackKnownHoistedComputedKeyRef(self, name_ref, self.current_scope);
+                                    }
+                                } else if (key_node.tag == .computed_property_key) {
                                     const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span, true);
                                     try pre_stmts.append(self.allocator, memo.decl);
                                     // `var _a = …` sits beside the private helpers; the

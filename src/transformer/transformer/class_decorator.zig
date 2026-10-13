@@ -223,6 +223,18 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         }
         pf_mappings.deinit(self.allocator);
     }
+    // 필드를 낮추면 멤버들이 생성자·IIFE 등 **다른 자리**로 흩어진다. 그 경우 모든 멤버의
+    // computed 키를 소스 순서대로 **클래스 앞에서 한 번** 평가해 temp 로 바꿔 둔다 (#4723).
+    //  - 필드 키가 생성자로 들어가면 인스턴스마다 재평가된다(스펙: 정의 시점 1회).
+    //  - 메서드/접근자 키가 IIFE 안에 남으면 키의 `yield`/`await` 가 새 함수 안으로 들어가
+    //    파싱조차 안 되고, 필드 키만 빼면 키 평가 순서가 뒤바뀐다.
+    // private 멤버 lowering 보다 먼저 한다 — 그 경로가 인스턴스 필드 키를 따로 빼면
+    // static 키보다 늦게 평가된다 (#5669).
+    var pre_hoisted_keys = false;
+    if (classBodyHasFieldAndComputedKey(self, body_idx)) {
+        body_idx = try hoistAllComputedKeys(self, node.tag, body_idx, key_assigns);
+        pre_hoisted_keys = true;
+    }
     if (lower_pm or lower_pf) {
         // class_expression + static private → 이름 부여(static init 참조 / IIFE).
         if (as_expression and new_name.isNone() and
@@ -280,19 +292,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             // V_ASSIGN fix: descriptor 를 별도 array 로 받아 class 뒤에 emit (TDZ 회피).
             &assign_static_descriptors,
             &static_descriptor_orders,
+            pre_hoisted_keys,
         );
         if (had_any) body_idx = new_body_pl;
-    }
-
-    // 필드를 낮추면 멤버들이 생성자·IIFE 등 **다른 자리**로 흩어진다. 그 경우 모든 멤버의
-    // computed 키를 소스 순서대로 **클래스 앞에서 한 번** 평가해 temp 로 바꿔 둔다 (#4723).
-    //  - 필드 키가 생성자로 들어가면 인스턴스마다 재평가된다(스펙: 정의 시점 1회).
-    //  - 메서드/접근자 키가 IIFE 안에 남으면 키의 `yield`/`await` 가 새 함수 안으로 들어가
-    //    파싱조차 안 되고, 필드 키만 빼면 키 평가 순서가 뒤바뀐다.
-    var pre_hoisted_keys = false;
-    if (classBodyHasFieldAndComputedKey(self, body_idx)) {
-        body_idx = try hoistAllComputedKeys(self, node.tag, body_idx, key_assigns);
-        pre_hoisted_keys = true;
     }
 
     // 원본(또는 private 다운레벨된) class_body를 직접 순회

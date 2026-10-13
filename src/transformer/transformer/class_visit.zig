@@ -317,6 +317,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 private_helper_scope,
                 desc_out,
                 &static_descriptor_orders,
+                false,
             );
             if (had_any) {
                 current_body_idx = new_body;
