@@ -128,6 +128,27 @@ test "Worklet semantic-less class factory avoids a captured source binding" {
     }
 }
 
+test "Worklet class factory accepts long class identifier names" {
+    const allocator = std.testing.allocator;
+    const class_name = try allocator.alloc(u8, 120);
+    defer allocator.free(class_name);
+    @memset(class_name, 'A');
+    const source = try std.fmt.allocPrint(
+        allocator,
+        "class {s} {{ __workletClass = true; value() {{ return 42; }} }}",
+        .{class_name},
+    );
+    defer allocator.free(source);
+
+    var result = try transformWorklet(allocator, source);
+    defer result.deinit();
+    const code = try generateCode(&result);
+    defer allocator.free(code);
+    const expected_factory = try std.fmt.allocPrint(allocator, "function {s}__classFactory()", .{class_name});
+    defer allocator.free(expected_factory);
+    try std.testing.expect(std.mem.indexOf(u8, code, expected_factory) != null);
+}
+
 test "Worklet init code uses the exact semantic enum IIFE parameter" {
     const Scanner = @import("../lexer/scanner.zig").Scanner;
     const Parser = @import("../parser/parser.zig").Parser;
