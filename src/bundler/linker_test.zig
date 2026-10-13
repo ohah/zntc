@@ -443,13 +443,23 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     try std.testing.expect(first.ast == null and second.ast == null);
     const first_sem = first.semantic orelse return error.TestUnexpectedResult;
     const second_sem = second.semantic orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 0), first_sem.scopes.len);
-    try std.testing.expectEqual(@as(usize, 0), first_sem.scope_maps.len);
+    try std.testing.expectEqual(@as(usize, 2), first_sem.scopes.len);
+    try std.testing.expectEqual(@as(usize, 2), first_sem.scope_maps.len);
+    try std.testing.expectEqual(@as(usize, 2), second_sem.scopes.len);
+    try std.testing.expectEqual(@as(usize, 2), second_sem.scope_maps.len);
+    const first_exports_param = first.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
+    const first_module_param = first.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
+    const first_wrapper_scope = first_sem.scopes[0].parent;
+    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(first_wrapper_scope));
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.global, first_sem.scopes[0].kind);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, first_sem.scopes[@intFromEnum(first_wrapper_scope)].kind);
+    try std.testing.expectEqual(@as(usize, 2), first_sem.scope_maps[0].count());
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_exports_param)), first_sem.scope_maps[0].get("exports"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_module_param)), first_sem.scope_maps[0].get("module"));
+    try std.testing.expectEqual(@as(usize, 2), first_sem.scope_maps[@intFromEnum(first_wrapper_scope)].count());
 
     const first_inner = first.require_symbol orelse return error.TestUnexpectedResult;
     const second_inner = second.require_symbol orelse return error.TestUnexpectedResult;
-    const first_exports_param = first.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
-    const first_module_param = first.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
     const first_row = first_sem.symbols.items[@intFromEnum(first_inner)];
     const second_row = second_sem.symbols.items[@intFromEnum(second_inner)];
     const first_exports_row = first_sem.symbols.items[@intFromEnum(first_exports_param)];
@@ -458,7 +468,12 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, second_row.synthetic_kind.?);
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter, first_exports_row.synthetic_kind.?);
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter, first_module_row.synthetic_kind.?);
-    try std.testing.expect(first_exports_row.scope_id.isNone() and first_module_row.scope_id.isNone());
+    try std.testing.expectEqual(first_wrapper_scope, first_exports_row.scope_id);
+    try std.testing.expectEqual(first_wrapper_scope, first_module_row.scope_id);
+    try std.testing.expectEqual(first_wrapper_scope, first_exports_row.origin_scope);
+    try std.testing.expectEqual(first_wrapper_scope, first_module_row.origin_scope);
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_exports_param)), first_sem.scope_maps[@intFromEnum(first_wrapper_scope)].get("exports"));
+    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_module_param)), first_sem.scope_maps[@intFromEnum(first_wrapper_scope)].get("module"));
     try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
     const first_symbol_count = first_sem.symbols.items.len;
@@ -476,6 +491,14 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     try std.testing.expectEqual(second_symbol_count, second.semantic.?.symbols.items.len);
     try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
+
+    // The exact wrapper ScopeId is an invariant, even when the convenience
+    // symbol IDs are still present and point to valid symbols.
+    first.semantic.?.symbols.items[@intFromEnum(first_exports_param)].scope_id = @enumFromInt(0);
+    try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(graph));
+    first.semantic.?.symbols.items[@intFromEnum(first_exports_param)].scope_id = first_wrapper_scope;
+    first.semantic.?.symbols.items[@intFromEnum(first_exports_param)].origin_scope = .none;
+    try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(graph));
 }
 
 test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
@@ -753,8 +776,15 @@ test "linker: disabled CJS wrappers receive runtime SymbolIds without source sem
     const module = graph.getModule(index) orelse return error.TestUnexpectedResult;
     try std.testing.expect(module.ast == null);
     const semantic = module.semantic orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 0), semantic.scopes.len);
-    try std.testing.expectEqual(@as(usize, 0), semantic.scope_maps.len);
+    try std.testing.expectEqual(@as(usize, 2), semantic.scopes.len);
+    try std.testing.expectEqual(@as(usize, 2), semantic.scope_maps.len);
+    const wrapper_scope = semantic.scopes[0].parent;
+    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(wrapper_scope));
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, semantic.scopes[@intFromEnum(wrapper_scope)].kind);
+    const exports_parameter = module.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
+    const module_parameter = module.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(wrapper_scope, semantic.symbols.items[@intFromEnum(exports_parameter)].scope_id);
+    try std.testing.expectEqual(wrapper_scope, semantic.symbols.items[@intFromEnum(module_parameter)].scope_id);
     const factory_inner = module.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult;
 
     var linker = Linker.initWithGlobalIdentifiers(std.testing.allocator, graph, .esm, &.{"__commonJS"});

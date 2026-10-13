@@ -51,6 +51,8 @@ const CjsWrapperParamNames = struct {
 fn cjsWrapperParamOutputName(
     module: *const Module,
     maybe_id: ?@import("../semantic/symbol.zig").SymbolId,
+    source_name: []const u8,
+    expected_kind: @import("../semantic/symbol.zig").SyntheticKind,
     fallback: []const u8,
     linker: ?*const Linker,
 ) ![]const u8 {
@@ -65,15 +67,133 @@ fn cjsWrapperParamOutputName(
     if (symbol.synthetic_kind != null and symbol.synthetic_name.len == 0)
         return error.InvalidCjsWrapperParameterSymbol;
 
+    // Parsed and AST-less CJS modules use the same virtual callback scope:
+    // Program/body scope 0 is parented by the emitted function scope. Resolve
+    // names only when the exact parameter identity is registered in that
+    // scope map, so stale IDs cannot silently fall back to text.
+    if (sem.scopes.len < 2 or sem.scope_maps.len != sem.scopes.len) {
+        return error.MissingCjsWrapperParameterName;
+    }
+    const wrapper_scope_id = sem.scopes[0].parent;
+    if (wrapper_scope_id.isNone() or wrapper_scope_id.toIndex() >= sem.scopes.len) return error.MissingCjsWrapperParameterName;
+    const wrapper_scope_raw = wrapper_scope_id.toIndex();
+    const wrapper_scope = sem.scopes[wrapper_scope_raw];
+    if (wrapper_scope.kind != @import("../semantic/scope.zig").ScopeKind.function or
+        !wrapper_scope.parent.isNone() or wrapper_scope.symbol_count != 2 or
+        sem.scope_maps[wrapper_scope_raw].count() != 2 or sem.scope_maps[wrapper_scope_raw].get(source_name) != raw)
+    {
+        return error.MissingCjsWrapperParameterName;
+    }
+    if (symbol.scope_id != wrapper_scope_id) return error.MissingCjsWrapperParameterName;
+    if (symbol.synthetic_kind) |kind| {
+        if (kind != expected_kind or symbol.kind != .parameter or !symbol.decl_flags.is_parameter or
+            symbol.origin_scope != wrapper_scope_id or !std.mem.eql(u8, symbol.synthetic_name, source_name))
+        {
+            return error.InvalidCjsWrapperParameterSymbol;
+        }
+    } else if (symbol.kind != .variable_var and !symbol.kind.isFunctionLike()) {
+        return error.InvalidCjsWrapperParameterSymbol;
+    }
+
     if (linker) |linked| {
         if (linked.rename_table.get(SymbolID.make(module.index, @as(u32, @intCast(raw))))) |name| return name;
     }
     // A parsed module with a virtual callback parameter must get its alias
     // from the linker. Falling back to the source spelling would recreate the
     // duplicate lexical declaration this identity exists to avoid.
-    if (module.ast != null and symbol.scope_id.isNone()) return error.MissingCjsWrapperParameterName;
+    if (module.ast != null and symbol.synthetic_kind == expected_kind and
+        (sem.scope_maps[0].get(source_name) orelse std.math.maxInt(usize)) != raw) return error.MissingCjsWrapperParameterName;
     if (symbol.synthetic_name.len > 0) return symbol.synthetic_name;
     return symbol.nameText(module.source);
+}
+
+test "CJS wrapper parameter codegen requires its exact output ScopeId" {
+    const allocator = std.testing.allocator;
+    const semantic_symbol = @import("../semantic/symbol.zig");
+    const scope_mod = @import("../semantic/scope.zig");
+    const wrapper_scope: scope_mod.ScopeId = @enumFromInt(1);
+    var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
+    defer symbols.deinit(allocator);
+    const exports_id = try semantic_symbol.extendSymbol(
+        allocator,
+        &symbols,
+        .parameter,
+        .cjs_wrapper_exports_parameter,
+        "exports",
+        .EMPTY,
+    );
+    const module_id = try semantic_symbol.extendSymbol(
+        allocator,
+        &symbols,
+        .parameter,
+        .cjs_wrapper_module_parameter,
+        "module",
+        .EMPTY,
+    );
+    for ([_]semantic_symbol.SymbolId{ exports_id, module_id }) |id| {
+        const symbol = &symbols.items[@intFromEnum(id)];
+        symbol.scope_id = wrapper_scope;
+        symbol.origin_scope = wrapper_scope;
+    }
+
+    var scopes = [_]scope_mod.Scope{
+        .{ .parent = wrapper_scope, .kind = .global, .is_strict = false },
+        .{ .parent = .none, .kind = .function, .is_strict = false, .symbol_count = 2 },
+    };
+    var scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
+    defer scope_maps[0].deinit(allocator);
+    defer scope_maps[1].deinit(allocator);
+    try scope_maps[1].put(allocator, "exports", @intFromEnum(exports_id));
+    try scope_maps[1].put(allocator, "module", @intFromEnum(module_id));
+
+    var module = Module.init(@enumFromInt(0), "disabled.cjs");
+    module.wrap_kind = .cjs;
+    module.cjs_wrapper_exports_parameter_symbol = exports_id;
+    module.cjs_wrapper_module_parameter_symbol = module_id;
+    module.semantic = .{
+        .symbols = symbols,
+        .scopes = &scopes,
+        .scope_maps = &scope_maps,
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+
+    try std.testing.expectEqualStrings(
+        "exports",
+        try cjsWrapperParamOutputName(
+            &module,
+            exports_id,
+            "exports",
+            semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter,
+            "exports",
+            null,
+        ),
+    );
+    try std.testing.expectEqualStrings(
+        "module",
+        try cjsWrapperParamOutputName(
+            &module,
+            module_id,
+            "module",
+            semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter,
+            "module",
+            null,
+        ),
+    );
+
+    module.semantic.?.symbols.items[@intFromEnum(exports_id)].scope_id = @enumFromInt(0);
+    try std.testing.expectError(
+        error.MissingCjsWrapperParameterName,
+        cjsWrapperParamOutputName(
+            &module,
+            exports_id,
+            "exports",
+            semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter,
+            "exports",
+            null,
+        ),
+    );
 }
 
 /// ZNTC0002 TLA+non-ESM 경고 주석. comptime 고정 — 코드/메시지가 error_codes와 항상 일치.
@@ -2201,12 +2321,16 @@ pub fn emitModule(
             .exports = try cjsWrapperParamOutputName(
                 module,
                 module.cjs_wrapper_exports_parameter_symbol,
+                "exports",
+                @import("../semantic/symbol.zig").SyntheticKind.cjs_wrapper_exports_parameter,
                 cg_options.default_cjs_exports_name,
                 linker,
             ),
             .module = try cjsWrapperParamOutputName(
                 module,
                 module.cjs_wrapper_module_parameter_symbol,
+                "module",
+                @import("../semantic/symbol.zig").SyntheticKind.cjs_wrapper_module_parameter,
                 cg_options.default_cjs_module_name,
                 linker,
             ),
