@@ -168,7 +168,7 @@ fn allocHome(self: *Transformer, node: Node, allow_late_output_name: bool) Trans
             else
                 try self.buildUniqueNameAvoidingDynamicEval(prefix, &self.object_home_counter, self.current_scope);
             // 사용자 식별자를 가리면 값 자리의 `_obj` 참조가 파라미터로 바뀐다.
-            if (es_helpers.nameAppearsInSource(self, name)) continue;
+            if (try es_helpers.nameAppearsInSource(self, name)) continue;
             return .{ .span = try self.ast.addString(name), .wrap = wrap, .late_output_name = late_output_name };
         }
     }
