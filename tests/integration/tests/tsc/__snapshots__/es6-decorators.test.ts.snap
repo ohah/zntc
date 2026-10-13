@@ -127,6 +127,8 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
+		}
+		static {
 			__runInitializers(_classThis, _classExtraInitializers);
 		}
 	};
@@ -193,6 +195,8 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
+		}
+		static {
 			__runInitializers(_classThis, _classExtraInitializers);
 		}
 	};
@@ -260,6 +264,8 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
+		}
+		static {
 			__runInitializers(_classThis, _classExtraInitializers);
 		}
 	};
@@ -328,6 +334,8 @@ export default (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
+		}
+		static {
 			__runInitializers(_classThis, _classExtraInitializers);
 		}
 	};
@@ -393,12 +401,14 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
-			__runInitializers(_classThis, _classExtraInitializers);
 		}
 		static x() {
 			return C.y;
 		}
 		static y = 1;
+		static {
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
 	};
 	return C = _classThis;
 })();
@@ -463,12 +473,14 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
-			__runInitializers(_classThis, _classExtraInitializers);
 		}
 		static x() {
 			return C.y;
 		}
 		static y = 1;
+		static {
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
 	};
 	return C = _classThis;
 })();
@@ -534,12 +546,14 @@ let C = (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
-			__runInitializers(_classThis, _classExtraInitializers);
 		}
 		static x() {
 			return C.y;
 		}
 		static y = 1;
+		static {
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
 	};
 	return C = _classThis;
 })();
@@ -606,9 +620,11 @@ export default (() => {
 			if (_metadata) {
 				Object.defineProperty(_classThis, Symbol.metadata, { enumerable: true, configurable: true, writable: true, value: _metadata });
 			}
-			__runInitializers(_classThis, _classExtraInitializers);
 		}
 		static y = 1;
+		static {
+			__runInitializers(_classThis, _classExtraInitializers);
+		}
 	};
 	return _Class = _classThis;
 })();

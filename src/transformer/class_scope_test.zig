@@ -1362,7 +1362,8 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         .{ .name = "_value_extraInitializers", .reads = 2 },
         .{ .name = "_other_extraInitializers", .reads = 2 },
         .{ .name = "_current_extraInitializers", .reads = 2 },
-        .{ .name = "_staticValue_extraInitializers", .reads = 1 },
+        // `__esDecorate` and the flush at the class end (#5712).
+        .{ .name = "_staticValue_extraInitializers", .reads = 2 },
     };
     for (extra_initializer_cases) |case| {
         var extra_initializer_id: ?u32 = null;
@@ -1675,7 +1676,9 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         try std.testing.expect(static_extra_initializers_are_visible);
         static_extra_initializers_reads += 1;
     }
-    try std.testing.expectEqual(@as(usize, 3), static_extra_initializers_reads);
+    // Three static method `__esDecorate` calls, and the first static field
+    // runs them (#5712).
+    try std.testing.expectEqual(@as(usize, 4), static_extra_initializers_reads);
 
     var instance_extra_initializers_id: ?u32 = null;
     var instance_extra_initializers_bindings: usize = 0;
