@@ -1405,6 +1405,41 @@ pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
         if (m.exports_kind == .none) m.exports_kind = .esm;
         if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
     }
+    promoteModulesAfterFirstAsync(self);
+}
+
+/// #5580: 실행 순서상 첫 TLA 모듈 **뒤**에 오는 scope-hoist 모듈도 (동기) `__esm` 으로 감싼다.
+///
+/// scope-hoist 된 코드는 entry 의 `init_X()` 가 async 체인을 시작하기 **전에** 최상위에서 돈다.
+/// 그래서 `import './a'`(TLA) 다음의 `import './b'` 가 a 보다 먼저 실행됐다(`b1 a1 a2`).
+/// 감싸면 importer 의 init 이 import 순서대로 `await init_a(); init_b();` 를 불러
+/// `a1 a2 b1` 이 된다 — rolldown·esbuild(TLA 유지)와 zntc es2022 출력의 순서와 같다.
+/// 네이티브(`a1 b1 a2`)는 형제가 await 구간에 끼어드는 스케줄링이 필요해 따르지 않는다.
+///
+/// entry 가 모두 래핑됐을 때만 한다 — 래핑되지 않은 entry(export 가 있는 라이브러리
+/// entry)는 init 체인이 없어 감싼 모듈을 부를 곳이 없다.
+fn promoteModulesAfterFirstAsync(self: *ModuleGraph) void {
+    var first_async: ?u32 = null;
+    var it = self.modules.iterator(0);
+    while (it.next()) |m| {
+        if (m.only_dynamically_reached) continue;
+        if (m.is_entry_point and m.wrap_kind != .esm) return;
+        if (!m.in_async_cone or m.wrap_kind != .esm) continue;
+        if (!(m.self_uses_top_level_await or m.tla_iife_stmt != null)) continue;
+        if (first_async == null or m.exec_index < first_async.?) first_async = m.exec_index;
+    }
+    const threshold = first_async orelse return;
+
+    it = self.modules.iterator(0);
+    while (it.next()) |m| {
+        if (m.only_dynamically_reached or m.is_entry_point) continue;
+        if (m.exec_index <= threshold) continue;
+        if (!m.module_type.isJavaScriptLike()) continue;
+        if (m.wrap_kind != .none) continue;
+        if (hasOnlyReExportImporters(self, m)) continue;
+        if (m.exports_kind == .none) m.exports_kind = .esm;
+        if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
+    }
 }
 
 /// #4598: 이 모듈을 소비하는 importer 가 **전부 re-export 뿐**인지.
