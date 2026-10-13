@@ -1862,7 +1862,7 @@ pub fn emitModule(
     // esbuild 호환: var require_X = __commonJS({ "(disabled)"(exports, module) {} });
     if (module.is_disabled) {
         const factory_name = if (linker) |l|
-            l.cjsFactoryRuntimeName()
+            try l.cjsFactoryRuntimeName()
         else if (options.minify_whitespace)
             rt.NAMES.CJS_FACTORY_MIN
         else
@@ -1885,7 +1885,7 @@ pub fn emitModule(
             if (helpers_out) |h| h.to_binary = true;
         }
         const factory_name = if (linker) |l|
-            l.cjsFactoryRuntimeName()
+            try l.cjsFactoryRuntimeName()
         else if (options.minify_whitespace)
             rt.NAMES.CJS_FACTORY_MIN
         else
@@ -2531,7 +2531,7 @@ pub fn emitModule(
     if (module.wrap_kind == .cjs) {
         const preamble_code = if (metadata) |md| md.cjs_import_preamble else null;
         const cjs_factory_name = if (linker) |l|
-            l.cjsFactoryRuntimeName()
+            try l.cjsFactoryRuntimeName()
         else if (options.minify_whitespace)
             rt.NAMES.CJS_FACTORY_MIN
         else

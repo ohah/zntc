@@ -748,7 +748,7 @@ pub fn emitChunks(
         // reg_split(IIFE/UMD/AMD) 만: ESM 출력은 청크가 native import 라 등록 모델 비대상.
         if (dev_split_chunk) {
             const cjs_factory_name = if (linker) |l|
-                l.cjsFactoryRuntimeName()
+                try l.cjsFactoryRuntimeName()
             else if (options.minify_whitespace)
                 rt.NAMES.CJS_FACTORY_MIN
             else

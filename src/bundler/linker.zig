@@ -1195,12 +1195,9 @@ pub const Linker = struct {
     /// Discover the graph-level runtime identity before emitted chunks are
     /// prepared. Single-bundle naming happens in computeRenames. Split outputs
     /// select their stable alias through that same pass with a graph-wide set of
-    /// source-visible names; graphs without a semantic owner keep the string fallback.
+    /// source-visible names. Graph finalization must supply an exact factory
+    /// SymbolId before a wrapped CJS runtime can be emitted.
     pub fn prepareCjsRuntimeName(self: *Linker) !void {
-        if (self.cjs_factory_runtime_name != null) {
-            try self.restoreCjsRuntimeInternalNames();
-            return;
-        }
         var has_included_cjs_runtime = false;
         var runtime_it = self.graph.modulesIterator();
         while (runtime_it.next()) |m| {
@@ -1217,14 +1214,13 @@ pub const Linker = struct {
         }
         const graph_wide_alias = self.graph.code_splitting or self.graph.preserve_modules;
         if (!has_included_cjs_runtime) return;
+        const symbol_id = self.cjs_factory_runtime_symbol_id orelse return error.CjsRuntimeFactoryIdentityMissing;
+        if (self.cjs_factory_runtime_name != null) {
+            try self.restoreCjsRuntimeInternalNames();
+            return;
+        }
         if (graph_wide_alias) {
-            if (self.cjs_factory_runtime_symbol_id) |symbol_id| {
-                self.cjs_factory_runtime_name = try self.calculateGraphWideCjsRuntimeName(symbol_id);
-            } else {
-                self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
-            }
-        } else if (self.cjs_factory_runtime_symbol_id == null) {
-            self.cjs_factory_runtime_name = try self.allocCjsRuntimeName();
+            self.cjs_factory_runtime_name = try self.calculateGraphWideCjsRuntimeName(symbol_id);
         }
         try self.restoreCjsRuntimeInternalNames();
     }
@@ -1628,11 +1624,19 @@ pub const Linker = struct {
         });
     }
 
-    pub fn cjsFactoryRuntimeName(self: *const Linker) []const u8 {
-        if (self.cjs_factory_runtime_symbol_id) |symbol_id| {
-            if (self.rename_table.get(symbol_id)) |name| return name;
+    pub fn cjsFactoryRuntimeName(self: *const Linker) ![]const u8 {
+        // HMR emits a template that can observe a CJS factory even in an
+        // ESM-only graph. Keep the optional template reference available, but
+        // require exact identity whenever an actual CJS wrapper is emitted.
+        if (!self.hasIncludedCjsRuntime()) {
+            return self.cjs_factory_runtime_name orelse if (self.minify_whitespace)
+                rt_names.NAMES.CJS_FACTORY_MIN
+            else
+                "__commonJS";
         }
-        return self.cjs_factory_runtime_name orelse if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
+        const symbol_id = self.cjs_factory_runtime_symbol_id orelse return error.CjsRuntimeFactoryIdentityMissing;
+        if (self.rename_table.get(symbol_id)) |name| return name;
+        return self.cjs_factory_runtime_name orelse error.CjsRuntimeFactoryNameMissing;
     }
 
     /// Resolve the graph-level binary helper name from its exact synthetic SID.
@@ -1847,16 +1851,11 @@ pub const Linker = struct {
     }
 
     /// Return the final names for lexical bindings in the raw CJS helper body.
-    /// Missing mappings fail closed whenever a semantic owner exists; graphs
-    /// without semantic data retain the standalone fixed-template spellings.
+    /// With no emitted CJS wrapper, return fixed names for optional HMR template
+    /// references. When a wrapper is emitted, missing identities or mappings fail closed.
     pub fn cjsFactoryRuntimeInternalNames(self: *const Linker) !rt_names.CjsRuntimeInternalNames {
-        const factory_id = self.cjs_factory_runtime_symbol_id orelse {
-            var module_it = self.graph.modulesIterator();
-            while (module_it.next()) |module| {
-                if (module.semantic != null) return error.CjsRuntimeFactoryIdentityMissing;
-            }
-            return .{};
-        };
+        if (!self.hasIncludedCjsRuntime()) return .{};
+        const factory_id = self.cjs_factory_runtime_symbol_id orelse return error.CjsRuntimeFactoryIdentityMissing;
         const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
         const ids = owner.cjs_runtime_internal_symbols orelse return error.CjsRuntimeInternalSymbolsMissing;
         return .{
@@ -2557,11 +2556,6 @@ pub const Linker = struct {
             return true;
         }
         return false;
-    }
-
-    fn allocCjsRuntimeName(self: *Linker) ![]const u8 {
-        const base = if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
-        return self.allocRuntimeFactoryName(base);
     }
 
     fn allocRuntimeFactoryName(self: *Linker, base: []const u8) ![]const u8 {
