@@ -39,6 +39,7 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
     if (((self.emotion or self.styled_components) and is_user_code) or options.emit_decorator_metadata) return;
     const verbatim_module_syntax = options.verbatim_module_syntax;
+    if (!verbatim_module_syntax) markInlineTypeOnlyImports(module, ast);
     const sem = if (module.semantic) |*s| s else return;
     if (sem.scope_maps.len == 0 or module.import_bindings.len == 0) return;
     var value_used = std.DynamicBitSetUnmanaged.initEmpty(arena_alloc, sem.symbols.items.len) catch return;
@@ -74,6 +75,34 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
             if (ib.is_helper or ib.source_type_only != true) type_only = false;
         }
         rec.ts_elided = bindings > 0 and type_only;
+    }
+}
+
+/// `import { type T } from './t'` — every specifier an inline type — has no
+/// binding at all, so the check above keeps it; tsc and esbuild drop the
+/// whole import and do not load the module (#5665). `import {} from` and
+/// `import './t'` have no specifier and stay side-effect imports.
+fn markInlineTypeOnlyImports(module: *module_mod.Module, ast: *const @import("../../parser/ast.zig").Ast) void {
+    const module_parser = @import("../../parser/module.zig");
+    if (ast.nodes.items.len == 0) return;
+    const root = ast.nodes.items[ast.nodes.items.len - 1];
+    if (root.tag != .program) return;
+    var it = ast.iterateExtraList(root.data.list);
+    while (it.next()) |stmt_idx| {
+        const node = ast.getNode(stmt_idx);
+        if (node.tag != .import_declaration) continue;
+        const x = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (x.is_type_only or x.specs_len == 0 or x.source.isNone()) continue;
+        const specs = ast.extra_data.items[x.specs_start .. x.specs_start + x.specs_len];
+        const all_types = for (specs) |raw| {
+            const spec = ast.getNode(@enumFromInt(raw));
+            if (spec.tag != .import_specifier or (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) == 0) break false;
+        } else true;
+        if (!all_types) continue;
+        const source_start = ast.getNode(x.source).span.start;
+        for (module.import_records) |*rec| {
+            if (rec.kind == .static_import and rec.span.start == source_start) rec.ts_elided = true;
+        }
     }
 }
 

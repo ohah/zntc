@@ -391,6 +391,16 @@ fn evalConstEnumExpr(
             if (raw.len < 2) return null;
             return .{ .string = raw[1 .. raw.len - 1] };
         },
+        // A no-substitution template is a string constant too (#5665). Only text that reads the
+        // same inside double quotes — no escape, quote or line break.
+        .template_literal => {
+            if (node.data.list.len != 0) return null;
+            const raw = self.ast.getText(node.span);
+            if (raw.len < 2) return null;
+            const inner = raw[1 .. raw.len - 1];
+            if (std.mem.indexOfAny(u8, inner, "\\\"'\n\r$") != null) return null;
+            return .{ .string = inner };
+        },
         .boolean_literal => {
             // ECMAScript: true=1, false=0 (Number 변환).
             return .{ .number = if (node.data.none == 1) 1 else 0 };
