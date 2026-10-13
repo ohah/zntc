@@ -7,6 +7,7 @@ const Module = @import("../module.zig").Module;
 const stmt_info_mod = @import("../stmt_info.zig");
 const StmtInfos = stmt_info_mod.ModuleStmtInfos;
 const module_effects = @import("module_effects.zig");
+const metadata = @import("../linker/metadata.zig");
 
 pub fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32) bool {
     if (stmt_idx >= infos.stmts.len) return false;
@@ -19,9 +20,10 @@ pub fn isImportDeclarationStmt(m: *const Module, infos: StmtInfos, stmt_idx: u32
 /// re-export 는 target 이 evaluation effect 를 갖거나 (side_effects/wrapped/dynamic-fallback),
 /// 해당 stmt 가 reachable 일 때만 보존 — `export *` 가 unrelated source 까지 fan out 하지 않도록.
 /// side_effect / require / worker / glob / require_context 는 항상 evaluation 의존이라 보존.
-/// static_import 만 entry 또는 live binding 이 있을 때만 보존 — dead body 안에서만 참조되는
-/// named import 가 source 모듈을 fan out 시키지 않도록. dynamic_import 는 별도
-/// dyn_import_targets 경로로 처리되므로 여기선 false.
+/// static_import 도 바인딩을 쓰지 않아도 import 하면 source 모듈이 평가되므로 보존한다
+/// (esbuild·rolldown 동일). 단 package.json `sideEffects` 로 순수 선언된 source 는 바인딩이
+/// 살아 있을 때만 — 쓰지 않는 import 가 그 모듈을 끌어오지 않는다(`sideEffects: false` 계약).
+/// dynamic_import 는 별도 dyn_import_targets 경로로 처리되므로 여기선 false.
 pub fn shouldPreserveImportRecordForEvaluation(
     self: anytype,
     m: *const Module,
@@ -40,7 +42,11 @@ pub fn shouldPreserveImportRecordForEvaluation(
     return switch (m.import_records[rec_idx].kind) {
         .dynamic_import => false,
         .require => try importRecordHasReachableStmt(self, live_mod_idx.?, rec_idx),
-        .static_import => self.entry_set.isSet(mod_idx) or importRecordHasLiveBinding(self, m, mod_idx, rec_idx),
+        .static_import => blk: {
+            const target = self.graph.getModule(m.import_records[rec_idx].resolved) orelse break :blk true;
+            if (!target.isUserDeclaredPure() and !importRecordIsTypeOnly(m, rec_idx)) break :blk true;
+            break :blk self.entry_set.isSet(mod_idx) or importRecordHasLiveBinding(self, m, mod_idx, rec_idx);
+        },
         else => true,
     };
 }
@@ -84,10 +90,25 @@ fn ensureImportRecordStmtIndices(self: anytype, mod_idx: u32, infos: StmtInfos) 
     return self.import_record_stmt_indices[mod_idx].?;
 }
 
+/// TypeScript import 의 바인딩이 모두 타입으로만 쓰였는지 — tsc 처럼 그 import 는 모듈을
+/// 평가하지 않는다. 파싱 단계 판정(`source_type_only`)이 꺼진 빌드(emitDecoratorMetadata 등)도
+/// `metadata.isImportElided` 가 reference 기준으로 판정한다.
+fn importRecordIsTypeOnly(m: *const Module, rec_idx: u32) bool {
+    if (!m.module_type.isTypeScript()) return false;
+    const sem = if (m.semantic) |*s| s else return false;
+    var any = false;
+    for (m.import_bindings) |ib| {
+        if (ib.import_record_index != rec_idx) continue;
+        if (!metadata.isImportElided(m, sem, ib)) return false;
+        any = true;
+    }
+    return any;
+}
+
 /// `isImportLiveInModule` 은 reachable_stmts 미초기화 시 보수적으로 true 를 반환하지만,
 /// 이 함수는 "stmt_info 는 빌드됐는데 reachable_stmts 가 비었다 = BFS 가 한 번도 방문 안
 /// 한 모듈" 이라 판단해 false 로 정밀화한다. shouldPreserveImportRecordForEvaluation 의
-/// static_import 케이스에서만 호출되며, fan-out 보수성을 의도적으로 줄인다.
+/// static_import 케이스(순수 선언된 source)에서만 호출된다.
 fn importRecordHasLiveBinding(self: anytype, m: *const Module, mod_idx: u32, rec_idx: u32) bool {
     if (mod_idx < self.module_stmt_infos.len and self.module_stmt_infos[mod_idx] != null) {
         if (mod_idx >= self.reachable_stmts.len or self.reachable_stmts[mod_idx] == null) return false;

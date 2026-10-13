@@ -305,20 +305,22 @@ test "TreeShaking: namespace import preamble dropped when target excluded from b
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
-        \\import { used } from './lib';
+        \\import { used } from 'lib';
         \\console.log(used());
     );
     // lib.js 가 namespace 로 cjslib 을 import 하지만, 소비자 (`heavy`) 는 entry 에서 안 쓴다.
-    try writeFile(tmp.dir, "lib.js",
+    // `sideEffects: false` 패키지라 쓰지 않는 import 가 cjslib 을 끌어오지 않는다 — 선언이
+    // 없으면 import 만으로도 cjslib 이 평가된다(esbuild 동일).
+    try writeFile(tmp.dir, "node_modules/lib/index.js",
         \\import * as cjslib from './cjslib.cjs';
         \\export function used() { return 'NS_TARGET_DROP_USED'; }
         \\export function heavy() { return cjslib.bar(); }
     );
-    try writeFile(tmp.dir, "cjslib.cjs",
+    try writeFile(tmp.dir, "node_modules/lib/cjslib.cjs",
         \\'use strict';
         \\exports.bar = function() { return 'NS_TARGET_DROP_HEAVY'; };
     );
-    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    try writeFile(tmp.dir, "node_modules/lib/package.json", "{\"name\": \"lib\", \"main\": \"index.js\", \"sideEffects\": false}");
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);

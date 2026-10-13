@@ -393,6 +393,8 @@ pub const TreeShaker = struct {
             var purity_scope = profile.begin(.shake_purity);
             defer purity_scope.end();
 
+            var auto_pure = try std.DynamicBitSet.initEmpty(self.allocator, mod_count);
+            defer auto_pure.deinit();
             for (0..mod_count) |i| {
                 const m = self.moduleAtMut(@intCast(i)) orelse continue;
                 if (!m.side_effects) continue;
@@ -403,9 +405,11 @@ pub const TreeShaker = struct {
                     const unresolved = if (m.semantic) |*s| &s.unresolved_references else null;
                     if (module_effects.isModulePure(&ast, unresolved)) {
                         m.side_effects = false;
+                        auto_pure.set(i);
                     }
                 }
             }
+            try self.restoreEffectsOfPureImporters(&auto_pure);
         }
 
         {
@@ -697,6 +701,48 @@ pub const TreeShaker = struct {
                     if (self.module_stmt_infos[i]) |infos| break :blk infos.symbol_to_stmt;
                     break :blk null;
                 } else null;
+            }
+        }
+    }
+
+    /// 자동으로 순수 판정된 모듈이라도, 정적으로 import 하는 모듈에 평가 효과가 있으면
+    /// 순수가 아니다 — import 하면 그 의존 모듈이 평가된다. 순수로 두면 상수 전파로 export
+    /// 사용이 사라졌을 때 모듈이 통째로 빠지면서 의존 모듈의 부수 효과까지 사라졌다
+    /// (`import { b } from './b'; export const m = b;`). rolldown 도 의존 모듈의 side effect 를
+    /// 모듈 판정에 포함한다. package.json `sideEffects` 로 정해진 모듈은 건드리지 않는다.
+    fn restoreEffectsOfPureImporters(self: *TreeShaker, auto_pure: *const std.DynamicBitSet) !void {
+        const mod_count = auto_pure.capacity();
+        if (auto_pure.count() == 0) return;
+
+        var importers = try self.allocator.alloc(std.ArrayListUnmanaged(u32), mod_count);
+        defer {
+            for (importers) |*list| list.deinit(self.allocator);
+            self.allocator.free(importers);
+        }
+        for (importers) |*list| list.* = .empty;
+        var queue: std.ArrayListUnmanaged(u32) = .empty;
+        defer queue.deinit(self.allocator);
+
+        for (0..mod_count) |i| {
+            const m = self.getModule(@intCast(i)) orelse continue;
+            if (module_effects.hasEvaluationEffect(m)) try queue.append(self.allocator, @intCast(i));
+            if (!auto_pure.isSet(i)) continue;
+            for (m.import_records) |rec| {
+                if (rec.resolved.isNone()) continue;
+                if (!rec.kind.isEagerEvalDependency() and rec.kind != .require) continue;
+                const target = @intFromEnum(rec.resolved);
+                if (target >= mod_count or target == i) continue;
+                try importers[target].append(self.allocator, @intCast(i));
+            }
+        }
+
+        var head: usize = 0;
+        while (head < queue.items.len) : (head += 1) {
+            for (importers[queue.items[head]].items) |importer| {
+                const m = self.moduleAtMut(importer) orelse continue;
+                if (m.side_effects) continue;
+                m.side_effects = true;
+                try queue.append(self.allocator, importer);
             }
         }
     }
