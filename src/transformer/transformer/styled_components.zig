@@ -1595,6 +1595,18 @@ fn resolveStyledInjectName(self: *Transformer) Error![]const u8 {
         try collectModuleLevelBindingsFallback(self, root_idx, &bindings);
     }
 
+    // In standalone semantic mode, keep the preferred spelling as a base and
+    // reserve only a collision-free staging name. The exact helper SymbolId
+    // receives its final spelling after all generated bindings are known.
+    if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution) {
+        const base_name = if (bindings.contains(DEFAULT_STYLED_BINDING)) "_styled" else DEFAULT_STYLED_BINDING;
+        const output_name = try es_helpers.resolveScopedSyntheticOutputName(self, base_name, self.programScope());
+        state.css_prop_inject_name = output_name.name;
+        state.css_prop_inject_name_resolved = true;
+        state.css_prop_needs_import = true;
+        return output_name.name;
+    }
+
     if (!bindings.contains(DEFAULT_STYLED_BINDING)) {
         state.css_prop_inject_name = DEFAULT_STYLED_BINDING;
         state.css_prop_needs_import = true;

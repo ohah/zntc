@@ -2734,7 +2734,9 @@ pub fn ensureStandaloneRuntimeHelperPreambleSymbol(self: *Transformer, name: []c
 /// JSX and plugin helper imports are AST imports even in standalone mode,
 /// where downlevel runtime helpers are emitted through an inline preamble.
 pub fn trackRuntimeHelperImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!?SymbolId {
-    return trackRuntimeHelperRefKind(self, node, local_name, true, false);
+    const defer_import_name = self.options.defer_runtime_helper_name_resolution and
+        es_helpers.canUseLateStandaloneOutputName(self, self.programScope());
+    return trackRuntimeHelperRefKind(self, node, local_name, true, defer_import_name);
 }
 
 /// Reserve a standalone JSX runtime import local for late output naming.
