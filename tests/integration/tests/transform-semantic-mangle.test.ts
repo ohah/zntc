@@ -1225,6 +1225,14 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
   });
 
   test('bundler retains unchanged direct-eval graphs and resyncs unsafe cases', async () => {
+    const escapeIdentifier = (name: string) =>
+      Array.from(
+        name,
+        (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+      ).join('');
+    const escapedLocalName = escapeIdentifier('localName');
+    const longLocalName = 'longLocalName'.repeat(7);
+    const escapedLongLocalName = escapeIdentifier(longLocalName);
     const fixture = await createFixture({
       'plain-eval.js': [
         'function readSecret() {',
@@ -1244,6 +1252,8 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         'const longSecretValue = 6;',
         "console.log(\\u0065val('longSecretValue'));",
       ].join('\n'),
+      'escaped-local.js': `const ${escapedLocalName} = 7; console.log(${escapedLocalName});`,
+      'escaped-long-local.js': `const ${escapedLongLocalName} = 8; console.log(${escapedLongLocalName});`,
       'escaped-global.js': ["\\u0063onsole.log('escaped global');"].join('\n'),
       'typed-eval.ts': [
         'function readTypedSecret(): number {',
@@ -1308,6 +1318,18 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const escapedRun = await runNode(escaped.output);
     expect(escapedRun.stderr).toBe('');
     expect(escapedRun.stdout).toBe('6');
+
+    // A parser-owned SymbolId is enough to retain an escaped local reference;
+    // the long case also proves the preflight does not truncate or reject its spelling.
+    const escapedLocal = await bundle('escaped-local.js');
+    const escapedLocalRun = await runNode(escapedLocal.output);
+    expect(escapedLocalRun.stderr).toBe('');
+    expect(escapedLocalRun.stdout).toBe('7');
+
+    const escapedLongLocal = await bundle('escaped-long-local.js');
+    const escapedLongLocalRun = await runNode(escapedLongLocal.output);
+    expect(escapedLongLocalRun.stderr).toBe('');
+    expect(escapedLongLocalRun.stdout).toBe('8');
 
     const escapedGlobal = await bundle('escaped-global.js', [], 'reanalyzed');
     const escapedGlobalRun = await runNode(escapedGlobal.output);

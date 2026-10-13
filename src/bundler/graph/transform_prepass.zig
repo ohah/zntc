@@ -4779,10 +4779,20 @@ fn canKeepPrepassSemanticGraph(
             .identifier_reference => {
                 const raw_name = ast.identifierNameText(node);
                 if (std.mem.indexOfScalar(u8, raw_name, '\\') != null) {
-                    // Escaped local references can leave source-name keyed
-                    // scope maps stale. Only an escaped eval reference is
-                    // admitted, and only when semantic analysis confirmed its
-                    // dynamic scope marker.
+                    // The exact source SymbolId proves the binding even when
+                    // the AST spelling is escaped. The exact scope audit accepts
+                    // the analyzer's decoded scope-map alias, so these references
+                    // can stay on the parser graph without reanalysis. Check this
+                    // before decoding: bound names have no fixed spelling limit.
+                    if (isBoundSourceIdentifierReference(
+                        ast,
+                        semantic,
+                        @enumFromInt(@as(u32, @intCast(raw_node_idx))),
+                    )) continue;
+                    // Unbound escaped references can leave source-name keyed
+                    // external-name reservations ambiguous. Keep them
+                    // on reanalysis, except for eval when semantic analysis
+                    // confirmed its dynamic-scope marker.
                     var decode_buffer: [64]u8 = undefined;
                     const decoded_name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse return false;
                     if (!std.mem.eql(u8, decoded_name, "eval") or !has_direct_eval) return false;
