@@ -1233,6 +1233,8 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     const escapedLocalName = escapeIdentifier('localName');
     const longLocalName = 'longLocalName'.repeat(7);
     const escapedLongLocalName = escapeIdentifier(longLocalName);
+    const longGlobalName = 'longGlobalName'.repeat(7);
+    const escapedLongGlobalName = escapeIdentifier(longGlobalName);
     const fixture = await createFixture({
       'plain-eval.js': [
         'function readSecret() {',
@@ -1255,6 +1257,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       'escaped-local.js': `const ${escapedLocalName} = 7; console.log(${escapedLocalName});`,
       'escaped-long-local.js': `const ${escapedLongLocalName} = 8; console.log(${escapedLongLocalName});`,
       'escaped-global.js': ["\\u0063onsole.log('escaped global');"].join('\n'),
+      'escaped-long-global.js': `globalThis.${longGlobalName} = 9; console.log(${escapedLongGlobalName});`,
       'typed-eval.ts': [
         'function readTypedSecret(): number {',
         '  const longSecretValue: number = 41;',
@@ -1331,10 +1334,15 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(escapedLongLocalRun.stderr).toBe('');
     expect(escapedLongLocalRun.stdout).toBe('8');
 
-    const escapedGlobal = await bundle('escaped-global.js', [], 'reanalyzed');
+    const escapedGlobal = await bundle('escaped-global.js');
     const escapedGlobalRun = await runNode(escapedGlobal.output);
     expect(escapedGlobalRun.stderr).toBe('');
     expect(escapedGlobalRun.stdout).toBe('escaped global');
+
+    const escapedLongGlobal = await bundle('escaped-long-global.js');
+    const escapedLongGlobalRun = await runNode(escapedLongGlobal.output);
+    expect(escapedLongGlobalRun.stderr).toBe('');
+    expect(escapedLongGlobalRun.stdout).toBe('9');
 
     const typed = await bundle('typed-eval.ts', [], 'reanalyzed');
     const typedRun = await runNode(typed.output);
