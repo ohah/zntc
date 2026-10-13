@@ -412,7 +412,35 @@ fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bo
 
     var generated_temps: usize = 0;
     var late_generated_temps: usize = 0;
+    var generated_parameter_temps: usize = 0;
+    var late_parameter_temps: usize = 0;
     for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, symbol_index| {
+        if (symbol.kind == .parameter and symbol.synthetic_name.len > 1 and symbol.synthetic_name[0] == '_') {
+            generated_parameter_temps += 1;
+            if (symbol.synthetic_kind == .standalone_temp_binding) {
+                late_parameter_temps += 1;
+                const raw_id: u32 = @intCast(symbol_index);
+                try std.testing.expectEqual(
+                    @as(?usize, symbol_index),
+                    edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name),
+                );
+                var bindings: usize = 0;
+                var references: usize = 0;
+                for (transformer.ast.nodes.items, 0..) |node, raw_node| {
+                    if (node.tag != .binding_identifier or raw_node >= edited.symbol_ids.len or edited.symbol_ids[raw_node] != raw_id) continue;
+                    bindings += 1;
+                }
+                for (edited.references) |reference| {
+                    if (@intFromEnum(reference.symbol_id) != raw_id or reference.flags.declare) continue;
+                    try std.testing.expect(!reference.node_index.isNone());
+                    try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+                    try std.testing.expectEqual(symbol.scope_id, reference.scope_id);
+                    references += 1;
+                }
+                try std.testing.expectEqual(@as(usize, 1), bindings);
+                try std.testing.expect(references > 0);
+            }
+        }
         if (symbol.kind != .variable_var or symbol.synthetic_name.len == 0 or symbol.synthetic_name[0] != '_') continue;
         generated_temps += 1;
         if (symbol.synthetic_kind != .standalone_temp_binding) continue;
@@ -434,6 +462,8 @@ fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bo
         try std.testing.expectEqual(@as(usize, 1), bindings);
         try std.testing.expect(references > 0);
     }
+    try std.testing.expectEqual(@as(usize, 1), generated_parameter_temps);
+    try std.testing.expectEqual(@as(usize, @intFromBool(expected_late)), late_parameter_temps);
     try std.testing.expect(generated_temps > 0);
     try std.testing.expectEqual(expected_late, late_generated_temps > 0);
 }

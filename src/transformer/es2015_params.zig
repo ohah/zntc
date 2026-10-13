@@ -51,6 +51,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             else
                 try self.declareSyntheticInScope(binding, declaration_span, kind, scope);
             const symbol_id = id orelse std.debug.panic("destructuring parameter temp has no creation SymbolId", .{});
+            if (kind == .parameter) es_helpers.markStandaloneLateSyntheticTemp(self, symbol_id, scope);
             const raw_id = @intFromEnum(symbol_id);
             const binding_id = self.getSymbolIdAt(binding) orelse
                 std.debug.panic("destructuring parameter temp binding missed its creation SymbolId", .{});
