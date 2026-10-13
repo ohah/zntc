@@ -1114,6 +1114,9 @@ pub const Ast = struct {
     /// Flow `enum X { ... }` 이 있는가. graph 단계에서 `flow-enums-runtime` synthetic
     /// require 주입 여부를 O(1) 로 결정 (linear AST walk 회피).
     has_flow_enum_declaration: bool = false,
+    /// An object literal declares a getter (`{ get p() {} }`). Reading a property
+    /// of such an object can run code, so tree shaking keeps those reads (#5665).
+    has_object_getter: bool = false,
     /// TypeScript 소스(`.ts`/`.tsx`/`.mts`/`.cts` 또는 loader=ts/tsx). transformer 의 import
     /// elision 이 타입으로만 쓴 default/namespace import 를 지우는 범위(#5595) — JS 는 import
     /// 가 모듈을 평가하므로 그대로 둔다.
@@ -1274,6 +1277,7 @@ pub const Ast = struct {
             .has_ts_import_equals = source_ast.has_ts_import_equals,
             .has_ts_export_equals = source_ast.has_ts_export_equals,
             .has_flow_enum_declaration = source_ast.has_flow_enum_declaration,
+            .has_object_getter = source_ast.has_object_getter,
             // #5608: transformer import elision 범위(TS 만). 빠뜨리면 번들 경로의
             // transformer 가 TS 모듈을 JS 로 보고 타입 전용 named import 를 남긴다.
             .is_typescript = source_ast.is_typescript,

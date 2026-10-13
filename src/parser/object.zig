@@ -71,6 +71,7 @@ pub fn parseObjectProperty(self: *Parser) ParseError2!NodeIndex {
             peek != .l_angle)
         {
             const method_flags: u16 = if (self.current() == .kw_get) 0x02 else 0x04;
+            if (method_flags == 0x02) self.ast.has_object_getter = true;
             try self.advance(); // skip get/set
             const key = try self.parsePropertyKey();
             try checkObjectPropertyKeyNotPrivate(self, key);
