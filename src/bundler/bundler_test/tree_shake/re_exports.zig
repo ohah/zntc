@@ -83,20 +83,20 @@ test "TreeShaking: export star named import drops unrelated source declared side
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts",
-        \\import { scaleLinearLike } from './d3';
+        \\import { scaleLinearLike } from 'd3';
         \\console.log(scaleLinearLike());
     );
-    try writeFile(tmp.dir, "d3.ts",
+    try writeFile(tmp.dir, "node_modules/d3/d3.js",
         \\export * from './scale';
         \\export * from './time-format';
     );
-    try writeFile(tmp.dir, "scale.ts",
+    try writeFile(tmp.dir, "node_modules/d3/scale.js",
         \\export function scaleLinearLike() { return "LIVE_SCALE_LINEAR_MARKER"; }
     );
-    try writeFile(tmp.dir, "time-format.ts",
+    try writeFile(tmp.dir, "node_modules/d3/time-format.js",
         \\export { default as timeFormatDefaultLocale, timeFormat } from './defaultLocale';
     );
-    try writeFile(tmp.dir, "defaultLocale.ts",
+    try writeFile(tmp.dir, "node_modules/d3/defaultLocale.js",
         \\import { formatLocale } from './locale';
         \\export var timeFormat;
         \\defaultLocale("UNUSED_TIME_FORMAT_DEFAULT_LOCALE_MARKER");
@@ -105,16 +105,16 @@ test "TreeShaking: export star named import drops unrelated source declared side
         \\  return timeFormat;
         \\}
     );
-    try writeFile(tmp.dir, "locale.ts",
+    try writeFile(tmp.dir, "node_modules/d3/locale.js",
         \\import { timeYear } from './time';
         \\export function formatLocale(definition) {
         \\  return definition + timeYear();
         \\}
     );
-    try writeFile(tmp.dir, "time.ts",
+    try writeFile(tmp.dir, "node_modules/d3/time.js",
         \\export function timeYear() { return "UNUSED_D3_TIME_YEAR_MARKER"; }
     );
-    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    try writeFile(tmp.dir, "node_modules/d3/package.json", "{\"name\": \"d3\", \"main\": \"d3.js\", \"sideEffects\": false}");
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
