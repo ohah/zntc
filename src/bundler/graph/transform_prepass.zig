@@ -4674,7 +4674,7 @@ fn canKeepPrepassSemanticGraph(
     // transformer records those helper identities in the edited graph. Unlike
     // syntax minification, this option does not remove or replace AST nodes.
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
-        options.drop_console or options.drop_debugger or
+        options.drop_console or
         options.drop_labels.len != 0 or define_mod.astUsesDefine(ast, options.define) or options.module_specifier_map.len != 0 or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable or
@@ -4688,6 +4688,7 @@ fn canKeepPrepassSemanticGraph(
 
     const safe_styled_components = options.styled_components;
     var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or safe_styled_components or
+        options.drop_debugger or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {

@@ -1525,6 +1525,84 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('dropping debugger retains the exact graph while console dropping reanalyzes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-drop-debugger-retained-graph-'));
+    const input = join(dir, 'entry.ts');
+    const retainedOutput = join(dir, 'retained.cjs');
+    const reanalyzedOutput = join(dir, 'reanalyzed.cjs');
+    writeFileSync(
+      input,
+      [
+        'const base = 40;',
+        'function addTwo(value: number) {',
+        '  const result = value + 2;',
+        '  return result;',
+        '}',
+        'debugger;',
+        'console.log(addTwo(base));',
+      ].join('\n'),
+    );
+    const bundle = (output: string, extraFlags: string[] = []) =>
+      spawnSync(
+        ZNTC_BIN,
+        ['--bundle', input, '--platform=node', '--format=cjs', ...extraFlags, '-o', output],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    try {
+      const retained = bundle(retainedOutput, ['--drop=debugger']);
+      expect(retained.status, retained.stderr).toBe(0);
+      const retainedLines = (retained.stderr ?? '').split(/\r?\n/);
+      const retainedScopeAudits = retainedLines.filter((line) =>
+        line.startsWith('zntc: symbol-source-scope-owner '),
+      );
+      expect(retainedScopeAudits, retained.stderr).toHaveLength(1);
+      expect(scopeOwnerAuditProblems(retainedScopeAudits[0]), retained.stderr).toEqual([]);
+      const retainedReports = retainedLines.filter((line) =>
+        line.startsWith('zntc: symbol-identity-prepass '),
+      );
+      expect(retainedReports, retained.stderr).toHaveLength(1);
+      expect(exactSchemaProblems(retainedReports[0]), retained.stderr).toEqual([]);
+      const retainedMode = retainedLines.find((line) =>
+        line.startsWith('zntc: symbol-identity-prepass-mode '),
+      );
+      expect(retainedMode, retained.stderr).toContain('semantic_graph=retained');
+      const retainedCode = readFileSync(retainedOutput, 'utf8');
+      expect(retainedCode).not.toContain('debugger;');
+      const retainedRun = spawnSync('node', [retainedOutput], { encoding: 'utf8' });
+      expect(retainedRun.status, retainedRun.stderr).toBe(0);
+      expect(retainedRun.stdout).toBe('42\n');
+
+      const reanalyzed = bundle(reanalyzedOutput, ['--drop=debugger', '--drop=console']);
+      expect(reanalyzed.status, reanalyzed.stderr).toBe(0);
+      const reanalyzedLines = (reanalyzed.stderr ?? '').split(/\r?\n/);
+      const reanalyzedScopeAudits = reanalyzedLines.filter((line) =>
+        line.startsWith('zntc: symbol-source-scope-owner '),
+      );
+      expect(reanalyzedScopeAudits, reanalyzed.stderr).toHaveLength(1);
+      expect(scopeOwnerAuditProblems(reanalyzedScopeAudits[0]), reanalyzed.stderr).toEqual([]);
+      const reanalyzedReports = reanalyzedLines.filter((line) =>
+        line.startsWith('zntc: symbol-identity-prepass '),
+      );
+      expect(reanalyzedReports, reanalyzed.stderr).toHaveLength(1);
+      expect(exactSchemaProblems(reanalyzedReports[0]), reanalyzed.stderr).toEqual([]);
+      const reanalyzedMode = reanalyzedLines.find((line) =>
+        line.startsWith('zntc: symbol-identity-prepass-mode '),
+      );
+      expect(reanalyzedMode, reanalyzed.stderr).toContain('semantic_graph=reanalyzed');
+      const reanalyzedCode = readFileSync(reanalyzedOutput, 'utf8');
+      expect(reanalyzedCode).not.toContain('debugger;');
+      const reanalyzedRun = spawnSync('node', [reanalyzedOutput], { encoding: 'utf8' });
+      expect(reanalyzedRun.status, reanalyzedRun.stderr).toBe(0);
+      expect(reanalyzedRun.stdout).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   for (const minifyIdentifiers of [false, true]) {
     test(`Stage 3 decorator-only lowering retains its exact prepass graph${minifyIdentifiers ? ' with identifier minification' : ''}`, () => {
       const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-graph-'));
