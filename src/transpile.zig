@@ -4507,6 +4507,46 @@ test "#4819 standalone temp final name is selected for its exact SymbolId around
     try std.testing.expect(names.get(0) == null);
 }
 
+test "#4819 standalone generated import local final name is selected by SymbolId" {
+    const Symbol = @import("semantic/symbol.zig").Symbol;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(allocator, &ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+
+    const user_name = try transformer.ast.addString("_emotionCss");
+    const generated_staging_name = try transformer.ast.addString("_emotionCss2");
+    var symbols = [_]Symbol{
+        .{
+            .name = user_name,
+            .scope_id = .none,
+            .kind = .variable_let,
+            .declaration_span = user_name,
+        },
+        .{
+            .name = generated_staging_name,
+            .scope_id = .none,
+            .kind = .import_binding,
+            .declaration_span = generated_staging_name,
+            .synthetic_kind = .runtime_helper_import,
+            .synthetic_name = "_emotionCss2",
+        },
+    };
+    transformer.symbols = &symbols;
+    try transformer.late_output_name_bases.put(allocator, "_emotionCss2", "_emotionCss");
+
+    var names = try buildStandaloneLateOutputNameOverrides(allocator, &transformer);
+    defer names.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), names.count());
+    try std.testing.expectEqualStrings("_emotionCss2", names.get(1).?);
+    try std.testing.expect(names.get(0) == null);
+}
+
 test "#4819 standalone helper preamble resolves its emitted name through SymbolId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
