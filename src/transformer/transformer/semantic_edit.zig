@@ -2209,6 +2209,20 @@ pub fn outputOwnedScope(self: *Transformer, owner: NodeIndex) ?ScopeId {
 
 /// Track all copies of a lexical boundary. A source node can be revisited on
 /// separate branches, so the live owner is selected from the final AST later.
+/// A non-simple parameter list owns its own scope (#5452). When the output
+/// keeps it non-simple (defaults are not lowered), the copied list must keep
+/// that owner: default values resolve in the parameter environment, and
+/// without the owner they inherited the body scope and bound to a same-named
+/// body `var` (#5652). A list that lowering made simple shares the body scope.
+pub fn keepRetainedParameterScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled or old.isNone() or new.isNone() or old == new) return;
+    if (self.ast.getNode(old).tag != .formal_parameters or self.ast.getNode(new).tag != .formal_parameters) return;
+    const Params = @import("../es2015_params.zig").ES2015Params(Transformer);
+    const list = self.ast.getNode(new).data.list;
+    if (list.len == 0 or !Params.hasDefaultOrRest(self, list)) return;
+    try self.remapCopiedScopeOwner(old, new);
+}
+
 pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex) Transformer.Error!void {
     if (old.isNone() or new.isNone() or old == new) return;
     const old_tag = self.ast.getNode(old).tag;
