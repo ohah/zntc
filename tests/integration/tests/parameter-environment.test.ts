@@ -374,6 +374,40 @@ const cases = [
       console.log(JSON.stringify(f(7)));`,
     expected: '[7,"inner",11]\n',
   },
+  // #5648: block lowering hoists a nested block binding to the function
+  // body, where the lowered parameter default now reads the same name.
+  {
+    name: 'nested block let cannot capture an outer read in a parameter default',
+    targets: ['es5'],
+    source: `var q = 'outer';
+      function h(a = q) { { let q = 'shadow'; return [a, q]; } }
+      console.log(JSON.stringify(h()));`,
+    expected: '["outer","shadow"]\n',
+  },
+  {
+    name: 'if-block const in a method cannot capture a parameter default read',
+    targets: ['es5'],
+    source: `var q = 'outer';
+      class C { m(a = q) { if (true) { const q = 's'; return [a, q]; } } }
+      console.log(JSON.stringify(new C().m()));`,
+    expected: '["outer","s"]\n',
+  },
+  {
+    name: 'for-of let cannot capture a destructuring default read',
+    targets: ['es5'],
+    source: `var q = 'outer';
+      function h({ a = q } = {}) { for (let q of ['loop']) return [a, q]; }
+      console.log(JSON.stringify(h()));`,
+    expected: '["outer","loop"]\n',
+  },
+  {
+    name: 'block class cannot capture a parameter default read beside a nested function',
+    targets: ['es5'],
+    source: `var K = 'outer';
+      function h(a = K) { function inner() { { let K = 'in'; return K; } } { class K {} return [a, typeof K, inner()]; } }
+      console.log(JSON.stringify(h()));`,
+    expected: '["outer","function","in"]\n',
+  },
   ...['(function () {}) as any', '(function () {}) satisfies Function', '(function () {})!'].map(
     (expression) => ({
       name: `transparent type wrapper retains the inferred name: ${expression}`,

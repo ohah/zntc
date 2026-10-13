@@ -104,6 +104,24 @@ fn functionParamsNode(self: anytype, function_raw: u32) ?u32 {
     return raw;
 }
 
+/// Function body scope → its separate parameter scope, for functions whose
+/// parameter list owns a scope of its own (a non-simple parameter list).
+/// ES5 lowering moves those parameter expressions into the body, so a block
+/// binding hoisted to the body sees what the parameter expressions read (#5648).
+pub fn parameterScopesByBody(self: anytype) std.mem.Allocator.Error!std.AutoHashMapUnmanaged(u32, u32) {
+    var result: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    errdefer result.deinit(self.allocator);
+    const scope_owners = scopeOwnersOf(self);
+    for (0..self.ast.nodes.items.len) |raw| {
+        const params_raw = functionParamsNode(self, @intCast(raw)) orelse continue;
+        const body_scope = scope_owners.get(@intCast(raw)) orelse continue;
+        const parameter_scope = scope_owners.get(params_raw) orelse continue;
+        if (body_scope == parameter_scope) continue;
+        try result.put(self.allocator, body_scope, parameter_scope);
+    }
+    return result;
+}
+
 /// The analyzer intentionally unifies a simple parameter with a body `var`.
 /// For a non-simple parameter list that is lowered to ES5, however, parameter
 /// initializers and the body have separate environments. Split only identities
