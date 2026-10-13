@@ -12619,6 +12619,56 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('Emotion css prop avoids escaped lexical shadows of its import', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-escaped-shadow-'));
+    const emotionDir = join(dir, 'node_modules', '@emotion', 'react');
+    mkdirSync(emotionDir, { recursive: true });
+    writeFileSync(join(dir, 'zntc.config.json'), JSON.stringify({ compiler: { emotion: true } }));
+    writeFileSync(
+      join(emotionDir, 'package.json'),
+      JSON.stringify({ name: '@emotion/react', version: '0.0.0-test', main: 'index.js' }),
+    );
+    writeFileSync(
+      join(emotionDir, 'index.js'),
+      "exports.css = function(value) { return 'EMOTION:' + value.color; };",
+    );
+
+    try {
+      const source = [
+        "import { css } from '@emotion/react';",
+        'function h(_tag, props) { return props.css; }',
+        'function render(c\\u0073s) {',
+        "  return <div css={{ color: 'red' }} />;",
+        '}',
+        "console.log(render(() => 'SHADOWED'));",
+        '',
+      ].join('\n');
+      writeFileSync(join(dir, 'index.tsx'), source);
+      const output = join(dir, 'out.js');
+      const proc = spawnSync(
+        'bun',
+        [
+          ZNTC_JS_CLI,
+          '--bundle',
+          'index.tsx',
+          '--target=esnext',
+          '--jsx=classic',
+          '--jsx-factory=h',
+          '-o',
+          output,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(proc.status, proc.stderr).toBe(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('EMOTION:red\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('bundler Emotion keeps direct eval on semantic reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-eval-reanalysis-'));
     const output = join(dir, 'out.cjs');
