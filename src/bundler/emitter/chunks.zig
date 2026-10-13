@@ -1484,6 +1484,24 @@ pub fn emitChunks(
         else
             null;
 
+        // CommonJS modules this chunk's hoisted modules import run at their
+        // import position (#5666).
+        var early_cjs_inits: std.ArrayList(parent.EarlyCjsInit) = .empty;
+        defer early_cjs_inits.deinit(allocator);
+        {
+            var in_chunk = try std.DynamicBitSet.initEmpty(allocator, module_count);
+            defer in_chunk.deinit();
+            for (sorted_mods) |mod_idx| {
+                const mi = @intFromEnum(mod_idx);
+                if (mi < module_count) in_chunk.set(mi);
+            }
+            for (sorted_mods) |mod_idx| {
+                const m = graph.getModule(mod_idx) orelse continue;
+                try parent.collectEarlyCjsInits(allocator, graph, linker, m, &in_chunk, &early_cjs_inits);
+            }
+            parent.sortEarlyCjsInits(early_cjs_inits.items);
+        }
+
         for (sorted_mods, 0..) |mod_idx, sorted_pos| {
             const mi = @intFromEnum(mod_idx);
             if (mi >= module_count) continue;
@@ -1540,6 +1558,12 @@ pub fn emitChunks(
                 try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
                 if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
                 rbm_calls_emitted = true;
+            }
+
+            if (early_cjs_inits.items.len > 0) {
+                const before_len = chunk_output.items.len;
+                try parent.appendEarlyCjsInitsBefore(&chunk_output, allocator, early_cjs_inits.items, m, linker, options.minify_whitespace);
+                if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
             }
 
             if (!options.minify_whitespace) {
