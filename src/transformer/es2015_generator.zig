@@ -535,15 +535,22 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             try ops.append(self.allocator, .{ .code = .yield_op, .arg = .{ .node = new_yield_value } });
                             next_label.* += 1;
                             try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
-                            const new_left = try self.visitNode(expr.data.binary.left);
-                            const sent_call = try buildSentCall(self, stmt.span);
-                            const new_left_node = self.ast.getNode(new_left);
-                            const is_destructuring = new_left_node.tag == .object_pattern or new_left_node.tag == .array_pattern;
-                            // Destructuring 은 spec 상 compound op 불가 (`{a} += x` invalid) → 전용 helper (flags=0 + paren wrap).
-                            const assign_stmt = if (is_destructuring)
-                                try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span)
-                            else
-                                try es_helpers.makeAssignStmt(self, new_left, sent_call, stmt.span, expr.data.binary.flags);
+                            // `[this.#y, o.b] = yield v` lowers like any assignment (#5728).
+                            const assign_stmt = if (patternNeedsLowering(self, expr.data.binary.left)) pattern: {
+                                const sent = try buildSentCall(self, stmt.span);
+                                const lowered = try es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, expr, sent);
+                                break :pattern try es_helpers.makeExprStmt(self, lowered, stmt.span);
+                            } else plain: {
+                                const new_left = try self.visitNode(expr.data.binary.left);
+                                const sent_call = try buildSentCall(self, stmt.span);
+                                const new_left_node = self.ast.getNode(new_left);
+                                const is_destructuring = new_left_node.tag == .object_pattern or new_left_node.tag == .array_pattern;
+                                // Destructuring 은 spec 상 compound op 불가 (`{a} += x` invalid) → 전용 helper (flags=0 + paren wrap).
+                                break :plain if (is_destructuring)
+                                    try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span)
+                                else
+                                    try es_helpers.makeAssignStmt(self, new_left, sent_call, stmt.span, expr.data.binary.flags);
+                            };
                             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                         } else if (es2015_scan.containsYield(self, expr_idx)) {
                             // x = [yield 5, yield 6] — 중첩 yield가 있는 assignment.
@@ -2058,6 +2065,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// expression 내부의 yield/await를 별도 yield operation으로 추출하고
         /// 해당 위치를 _state.sent()로 치환한 expression을 반환.
         /// 조건식(if, while, for test) 등에서 yield/await가 중첩된 경우 사용.
+        /// An assignment pattern (with no `yield` of its own) the general
+        /// assignment path would lower.
+        fn patternNeedsLowering(self: *Transformer, left_idx: NodeIndex) bool {
+            return self.needsDestructuringAssignmentLowering(left_idx) and !es2015_scan.containsYield(self, left_idx);
+        }
+
         fn visitExprWithYieldExtraction(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
             if (expr_idx.isNone()) return .none;
             const node = self.ast.getNode(expr_idx);
@@ -2210,6 +2223,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // assignment expression: left = right
             if (node.tag == .assignment_expression) {
+                // `[this.#y, o.b] = [yield 1, 2]`: the pattern lowers like any other
+                // assignment, with the right side whose yields became temps (#5728).
+                if (patternNeedsLowering(self, node.data.binary.left)) {
+                    const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
+                    return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, node, new_right);
+                }
                 const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
                 const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
                 return self.ast.addNode(.{

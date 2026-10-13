@@ -390,26 +390,8 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             {
                 const left_idx = node.data.binary.left;
                 if (!left_idx.isNone()) {
-                    const left_node = self.ast.getNode(left_idx);
-                    if (left_node.tag == .object_assignment_target or left_node.tag == .array_assignment_target) {
-                        const has_private = self.hasActivePrivateFieldLowering() and
-                            es2015_class.ES2015Class(Transformer).destructuringTargetHasPrivateField(self, left_idx);
-                        // #4251(+#4261): object rest (`({a, ...r} = o)`, ES2018) 는
-                        // destructuring 지원 타겟(es2017)에서도 lowering 필요 — 게이트가
-                        // destructuring(ES2015)만 보면 native 잔존(es2017 엔진 SyntaxError).
-                        // object/array_assignment_target 트리에 object rest 가 중첩
-                        // (`([b, {a,...r}] = o)`)되어도 검출(top-level rest 만 보면 누락).
-                        const has_object_rest = self.options.unsupported.object_spread and
-                            es2015_destructuring.ES2015Destructuring(Transformer).destructuringTargetHasObjectRest(self, left_idx);
-                        // #4244: destructuring 이 native(es2017+)라도 super lowering 이
-                        // 활성(extracted private/static method 등)이면 super member
-                        // target 이 READ-lowering 돼 `[__superGet(...)]=v` Invalid LHS.
-                        // super target 실재 시 lowering 강제(trySuperAssignTarget 경로).
-                        const has_super = self.needsSuperLowering() and
-                            es2015_class.ES2015Class(Transformer).destructuringTargetHasSuper(self, left_idx);
-                        if (self.options.unsupported.destructuring or has_private or has_object_rest or has_super) {
-                            return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
-                        }
+                    if (needsDestructuringAssignmentLowering(self, left_idx)) {
+                        return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
                     }
                 }
             }
@@ -1337,4 +1319,29 @@ fn visitBindingProperty(self: *Transformer, idx: NodeIndex, node: ast_mod.Node) 
         .span = node.span,
         .data = .{ .binary = .{ .left = new_key, .right = new_value, .flags = node.data.binary.flags } },
     });
+}
+
+/// Whether `left = …` must lower its assignment pattern here rather than stay
+/// native: the target lacks destructuring, or the pattern holds a lowered
+/// private member, an object rest, or a lowered `super` member.
+pub fn needsDestructuringAssignmentLowering(self: *Transformer, left_idx: NodeIndex) bool {
+    if (left_idx.isNone()) return false;
+    const left_node = self.ast.getNode(left_idx);
+    if (left_node.tag != .object_assignment_target and left_node.tag != .array_assignment_target) return false;
+    const has_private = self.hasActivePrivateFieldLowering() and
+        es2015_class.ES2015Class(Transformer).destructuringTargetHasPrivateField(self, left_idx);
+    // #4251(+#4261): object rest (`({a, ...r} = o)`, ES2018) 는
+    // destructuring 지원 타겟(es2017)에서도 lowering 필요 — 게이트가
+    // destructuring(ES2015)만 보면 native 잔존(es2017 엔진 SyntaxError).
+    // object/array_assignment_target 트리에 object rest 가 중첩
+    // (`([b, {a,...r}] = o)`)되어도 검출(top-level rest 만 보면 누락).
+    const has_object_rest = self.options.unsupported.object_spread and
+        es2015_destructuring.ES2015Destructuring(Transformer).destructuringTargetHasObjectRest(self, left_idx);
+    // #4244: destructuring 이 native(es2017+)라도 super lowering 이
+    // 활성(extracted private/static method 등)이면 super member
+    // target 이 READ-lowering 돼 `[__superGet(...)]=v` Invalid LHS.
+    // super target 실재 시 lowering 강제(trySuperAssignTarget 경로).
+    const has_super = self.needsSuperLowering() and
+        es2015_class.ES2015Class(Transformer).destructuringTargetHasSuper(self, left_idx);
+    return self.options.unsupported.destructuring or has_private or has_object_rest or has_super;
 }
