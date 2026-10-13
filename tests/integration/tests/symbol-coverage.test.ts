@@ -330,6 +330,15 @@ function postMinifySchemaProblems(report: string): string[] {
       problems.push('clean=' + values.get(field) + ', expected 1');
     }
   }
+  const checkedBindings = Number(values.get('bindings'));
+  const checkedReferences = Number(values.get('references'));
+  if (
+    Number.isFinite(checkedBindings) &&
+    Number.isFinite(checkedReferences) &&
+    checkedBindings + checkedReferences === 0
+  ) {
+    problems.push('post-minify audit checked no binding or reference nodes');
+  }
   return problems;
 }
 
@@ -1378,6 +1387,15 @@ describe('symbol identity coverage gate (#4819)', () => {
     );
     expect(postMinifySchemaProblems(report.replace(' clean=1', ' clean=10'))).toContain(
       'clean=10, expected 1',
+    );
+    const emptyObservationReport = report
+      .replace('bindings=1', 'bindings=0')
+      .replace('references=1', 'references=0');
+    expect(postMinifySchemaProblems(emptyObservationReport)).toContain(
+      'post-minify audit checked no binding or reference nodes',
+    );
+    expect(postMinifyAuditProblems(emptyObservationReport)).toContain(
+      'post-minify audit checked no binding or reference nodes',
     );
     expect(postMinifySchemaProblems(report.replace(' helpers=1', ' helpers=bad'))).toContain(
       'malformed post-minify report value helpers=bad',
