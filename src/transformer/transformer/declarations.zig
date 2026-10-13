@@ -361,6 +361,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     const none = @intFromEnum(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
+    try self.keepRetainedParameterScopeOwner(params_idx_old, new_params_node);
     const result = try self.addExtraNode(node.tag, node.span, &.{
         @intFromEnum(new_name), @intFromEnum(new_params_node),
         @intFromEnum(new_body), self.readU32(e, 3),

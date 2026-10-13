@@ -39,11 +39,13 @@ pub fn visitListNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
     if (new_list.start == node.data.list.start and new_list.len == node.data.list.len) {
         return idx;
     }
-    return self.ast.addNode(.{
+    const copied = try self.ast.addNode(.{
         .tag = node.tag,
         .span = node.span,
         .data = .{ .list = new_list },
     });
+    if (node.tag == .formal_parameters) try self.keepRetainedParameterScopeOwner(idx, copied);
+    return copied;
 }
 
 /// es5 블록 방문. 블록 안 let/const 의 새 이름은 심볼 표(`block_rename_map`)로 이미 정해져
