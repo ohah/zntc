@@ -89,19 +89,25 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
-    name: 'preserves lexical new.target when the body moves into a generator',
+    name: 'retains lexical new.target through nested async arrows and collisions',
     source: `
-      function read() {
+      function read(_newTarget) {
+        const outer = _newTarget;
         return (async () => {
+          const _newTarget = 99;
           await Promise.resolve();
-          return new.target === read;
+          return (async () => {
+            await Promise.resolve();
+            return [new.target === read, _newTarget, outer].join(':');
+          })();
         })();
       }
-      new read().then(console.log);
+      new read(7).then(console.log);
     `,
-    expected: 'true\n',
+    expected: 'true:99:7\n',
     expectsSyntheticBinding: true,
-    expectsRetainedGraph: false,
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
     name: 'retains lexical this capture identity through _this name collisions',
