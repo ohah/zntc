@@ -912,18 +912,15 @@ pub fn ES2022(comptime Transformer: type) type {
             const args_start = self.readU32(ce, 1);
             const args_len = self.readU32(ce, 2);
 
-            const new_obj = try self.visitNode(obj_idx);
-            const receiver_temp = if (mapping.class_name != null) try es_helpers.captureToTrackedTemp(self, new_obj, node.span) else null;
-            const get_receiver = if (receiver_temp) |temp| try es_helpers.makeTrackedTempRef(self, temp.span, node.span, .{ .read = true }) else new_obj;
-            const get_call = try buildMethodGetCall(self, get_receiver, mapping, node.span);
+            const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), node.span);
+            const get_call = try buildMethodGetCall(self, try receiver.use(self, node.span), mapping, node.span);
 
             const call_prop = try es_helpers.makePropertyName(self, "call");
             const callee_member = try es_helpers.makeStaticMember(self, get_call, call_prop, node.span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
-            const call_receiver = if (receiver_temp) |temp| try es_helpers.makeTrackedTempRef(self, temp.span, node.span, .{ .read = true }) else new_obj;
-            try self.scratch.append(self.allocator, call_receiver);
+            try self.scratch.append(self.allocator, try receiver.use(self, node.span));
 
             // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
             var i_loop: u32 = 0;
@@ -936,11 +933,7 @@ pub fn ES2022(comptime Transformer: type) type {
             }
 
             const call = try es_helpers.makeCallExpr(self, callee_member, self.scratch.items[scratch_top..], node.span);
-            if (receiver_temp) |temp| {
-                const seq_list = try self.ast.addNodeList(&.{ temp.paren_assign, call });
-                return self.ast.addNode(.{ .tag = .sequence_expression, .span = node.span, .data = .{ .list = seq_list } });
-            }
-            return call;
+            return receiver.wrap(self, call, node.span);
         }
 
         /// private method/getter 참조 변환:
@@ -965,17 +958,18 @@ pub fn ES2022(comptime Transformer: type) type {
             if (mapping.kind == .setter and mapping.class_name == null) return null;
 
             const new_obj = try self.visitNode(obj_idx);
-            const get_call = try buildMethodGetCall(self, new_obj, mapping, node.span);
-
             // The static descriptor helper invokes the getter itself (and rejects a
             // setter-only accessor). An instance getter still needs its .call(obj).
-            if (mapping.class_name != null) return get_call;
+            if (mapping.class_name != null) return buildMethodGetCall(self, new_obj, mapping, node.span);
 
+            const receiver = try es_helpers.OnceReceiver.init(self, new_obj, node.span);
+            const get_call = try buildMethodGetCall(self, try receiver.use(self, node.span), mapping, node.span);
             // getter → `.call(this)` 즉시 호출 (값 반환). 메서드 → `.bind(this)` 바운드 참조.
             const access_prop_name: []const u8 = if (mapping.kind == .getter) "call" else "bind";
             const access_prop = try es_helpers.makePropertyName(self, access_prop_name);
             const callee = try es_helpers.makeStaticMember(self, get_call, access_prop, node.span);
-            return es_helpers.makeCallExpr(self, callee, &.{new_obj}, node.span);
+            const access = try es_helpers.makeCallExpr(self, callee, &.{try receiver.use(self, node.span)}, node.span);
+            return receiver.wrap(self, access, node.span);
         }
 
         /// __classPrivateMethodGet(obj, _set, _fn) 호출 노드 생성.

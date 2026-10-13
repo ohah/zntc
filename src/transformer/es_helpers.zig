@@ -2017,6 +2017,34 @@ pub fn captureToTrackedTemp(self: anytype, value: NodeIndex, span: Span) !TempCa
     return captured;
 }
 
+/// A receiver a lowering reads more than once (`__classPrivateMethodGet(o, …)
+/// .call(o)`): `this` is repeated, anything else runs once into a temp
+/// (`(_a = f(), …_a…)`), so it is neither re-evaluated nor one AST node with
+/// two parents (#5726).
+pub const OnceReceiver = struct {
+    temp: ?TempCapture,
+
+    pub fn init(self: anytype, receiver: NodeIndex, span: Span) !OnceReceiver {
+        if (self.ast.getNode(receiver).tag == .this_expression) return .{ .temp = null };
+        return .{ .temp = try captureToTrackedTemp(self, receiver, span) };
+    }
+
+    pub fn use(receiver: OnceReceiver, self: anytype, span: Span) !NodeIndex {
+        const temp = receiver.temp orelse return makeThisExpr(self, span);
+        return makeTrackedTempRef(self, temp.span, span, .{ .read = true });
+    }
+
+    /// `(_a = receiver, expr)`: the capture runs before every use.
+    pub fn wrap(receiver: OnceReceiver, self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
+        const temp = receiver.temp orelse return expr;
+        return self.ast.addNode(.{
+            .tag = .sequence_expression,
+            .span = span,
+            .data = .{ .list = try self.ast.addNodeList(&.{ temp.paren_assign, expr }) },
+        });
+    }
+};
+
 pub fn makeTrackedTempRef(self: anytype, name_span: Span, node_span: Span, flags: @import("../semantic/mod.zig").ReferenceFlags) !NodeIndex {
     const ref = try makeTempVarRef(self, name_span, node_span);
     if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {

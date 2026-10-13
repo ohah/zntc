@@ -14,40 +14,6 @@ const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
 pub fn PrivateFields(comptime Transformer: type) type {
     return struct {
-        const PrivateTemp = struct {
-            name_span: Span,
-            binding: ?Transformer.SyntheticBinding,
-        };
-
-        fn beginPrivateTemp(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!PrivateTemp {
-            const binding = if (self.semantic_edit_enabled and self.state_machine_depth == 0)
-                try self.createSyntheticTempBinding(name_span, declaration_span, self.nearestVarScope(self.current_scope))
-            else
-                null;
-            return .{ .name_span = name_span, .binding = binding };
-        }
-
-        fn registerPrivateTempRef(self: *Transformer, temp: PrivateTemp, ref: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
-            if (!self.semantic_edit_enabled) return;
-            if (temp.binding) |binding| {
-                const symbol_id = binding.symbol_id orelse std.debug.panic("private-field temp has no exact SymbolId", .{});
-                try self.addSyntheticRefInScope(ref, symbol_id, self.current_scope, flags);
-            } else {
-                // State-machine callback scope is created after this expression
-                // is lowered, so the exact name span is linked when that scope exists.
-                try self.trackHoistedTempRefInScope(temp.name_span, ref, self.current_scope, flags);
-            }
-        }
-
-        fn makePrivateTempRef(self: *Transformer, temp: PrivateTemp, node_span: Span, flags: ReferenceFlags) Transformer.Error!NodeIndex {
-            const ref = if (temp.binding) |binding|
-                try es_helpers.makeExactSyntheticRefAt(self, binding.name_span, node_span)
-            else
-                try es_helpers.makeTempVarRef(self, temp.name_span, node_span);
-            try registerPrivateTempRef(self, temp, ref, flags);
-            return ref;
-        }
-
         /// this.#x → instance: _x.get(this), static: __classStaticPrivateFieldSpecGet(receiver, ClassName, _x)
         /// optional flag가 설정된 노드는 null 반환 — optional chain lowering이 short-circuit과
         /// 함께 처리해야 함 (es2020.lowerOptionalChain 내부 rebuildChainNode에서 get 변환).
@@ -64,24 +30,148 @@ pub fn PrivateFields(comptime Transformer: type) type {
             return buildWeakMapCall(self, mapping.var_name, mapping, "get", obj_idx, &.{}, node.span);
         }
 
-        /// instance/static 분기해서 private field get 호출을 구성.
-        fn buildPrivateFieldGetCall(self: *Transformer, mapping: Transformer.PrivateFieldMapping, obj_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            if (mapping.class_name != null) return buildStaticPrivateFieldGet(self, mapping, obj_idx, span);
-            return buildWeakMapCall(self, mapping.var_name, mapping, "get", obj_idx, &.{}, span);
+        /// this.#x = rhs (setter) → `(__classPrivateMethodGet(obj, _x, _x_set).call(obj, _v = rhs), _v)` (#1523).
+        /// The assignment's value is `rhs`, not the setter's return (#5726).
+        fn lowerPrivateSetterCall(self: *Transformer, setter_mapping: Transformer.PrivateMethodMapping, obj_idx: NodeIndex, rhs_old: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), span);
+            const new_rhs = try self.visitNode(rhs_old);
+            return receiver.wrap(self, try buildInstanceAccessorSetValue(self, setter_mapping, receiver, new_rhs, span), span);
         }
 
-        /// this.#x = rhs (setter) → __classPrivateMethodGet(obj, _x, _x_set).call(obj, rhs) (#1523).
-        fn lowerPrivateSetterCall(self: *Transformer, setter_mapping: Transformer.PrivateMethodMapping, obj_idx: NodeIndex, rhs_old: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        /// `__classPrivateMethodGet(recv, _x, _x_get).call(recv[, value])` — an instance
+        /// private getter read or setter call through one receiver (#5726).
+        fn buildInstanceAccessorCall(self: *Transformer, mapping: Transformer.PrivateMethodMapping, receiver: es_helpers.OnceReceiver, value: ?NodeIndex, span: Span) Transformer.Error!NodeIndex {
             self.runtime_helpers.class_private_method_get = true;
-            const new_obj = try self.visitNode(obj_idx);
-            const new_rhs = try self.visitNode(rhs_old);
             const helper_ref = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const ws_ref = try es_helpers.makePrivateMethodWeakSetRef(self, setter_mapping);
-            const fn_ref = try es_helpers.makePrivateMethodFunctionRef(self, setter_mapping);
-            const get_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ new_obj, ws_ref, fn_ref }, span);
+            const ws_ref = try es_helpers.makePrivateMethodWeakSetRef(self, mapping);
+            const fn_ref = try es_helpers.makePrivateMethodFunctionRef(self, mapping);
+            const get_call = try es_helpers.makeCallExpr(self, helper_ref, &.{ try receiver.use(self, span), ws_ref, fn_ref }, span);
             const call_prop = try es_helpers.makePropertyName(self, "call");
             const callee = try es_helpers.makeStaticMember(self, get_call, call_prop, span);
-            return es_helpers.makeCallExpr(self, callee, &.{ new_obj, new_rhs }, span);
+            const this_arg = try receiver.use(self, span);
+            return es_helpers.makeCallExpr(self, callee, if (value) |v| &.{ this_arg, v } else &.{this_arg}, span);
+        }
+
+        /// `(set.call(recv, _v = value), _v)`: a setter call whose expression value
+        /// is the assigned value.
+        fn buildInstanceAccessorSetValue(self: *Transformer, setter: Transformer.PrivateMethodMapping, receiver: es_helpers.OnceReceiver, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const value_temp = try es_helpers.captureToTrackedTemp(self, value, span);
+            const set_call = try buildInstanceAccessorCall(self, setter, receiver, value_temp.paren_assign, span);
+            return makeSequence(self, &.{ set_call, try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true }) }, span);
+        }
+
+        /// An instance private field or accessor pair that a compound, logical or
+        /// update lowering reads and writes through one receiver (#5726).
+        const PrivateTarget = union(enum) {
+            field: Transformer.PrivateFieldMapping,
+            accessor: struct { getter: Transformer.PrivateMethodMapping, setter: Transformer.PrivateMethodMapping },
+        };
+
+        fn targetGet(self: *Transformer, target: PrivateTarget, receiver: es_helpers.OnceReceiver, span: Span) Transformer.Error!NodeIndex {
+            return switch (target) {
+                .field => |mapping| buildPrivateFieldGetOn(self, mapping, try receiver.use(self, span), span),
+                .accessor => |pair| buildInstanceAccessorCall(self, pair.getter, receiver, null, span),
+            };
+        }
+
+        /// The write; its expression value is `value`.
+        fn targetSet(self: *Transformer, target: PrivateTarget, receiver: es_helpers.OnceReceiver, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            return switch (target) {
+                .field => |mapping| buildPrivateFieldSetOn(self, mapping, try receiver.use(self, span), value, span),
+                .accessor => |pair| buildInstanceAccessorSetValue(self, pair.setter, receiver, value, span),
+            };
+        }
+
+        /// `obj.#x op= rhs` → `(_a = obj, set(_a, get(_a) op rhs))`.
+        fn lowerTargetCompound(self: *Transformer, target: PrivateTarget, obj_idx: NodeIndex, bin_op: u16, rhs_old: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), span);
+            const old_value = try targetGet(self, target, receiver, span);
+            const new_rhs = try self.visitNode(rhs_old);
+            // `**=` + target<es2016: 내부 `**` 도 Math.pow로 lowering해야 함. 일반 binary
+            // 경로를 거치지 않고 여기서 직접 생성 — 그렇지 않으면 `**` 가 그대로 남아
+            // es2015 타겟에서 syntax error (#1486).
+            const computed = if (bin_op == @intFromEnum(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
+                try es_helpers.makeMathPowCall(self, old_value, new_rhs, span)
+            else
+                try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = new_rhs, .flags = bin_op } } });
+            return receiver.wrap(self, try targetSet(self, target, receiver, computed, span), span);
+        }
+
+        /// `obj.#x ||= / &&= / ??= rhs`: one read (a getter may have side effects),
+        /// the write only when it short-circuits through.
+        fn lowerTargetLogical(self: *Transformer, target: PrivateTarget, obj_idx: NodeIndex, op_kind: token_mod.Kind, rhs_old: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), span);
+            const old_value = try targetGet(self, target, receiver, span);
+            const new_rhs = try self.visitNode(rhs_old);
+            const set_value = try targetSet(self, target, receiver, new_rhs, span);
+            const result = if (op_kind == .pipe2_eq or op_kind == .amp2_eq)
+                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_value, .flags = @intFromEnum(if (op_kind == .pipe2_eq) token_mod.Kind.pipe2 else token_mod.Kind.amp2) } } })
+            else if (!self.options.unsupported.nullish_coalescing)
+                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_value, .flags = @intFromEnum(token_mod.Kind.question2) } } })
+            else blk: {
+                const value_temp = try es_helpers.captureToTrackedTemp(self, old_value, span);
+                const cond = try es_helpers.makeNeqNull(self, value_temp.paren_assign, span);
+                const read = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true });
+                break :blk try self.ast.addNode(.{ .tag = .conditional_expression, .span = span, .data = .{ .ternary = .{ .a = cond, .b = read, .c = set_value } } });
+            };
+            return receiver.wrap(self, result, span);
+        }
+
+        /// `++obj.#x` → `(_a = obj, _t = get(_a), set(_a, ++_t))`;
+        /// `obj.#x++` → `(_a = obj, _t = get(_a), _o = _t++, set(_a, _t), _o)`.
+        /// The update operator on the temp keeps ToNumeric (`"1"++` is 2, not "11").
+        fn lowerTargetUpdate(self: *Transformer, target: PrivateTarget, obj_idx: NodeIndex, op_flags: u32, span: Span) Transformer.Error!NodeIndex {
+            const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), span);
+            const value_temp = try es_helpers.captureToTrackedTemp(self, try targetGet(self, target, receiver, span), span);
+            const update_operand = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true, .write = true });
+            const update_extra = try self.ast.addExtras(&.{ @intFromEnum(update_operand), op_flags });
+            const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = update_extra } });
+            if ((op_flags & ast_mod.UnaryFlags.postfix) != 0) {
+                const old_temp = try es_helpers.captureToTrackedTemp(self, update, span);
+                const new_value = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true });
+                const set_call = try targetSet(self, target, receiver, new_value, span);
+                const old_result = try es_helpers.makeTrackedTempRef(self, old_temp.span, span, .{ .read = true });
+                return receiver.wrap(self, try makeSequence(self, &.{ value_temp.paren_assign, old_temp.paren_assign, set_call, old_result }, span), span);
+            }
+            const set_call = try targetSet(self, target, receiver, update, span);
+            return receiver.wrap(self, try makeSequence(self, &.{ value_temp.paren_assign, set_call }, span), span);
+        }
+
+        /// The instance getter/setter pair of a private accessor, if `name` has one.
+        fn instanceAccessorPair(self: *const Transformer, name: []const u8) ?PrivateTarget {
+            const E = es2022.ES2022(Transformer);
+            const getter = E.findPrivateMethodMappingOfKind(self, name, .getter) orelse return null;
+            const setter = E.findPrivateMethodMappingOfKind(self, name, .setter) orelse return null;
+            if (getter.class_name != null) return null;
+            return .{ .accessor = .{ .getter = getter, .setter = setter } };
+        }
+
+        fn buildPrivateFieldGetOn(self: *Transformer, mapping: Transformer.PrivateFieldMapping, receiver: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (mapping.class_name) |class_name| {
+                const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecGet");
+                const class_ref = try self.makeUserRefNamed(es_helpers.freshClassNameText(self, class_name, mapping.class_name_node), mapping.class_name_node);
+                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+                self.runtime_helpers.class_static_private_field = true;
+                return es_helpers.makeCallExpr(self, helper, &.{ receiver, class_ref, desc_ref }, span);
+            }
+            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            const callee = try es_helpers.makeStaticMember(self, wm_ref, try es_helpers.makePropertyName(self, "get"), span);
+            return es_helpers.makeCallExpr(self, callee, &.{receiver}, span);
+        }
+
+        /// instance는 `__classPrivateFieldSet` helper, static은 수정된 spec helper 모두 value를 반환 (#1488).
+        fn buildPrivateFieldSetOn(self: *Transformer, mapping: Transformer.PrivateFieldMapping, receiver: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+            if (mapping.class_name) |class_name| {
+                const helper = try es_helpers.makeRuntimeHelperRef(self, "__classStaticPrivateFieldSpecSet");
+                const class_ref = try self.makeUserRefNamed(es_helpers.freshClassNameText(self, class_name, mapping.class_name_node), mapping.class_name_node);
+                const desc_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+                self.runtime_helpers.class_static_private_field = true;
+                return es_helpers.makeCallExpr(self, helper, &.{ receiver, class_ref, desc_ref, value }, span);
+            }
+            const helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateFieldSet");
+            const wm_ref = try es_helpers.makeDeferredExactSyntheticRef(self, mapping.var_name, mapping.symbol_id);
+            self.runtime_helpers.class_private_field_set = true;
+            return es_helpers.makeCallExpr(self, helper, &.{ wm_ref, receiver, value }, span);
         }
 
         fn buildStaticMethodGet(self: *Transformer, mapping: Transformer.PrivateMethodMapping, receiver: NodeIndex, span: Span) Transformer.Error!NodeIndex {
@@ -135,45 +225,6 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 break :blk try self.ast.addNode(.{ .tag = .conditional_expression, .span = span, .data = .{ .ternary = .{ .a = cond, .b = read, .c = set_call } } });
             };
             return makeSequence(self, &.{ recv_temp.paren_assign, result }, span);
-        }
-
-        /// this.#x op= v → set(obj, get(obj) op v). obj 는 3회 visit — this/identifier 는 안전, 복잡 obj 는 정의역 밖 (#1511).
-        fn lowerPrivateAccessorCompoundAssign(
-            self: *Transformer,
-            getter_mapping: Transformer.PrivateMethodMapping,
-            setter_mapping: Transformer.PrivateMethodMapping,
-            obj_idx: NodeIndex,
-            bin_op: u16,
-            rhs_old: NodeIndex,
-            span: Span,
-        ) Transformer.Error!NodeIndex {
-            self.runtime_helpers.class_private_method_get = true;
-
-            // getter side: __classPrivateMethodGet(obj, _x, _x_get).call(obj)
-            const get_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const get_ws = try es_helpers.makePrivateMethodWeakSetRef(self, getter_mapping);
-            const get_fn = try es_helpers.makePrivateMethodFunctionRef(self, getter_mapping);
-            const get_outer = try es_helpers.makeCallExpr(self, get_helper, &.{ try self.visitNode(obj_idx), get_ws, get_fn }, span);
-            const get_call_prop = try es_helpers.makePropertyName(self, "call");
-            const get_callee = try es_helpers.makeStaticMember(self, get_outer, get_call_prop, span);
-            const get_expr = try es_helpers.makeCallExpr(self, get_callee, &.{try self.visitNode(obj_idx)}, span);
-
-            // 연산: get_expr op rhs
-            const new_rhs = try self.visitNode(rhs_old);
-            const computed = try self.ast.addNode(.{
-                .tag = .binary_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = get_expr, .right = new_rhs, .flags = bin_op } },
-            });
-
-            // setter side: __classPrivateMethodGet(obj, _x, _x_set).call(obj, computed)
-            const set_helper = try es_helpers.makeRuntimeHelperRef(self, "__classPrivateMethodGet");
-            const set_ws = try es_helpers.makePrivateMethodWeakSetRef(self, setter_mapping);
-            const set_fn = try es_helpers.makePrivateMethodFunctionRef(self, setter_mapping);
-            const set_outer = try es_helpers.makeCallExpr(self, set_helper, &.{ try self.visitNode(obj_idx), set_ws, set_fn }, span);
-            const set_call_prop = try es_helpers.makePropertyName(self, "call");
-            const set_callee = try es_helpers.makeStaticMember(self, set_outer, set_call_prop, span);
-            return es_helpers.makeCallExpr(self, set_callee, &.{ try self.visitNode(obj_idx), computed }, span);
         }
 
         /// private_methods 리스트를 순회하며 WeakSet 선언 + standalone function 을 scratch 에 append.
@@ -345,6 +396,11 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, name, .setter);
                 if (method) |pm| {
                     if (pm.class_name != null) return try buildStaticMethodSet(self, pm, try self.visitNode(obj_idx), value, span);
+                    // `[this.#g] = …` writes through the setter (#5726).
+                    if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, name, .setter)) |setter| {
+                        const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), span);
+                        return try receiver.wrap(self, try buildInstanceAccessorCall(self, setter, receiver, value, span), span);
+                    }
                 }
             }
             const mapping = findPrivateFieldMapping(self, prop_idx) orelse return null;
@@ -447,11 +503,12 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         if (op_kind_pre == .eq) {
                             return lowerPrivateSetterCall(self, setter_mapping, obj_idx, node.data.binary.right, node.span);
                         }
-                        if (assign_ops.compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
-                            if (es2022.ES2022(Transformer).findPrivateMethodMappingOfKind(self, orig_name, .getter)) |getter_mapping| {
-                                return lowerPrivateAccessorCompoundAssign(self, getter_mapping, setter_mapping, obj_idx, bin_op, node.data.binary.right, node.span);
-                            }
-                        }
+                    }
+                    if (instanceAccessorPair(self, orig_name)) |target| {
+                        if (assign_ops.compoundAssignBaseOp(node.data.binary.flags)) |bin_op|
+                            return lowerTargetCompound(self, target, obj_idx, bin_op, node.data.binary.right, node.span);
+                        if (op_kind_pre == .question2_eq or op_kind_pre == .pipe2_eq or op_kind_pre == .amp2_eq)
+                            return lowerTargetLogical(self, target, obj_idx, op_kind_pre, node.data.binary.right, node.span);
                     }
                 }
             }
@@ -460,24 +517,11 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
             const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
             if (op_kind == .question2_eq or op_kind == .pipe2_eq or op_kind == .amp2_eq) {
-                return lowerPrivateFieldLogicalAssign(self, mapping, obj_idx, op_kind, node.data.binary.right, node.span);
+                return lowerTargetLogical(self, .{ .field = mapping }, obj_idx, op_kind, node.data.binary.right, node.span);
             }
 
             if (assign_ops.compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
-                const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, node.span);
-                const new_rhs = try self.visitNode(node.data.binary.right);
-                // `**=` + target<es2016: 내부 `**` 도 Math.pow로 lowering해야 함. 일반 binary
-                // 경로를 거치지 않고 여기서 직접 생성 — 그렇지 않으면 `**` 가 그대로 남아
-                // es2015 타겟에서 syntax error (#1486).
-                const computed = if (bin_op == @intFromEnum(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
-                    try es_helpers.makeMathPowCall(self, get_call, new_rhs, node.span)
-                else
-                    try self.ast.addNode(.{
-                        .tag = .binary_expression,
-                        .span = node.span,
-                        .data = .{ .binary = .{ .left = get_call, .right = new_rhs, .flags = bin_op } },
-                    });
-                return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, node.span);
+                return lowerTargetCompound(self, .{ .field = mapping }, obj_idx, bin_op, node.data.binary.right, node.span);
             }
 
             // plain `=` : right를 visit한 뒤 buildPrivateFieldSetWithComputedValue 경유 —
@@ -487,50 +531,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
             return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, new_rhs, node.span);
         }
 
-        /// `this.#x ??=/||=/&&= v` lowering.
-        /// private field get은 부작용 없으므로 ??= ternary 분기에서 get을 두 번 호출해도 안전.
-        /// set helper 반환값이 spec상 expression 값과 다를 수 있으나, statement context에선 무관.
-        fn lowerPrivateFieldLogicalAssign(
-            self: *Transformer,
-            mapping: Transformer.PrivateFieldMapping,
-            obj_idx: NodeIndex,
-            op_kind: token_mod.Kind,
-            rhs_old: NodeIndex,
-            span: Span,
-        ) Transformer.Error!NodeIndex {
-            const get_read = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
-            const new_rhs = try self.visitNode(rhs_old);
-            const set_call = try buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, new_rhs, span);
-
-            if (op_kind == .pipe2_eq or op_kind == .amp2_eq) {
-                const logical_op: token_mod.Kind = if (op_kind == .pipe2_eq) .pipe2 else .amp2;
-                return self.ast.addNode(.{
-                    .tag = .logical_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(logical_op) } },
-                });
-            }
-
-            // ??= : nullish_coalescing 미지원 target이면 ternary, 아니면 `get ?? set`.
-            if (self.options.unsupported.nullish_coalescing) {
-                const neq_null = try es_helpers.makeNeqNull(self, get_read, span);
-                const get_read2 = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
-                return self.ast.addNode(.{
-                    .tag = .conditional_expression,
-                    .span = span,
-                    .data = .{ .ternary = .{ .a = neq_null, .b = get_read2, .c = set_call } },
-                });
-            }
-            return self.ast.addNode(.{
-                .tag = .logical_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(token_mod.Kind.question2) } },
-            });
-        }
-
-        /// prefix  ++this.#x → set(get() + 1)   (expression 값 = 새 값)
-        /// postfix this.#x++  → (_t = get(), set(_t + 1), _t)   (expression 값 = 이전 값)
-        /// op_flags 의 0x100 비트가 postfix 표시 (parser/expression.zig 참고).
+        /// `++this.#x` / `this.#x++` on a private field or instance accessor pair
+        /// (`lowerTargetUpdate`); a static private accessor has its own descriptor path.
         pub fn lowerPrivateFieldUpdate(self: *Transformer, operand: Node, op_flags: u32, span: Span) ?Transformer.Error!NodeIndex {
             const oe = operand.data.extra;
             if (oe + 1 >= self.ast.extra_data.items.len) return null;
@@ -544,61 +546,10 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 if (method) |mapping| {
                     if (mapping.class_name != null) return lowerStaticMethodUpdate(self, mapping, obj_idx, op_flags, span);
                 }
+                if (instanceAccessorPair(self, name)) |target| return lowerTargetUpdate(self, target, obj_idx, op_flags, span);
             }
             const mapping = findPrivateFieldMapping(self, prop_idx) orelse return null;
-
-            const op_kind = op_flags & 0xFF;
-            const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
-            const is_postfix = (op_flags & ast_mod.UnaryFlags.postfix) != 0;
-            const bin_op: u16 = if (is_increment) @intFromEnum(token_mod.Kind.plus) else @intFromEnum(token_mod.Kind.minus);
-
-            if (is_postfix) {
-                const scratch_top = self.scratch.items.len;
-                defer self.scratch.shrinkRetainingCapacity(scratch_top);
-
-                const temp_span = try es_helpers.makeTempVarSpan(self);
-                const temp = try beginPrivateTemp(self, temp_span, span);
-                // _t = get()
-                const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
-                const tmp_ref_lhs = try makePrivateTempRef(self, temp, temp_span, .{ .write = true });
-                const init_assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = tmp_ref_lhs, .right = get_call, .flags = @intFromEnum(token_mod.Kind.eq) } },
-                });
-                try self.scratch.append(self.allocator, init_assign);
-                // set(_t + 1)
-                const tmp_ref_read = try makePrivateTempRef(self, temp, temp_span, .{ .read = true });
-                const one = try es_helpers.makeNumericLiteral(self, 1);
-                const computed = try self.ast.addNode(.{
-                    .tag = .binary_expression,
-                    .span = span,
-                    .data = .{ .binary = .{ .left = tmp_ref_read, .right = one, .flags = bin_op } },
-                });
-                const set_call = try buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, span);
-                try self.scratch.append(self.allocator, set_call);
-                // _t (최종 expression 값)
-                try self.scratch.append(self.allocator, try makePrivateTempRef(self, temp, temp_span, .{ .read = true }));
-
-                const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-                const seq = try self.ast.addNode(.{
-                    .tag = .sequence_expression,
-                    .span = span,
-                    .data = .{ .list = seq_list },
-                });
-                // sequence paren 은 precedence 재유도가 처리 (#4042 PR8)
-                return seq;
-            }
-
-            // prefix: set(get() + 1) — expression 값이 새 값이라 세팅 결과 그대로 사용
-            const get_call = try buildPrivateFieldGetCall(self, mapping, obj_idx, span);
-            const one = try es_helpers.makeNumericLiteral(self, 1);
-            const computed = try self.ast.addNode(.{
-                .tag = .binary_expression,
-                .span = span,
-                .data = .{ .binary = .{ .left = get_call, .right = one, .flags = bin_op } },
-            });
-            return buildPrivateFieldSetWithComputedValue(self, mapping, obj_idx, computed, span);
+            return lowerTargetUpdate(self, .{ .field = mapping }, obj_idx, op_flags, span);
         }
 
         fn lowerStaticMethodUpdate(self: *Transformer, mapping: Transformer.PrivateMethodMapping, obj_idx: NodeIndex, op_flags: u32, span: Span) Transformer.Error!NodeIndex {
