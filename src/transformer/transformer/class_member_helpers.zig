@@ -276,8 +276,11 @@ pub fn classifyPropertyDefinition(
                 // init 은 constructor 로 옮겼으니 declaration 만 남기기 위해 PropertyExtra.init 을
                 // .none 으로 emit. 직접 새 노드 build:
                 const empty_init = ast_mod.NodeIndex.none;
+                // The constructor's `this.#x` already owns `new_key`; the
+                // declaration takes its own copy so no node has two parents (#5677).
+                const decl_key = try self.ast.addNode(self.ast.getNode(new_key));
                 const new_prop_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_key),
+                    @intFromEnum(decl_key),
                     @intFromEnum(empty_init),
                     flags,
                     self.readU32(me, ast_mod.PropertyExtra.deco_start),
