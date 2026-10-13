@@ -4067,6 +4067,27 @@ test "#4390 refresh hook-sig: _s component ref follows mangler rename" {
     try std.testing.expect(std.mem.indexOf(u8, r.code, "(App,") == null);
 }
 
+test "#4819 React Refresh standalone handles emit their exact late SymbolId names" {
+    const source =
+        \\const _c = 1, _c2 = 2, _s = 3, _s2 = 4;
+        \\function App() { useState(0); return null; }
+        \\function Button() { useEffect(() => {}, []); return null; }
+    ;
+    var result = try transpile(std.testing.allocator, source, "/src/App.tsx", .{
+        .react_refresh = true,
+        .react_refresh_hook_signatures = true,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _c3,_c22;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _s3 = $RefreshSig$();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _s22 = $RefreshSig$();") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_c3 = App;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_c22 = Button;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_s3(App,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_s22(Button,") != null);
+}
+
 test "#4493 구조분해 할당의 shorthand+기본값 프로퍼티도 rename 을 따라간다" {
     // `({stackWeight = 1} = o)` 는 cover grammar 로
     // assignment_target_property_identifier(left=바인딩, right=기본값, flags=shorthand_with_default)
