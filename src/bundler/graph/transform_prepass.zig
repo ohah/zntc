@@ -3442,11 +3442,53 @@ fn sourceBindingShadowsGeneratedGlobalAtNode(
     return true;
 }
 
+fn isRetainableAsyncFunctionNode(
+    ast: *const ast_mod.Ast,
+    node: ast_mod.Node,
+    options: TransformOptions,
+) bool {
+    if (!options.unsupported.async_await or options.unsupported.generator) return false;
+    if (node.tag != .function_declaration and node.tag != .function_expression and node.tag != .function)
+        return false;
+    const flags_at = node.data.extra + ast_mod.FunctionExtra.flags;
+    if (flags_at >= ast.extra_data.items.len) return false;
+    const flags = ast.extra_data.items[flags_at];
+    return (flags & ast_mod.FunctionFlags.is_async) != 0 and
+        (flags & ast_mod.FunctionFlags.is_generator) == 0;
+}
+
+fn awaitBelongsToRetainableAsyncFunction(
+    ast: *const ast_mod.Ast,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+    retained_async_functions: *const std.AutoHashMapUnmanaged(u32, void),
+    await_node: u32,
+) bool {
+    var current = parents.get(await_node) orelse return false;
+    var hops: usize = 0;
+    while (hops < ast.nodes.items.len) : (hops += 1) {
+        if (current >= ast.nodes.items.len) return false;
+        const node = ast.nodes.items[current];
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .method_definition,
+            => return retained_async_functions.contains(current),
+            else => current = parents.get(current) orelse return false,
+        }
+    }
+    return false;
+}
+
 /// Arrow lowering edits the existing graph and creates only output function
 /// scopes plus explicitly tracked captures. Native `await` and `yield` add no
 /// binding or scope edges. Tagged-template lowering registers its cache
 /// functions, data bindings, and references with exact identities. Keep these
-/// paths only for the audited syntax subset; async lowering stays on reanalysis.
+/// paths only for the audited syntax subset. Ordinary async functions may also
+/// retain their graph when they lower to a native generator wrapper; async
+/// arrows, methods, async generators, and generator-state-machine lowering
+/// remain on reanalysis.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -3487,6 +3529,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer lowered_for_of_heads.deinit(ast.allocator);
     var lowered_classic_for_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_classic_for_heads.deinit(ast.allocator);
+    var retained_async_functions: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_async_functions.deinit(ast.allocator);
+    if (options.unsupported.async_await and !options.unsupported.generator) {
+        for (reachable_nodes) |raw_idx| {
+            if (isRetainableAsyncFunctionNode(ast, ast.nodes.items[raw_idx], options)) {
+                retained_async_functions.put(ast.allocator, raw_idx, {}) catch return false;
+            }
+        }
+    }
     if (options.unsupported.block_scoping) {
         for (reachable_nodes) |raw_idx| {
             const node = ast.nodes.items[raw_idx];
@@ -3742,6 +3793,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer source_parent_map.deinit(ast.allocator);
     var source_parent_map_ready = false;
 
+    var found_lowered_async_function = false;
+
     // Default-parameter lowering replaces only these literal assignment
     // patterns with exact reads/writes of the same parameter SymbolId. Admit
     // those nodes only when their owning retained class already passes the
@@ -3856,7 +3909,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // still use the conservative resync path above.
                     found_lowered_generator = true;
                 }
-                if (is_async and options.unsupported.async_await) return false;
+                if (is_async and options.unsupported.async_await) {
+                    if (!retained_async_functions.contains(raw_idx)) return false;
+                    found_lowered_async_function = true;
+                }
             },
             .variable_declaration => {
                 const kind = ast.variableDeclarationKind(node);
@@ -4133,8 +4189,21 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .await_expression => {
-                if (options.unsupported.async_await) return false;
-                found_native_await = true;
+                if (options.unsupported.async_await) {
+                    if (!source_parent_map_ready) {
+                        source_parent_map_ready = true;
+                        if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                    }
+                    if (!awaitBelongsToRetainableAsyncFunction(
+                        ast,
+                        &source_parent_map,
+                        &retained_async_functions,
+                        @intCast(raw_idx),
+                    )) return false;
+                    found_lowered_async_function = true;
+                } else {
+                    found_native_await = true;
+                }
             },
             .yield_expression => {
                 if (options.unsupported.generator) {
@@ -4370,6 +4439,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
     return found_arrow or found_native_await or found_native_generator or found_lowered_generator or
+        found_lowered_async_function or
         found_native_tagged_template or found_lowered_tagged_template or
         found_native_for_in or found_lowered_for_in or found_lowered_classic_for or
         found_native_for_of or found_lowered_for_of or
@@ -4417,8 +4487,10 @@ fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
     allow_derived_class_helpers: bool,
     allow_stage3_decorator_helpers: bool,
+    allow_async_helper: bool,
 ) bool {
     var other_helpers = helpers;
+    if (allow_async_helper) other_helpers.async_helper = false;
     if (allow_derived_class_helpers) {
         other_helpers.extends = false;
         other_helpers.call_super = false;
@@ -4887,6 +4959,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         hasReachableDerivedClass(ast_ptr);
     const allow_stage3_decorator_helpers = can_keep_semantic_graph and
         canRetainStage3DecoratorGraph(ast_ptr, opts);
+    const allow_async_helper = can_keep_semantic_graph and opts.unsupported.async_await and
+        !opts.unsupported.generator;
     const lowered_simple_static_class_field_global = can_keep_semantic_graph and
         (downlevel_static_public_class_field_scan orelse
             (opts.unsupported.class or opts.unsupported.class_field));
@@ -5090,6 +5164,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         transformer.runtime_helpers,
         allow_derived_class_helpers,
         allow_stage3_decorator_helpers,
+        allow_async_helper,
     )) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
