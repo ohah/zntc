@@ -851,6 +851,23 @@ fn exactDetachedOutputSymbolShape(symbol: *const Symbol) bool {
                 std.mem.eql(u8, symbol.synthetic_name, "export.name"),
             else => false,
         },
+        .hmr_runtime_internal_local => switch (symbol.kind) {
+            .variable_var => std.mem.eql(u8, symbol.synthetic_name, "hmr.global") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.modules") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.hot_callbacks") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.hot_data") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.reload") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.refresh_timer") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.original_commonjs") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.original_esm"),
+            .function_decl => std.mem.eql(u8, symbol.synthetic_name, "hmr.schedule") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.resolve_refresh") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.refresh_boundary") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.enqueue_update") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.make_hot") or
+                std.mem.eql(u8, symbol.synthetic_name, "hmr.apply_update"),
+            else => false,
+        },
         .require_shim_local => symbol.kind == .import_binding and std.mem.eql(u8, symbol.synthetic_name, "createRequire"),
         .esm_init, .cjs_require => symbol.kind == .function_decl,
         .cjs_exports, .bundler_runtime_helper => symbol.kind == .variable_var,

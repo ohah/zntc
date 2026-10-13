@@ -1108,6 +1108,107 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
     try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, regenerated_ids);
 }
 
+test "linker: HMR preamble names are graph-owned and recover exact identities" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "globalThis.__zntc_hot_cbs = 'external'; console.log(__zntc_hot_cbs);");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.js");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+    r.linker.dev_mode = true;
+    try r.linker.computeRenames();
+
+    const module_index = findModuleIdx(r.graph, "entry.js") orelse return error.TestUnexpectedResult;
+    const module = r.graph.moduleAtMut(module_index) orelse return error.TestUnexpectedResult;
+    const names = try r.linker.hmrRuntimeInternalNames();
+    try std.testing.expect(!std.mem.eql(u8, "__zntc_hot_cbs", names.hot_callbacks));
+    const ids = module.hmr_runtime_internal_symbols orelse return error.TestUnexpectedResult;
+    const expected = [_]struct { id: semantic_symbol.SymbolId, identity: []const u8, output_name: []const u8, kind: semantic_symbol.SymbolKind }{
+        .{ .id = ids.global, .identity = "hmr.global", .output_name = names.global, .kind = .variable_var },
+        .{ .id = ids.modules, .identity = "hmr.modules", .output_name = names.modules, .kind = .variable_var },
+        .{ .id = ids.hot_callbacks, .identity = "hmr.hot_callbacks", .output_name = names.hot_callbacks, .kind = .variable_var },
+        .{ .id = ids.hot_data, .identity = "hmr.hot_data", .output_name = names.hot_data, .kind = .variable_var },
+        .{ .id = ids.schedule, .identity = "hmr.schedule", .output_name = names.schedule, .kind = .function_decl },
+        .{ .id = ids.reload, .identity = "hmr.reload", .output_name = names.reload, .kind = .variable_var },
+        .{ .id = ids.resolve_refresh, .identity = "hmr.resolve_refresh", .output_name = names.resolve_refresh, .kind = .function_decl },
+        .{ .id = ids.refresh_boundary, .identity = "hmr.refresh_boundary", .output_name = names.refresh_boundary, .kind = .function_decl },
+        .{ .id = ids.refresh_timer, .identity = "hmr.refresh_timer", .output_name = names.refresh_timer, .kind = .variable_var },
+        .{ .id = ids.enqueue_update, .identity = "hmr.enqueue_update", .output_name = names.enqueue_update, .kind = .function_decl },
+        .{ .id = ids.make_hot, .identity = "hmr.make_hot", .output_name = names.make_hot, .kind = .function_decl },
+        .{ .id = ids.original_commonjs, .identity = "hmr.original_commonjs", .output_name = names.original_commonjs, .kind = .variable_var },
+        .{ .id = ids.original_esm, .identity = "hmr.original_esm", .output_name = names.original_esm, .kind = .variable_var },
+        .{ .id = ids.apply_update, .identity = "hmr.apply_update", .output_name = names.apply_update, .kind = .function_decl },
+    };
+    for (expected) |item| {
+        const symbol = module.semantic.?.symbols.items[@intFromEnum(item.id)];
+        try std.testing.expectEqual(semantic_symbol.SyntheticKind.hmr_runtime_internal_local, symbol.synthetic_kind.?);
+        try std.testing.expectEqual(item.kind, symbol.kind);
+        try std.testing.expectEqualStrings(item.identity, symbol.synthetic_name);
+        try std.testing.expectEqualStrings(item.output_name, r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(item.id))) orelse return error.TestUnexpectedResult);
+    }
+
+    // Typed rows recover the convenience ID cache and restore names after a
+    // chunk pass drops entries from the transient rename table.
+    module.hmr_runtime_internal_symbols = null;
+    try expectHmrRuntimeInternalNames(&r.linker, module_index, ids);
+    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.hot_callbacks));
+    _ = r.linker.rename_table.map.fetchRemove(missing_name_id) orelse return error.TestUnexpectedResult;
+    try expectHmrRuntimeInternalNames(&r.linker, module_index, ids);
+
+    const sem = &module.semantic.?;
+    const changed_index = @intFromEnum(ids.hot_callbacks);
+    const original_kind = sem.symbols.items[changed_index].kind;
+    sem.symbols.items[changed_index].kind = .function_decl;
+    try std.testing.expectError(error.HmrRuntimeInternalSymbolsInvalid, r.linker.prepareHmrRuntimeInternalNames());
+    sem.symbols.items[changed_index].kind = original_kind;
+
+    const original_synthetic = sem.symbols.items[changed_index].synthetic_kind;
+    sem.symbols.items[changed_index].synthetic_kind = .bundler_runtime_helper;
+    try std.testing.expectError(error.HmrRuntimeInternalSymbolsInvalid, r.linker.prepareHmrRuntimeInternalNames());
+    sem.symbols.items[changed_index].synthetic_kind = original_synthetic;
+
+    const original_name = sem.symbols.items[changed_index].synthetic_name;
+    sem.symbols.items[changed_index].synthetic_kind = null;
+    sem.symbols.items[changed_index].synthetic_name = "";
+    try std.testing.expectError(error.HmrRuntimeInternalSymbolsMissing, r.linker.prepareHmrRuntimeInternalNames());
+    sem.symbols.items[changed_index].synthetic_kind = original_synthetic;
+    sem.symbols.items[changed_index].synthetic_name = original_name;
+
+    for (sem.symbols.items) |*symbol| {
+        if (symbol.synthetic_kind == .hmr_runtime_internal_local) symbol.synthetic_kind = .bundler_runtime_helper;
+    }
+    try std.testing.expectError(error.HmrRuntimeInternalSymbolsInvalid, r.linker.prepareHmrRuntimeInternalNames());
+    for (sem.symbols.items) |*symbol| {
+        if (std.mem.startsWith(u8, symbol.synthetic_name, "hmr.")) symbol.synthetic_kind = .hmr_runtime_internal_local;
+    }
+    try expectHmrRuntimeInternalNames(&r.linker, module_index, ids);
+}
+
+fn expectHmrRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids: @import("module.zig").HmrRuntimeInternalSymbolIds) !void {
+    const names = try linker.hmrRuntimeInternalNames();
+    const values = .{
+        .{ ids.global, names.global },
+        .{ ids.modules, names.modules },
+        .{ ids.hot_callbacks, names.hot_callbacks },
+        .{ ids.hot_data, names.hot_data },
+        .{ ids.schedule, names.schedule },
+        .{ ids.reload, names.reload },
+        .{ ids.resolve_refresh, names.resolve_refresh },
+        .{ ids.refresh_boundary, names.refresh_boundary },
+        .{ ids.refresh_timer, names.refresh_timer },
+        .{ ids.enqueue_update, names.enqueue_update },
+        .{ ids.make_hot, names.make_hot },
+        .{ ids.original_commonjs, names.original_commonjs },
+        .{ ids.original_esm, names.original_esm },
+        .{ ids.apply_update, names.apply_update },
+    };
+    inline for (values) |value| {
+        try std.testing.expectEqualStrings(value[1], linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(value[0]))) orelse return error.TestUnexpectedResult);
+    }
+}
+
 fn expectEsmInteropRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids: @import("module.zig").EsmInteropRuntimeInternalSymbolIds) !void {
     const names = try linker.esmInteropRuntimeInternalNames();
     const values = .{

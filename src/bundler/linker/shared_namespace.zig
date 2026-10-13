@@ -1204,7 +1204,8 @@ pub fn writeEsmInitExprBody(
 ) !void {
     if (guard) try writer.write(if (self.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
     if (self.dev_mode) {
-        try writer.write("__zntc_modules[\"");
+        try writer.write(self.currentHmrRuntimeInternalNames().modules);
+        try writer.write("[\"");
         try writer.write(target_mod.dev_id);
         try writer.write("\"].fn()");
     } else {

@@ -589,7 +589,10 @@ pub fn emitWithTreeShaking(
     // ESM interop helper identities are shared by each module's injected
     // metadata and runtime preamble. Resolve them before the parallel emit
     // workers start so no worker lazily mutates the graph or linker caches.
-    if (linker) |l| try l.prepareEsmInteropRuntimeNamesForEmit();
+    if (linker) |l| {
+        try l.prepareEsmInteropRuntimeNamesForEmit();
+        try @constCast(l).prepareHmrRuntimeInternalNames();
+    }
 
     // 1. JS/JSON 모듈 필터 + exec_index 순으로 정렬
     var sorted: std.ArrayList(*const Module) = .empty;
@@ -1250,7 +1253,8 @@ pub fn emitWithTreeShaking(
             }
 
             // wrap 형식(IIFE + 런타임 alias + sourceURL)은 split 경로와 공유 — 한 곳에서 정의.
-            const hmr_code = try wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable);
+            const hmr_names = if (linker) |l| try l.hmrRuntimeInternalNames() else rt_names.HmrRuntimeInternalNames{};
+            const hmr_code = try wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable, hmr_names);
 
             // 모듈별 standalone sourcemap (Issue #1248): HMR 클라이언트가 전체 번들
             // sourcemap을 재처리하지 않고 변경 모듈만 매핑할 수 있게 한다.
@@ -1546,6 +1550,7 @@ pub fn wrapDevModuleCode(
     code: []const u8,
     mod_id: []const u8,
     with_source_url: bool,
+    hmr_names: rt_names.HmrRuntimeInternalNames,
 ) ![]const u8 {
     var source_url_buf: []const u8 = "";
     defer if (source_url_buf.len > 0) allocator.free(source_url_buf);
@@ -1558,14 +1563,46 @@ pub fn wrapDevModuleCode(
         // 이면 번들의 `var __zntc_g` 가 모듈-로컬이라 eval 스코프에서 안 보인다 → 아래 alias 와
         // 컴포넌트 FR save/restore 의 `__zntc_g.X` 가 ReferenceError → reload fallback. self-contained
         // 하게 __zntc_g 를 여기서 globalThis 로 재결정한다(IIFE 번들이면 동일 globalThis 라 무해).
-        "var __zntc_g=typeof globalThis!==\"undefined\"?globalThis:typeof global!==\"undefined\"?global:typeof window!==\"undefined\"?window:this;\n",
-        "var __esm=__zntc_g.__esm,__export=__zntc_g.__export,__commonJS=__zntc_g.__commonJS,",
-        "__defProp=__zntc_g.__defProp,__toESM=__zntc_g.__toESM,__toCommonJS=__zntc_g.__toCommonJS,",
-        "__zntc_modules=__zntc_g.__zntc_modules,__zntc_make_hot=__zntc_g.__zntc_make_hot,",
-        "__zntc_resolveRefresh=__zntc_g.__zntc_resolveRefresh||function(){return null},",
-        "__zntc_isReactRefreshBoundary=__zntc_g.__zntc_isReactRefreshBoundary,",
-        "__zntc_enqueueUpdate=__zntc_g.__zntc_enqueueUpdate,",
-        "__zntc_reload=__zntc_g.__zntc_reload;\n",
+        "var ",
+        hmr_names.global,
+        "=typeof globalThis!==\"undefined\"?globalThis:typeof global!==\"undefined\"?global:typeof window!==\"undefined\"?window:this;\n",
+        "var __esm=",
+        hmr_names.global,
+        ".__esm,__export=",
+        hmr_names.global,
+        ".__export,__commonJS=",
+        hmr_names.global,
+        ".__commonJS,__defProp=",
+        hmr_names.global,
+        ".__defProp,__toESM=",
+        hmr_names.global,
+        ".__toESM,__toCommonJS=",
+        hmr_names.global,
+        ".__toCommonJS,",
+        hmr_names.modules,
+        "=",
+        hmr_names.global,
+        ".__zntc_modules,",
+        hmr_names.make_hot,
+        "=",
+        hmr_names.global,
+        ".__zntc_make_hot,",
+        hmr_names.resolve_refresh,
+        "=",
+        hmr_names.global,
+        ".__zntc_resolveRefresh||function(){return null},",
+        hmr_names.refresh_boundary,
+        "=",
+        hmr_names.global,
+        ".__zntc_isReactRefreshBoundary,",
+        hmr_names.enqueue_update,
+        "=",
+        hmr_names.global,
+        ".__zntc_enqueueUpdate,",
+        hmr_names.reload,
+        "=",
+        hmr_names.global,
+        ".__zntc_reload;\n",
         code,
         "\n})();\n",
         source_url_buf,
@@ -2396,6 +2433,11 @@ pub fn emitModule(
         break :blk refs;
     };
 
+    const hmr_names: rt_names.HmrRuntimeInternalNames = if (options.dev_mode) blk: {
+        if (linker) |l| break :blk try l.hmrRuntimeInternalNames();
+        break :blk .{};
+    } else .{};
+
     var cg = Codegen.initWithOptions(arena_alloc, transformer.ast, .{
         .minify_whitespace = options.minify_whitespace,
         .cjs_exports_name = cjs_ex_name,
@@ -2455,6 +2497,8 @@ pub fn emitModule(
         // codegen은 jsx_element/jsx_fragment를 만나지 않으므로 JSX 옵션 불필요.
         // dev mode: import.meta.hot → __zntc_make_hot("dev_id")
         .dev_module_id = if (options.dev_mode and module.dev_id.len > 0) module.dev_id else null,
+        .dev_hmr_make_hot_name = hmr_names.make_hot,
+        .dev_hmr_modules_name = hmr_names.modules,
         .require_context_module_id_root = options.root_dir,
         .require_context_init_refs = rc_init_refs,
         .import_records = module.import_records,
@@ -2474,7 +2518,9 @@ pub fn emitModule(
         if (std.mem.indexOf(u8, code, "$RefreshReg$") != null) {
             code = try std.mem.concat(arena_alloc, u8, &.{
                 code,
-                "\n__zntc_make_hot(\"",
+                "\n",
+                hmr_names.make_hot,
+                "(\"",
                 module.dev_id,
                 "\").accept();\n",
             });

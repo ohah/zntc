@@ -277,9 +277,13 @@ fn tryEmitRequireContextObject(self: anytype, node: Node) !bool {
                 // 반환해야 한다. `__zntc_modules` 의 key 는 `dev.makeModuleId` normalize 한
                 // 등록 ID (#2466). HMR 런타임(dev_mode)이 `__zntc_modules` 를 주입한다.
                 const id = dev.makeModuleId(abs, self.options.require_context_module_id_root);
-                try self.write("(__zntc_modules[\"");
+                try self.write("(");
+                try self.write(self.options.dev_hmr_modules_name);
+                try self.write("[\"");
                 try writeJsStringContent(self, id);
-                try self.write("\"].fn(),__toCommonJS(__zntc_modules[\"");
+                try self.write("\"].fn(),__toCommonJS(");
+                try self.write(self.options.dev_hmr_modules_name);
+                try self.write("[\"");
                 try writeJsStringContent(self, id);
                 try self.write("\"].exports))");
             } else {

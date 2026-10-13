@@ -1037,19 +1037,31 @@ pub fn makeNsVarName(allocator: std.mem.Allocator, path: []const u8) ![]const u8
 /// HMR에서 new Function()이 번들 스코프 밖에서 실행되므로 레지스트리 동적 lookup 사용.
 /// require_rewrites(metadata.zig) 및 default re-export(esm_wrap.zig)에서 공유.
 pub fn fmtDevRequireExpr(allocator: std.mem.Allocator, dev_id: []const u8, to_common_js_name: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "(__zntc_modules[\"{s}\"].fn(), {s}(__zntc_modules[\"{s}\"].exports))", .{ dev_id, to_common_js_name, dev_id });
+    return fmtDevRequireExprNamed(allocator, dev_id, "__zntc_modules", to_common_js_name);
+}
+
+pub fn fmtDevRequireExprNamed(allocator: std.mem.Allocator, dev_id: []const u8, modules_name: []const u8, to_common_js_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "({s}[\"{s}\"].fn(), {s}({s}[\"{s}\"].exports))", .{ modules_name, dev_id, to_common_js_name, modules_name, dev_id });
 }
 
 /// dev mode: `__zntc_modules["<dev_id>"].fn` — factory function reference (호출 없음).
 /// callee 자리에 그대로 끼워 넣을 때 사용 (e.g. `<ref>().Animated.Value`).
 pub fn fmtDevRequireRef(allocator: std.mem.Allocator, dev_id: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn", .{dev_id});
+    return fmtDevRequireRefNamed(allocator, dev_id, "__zntc_modules");
+}
+
+pub fn fmtDevRequireRefNamed(allocator: std.mem.Allocator, dev_id: []const u8, modules_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}[\"{s}\"].fn", .{ modules_name, dev_id });
 }
 
 /// dev mode: `(__zntc_modules["<dev_id>"].fn())` — paren-wrapped call expression.
 /// require_rewrites 등 expression 위치에 직접 치환할 때 사용.
 pub fn fmtDevRequireCallExpr(allocator: std.mem.Allocator, dev_id: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "(__zntc_modules[\"{s}\"].fn())", .{dev_id});
+    return fmtDevRequireCallExprNamed(allocator, dev_id, "__zntc_modules");
+}
+
+pub fn fmtDevRequireCallExprNamed(allocator: std.mem.Allocator, dev_id: []const u8, modules_name: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "({s}[\"{s}\"].fn())", .{ modules_name, dev_id });
 }
 
 /// npm 패키지 specifier를 UMD/AMD factory 매개변수명으로 변환.

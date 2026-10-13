@@ -65,6 +65,25 @@ pub const EsmInteropRuntimeInternalSymbolIds = struct {
     export_name: SemanticSymbolId,
     to_common_js_module: SemanticSymbolId,
 };
+
+/// Exact identities for top-level lexical bindings in the raw HMR runtime
+/// preamble. They share the bundle scope with generated HMR callsites.
+pub const HmrRuntimeInternalSymbolIds = struct {
+    global: SemanticSymbolId,
+    modules: SemanticSymbolId,
+    hot_callbacks: SemanticSymbolId,
+    hot_data: SemanticSymbolId,
+    schedule: SemanticSymbolId,
+    reload: SemanticSymbolId,
+    resolve_refresh: SemanticSymbolId,
+    refresh_boundary: SemanticSymbolId,
+    refresh_timer: SemanticSymbolId,
+    enqueue_update: SemanticSymbolId,
+    make_hot: SemanticSymbolId,
+    original_commonjs: SemanticSymbolId,
+    original_esm: SemanticSymbolId,
+    apply_update: SemanticSymbolId,
+};
 const stmt_info_mod = @import("stmt_info.zig");
 const symbol_mod = @import("symbol.zig");
 pub const AliasTable = symbol_mod.AliasTable;
@@ -463,6 +482,8 @@ pub const Module = struct {
     esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds = null,
     /// Exact identities for lexical locals in raw ESM interop helper bodies.
     esm_interop_runtime_internal_symbols: ?EsmInteropRuntimeInternalSymbolIds = null,
+    /// Exact identities for top-level locals in raw HMR runtime preambles.
+    hmr_runtime_internal_symbols: ?HmrRuntimeInternalSymbolIds = null,
     /// Exact identity for the generated `createRequire` import local emitted
     /// in this module's output unit. The semantic row is detached from source
     /// AST scopes and is recovered by its typed synthetic kind after rebuilds.

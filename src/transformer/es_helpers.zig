@@ -66,6 +66,7 @@ pub fn isStandaloneLateOutputNameSymbol(symbol: symbol_mod.Symbol) bool {
         .bundler_runtime_helper,
         .esm_runtime_internal_local,
         .esm_interop_runtime_internal_local,
+        .hmr_runtime_internal_local,
         .require_shim_local,
         => false,
     };

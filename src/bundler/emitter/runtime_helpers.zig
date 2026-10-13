@@ -127,12 +127,17 @@ pub fn emitBundleRuntimeHelpers(
             l.currentEsmInteropRuntimeNames()
         else
             rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
-        try rt.appendHmrRuntimeWithNames(output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name, helper_names);
+        const hmr_names = if (linker) |l|
+            try l.hmrRuntimeInternalNames()
+        else
+            rt_names.HmrRuntimeInternalNames{};
+        try rt.appendHmrRuntimeWithInternalNames(output, allocator, options.minify_whitespace, cjs_factory_name, esm_factory_name, helper_names, hmr_names);
         // RN: react-refresh/runtime 의 dev_id 를 전역(__zntc_g.__zntc_refresh_id)으로 주입.
         // __zntc_resolveRefresh()가 전역 require 대신 __zntc_modules[id] 로 runtime 을 꺼내
         // setUpReactRefresh 와 동일 인스턴스를 공유한다(Metro 호환). 브라우저는 null → 미주입.
         if (options.react_refresh_runtime_dev_id) |rid| {
-            try output.appendSlice(allocator, "__zntc_g.__zntc_refresh_id=");
+            try output.appendSlice(allocator, hmr_names.global);
+            try output.appendSlice(allocator, ".__zntc_refresh_id=");
             try parent.appendJsonString(output, allocator, rid);
             try output.appendSlice(allocator, ";\n");
         }

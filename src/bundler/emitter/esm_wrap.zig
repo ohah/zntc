@@ -193,6 +193,7 @@ pub fn emitEsmWrappedModule(
         try l.esmInteropRuntimeNames()
     else
         rt_names.defaultEsmInteropRuntimeNames(options.minify_whitespace);
+    const hmr_names = if (linker) |l| l.currentHmrRuntimeInternalNames() else rt_names.HmrRuntimeInternalNames{};
 
     const init_name = try module.allocInitName(allocator, rename_tbl);
     defer allocator.free(init_name);
@@ -655,8 +656,8 @@ pub fn emitEsmWrappedModule(
                     // export * as ns from './dep' → namespace re-export
                     // getter는 소스 모듈의 exports 객체 자체를 참조
                     const getter_val = switch (src_mod.wrap_kind) {
-                        .esm, .none => try makeNamespaceGetterValue(allocator, src_mod, options, rename_tbl),
-                        .cjs => try allocCjsRequireCall(allocator, src_mod, options, rename_tbl),
+                        .esm, .none => try makeNamespaceGetterValue(allocator, src_mod, options, rename_tbl, hmr_names),
+                        .cjs => try allocCjsRequireCall(allocator, src_mod, options, rename_tbl, hmr_names),
                     };
                     try star_owned.append(allocator, getter_val);
                     if (!direct_exports.contains(eb.exported_name)) {
@@ -833,7 +834,8 @@ pub fn emitEsmWrappedModule(
                 try wrapped.appendSlice(allocator, ", ");
                 // direct-buf: dev_split 만 registry, 그 외는 원래 lexical append 경계 유지(byte-identical).
                 if (options.isDevSplit()) {
-                    try wrapped.appendSlice(allocator, "__zntc_modules[\"");
+                    try wrapped.appendSlice(allocator, hmr_names.modules);
+                    try wrapped.appendSlice(allocator, "[\"");
                     try wrapped.appendSlice(allocator, src_mod.dev_id);
                     try wrapped.appendSlice(allocator, "\"].fn());\n");
                 } else {
@@ -976,11 +978,14 @@ pub fn emitEsmWrappedModule(
                         // 정의자 청크 스코프라 크로스청크 ReferenceError).
                         if (options.useDevModuleRegistry()) {
                             const to_cjs_name = esm_interop_names.get(.to_common_js);
-                            try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
+                            try reexport_buf.appendSlice(allocator, hmr_names.modules);
+                            try reexport_buf.appendSlice(allocator, "[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].fn(), ");
                             try reexport_buf.appendSlice(allocator, to_cjs_name);
-                            try reexport_buf.appendSlice(allocator, "(__zntc_modules[\"");
+                            try reexport_buf.appendSlice(allocator, "(");
+                            try reexport_buf.appendSlice(allocator, hmr_names.modules);
+                            try reexport_buf.appendSlice(allocator, "[\"");
                             try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                             try reexport_buf.appendSlice(allocator, "\"].exports))");
                         } else {
@@ -1017,7 +1022,8 @@ pub fn emitEsmWrappedModule(
                             try reexport_buf.appendSlice(allocator, "(");
                             // direct-buf: dev_split 만 registry, 그 외는 원래 lexical append 경계 유지.
                             if (options.isDevSplit()) {
-                                try reexport_buf.appendSlice(allocator, "__zntc_modules[\"");
+                                try reexport_buf.appendSlice(allocator, hmr_names.modules);
+                                try reexport_buf.appendSlice(allocator, "[\"");
                                 try reexport_buf.appendSlice(allocator, source_mod.dev_id);
                                 try reexport_buf.appendSlice(allocator, "\"].fn()");
                             } else {
@@ -1067,7 +1073,7 @@ pub fn emitEsmWrappedModule(
             re_export_inited.put(allocator, src_i, {}) catch {};
             if (shouldLazyReExportInit(options, src_mod_ptr)) continue;
 
-            try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, module, options, rename_tbl);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod_ptr, module, options, rename_tbl, hmr_names);
         }
 
         // Side-effect-only import (`import './x';`) → target이 ESM 래핑일 때만
@@ -1085,7 +1091,7 @@ pub fn emitEsmWrappedModule(
             if (src_mod.wrap_kind != .esm) continue;
             re_export_inited.put(allocator, src_i, {}) catch {};
 
-            try appendWrappedInitCall(&star_init_buf, allocator, src_mod, module, options, rename_tbl);
+            try appendWrappedInitCall(&star_init_buf, allocator, src_mod, module, options, rename_tbl, hmr_names);
         }
     }
 
@@ -1126,11 +1132,13 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, "({");
         try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, true);
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "var __prevRefreshReg=__zntc_g.$RefreshReg$,__prevRefreshSig=__zntc_g.$RefreshSig$;");
-            try wrapped.appendSlice(allocator, "__zntc_g.$RefreshReg$=function(type,id){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.register(type,\"");
-            try wrapped.appendSlice(allocator, module.dev_id);
-            try wrapped.appendSlice(allocator, " \"+id)};");
-            try wrapped.appendSlice(allocator, "__zntc_g.$RefreshSig$=function(){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};");
+            try appendHmrNamedTemplate(&wrapped, allocator, "var __prevRefreshReg=__zntc_g.$RefreshReg$,__prevRefreshSig=__zntc_g.$RefreshSig$;", hmr_names);
+            try appendHmrNamedTemplateParts(&wrapped, allocator, &.{
+                "__zntc_g.$RefreshReg$=function(type,id){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)rt.register(type,\"",
+                module.dev_id,
+                " \"+id)};",
+            }, hmr_names);
+            try appendHmrNamedTemplate(&wrapped, allocator, "__zntc_g.$RefreshSig$=function(){var rt=__zntc_g.__ReactRefresh||__zntc_resolveRefresh();if(rt)return rt.createSignatureFunctionForTransform();return function(t){return t}};", hmr_names);
         }
         if (func_code.len > 0) {
             func_preamble_lines = @intCast(std.mem.count(u8, wrapped.items, "\n"));
@@ -1143,10 +1151,12 @@ pub fn emitEsmWrappedModule(
         try wrapped.appendSlice(allocator, body_code);
         if (reexport_buf.items.len > 0) try wrapped.appendSlice(allocator, reexport_buf.items);
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "__zntc_g.$RefreshReg$=__prevRefreshReg;__zntc_g.$RefreshSig$=__prevRefreshSig;");
-            try wrapped.appendSlice(allocator, "__zntc_make_hot(\"");
-            try wrapped.appendSlice(allocator, module.dev_id);
-            try wrapped.appendSlice(allocator, "\").accept(function(m){if(__zntc_isReactRefreshBoundary(m))__zntc_enqueueUpdate();else __zntc_reload()});");
+            try appendHmrNamedTemplate(&wrapped, allocator, "__zntc_g.$RefreshReg$=__prevRefreshReg;__zntc_g.$RefreshSig$=__prevRefreshSig;", hmr_names);
+            try appendHmrNamedTemplateParts(&wrapped, allocator, &.{
+                "__zntc_make_hot(\"",
+                module.dev_id,
+                "\").accept(function(m){if(__zntc_isReactRefreshBoundary(m))__zntc_enqueueUpdate();else __zntc_reload()});",
+            }, hmr_names);
         }
         if (options.dev_mode) {
             try wrapped.appendSlice(allocator, "}},void 0,");
@@ -1164,15 +1174,15 @@ pub fn emitEsmWrappedModule(
         try rt.appendWrapperMemberHeader(&wrapped, allocator, basename, "", is_async, !options.unsupported.object_extensions, false);
         try wrapped.appendSlice(allocator, "\n");
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "\tvar __prevRefreshReg = __zntc_g.$RefreshReg$, __prevRefreshSig = __zntc_g.$RefreshSig$;\n");
-            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshReg$ = function(type, id) {\n");
-            try wrapped.appendSlice(allocator, "\t\tvar rt = __zntc_g.__ReactRefresh || __zntc_resolveRefresh();\n");
+            try appendHmrNamedTemplate(&wrapped, allocator, "\tvar __prevRefreshReg = __zntc_g.$RefreshReg$, __prevRefreshSig = __zntc_g.$RefreshSig$;\n", hmr_names);
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t__zntc_g.$RefreshReg$ = function(type, id) {\n", hmr_names);
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t\tvar rt = __zntc_g.__ReactRefresh || __zntc_resolveRefresh();\n", hmr_names);
             try wrapped.appendSlice(allocator, "\t\tif (rt) rt.register(type, \"");
             try wrapped.appendSlice(allocator, module.dev_id);
             try wrapped.appendSlice(allocator, " \" + id);\n");
             try wrapped.appendSlice(allocator, "\t};\n");
-            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshSig$ = function() {\n");
-            try wrapped.appendSlice(allocator, "\t\tvar rt = __zntc_g.__ReactRefresh || __zntc_resolveRefresh();\n");
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t__zntc_g.$RefreshSig$ = function() {\n", hmr_names);
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t\tvar rt = __zntc_g.__ReactRefresh || __zntc_resolveRefresh();\n", hmr_names);
             try wrapped.appendSlice(allocator, "\t\tif (rt) return rt.createSignatureFunctionForTransform();\n");
             try wrapped.appendSlice(allocator, "\t\treturn function(t) { return t; };\n");
             try wrapped.appendSlice(allocator, "\t};\n");
@@ -1198,13 +1208,15 @@ pub fn emitEsmWrappedModule(
             try appendIndented(&wrapped, allocator, reexport_buf.items);
         }
         if (has_refresh) {
-            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshReg$ = __prevRefreshReg;\n");
-            try wrapped.appendSlice(allocator, "\t__zntc_g.$RefreshSig$ = __prevRefreshSig;\n");
-            try wrapped.appendSlice(allocator, "\t__zntc_make_hot(\"");
-            try wrapped.appendSlice(allocator, module.dev_id);
-            try wrapped.appendSlice(allocator, "\").accept(function(m) {\n");
-            try wrapped.appendSlice(allocator, "\t\tif (__zntc_isReactRefreshBoundary(m)) __zntc_enqueueUpdate();\n");
-            try wrapped.appendSlice(allocator, "\t\telse __zntc_reload();\n");
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t__zntc_g.$RefreshReg$ = __prevRefreshReg;\n", hmr_names);
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t__zntc_g.$RefreshSig$ = __prevRefreshSig;\n", hmr_names);
+            try appendHmrNamedTemplateParts(&wrapped, allocator, &.{
+                "\t__zntc_make_hot(\"",
+                module.dev_id,
+                "\").accept(function(m) {\n",
+            }, hmr_names);
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t\tif (__zntc_isReactRefreshBoundary(m)) __zntc_enqueueUpdate();\n", hmr_names);
+            try appendHmrNamedTemplate(&wrapped, allocator, "\t\telse __zntc_reload();\n", hmr_names);
             try wrapped.appendSlice(allocator, "\t});\n");
         }
         if (options.dev_mode) {
@@ -1345,6 +1357,7 @@ fn appendWrappedInitCall(
     importer: *const Module,
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
+    hmr_names: rt_names.HmrRuntimeInternalNames,
 ) !void {
     const is_tla = @import("../module.zig").isAwaitableInit(src_mod, importer, options.transform_options_base.unsupported);
     const guard = src_mod.shouldGuard(options.entry_error_guard);
@@ -1357,7 +1370,8 @@ fn appendWrappedInitCall(
             // 매핑은 codegen body 와 줄 수만 반영). .esm init 은 기존에 단일번들 dev 도 registry 였으므로
             // useDevModuleRegistry(dev and (!split or lazy)).
             if (options.useDevModuleRegistry()) {
-                try buf.appendSlice(allocator, "__zntc_modules[\"");
+                try buf.appendSlice(allocator, hmr_names.modules);
+                try buf.appendSlice(allocator, "[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn()");
             } else {
@@ -1372,7 +1386,8 @@ fn appendWrappedInitCall(
             if (guard) try buf.appendSlice(allocator, if (options.minify_whitespace) rt.GUARD_LAMBDA_OPEN_MIN else rt.GUARD_LAMBDA_OPEN);
             // .cjs init 은 기존에 단일번들 dev 도 lexical → dev_split 만 registry(isDevSplit).
             if (options.isDevSplit()) {
-                try buf.appendSlice(allocator, "__zntc_modules[\"");
+                try buf.appendSlice(allocator, hmr_names.modules);
+                try buf.appendSlice(allocator, "[\"");
                 try buf.appendSlice(allocator, src_mod.dev_id);
                 try buf.appendSlice(allocator, "\"].fn()");
             } else {
@@ -1385,6 +1400,27 @@ fn appendWrappedInitCall(
         },
         .none => {},
     }
+}
+
+fn appendHmrNamedTemplate(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    hmr_names: rt_names.HmrRuntimeInternalNames,
+) !void {
+    try rt.appendHmrInternalNameReferences(out, allocator, source, hmr_names);
+}
+
+fn appendHmrNamedTemplateParts(
+    out: *std.ArrayList(u8),
+    allocator: std.mem.Allocator,
+    parts: []const []const u8,
+    hmr_names: rt_names.HmrRuntimeInternalNames,
+) !void {
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(allocator);
+    for (parts) |part| try source.appendSlice(allocator, part);
+    try appendHmrNamedTemplate(out, allocator, source.items, hmr_names);
 }
 
 /// __export() 내부의 "name: () => value,\n" 한 줄을 출력한다.
@@ -1472,9 +1508,9 @@ fn shouldLazyReExportInit(options: *const EmitOptions, src_mod: *const Module) b
 // 무관하나, 리뷰 diff 를 최소화하고 비-dev_split 경로를 한눈에 byte-identical 로 보이게 하기 위함.)
 
 /// CJS require 호출식. dev_split: `__zntc_modules["id"].fn()`, else: `require_X()`. =module.exports.
-fn allocCjsRequireCall(allocator: std.mem.Allocator, mod: *const Module, options: *const EmitOptions, rename_tbl: ?*const RenameTable) ![]const u8 {
+fn allocCjsRequireCall(allocator: std.mem.Allocator, mod: *const Module, options: *const EmitOptions, rename_tbl: ?*const RenameTable, hmr_names: rt_names.HmrRuntimeInternalNames) ![]const u8 {
     if (options.isDevSplit()) {
-        return std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{mod.dev_id});
+        return std.fmt.allocPrint(allocator, "{s}[\"{s}\"].fn()", .{ hmr_names.modules, mod.dev_id });
     }
     const rv = try mod.allocRequireName(allocator, rename_tbl);
     defer allocator.free(rv);
@@ -1482,9 +1518,9 @@ fn allocCjsRequireCall(allocator: std.mem.Allocator, mod: *const Module, options
 }
 
 /// ESM 네임스페이스 객체 ref. dev_split: `__zntc_modules["id"].exports`, else: `exports_X`.
-fn allocEsmExportsRef(allocator: std.mem.Allocator, mod: *const Module, options: *const EmitOptions, rename_tbl: ?*const RenameTable) ![]const u8 {
+fn allocEsmExportsRef(allocator: std.mem.Allocator, mod: *const Module, options: *const EmitOptions, rename_tbl: ?*const RenameTable, hmr_names: rt_names.HmrRuntimeInternalNames) ![]const u8 {
     if (options.isDevSplit()) {
-        return std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].exports", .{mod.dev_id});
+        return std.fmt.allocPrint(allocator, "{s}[\"{s}\"].exports", .{ hmr_names.modules, mod.dev_id });
     }
     return mod.allocExportsName(allocator, rename_tbl);
 }
@@ -1495,6 +1531,7 @@ fn makeLazyEsmGetterValue(
     target: []const u8,
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
+    hmr_names: rt_names.HmrRuntimeInternalNames,
 ) ![]const u8 {
     if (!shouldLazyReExportInit(options, src_mod) or src_mod.wrap_kind != .esm) {
         return try allocator.dupe(u8, target);
@@ -1503,7 +1540,7 @@ fn makeLazyEsmGetterValue(
     // RN 전용(shouldLazyReExportInit=react_native) — dev_split(web) 미경유(web 은 위 early-return).
     // 원래 게이트(`dev_mode and !code_splitting`)·구조 그대로 유지 → RN/단일번들 dev byte-identical.
     const init_call = if (options.dev_mode and !options.code_splitting) blk: {
-        break :blk try std.fmt.allocPrint(allocator, "__zntc_modules[\"{s}\"].fn()", .{src_mod.dev_id});
+        break :blk try std.fmt.allocPrint(allocator, "{s}[\"{s}\"].fn()", .{ hmr_names.modules, src_mod.dev_id });
     } else blk: {
         const iv = try src_mod.allocInitName(allocator, rename_tbl);
         defer allocator.free(iv);
@@ -1526,12 +1563,13 @@ fn makeEsmExportGetterValue(
     name: []const u8,
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
+    hmr_names: rt_names.HmrRuntimeInternalNames,
 ) ![]const u8 {
-    const ev = try allocEsmExportsRef(allocator, src_mod, options, rename_tbl);
+    const ev = try allocEsmExportsRef(allocator, src_mod, options, rename_tbl, hmr_names);
     defer allocator.free(ev);
     const target = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, name });
     defer allocator.free(target);
-    return makeLazyEsmGetterValue(allocator, src_mod, target, options, rename_tbl);
+    return makeLazyEsmGetterValue(allocator, src_mod, target, options, rename_tbl, hmr_names);
 }
 
 fn makeNamespaceGetterValue(
@@ -1539,10 +1577,11 @@ fn makeNamespaceGetterValue(
     src_mod: *const Module,
     options: *const EmitOptions,
     rename_tbl: ?*const RenameTable,
+    hmr_names: rt_names.HmrRuntimeInternalNames,
 ) ![]const u8 {
-    const ev = try allocEsmExportsRef(allocator, src_mod, options, rename_tbl);
+    const ev = try allocEsmExportsRef(allocator, src_mod, options, rename_tbl, hmr_names);
     defer allocator.free(ev);
-    return makeLazyEsmGetterValue(allocator, src_mod, ev, options, rename_tbl);
+    return makeLazyEsmGetterValue(allocator, src_mod, ev, options, rename_tbl, hmr_names);
 }
 
 /// star re-export의 getter 값을 소스 모듈 wrap_kind에 따라 생성한다.
@@ -1558,6 +1597,7 @@ fn makeStarGetterValue(
     options: *const EmitOptions,
 ) !?[]const u8 {
     if (l.tree_shaker_active and !src_mod.is_included) return null;
+    const hmr_names = l.currentHmrRuntimeInternalNames();
     // RFC #3940 L.4c-2a-ii: wrapper-name 을 build-scope rename_table 경유 (parity 로 byte-identical).
     const rename_tbl: ?*const RenameTable = &l.rename_table;
 
@@ -1581,12 +1621,12 @@ fn makeStarGetterValue(
                 if (l.tree_shaker_active and !canonical_mod.is_included) return null;
                 // canonical 모듈이 래핑되어 있으면 exports_xxx.name 형태
                 if (canonical_mod.wrap_kind == .esm) {
-                    const ev = try allocEsmExportsRef(allocator, canonical_mod, options, rename_tbl);
+                    const ev = try allocEsmExportsRef(allocator, canonical_mod, options, rename_tbl, hmr_names);
                     defer allocator.free(ev);
                     return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ ev, resolved.export_name });
                 }
                 if (canonical_mod.wrap_kind == .cjs) {
-                    const rv = try allocCjsRequireCall(allocator, canonical_mod, options, rename_tbl);
+                    const rv = try allocCjsRequireCall(allocator, canonical_mod, options, rename_tbl, hmr_names);
                     defer allocator.free(rv);
                     return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ rv, resolved.export_name });
                 }
@@ -1602,10 +1642,10 @@ fn makeStarGetterValue(
             return null;
         },
         .esm => {
-            return try makeEsmExportGetterValue(allocator, src_mod, name, options, rename_tbl);
+            return try makeEsmExportGetterValue(allocator, src_mod, name, options, rename_tbl, hmr_names);
         },
         .cjs => {
-            const rv = try allocCjsRequireCall(allocator, src_mod, options, rename_tbl);
+            const rv = try allocCjsRequireCall(allocator, src_mod, options, rename_tbl, hmr_names);
             defer allocator.free(rv);
             return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ rv, name });
         },

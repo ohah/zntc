@@ -84,6 +84,43 @@ describe('HMR 통합 테스트', () => {
     expect(stdout.trim()).toBe('export-source define-source\n42');
   });
 
+  test('HMR runtime internals do not capture user references to same-named globals', async () => {
+    const fixture = await createFixture({
+      'entry.js': [
+        `globalThis.__zntc_hot_cbs = "global-callbacks";`,
+        `globalThis.__zntc_hot_data = "global-data";`,
+        `globalThis.__zntc_schedule = "global-schedule";`,
+        `globalThis.__zntc_refreshTimer = "global-timer";`,
+        `globalThis.__zntc_orig_commonJS = "global-cjs-factory";`,
+        `globalThis.__zntc_orig_esm = "global-esm-factory";`,
+        `console.log(JSON.stringify([__zntc_hot_cbs, __zntc_hot_data, __zntc_schedule, __zntc_refreshTimer, __zntc_orig_commonJS, __zntc_orig_esm]));`,
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+
+    const outFile = join(fixture.dir, 'out.js');
+    const bundle = await runZntc([
+      '--bundle',
+      join(fixture.dir, 'entry.js'),
+      '-o',
+      outFile,
+      '--dev',
+    ]);
+    expect(bundle.exitCode).toBe(0);
+
+    const run = spawn({ cmd: ['bun', 'run', outFile], stdout: 'pipe', stderr: 'pipe' });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(run.stdout).text(),
+      new Response(run.stderr).text(),
+      run.exited,
+    ]);
+    expect(exitCode).toBe(0);
+    expect(stderr).toBe('');
+    expect(stdout.trim()).toBe(
+      '["global-callbacks","global-data","global-schedule","global-timer","global-cjs-factory","global-esm-factory"]',
+    );
+  });
+
   test('--watch-json 첫 rebuild는 graph_changed, 이후는 변경 모듈만 updates', async () => {
     const fixture = await createFixture({
       'App.tsx': `export default function App() { return "v1"; }`,

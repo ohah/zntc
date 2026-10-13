@@ -504,6 +504,7 @@ fn hasFixedOutputName(sym: Symbol) bool {
         .cjs_runtime_internal_local,
         .esm_runtime_internal_local,
         .esm_interop_runtime_internal_local,
+        .hmr_runtime_internal_local,
         .bundler_runtime_helper,
         .require_shim_local,
         => true,
