@@ -45,10 +45,10 @@ console.log(c[s], c.ab, c[3]);`,
   },
   'class with private members': {
     source: `${keyed}
-class C { #p = 1; [ev(k1, 1)] = 5; get p() { return this.#p; } }
+class C { #p = 1; [ev(k1, 1)] = () => {}; [ev(k2, 2)] = 5; get p() { return this.#p; } }
 new C(); new C(); const c = new C();
-console.log(calls, c.k1, c.p, log.join());`,
-    expected: '1 5 1 ev1,str1\n',
+console.log(calls, c.k1.name, c.k2, c.p, log.join());`,
+    expected: '2 k1 5 1 ev1,str1,ev2,str2\n',
   },
   'Symbol.toPrimitive returning a symbol': {
     source: `const s = Symbol('s');
