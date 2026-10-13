@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { createFixture, runZntc } from './helpers';
+import { createFixture, runZntc, runZntcInDir } from './helpers';
 
 // #5581: TypeScript drops an import whose bindings are all used only as types
 // in the source, so its module is not evaluated — the same as `import type`.
@@ -106,6 +106,36 @@ describe('TypeScript type-only imports do not evaluate their module (#5581, #559
         expect(run.stdout).toBe(expected);
       });
     }
+  }
+
+  // The bundler's transformer works on a clone of the parsed AST. The clone
+  // lost `is_typescript`, so with emitDecoratorMetadata (which turns off the
+  // parse-time check) a type-only named import evaluated its module (#5608).
+  for (const target of ['es2019', 'es2022']) {
+    test(`type-only named import with emitDecoratorMetadata, ${target}`, async () => {
+      const created = await createFixture({
+        'svc.ts': "console.log('svc');\nexport class Service {}",
+        'entry.ts':
+          "import { Service } from './svc';\nclass C { constructor(s: Service) {} }\nconsole.log('main', typeof C);",
+        'tsconfig.json':
+          '{"compilerOptions":{"experimentalDecorators":true,"emitDecoratorMetadata":true}}',
+        'package.json': '{"type":"module"}',
+      });
+      cleanup = created.cleanup;
+      const out = join(created.dir, 'out.mjs');
+      const result = await runZntcInDir(created.dir, [
+        '--bundle',
+        'entry.ts',
+        '--format=esm',
+        `--target=${target}`,
+        '-o',
+        out,
+      ]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const run = spawnSync('node', [out], { encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.stdout).toBe('main function\n');
+    });
   }
 
   // Transform output (no bundling): TypeScript drops the import, JavaScript keeps it —

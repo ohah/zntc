@@ -252,6 +252,15 @@ test "Ast string_table: cloned intern table is independent from source AST" {
     try std.testing.expectEqual(@as(usize, "shared".len + "clone-only".len), cloned.string_table.items.len);
 }
 
+test "Ast.cloneForTransformer: keeps is_typescript (#5608)" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+    ast.is_typescript = true;
+    var cloned = try Ast.cloneForTransformer(&ast, std.testing.allocator);
+    defer cloned.deinit();
+    try std.testing.expect(cloned.is_typescript);
+}
+
 test "Ast string_table: addString self-slice + miss survives realloc" {
     // 회귀 가드: text 가 string_table 내부 slice 이고 intern miss 인 케이스에서
     // ensureUnusedCapacity 가 realloc 을 일으키면 text.ptr 이 dangling 된다.

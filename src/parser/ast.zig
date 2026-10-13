@@ -1274,6 +1274,9 @@ pub const Ast = struct {
             .has_ts_import_equals = source_ast.has_ts_import_equals,
             .has_ts_export_equals = source_ast.has_ts_export_equals,
             .has_flow_enum_declaration = source_ast.has_flow_enum_declaration,
+            // #5608: transformer import elision 범위(TS 만). 빠뜨리면 번들 경로의
+            // transformer 가 TS 모듈을 JS 로 보고 타입 전용 named import 를 남긴다.
+            .is_typescript = source_ast.is_typescript,
             .jsx_pragma_factory = source_ast.jsx_pragma_factory,
             .jsx_pragma_fragment = source_ast.jsx_pragma_fragment,
             .jsx_pragma_runtime = source_ast.jsx_pragma_runtime,
