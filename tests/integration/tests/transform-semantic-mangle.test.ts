@@ -1325,6 +1325,39 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(typedEscapedRun.stdout).toBe('6');
   });
 
+  test('exact scope audit accepts decoded scope-map aliases for escaped bindings', async () => {
+    const fixture = await createFixture({
+      'input.js': ['const \\u006cocalName = 7;', 'console.log(localName);'].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--minify-identifiers',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+
+    const identity = expectPrepassGraph(result.stderr, 'input.js', 'retained');
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity).toMatch(new RegExp(counter + '=0(?:\\s|$)'));
+    }
+
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout).toBe('7');
+  });
+
   test('standalone downlevel helpers avoid user bindings in normal and minified output', async () => {
     const cases = [
       {
