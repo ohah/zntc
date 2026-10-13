@@ -14,7 +14,6 @@ const symbol_mod = @import("../../semantic/symbol.zig");
 const ReferenceFlags = symbol_mod.ReferenceFlags;
 const SymbolId = symbol_mod.SymbolId;
 
-const FieldAssignment = class_member_helpers.FieldAssignment;
 const MemberDecoratorInfo = class_member_helpers.MemberDecoratorInfo;
 
 /// Decorator lowering can synthesize class-name references from a binding node,
@@ -42,8 +41,9 @@ pub fn transformExperimentalDecorators(
     old_deco_start: u32,
     old_deco_len: u32,
     member_decos: []const MemberDecoratorInfo,
-    static_block_iifes: []const NodeIndex,
-    static_field_assigns: []const FieldAssignment,
+    /// Static fields, blocks and private descriptors, in source order. They
+    /// are part of class definition: they run before any decorator (tsc).
+    static_statements: []const NodeIndex,
     ctor_param_decos: []const NodeIndex,
     ctor_params: NodeList,
 ) Error!NodeIndex {
@@ -99,6 +99,7 @@ pub fn transformExperimentalDecorators(
 
         // pending_nodes에 let 선언 추가 (visitExtraList가 class 노드 앞에 삽입)
         try self.pending_nodes.append(self.allocator, var_decl);
+        try self.pending_nodes.appendSlice(self.allocator, static_statements);
 
         // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
         for (member_decos) |md| {
@@ -118,16 +119,6 @@ pub fn transformExperimentalDecorators(
         );
         try self.pending_nodes.append(self.allocator, class_deco_stmt);
 
-        // static field: Foo.x = value (decorator 호출 뒤에 배치)
-        for (static_field_assigns) |field| {
-            const stmt = try self.buildStaticFieldAssignment(new_name, field, self.current_scope);
-            try self.pending_nodes.append(self.allocator, stmt);
-        }
-
-        for (static_block_iifes) |iife| {
-            try self.pending_nodes.append(self.allocator, iife);
-        }
-
         return .none;
     }
 
@@ -145,36 +136,26 @@ pub fn transformExperimentalDecorators(
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
         try self.pending_nodes.append(self.allocator, class_result);
+        try self.pending_nodes.appendSlice(self.allocator, static_statements);
 
         for (member_decos) |md| {
             const call_stmt = try buildDecorateClassMemberCall(self, name_span, name_old_idx, md);
             try self.pending_nodes.append(self.allocator, call_stmt);
         }
 
-        for (static_field_assigns) |field| {
-            const stmt = try self.buildStaticFieldAssignment(new_name, field, self.current_scope);
-            try self.pending_nodes.append(self.allocator, stmt);
-        }
-
-        for (static_block_iifes) |iife| {
-            try self.pending_nodes.append(self.allocator, iife);
-        }
-
         return .none;
     }
 
     // decorator가 없는 경우
-    // ES2022: static block이 있으면 class를 pending에 넣고 IIFE를 뒤에 추가
-    if (static_block_iifes.len > 0) {
+    // static 문장이 있으면 class를 pending에 넣고 그 뒤에 추가
+    if (static_statements.len > 0) {
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
             @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
             none,                   0,                       0,
             empty_list.start,       empty_list.len,
         });
         try self.pending_nodes.append(self.allocator, class_result);
-        for (static_block_iifes) |iife| {
-            try self.pending_nodes.append(self.allocator, iife);
-        }
+        try self.pending_nodes.appendSlice(self.allocator, static_statements);
         return .none;
     }
 
