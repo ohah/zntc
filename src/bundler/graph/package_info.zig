@@ -60,9 +60,28 @@ pub fn lookupPkgInfo(self: *ModuleGraph, io: std.Io, pkg_dir_path: []const u8) P
 /// node_modules 패키지의 package.json sideEffects 필드를 module.side_effects에 반영.
 pub fn applySideEffectsFromPackageJson(self: *ModuleGraph, io: std.Io, module: *Module) void {
     if (self.ignore_annotations) return;
-    const pkg_dir_path = findPackageDirPath(module.path) orelse return;
+    // node_modules 밖(프로젝트·모노레포 패키지 코드)은 가장 가까운 package.json 을 쓴다 —
+    // esbuild·rolldown·webpack 도 사용자 코드에 `sideEffects` 를 적용한다 (#5634).
+    const pkg_dir_path = findPackageDirPath(module.path) orelse
+        nearestPackageDirPath(self, io, module.path) orelse return;
     const info = self.lookupPkgInfo(io, pkg_dir_path);
     graph_package_side_effects.applyCached(module, pkg_dir_path, info.side_effects);
+}
+
+/// node_modules 밖에서 가장 가까운 package.json 이 있는 디렉토리. 처음 만난 package.json 에서
+/// 멈춘다(`nearestPackageTypeIsModule` 과 같은 탐색, 같은 `pkg_info_cache`).
+fn nearestPackageDirPath(self: *ModuleGraph, io: std.Io, module_path: []const u8) ?[]const u8 {
+    const max_hops = 64;
+    var dir_opt = std.fs.path.dirname(module_path);
+    var hops: usize = 0;
+    while (dir_opt) |dir| : (hops += 1) {
+        if (hops >= max_hops) return null;
+        if (self.lookupPkgInfo(io, dir).found) return dir;
+        const parent = std.fs.path.dirname(dir) orelse return null;
+        if (std.mem.eql(u8, parent, dir)) return null;
+        dir_opt = parent;
+    }
+    return null;
 }
 
 /// 모듈 경로에서 **가장 가까운** package.json 의 `"type"` 필드가 `"module"` 인지.

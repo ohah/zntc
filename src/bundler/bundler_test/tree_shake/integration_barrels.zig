@@ -290,7 +290,9 @@ test "Integration: lazy barrel skips local re-export with side-effect import pre
     );
     try writeFile(tmp.dir, "side.ts", "console.log('LAZY_BARREL_LOCAL_SIDE_EFFECT');");
     try writeFile(tmp.dir, "real.ts", "export const value = 'LAZY_BARREL_LOCAL_SIDE_VALUE';");
-    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": false}");
+    // The project package.json applies to its own files (#5634): the barrel
+    // and real.ts are declared pure, side.ts keeps its side effect.
+    try writeFile(tmp.dir, "package.json", "{\"sideEffects\": [\"./side.ts\"]}");
 
     const entry = try absPath(&tmp, "entry.ts");
     defer std.testing.allocator.free(entry);
@@ -307,8 +309,7 @@ test "Integration: lazy barrel skips local re-export with side-effect import pre
     try std.testing.expect(!result.hasErrors());
     try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_LOCAL_SIDE_EFFECT") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "LAZY_BARREL_LOCAL_SIDE_VALUE") != null);
-    // The barrel stays in the graph because it imports a side-effectful module
-    // (the root package.json `sideEffects` is not applied outside node_modules),
+    // The barrel stays in the graph because it imports a side-effectful module,
     // but none of its own code is emitted: only an empty region remains.
     const region = "//#region barrel.ts\n//#endregion\n";
     if (std.mem.indexOf(u8, result.output, "barrel.ts")) |_| {
