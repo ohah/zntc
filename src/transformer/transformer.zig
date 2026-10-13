@@ -383,9 +383,9 @@ pub const Transformer = struct {
     runtime_helper_aliases: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// 이미 쓴 합성 결과 이름 — 서로 다른 합성 이름이 같은 결과로 겹치지 않게 (`_loop`→`_loop2` 와 두 번째 루프의 `_loop2`).
     synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
-    /// Late standalone staging spelling -> readable output-name base. A staging
-    /// spelling differs from its base only when the source already binds the
-    /// base; the final-name pass still starts from the base (#5451).
+    /// Late standalone staging spelling -> readable output-name base. Includes
+    /// collision-free names so final output can verify every deferred request
+    /// has an exact late-name SymbolId (#5451).
     late_output_name_bases: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// 합성 생성 함수가 만든 식별자 노드 — 심볼 누락 검사기(`symbol_coverage`)가 켜졌을 때만 기록한다
     /// (null 이면 기록 안 함). 사용자 이름을 빌려 쓰는 합성 바인딩(`const C = class {}` 의 안쪽 `C`)을

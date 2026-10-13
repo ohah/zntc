@@ -1200,6 +1200,7 @@ fn buildStandaloneLateOutputNameOverrides(
     allocator: std.mem.Allocator,
     transformer: *const Transformer,
 ) TranspileError!std.AutoHashMapUnmanaged(u32, []const u8) {
+    try validateDeferredOutputNameSymbols(allocator, transformer);
     var overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     var reserved: std.StringHashMapUnmanaged(void) = .empty;
     defer reserved.deinit(allocator);
@@ -1242,6 +1243,30 @@ fn buildStandaloneLateOutputNameOverrides(
         try overrides.put(allocator, @intCast(raw_id), candidate);
     }
     return overrides;
+}
+
+/// A deferred staging spelling must be represented by a late-name symbol.
+/// Without this check a producer can reserve a readable output name, forget to
+/// mark its exact SymbolId, and silently emit the staging spelling instead.
+fn validateDeferredOutputNameSymbols(allocator: std.mem.Allocator, transformer: *const Transformer) TranspileError!void {
+    const State = enum { pending, found };
+    var deferred: std.StringHashMapUnmanaged(State) = .empty;
+    defer deferred.deinit(allocator);
+    var entries = transformer.late_output_name_bases.iterator();
+    while (entries.next()) |entry| {
+        const staging_name = entry.key_ptr.*;
+        if (staging_name.len == 0 or entry.value_ptr.len == 0) return error.TransformError;
+        try deferred.put(allocator, staging_name, .pending);
+    }
+    for (transformer.symbols) |symbol| {
+        const state = deferred.getPtr(symbol.synthetic_name) orelse continue;
+        if (!isStandaloneLateOutputNameSymbol(symbol)) return error.TransformError;
+        state.* = .found;
+    }
+    var states = deferred.valueIterator();
+    while (states.next()) |state| {
+        if (state.* != .found) return error.TransformError;
+    }
 }
 
 fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbol) bool {
@@ -4647,6 +4672,81 @@ test "#4819 standalone generated import local final name is selected by SymbolId
     try std.testing.expectEqual(@as(usize, 1), names.count());
     try std.testing.expectEqualStrings("_emotionCss2", names.get(1).?);
     try std.testing.expect(names.get(0) == null);
+}
+
+test "#4819 collision-free deferred names are still registered to exact SymbolIds" {
+    const Symbol = @import("semantic/symbol.zig").Symbol;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(allocator, &ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+
+    const staging = try es_helpers.deferSyntheticOutputName(&transformer, "_deferred");
+    try std.testing.expectEqualStrings("_deferred", staging);
+    try std.testing.expectEqualStrings("_deferred", transformer.late_output_name_bases.get(staging).?);
+    const generated_staging = try es_helpers.deferGeneratedOutputName(&transformer, "FlowComponent");
+    try std.testing.expectEqualStrings("FlowComponent", generated_staging);
+    try std.testing.expectEqualStrings("FlowComponent", transformer.late_output_name_bases.get(generated_staging).?);
+
+    const generated_name = try transformer.ast.addString(staging);
+    const generated_output_name = try transformer.ast.addString(generated_staging);
+    var symbols = [_]Symbol{
+        .{
+            .name = generated_name,
+            .scope_id = .none,
+            .kind = .variable_var,
+            .declaration_span = generated_name,
+            .synthetic_kind = .standalone_generated_binding,
+            .synthetic_name = "_deferred",
+        },
+        .{
+            .name = generated_output_name,
+            .scope_id = .none,
+            .kind = .function_decl,
+            .declaration_span = generated_output_name,
+            .synthetic_kind = .standalone_generated_binding,
+            .synthetic_name = "FlowComponent",
+        },
+    };
+    transformer.symbols = &symbols;
+    var names = try buildStandaloneLateOutputNameOverrides(allocator, &transformer);
+    defer names.deinit(allocator);
+    try std.testing.expectEqualStrings("_deferred", names.get(0).?);
+    try std.testing.expectEqualStrings("FlowComponent", names.get(1).?);
+}
+
+test "#4819 deferred output spelling without a late SymbolId fails closed" {
+    const Symbol = @import("semantic/symbol.zig").Symbol;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(allocator, &ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+
+    try transformer.late_output_name_bases.put(allocator, "_staging", "_preferred");
+    const staging = try transformer.ast.addString("_staging");
+    var symbols = [_]Symbol{.{
+        .name = staging,
+        .scope_id = .none,
+        .kind = .variable_var,
+        .declaration_span = staging,
+        .synthetic_name = "_staging",
+    }};
+    transformer.symbols = &symbols;
+    try std.testing.expectError(error.TransformError, buildStandaloneLateOutputNameOverrides(allocator, &transformer));
+
+    symbols[0].synthetic_kind = .standalone_generated_binding;
+    symbols[0].synthetic_name = "_different";
+    try std.testing.expectError(error.TransformError, buildStandaloneLateOutputNameOverrides(allocator, &transformer));
 }
 
 test "#4819 standalone helper preamble resolves its emitted name through SymbolId" {

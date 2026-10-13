@@ -1300,17 +1300,11 @@ pub fn resolveSyntheticNameAvoidingDynamicEval(self: anytype, name: []const u8, 
 pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
     if (self.synthetic_names.get(name)) |resolved| {
         try self.synthetic_taken.put(self.allocator, resolved, {});
-        if (!std.mem.eql(u8, resolved, name) and !self.late_output_name_bases.contains(resolved)) {
-            const base = try self.name_arena.?.allocator().dupe(u8, name);
-            try self.late_output_name_bases.put(self.allocator, resolved, base);
-        }
+        try recordLateOutputNameBase(self, resolved, name);
         return resolved;
     }
     const staging = try resolveSyntheticName(self, name);
-    if (!std.mem.eql(u8, staging, name) and !self.late_output_name_bases.contains(staging)) {
-        const base = try self.name_arena.?.allocator().dupe(u8, name);
-        try self.late_output_name_bases.put(self.allocator, staging, base);
-    }
+    try recordLateOutputNameBase(self, staging, name);
     return staging;
 }
 
@@ -1320,18 +1314,26 @@ pub fn deferSyntheticOutputName(self: anytype, name: []const u8) ![]const u8 {
 pub fn deferGeneratedOutputName(self: anytype, name: []const u8) ![]const u8 {
     if (self.synthetic_names.get(name)) |resolved| {
         try self.synthetic_taken.put(self.allocator, resolved, {});
-        if (!std.mem.eql(u8, resolved, name) and !self.late_output_name_bases.contains(resolved)) {
-            const base = try self.name_arena.?.allocator().dupe(u8, name);
-            try self.late_output_name_bases.put(self.allocator, resolved, base);
-        }
+        try recordLateOutputNameBase(self, resolved, name);
         return resolved;
     }
     const staging = try resolveGeneratedName(self, name);
-    if (!std.mem.eql(u8, staging, name) and !self.late_output_name_bases.contains(staging)) {
-        const base = try self.name_arena.?.allocator().dupe(u8, name);
-        try self.late_output_name_bases.put(self.allocator, staging, base);
-    }
+    try recordLateOutputNameBase(self, staging, name);
     return staging;
+}
+
+/// Keep every late-name request in the registry, including collision-free
+/// staging names. The standalone output pass uses this ledger to assert that
+/// each deferred spelling is owned by an exact late-name SymbolId.
+fn recordLateOutputNameBase(self: anytype, staging: []const u8, base_name: []const u8) !void {
+    if (self.late_output_name_bases.get(staging)) |existing| {
+        if (!std.mem.eql(u8, existing, base_name))
+            std.debug.panic("late output staging name was assigned conflicting output bases", .{});
+        return;
+    }
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const base = try self.name_arena.?.allocator().dupe(u8, base_name);
+    try self.late_output_name_bases.put(self.allocator, staging, base);
 }
 
 pub const ScopedSyntheticOutputName = struct {
