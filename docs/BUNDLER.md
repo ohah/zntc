@@ -461,7 +461,8 @@ esbuild / rolldown 과 동일 기준. 재귀 깊이 128 제한.
 `sideEffects` 필드:
 - `false` → 모듈 전체 순수
 - `["*.css"]` → glob 매칭 (단조 적용, 예외 없음, INVARIANTS.md § sideEffects 참고)
-- 자동 순수 판별: entry 가 아닌 모듈의 top-level 이 모두 순수면 `side_effects = false` 자동 설정
+- 적용 범위: 모듈에서 **가장 가까운** package.json. node_modules 패키지뿐 아니라 프로젝트·워크스페이스 패키지 코드에도 적용된다 (esbuild/rolldown/webpack 동일, #5634)
+- 자동 순수 판별: entry 가 아닌 모듈의 top-level 이 모두 순수면 `side_effects = false` 자동 설정. 단 평가 효과가 있는 모듈을 정적으로 import 하면 순수가 아니다 — import 자체가 그 모듈을 평가한다 (#5638)
 
 ### Type-only import elision
 
