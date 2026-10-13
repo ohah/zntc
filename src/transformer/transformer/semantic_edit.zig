@@ -1087,18 +1087,27 @@ fn outputReferenceName(ast: *const ast_mod.Ast, node: NodeIndex) ?[]const u8 {
     };
 }
 
+/// An exact spelling anywhere up the chain wins before the rename-suffix
+/// fallback is tried at all. A source binding literally named `x$1` is a
+/// different variable from an inner `x`; trying the stripped `x` at each scope
+/// on the way up let that inner binding capture the outer `x$1` (#5605). A
+/// renamed reference never has an exact binding: fresh aliases are reserved
+/// against every symbol name, so the fallback still finds its base spelling.
 fn nearestOutputSymbolAtScope(editor: *SemanticEditor, name: []const u8, start: ScopeId) ?u32 {
-    if (start.isNone()) return null;
+    if (nearestOutputSymbolBySpelling(editor, name, start)) |symbol| return symbol;
     const normalized = baseOutputName(name);
+    if (std.mem.eql(u8, name, normalized)) return null;
+    return nearestOutputSymbolBySpelling(editor, normalized, start);
+}
+
+fn nearestOutputSymbolBySpelling(editor: *SemanticEditor, spelling: []const u8, start: ScopeId) ?u32 {
+    if (start.isNone()) return null;
     var current = start;
     var hops: usize = 0;
     while (!current.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
         if (current.toIndex() >= editor.scopes.items.len) return null;
         const map = editor.scope_maps.items[current.toIndex()];
-        if (map.get(name)) |symbol| return @intCast(symbol);
-        if (!std.mem.eql(u8, name, normalized)) {
-            if (map.get(normalized)) |symbol| return @intCast(symbol);
-        }
+        if (map.get(spelling)) |symbol| return @intCast(symbol);
         current = editor.scopes.items[current.toIndex()].parent;
     }
     return null;
