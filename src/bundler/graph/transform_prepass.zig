@@ -3457,6 +3457,42 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
+/// Async arrows keep their source arrow scope while the lowered generator is
+/// nested inside it. That graph shape is safe only when the moved generator
+/// body does not acquire a new dynamic `this`, `arguments`, `super`, or
+/// `new.target` binding. Keep those lexical-capture cases on reanalysis until
+/// the capture references are explicitly represented in the edited graph.
+fn isRetainableAsyncArrowNode(
+    ast: *const ast_mod.Ast,
+    arrow_idx: ast_mod.NodeIndex,
+    options: TransformOptions,
+) bool {
+    if (!options.unsupported.async_await or options.unsupported.generator or
+        arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+    const node = ast.getNode(arrow_idx);
+    if (node.tag != .arrow_function_expression) return false;
+    const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
+    if (flags_at >= ast.extra_data.items.len or
+        (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) == 0) return false;
+
+    const reachable = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, arrow_idx) catch return false;
+    defer ast.allocator.free(reachable);
+    for (reachable) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len) return false;
+        const child = ast.nodes.items[raw_idx];
+        switch (child.tag) {
+            .this_expression, .super_expression => return false,
+            .meta_property => if (child.data.none == 1) return false,
+            .identifier_reference => {
+                const name = ast.identifierNameText(child);
+                if (std.mem.eql(u8, name, "arguments")) return false;
+            },
+            else => {},
+        }
+    }
+    return true;
+}
+
 fn awaitBelongsToRetainableAsyncFunction(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -3486,8 +3522,9 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// binding or scope edges. Tagged-template lowering registers its cache
 /// functions, data bindings, and references with exact identities. Keep these
 /// paths only for the audited syntax subset. Ordinary async functions may also
-/// retain their graph when they lower to a native generator wrapper; async
-/// arrows, methods, async generators, and generator-state-machine lowering
+/// retain their graph when they lower to a native generator wrapper. Async
+/// arrows are admitted only when the moved generator body has no lexical
+/// captures; methods, async generators, and generator-state-machine lowering
 /// remain on reanalysis.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
@@ -3533,7 +3570,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer retained_async_functions.deinit(ast.allocator);
     if (options.unsupported.async_await and !options.unsupported.generator) {
         for (reachable_nodes) |raw_idx| {
-            if (isRetainableAsyncFunctionNode(ast, ast.nodes.items[raw_idx], options)) {
+            const node = ast.nodes.items[raw_idx];
+            if (isRetainableAsyncFunctionNode(ast, node, options) or
+                isRetainableAsyncArrowNode(ast, @enumFromInt(raw_idx), options))
+            {
                 retained_async_functions.put(ast.allocator, raw_idx, {}) catch return false;
             }
         }
@@ -3893,7 +3933,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .arrow_function_expression => {
                 const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
                 if (flags_at >= ast.extra_data.items.len) return false;
-                if ((ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0) return false;
+                const is_async = (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0;
+                if (is_async and options.unsupported.async_await) {
+                    if (!retained_async_functions.contains(raw_idx)) return false;
+                    found_lowered_async_function = true;
+                }
                 if (options.unsupported.arrow) found_arrow = true;
             },
             .function_declaration, .function_expression, .function => {

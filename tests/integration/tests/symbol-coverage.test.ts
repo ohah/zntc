@@ -6285,7 +6285,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES2015 async function lowering retains its exact graph for plain and minified bundles', () => {
+  test('ES2015 async functions and capture-free arrows retain their exact graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2015-async-retained-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -6300,7 +6300,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '  return captured() + value;',
         '}',
         'const expression = async function (value: Count) { await Promise.resolve(value); return value + 2; };',
-        'Promise.all([calculate.call({ base: 1 }, 40), expression(40)]).then(([captured, result]) => console.log(captured + ":" + result));',
+        'const arrow = async (value: Count) => { const before = value + 1; await Promise.resolve(before); return before + value; };',
+        'Promise.all([calculate.call({ base: 1 }, 40), expression(40), arrow(20)]).then(([captured, result, arrowResult]) => console.log(captured + ":" + result + ":" + arrowResult));',
       ].join('\n'),
     );
 
@@ -6351,24 +6352,17 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(report).toMatch(/clean=1(?:\s|$)/);
         const execution = spawnSync('node', [output], { encoding: 'utf8' });
         expect(execution.status, execution.stderr).toBe(0);
-        expect(execution.stdout).toBe('92:42\n');
+        expect(execution.stdout).toBe('92:42:41\n');
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  test('ES2015 async arrows, methods, and direct eval stay on semantic reanalysis', () => {
+  test('ES2015 async arrows with captures, methods, and direct eval stay on semantic reanalysis', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2015-async-fallback-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
-    writeFileSync(
-      input,
-      [
-        'const task = { async run(value: number) { await Promise.resolve(value); return value + 1; } };',
-        'task.run(41).then(result => console.log(result));',
-      ].join('\n'),
-    );
 
     const run = (target = '--target=es2015') =>
       spawnSync(
@@ -6395,6 +6389,24 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     };
 
     try {
+      writeFileSync(
+        input,
+        [
+          'function readThis() {',
+          '  return (async () => { await Promise.resolve(); return this.base; })();',
+          '}',
+          'readThis.call({ base: 40 }).then(result => console.log(result + 2));',
+        ].join('\n'),
+      );
+      expectReanalyzedAndRuns(run(), '42\n');
+
+      writeFileSync(
+        input,
+        [
+          'const task = { async run(value: number) { await Promise.resolve(value); return value + 1; } };',
+          'task.run(41).then(result => console.log(result));',
+        ].join('\n'),
+      );
       expectReanalyzedAndRuns(run(), '42\n');
 
       writeFileSync(
@@ -6413,15 +6425,6 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           '  for await (const value of values) console.log(value);',
           '}',
           'drain([42]);',
-        ].join('\n'),
-      );
-      expectReanalyzedAndRuns(run(), '42\n');
-
-      writeFileSync(
-        input,
-        [
-          'const read = async (value: number) => { await Promise.resolve(value); return value + 1; };',
-          'read(41).then(result => console.log(result));',
         ].join('\n'),
       );
       expectReanalyzedAndRuns(run(), '42\n');
