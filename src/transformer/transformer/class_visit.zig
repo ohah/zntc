@@ -277,6 +277,8 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // descriptor 참조 가능하도록).
         var static_descriptors: std.ArrayList(NodeIndex) = .empty;
         defer static_descriptors.deinit(self.allocator);
+        var static_descriptor_orders: std.ArrayList(es2022.StaticDescriptorOrder) = .empty;
+        defer static_descriptor_orders.deinit(self.allocator);
 
         if (lower_pm or lower_pf) {
             const has_super = !self.readNodeIdx(e, 1).isNone();
@@ -314,6 +316,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 false, // fast path 는 lowerPrivateMembers 가 통째 visit + 복원 (기존 동작).
                 private_helper_scope,
                 desc_out,
+                &static_descriptor_orders,
             );
             if (had_any) {
                 current_body_idx = new_body;
@@ -353,14 +356,24 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 });
                 if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
 
+                // static descriptor 와 static block IIFE 는 class 뒤에 **소스 순서대로** —
+                // receiver=D 가 init 후 평가되고, 앞선 block 이 뒤 private 필드 초기화보다
+                // 먼저 돈다 (#5696).
+                var static_elements: std.ArrayList(es2022.StaticElement) = .empty;
+                defer static_elements.deinit(self.allocator);
+                try es2022.orderStaticElements(self.allocator, &static_elements, static_descriptor_orders.items, 0, &.{}, static_block_iifes.items.len);
+
                 if (as_expression) {
-                    // V_EXPR fix: post_stmts = super_alias + static_descriptors + static_block_iifes
+                    // V_EXPR fix: post_stmts = super_alias + static_descriptors/static_block_iifes
                     // — alias/descriptor 가 IIFE 안에서 class_decl 뒤에 emit (receiver=D TDZ 회피).
                     const scratch_top_e = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top_e);
                     if (super_proto_alias_decl) |alias_decl| try self.scratch.append(self.allocator, alias_decl);
-                    try self.scratch.appendSlice(self.allocator, static_descriptors.items);
-                    try self.scratch.appendSlice(self.allocator, static_block_iifes.items);
+                    for (static_elements.items) |element| try self.scratch.append(self.allocator, switch (element) {
+                        .descriptor => |i| static_descriptors.items[i],
+                        .block => |i| static_block_iifes.items[i],
+                        .field => unreachable,
+                    });
                     return wrapClassExprInIIFE(
                         self,
                         source_idx,
@@ -387,14 +400,11 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 try self.pending_nodes.append(self.allocator, class_result);
                 // VSHADOW: V8 fix 의 super-prop alias 를 class 뒤에 emit (D init 후 평가되도록).
                 if (super_proto_alias_decl) |alias_decl| try self.pending_nodes.append(self.allocator, alias_decl);
-                // V1 정밀 fix: static descriptor 는 class 뒤, static block IIFE 앞에 emit.
-                // receiver=D 가 init 후 평가됨 + IIFE 가 descriptor (_n 등) 참조 가능.
-                for (static_descriptors.items) |desc| {
-                    try self.pending_nodes.append(self.allocator, desc);
-                }
-                for (static_block_iifes.items) |iife| {
-                    try self.pending_nodes.append(self.allocator, iife);
-                }
+                for (static_elements.items) |element| try self.pending_nodes.append(self.allocator, switch (element) {
+                    .descriptor => |i| static_descriptors.items[i],
+                    .block => |i| static_block_iifes.items[i],
+                    .field => unreachable,
+                });
                 return .none;
             }
         }

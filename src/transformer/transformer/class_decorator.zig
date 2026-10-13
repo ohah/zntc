@@ -149,6 +149,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // class declaration 뒤에 emit — receiver=D 의 TDZ 회피.
     var assign_static_descriptors: std.ArrayList(NodeIndex) = .empty;
     defer assign_static_descriptors.deinit(self.allocator);
+    var static_descriptor_orders: std.ArrayList(es2022.StaticDescriptorOrder) = .empty;
+    defer static_descriptor_orders.deinit(self.allocator);
     var pm_mappings: std.ArrayList(PrivateMethodMapping) = .empty;
     defer {
         for (pm_mappings.items) |pm| {
@@ -220,6 +222,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             private_helper_scope,
             // V_ASSIGN fix: descriptor 를 별도 array 로 받아 class 뒤에 emit (TDZ 회피).
             &assign_static_descriptors,
+            &static_descriptor_orders,
         );
         if (had_any) body_idx = new_body_pl;
     }
@@ -472,28 +475,27 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             new_decos.start,        new_decos.len,
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
-        // 클래스 뒤에 올 문장들: private static descriptor → (소스 순서대로) static field / block.
+        // 클래스 뒤에 올 문장들: private static descriptor(V_ASSIGN fix — class 뒤라
+        // receiver=D 의 TDZ 회피), static field, static block. 셋은 **소스 순서**대로
+        // 평가돼야 한다 (#4629, #5696) — `static a = …; static { … } static #b = …` 에서
+        // 순서가 밀리면 block 이 보는 값이 달라진다.
         var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
         defer post.deinit(self.allocator);
-        // V_ASSIGN fix: private static descriptor 는 class 뒤, static field 할당과 IIFE 의 앞에.
-        try post.appendSlice(self.allocator, assign_static_descriptors.items);
-        // static field 와 static block 은 **소스 순서**대로 평가돼야 한다 (#4629).
-        // `static a = …; static { … } static b = …` 에서 block 이 뒤로 밀리면
-        // block 이 보는 값이 달라진다. counts[i] = 그 block 앞에 있던 field 수.
-        var emitted_fields: u32 = 0;
-        for (static_block_iifes.items, 0..) |iife, i| {
-            const upto: u32 = if (i < static_block_field_counts.items.len)
-                static_block_field_counts.items[i]
-            else
-                @intCast(static_field_assignments.items.len);
-            while (emitted_fields < upto) : (emitted_fields += 1) {
-                try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields], static_field_ref_scope));
-            }
-            try post.append(self.allocator, iife);
-        }
-        while (emitted_fields < static_field_assignments.items.len) : (emitted_fields += 1) {
-            try post.append(self.allocator, try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[emitted_fields], static_field_ref_scope));
-        }
+        var static_elements: std.ArrayList(es2022.StaticElement) = .empty;
+        defer static_elements.deinit(self.allocator);
+        try es2022.orderStaticElements(
+            self.allocator,
+            &static_elements,
+            static_descriptor_orders.items,
+            static_field_assignments.items.len,
+            static_block_field_counts.items,
+            static_block_iifes.items.len,
+        );
+        for (static_elements.items) |element| try post.append(self.allocator, switch (element) {
+            .descriptor => |i| assign_static_descriptors.items[i],
+            .field => |i| try self.buildStaticFieldAssignment(new_name, static_field_assignments.items[i], static_field_ref_scope),
+            .block => |i| static_block_iifes.items[i],
+        });
 
         // 클래스 **식**은 값 자리라 문장을 앞뒤에 끼울 수 없다 — IIFE 로 감싸 클래스를
         // 돌려준다. 예전엔 여기서도 pending 에 넣고 `.none` 을 돌려줘 식이 통째로 사라질

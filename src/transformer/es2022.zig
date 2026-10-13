@@ -49,6 +49,66 @@ fn firstPrivateBrand(mappings: anytype, index: usize) bool {
     return true;
 }
 
+/// Where a lowered static private descriptor sits among the class's static
+/// elements: how many static blocks and lowered static public fields
+/// precede it in source order (#5696).
+pub const StaticDescriptorOrder = struct {
+    blocks_before: u32 = 0,
+    fields_before: u32 = 0,
+    /// A private method exists once the class is defined: ahead of every
+    /// static field and block.
+    at_definition: bool = false,
+};
+
+pub const StaticElement = union(enum) {
+    descriptor: usize,
+    field: usize,
+    block: usize,
+};
+
+/// Interleave lowered static elements back into source order: static
+/// fields, blocks and private field descriptors run one after another as
+/// written (#4629, #5696). `block_field_counts[i]` is the number of static
+/// fields before block `i`. A count past the lowered elements (e.g. a field
+/// kept inside the class) is satisfied once that list is exhausted.
+pub fn orderStaticElements(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(StaticElement),
+    descriptor_orders: []const StaticDescriptorOrder,
+    field_count: usize,
+    block_field_counts: []const u32,
+    block_count: usize,
+) std.mem.Allocator.Error!void {
+    for (descriptor_orders, 0..) |order, i| {
+        if (order.at_definition) try out.append(allocator, .{ .descriptor = i });
+    }
+    var d: usize = 0;
+    var f: usize = 0;
+    var b: usize = 0;
+    while (true) {
+        while (d < descriptor_orders.len) : (d += 1) {
+            const order = descriptor_orders[d];
+            if (order.at_definition) continue;
+            if (order.blocks_before > b and b < block_count) break;
+            if (order.fields_before > f and f < field_count) break;
+            try out.append(allocator, .{ .descriptor = d });
+        }
+        if (b < block_count) {
+            const fields_first: usize = if (b < block_field_counts.len) block_field_counts[b] else field_count;
+            if (f < fields_first and f < field_count) {
+                try out.append(allocator, .{ .field = f });
+                f += 1;
+            } else {
+                try out.append(allocator, .{ .block = b });
+                b += 1;
+            }
+        } else if (f < field_count) {
+            try out.append(allocator, .{ .field = f });
+            f += 1;
+        } else break;
+    }
+}
+
 pub fn ES2022(comptime Transformer: type) type {
     return struct {
         /// 클래스 바디에서 static block을 제거하고, IIFE로 변환하여 pending_nodes에 추가한다.
@@ -197,6 +257,16 @@ pub fn ES2022(comptime Transformer: type) type {
             return (flags & ast_mod.PropertyFlags.is_static) != 0;
         }
 
+        /// A static public field with an initializer: the field the class
+        /// lowering moves out as a `C.x = …` statement (`classifyPropertyDefinition`).
+        fn isLoweredStaticFieldWithInit(self: *Transformer, member: Node) bool {
+            if (!isPublicStaticField(self, member)) return false;
+            const flags = self.readU32(member.data.extra, ast_mod.PropertyExtra.flags);
+            const type_only_mask = ast_mod.PropertyFlags.is_abstract | ast_mod.PropertyFlags.is_declare | ast_mod.PropertyFlags.flow_variance;
+            if (self.options.strip_types and (flags & type_only_mask) != 0) return false;
+            return !self.readNodeIdx(member.data.extra, ast_mod.PropertyExtra.init).isNone();
+        }
+
         fn lookupKeyMemo(memos: anytype, raw_idx: u32) ?NodeIndex {
             for (memos) |m| {
                 if (m.raw_idx == raw_idx) return m.key_ref;
@@ -310,6 +380,9 @@ pub fn ES2022(comptime Transformer: type) type {
             // (기존 동작). non-null 이면 caller 가 class declaration 뒤, static block IIFE
             // 앞에 emit 해야 한다 (receiver=D 가 init 후 평가 + IIFE 가 descriptor 참조 가능).
             static_descriptors_out: ?*std.ArrayList(NodeIndex),
+            /// Parallel to `static_descriptors_out`: each descriptor's place
+            /// among the static blocks and fields, for source-order emit (#5696).
+            static_descriptor_orders: ?*std.ArrayList(StaticDescriptorOrder),
         ) Transformer.Error!bool {
             const body_node = self.ast.getNode(body_idx);
             const body_start = body_node.data.list.start;
@@ -321,6 +394,9 @@ pub fn ES2022(comptime Transformer: type) type {
             defer field_member_raw.deinit(self.allocator);
             var field_init_idx: std.ArrayList(NodeIndex) = .empty;
             defer field_init_idx.deinit(self.allocator);
+            var field_static_order: std.ArrayList(StaticDescriptorOrder) = .empty;
+            defer field_static_order.deinit(self.allocator);
+            var static_seen: StaticDescriptorOrder = .{};
 
             var private_names = try es_helpers.PrivateNameAllocator.init(self.allocator, self.ast);
             defer private_names.deinit();
@@ -329,6 +405,12 @@ pub fn ES2022(comptime Transformer: type) type {
                 const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
                 for (body_members) |raw_idx| {
                     const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    const static_order = static_seen;
+                    if (member.tag == .static_block) {
+                        static_seen.blocks_before += 1;
+                    } else if (member.tag == .property_definition and isLoweredStaticFieldWithInit(self, member)) {
+                        static_seen.fields_before += 1;
+                    }
 
                     if (lower_methods and member.tag == .method_definition) {
                         const me = member.data.extra;
@@ -385,6 +467,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         });
                         try field_member_raw.append(self.allocator, raw_idx);
                         try field_init_idx.append(self.allocator, init_val);
+                        try field_static_order.append(self.allocator, static_order);
                     }
                 }
             }
@@ -442,11 +525,14 @@ pub fn ES2022(comptime Transformer: type) type {
             // class declaration 뒤, static block IIFE 앞에 emit 해야 한다. caller 가 별도 array
             // 를 주지 않으면 (e.g. assign-semantics path) pre_stmts 사용 (기존 동작).
             const desc_target = static_descriptors_out orelse pre_stmts;
-            for (field_mappings.items, field_init_idx.items) |m, init_val| {
+            const desc_start = desc_target.items.len;
+            const orders_start = if (static_descriptor_orders) |orders| orders.items.len else 0;
+            for (field_mappings.items, field_init_idx.items, field_static_order.items) |m, init_val, static_order| {
                 if (m.class_name) |cname| {
                     const cname_span = try self.ast.addString(es_helpers.freshClassNameText(self, cname, m.class_name_node));
                     const desc = try es_helpers.buildStaticPrivateFieldDescriptor(self, m.var_name, init_val, span, cname_span, m.binding_node);
                     try desc_target.append(self.allocator, desc);
+                    if (static_descriptor_orders) |orders| try orders.append(self.allocator, static_order);
                     self.runtime_helpers.class_static_private_field = true;
                 } else {
                     const wm_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakMap", m.var_name, span, m.binding_node);
@@ -503,6 +589,7 @@ pub fn ES2022(comptime Transformer: type) type {
                         }
                         const desc = try es_helpers.buildStaticPrivateMethodDescriptor(self, m.weakset_name, method_fn, getter_fn, setter_fn, span, m.weakset_binding_node);
                         try desc_target.append(self.allocator, desc);
+                        if (static_descriptor_orders) |orders| try orders.append(self.allocator, .{ .at_definition = true });
                         self.runtime_helpers.class_static_private_field = true;
                     }
                 } else if (firstPrivateBrand(method_mappings.items, i)) {
@@ -523,6 +610,26 @@ pub fn ES2022(comptime Transformer: type) type {
                     );
                     try pre_stmts.append(self.allocator, assignment.declaration);
                     try desc_target.append(self.allocator, assignment.assignment);
+                    if (static_descriptor_orders) |orders| try orders.append(self.allocator, .{ .at_definition = true });
+                }
+            }
+            // Private methods exist once the class is defined: their descriptors
+            // go ahead of every static field initializer, which may call them (#5696).
+            if (static_descriptor_orders) |orders| {
+                const descs = desc_target.items[desc_start..];
+                const descs_orders = orders.items[orders_start..];
+                const original_descs = try self.allocator.dupe(NodeIndex, descs);
+                defer self.allocator.free(original_descs);
+                const original_orders = try self.allocator.dupe(StaticDescriptorOrder, descs_orders);
+                defer self.allocator.free(original_orders);
+                var write: usize = 0;
+                for ([_]bool{ true, false }) |at_definition| {
+                    for (original_descs, original_orders) |desc, order| {
+                        if (order.at_definition != at_definition) continue;
+                        descs[write] = desc;
+                        descs_orders[write] = order;
+                        write += 1;
+                    }
                 }
             }
 
