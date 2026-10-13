@@ -42,6 +42,7 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const es_helpers = @import("../es_helpers.zig");
+const cooked_name = @import("../cooked_name.zig");
 const plugin_state = @import("../plugin_state.zig");
 const sourcemap_mod = @import("../../codegen/sourcemap.zig");
 const string_list = @import("../../util/string_list.zig");
@@ -360,7 +361,7 @@ pub fn maybeApplyAutoLabelForJsxAttr(
 fn hasShadowingBindingName(self: *Transformer, name: []const u8, owner: NodeIndex) bool {
     for (self.ast.nodes.items, 0..) |node, raw| {
         if (raw == @intFromEnum(owner) or node.tag != .binding_identifier) continue;
-        if (std.mem.eql(u8, self.ast.getText(node.data.string_ref), name)) return true;
+        if (cooked_name.eql(self.ast.getText(node.data.string_ref), name)) return true;
     }
     return false;
 }
