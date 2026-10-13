@@ -1874,6 +1874,7 @@ test "#4819 auto-injected styled import carries the generated reference SymbolId
         .jsx_runtime = .automatic,
         .jsx_filename = "/src/App.tsx",
         .emit_jsx_runtime_imports = true,
+        .defer_runtime_helper_name_resolution = true,
     };
     var transformer = try helpers.Transformer.init(allocator, &parser.ast, options);
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -1913,6 +1914,11 @@ test "#4819 auto-injected styled import carries the generated reference SymbolId
     const symbol = edited.symbols.items[symbol_id];
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, symbol.kind);
     try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+    try std.testing.expectEqual(@as(?@import("../semantic/symbol.zig").SyntheticKind, .runtime_helper_import), symbol.synthetic_kind);
+    try std.testing.expectEqualStrings(
+        "_styled",
+        transformer.late_output_name_bases.get(injected_name) orelse return error.MissingStyledOutputNameBase,
+    );
     try std.testing.expectEqualStrings(injected_name, transformer.ast.getText(symbol.name));
 
     var import_specifier_found = false;
@@ -1926,6 +1932,52 @@ test "#4819 auto-injected styled import carries the generated reference SymbolId
     }
     try std.testing.expect(import_specifier_found);
     try std.testing.expect(!root.isNone());
+}
+
+test "#4819 auto-injected styled import keeps its staging name when descendant eval can observe it" {
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const styled = 0;
+        \\function App(suffix) { eval('_styled' + suffix); return <div css={{ color: 'red' }} />; }
+    ;
+
+    var scanner = try helpers.Scanner.init(allocator, source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, .{
+        .styled_components = true,
+        .styled_components_css_prop = true,
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const symbol_id = transformer.plugins.styled_components.css_prop_inject_symbol_id orelse
+        return error.MissingStyledCssPropSymbolId;
+    const symbol = edited.symbols.items[@intFromEnum(symbol_id)];
+    try std.testing.expectEqual(@as(?@import("../semantic/symbol.zig").SyntheticKind, null), symbol.synthetic_kind);
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
 }
 
 test "styled (cssProp) #4339: top-level-await wrap 시에도 추출된 module-level decl 보존" {
