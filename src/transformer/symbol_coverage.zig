@@ -28,6 +28,7 @@ const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
 const Span = @import("../lexer/token.zig").Span;
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const module_parser = @import("../parser/module.zig");
 const reference_walk = @import("../semantic/reference_walk.zig");
 
@@ -759,6 +760,53 @@ fn spanKey(span: Span) u64 {
 fn exactSymbolName(ast: *const Ast, symbol: *const Symbol) []const u8 {
     if (symbol.synthetic_kind == .enum_iife_parameter) return ast.getText(symbol.name);
     return if (symbol.synthetic_name.len > 0) symbol.synthetic_name else ast.getText(symbol.name);
+}
+
+fn exactScopeMapKeyMatchesSymbol(ast: *const Ast, symbol: *const Symbol, map_key: []const u8) bool {
+    const source_name = exactSymbolName(ast, symbol);
+    if (std.mem.eql(u8, map_key, source_name)) return true;
+    if (std.mem.indexOfScalar(u8, source_name, '\\') == null) return false;
+
+    // Semantic scope maps keep both source spelling and the decoded identifier
+    // key. The exact audit must accept those two spellings for the same SymbolId.
+    const decoded_name = Scanner.decodeIdentifierEscapesAlloc(ast.allocator, source_name) catch return false;
+    defer if (decoded_name.ptr != source_name.ptr) ast.allocator.free(decoded_name);
+    return std.mem.eql(u8, map_key, decoded_name);
+}
+
+test "exact scope-map audit accepts only source and decoded escaped names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    const raw_name = try ast.addString("\\u006cocalName");
+    const symbol: Symbol = .{
+        .name = raw_name,
+        .scope_id = .none,
+        .kind = .variable_let,
+        .declaration_span = raw_name,
+    };
+
+    try std.testing.expect(exactScopeMapKeyMatchesSymbol(&ast, &symbol, "\\u006cocalName"));
+    try std.testing.expect(exactScopeMapKeyMatchesSymbol(&ast, &symbol, "localName"));
+    try std.testing.expect(!exactScopeMapKeyMatchesSymbol(&ast, &symbol, "otherName"));
+
+    const long_raw_name = try allocator.alloc(u8, 6 * 300);
+    for (0..300) |index| {
+        @memcpy(long_raw_name[index * 6 ..][0..6], "\\u0061");
+    }
+    const long_name_span = try ast.addString(long_raw_name);
+    const long_symbol: Symbol = .{
+        .name = long_name_span,
+        .scope_id = .none,
+        .kind = .variable_let,
+        .declaration_span = long_name_span,
+    };
+    const decoded_long_name = try allocator.alloc(u8, 300);
+    @memset(decoded_long_name, 'a');
+    try std.testing.expect(exactScopeMapKeyMatchesSymbol(&ast, &long_symbol, decoded_long_name));
 }
 
 const ExactCjsWrapperBindings = struct {
@@ -2937,7 +2985,7 @@ fn checkExactImpl(
                 break :blk (std.mem.eql(u8, entry.key_ptr.*, "exports") and entry.value_ptr.* == wrapper.exports_symbol_id) or
                     (std.mem.eql(u8, entry.key_ptr.*, "module") and entry.value_ptr.* == wrapper.module_symbol_id);
             } else false;
-            if (!std.mem.eql(u8, entry.key_ptr.*, exactSymbolName(ast, &mapped_symbol)) or
+            if (!exactScopeMapKeyMatchesSymbol(ast, &mapped_symbol, entry.key_ptr.*) or
                 (mapped_symbol.scope_id != mapped_scope and !is_cjs_root_alias))
             {
                 recordScopeMapMismatch(&report, "entry-name-or-owner", @intCast(scope_i), @intCast(entry.value_ptr.*), entry.key_ptr.*);
