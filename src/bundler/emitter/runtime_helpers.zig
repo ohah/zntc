@@ -58,7 +58,7 @@ pub fn emitBundleRuntimeHelpers(
         }
         if (needs_cjs_runtime) {
             const factory_name = if (linker) |l|
-                l.cjsFactoryRuntimeName()
+                try l.cjsFactoryRuntimeName()
             else if (options.minify_whitespace)
                 rt.NAMES.CJS_FACTORY_MIN
             else
@@ -112,7 +112,7 @@ pub fn emitBundleRuntimeHelpers(
     // HMR 런타임이 $RefreshReg$/$RefreshSig$도 정의하므로 별도 스텁 불필요.
     if (options.dev_mode) {
         const cjs_factory_name = if (linker) |l|
-            l.cjsFactoryRuntimeName()
+            try l.cjsFactoryRuntimeName()
         else if (options.minify_whitespace)
             rt.NAMES.CJS_FACTORY_MIN
         else
@@ -442,7 +442,7 @@ pub fn emitChunkRuntimeHelpers(
         }
         if (needs_cjs_runtime) {
             const factory_name = if (linker) |l|
-                l.cjsFactoryRuntimeName()
+                try l.cjsFactoryRuntimeName()
             else if (options.minify_whitespace)
                 rt.NAMES.CJS_FACTORY_MIN
             else

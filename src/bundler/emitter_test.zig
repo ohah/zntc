@@ -3,6 +3,8 @@ const emitter = @import("emitter.zig");
 const emit = emitter.emit;
 const EmitOptions = emitter.EmitOptions;
 const appendRuntimeHelpers = emitter.appendRuntimeHelpers;
+const runtime_helper_emitter = @import("emitter/runtime_helpers.zig");
+const Linker = @import("linker.zig").Linker;
 const RuntimeHelpers = @import("../transformer/runtime_helper_bits.zig").RuntimeHelpers;
 const ModuleGraph = @import("graph.zig").ModuleGraph;
 const types = @import("types.zig");
@@ -2805,6 +2807,28 @@ test "HMR runtime: RN reload goes through DevSettings wrapper before native prox
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "rn.DevSettings.reload(why)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "setTimeout(f,0)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rt.HMR_RUNTIME_MIN, "__zntc_g.nativeModuleProxy.DevSettings.reload()") == null);
+}
+
+test "emitter: dev HMR is emitted when the graph has no CJS wrappers" {
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    var linker = Linker.init(std.testing.allocator, &graph, .esm);
+    defer linker.deinit();
+
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(std.testing.allocator);
+    try runtime_helper_emitter.emitBundleRuntimeHelpers(
+        &output,
+        std.testing.allocator,
+        &.{},
+        &graph,
+        &linker,
+        &.{ .dev_mode = true },
+    );
+
+    try std.testing.expect(std.mem.indexOf(u8, output.items, "__zntc_modules") != null);
 }
 
 // ============================================================
