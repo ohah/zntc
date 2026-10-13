@@ -47,6 +47,14 @@ pub const Stage3MemberInfo = struct {
     descriptor_assignment_ref: NodeIndex = .none,
     descriptor_getter_ref: NodeIndex = .none,
     descriptor_getter_scope: @import("../../semantic/scope.zig").ScopeId = .none,
+    /// private accessor용: `set #a(value) { _desc.set.call(this, value); }` 의 descriptor 읽기.
+    descriptor_setter_ref: NodeIndex = .none,
+    descriptor_setter_scope: @import("../../semantic/scope.zig").ScopeId = .none,
+    /// private accessor용: descriptor 의 원래 get/set 함수, 그 함수 스코프(decorate
+    /// static block 으로 옮길 대상), `__setFunctionName` 의 이름 리터럴.
+    accessor_fns: [2]NodeIndex = .{ .none, .none },
+    accessor_fn_scopes: [2]@import("../../semantic/scope.zig").ScopeId = .{ .none, .none },
+    accessor_fn_names: [2]NodeIndex = .{ .none, .none },
     /// private method용: 원본 method body (function expression으로 변환에 사용)
     method_body: NodeIndex = .none,
     /// private method용: 원본 params NodeList
@@ -157,7 +165,26 @@ pub fn buildEsDecorateCall(
         try self.ast.addNode(.{ .tag = .this_expression, .span = zero_span, .data = .{ .none = 0 } });
 
     // arg2: null (public) 또는 _descriptor = { value: __setFunctionName(fn, "#name") } (private method)
-    const arg2 = if (info.descriptor_name) |dname| blk: {
+    //       또는 _descriptor = { get: __setFunctionName(fn, "#a", "get"), set: … } (private accessor)
+    const arg2 = if (info.descriptor_name != null and std.mem.eql(u8, info.kind, "accessor")) blk: {
+        const desc_ref = try es_helpers.makeSyntheticRef(self, info.descriptor_name.?);
+        info.descriptor_assignment_ref = desc_ref;
+        var props: [2]NodeIndex = undefined;
+        inline for (.{ "get", "set" }, 0..) |prefix, i| {
+            const setfn_callee = try es_helpers.makeRuntimeHelperRef(self, "__setFunctionName");
+            const setfn_args = try self.ast.addNodeList(&.{ info.accessor_fns[i], info.accessor_fn_names[i], try wrapInStringLiteral(self, prefix) });
+            const setfn_call = try self.addExtraNode(.call_expression, zero_span, &.{
+                @intFromEnum(setfn_callee), setfn_args.start, setfn_args.len, 0,
+            });
+            props[i] = try makeObjProp(self, try es_helpers.makePropertyName(self, prefix), setfn_call);
+        }
+        const desc_obj = try self.ast.addNode(.{ .tag = .object_expression, .span = zero_span, .data = .{ .list = try self.ast.addNodeList(&props) } });
+        break :blk try self.ast.addNode(.{
+            .tag = .assignment_expression,
+            .span = zero_span,
+            .data = .{ .binary = .{ .left = desc_ref, .right = desc_obj, .flags = 0 } },
+        });
+    } else if (info.descriptor_name) |dname| blk: {
         // _private_method_descriptor = { value: __setFunctionName(function() { ... }, "#name") }
         const desc_ref = try es_helpers.makeSyntheticRef(self, dname);
         info.descriptor_assignment_ref = desc_ref;

@@ -486,7 +486,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
             // private accessor 인터셉트 — simple `=` 는 setter 호출, compound (+=, -=, ...) 는 set(obj, get(obj) op rhs) 합성.
             // obj 는 2회 visit 되므로 side-effect 있는 복잡 obj 는 정의역 밖 (this / simple ident 는 안전).
             // Logical assignment (??=/||=/&&=) 는 현재 미지원 — getter 결과의 short-circuit 별도 복잡도.
-            const op_kind_pre: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+            // A synthesized plain assignment carries flags 0 rather than `=`.
+            const op_kind_pre: token_mod.Kind = if (node.data.binary.flags == 0) .eq else @enumFromInt(node.data.binary.flags);
             if (!prop_idx.isNone()) {
                 const prop_node_pre = self.ast.getNode(prop_idx);
                 if (prop_node_pre.tag == .private_identifier) {
