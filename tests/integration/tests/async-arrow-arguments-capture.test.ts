@@ -8,15 +8,18 @@ const cases = [
     name: 'captures the outer arguments object without shadowing a user _arguments',
     source: `
       function read(a, b, _arguments) {
+        const outer = _arguments;
         return (async () => {
+          const _arguments = 99;
           await Promise.resolve();
-          return [arguments.length, arguments[0], _arguments].join(':');
+          return [arguments.length, arguments[0], _arguments, outer].join(':');
         })();
       }
       read(11, 22, 33).then(console.log);
     `,
-    expected: '3:11:33\n',
+    expected: '3:11:99:33\n',
     expectsSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
     name: 'keeps the outer arguments binding through nested async arrows',
@@ -34,6 +37,23 @@ const cases = [
     `,
     expected: '2:11\n',
     expectsSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'captures an explicit arguments parameter by its source binding',
+    inputFile: 'input.cjs',
+    source: `
+      function read(arguments) {
+        return (async () => {
+          await Promise.resolve();
+          return arguments;
+        })();
+      }
+      read(42).then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
     name: 'leaves arguments in async arrow parameter defaults in the lexical environment',
@@ -48,6 +68,25 @@ const cases = [
     `,
     expected: '2\n',
     expectsSyntheticBinding: false,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'does not capture arguments owned by a nested ordinary function',
+    source: `
+      function read() {
+        return (async () => {
+          await Promise.resolve();
+          function nested(first, second) {
+            return arguments.length + ':' + arguments[0];
+          }
+          return nested(21, 34);
+        })();
+      }
+      read().then(console.log);
+    `,
+    expected: '2:21\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: true,
   },
   {
     name: 'preserves lexical new.target when the body moves into a generator',
@@ -62,6 +101,38 @@ const cases = [
     `,
     expected: 'true\n',
     expectsSyntheticBinding: true,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'keeps lexical this captures on the conservative graph path',
+    source: `
+      function read() {
+        return (async () => {
+          await Promise.resolve();
+          return this.value;
+        })();
+      }
+      read.call({ value: 42 }).then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'keeps direct eval on the conservative graph path',
+    source: `
+      function read() {
+        return (async () => {
+          await Promise.resolve();
+          return eval('40 + 2');
+        })();
+      }
+      read().then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+    expectsCleanIdentity: false,
   },
 ] as const;
 
@@ -77,13 +148,14 @@ describe('async arrow arguments capture (#4819)', () => {
     for (const minifyIdentifiers of [false, true]) {
       for (const scenario of cases) {
         test(`${scenario.name}, ${bundle ? 'bundle' : 'single'}, ${minifyIdentifiers ? 'identifier-minified' : 'plain'}`, async () => {
+          const inputFile = scenario.inputFile ?? 'input.js';
           const fixture = await createFixture({
-            'input.js': scenario.source,
+            [inputFile]: scenario.source,
             'package.json': '{"type":"commonjs"}',
           });
           cleanup = fixture.cleanup;
 
-          const input = join(fixture.dir, 'input.js');
+          const input = join(fixture.dir, inputFile);
           const native = spawnSync('node', [input], { encoding: 'utf8' });
           expect(native.status, native.stderr).toBe(0);
           expect(native.stdout).toBe(scenario.expected);
@@ -106,18 +178,36 @@ describe('async arrow arguments capture (#4819)', () => {
           );
           expect(result.status, result.stderr).toBe(0);
 
+          if (bundle) {
+            const mode = (result.stderr ?? '')
+              .split(/\r?\n/)
+              .find(
+                (line) =>
+                  line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+                  line.includes(inputFile),
+              );
+            expect(mode, result.stderr).toBeDefined();
+            expect(mode).toContain(
+              scenario.expectsRetainedGraph
+                ? 'semantic_graph=retained'
+                : 'semantic_graph=reanalyzed',
+            );
+          }
+
           const auditPrefix = bundle ? 'zntc: symbol-identity-prepass ' : 'zntc: symbol-identity ';
           const report = (result.stderr ?? '')
             .split(/\r?\n/)
-            .find((line) => line.startsWith(auditPrefix) && line.includes('input.js'));
+            .find((line) => line.startsWith(auditPrefix) && line.includes(inputFile));
           expect(report, result.stderr).toBeDefined();
           if (scenario.expectsSyntheticBinding)
             expect(report).toMatch(/generated_bindings=[1-9]\d*/);
           expect(report).toMatch(/generated_references=[1-9]\d*/);
-          expect(report).toMatch(/missing_binding=0/);
-          expect(report).toMatch(/missing_reference=0/);
-          expect(report).toMatch(/unclassified_reference=0/);
-          expect(report).toMatch(/clean=1(?:\s|$)/);
+          if (scenario.expectsCleanIdentity !== false) {
+            expect(report).toMatch(/missing_binding=0/);
+            expect(report).toMatch(/missing_reference=0/);
+            expect(report).toMatch(/unclassified_reference=0/);
+            expect(report).toMatch(/clean=1(?:\s|$)/);
+          }
 
           const runtime = spawnSync('node', [output], { encoding: 'utf8' });
           expect(runtime.status, runtime.stderr).toBe(0);
