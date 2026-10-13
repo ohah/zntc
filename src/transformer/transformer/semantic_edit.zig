@@ -533,6 +533,13 @@ fn collectOutputNonSimpleParameterScopes(
     const reachable = ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root) catch return error.OutOfMemory;
     defer self.allocator.free(reachable);
     const Params = @import("../es2015_params.zig").ES2015Params(Transformer);
+    // Scopes already owned by an emitted node; a parameter scope taken over by
+    // a lowering (a Flow component wrapper, for example) keeps that owner.
+    var owned: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer owned.deinit(self.allocator);
+    for (reachable) |raw| {
+        if (self.outputOwnedScope(@enumFromInt(raw))) |scope| try owned.put(self.allocator, scope.toIndex(), {});
+    }
     for (reachable) |raw| {
         if (raw >= self.ast.nodes.items.len) continue;
         const function = self.ast.nodes.items[raw];
@@ -552,6 +559,20 @@ fn collectOutputNonSimpleParameterScopes(
         const params = self.ast.functionParamsList(function);
         if (params.len == 0 or !Params.hasDefaultOrRest(self, params)) continue;
         try scopes.put(self.allocator, parameter_scope.toIndex(), {});
+        // A retained non-simple list owns the parameter scope. Transforms copy
+        // the list without its owner; default values would then resolve in the
+        // body scope and bind to a same-named body `var` (#5652). Attach it
+        // here, once the final function node is known to own the body scope
+        // whose parent is that parameter scope, so the list and body agree.
+        const slot: u32 = if (function.tag == .arrow_function_expression) 0 else 1;
+        const params_idx = self.ast.readExtraNode(function.data.extra, slot);
+        if (params_idx.isNone() or self.outputOwnedScope(params_idx) != null) continue;
+        // Only a real parameter environment (a function-kind scope); a rebuilt
+        // constructor's function scope can sit directly under its class body.
+        if (editor.scopes.items[parameter_scope.toIndex()].kind != .function) continue;
+        if (owned.contains(parameter_scope.toIndex())) continue;
+        try editor.scope_owner_map.put(self.allocator, @intFromEnum(params_idx), parameter_scope.toIndex());
+        try owned.put(self.allocator, parameter_scope.toIndex(), {});
     }
 }
 
@@ -2209,20 +2230,6 @@ pub fn outputOwnedScope(self: *Transformer, owner: NodeIndex) ?ScopeId {
 
 /// Track all copies of a lexical boundary. A source node can be revisited on
 /// separate branches, so the live owner is selected from the final AST later.
-/// A non-simple parameter list owns its own scope (#5452). When the output
-/// keeps it non-simple (defaults are not lowered), the copied list must keep
-/// that owner: default values resolve in the parameter environment, and
-/// without the owner they inherited the body scope and bound to a same-named
-/// body `var` (#5652). A list that lowering made simple shares the body scope.
-pub fn keepRetainedParameterScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex) Transformer.Error!void {
-    if (!self.semantic_edit_enabled or old.isNone() or new.isNone() or old == new) return;
-    if (self.ast.getNode(old).tag != .formal_parameters or self.ast.getNode(new).tag != .formal_parameters) return;
-    const Params = @import("../es2015_params.zig").ES2015Params(Transformer);
-    const list = self.ast.getNode(new).data.list;
-    if (list.len == 0 or !Params.hasDefaultOrRest(self, list)) return;
-    try self.remapCopiedScopeOwner(old, new);
-}
-
 pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex) Transformer.Error!void {
     if (old.isNone() or new.isNone() or old == new) return;
     const old_tag = self.ast.getNode(old).tag;

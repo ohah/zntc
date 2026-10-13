@@ -23,6 +23,7 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults
     try analyzer.analyze();
 
     var function_scope: ?u32 = null;
+    var parameter_scope: ?u32 = null;
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |owner| {
         const node = parser.ast.nodes.items[owner.key_ptr.*];
@@ -30,8 +31,16 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults
         if (parser.ast.functionParamsList(node).len == 0) continue;
         try std.testing.expect(function_scope == null);
         function_scope = owner.value_ptr.*;
+        const params = parser.ast.readExtraNode(node.data.extra, 1);
+        parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(params));
     }
-    const reference_scope = function_scope orelse return error.TestUnexpectedResult;
+    // A retained default value is evaluated in its parameter environment, so
+    // its temp references belong to the parameter scope (#5652). A lowered
+    // default moves into the function body.
+    const reference_scope = if (native_defaults)
+        parameter_scope orelse return error.TestUnexpectedResult
+    else
+        function_scope orelse return error.TestUnexpectedResult;
     const expected_scope = if (native_defaults)
         analyzer.scope_owner_map.get(@intCast(parser.ast.nodes.items.len - 1)) orelse return error.TestUnexpectedResult
     else
