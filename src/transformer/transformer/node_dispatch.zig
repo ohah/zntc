@@ -677,6 +677,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const replacement_idx = try self.dispatchVisitor(.on_class_declaration, idx);
             var target_node_idx = replacement_idx orelse idx;
             var target_node = self.ast.getNode(target_node_idx);
+            const plain_accessors = try @import("stage3_decorator_transform.zig").lowerPlainAutoAccessors(self, target_node_idx, idx);
+            if (plain_accessors) |lowered| {
+                target_node_idx = lowered;
+                target_node = self.ast.getNode(lowered);
+            }
             // Stage 3 decorator는 unsupported.class 분기보다 먼저 돌려야 한다 — 반대면 decorator가 silent drop.
             // 이름 있는 class_declaration은 Stage 3 내부에서 outer_var_decl을 pending_nodes로 hoist하고
             // `.none`을 반환하므로, export_named/default declaration이 이름을 감지해 `export { X };` 또는
@@ -694,7 +699,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.options.unsupported.class) {
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassDeclaration);
             }
-            if (target_node_idx != pre_legacy_hoist_idx) return self.visitClass(idx, target_node);
+            if (target_node_idx != pre_legacy_hoist_idx or plain_accessors != null) return self.visitClass(idx, target_node);
             if (replacement_idx) |r| return r;
             return self.visitClass(idx, node);
         },
@@ -713,6 +718,11 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const replacement_idx = try self.dispatchVisitor(.on_class_expression, idx);
             var target_node_idx = replacement_idx orelse idx;
             var target_node = self.ast.getNode(target_node_idx);
+            const plain_accessors = try @import("stage3_decorator_transform.zig").lowerPlainAutoAccessors(self, target_node_idx, idx);
+            if (plain_accessors) |lowered| {
+                target_node_idx = lowered;
+                target_node = self.ast.getNode(lowered);
+            }
             if (try self.tryTransformStage3(idx, target_node)) |stage3_result| {
                 if (self.options.unsupported.class or
                     @import("stage3_decorator_transform.zig").stage3OutputNeedsClassLowering(self))
@@ -725,7 +735,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (self.options.unsupported.class) {
                 return self.lowerClassWithPrehoistedKeys(idx, target_node, es2015_class.ES2015Class(Transformer).lowerClassExpression);
             }
-            if (target_node_idx != pre_legacy_hoist_idx) return self.visitClass(idx, target_node);
+            if (target_node_idx != pre_legacy_hoist_idx or plain_accessors != null) return self.visitClass(idx, target_node);
             if (replacement_idx) |r| return r;
             return self.visitClass(idx, node);
         },

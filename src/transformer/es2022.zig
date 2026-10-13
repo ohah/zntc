@@ -40,6 +40,15 @@ const Span = token_mod.Span;
 const es_helpers = @import("es_helpers.zig");
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 
+/// Whether `mappings[index]` is the first private method with its brand
+/// WeakSet name (a getter and setter of one private name share it).
+fn firstPrivateBrand(mappings: anytype, index: usize) bool {
+    for (mappings[0..index]) |previous| {
+        if (std.mem.eql(u8, previous.weakset_name, mappings[index].weakset_name)) return false;
+    }
+    return true;
+}
+
 pub fn ES2022(comptime Transformer: type) type {
     return struct {
         /// 클래스 바디에서 static block을 제거하고, IIFE로 변환하여 pending_nodes에 추가한다.
@@ -496,7 +505,8 @@ pub fn ES2022(comptime Transformer: type) type {
                         try desc_target.append(self.allocator, desc);
                         self.runtime_helpers.class_static_private_field = true;
                     }
-                } else {
+                } else if (firstPrivateBrand(method_mappings.items, i)) {
+                    // A getter/setter pair shares one brand WeakSet (#5695).
                     const ws_decl = try es_helpers.buildWeakCollectionDecl(self, "WeakSet", m.weakset_name, span, m.weakset_binding_node);
                     try pre_stmts.append(self.allocator, ws_decl);
                 }
@@ -537,7 +547,9 @@ pub fn ES2022(comptime Transformer: type) type {
                 {
                     const m = method_mappings.items[method_mapping_idx];
                     method_mapping_idx += 1;
-                    if (m.class_name == null) {
+                    // Brand an instance once per private name: a getter/setter
+                    // pair adding it twice threw at construction (#5695).
+                    if (m.class_name == null and firstPrivateBrand(method_mappings.items, method_mapping_idx - 1)) {
                         const init_stmt = try es_helpers.buildPrivateMethodInit(self, m.weakset_name, m.weakset_symbol_id, span);
                         try ctor_init_stmts.append(self.allocator, init_stmt);
                     }
