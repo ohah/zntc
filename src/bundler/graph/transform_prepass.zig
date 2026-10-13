@@ -4416,6 +4416,7 @@ fn hasReachableDerivedClass(ast: *const ast_mod.Ast) bool {
 fn runtimeHelpersSafeForRetainedGraph(
     helpers: @import("../../transformer/runtime_helper_bits.zig").RuntimeHelpers,
     allow_derived_class_helpers: bool,
+    allow_stage3_decorator_helpers: bool,
 ) bool {
     var other_helpers = helpers;
     if (allow_derived_class_helpers) {
@@ -4435,7 +4436,31 @@ fn runtimeHelpersSafeForRetainedGraph(
     // `__toPropertyKey(key)` wraps a hoisted computed field key (#5553); like
     // the class-call check it is a plain helper call with a tracked reference.
     other_helpers.to_property_key = false;
+    if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
     return !other_helpers.hasAny();
+}
+
+/// Stage 3 decorators are always lowered by the transformer, even when the
+/// selected JavaScript target leaves class syntax native. Keep that narrow
+/// path on the edited semantic graph only when no other syntax lowering or
+/// plugin can change the same scopes. Legacy decorators and decorator
+/// metadata have distinct graph effects and remain on semantic reanalysis.
+fn canRetainStage3DecoratorGraph(
+    ast: *const ast_mod.Ast,
+    options: TransformOptions,
+) bool {
+    return ast.has_decorator and
+        !options.unsupported.hasAny() and
+        !options.experimental_decorators and
+        !options.emit_decorator_metadata and
+        !options.minify_syntax and
+        !options.react_refresh and
+        !options.styled_components and
+        !options.emotion and
+        !ast.has_jsx and
+        !ast.has_ts_namespace_or_enum and
+        !ast.has_ts_import_equals and
+        !ast.has_ts_export_equals;
 }
 
 fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
@@ -4529,9 +4554,11 @@ fn canKeepPrepassSemanticGraph(
     const automatic_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic;
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
+    const retained_stage3_decorators = canRetainStage3DecoratorGraph(ast, options);
     const safe_graph_subset = options.unsupported.hasAny() and
         canRetainGraphForAuditedSyntaxSubset(self.allocator, ast, semantic, options);
-    if ((ast.has_jsx and !graph_editable_jsx) or ast.has_decorator) return false;
+    if ((ast.has_jsx and !graph_editable_jsx) or
+        (ast.has_decorator and !retained_stage3_decorators)) return false;
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph. Unlike
     // syntax minification, this option does not remove or replace AST nodes.
@@ -4549,7 +4576,7 @@ fn canKeepPrepassSemanticGraph(
     if (!hasStableRuntimeImports(ast, options)) return false;
 
     const safe_styled_components = options.styled_components;
-    var found_transform = graph_editable_jsx or safe_graph_subset or safe_styled_components or
+    var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or safe_styled_components or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     for (ast.nodes.items, 0..) |node, raw_node_idx| {
         const tag_name = @tagName(node.tag);
@@ -4858,6 +4885,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // for modules that passed the full retained-graph preflight.
     const allow_derived_class_helpers = can_keep_semantic_graph and opts.unsupported.class and
         hasReachableDerivedClass(ast_ptr);
+    const allow_stage3_decorator_helpers = can_keep_semantic_graph and
+        canRetainStage3DecoratorGraph(ast_ptr, opts);
     const lowered_simple_static_class_field_global = can_keep_semantic_graph and
         (downlevel_static_public_class_field_scan orelse
             (opts.unsupported.class or opts.unsupported.class_field));
@@ -5053,13 +5082,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     };
 
     // Type erasure, Flow match lowering, TypeScript enums, supported JSX,
-    // bounded named-class cases, and audited iterator/destructuring/spread
-    // subsets preserve the edited semantic graph. JSX and syntax lowering may
-    // add synthetic helper imports, so refresh module graph metadata without
-    // replacing that graph.
+    // Stage 3 decorators, bounded named-class cases, and audited
+    // iterator/destructuring/spread subsets preserve the edited semantic
+    // graph. JSX, decorators, and syntax lowering may add synthetic helper
+    // imports, so refresh module graph metadata without replacing that graph.
     if (can_keep_semantic_graph and runtimeHelpersSafeForRetainedGraph(
         transformer.runtime_helpers,
         allow_derived_class_helpers,
+        allow_stage3_decorator_helpers,
     )) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
