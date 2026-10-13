@@ -440,12 +440,14 @@ pub fn Members(comptime Transformer: type) type {
                         continue;
                     }
 
-                    if (is_static and !init_val.isNone()) {
+                    if (is_static and (!init_val.isNone() or self.options.use_define_for_class_fields)) {
                         const static_key = if (key_node.tag == .computed_property_key)
                             try memoizeStaticComputedFieldKey(self, &cm, key_node.data.unary.operand, span)
                         else
                             key;
-                        try cm.static_elements.append(self.allocator, .{ .field = .{ .key = static_key, .init = init_val } });
+                        // Define semantics defines `static u;` too, as `undefined` (#5714).
+                        const static_init = if (init_val.isNone()) try es_helpers.makeVoidZero(self, member.span) else init_val;
+                        try cm.static_elements.append(self.allocator, .{ .field = .{ .key = static_key, .init = static_init } });
                     } else if (!is_static and (!init_val.isNone() or self.options.use_define_for_class_fields)) {
                         // 실제 statement build + visitNode 는 emitInstanceInits 가 매핑 set 후에 처리.
                         // init 이 없어도 define 의미론에선 필드가 **존재해야** 한다
