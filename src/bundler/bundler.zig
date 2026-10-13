@@ -1751,6 +1751,8 @@ pub const Bundler = struct {
                     // helper-local rename entries after stale module entries
                     // have been replaced.
                     try l.prepareCjsRuntimeInternalNames();
+                    // The ESM factory identity moves the same way (#5629).
+                    try l.prepareEsmRuntimeName();
                 }
             }
             break :blk s;

@@ -1969,6 +1969,23 @@ pub const Linker = struct {
             symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name);
     }
 
+    /// The cached factory SymbolID is only trusted while its owner's symbol row
+    /// still is the `__esm` helper. A post-link semantic refresh (constant
+    /// materialization dropping a binding) renumbers the rows: the stale index
+    /// then names a helper-local such as `fn`, and `rename_table` has already
+    /// been remapped to the new numbering (#5629).
+    fn validEsmFactorySymbolId(self: *const Linker) ?bundler_symbol.SymbolID {
+        const cached = self.esm_factory_runtime_symbol_id orelse return null;
+        const owner = self.getModule(@intFromEnum(cached.module)) orelse return null;
+        const sem = owner.semantic orelse return null;
+        const raw: usize = @intFromEnum(cached.inner);
+        if (raw >= sem.symbols.items.len) return null;
+        const symbol = sem.symbols.items[raw];
+        if (symbol.synthetic_kind != .bundler_runtime_helper or !std.mem.eql(u8, symbol.synthetic_name, "__esm")) return null;
+        if (owner.esm_runtime_factory_symbol != cached.inner) return null;
+        return cached;
+    }
+
     /// Resolve the graph-level ESM factory name from its exact synthetic SID.
     /// Fully semantic-less graphs retain the historical string fallback.
     pub fn esmFactoryRuntimeName(self: *const Linker) ![]const u8 {
@@ -1978,7 +1995,7 @@ pub const Linker = struct {
             else
                 "__esm";
         }
-        var symbol_id = self.esm_factory_runtime_symbol_id;
+        var symbol_id = self.validEsmFactorySymbolId();
         if (symbol_id == null) {
             var modules = self.graph.modulesIterator();
             while (modules.next()) |m| {
