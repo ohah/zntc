@@ -21,6 +21,8 @@
 //! 범위:
 //! - import_declaration / export_* 는 래퍼 밖에 둔다. 첫 top-level await 보다 앞의
 //!   export 선언은 래퍼 앞(원래 순서), 뒤의 것은 래퍼 뒤에 놓인다 (#5570).
+//! - 첫 await 뒤의 함수 선언은 래퍼에 선언된 바인딩을 읽지 않으면 래퍼 앞으로
+//!   끌어올린다 — 네이티브처럼 await 앞 코드가 호출할 수 있다 (#5575).
 //! - export 선언 안의 await (`export const x = await foo()`) 는 낮출 수 없다 — 번들은
 //!   analyzer 가 ZNTC0001 로 거부한다 (#5564).
 //! - 번들이 모듈을 async `__esm` factory 로 평가하면(`tla_export_decl_deferrable`)
@@ -96,6 +98,121 @@ pub fn hasTopLevelAwait(ast: *const ast_mod.Ast, idx: NodeIndex) std.mem.Allocat
     var c = TopLevelAwaitCtx{ .found = false };
     try ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, topLevelAwaitVisit);
     return c.found;
+}
+
+const NameSet = std.StringHashMapUnmanaged(void);
+
+/// 이름 수집용 walk 컨텍스트. `opaque_names` 는 이름만으로 판정할 수 없는 경우
+/// (escape 된 식별자, direct eval) — 그런 래퍼는 함수를 끌어올리지 않는다.
+const NameCollectCtx = struct {
+    ast: *const ast_mod.Ast,
+    allocator: std.mem.Allocator,
+    names: *NameSet,
+    tag: Tag,
+    opaque_names: bool = false,
+    oom: bool = false,
+};
+
+fn nameCollectVisit(ctx: *NameCollectCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
+    _ = idx;
+    const matches = switch (ctx.tag) {
+        .binding_identifier => node.tag == .binding_identifier,
+        else => node.tag == .identifier_reference or node.tag == .assignment_target_identifier or node.tag == .jsx_identifier,
+    };
+    if (!matches) return .descend;
+    const name = ctx.ast.identifierNameText(node);
+    if (std.mem.indexOfScalar(u8, name, '\\') != null or std.mem.eql(u8, name, "eval")) {
+        ctx.opaque_names = true;
+        return .stop;
+    }
+    ctx.names.put(ctx.allocator, name, {}) catch {
+        ctx.oom = true;
+        return .stop;
+    };
+    return .descend;
+}
+
+/// `root` 서브트리의 `tag`(binding 또는 reference) 식별자 이름을 `names` 에 모은다.
+/// 이름만으로 판정할 수 없으면 false.
+fn collectNames(ast: *const ast_mod.Ast, allocator: std.mem.Allocator, root: NodeIndex, tag: Tag, names: *NameSet) std.mem.Allocator.Error!bool {
+    var ctx = NameCollectCtx{ .ast = ast, .allocator = allocator, .names = names, .tag = tag };
+    try ast_walk.walkPreorderIterative(ast.allocator, ast, root, &ctx, nameCollectVisit);
+    if (ctx.oom) return error.OutOfMemory;
+    return !ctx.opaque_names;
+}
+
+/// 첫 top-level await 뒤의 함수 선언 중 래퍼 앞으로 끌어올려도 되는 것을 고른다.
+///
+/// 네이티브 모듈에서 함수 선언은 모듈 평가 전에 초기화되므로, await 앞 코드도 await
+/// 뒤에 선언된 함수를 호출할 수 있다. 래퍼 안에 두면 앞 코드에서 보이지 않는다
+/// (`ReferenceError`, #5575). 래퍼에 선언된 바인딩(변수·클래스·끌어올리지 못한 함수)을
+/// 이름으로 하나라도 읽는 함수는 래퍼 밖에서 그 바인딩을 볼 수 없으므로 그대로 둔다.
+/// 판정은 이름 기준이라 보수적이다 — 같은 이름의 지역 변수만 있어도 남긴다.
+fn collectHoistableFunctions(
+    ast: *const ast_mod.Ast,
+    allocator: std.mem.Allocator,
+    list: ast_mod.NodeList,
+    out: *std.AutoHashMapUnmanaged(u32, void),
+) std.mem.Allocator.Error!void {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const Candidate = struct { idx: NodeIndex, name: []const u8, refs: NameSet, hoistable: bool };
+    var candidates: std.ArrayList(Candidate) = .empty;
+    var blocked: NameSet = .empty;
+    var started = false;
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        const child: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+        const child_node = ast.getNode(child);
+        if (isModuleDeclaration(child_node.tag)) continue;
+        if (!started) {
+            if (!try hasTopLevelAwait(ast, child)) continue;
+            started = true;
+        }
+        if (child_node.tag == .function_declaration) {
+            const e = child_node.data.extra;
+            const name_idx = ast.readExtraNode(e, ast_mod.FunctionExtra.name);
+            const body_idx = ast.readExtraNode(e, ast_mod.FunctionExtra.body);
+            if (!name_idx.isNone() and !body_idx.isNone()) {
+                const name = ast.identifierNameText(ast.getNode(name_idx));
+                var refs: NameSet = .empty;
+                const hoistable = std.mem.indexOfScalar(u8, name, '\\') == null and
+                    try collectNames(ast, arena, child, .identifier_reference, &refs);
+                try candidates.append(arena, .{ .idx = child, .name = name, .refs = refs, .hoistable = hoistable });
+                if (!hoistable) try blocked.put(arena, name, {});
+                continue;
+            }
+        }
+        if (!try collectNames(ast, arena, child, .binding_identifier, &blocked)) return;
+    }
+
+    // 래퍼 안에 같은 이름의 선언이 남는 함수(`var f` + `function f`)와, 끌어올리지
+    // 못한 함수를 읽는 함수도 끌어올릴 수 없다 — 고정점까지 반복.
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (candidates.items) |*c| {
+            if (!c.hoistable) continue;
+            if (blocked.contains(c.name)) {
+                c.hoistable = false;
+                changed = true;
+                continue;
+            }
+            var it = c.refs.keyIterator();
+            while (it.next()) |ref| {
+                if (!blocked.contains(ref.*)) continue;
+                c.hoistable = false;
+                try blocked.put(arena, c.name, {});
+                changed = true;
+                break;
+            }
+        }
+    }
+    for (candidates.items) |c| {
+        if (c.hoistable) try out.put(allocator, @intFromEnum(c.idx), {});
+    }
 }
 
 /// `visitNode` 가 쌓은 `pending_nodes`(앞) / `trailing_nodes`(뒤) 를 scratch 로 옮긴다.
@@ -228,6 +345,12 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // ahead of the wrapper: code before that await may read them (#5570).
     var prelude_exports: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer prelude_exports.deinit(self.allocator);
+    // Function declarations after the first await that read no wrapped
+    // binding move ahead of the wrapper: they are initialized before the
+    // module runs, so earlier code may call them (#5575).
+    var hoisted_functions: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer hoisted_functions.deinit(self.allocator);
+    try collectHoistableFunctions(self.ast, self.allocator, list, &hoisted_functions);
     i = 0;
     while (i < list.len) : (i += 1) {
         const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
@@ -246,7 +369,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         const tt = self.trailing_nodes.items.len;
         const visited = try self.visitNode(child);
         if (!wrapper_started and try hasTopLevelAwait(self.ast, child)) wrapper_started = true;
-        const destination = if (wrapper_started) &self.scratch else &prelude_stmts;
+        const destination = if (wrapper_started and !hoisted_functions.contains(@intFromEnum(child))) &self.scratch else &prelude_stmts;
         try drainPendingAroundTo(Transformer, self, pt, tt, visited, destination);
     }
     const body_stmts_end = self.scratch.items.len;

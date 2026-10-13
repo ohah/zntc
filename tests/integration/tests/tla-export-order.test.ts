@@ -30,17 +30,35 @@ export class K { static v = k; }
 console.log(await Promise.resolve(K.v));`,
 } as const;
 
-// Only async `__esm` factories keep these exact: the IIFE path cannot defer
-// an export past the first await or hoist a wrapped function out of it.
+// #5575: function declarations after the first await are initialized before
+// the module runs. The IIFE path hoists those that read no wrapped binding.
+const hoistedFunction = {
+  'export calling a function declared after the first await': `export const x = helper();
+await 0;
+function helper() { return 3; }
+console.log(x);`,
+  'functions after the first await calling each other': `console.log(f());
+await 0;
+const k = 2;
+function f() { return h() + 1; }
+function h() { return 1; }
+function g() { return k; }
+console.log(g(), f());`,
+  'hoisted function reading an import and a prelude local': `import { k } from './dep.mjs';
+const base = 10;
+console.log(f(1));
+await 0;
+function f(n) { return n ? f(n - 1) + base + k : 0; }
+console.log(f(2));`,
+} as const;
+
+// Only async `__esm` factories keep this exact: the IIFE path cannot defer
+// an export past the first await.
 const factoryOnly = {
   'export after the first await keeps its side-effect order': `await 0;
 console.log('a');
 export const y = (console.log('b'), 1);
 console.log('c', y);`,
-  'export calling a function declared after the first await': `export const x = helper();
-await 0;
-function helper() { return 3; }
-console.log(x);`,
 } as const;
 
 const variants = [
@@ -78,12 +96,33 @@ describe('top-level await keeps export order and scope (#5570)', () => {
   }
 
   for (const variant of variants) {
-    const cases = variant.factory ? { ...sameModule, ...factoryOnly } : sameModule;
+    const cases = variant.factory
+      ? { ...sameModule, ...hoistedFunction, ...factoryOnly }
+      : { ...sameModule, ...hoistedFunction };
     for (const [name, source] of Object.entries(cases)) {
       test(`${name}, ${variant.label}`, async () => {
-        await run({ 'entry.mjs': source }, 'entry.mjs', variant.args);
+        await run(
+          { 'entry.mjs': source, 'dep.mjs': 'export const k = 5;' },
+          'entry.mjs',
+          variant.args,
+        );
       });
     }
+  }
+
+  for (const variant of variants) {
+    test(`a dependency's function declared after its first await, ${variant.label}`, async () => {
+      await run(
+        {
+          'dep.mjs': `await 0;
+function helper() { return 3; }
+export { helper };`,
+          'entry.mjs': "import { helper } from './dep.mjs';\nconsole.log(helper());",
+        },
+        'entry.mjs',
+        variant.args,
+      );
+    });
   }
 
   for (const variant of variants.filter((v) => v.factory)) {
