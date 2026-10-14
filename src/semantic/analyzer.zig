@@ -584,6 +584,12 @@ pub const SemanticAnalyzer = struct {
         }.pred);
     }
 
+    /// `if (x) function f() {}` 처럼 if/else 본문이 곧 함수 선언인지 (Annex B.3.4).
+    fn isFunctionDeclarationNode(self: *const SemanticAnalyzer, idx: NodeIndex) bool {
+        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+        return self.ast.getNode(idx).tag == .function_declaration;
+    }
+
     /// 현재 스코프가 strict mode인지 확인한다.
     fn isCurrentStrict(self: *const SemanticAnalyzer) bool {
         if (self.is_strict_mode or self.is_module) return true;
@@ -1861,9 +1867,14 @@ pub const SemanticAnalyzer = struct {
                 // var hoisting conflict check를 건너뛴다. strict 는 하향 sticky 이므로
                 // class body(항상 strict) 안의 메서드 if-body 까지 반영하도록
                 // isCurrentStrict() 로 판단(canRedeclare 와 동일 기준).
+                // 본문이 블록이면 그 안의 함수는 평범한 블록 함수다 — 컨텍스트를 블록 안까지
+                // 끌고 가면 같은 이름의 블록 함수가 바깥 함수와 별개 심볼이 되어 리네임되고,
+                // 평가 때 바깥 바인딩을 갱신하는 Annex B 의미가 사라진다 (#5746).
                 const saved_annex_b = self.in_annex_b_context;
-                if (!self.isCurrentStrict()) self.in_annex_b_context = true;
+                const sloppy = !self.isCurrentStrict();
+                self.in_annex_b_context = sloppy and self.isFunctionDeclarationNode(node.data.ternary.b);
                 try self.visitNode(node.data.ternary.b);
+                self.in_annex_b_context = sloppy and self.isFunctionDeclarationNode(node.data.ternary.c);
                 try self.visitNode(node.data.ternary.c);
                 self.in_annex_b_context = saved_annex_b;
             },
