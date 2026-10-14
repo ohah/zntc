@@ -3526,13 +3526,23 @@ fn isRetainableAsyncArrowNode(
     return true;
 }
 
-fn asyncArrowHasLexicalSuper(ast: *const ast_mod.Ast, arrow_idx: ast_mod.NodeIndex) bool {
-    if (arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+const Es5AsyncArrowLexicalCaptures = struct {
+    this_value: bool = false,
+    arguments: bool = false,
+    new_target: bool = false,
+    super_value: bool = false,
+};
+
+fn es5AsyncArrowLexicalCaptures(
+    ast: *const ast_mod.Ast,
+    arrow_idx: ast_mod.NodeIndex,
+) ?Es5AsyncArrowLexicalCaptures {
+    if (arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return null;
     const arrow = ast.getNode(arrow_idx);
-    if (arrow.tag != .arrow_function_expression) return false;
+    if (arrow.tag != .arrow_function_expression) return null;
     const extra = arrow.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.body)
-        return false;
+        return null;
 
     var stack: std.ArrayList(ast_mod.NodeIndex) = .empty;
     defer stack.deinit(ast.allocator);
@@ -3542,15 +3552,27 @@ fn asyncArrowHasLexicalSuper(ast: *const ast_mod.Ast, arrow_idx: ast_mod.NodeInd
         @enumFromInt(ast.extra_data.items[extra + ast_mod.ArrowExtra.params]),
         @enumFromInt(ast.extra_data.items[extra + ast_mod.ArrowExtra.body]),
     }) |root| {
-        if (!root.isNone()) stack.append(ast.allocator, root) catch return false;
+        if (!root.isNone()) stack.append(ast.allocator, root) catch return null;
     }
+
+    var captures: Es5AsyncArrowLexicalCaptures = .{};
     while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
+        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
         const raw_idx = @intFromEnum(idx);
         if (seen.contains(raw_idx)) continue;
-        seen.put(ast.allocator, raw_idx, {}) catch return false;
+        seen.put(ast.allocator, raw_idx, {}) catch return null;
         const node = ast.getNode(idx);
-        if (node.tag == .super_expression) return true;
+        switch (node.tag) {
+            .this_expression => captures.this_value = true,
+            .super_expression => captures.super_value = true,
+            .identifier_reference, .assignment_target_identifier => {
+                if (std.mem.eql(u8, ast.getText(node.span), "arguments")) captures.arguments = true;
+            },
+            .meta_property => {
+                if (node.data.none == 1) captures.new_target = true;
+            },
+            else => {},
+        }
         switch (node.tag) {
             .function_declaration,
             .function_expression,
@@ -3563,10 +3585,10 @@ fn asyncArrowHasLexicalSuper(ast: *const ast_mod.Ast, arrow_idx: ast_mod.NodeInd
         }
         var children = ast_walk.children(ast, node);
         while (children.next()) |child| {
-            if (!child.isNone()) stack.append(ast.allocator, child) catch return false;
+            if (!child.isNone()) stack.append(ast.allocator, child) catch return null;
         }
     }
-    return false;
+    return captures;
 }
 
 fn methodSuperUsesOnlyAsyncArrows(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
@@ -3634,7 +3656,9 @@ fn isRetainableEs5AsyncArrowSuper(
     if (!options.unsupported.async_await or !options.unsupported.generator or
         arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
     const arrow = ast.getNode(arrow_idx);
-    if (arrow.tag != .arrow_function_expression or !asyncArrowHasLexicalSuper(ast, arrow_idx)) return false;
+    const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
+    if (arrow.tag != .arrow_function_expression or !captures.super_value or captures.this_value or
+        captures.arguments or captures.new_target) return false;
     const extra = arrow.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.flags or
         (ast.extra_data.items[extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) == 0) return false;
@@ -3698,6 +3722,38 @@ fn isRetainableEs5AsyncArrowSuper(
     return false;
 }
 
+fn isRetainableEs5AsyncArrowStateMachine(
+    ast: *const ast_mod.Ast,
+    arrow_idx: ast_mod.NodeIndex,
+    options: TransformOptions,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+) bool {
+    if (!options.unsupported.async_await or !options.unsupported.generator or
+        arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+    const arrow = ast.getNode(arrow_idx);
+    if (arrow.tag != .arrow_function_expression) return false;
+    const flags_at = arrow.data.extra + ast_mod.ArrowExtra.flags;
+    if (flags_at >= ast.extra_data.items.len or
+        (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) == 0) return false;
+
+    const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
+    if (captures.this_value or captures.arguments or captures.new_target) return false;
+    if (captures.super_value)
+        return isRetainableEs5AsyncArrowSuper(ast, arrow_idx, options, parents);
+
+    // Parameter initializers run before the async arrow's body wrapper exists.
+    var current = parents.get(@intFromEnum(arrow_idx)) orelse return false;
+    var hops: usize = 0;
+    while (hops < ast.nodes.items.len) : (hops += 1) {
+        if (current >= ast.nodes.items.len) return false;
+        const ancestor = ast.nodes.items[current];
+        if (ancestor.tag == .formal_parameter) return false;
+        if (ancestor.tag == .program) return true;
+        current = parents.get(current) orelse return false;
+    }
+    return false;
+}
+
 fn awaitBelongsToRetainableAsyncFunction(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -3727,10 +3783,11 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// binding or scope edges. Tagged-template lowering registers its cache
 /// functions, data bindings, and references with exact identities. Keep these
 /// paths only for the audited syntax subset. Ordinary async functions may also
-/// retain their graph when they lower to a native generator wrapper. ES5
-/// state-machine lowering remains conservative except for lexical `super` in
-/// a plain class or object-literal method's async arrow, whose generated
-/// captures and helper references are tracked by the transformer.
+/// retain their graph when they lower to a native generator wrapper. ES5 state
+/// machine lowering retains arrows without lexical `this`/`arguments`/
+/// `new.target` captures, plus arrows whose only special lexical capture is
+/// `super` in a plain class/object method. Their generated state and helper
+/// references are tracked by the transformer.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -3785,14 +3842,13 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (node.tag != .arrow_function_expression) continue;
                 const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
                 if (flags_at >= ast.extra_data.items.len or
-                    (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) == 0 or
-                    !asyncArrowHasLexicalSuper(ast, arrow_idx)) continue;
+                    (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) == 0) continue;
                 if (!source_parent_map_ready) {
                     if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map))
                         return false;
                     source_parent_map_ready = true;
                 }
-                retainable = isRetainableEs5AsyncArrowSuper(ast, arrow_idx, options, &source_parent_map);
+                retainable = isRetainableEs5AsyncArrowStateMachine(ast, arrow_idx, options, &source_parent_map);
             } else {
                 retainable = isRetainableAsyncFunctionNode(ast, node, options) or
                     isRetainableAsyncArrowNode(ast, arrow_idx, options);

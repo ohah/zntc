@@ -72,6 +72,7 @@ const cases = [
   },
   {
     name: 'does not capture arguments owned by a nested ordinary function',
+    target: 'es5',
     source: `
       function read() {
         return (async () => {
@@ -306,7 +307,7 @@ const cases = [
     expectsRetainedGraph: false,
   },
   {
-    name: 'keeps other ES5 async-arrow state machines on the conservative graph path',
+    name: 'retains ES5 async-arrow state machines with ordinary lexical bindings',
     target: 'es5',
     source: `
       function read(value) {
@@ -318,11 +319,11 @@ const cases = [
       read(40).then(console.log);
     `,
     expected: '42\n',
-    expectsSyntheticBinding: false,
-    expectsRetainedGraph: false,
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
-    name: 'does not retain ES5 class async arrows that do not capture lexical super',
+    name: 'retains ES5 class async arrows without home-object captures',
     target: 'es5',
     source: `
       class Child {
@@ -336,6 +337,93 @@ const cases = [
       new Child().readAsync(40).then(console.log);
     `,
     expected: '42\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'keeps ES5 async-arrow state machines with lexical arguments on reanalysis',
+    target: 'es5',
+    source: `
+      function read(value) {
+        return (async () => {
+          await Promise.resolve();
+          return arguments.length + ':' + arguments[0] + ':' + value;
+        })();
+      }
+      read(40).then(console.log);
+    `,
+    expected: '1:40:40\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'keeps ES5 async-arrow state machines with lexical this on reanalysis',
+    target: 'es5',
+    source: `
+      function read(value) {
+        return (async () => {
+          await Promise.resolve();
+          return this.prefix + value;
+        })();
+      }
+      read.call({ prefix: 'value:' }, 42).then(console.log);
+    `,
+    expected: 'value:42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'keeps ES5 async-arrow state machines with lexical new.target on reanalysis',
+    target: 'es5',
+    source: `
+      function read() {
+        return (async () => {
+          await Promise.resolve();
+          return new.target === read;
+        })();
+      }
+      new read().then(console.log);
+    `,
+    expected: 'true\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'keeps ES5 async-arrow state machines with direct eval on reanalysis',
+    target: 'es5',
+    source: `
+      function read(value) {
+        return (async () => {
+          await Promise.resolve();
+          return eval('value');
+        })();
+      }
+      read(42).then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+    expectsCleanIdentity: false,
+  },
+  {
+    name: 'keeps ES5 async-arrow super with an additional lexical this capture on reanalysis',
+    target: 'es5',
+    source: `
+      class Base {
+        read(value) { return this.prefix + value; }
+      }
+      class Child extends Base {
+        readAsync(value) {
+          this.prefix = 'value:';
+          return (async () => {
+            await Promise.resolve();
+            return super.read(value) + this.prefix;
+          })();
+        }
+      }
+      new Child().readAsync(42).then(console.log);
+    `,
+    expected: 'value:42value:\n',
     expectsSyntheticBinding: false,
     expectsRetainedGraph: false,
   },
