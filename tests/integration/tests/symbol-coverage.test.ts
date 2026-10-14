@@ -6842,7 +6842,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async object methods retain audited super property reads', () => {
+  test('ES5 async object methods retain audited super property reads and writes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-super-get-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -6967,10 +6967,58 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(superWriteMode, superWrite.stderr).toContain('semantic_graph=reanalyzed');
+      expect(superWriteMode, superWrite.stderr).toContain('semantic_graph=retained');
+      const superWriteReport = (superWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(superWriteReport, superWrite.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(superWriteReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${superWriteReport}`,
+        ).toBe(0);
+      }
+      expect(superWriteReport).toMatch(/clean=1(?:\s|$)/);
       const superWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(superWriteOutput.status, superWriteOutput.stderr).toBe(0);
       expect(superWriteOutput.stdout).toBe('50 50\n');
+
+      // A synchronous sibling's super write must not authorize __superSet
+      // for the async-method retained graph.
+      const synchronousSuperWrite = run(
+        [
+          'var prototype = { set read(value) { this.value = value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async writeAsync() {',
+          '    await Promise.resolve();',
+          '    return super.read = 50;',
+          '  },',
+          '  writeSync(value) { return super.read = value; },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.writeAsync().then(value => {',
+          '  var other = { value: 7 };',
+          '  var syncValue = service.writeSync.call(other, 60);',
+          '  console.log(value, service.value, syncValue, other.value);',
+          '});',
+        ].join('\n'),
+      );
+      expect(synchronousSuperWrite.status, synchronousSuperWrite.stderr).toBe(0);
+      const synchronousSuperWriteMode = (synchronousSuperWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(synchronousSuperWriteMode, synchronousSuperWrite.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const synchronousSuperWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(synchronousSuperWriteOutput.status, synchronousSuperWriteOutput.stderr).toBe(0);
+      expect(synchronousSuperWriteOutput.stdout).toBe('50 50 60 60\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

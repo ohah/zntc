@@ -3956,8 +3956,9 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// their graph when they lower to either a native generator wrapper or an ES5
 /// state machine. Async arrows also retain their graph with audited lexical
 /// captures when their exact bindings and references are registered. When
-/// `super` is present, admit it only for a plain class/object method or an
-/// audited async object method whose `super` uses are all inside async arrows.
+/// `super` is present, admit it only for plain class/object methods or when
+/// every use belongs to an audited async object method with a retained home
+/// object graph. Its async-arrow captures must pass their own preflight.
 /// Direct eval and parameter initializer arrows remain outside this subset.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
@@ -3965,8 +3966,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
     semantic: *const ModuleSemanticData,
     options: TransformOptions,
     allow_es5_async_object_method_super_get: *bool,
+    allow_es5_async_object_method_super_set: *bool,
 ) bool {
     allow_es5_async_object_method_super_get.* = false;
+    allow_es5_async_object_method_super_set.* = false;
     // Cover-grammar parsing may leave speculative nodes in the arena that are
     // not part of the program. Only reachable syntax can affect this lowering.
     if (ast.nodes.items.len == 0) return false;
@@ -4988,19 +4991,22 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
         found_lowered_optional_catch_binding or found_lowered_new_target;
     if (safe_graph and source_parent_map_ready) {
-        allow_es5_async_object_method_super_get.* = allSuperUsesBelongToRetainedEs5AsyncObjectMethods(
+        const retained_async_object_super_uses = allSuperUsesBelongToRetainedEs5AsyncObjectMethods(
             ast,
             reachable_nodes,
             &retained_async_functions,
             &source_parent_map,
         );
+        allow_es5_async_object_method_super_get.* = retained_async_object_super_uses;
+        allow_es5_async_object_method_super_set.* = retained_async_object_super_uses;
     }
     return safe_graph;
 }
 
 /// A retained prepass graph may absorb imports introduced by audited generator,
 /// iterator, array-spread, destructuring, tagged-template, inferred class-name,
-/// bounded class lowering, and ES5 async object-method `super` property reads.
+/// bounded class lowering, and ES5 async object-method `super` property
+/// reads/writes.
 /// Any other runtime helper can indicate an independently lowered construct,
 /// so keep that module on semantic resync.
 /// `__extends` and `__callSuper` are admitted only when the retained-graph
@@ -5034,6 +5040,7 @@ fn runtimeHelpersSafeForRetainedGraph(
     allow_stage3_decorator_helpers: bool,
     allow_async_helper: bool,
     allow_es5_async_object_method_super_get: bool,
+    allow_es5_async_object_method_super_set: bool,
 ) bool {
     var other_helpers = helpers;
     if (allow_async_helper) other_helpers.async_helper = false;
@@ -5057,6 +5064,9 @@ fn runtimeHelpersSafeForRetainedGraph(
     // `__superGet` is safe when every reachable super expression belongs to
     // an ES5 async object method whose home-object graph passed its exact gate.
     if (allow_es5_async_object_method_super_get) other_helpers.super_get = false;
+    // `__superSet` uses the same retained method home and exact helper-reference
+    // registration. Keep it gated by the same all-super-uses ownership proof.
+    if (allow_es5_async_object_method_super_set) other_helpers.super_set = false;
     if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
     return !other_helpers.hasAny();
 }
@@ -5225,8 +5235,10 @@ fn canKeepPrepassSemanticGraph(
     options: TransformOptions,
     plugins: anytype,
     allow_es5_async_object_method_super_get: *bool,
+    allow_es5_async_object_method_super_set: *bool,
 ) bool {
     allow_es5_async_object_method_super_get.* = false;
+    allow_es5_async_object_method_super_set.* = false;
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
@@ -5257,6 +5269,7 @@ fn canKeepPrepassSemanticGraph(
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const retained_stage3_decorators = canRetainStage3DecoratorGraph(ast, options);
     var retainable_async_object_super_get = false;
+    var retainable_async_object_super_set = false;
     const safe_graph_subset = options.unsupported.hasAny() and
         canRetainGraphForAuditedSyntaxSubset(
             self.allocator,
@@ -5264,6 +5277,7 @@ fn canKeepPrepassSemanticGraph(
             semantic,
             options,
             &retainable_async_object_super_get,
+            &retainable_async_object_super_set,
         );
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators)) return false;
@@ -5425,6 +5439,7 @@ fn canKeepPrepassSemanticGraph(
     else
         found_transform or unchanged_graph_is_safe;
     allow_es5_async_object_method_super_get.* = safe_graph and retainable_async_object_super_get;
+    allow_es5_async_object_method_super_set.* = safe_graph and retainable_async_object_super_set;
     return safe_graph;
 }
 
@@ -5640,6 +5655,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         else
             @as(?bool, false);
     var allow_es5_async_object_method_super_get = false;
+    var allow_es5_async_object_method_super_set = false;
     const can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         canKeepPrepassSemanticGraph(
@@ -5648,6 +5664,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             opts,
             merged_plugins,
             &allow_es5_async_object_method_super_get,
+            &allow_es5_async_object_method_super_set,
         );
     // Class lowering removes source class nodes. Cache the derived-class
     // evidence before transforming so its helper imports can be admitted only
@@ -5862,6 +5879,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         allow_stage3_decorator_helpers,
         allow_async_helper,
         allow_es5_async_object_method_super_get,
+        allow_es5_async_object_method_super_set,
     )) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them
