@@ -3982,21 +3982,30 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         );
                     }
                 } else if (node.tag == .method_definition) {
-                    if (!source_parent_map_ready) {
-                        if (!collectRetainedPreflightParents(
-                            ast.allocator,
+                    const flags_at = node.data.extra + ast_mod.MethodExtra.flags;
+                    if (flags_at >= ast.extra_data.items.len) return false;
+                    // Only plain async object methods need the ancestor map
+                    // for their state-machine/super preflight. Synchronous
+                    // methods are checked by the syntax walk below; building
+                    // the map for them can unnecessarily force unrelated
+                    // syntax through full reanalysis.
+                    if (ast.extra_data.items[flags_at] == ast_mod.MethodFlags.is_async) {
+                        if (!source_parent_map_ready) {
+                            if (!collectRetainedPreflightParents(
+                                ast.allocator,
+                                ast,
+                                root_idx,
+                                &source_parent_map,
+                            )) return false;
+                            source_parent_map_ready = true;
+                        }
+                        retainable = isRetainableEs5AsyncObjectMethodNode(
                             ast,
-                            root_idx,
+                            arrow_idx,
+                            options,
                             &source_parent_map,
-                        )) return false;
-                        source_parent_map_ready = true;
+                        );
                     }
-                    retainable = isRetainableEs5AsyncObjectMethodNode(
-                        ast,
-                        arrow_idx,
-                        options,
-                        &source_parent_map,
-                    );
                 } else {
                     retainable = isRetainableAsyncFunctionNode(ast, node, options);
                 }
