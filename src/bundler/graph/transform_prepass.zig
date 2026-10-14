@@ -3486,12 +3486,15 @@ fn isRetainableAsyncFunctionNode(
     node: ast_mod.Node,
     options: TransformOptions,
 ) bool {
-    if (!options.unsupported.async_await or options.unsupported.generator) return false;
+    if (!options.unsupported.async_await) return false;
     if (node.tag != .function_declaration and node.tag != .function_expression and node.tag != .function)
         return false;
     const flags_at = node.data.extra + ast_mod.FunctionExtra.flags;
     if (flags_at >= ast.extra_data.items.len) return false;
     const flags = ast.extra_data.items[flags_at];
+    // The ES5 async state-machine path registers its generated wrapper/callback
+    // scopes, state binding, and moved body references in the edited graph.
+    // Async generators still use their separate conservative resync path.
     return (flags & ast_mod.FunctionFlags.is_async) != 0 and
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
@@ -3780,13 +3783,13 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// scopes plus explicitly tracked captures. Native `await` and `yield` add no
 /// binding or scope edges. Tagged-template lowering registers its cache
 /// functions, data bindings, and references with exact identities. Keep these
-/// paths only for the audited syntax subset. Ordinary async functions may also
-/// retain their graph when they lower to a native generator wrapper. ES5 state
-/// machine lowering retains arrows with audited lexical `this`, `arguments`,
-/// and `new.target` captures when the transformer has registered their exact
-/// bindings and references. When `super` is present, admit it only for a plain
-/// class/object method whose `super` uses are all inside async arrows. Direct
-/// eval and parameter-initializer arrows remain outside this subset.
+/// paths only for the audited syntax subset. Ordinary async functions retain
+/// their graph when they lower to either a native generator wrapper or an ES5
+/// state machine. Async arrows also retain their graph with audited lexical
+/// captures when their exact bindings and references are registered. When
+/// `super` is present, admit it only for a plain class/object method whose
+/// `super` uses are all inside async arrows. Direct eval and parameter
+/// initializer arrows remain outside this subset.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -3838,16 +3841,30 @@ fn canRetainGraphForAuditedSyntaxSubset(
             const arrow_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
             var retainable = false;
             if (options.unsupported.generator) {
-                if (node.tag != .arrow_function_expression) continue;
-                const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
-                if (flags_at >= ast.extra_data.items.len or
-                    (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) == 0) continue;
-                if (!source_parent_map_ready) {
-                    if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map))
-                        return false;
-                    source_parent_map_ready = true;
+                if (node.tag == .arrow_function_expression) {
+                    const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
+                    if (flags_at < ast.extra_data.items.len and
+                        (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0)
+                    {
+                        if (!source_parent_map_ready) {
+                            if (!collectRetainedPreflightParents(
+                                ast.allocator,
+                                ast,
+                                root_idx,
+                                &source_parent_map,
+                            )) return false;
+                            source_parent_map_ready = true;
+                        }
+                        retainable = isRetainableEs5AsyncArrowStateMachine(
+                            ast,
+                            arrow_idx,
+                            options,
+                            &source_parent_map,
+                        );
+                    }
+                } else {
+                    retainable = isRetainableAsyncFunctionNode(ast, node, options);
                 }
-                retainable = isRetainableEs5AsyncArrowStateMachine(ast, arrow_idx, options, &source_parent_map);
             } else {
                 retainable = isRetainableAsyncFunctionNode(ast, node, options) or
                     isRetainableAsyncArrowNode(ast, arrow_idx, options);

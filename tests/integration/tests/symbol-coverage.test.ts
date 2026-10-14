@@ -6485,7 +6485,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('native function and top-level await keep TypeScript erasure on the edited semantic graph', () => {
+  test('async function state machines and top-level await use audited graph paths', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-await-retained-'));
     const output = join(dir, 'out.cjs');
     const esmOutput = join(dir, 'tla-out.mjs');
@@ -6576,6 +6576,72 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const downlevelOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(downlevelOutput.status, downlevelOutput.stderr).toBe(0);
       expect(downlevelOutput.stdout).toBe('42\n');
+
+      // ES5 lowers both async and generator syntax into an explicit state
+      // machine. Its generated wrapper/callback identities are already
+      // recorded by the semantic editor, so the parser graph remains exact.
+      writeFileSync(
+        input,
+        [
+          'var offset = 10;',
+          'async function calculate(value) {',
+          '  var _state = 4, _context = 4, _arguments = arguments[0];',
+          '  await Promise.resolve(value);',
+          '  return value + offset + _state + _context + _arguments;',
+          '}',
+          'calculate(12).then(function(result) { console.log(result); });',
+        ].join('\n'),
+      );
+      const es5 = run('--target=es5');
+      expect(es5.status, es5.stderr).toBe(0);
+      const es5Mode = (es5.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(es5Mode, es5.stderr).toContain('semantic_graph=retained');
+      const es5Report = (es5.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(es5Report, es5.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(es5Report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${es5Report}`,
+        ).toBe(0);
+      }
+      expect(es5Report).toMatch(/clean=1(?:\s|$)/);
+      const es5Output = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(es5Output.status, es5Output.stderr).toBe(0);
+      expect(es5Output.stdout).toBe('42\n');
+
+      // Direct eval can observe generated state-machine names. Keep that
+      // shape on the existing full semantic resync path.
+      writeFileSync(
+        input,
+        [
+          'async function calculate(value) {',
+          '  await Promise.resolve();',
+          "  return eval('value') + 1;",
+          '}',
+          'calculate(41).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      const directEval = run('--target=es5');
+      expect(directEval.status, directEval.stderr).toBe(0);
+      const directEvalMode = (directEval.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=reanalyzed');
+      const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
+      expect(directEvalOutput.stdout).toBe('42\n');
 
       // Native TLA keeps the parser's exact async-module fact and graph.
       writeFileSync(
