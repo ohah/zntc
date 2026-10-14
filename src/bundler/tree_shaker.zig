@@ -353,6 +353,14 @@ pub const TreeShaker = struct {
         // 그래야 `if (DEV) heavy()` 같은 dead branch 안 import가 BFS seed로 번지지 않는다.
         // preserve-modules는 원본 모듈 경계가 출력 계약이므로, import edge를 제거할 수
         // 있는 materialize는 reachability 확정 뒤 numeric post-pass에서만 수행한다.
+        // code-splitting은 이 prepass 동안 rename carry-over를 사용하지 않는다. 각 AST
+        // resync에서 그래프 전체 wrapper symbol을 다시 등록하는 대신, 모든 mutation 뒤
+        // 한 번 등록해 수천 모듈 입력의 반복 전체 그래프 순회를 막는다.
+        const defer_wrapper_symbol_registration = self.graph.code_splitting and self.graph.wrapper_symbols_registered;
+        if (defer_wrapper_symbol_registration) self.graph.wrapper_symbols_registered = false;
+        defer {
+            if (defer_wrapper_symbol_registration) self.graph.wrapper_symbols_registered = true;
+        }
         {
             var const_scope = profile.begin(.shake_const_prepass);
             defer const_scope.end();
@@ -381,6 +389,10 @@ pub const TreeShaker = struct {
                 defer link_refresh_scope.end();
                 self.refreshLinkMetadataAfterPreShakeMutation();
             }
+        }
+        if (defer_wrapper_symbol_registration) {
+            if (self.ast_mutated_after_link) try self.graph.registerWrapperSymbols();
+            self.graph.wrapper_symbols_registered = true;
         }
 
         // 자동 순수 판별: 진입점이 아닌 모듈의 top-level이 모두 순수하면 side_effects=false
