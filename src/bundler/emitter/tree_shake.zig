@@ -7,6 +7,7 @@ const Ast = @import("../../parser/ast.zig").Ast;
 const CallFlags = @import("../../parser/ast.zig").CallFlags;
 const stmt_info_mod = @import("../stmt_info.zig");
 const TreeShaker = @import("../tree_shaker.zig").TreeShaker;
+const profile = @import("../../profile.zig");
 
 /// Cross-module @__NO_SIDE_EFFECTS__ 전파.
 ///
@@ -28,74 +29,106 @@ pub fn propagateCrossModulePurity(
     const sem = module.semantic orelse return;
     if (sem.scope_maps.len == 0) return;
     if (module.import_bindings.len == 0) return;
+    if (symbol_ids.len == 0) return;
     const module_scope = sem.scope_maps[0];
     const module_index: u32 = module.index.toU32();
 
-    // 1단계: no_side_effects인 import binding의 local symbol_id를 수집한다.
-    // 비트셋 대신 bool 배열 사용 — 스택 256개, 초과 시 arena fallback.
-    var has_any_pure = false;
     const sym_count = sem.symbols.items.len;
     if (sym_count == 0) return;
 
-    var pure_flags_buf: [256]bool = .{false} ** 256;
-    const pure_flags: []bool = if (sym_count <= 256)
-        pure_flags_buf[0..sym_count]
+    var purity_scope = profile.begin(.emit_output_purity);
+    defer purity_scope.end();
+
+    const CandidateCall = struct {
+        symbol_idx: usize,
+        flags_extra_idx: usize,
+    };
+    var candidate_calls: std.ArrayListUnmanaged(CandidateCall) = .empty;
+    defer candidate_calls.deinit(allocator);
+
+    // import 목록 전체를 linker로 해석하기 전에, import binding을 callee로 쓰는 호출만
+    // 추린다. 값/인자로만 쓰이는 대량 import는 이후 단계에서 건너뛴다.
+    {
+        var scope = profile.begin(.emit_output_purity_candidates);
+        defer scope.end();
+        for (ast.nodes.items) |node| {
+            if (node.tag != .call_expression and node.tag != .new_expression) continue;
+            const e = node.data.extra;
+            if (!ast.hasExtra(e, 3)) continue;
+
+            const callee_idx = ast.readExtraNode(e, 0);
+            if (callee_idx.isNone()) continue;
+            const callee_ni = @intFromEnum(callee_idx);
+            if (callee_ni >= ast.nodes.items.len or callee_ni >= symbol_ids.len) continue;
+            if (ast.nodes.items[callee_ni].tag != .identifier_reference) continue;
+            const sym_idx = symbol_ids[callee_ni] orelse continue;
+            if (sym_idx >= sym_count or sem.symbols.items[sym_idx].kind != .import_binding) continue;
+
+            candidate_calls.append(allocator, .{
+                .symbol_idx = @intCast(sym_idx),
+                .flags_extra_idx = @intCast(e + 3),
+            }) catch return;
+        }
+    }
+    if (candidate_calls.items.len == 0) return;
+
+    // 0 = 무관, 1 = 호출 callee 후보, 2 = @__NO_SIDE_EFFECTS__ import.
+    // 기존과 같이 작은 모듈은 stack, 큰 모듈만 emitter arena를 사용한다.
+    var import_call_state_buf: [256]u8 = .{0} ** 256;
+    const import_call_state: []u8 = if (sym_count <= import_call_state_buf.len)
+        import_call_state_buf[0..sym_count]
     else
-        allocator.alloc(bool, sym_count) catch return;
-    defer if (sym_count > 256) allocator.free(pure_flags);
-    if (sym_count > 256) @memset(pure_flags, false);
+        allocator.alloc(u8, sym_count) catch return;
+    defer if (sym_count > import_call_state_buf.len) allocator.free(import_call_state);
+    if (sym_count > import_call_state_buf.len) @memset(import_call_state, 0);
+    for (candidate_calls.items) |call| import_call_state[call.symbol_idx] = 1;
 
-    for (module.import_bindings) |ib| {
-        if (ib.kind == .namespace) continue;
+    var has_any_pure = false;
+    {
+        var scope = profile.begin(.emit_output_purity_bindings);
+        defer scope.end();
+        for (module.import_bindings) |ib| {
+            if (ib.kind == .namespace) continue;
+            const local_sym_idx = if (ib.local_symbol.semanticIndex()) |idx|
+                @as(usize, idx)
+            else
+                module_scope.get(ib.local_name) orelse continue;
+            if (local_sym_idx >= sym_count or import_call_state[local_sym_idx] != 1) continue;
 
-        const resolved = linker.getResolvedBinding(module_index, ib.local_span) orelse continue;
+            const resolved = linker.getResolvedBinding(module_index, ib.local_span) orelse continue;
 
-        const canon_mod_idx = @intFromEnum(resolved.canonical.module_index);
-        const target_module = linker.graph.getModule(resolved.canonical.module_index) orelse continue;
-        const target_sem = target_module.semantic orelse continue;
+            const canon_mod_idx = @intFromEnum(resolved.canonical.module_index);
+            const target_module = linker.graph.getModule(resolved.canonical.module_index) orelse continue;
+            const target_sem = target_module.semantic orelse continue;
 
-        if (target_sem.scope_maps.len == 0) continue;
-        const target_scope = target_sem.scope_maps[0];
+            if (target_sem.scope_maps.len == 0) continue;
+            const target_scope = target_sem.scope_maps[0];
 
-        // default export는 local_name이 다를 수 있음 ("default" → 실제 함수명)
-        const target_sym_name = if (std.mem.eql(u8, resolved.canonical.export_name, "default"))
-            linker.getExportLocalName(canon_mod_idx, "default") orelse resolved.canonical.export_name
-        else
-            resolved.canonical.export_name;
+            // default export는 local_name이 다를 수 있음 ("default" → 실제 함수명)
+            const target_sym_name = if (std.mem.eql(u8, resolved.canonical.export_name, "default"))
+                linker.getExportLocalName(canon_mod_idx, "default") orelse resolved.canonical.export_name
+            else
+                resolved.canonical.export_name;
 
-        const target_sym_idx = target_scope.get(target_sym_name) orelse continue;
-        if (target_sym_idx >= target_sem.symbols.items.len) continue;
-        if (!target_sem.symbols.items[target_sym_idx].decl_flags.no_side_effects) continue;
+            const target_sym_idx = target_scope.get(target_sym_name) orelse continue;
+            if (target_sym_idx >= target_sem.symbols.items.len) continue;
+            if (!target_sem.symbols.items[target_sym_idx].decl_flags.no_side_effects) continue;
 
-        const local_sym_idx = module_scope.get(ib.local_name) orelse continue;
-        if (local_sym_idx >= sym_count) continue;
-
-        pure_flags[local_sym_idx] = true;
-        has_any_pure = true;
+            import_call_state[local_sym_idx] = 2;
+            has_any_pure = true;
+        }
     }
 
     if (!has_any_pure) return;
 
-    // 2단계: ast의 call/new expression 중 callee가 pure import이면 is_pure 설정
-    for (ast.nodes.items) |node| {
-        if (node.tag != .call_expression and node.tag != .new_expression) continue;
-
-        const e = node.data.extra;
-        if (!ast.hasExtra(e, 3)) continue;
-
-        const callee_idx = ast.readExtraNode(e, 0);
-        if (callee_idx.isNone()) continue;
-        const callee_ni = @intFromEnum(callee_idx);
-
-        if (callee_ni >= ast.nodes.items.len) continue;
-        if (ast.nodes.items[callee_ni].tag != .identifier_reference) continue;
-
-        if (callee_ni >= symbol_ids.len) continue;
-        const sym_idx = symbol_ids[callee_ni] orelse continue;
-        if (sym_idx >= sym_count) continue;
-
-        if (pure_flags[sym_idx]) {
-            ast.extra_data.items[e + 3] |= CallFlags.is_pure;
+    // 후보 호출만 다시 확인해 import callee를 pure로 표시한다.
+    {
+        var scope = profile.begin(.emit_output_purity_apply);
+        defer scope.end();
+        for (candidate_calls.items) |call| {
+            if (import_call_state[call.symbol_idx] == 2) {
+                ast.extra_data.items[call.flags_extra_idx] |= CallFlags.is_pure;
+            }
         }
     }
 }
