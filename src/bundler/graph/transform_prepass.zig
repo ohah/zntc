@@ -3655,8 +3655,7 @@ fn isRetainableEs5AsyncArrowSuper(
             const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]);
             if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
             const key = ast.getNode(key_idx);
-            if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "constructor"))
-                return false;
+            if (key.tag != .identifier_reference) return false;
             if (method_extra > ast.extra_data.items.len or
                 ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.body) return false;
             const body_raw = ast.extra_data.items[method_extra + ast_mod.MethodExtra.body];
@@ -3671,10 +3670,14 @@ fn isRetainableEs5AsyncArrowSuper(
                 }
             }
             if (!inside_method_body) return false;
-            const class_body_raw = parents.get(current) orelse return false;
-            if (class_body_raw >= ast.nodes.items.len or ast.nodes.items[class_body_raw].tag != .class_body)
+            const method_owner_raw = parents.get(current) orelse return false;
+            if (method_owner_raw >= ast.nodes.items.len) return false;
+            const method_owner = ast.nodes.items[method_owner_raw];
+            if (method_owner.tag == .object_expression)
+                return methodSuperUsesOnlyAsyncArrows(ast, node);
+            if (method_owner.tag != .class_body or std.mem.eql(u8, ast.getText(key.span), "constructor"))
                 return false;
-            const class_raw = parents.get(class_body_raw) orelse return false;
+            const class_raw = parents.get(method_owner_raw) orelse return false;
             if (class_raw >= ast.nodes.items.len) return false;
             const class = ast.nodes.items[class_raw];
             return (class.tag == .class_declaration or class.tag == .class_expression) and
@@ -3726,8 +3729,8 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// paths only for the audited syntax subset. Ordinary async functions may also
 /// retain their graph when they lower to a native generator wrapper. ES5
 /// state-machine lowering remains conservative except for lexical `super` in
-/// a plain class method's async arrow, whose generated captures and helper
-/// references are tracked by the transformer.
+/// a plain class or object-literal method's async arrow, whose generated
+/// captures and helper references are tracked by the transformer.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
