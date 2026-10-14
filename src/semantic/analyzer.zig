@@ -5517,8 +5517,25 @@ pub const SemanticAnalyzer = struct {
                 try self.predeclareVarDeclsRecursive(node.data.ternary.b, false);
                 try self.predeclareVarDeclsRecursive(node.data.ternary.c, false);
             },
+            // switch: extra = [discriminant, cases.start, cases.len], case: extra = [test, body.start, body.len].
+            // case 안의 var·블록 함수도 함수 스코프로 호이스팅된다 (Annex B.3.3 은 case 절도 포함).
+            .switch_statement => {
+                const extras = self.ast.extra_data.items;
+                const extra = node.data.extra;
+                if (extra > extras.len or extras.len - extra < 3) return;
+                const cases_start = extras[extra + 1];
+                const cases_len = extras[extra + 2];
+                if (cases_start > extras.len or cases_len > extras.len - cases_start) return;
+                var i: u32 = 0;
+                while (i < cases_len) : (i += 1) {
+                    try self.predeclareVarDeclsRecursive(@enumFromInt(self.ast.extra_data.items[cases_start + i]), false);
+                }
+            },
             .switch_case => {
-                try self.predeclareVarDeclsPreservingStmtIdx(node.data.list);
+                const extras = self.ast.extra_data.items;
+                const extra = node.data.extra;
+                if (extra > extras.len or extras.len - extra < 3) return;
+                try self.predeclareVarDeclsPreservingStmtIdx(.{ .start = extras[extra + 1], .len = extras[extra + 2] });
             },
             .expression_statement => {
                 // expression_statement 안에 var는 없으므로 스킵
