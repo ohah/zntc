@@ -10,6 +10,7 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const profile = @import("../profile.zig");
 const define_mod = @import("transformer/define.zig");
+const drop_scan = @import("drop_scan.zig");
 const codegen_options = @import("../codegen/options.zig");
 const regex_lower = @import("regex_lower.zig");
 
@@ -293,8 +294,9 @@ pub const TransformOptions = struct {
     /// 새 transformer-driven 옵션을 추가하면 여기에도 반영해야 graph 의 게이트가
     /// silent 하게 fall-through 하지 않는다.
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
-        if (self.drop_console or self.drop_labels.len > 0) return true;
+        if (self.drop_console and drop_scan.hasDroppedConsoleStatement(ast)) return true;
         if (self.drop_debugger and astHasDebuggerStatement(ast)) return true;
+        if (self.drop_labels.len > 0) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
         if (astHasMappedImportSource(ast, self.module_specifier_map)) return true;
         // Whitespace-only minification changes emission, not the AST or graph.
@@ -850,6 +852,27 @@ test "drop debugger requires graph pre-pass only when debugger statements are pr
         _ = try parser.parse();
 
         const options: TransformOptions = .{ .drop_debugger = true };
+        try std.testing.expectEqual(fixture.expected, options.requiresGraphPrePass(&parser.ast));
+    }
+}
+
+test "drop console requires graph pre-pass only when matching calls are present" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct { source: []const u8, expected: bool }{
+        .{ .source = "const answer = 42;", .expected = false },
+        .{ .source = "console.log(42);", .expected = true },
+        .{ .source = "console[method](42);", .expected = false },
+    };
+
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".js");
+        _ = try parser.parse();
+
+        const options: TransformOptions = .{ .drop_console = true };
         try std.testing.expectEqual(fixture.expected, options.requiresGraphPrePass(&parser.ast));
     }
 }
