@@ -357,9 +357,14 @@ fn isSupportedPlainExportAll(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeInde
 /// without inline type-only specifiers. Declaration-level type imports have
 /// no runtime import record and are always erased.
 fn hasStableRuntimeImports(ast: *const ast_mod.Ast, options: TransformOptions) bool {
-    for (ast.nodes.items) |node| {
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return false;
+    for (statements) |raw_stmt| {
+        if (raw_stmt >= ast.nodes.items.len) return false;
+        const node = ast.nodes.items[raw_stmt];
         if (node.tag != .import_declaration) continue;
-        const import = module_parser.readImportDeclExtras(ast, node.data.extra);
+        const extra = node.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return false;
+        const import = module_parser.readImportDeclExtras(ast, extra);
         if (import.is_type_only) continue;
         if (import.phase != .none or import.attrs_len != 0) return false;
         if (import.specs_len == 0) continue;
