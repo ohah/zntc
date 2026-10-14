@@ -69,16 +69,30 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     // (#5595); the classic JSX factory head above keeps an implicit
     // `React` use (#1793).
     if (verbatim_module_syntax) return;
+    const RecordBindingSummary = struct {
+        count: usize = 0,
+        all_type_only: bool = true,
+    };
+    var inline_summaries: [8]RecordBindingSummary = undefined;
+    const summaries: []RecordBindingSummary = if (module.import_records.len <= inline_summaries.len)
+        inline_summaries[0..module.import_records.len]
+    else
+        self.allocator.alloc(RecordBindingSummary, module.import_records.len) catch return;
+    defer {
+        if (module.import_records.len > inline_summaries.len) self.allocator.free(summaries);
+    }
+    @memset(summaries, .{});
+    for (module.import_bindings) |ib| {
+        const rec_i: usize = @intCast(ib.import_record_index);
+        if (rec_i >= summaries.len) continue;
+        const summary = &summaries[rec_i];
+        summary.count += 1;
+        if (ib.is_helper or ib.source_type_only != true) summary.all_type_only = false;
+    }
     for (module.import_records, 0..) |*rec, rec_i| {
         if (rec.kind != .static_import) continue;
-        var bindings: usize = 0;
-        var type_only = true;
-        for (module.import_bindings) |ib| {
-            if (ib.import_record_index != rec_i) continue;
-            bindings += 1;
-            if (ib.is_helper or ib.source_type_only != true) type_only = false;
-        }
-        rec.ts_elided = bindings > 0 and type_only;
+        const summary = summaries[rec_i];
+        rec.ts_elided = summary.count > 0 and summary.all_type_only;
     }
 }
 

@@ -1955,6 +1955,37 @@ test "graph: load hit — TS 타입 전용 판정이 cold parse 와 같다 (#558
     try std.testing.expectEqual(cold, loaded);
 }
 
+test "graph: TS import record type-only classification is grouped by record" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "types-a.ts", "export interface TypeA { a: string }\n");
+    try writeFile(tmp.dir, "types-b.ts", "export interface TypeB { b: string }\n");
+    try writeFile(tmp.dir, "value.ts", "export const value = 1;\n");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { TypeA } from './types-a';
+        \\import { TypeB } from './types-b';
+        \\import { value } from './value';
+        \\export function f(a: TypeA, b: TypeB): number { return value; }
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    try graph.build(std.testing.io, &.{entry});
+
+    const module = graph.getModule(ModuleIndex.fromUsize(0)).?;
+    try std.testing.expectEqual(@as(usize, 3), module.import_records.len);
+    try std.testing.expect(module.import_records[0].ts_elided);
+    try std.testing.expect(module.import_records[1].ts_elided);
+    try std.testing.expect(!module.import_records[2].ts_elided);
+}
+
 test "graph: load hit 게이트 — legal comment 모듈은 load OFF (#4438 통합3 PR2)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
