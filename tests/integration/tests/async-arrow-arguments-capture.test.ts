@@ -212,6 +212,77 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
+    name: 'retains exact graph for ES5 async-arrow state machine with object-method lexical super',
+    target: 'es5',
+    source: `
+      var base = {
+        read(suffix) { return this.prefix + suffix; }
+      };
+      var child = {
+        __proto__: base,
+        prefix: 'object:',
+        readAsync(suffix, _a) {
+          return (async () => {
+            await Promise.resolve();
+            return super.read(suffix);
+          })();
+        }
+      };
+      child.readAsync('ok', 42).then(console.log);
+    `,
+    expected: 'object:ok\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'reanalyzes ES5 object methods with direct and async-arrow super together',
+    target: 'es5',
+    source: `
+      var base = {
+        read(suffix) { return this.prefix + suffix; }
+      };
+      var child = {
+        __proto__: base,
+        prefix: 'object:',
+        readAsync(suffix) {
+          var direct = super.read('direct:');
+          return (async () => {
+            await Promise.resolve();
+            return direct + ':' + super.read(suffix);
+          })();
+        }
+      };
+      child.readAsync('ok').then(console.log);
+    `,
+    expected: 'object:direct::object:ok\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'keeps computed-key ES5 object methods with async-arrow super on reanalysis',
+    target: 'es5',
+    source: `
+      var base = {
+        read(suffix) { return this.prefix + suffix; }
+      };
+      var methodKey = 'readAsync';
+      var child = {
+        __proto__: base,
+        prefix: 'object:',
+        [methodKey](suffix) {
+          return (async () => {
+            await Promise.resolve();
+            return super.read(suffix);
+          })();
+        }
+      };
+      child.readAsync('ok').then(console.log);
+    `,
+    expected: 'object:ok\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
     name: 'reanalyzes ES5 class methods with direct and async-arrow super together',
     target: 'es5',
     source: `
