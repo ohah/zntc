@@ -212,6 +212,8 @@ pub fn parseArrowBody(self: *Parser, is_async: bool, param_idx: NodeIndex) Parse
         // 화살표 expression body에서 `:` 를 만나면 외부 삼항의 separator일 수 있음.
         // `a ? v => (expr) : v => (expr2)` — `:` 는 외부 삼항의 separator.
         self.in_ternary_consequent = saved_ctx.in_ternary_consequent;
+        // ConciseBody[?In]: `for (let f = (e) => e in o; ;)` 의 `in` 은 여전히 for-in 키워드.
+        self.ctx.allow_in = saved_ctx.ctx.allow_in;
         break :blk try parseAssignmentExpression(self);
     };
     self.restoreFunctionContext(saved_ctx);
