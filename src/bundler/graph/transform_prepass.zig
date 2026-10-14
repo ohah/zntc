@@ -26,6 +26,7 @@ const drop_mod = @import("../../transformer/transformer/drop.zig");
 const worklet_mod = @import("../../transformer/transformer/worklet.zig");
 const styled_components_scan = @import("../../transformer/transformer/styled_components.zig");
 const emotion_scan = @import("../../transformer/transformer/emotion.zig");
+const refresh_mod = @import("../../transformer/transformer/refresh.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
@@ -111,7 +112,10 @@ pub fn shouldRun(
         // code 에만 적용된다 (`/node_modules/` 밖). node_modules 의 plain ESM/ES5 dep 까지
         // pre-pass 를 돌리던 게 가장 큰 낭비였다 — 그 모듈들은 helper import 도 안 만든다.
         const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
-        if (is_user_code and self.react_refresh) return true;
+        if (is_user_code and self.react_refresh and refresh_mod.computeRefreshEnabled(.{
+            .react_refresh = true,
+            .jsx_filename = module.path,
+        })) return true;
         if (is_user_code and (self.styled_components or self.emotion)) {
             // These transforms can only recognize bindings from their configured
             // package imports. JSX is gated below independently for css-prop paths.
