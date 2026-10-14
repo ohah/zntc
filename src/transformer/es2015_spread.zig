@@ -398,12 +398,45 @@ pub fn ES2015Spread(comptime Transformer: type) type {
         /// spread 값을 __toConsumableArray(value) 호출로 감싼다.
         /// Array literal은 이미 배열이므로 그대로 반환 (런타임 헬퍼 주입 방지).
         fn wrapWithToConsumableArray(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            if (!value.isNone() and self.ast.getNode(value).tag == .array_expression) return value;
+            if (!value.isNone() and self.ast.getNode(value).tag == .array_expression) return fillArrayHoles(self, value);
 
             self.runtime_helpers.spread_array = true;
             // #1621: minify 시 $tA 축약. helperName 이 분기 처리.
             const callee = try es_helpers.makeRuntimeHelperRef(self, "__toConsumableArray");
             return es_helpers.makeCallExpr(self, callee, &.{value}, span);
+        }
+
+        /// spread 는 이터레이터로 읽어 구멍을 undefined 로 채우지만 concat 은 구멍을 보존한다.
+        /// `[...[, 1]]` 의 리터럴 구멍을 `void 0` 으로 바꾼 새 리터럴을 돌려준다 (#5821,
+        /// esbuild minify-syntax 와 동일). 구멍이 없으면 원본 그대로.
+        fn fillArrayHoles(self: *Transformer, array: NodeIndex) Transformer.Error!NodeIndex {
+            const node = self.ast.getNode(array);
+            const start = node.data.list.start;
+            const len = node.data.list.len;
+            var has_hole = false;
+            for (self.ast.extra_data.items[start .. start + len]) |raw| {
+                if (self.ast.getNode(@enumFromInt(raw)).tag == .elision) {
+                    has_hole = true;
+                    break;
+                }
+            }
+            if (!has_hole) return array;
+
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+            var i: u32 = 0;
+            while (i < len) : (i += 1) {
+                const elem: NodeIndex = @enumFromInt(self.ast.extra_data.items[start + i]);
+                const elem_node = self.ast.getNode(elem);
+                const filled = if (elem_node.tag == .elision) try es_helpers.makeVoidZero(self, elem_node.span) else elem;
+                try self.scratch.append(self.allocator, filled);
+            }
+            const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+            return self.ast.addNode(.{
+                .tag = .array_expression,
+                .span = node.span,
+                .data = .{ .list = list },
+            });
         }
 
         fn buildConcatCall(self: *Transformer, args: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
