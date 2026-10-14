@@ -4,17 +4,20 @@ const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const Node = ast_mod.Node;
 
-pub fn hasDroppedConsoleStatement(ast: *const ast_mod.Ast) bool {
-    for (ast.nodes.items) |node| {
-        if (node.tag == .expression_statement and isConsoleCallInAst(ast, node)) return true;
-    }
-    return false;
-}
+/// Check the graph-prepass drop options in one AST walk. These options are
+/// independent; any matching statement requires the graph transform pre-pass.
+pub fn hasDroppedTransformStatement(
+    ast: *const ast_mod.Ast,
+    drop_console: bool,
+    drop_debugger: bool,
+    labels: []const []const u8,
+) bool {
+    if (!drop_console and !drop_debugger and labels.len == 0) return false;
 
-pub fn hasDroppedLabelStatement(ast: *const ast_mod.Ast, labels: []const []const u8) bool {
-    if (labels.len == 0) return false;
     for (ast.nodes.items) |node| {
-        if (node.tag == .labeled_statement and isDroppedLabel(ast, node, labels)) return true;
+        if (drop_console and node.tag == .expression_statement and isConsoleCallInAst(ast, node)) return true;
+        if (drop_debugger and node.tag == .debugger_statement) return true;
+        if (labels.len != 0 and node.tag == .labeled_statement and isDroppedLabel(ast, node, labels)) return true;
     }
     return false;
 }
