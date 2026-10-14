@@ -668,9 +668,8 @@ fn hasReachableExponentiation(ast: *const ast_mod.Ast) ?bool {
     return false;
 }
 
-// Accessor `super` can add a runtime helper module during lowering. Keep those
-// owners on graph resync until helper imports can be edited with the graph.
-// Scan nested nodes conservatively.
+// Super property lowering can add a runtime helper module. Scan nested nodes
+// conservatively so each owner can be checked against the retained home graph.
 fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
     if (method.tag != .method_definition) return true;
     const extra = method.data.extra;
@@ -689,6 +688,66 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
         }
     }
     return false;
+}
+
+// The class async-method `super` path moves the method body into a generated
+// state-machine callback. Keep only uses in the method's own body, where the
+// class lowering context can attach the exact home-object binding. A `super`
+// use in parameters or a nested function/arrow needs its own capture proof.
+fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    if (method.tag != .method_definition) return false;
+    const extra = method.data.extra;
+    if (extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return false;
+    const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]);
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
+    if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len or
+        body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+
+    const params_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, params_idx) catch return false;
+    defer ast.allocator.free(params_nodes);
+    for (params_nodes) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .super_expression) return false;
+    }
+
+    const Work = struct { node: ast_mod.NodeIndex, nested_function: bool };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(ast.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(ast.allocator);
+    stack.append(ast.allocator, .{ .node = body_idx, .nested_function = false }) catch return false;
+    var found_super = false;
+    while (stack.pop()) |work| {
+        if (work.node.isNone() or @intFromEnum(work.node) >= ast.nodes.items.len) return false;
+        const raw_idx = @intFromEnum(work.node);
+        if (seen.contains(raw_idx)) continue;
+        seen.put(ast.allocator, raw_idx, {}) catch return false;
+        const node = ast.nodes.items[raw_idx];
+        const nested_function = work.nested_function or switch (node.tag) {
+            .arrow_function_expression,
+            .function_declaration,
+            .function_expression,
+            .function,
+            .method_definition,
+            .class_declaration,
+            .class_expression,
+            => true,
+            else => false,
+        };
+        if (node.tag == .super_expression) {
+            if (nested_function) return false;
+            found_super = true;
+            continue;
+        }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| {
+            if (!child.isNone()) stack.append(ast.allocator, .{
+                .node = child,
+                .nested_function = nested_function,
+            }) catch return false;
+        }
+    }
+    return found_super;
 }
 
 fn hasValidSourceSymbol(
@@ -3202,8 +3261,9 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// A downleveled class preserves its graph when it has no base or a simple
 /// bound identifier base, and contains supported plain methods, optionally
 /// followed by one accessor or a compatible getter/setter pair. ES5 async
-/// class methods are admitted only when their bodies have no `super` use and
-/// their state-machine scopes pass the retained async preflight.
+/// class methods are admitted when their state-machine scopes pass the retained
+/// async preflight. A derived class method may use `super` only directly in its
+/// body, where its exact home-object reference remains in the class scope.
 /// One explicit constructor with only simple identifier parameters or
 /// identifier parameters with literal defaults may accompany those members
 /// when its body contains only audited declarations, expressions, control
@@ -3214,7 +3274,9 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass
 /// `isRetainableSimpleStaticClassField`; computed/escaped keys, class-self
-/// heritage reads, and direct/non-async-arrow `super` methods stay excluded.
+/// heritage reads, direct `super` in sync methods, and nested lexical `super`
+/// in async class methods stay excluded. Async-arrow super uses retain their
+/// separate single-arrow home-object preflight.
 fn isSimpleClass(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -3311,9 +3373,11 @@ fn isSimpleClass(
         const retains_async_arrow_super = allow_es5_async_arrow_super and !super.isNone() and
             (flags == 0 or flags == ast_mod.MethodFlags.is_static) and
             methodSuperUsesOnlyAsyncArrows(ast, member);
-        if (is_es5_async_method and has_super) return false;
+        const retains_async_class_method_super = is_es5_async_method and !super.isNone() and
+            methodSuperUsesOnlyDirectMethodBody(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
-            std.mem.indexOfScalar(u8, key_text, '\\') != null or (has_super and !retains_async_arrow_super)) return false;
+            std.mem.indexOfScalar(u8, key_text, '\\') != null or
+            (has_super and !retains_async_arrow_super and !retains_async_class_method_super)) return false;
     }
     if (accessor_count > 2) return false;
     if (accessor_pair) |accessor| {
@@ -3433,6 +3497,7 @@ fn registerRetainableEs5AsyncClassMethods(
     const class_extra = class_node.data.extra;
     if (class_extra > ast.extra_data.items.len or
         ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.body) return false;
+    const super_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]);
     const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]);
     if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len or
         ast.getNode(body_idx).tag != .class_body) return false;
@@ -3448,7 +3513,8 @@ fn registerRetainableEs5AsyncClassMethods(
             ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags) return false;
         if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags] != ast_mod.MethodFlags.is_async)
             continue;
-        if (methodHasSuperExpression(ast, member)) return false;
+        if (methodHasSuperExpression(ast, member) and
+            (super_idx.isNone() or !methodSuperUsesOnlyDirectMethodBody(ast, member))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
@@ -3654,7 +3720,7 @@ fn isRetainableEs5AsyncObjectMethodNode(
     return true;
 }
 
-fn allSuperUsesBelongToRetainedEs5AsyncObjectMethods(
+fn allSuperUsesBelongToRetainedEs5AsyncMethods(
     ast: *const ast_mod.Ast,
     reachable_nodes: []const u32,
     retained_async_functions: *const std.AutoHashMapUnmanaged(u32, void),
@@ -3997,19 +4063,19 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// state machine. Async arrows also retain their graph with audited lexical
 /// captures when their exact bindings and references are registered. When
 /// `super` is present, admit it only for plain class/object methods or when
-/// every use belongs to an audited async object method with a retained home
-/// object graph. Its async-arrow captures must pass their own preflight.
+/// every use belongs to an audited async class/object method with a retained
+/// home-object graph. Its async-arrow captures must pass their own preflight.
 /// Direct eval and parameter initializer arrows remain outside this subset.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     options: TransformOptions,
-    allow_es5_async_object_method_super_get: *bool,
-    allow_es5_async_object_method_super_set: *bool,
+    allow_es5_async_method_super_get: *bool,
+    allow_es5_async_method_super_set: *bool,
 ) bool {
-    allow_es5_async_object_method_super_get.* = false;
-    allow_es5_async_object_method_super_set.* = false;
+    allow_es5_async_method_super_get.* = false;
+    allow_es5_async_method_super_set.* = false;
     // Cover-grammar parsing may leave speculative nodes in the arena that are
     // not part of the program. Only reachable syntax can affect this lowering.
     if (ast.nodes.items.len == 0) return false;
@@ -5034,21 +5100,21 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
         found_lowered_optional_catch_binding or found_lowered_new_target;
     if (safe_graph and source_parent_map_ready) {
-        const retained_async_object_super_uses = allSuperUsesBelongToRetainedEs5AsyncObjectMethods(
+        const retained_async_method_super_uses = allSuperUsesBelongToRetainedEs5AsyncMethods(
             ast,
             reachable_nodes,
             &retained_async_functions,
             &source_parent_map,
         );
-        allow_es5_async_object_method_super_get.* = retained_async_object_super_uses;
-        allow_es5_async_object_method_super_set.* = retained_async_object_super_uses;
+        allow_es5_async_method_super_get.* = retained_async_method_super_uses;
+        allow_es5_async_method_super_set.* = retained_async_method_super_uses;
     }
     return safe_graph;
 }
 
 /// A retained prepass graph may absorb imports introduced by audited generator,
 /// iterator, array-spread, destructuring, tagged-template, inferred class-name,
-/// bounded class lowering, and ES5 async object-method `super` property
+/// bounded class lowering, and ES5 async class/object-method `super` property
 /// reads/writes.
 /// Any other runtime helper can indicate an independently lowered construct,
 /// so keep that module on semantic resync.
@@ -5082,8 +5148,8 @@ fn runtimeHelpersSafeForRetainedGraph(
     allow_derived_class_helpers: bool,
     allow_stage3_decorator_helpers: bool,
     allow_async_helper: bool,
-    allow_es5_async_object_method_super_get: bool,
-    allow_es5_async_object_method_super_set: bool,
+    allow_es5_async_method_super_get: bool,
+    allow_es5_async_method_super_set: bool,
 ) bool {
     var other_helpers = helpers;
     if (allow_async_helper) other_helpers.async_helper = false;
@@ -5104,12 +5170,10 @@ fn runtimeHelpersSafeForRetainedGraph(
     // `__toPropertyKey(key)` wraps a hoisted computed field key (#5553); like
     // the class-call check it is a plain helper call with a tracked reference.
     other_helpers.to_property_key = false;
-    // `__superGet` is safe when every reachable super expression belongs to
-    // an ES5 async object method whose home-object graph passed its exact gate.
-    if (allow_es5_async_object_method_super_get) other_helpers.super_get = false;
-    // `__superSet` uses the same retained method home and exact helper-reference
-    // registration. Keep it gated by the same all-super-uses ownership proof.
-    if (allow_es5_async_object_method_super_set) other_helpers.super_set = false;
+    // `__superGet` and `__superSet` are safe when every reachable super use
+    // belongs to an ES5 async class/object method with an admitted home graph.
+    if (allow_es5_async_method_super_get) other_helpers.super_get = false;
+    if (allow_es5_async_method_super_set) other_helpers.super_set = false;
     if (allow_stage3_decorator_helpers) other_helpers.es_decorator = false;
     return !other_helpers.hasAny();
 }
@@ -5277,11 +5341,11 @@ fn canKeepPrepassSemanticGraph(
     module: *const Module,
     options: TransformOptions,
     plugins: anytype,
-    allow_es5_async_object_method_super_get: *bool,
-    allow_es5_async_object_method_super_set: *bool,
+    allow_es5_async_method_super_get: *bool,
+    allow_es5_async_method_super_set: *bool,
 ) bool {
-    allow_es5_async_object_method_super_get.* = false;
-    allow_es5_async_object_method_super_set.* = false;
+    allow_es5_async_method_super_get.* = false;
+    allow_es5_async_method_super_set.* = false;
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
@@ -5311,16 +5375,16 @@ fn canKeepPrepassSemanticGraph(
     const automatic_dev_jsx = ast.has_jsx and options.jsx_transform and options.jsx_runtime == .automatic_dev;
     const graph_editable_jsx = classic_jsx or automatic_jsx or automatic_dev_jsx;
     const retained_stage3_decorators = canRetainStage3DecoratorGraph(ast, options);
-    var retainable_async_object_super_get = false;
-    var retainable_async_object_super_set = false;
+    var retainable_async_method_super_get = false;
+    var retainable_async_method_super_set = false;
     const safe_graph_subset = options.unsupported.hasAny() and
         canRetainGraphForAuditedSyntaxSubset(
             self.allocator,
             ast,
             semantic,
             options,
-            &retainable_async_object_super_get,
-            &retainable_async_object_super_set,
+            &retainable_async_method_super_get,
+            &retainable_async_method_super_set,
         );
     if ((ast.has_jsx and !graph_editable_jsx) or
         (ast.has_decorator and !retained_stage3_decorators)) return false;
@@ -5481,8 +5545,8 @@ fn canKeepPrepassSemanticGraph(
         !found_transform and unchanged_graph_is_safe
     else
         found_transform or unchanged_graph_is_safe;
-    allow_es5_async_object_method_super_get.* = safe_graph and retainable_async_object_super_get;
-    allow_es5_async_object_method_super_set.* = safe_graph and retainable_async_object_super_set;
+    allow_es5_async_method_super_get.* = safe_graph and retainable_async_method_super_get;
+    allow_es5_async_method_super_set.* = safe_graph and retainable_async_method_super_set;
     return safe_graph;
 }
 
@@ -5697,8 +5761,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             hasReachableStaticPublicClassField(ast_ptr)
         else
             @as(?bool, false);
-    var allow_es5_async_object_method_super_get = false;
-    var allow_es5_async_object_method_super_set = false;
+    var allow_es5_async_method_super_get = false;
+    var allow_es5_async_method_super_set = false;
     const can_keep_semantic_graph = object_spread_scan != null and exponentiation_scan != null and
         downlevel_static_public_class_field_scan != null and
         canKeepPrepassSemanticGraph(
@@ -5706,8 +5770,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
             module,
             opts,
             merged_plugins,
-            &allow_es5_async_object_method_super_get,
-            &allow_es5_async_object_method_super_set,
+            &allow_es5_async_method_super_get,
+            &allow_es5_async_method_super_set,
         );
     // Class lowering removes source class nodes. Cache the derived-class
     // evidence before transforming so its helper imports can be admitted only
@@ -5921,8 +5985,8 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         allow_derived_class_helpers,
         allow_stage3_decorator_helpers,
         allow_async_helper,
-        allow_es5_async_object_method_super_get,
-        allow_es5_async_object_method_super_set,
+        allow_es5_async_method_super_get,
+        allow_es5_async_method_super_set,
     )) {
         // Generated built-ins are not source references, so the transform
         // editor cannot add them to unresolved_references. If recording them

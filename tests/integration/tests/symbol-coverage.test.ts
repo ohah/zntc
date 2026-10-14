@@ -6502,15 +6502,25 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async class methods retain the exact state-machine graph', () => {
+  test('ES5 async class methods retain exact state-machine and direct super graphs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-class-method-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
+    const compilerStdout = join(dir, 'compiler.stdout');
+    const compilerStderr = join(dir, 'compiler.stderr');
+    const runtimeStdout = join(dir, 'runtime.stdout');
+    const runtimeStderr = join(dir, 'runtime.stderr');
     const run = (source: string) => {
       writeFileSync(input, source);
-      return spawnSync(
-        ZNTC_BIN,
+      const proc = spawnSync(
+        '/bin/sh',
         [
+          '-c',
+          'export ZNTC_DEBUG_SYMBOL_COVERAGE=1; stderr_path=$1; stdout_path=$2; shift 2; "$@" >"$stdout_path" 2>"$stderr_path"',
+          'zntc-class-super-coverage',
+          compilerStderr,
+          compilerStdout,
+          ZNTC_BIN,
           '--bundle',
           input,
           '--target=es5',
@@ -6520,12 +6530,32 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           '-o',
           output,
         ],
-        {
-          cwd: dir,
-          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
-          encoding: 'utf8',
-        },
+        { cwd: dir, encoding: 'utf8' },
       );
+      return {
+        status: proc.status,
+        stderr: readFileSync(compilerStderr, 'utf8') + (proc.stderr ?? ''),
+      };
+    };
+    const runOutput = () => {
+      const proc = spawnSync(
+        '/bin/sh',
+        [
+          '-c',
+          'stdout_path=$1; stderr_path=$2; shift 2; "$@" >"$stdout_path" 2>"$stderr_path"',
+          'zntc-class-super-runtime',
+          runtimeStdout,
+          runtimeStderr,
+          'node',
+          output,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      return {
+        status: proc.status,
+        stdout: readFileSync(runtimeStdout, 'utf8') + (proc.stdout ?? ''),
+        stderr: readFileSync(runtimeStderr, 'utf8') + (proc.stderr ?? ''),
+      };
     };
 
     try {
@@ -6564,7 +6594,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ).toBe(0);
       }
       expect(retainedReport).toMatch(/clean=1(?:\s|$)/);
-      const retainedOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      const retainedOutput = runOutput();
       expect(retainedOutput.status, retainedOutput.stderr).toBe(0);
       expect(retainedOutput.stdout).toBe('82\n');
 
@@ -6588,25 +6618,28 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
       expect(directEvalMode, directEval.stderr).toContain('semantic_graph=reanalyzed');
-      const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      const directEvalOutput = runOutput();
       expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
       expect(directEvalOutput.stdout).toBe('42\n');
 
-      // Class-method super has a separate home-object gate and remains reanalyzed.
+      // Direct async class-method super keeps the exact class home and helper graph.
       const classSuper = run(
         [
           'class Base {',
-          '  get read() { return this.value; }',
-          '  set read(value) { this.value = value; }',
+          '  get current() { return this.value; }',
+          '  set current(value) { this.value = value; }',
           '}',
           'class Service extends Base {',
-          '  async write() {',
+          '  async readWrite() {',
           '    await Promise.resolve();',
-          '    return super.read = 50;',
+          '    var before = super.current;',
+          '    var assigned = super.current = 50;',
+          '    return [before, assigned, this.current].join(" ");',
           '  }',
           '}',
           'var service = new Service();',
-          'service.write().then(value => console.log(value, service.read));',
+          'service.value = 42;',
+          'service.readWrite().then(value => console.log(value));',
         ].join('\n'),
       );
       expect(classSuper.status, classSuper.stderr).toBe(0);
@@ -6616,10 +6649,83 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(classSuperMode, classSuper.stderr).toContain('semantic_graph=reanalyzed');
-      const classSuperOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(classSuperMode, classSuper.stderr).toContain('semantic_graph=retained');
+      const classSuperReport = (classSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(classSuperReport, classSuper.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(classSuperReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${classSuperReport}`,
+        ).toBe(0);
+      }
+      expect(classSuperReport).toMatch(/clean=1(?:\s|$)/);
+      const classSuperOutput = runOutput();
       expect(classSuperOutput.status, classSuperOutput.stderr).toBe(0);
-      expect(classSuperOutput.stdout).toBe('50 50\n');
+      expect(classSuperOutput.stdout).toBe('42 50 50\n');
+
+      // A synchronous sibling with super keeps the whole class on reanalysis.
+      const synchronousSuper = run(
+        [
+          'class Base {',
+          '  get current() { return this.value; }',
+          '}',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    return super.current;',
+          '  }',
+          '  readSync() { return super.current; }',
+          '}',
+          'var service = new Service();',
+          'service.value = 42;',
+          'service.readAsync().then(value => console.log(value, service.readSync()));',
+        ].join('\n'),
+      );
+      expect(synchronousSuper.status, synchronousSuper.stderr).toBe(0);
+      const synchronousSuperMode = (synchronousSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(synchronousSuperMode, synchronousSuper.stderr).toContain('semantic_graph=reanalyzed');
+      const synchronousSuperOutput = runOutput();
+      expect(synchronousSuperOutput.status, synchronousSuperOutput.stderr).toBe(0);
+      expect(synchronousSuperOutput.stdout).toBe('42 42\n');
+
+      // A nested closure has a separate lexical super capture and stays gated.
+      const nestedArrowSuper = run(
+        [
+          'class Base {',
+          '  get current() { return this.value; }',
+          '}',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = () => super.current;',
+          '    return read();',
+          '  }',
+          '}',
+          'var service = new Service();',
+          'service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(nestedArrowSuper.status, nestedArrowSuper.stderr).toBe(0);
+      const nestedArrowSuperMode = (nestedArrowSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(nestedArrowSuperMode, nestedArrowSuper.stderr).toContain('semantic_graph=reanalyzed');
+      const nestedArrowSuperOutput = runOutput();
+      expect(nestedArrowSuperOutput.status, nestedArrowSuperOutput.stderr).toBe(0);
+      expect(nestedArrowSuperOutput.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
