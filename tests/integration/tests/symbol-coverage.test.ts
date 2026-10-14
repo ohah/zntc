@@ -6485,6 +6485,125 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async object methods retain the exact state-machine graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-method-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+
+    try {
+      const retained = run(
+        [
+          'var service = {',
+          '  value: 40,',
+          '  async calculate(value: number) {',
+          '    var _state = 1, _context = 1, _arguments = arguments[0];',
+          '    await Promise.resolve(value);',
+          '    return this.value + value + _state + _context + _arguments;',
+          '  },',
+          '};',
+          'service.calculate(0).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(retained.status, retained.stderr).toBe(0);
+      const retainedMode = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(retainedMode, retained.stderr).toContain('semantic_graph=retained');
+      const retainedReport = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(retainedReport, retained.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(retainedReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${retainedReport}`,
+        ).toBe(0);
+      }
+      expect(retainedReport).toMatch(/clean=1(?:\s|$)/);
+      const retainedOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(retainedOutput.status, retainedOutput.stderr).toBe(0);
+      expect(retainedOutput.stdout).toBe('42\n');
+
+      // Direct eval can observe the state-machine locals and keeps its method
+      // on the conservative semantic reanalysis path.
+      const directEval = run(
+        [
+          'var service = {',
+          '  async calculate(value: number) {',
+          '    await Promise.resolve();',
+          "    return eval('value') + 1;",
+          '  },',
+          '};',
+          'service.calculate(41).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(directEval.status, directEval.stderr).toBe(0);
+      const directEvalMode = (directEval.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=reanalyzed');
+      const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
+      expect(directEvalOutput.stdout).toBe('42\n');
+
+      // Computed keys are evaluated outside the method scope and remain gated.
+      const computedKey = run(
+        [
+          "var key = 'calculate';",
+          'var service = {',
+          '  async [key](value: number) {',
+          '    await Promise.resolve();',
+          '    return value + 1;',
+          '  },',
+          '};',
+          'service.calculate(41).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(computedKey.status, computedKey.stderr).toBe(0);
+      const computedKeyMode = (computedKey.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(computedKeyMode, computedKey.stderr).toContain('semantic_graph=reanalyzed');
+      const computedKeyOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(computedKeyOutput.status, computedKeyOutput.stderr).toBe(0);
+      expect(computedKeyOutput.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('async function state machines and top-level await use audited graph paths', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-await-retained-'));
     const output = join(dir, 'out.cjs');
