@@ -4811,7 +4811,8 @@ fn validScope(scope: ScopeId, scopes: []const Scope) bool {
 /// function symbol — and output keeps that single shared identity (#5773), as
 /// esbuild and SWC do. Such a block entry/declaration is not a scope mismatch.
 fn isAnnexBBlockFunctionAlias(scopes: []const Scope, symbol: *const Symbol, block_scope: u32) bool {
-    if (!symbol.kind.isFunctionLike()) return false;
+    // A same-named `var` and its block functions are one binding as well (#5803).
+    if (!(symbol.kind.isFunctionLike() or symbol.kind == .variable_var)) return false;
     if (!validScope(symbol.scope_id, scopes) or block_scope >= scopes.len) return false;
     if (!scopes[symbol.scope_id.toIndex()].kind.isVarScope()) return false;
     const block = scopes[block_scope];

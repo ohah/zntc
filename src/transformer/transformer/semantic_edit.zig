@@ -608,7 +608,9 @@ fn outputBindingTargetScope(
 fn isAnnexBBlockFunctionAliasGroup(self: *Transformer, editor: *SemanticEditor, groups: []const OutputBindingGroup, raw_id: u32) bool {
     const scopes = editor.scopes.items;
     const symbol = editor.symbols.items[raw_id];
-    if (!symbol.kind.isFunctionLike() or symbol.scope_id.isNone() or symbol.scope_id.toIndex() >= scopes.len) return false;
+    // A same-named `var` shares the binding too (#5803), so its symbol may be a var.
+    if (!(symbol.kind.isFunctionLike() or symbol.kind == .variable_var) or symbol.scope_id.isNone() or
+        symbol.scope_id.toIndex() >= scopes.len) return false;
     if (!scopes[symbol.scope_id.toIndex()].kind.isVarScope()) return false;
     for (groups) |group| {
         if (group.kind != symbol.kind or group.lexical_scope.isNone() or group.lexical_scope.toIndex() >= scopes.len) return false;

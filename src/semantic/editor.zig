@@ -387,9 +387,21 @@ pub const SemanticEditor = struct {
     }
 
     fn reanchorDeclaration(self: *SemanticEditor, id: SymbolId, binding: NodeIndex) void {
+        // One var-scope binding can have several declarations (`function f`
+        // twice, `var f` + `function f`), each anchoring its own row (#5803).
+        // A rebound copy keeps its source name's span, so move only the rows
+        // anchored at that source position; a lone row moves as before.
+        var rows: usize = 0;
+        for (self.references.items) |reference| {
+            if (reference.symbol_id == id and reference.flags.declare) rows += 1;
+        }
+        const binding_span = self.ast.getNode(binding).span;
         for (self.references.items) |*reference| {
-            if (reference.symbol_id == id and reference.flags.declare)
-                reference.declaration_node_index = binding;
+            if (reference.symbol_id != id or !reference.flags.declare) continue;
+            if (rows > 1 and !reference.declaration_node_index.isNone() and
+                @intFromEnum(reference.declaration_node_index) < self.ast.nodes.items.len and
+                !std.meta.eql(self.ast.getNode(reference.declaration_node_index).span, binding_span)) continue;
+            reference.declaration_node_index = binding;
         }
     }
 

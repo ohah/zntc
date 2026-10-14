@@ -835,13 +835,27 @@ pub const SemanticAnalyzer = struct {
                 // JS spec: 매개변수 + 같은 이름 var 는 동일 binding (var hoisting). 새 symbol
                 // 만들면 mangler 가 두 binding 으로 처리해 \`function f(fn){var fn=...}\` 의
                 // 매개변수가 reference 와 다르게 mangle 됨 (#2976 express \`Router.use(fn)\`).
-                if (kind == .variable_var and (existing.kind == .parameter or existing.kind == .variable_var)) {
+                // var 스코프에서 같은 이름의 함수 선언 여럿, 또는 var 와 함수 선언도 바인딩 하나다. 새 심볼을
+                // 만들면 앞 심볼이 스코프 맵에서 밀려나 선언도 참조도 없는 고아가 되고, 그 심볼에 쓰는
+                // `var f = …` 문장은 번들 tree shaker 가 지운다 (#5803). 먼저 선언된 종류를 유지한다.
+                const same_var_scope_function = (kind.isFunctionLike() or kind == .variable_var) and
+                    (existing.kind.isFunctionLike() or existing.kind == .variable_var) and
+                    (kind.isFunctionLike() or existing.kind.isFunctionLike()) and
+                    !target_scope.isNone() and self.scopes.items[target_scope.toIndex()].kind.isVarScope();
+                if ((kind == .variable_var and (existing.kind == .parameter or existing.kind == .variable_var)) or
+                    same_var_scope_function)
+                {
                     if (self.findSymbolIndexInScope(target_scope, name_text)) |existing_sym_idx| {
                         if (node_idx) |ni| {
                             if (ni < self.symbol_ids.items.len) {
                                 self.symbol_ids.items[ni] = @intCast(existing_sym_idx);
                             }
                         }
+                        // 함수 선언 문장은 쓰기 참조가 없으므로 선언 행을 남겨야 번들 tree shaker 가
+                        // 그 문장을 이 심볼의 선언으로 보고 지우지 않는다(마지막 선언이 값).
+                        // 노드 없는 1st pass 병합은 행을 남기지 않는다 — 방문 때 노드와 함께 남긴다.
+                        if (same_var_scope_function and node_idx != null)
+                            self.recordDeclareRef(@intCast(existing_sym_idx), target_scope, node_idx);
                         return;
                     }
                 }
@@ -878,7 +892,11 @@ pub const SemanticAnalyzer = struct {
             const var_scope_for_alias = self.findVarScope();
             if (!var_scope_for_alias.isNone() and var_scope_for_alias.toIndex() < self.scope_maps.items.len) {
                 if (self.scope_maps.items[var_scope_for_alias.toIndex()].get(name_text)) |x_idx| {
-                    if (self.symbols.items[x_idx].kind.isFunctionLike()) {
+                    // 같은 이름의 `var` 가 있어도 블록 함수는 그 var 바인딩에 대입된다(B.3.3). 1st pass
+                    // 가 var 와 함수를 한 심볼로 합치므로 var 종류도 받는다 (#5803). 같은 블록의 var 충돌은
+                    // 위 checkLexicalVarConflict 가 먼저 잡는다.
+                    const x_kind = self.symbols.items[x_idx].kind;
+                    if (x_kind.isFunctionLike() or x_kind == .variable_var) {
                         try self.scope_maps.items[target_scope.toIndex()].put(self.allocator, name_text, x_idx);
                         if (node_idx) |ni| {
                             if (ni < self.symbol_ids.items.len) {
@@ -4552,7 +4570,10 @@ pub const SemanticAnalyzer = struct {
                             const var_scope = self.findVarScope();
                             if (!var_scope.isNone() and var_scope.toIndex() < self.scope_maps.items.len) {
                                 if (self.scope_maps.items[var_scope.toIndex()].get(bname)) |existing_idx| {
-                                    if (self.symbols.items[existing_idx].kind == .variable_var) {
+                                    // var-scope 함수와 같은 이름의 var 도 1st pass 에서 그 심볼로 합쳐졌다
+                                    // (#5803). 블록 충돌은 아래 recheckPredeclaredVar 가 다시 검사한다.
+                                    const existing_kind = self.symbols.items[existing_idx].kind;
+                                    if (existing_kind == .variable_var or existing_kind.isFunctionLike()) {
                                         break :blk true;
                                     }
                                 }
