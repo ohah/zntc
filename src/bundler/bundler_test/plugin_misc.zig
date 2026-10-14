@@ -400,11 +400,12 @@ test "Batch D: keepNames + code splitting — __name helper in chunk" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const mod = import('./lazy');\nconsole.log(mod);");
-    // lazy 청크에 두 개의 같은 이름 함수 → rename 발생
+    // lazy 청크에 두 개의 같은 이름 함수 → rename 발생. 같은 모듈에서 import 이름과 함수
+    // 선언이 겹치면 SyntaxError 라(#5807) util 의 run 은 별칭으로 가져온다.
     try writeFile(tmp.dir, "lazy.ts",
-        \\import { run } from './util';
+        \\import { run as runUtil } from './util';
         \\export function run() { return 'lazy'; }
-        \\console.log(run());
+        \\console.log(run(), runUtil());
     );
     try writeFile(tmp.dir, "util.ts", "export function run() { return 'util'; }");
 
