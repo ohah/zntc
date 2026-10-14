@@ -160,6 +160,13 @@ pub fn Members(comptime Transformer: type) type {
             const static_ctx = es_helpers.enterStaticInitContext(self, class_name_span);
             defer es_helpers.leaveStaticInitContext(self, static_ctx);
 
+            // 본문 문장이 만든 보류/후행 노드(중첩 클래스 선언 `var C = …`, 키 temp 등)는 그 문장
+            // 앞/뒤에 둔다. 그대로 두면 바깥 문장 목록으로 새어 클래스보다 앞(모듈 최상위)에 나간다.
+            const pending_top = self.pending_nodes.items.len;
+            defer self.pending_nodes.shrinkRetainingCapacity(pending_top);
+            const trailing_top = self.trailing_nodes.items.len;
+            defer self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
+
             var new_elements: std.ArrayList(StaticElement) = .empty;
             errdefer new_elements.deinit(self.allocator);
             try new_elements.ensureTotalCapacity(self.allocator, cm.static_elements.items.len);
@@ -167,11 +174,17 @@ pub fn Members(comptime Transformer: type) type {
                 switch (elem) {
                     .raw_stmt => |raw| {
                         const visited = try self.visitNode(raw);
+                        for (self.pending_nodes.items[pending_top..]) |pending|
+                            try new_elements.append(self.allocator, .{ .stmt = pending });
+                        self.pending_nodes.shrinkRetainingCapacity(pending_top);
                         if (!visited.isNone()) {
-                            new_elements.appendAssumeCapacity(.{ .stmt = visited });
+                            try new_elements.append(self.allocator, .{ .stmt = visited });
                         }
+                        for (self.trailing_nodes.items[trailing_top..]) |trailing|
+                            try new_elements.append(self.allocator, .{ .stmt = trailing });
+                        self.trailing_nodes.shrinkRetainingCapacity(trailing_top);
                     },
-                    else => new_elements.appendAssumeCapacity(elem),
+                    else => try new_elements.append(self.allocator, elem),
                 }
             }
             cm.static_elements.deinit(self.allocator);

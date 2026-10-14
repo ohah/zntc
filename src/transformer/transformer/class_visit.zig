@@ -734,3 +734,42 @@ pub fn shouldDropClassExprName(self: *Transformer, tag: Tag, name_idx: NodeIndex
     if (sym_id >= self.symbols.len) return false;
     return self.symbols[sym_id].reference_count == 0;
 }
+
+/// 클래스 멤버의 계산된 키에 바깥 super 문맥을 기록한다 (#4735). 키는 클래스 정의 시점에
+/// 바깥에서 평가되므로 `super` 도 바깥 home(객체 리터럴 메서드·바깥 클래스)을 가리킨다.
+/// 낮추기 경로마다 키를 방문하는 위치가 달라서, 키 노드와 그 안쪽 식 모두를 기록해
+/// `visitNode` 가 어느 쪽을 방문하든 바깥 문맥으로 되돌린다. 같은 클래스를 여러 경로가
+/// 다시 방문해도 먼저 기록한 (진짜 바깥) 문맥을 지킨다. 기록한 키는 `inserted` 에 모은다.
+pub fn pushClassKeySuperContexts(self: *Transformer, class_idx: NodeIndex, inserted: *std.ArrayListUnmanaged(u32)) Error!void {
+    const outer = self.saveSuperContext();
+    if (outer.isEmpty()) return;
+    const class_node = self.ast.getNode(class_idx);
+    if (class_node.tag != .class_declaration and class_node.tag != .class_expression) return;
+    const body_idx = self.readNodeIdx(class_node.data.extra, ast_mod.ClassExtra.body);
+    if (body_idx.isNone()) return;
+    const body_node = self.ast.getNode(body_idx);
+    if (body_node.tag != .class_body) return;
+    var members = self.ast.iterateExtraList(body_node.data.list);
+    while (members.next()) |member| {
+        const member_node = self.ast.getNode(member);
+        switch (member_node.tag) {
+            .method_definition, .property_definition, .accessor_property => {},
+            else => continue,
+        }
+        const key = self.readNodeIdx(member_node.data.extra, 0);
+        if (key.isNone()) continue;
+        const key_node = self.ast.getNode(key);
+        if (key_node.tag != .computed_property_key) continue;
+        for ([_]NodeIndex{ key, key_node.data.unary.operand }) |target| {
+            const entry = try self.class_key_super_contexts.getOrPut(self.allocator, @intFromEnum(target));
+            if (entry.found_existing) continue;
+            entry.value_ptr.* = outer;
+            try inserted.append(self.allocator, @intFromEnum(target));
+        }
+    }
+}
+
+pub fn popClassKeySuperContexts(self: *Transformer, inserted: *std.ArrayListUnmanaged(u32)) void {
+    for (inserted.items) |raw| _ = self.class_key_super_contexts.remove(raw);
+    inserted.deinit(self.allocator);
+}

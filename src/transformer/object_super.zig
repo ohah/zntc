@@ -49,7 +49,19 @@ fn superMustBeLowered(self: *const Transformer, flags: u32) bool {
 /// even when the containing method itself remains native.
 fn hasDownleveledAsyncArrowSuper(self: *Transformer, method: Node) bool {
     if (!self.options.unsupported.async_await) return false;
+    return scanMethodSuper(self, method, true);
+}
 
+/// 메서드의 params/body 에 이 메서드를 home 으로 하는 `super` 가 있는지.
+/// 일반 함수·클래스·다른 메서드는 경계 — 그 안의 `super` 는 다른 home 을 가진다(일반
+/// 함수 안에선 애초에 문법 오류). arrow 는 경계가 아니다.
+fn methodUsesSuper(self: *Transformer, method: Node) bool {
+    return scanMethodSuper(self, method, false);
+}
+
+/// `only_in_async_arrow` 면 async arrow 안의 `super` 만 센다. OOM 이면 보수적으로 "쓴다" —
+/// home 을 배정해도 결과는 맞다.
+fn scanMethodSuper(self: *Transformer, method: Node, only_in_async_arrow: bool) bool {
     const Work = struct {
         node: NodeIndex,
         inside_async_arrow: bool,
@@ -57,27 +69,41 @@ fn hasDownleveledAsyncArrowSuper(self: *Transformer, method: Node) bool {
     var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(self.allocator);
     const e = method.data.extra;
-    stack.append(self.allocator, .{
-        .node = self.readNodeIdx(e, ast_mod.MethodExtra.params),
-        .inside_async_arrow = false,
-    }) catch return true;
-    stack.append(self.allocator, .{
-        .node = self.readNodeIdx(e, ast_mod.MethodExtra.body),
-        .inside_async_arrow = false,
-    }) catch return true;
+    for ([_]NodeIndex{ self.readNodeIdx(e, ast_mod.MethodExtra.params), self.readNodeIdx(e, ast_mod.MethodExtra.body) }) |root|
+        stack.append(self.allocator, .{ .node = root, .inside_async_arrow = false }) catch return true;
 
     while (stack.pop()) |work| {
         if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
         const node = self.ast.getNode(work.node);
-        if (work.inside_async_arrow and node.tag == .super_expression) return true;
+        if (node.tag == .super_expression and (work.inside_async_arrow or !only_in_async_arrow)) return true;
         switch (node.tag) {
-            .function_declaration,
-            .function_expression,
-            .function,
-            .class_declaration,
-            .class_expression,
-            .method_definition,
-            => continue,
+            .function_declaration, .function_expression, .function => continue,
+            // 경계지만 클래스 extends 식과 멤버·메서드의 계산된 키는 바깥에서 평가된다 —
+            // 그 안의 `super` 는 이 메서드의 home 이다 (#4735).
+            .class_declaration, .class_expression => {
+                const ce = node.data.extra;
+                stack.append(self.allocator, .{ .node = self.readNodeIdx(ce, ast_mod.ClassExtra.super), .inside_async_arrow = work.inside_async_arrow }) catch return true;
+                const body = self.readNodeIdx(ce, ast_mod.ClassExtra.body);
+                if (body.isNone() or self.ast.getNode(body).tag != .class_body) continue;
+                var class_members = self.ast.iterateExtraList(self.ast.getNode(body).data.list);
+                while (class_members.next()) |member| {
+                    const member_node = self.ast.getNode(member);
+                    switch (member_node.tag) {
+                        .method_definition, .property_definition, .accessor_property => {},
+                        else => continue,
+                    }
+                    const key = self.readNodeIdx(member_node.data.extra, 0);
+                    if (key.isNone() or self.ast.getNode(key).tag != .computed_property_key) continue;
+                    stack.append(self.allocator, .{ .node = key, .inside_async_arrow = work.inside_async_arrow }) catch return true;
+                }
+                continue;
+            },
+            .method_definition => {
+                const key = self.readNodeIdx(node.data.extra, ast_mod.MethodExtra.key);
+                if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key)
+                    stack.append(self.allocator, .{ .node = key, .inside_async_arrow = work.inside_async_arrow }) catch return true;
+                continue;
+            },
             else => {},
         }
         const inside_async_arrow = work.inside_async_arrow or
@@ -92,42 +118,6 @@ fn hasDownleveledAsyncArrowSuper(self: *Transformer, method: Node) bool {
         }
     }
     return false;
-}
-
-/// 메서드의 params/body 에 이 메서드를 home 으로 하는 `super` 가 있는지.
-/// 일반 함수·클래스·다른 메서드는 경계 — 그 안의 `super` 는 다른 home 을 가진다(일반
-/// 함수 안에선 애초에 문법 오류). arrow 는 경계가 아니다.
-fn methodUsesSuper(self: *Transformer, method: Node) bool {
-    const e = method.data.extra;
-    var found = false;
-    const roots = [_]NodeIndex{
-        self.readNodeIdx(e, ast_mod.MethodExtra.params),
-        self.readNodeIdx(e, ast_mod.MethodExtra.body),
-    };
-    for (roots) |r| {
-        if (r.isNone()) continue;
-        // OOM 이면 보수적으로 "쓴다" — home 을 배정해도 결과는 맞다.
-        ast_walk.walkPreorderIterative(self.allocator, self.ast, r, &found, superVisit) catch return true;
-        if (found) return true;
-    }
-    return false;
-}
-
-fn superVisit(found: *bool, _: NodeIndex, node: Node) ast_walk.WalkAction {
-    switch (node.tag) {
-        .super_expression => {
-            found.* = true;
-            return .stop;
-        },
-        .function_declaration,
-        .function_expression,
-        .function,
-        .class_declaration,
-        .class_expression,
-        .method_definition,
-        => return .skip_children,
-        else => return .descend,
-    }
 }
 
 pub const Home = struct {

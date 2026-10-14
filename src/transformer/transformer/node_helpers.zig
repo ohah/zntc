@@ -477,15 +477,39 @@ pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import
 fn classNameOutputLookupScope(self: anytype, start: @import("../../semantic/scope.zig").ScopeId) @import("../../semantic/scope.zig").ScopeId {
     if (start.isNone()) return start;
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    // 중첩 클래스의 계산된 키(`static { class C { [super.s]() {} } }`)는 그 클래스 스코프에서
+    // 방문되지만 static 문맥은 바깥 클래스의 것이다 (#4735). 클래스 자기 바인딩의 스코프가
+    // 조상이면 그 클래스 바디를 기준으로 삼는다.
+    const owner = currentClassSelfScope(self, scopes);
     var cursor = start;
     var hops: usize = 0;
     while (!cursor.isNone() and hops < scopes.len) : (hops += 1) {
         if (cursor.toIndex() >= scopes.len) return start;
         const current = scopes[cursor.toIndex()];
-        if (current.kind == .class_body) return current.parent;
+        if (current.kind == .class_body and (owner == null or owner.? == cursor or !scopeIsAncestor(scopes, owner.?, cursor)))
+            return current.parent;
         cursor = current.parent;
     }
     return start;
+}
+
+fn currentClassSelfScope(self: anytype, scopes: anytype) ?@import("../../semantic/scope.zig").ScopeId {
+    const raw_id = self.current_class_self_symbol_id orelse return null;
+    const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    if (raw_id >= symbols.len) return null;
+    const scope = symbols[raw_id].scope_id;
+    if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].kind != .class_body) return null;
+    return scope;
+}
+
+fn scopeIsAncestor(scopes: anytype, ancestor: @import("../../semantic/scope.zig").ScopeId, start: @import("../../semantic/scope.zig").ScopeId) bool {
+    var cursor = scopes[start.toIndex()].parent;
+    var hops: usize = 0;
+    while (!cursor.isNone() and cursor.toIndex() < scopes.len and hops < scopes.len) : (hops += 1) {
+        if (cursor == ancestor) return true;
+        cursor = scopes[cursor.toIndex()].parent;
+    }
+    return false;
 }
 
 fn isCurrentStaticClassName(self: anytype, name_span: Span) bool {

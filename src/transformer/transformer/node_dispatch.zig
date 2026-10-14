@@ -27,6 +27,7 @@ const es2015_for_of = @import("../es2015_for_of.zig");
 const es2018_for_await = @import("../es2018_for_await.zig");
 const es2015_destructuring = @import("../es2015_destructuring.zig");
 const es2015_class = @import("../es2015_class.zig");
+const class_visit_mod = @import("class_visit.zig");
 const es2015_generator = @import("../es2015_generator.zig");
 const regex_lower = @import("../regex_lower.zig");
 const group_name = @import("../../regexp/group_name.zig");
@@ -656,6 +657,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.used_unsupported_arrow_dynamic_scope = true;
                 return idx;
             }
+            // 계산된 키는 클래스 바깥 문맥(`super`·static 블록의 `this`)으로 평가된다 (#4735).
+            var key_super_contexts: std.ArrayListUnmanaged(u32) = .empty;
+            defer class_visit_mod.popClassKeySuperContexts(self, &key_super_contexts);
+            try class_visit_mod.pushClassKeySuperContexts(self, idx, &key_super_contexts);
             // static 초기값·static 블록 안의 중첩 클래스는 자기 `this` 를 가진다 — 바깥 클래스 이름으로
             // 치환하지 않게 함수 경계처럼 깊이를 올린다 (#4801).
             const in_static_ctx = self.static_block_class_name != null;
@@ -699,6 +704,10 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 self.used_unsupported_arrow_dynamic_scope = true;
                 return idx;
             }
+            // 계산된 키는 클래스 바깥 문맥(`super`·static 블록의 `this`)으로 평가된다 (#4735).
+            var key_super_contexts: std.ArrayListUnmanaged(u32) = .empty;
+            defer class_visit_mod.popClassKeySuperContexts(self, &key_super_contexts);
+            try class_visit_mod.pushClassKeySuperContexts(self, idx, &key_super_contexts);
             const in_static_ctx = self.static_block_class_name != null;
             if (in_static_ctx) self.this_depth += 1;
             defer if (in_static_ctx) {

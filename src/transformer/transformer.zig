@@ -550,6 +550,11 @@ pub const Transformer = struct {
     /// 형태로 emit. D 의 prototype chain 은 class declaration 시 고정되므로 1회 평가 보장
     /// + bundler 도 D identifier 의 reference 추적이 자연스러움.
     current_super_via_proto_chain: bool = false,
+    /// 클래스 멤버의 계산된 키(`[super.k]`)가 볼 **바깥** super 문맥 (#4735). 키는 클래스 정의
+    /// 시점에 바깥 함수에서 평가되므로 `super` 도 바깥 home 을 가리킨다. 그런데 키는 클래스가
+    /// 자기 super 문맥을 세운 뒤에 방문되므로, 클래스 진입 때 키 노드(와 그 안쪽 식)에 바깥
+    /// 문맥을 기록해 두고 `visitNode` 가 그 노드를 방문하는 동안만 되돌린다.
+    class_key_super_contexts: std.AutoHashMapUnmanaged(u32, SuperContext) = .empty,
 
     /// ES2015 generator: labeled break/continue를 위한 label 스택.
     /// labeled_statement 진입 시 push, 퇴장 시 pop.
@@ -792,8 +797,81 @@ pub const Transformer = struct {
     /// 재귀 함수에서 Zig가 에러 셋을 추론할 수 없으므로 명시적으로 선언.
     pub const Error = std.mem.Allocator.Error;
 
+    /// `super` 낮추기가 읽는 문맥 필드 묶음 (#4735). 클래스 진입이 이 필드들을 바꾸므로,
+    /// 계산된 키를 바깥 문맥으로 방문할 때 통째로 저장·복원한다. static 문맥의 receiver 는
+    /// 바깥 클래스 이름이라 그 이름 바인딩(`current_class_*`)도, static 블록 안 `this` 치환
+    /// 깊이(`this_depth`)도 함께 담는다.
+    pub const SuperContext = struct {
+        class: ?Span,
+        class_old_idx: NodeIndex,
+        method_is_static: bool,
+        is_static: bool,
+        static_receiver: ?Span,
+        in_extracted_fn: bool,
+        home_object: ?Span,
+        via_proto_chain: bool,
+        this_alias: bool,
+        class_super_parameter: ?ClassSuperParameter,
+        class_name_node: NodeIndex,
+        class_self_symbol_id: ?u32,
+        this_depth: u32,
+
+        /// 아무 super 문맥도 없는 상태(최상위). 이 안의 클래스 키에는 `super` 가 올 수 없다.
+        pub fn isEmpty(ctx: SuperContext) bool {
+            return ctx.class == null and !ctx.method_is_static and !ctx.is_static and ctx.static_receiver == null and
+                !ctx.in_extracted_fn and ctx.home_object == null and !ctx.via_proto_chain and !ctx.this_alias and
+                ctx.class_super_parameter == null;
+        }
+    };
+
+    pub fn saveSuperContext(self: *const Transformer) SuperContext {
+        return .{
+            .class = self.current_super_class,
+            .class_old_idx = self.current_super_class_old_idx,
+            .method_is_static = self.current_method_is_static,
+            .is_static = self.current_super_is_static,
+            .static_receiver = self.current_super_static_receiver,
+            .in_extracted_fn = self.current_super_in_extracted_fn,
+            .home_object = self.current_super_home_object,
+            .via_proto_chain = self.current_super_via_proto_chain,
+            .this_alias = self.super_call_this_alias,
+            .class_super_parameter = self.active_class_super_parameter,
+            .class_name_node = self.current_class_name_node,
+            .class_self_symbol_id = self.current_class_self_symbol_id,
+            .this_depth = self.this_depth,
+        };
+    }
+
+    pub fn restoreSuperContext(self: *Transformer, ctx: SuperContext) void {
+        self.current_super_class = ctx.class;
+        self.current_super_class_old_idx = ctx.class_old_idx;
+        self.current_method_is_static = ctx.method_is_static;
+        self.current_super_is_static = ctx.is_static;
+        self.current_super_static_receiver = ctx.static_receiver;
+        self.current_super_in_extracted_fn = ctx.in_extracted_fn;
+        self.current_super_home_object = ctx.home_object;
+        self.current_super_via_proto_chain = ctx.via_proto_chain;
+        self.super_call_this_alias = ctx.this_alias;
+        self.active_class_super_parameter = ctx.class_super_parameter;
+        self.current_class_name_node = ctx.class_name_node;
+        self.current_class_self_symbol_id = ctx.class_self_symbol_id;
+        self.this_depth = ctx.this_depth;
+    }
+
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
+        if (self.class_key_super_contexts.count() != 0) {
+            if (self.class_key_super_contexts.get(@intFromEnum(idx))) |outer| {
+                const inner = self.saveSuperContext();
+                self.restoreSuperContext(outer);
+                defer self.restoreSuperContext(inner);
+                return self.visitNodeWithSuperContext(idx);
+            }
+        }
+        return self.visitNodeWithSuperContext(idx);
+    }
+
+    fn visitNodeWithSuperContext(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         const input_raw = @intFromEnum(idx);
         if (self.generated_class_copy_depth > 0 and input_raw < self.parser_node_count and
             !self.scope_owner_removed.contains(input_raw))

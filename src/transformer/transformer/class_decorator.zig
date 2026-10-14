@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
+const ast_walk = @import("../../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
@@ -775,6 +776,46 @@ fn classBodyHasFieldAndComputedKey(self: *Transformer, body_idx: NodeIndex) bool
     return has_field and has_computed;
 }
 
+/// 계산된 키가 바깥 `this`/`super`/`arguments` 를 읽는지 (#4735). es5 는 클래스를 IIFE 로
+/// 감싸는데 키를 그 안에서 평가하면 이 셋이 IIFE 의 것(또는 같은 이름의 `_super` 매개변수)이
+/// 된다. 그런 키는 IIFE 밖에서 먼저 평가하도록 temp 로 올린다. 일반 함수는 경계다.
+fn classKeysUseOuterContext(self: *Transformer, body_idx: NodeIndex) bool {
+    if (body_idx.isNone()) return false;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .class_body) return false;
+    var class_members = self.ast.iterateExtraList(body.data.list);
+    while (class_members.next()) |member_idx| {
+        const member = self.ast.getNode(member_idx);
+        switch (member.tag) {
+            .method_definition, .property_definition, .accessor_property => {},
+            else => continue,
+        }
+        const key = self.readNodeIdx(member.data.extra, 0);
+        if (key.isNone() or self.ast.getNode(key).tag != .computed_property_key) continue;
+        var scan: OuterContextScan = .{ .ast = self.ast };
+        // OOM 이면 보수적으로 "읽는다" — 키를 올려도 결과는 맞다.
+        ast_walk.walkPreorderIterative(self.allocator, self.ast, key, &scan, outerContextVisit) catch return true;
+        if (scan.found) return true;
+    }
+    return false;
+}
+
+const OuterContextScan = struct {
+    ast: *const ast_mod.Ast,
+    found: bool = false,
+};
+
+fn outerContextVisit(scan: *OuterContextScan, _: NodeIndex, node: Node) ast_walk.WalkAction {
+    switch (node.tag) {
+        .this_expression, .super_expression => {},
+        .identifier_reference => if (!std.mem.eql(u8, scan.ast.getText(node.data.string_ref), "arguments")) return .descend,
+        .function_declaration, .function_expression, .function, .method_definition => return .skip_children,
+        else => return .descend,
+    }
+    scan.found = true;
+    return .stop;
+}
+
 /// A legacy member decorator is emitted after the class. Preserve the key
 /// value for that call by assigning a temp at the method's computed-key site.
 /// The temp declaration itself is hoisted without side effects, so heritage
@@ -961,7 +1002,8 @@ pub fn lowerClassWithPrehoistedKeys(
     comptime lower: fn (*Transformer, NodeIndex, Node) Error!NodeIndex,
 ) Error!NodeIndex {
     const body_idx = self.readNodeIdx(node.data.extra, ast_mod.ClassExtra.body);
-    if (!classBodyHasFieldAndComputedKey(self, body_idx)) return lower(self, source_idx, node);
+    if (!classBodyHasFieldAndComputedKey(self, body_idx) and !classKeysUseOuterContext(self, body_idx))
+        return lower(self, source_idx, node);
 
     var key_assigns: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer key_assigns.deinit(self.allocator);
