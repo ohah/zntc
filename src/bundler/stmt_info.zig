@@ -1800,6 +1800,13 @@ pub fn buildFromSemantic(
         stmts[stmt_i].declared_symbols = declared_slice;
         for (declared_slice) |sym_idx| {
             if (sym_idx < sym_to_stmt.len) {
+                // One var-scope binding can be declared by several statements
+                // (`function f` twice, `var f` + `function f`). Keep the last as
+                // the declarer and seed the earlier ones as writers, so a live
+                // binding keeps every declaration (#5803).
+                if (sym_to_stmt[sym_idx]) |previous| {
+                    if (previous != stmt_i) try writer_buckets[sym_idx].append(allocator, previous);
+                }
                 sym_to_stmt[sym_idx] = @intCast(stmt_i);
             }
         }
