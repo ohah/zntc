@@ -393,22 +393,23 @@ pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
             self.transform_options_base.unsupported.async_await;
         const analyze_ok = if (analyzer.analyze()) |_| true else |_| false;
 
-        // import-mutation 진단(ZNTC0805)과 재선언(ZNTC1000)을 사용자 노출 fatal 로 승격한다.
-        // 재선언은 코드가 아예 실행되지 않는 SyntaxError 라, 번들이 조용히 통과시키면 의미가
-        // 바뀐 코드가 나온다 (#5807, esbuild 도 번들에서 에러). 다른 semantic 에러는 기존대로
-        // 비-fatal — 코퍼스 회귀 회피, 범위 한정.
+        // import-mutation 진단(ZNTC0805)과 early SyntaxError 를 사용자 노출 fatal 로 승격한다.
+        // 재선언·중복 export·미선언 private 등은 코드가 아예 실행되지 않는 SyntaxError 라,
+        // 번들이 조용히 통과시키면 의미가 바뀐 코드가 나온다 (#5807, #5820 — esbuild/rolldown/
+        // webpack 도 번들에서 에러). TLA 진단만 타겟 조건부.
         for (analyzer.errors.items) |sem_err| {
-            if (sem_err.code == .identifier_redeclared) {
-                const m = if (sem_err.message.len > 0) sem_err.message else "Identifier has already been declared";
-                self.addDiag(.parse_error, .@"error", module.path, sem_err.span, .parse, m, null);
-                emitted_error_diag = true; // #4438 ON==OFF: 진단 발행 → store skip
-            } else if (sem_err.code == .assign_to_import) {
+            if (sem_err.code == .assign_to_import) {
                 const m = if (sem_err.message.len > 0) sem_err.message else "Cannot assign to or delete an imported binding";
                 self.addDiag(.assign_to_import, .@"error", module.path, sem_err.span, .link, m, null);
                 emitted_error_diag = true; // #4438 ON==OFF: 진단 발행 → store skip
-            } else if (sem_err.code == .top_level_await_target and analyzer.reject_exported_top_level_await) {
+            } else if (sem_err.code == .top_level_await_target) {
+                if (!analyzer.reject_exported_top_level_await) continue;
                 self.addDiag(.top_level_await_target, .@"error", module.path, sem_err.span, .transform, sem_err.message, null);
                 emitted_error_diag = true;
+            } else {
+                const m = if (sem_err.message.len > 0) sem_err.message else "Invalid syntax";
+                self.addDiag(.parse_error, .@"error", module.path, sem_err.span, .parse, m, null);
+                emitted_error_diag = true; // #4438 ON==OFF: 진단 발행 → store skip
             }
         }
 
