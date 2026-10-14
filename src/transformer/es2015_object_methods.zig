@@ -56,6 +56,79 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             return false;
         }
 
+        /// One object literal member: a method the target can't keep becomes
+        /// `key: function () {…}`, anything else is visited as is. A state
+        /// machine rebuilding the literal around a `yield` lowers its members
+        /// through this too (#4736).
+        pub fn lowerObjectMember(self: *Transformer, m_idx: NodeIndex) Transformer.Error!NodeIndex {
+            const m = self.ast.getNode(m_idx);
+
+            if (m.tag != .method_definition) {
+                // 일반 property / spread → 기존 방문 경로
+                return self.visitNode(m_idx);
+            }
+
+            const me = m.data.extra;
+            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
+            const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.params]);
+            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.body]);
+            const flags: u32 = self.ast.extra_data.items[me + ast_mod.MethodExtra.flags];
+
+            // getter/setter 또는 현재 타겟에서 보존 가능한 일반 method는 원본 그대로 방문.
+            if (!methodNeedsFunctionLowering(self, flags)) {
+                return self.visitNode(m_idx);
+            }
+
+            // method → function 플래그 재매핑 (비트 위치가 다름).
+            const fn_flags = ast_mod.methodFlagsToFunctionFlags(flags);
+
+            const none = @intFromEnum(NodeIndex.none);
+
+            // function_expression: [name, params, body, flags, return_type]
+            const fn_extra = try self.ast.addExtras(&.{
+                none,
+                @intFromEnum(params_idx),
+                @intFromEnum(body_idx),
+                fn_flags,
+                none,
+            });
+            const fn_expr = try self.ast.addNode(.{
+                .tag = .function_expression,
+                .span = m.span,
+                .data = .{ .extra = fn_extra },
+            });
+
+            // 상위 visitNode를 통해 async/generator lowering 적용.
+            // 함수로 바뀌어도 이 본문의 `super` 는 객체 리터럴이 home 이다 — 배정된 home
+            // 이 있으면 바깥 클래스의 super 문맥을 끊고 그 기준으로 낮춘다 (#4729).
+            const new_fn = blk: {
+                const home_saved = object_super.enterMethod(self, object_super.lookup(self, me));
+                defer object_super.leaveMethod(self, home_saved);
+                const saved_owner = self.synthetic_function_source_owner;
+                const saved_node = self.synthetic_function_node;
+                const saved_scope = self.current_scope;
+                defer {
+                    self.synthetic_function_source_owner = saved_owner;
+                    self.synthetic_function_node = saved_node;
+                    self.current_scope = saved_scope;
+                }
+                self.synthetic_function_source_owner = m_idx;
+                self.synthetic_function_node = fn_expr;
+                if (self.semantic_edit_enabled) self.current_scope = self.originalFunctionScope(m_idx);
+                break :blk try self.visitNode(fn_expr);
+            };
+            try self.remapCopiedScopeOwner(m_idx, new_fn);
+
+            // key도 방문 (computed_property_key 내부 expr 등)
+            const new_key = try self.visitNode(key_idx);
+
+            return self.ast.addNode(.{
+                .tag = .object_property,
+                .span = m.span,
+                .data = .{ .binary = .{ .left = new_key, .right = new_fn, .flags = 0 } },
+            });
+        }
+
         /// method_definition → object_property { key: function_expression } 로 변환한 object_expression 반환.
         /// function_expression은 async/generator 플래그를 보존하므로, 상위 visitNode가
         /// async_await/generator unsupported일 경우 자동으로 추가 lowering을 수행한다.
@@ -71,78 +144,8 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             var i: u32 = 0;
             while (i < members_len) : (i += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + i];
-                const m_idx: NodeIndex = @enumFromInt(raw_idx);
-                const m = self.ast.getNode(m_idx);
-
-                if (m.tag != .method_definition) {
-                    // 일반 property / spread → 기존 방문 경로
-                    const new_m = try self.visitNode(m_idx);
-                    if (!new_m.isNone()) try self.scratch.append(self.allocator, new_m);
-                    continue;
-                }
-
-                const me = m.data.extra;
-                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
-                const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.params]);
-                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.body]);
-                const flags: u32 = self.ast.extra_data.items[me + ast_mod.MethodExtra.flags];
-
-                // getter/setter 또는 현재 타겟에서 보존 가능한 일반 method는 원본 그대로 방문.
-                if (!methodNeedsFunctionLowering(self, flags)) {
-                    const new_m = try self.visitNode(m_idx);
-                    if (!new_m.isNone()) try self.scratch.append(self.allocator, new_m);
-                    continue;
-                }
-
-                // method → function 플래그 재매핑 (비트 위치가 다름).
-                const fn_flags = ast_mod.methodFlagsToFunctionFlags(flags);
-
-                const none = @intFromEnum(NodeIndex.none);
-
-                // function_expression: [name, params, body, flags, return_type]
-                const fn_extra = try self.ast.addExtras(&.{
-                    none,
-                    @intFromEnum(params_idx),
-                    @intFromEnum(body_idx),
-                    fn_flags,
-                    none,
-                });
-                const fn_expr = try self.ast.addNode(.{
-                    .tag = .function_expression,
-                    .span = m.span,
-                    .data = .{ .extra = fn_extra },
-                });
-
-                // 상위 visitNode를 통해 async/generator lowering 적용.
-                // 함수로 바뀌어도 이 본문의 `super` 는 객체 리터럴이 home 이다 — 배정된 home
-                // 이 있으면 바깥 클래스의 super 문맥을 끊고 그 기준으로 낮춘다 (#4729).
-                const new_fn = blk: {
-                    const home_saved = object_super.enterMethod(self, object_super.lookup(self, me));
-                    defer object_super.leaveMethod(self, home_saved);
-                    const saved_owner = self.synthetic_function_source_owner;
-                    const saved_node = self.synthetic_function_node;
-                    const saved_scope = self.current_scope;
-                    defer {
-                        self.synthetic_function_source_owner = saved_owner;
-                        self.synthetic_function_node = saved_node;
-                        self.current_scope = saved_scope;
-                    }
-                    self.synthetic_function_source_owner = m_idx;
-                    self.synthetic_function_node = fn_expr;
-                    if (self.semantic_edit_enabled) self.current_scope = self.originalFunctionScope(m_idx);
-                    break :blk try self.visitNode(fn_expr);
-                };
-                try self.remapCopiedScopeOwner(m_idx, new_fn);
-
-                // key도 방문 (computed_property_key 내부 expr 등)
-                const new_key = try self.visitNode(key_idx);
-
-                const prop = try self.ast.addNode(.{
-                    .tag = .object_property,
-                    .span = m.span,
-                    .data = .{ .binary = .{ .left = new_key, .right = new_fn, .flags = 0 } },
-                });
-                try self.scratch.append(self.allocator, prop);
+                const new_m = try lowerObjectMember(self, @enumFromInt(raw_idx));
+                if (!new_m.isNone()) try self.scratch.append(self.allocator, new_m);
             }
 
             const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
