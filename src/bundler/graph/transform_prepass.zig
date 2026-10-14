@@ -751,9 +751,14 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
 }
 
 // A class async method can keep its home-object graph when every `super` use
-// belongs to one synchronous arrow scope. Keep direct method-body uses, async
-// arrows, multiple owning arrows, and deeper arrow nesting on reanalysis.
-fn methodSuperUsesOnlySingleSyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+// belongs to one arrow scope whose state-machine kind is separately audited.
+// Keep direct method-body uses, multiple owning arrows, and deeper nesting on
+// reanalysis.
+fn methodSuperUsesOnlySingleArrow(
+    ast: *const ast_mod.Ast,
+    method: ast_mod.Node,
+    expected_async: bool,
+) bool {
     if (method.tag != .method_definition) return false;
     const extra = method.data.extra;
     if (extra > ast.extra_data.items.len or
@@ -824,9 +829,11 @@ fn methodSuperUsesOnlySingleSyncArrow(ast: *const ast_mod.Ast, method: ast_mod.N
                 ast.nodes.items[arrow_raw].tag != .arrow_function_expression) return false;
             const arrow_extra = ast.nodes.items[arrow_raw].data.extra;
             if (arrow_extra > ast.extra_data.items.len or
-                ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags or
+                ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags) return false;
+            const arrow_is_async =
                 (ast.extra_data.items[arrow_extra + ast_mod.ArrowExtra.flags] &
-                    ast_mod.ArrowFlags.is_async) != 0) return false;
+                    ast_mod.ArrowFlags.is_async) != 0;
+            if (arrow_is_async != expected_async) return false;
             if (super_arrow_owner) |first_owner| {
                 if (first_owner != arrow_raw) return false;
             } else {
@@ -860,6 +867,14 @@ fn methodSuperUsesOnlySingleSyncArrow(ast: *const ast_mod.Ast, method: ast_mod.N
         }
     }
     return super_arrow_owner != null;
+}
+
+fn methodSuperUsesOnlySingleSyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    return methodSuperUsesOnlySingleArrow(ast, method, false);
+}
+
+fn methodSuperUsesOnlySingleAsyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    return methodSuperUsesOnlySingleArrow(ast, method, true);
 }
 
 fn hasValidSourceSymbol(
@@ -3498,10 +3513,15 @@ fn isSimpleClass(
             (is_es5_async_instance_method or is_es5_async_static_method) and
             allow_es5_async_class_methods and !super.isNone() and
             methodSuperUsesOnlySingleSyncArrow(ast, member);
+        const retains_async_class_method_async_arrow_super =
+            (is_es5_async_instance_method or is_es5_async_static_method) and
+            allow_es5_async_class_methods and !super.isNone() and
+            methodSuperUsesOnlySingleAsyncArrow(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or
             (has_super and !retains_async_arrow_super and !retains_async_class_method_super and
-                !retains_async_class_method_sync_arrow_super)) return false;
+                !retains_async_class_method_sync_arrow_super and
+                !retains_async_class_method_async_arrow_super)) return false;
     }
     if (accessor_count > 2) return false;
     if (accessor_pair) |accessor| {
@@ -3645,7 +3665,8 @@ fn registerRetainableEs5AsyncClassMethods(
         if (methodHasSuperExpression(ast, member) and
             (super_idx.isNone() or
                 (!methodSuperUsesOnlyDirectMethodBody(ast, member) and
-                    !methodSuperUsesOnlySingleSyncArrow(ast, member)))) return false;
+                    !methodSuperUsesOnlySingleSyncArrow(ast, member) and
+                    !methodSuperUsesOnlySingleAsyncArrow(ast, member)))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
@@ -4079,7 +4100,12 @@ fn isRetainableEs5AsyncArrowSuper(
             const method_owner = ast.nodes.items[method_owner_raw];
             const is_async_object_method = flags == ast_mod.MethodFlags.is_async and
                 method_owner.tag == .object_expression;
-            if (flags != 0 and flags != ast_mod.MethodFlags.is_static and !is_async_object_method) return false;
+            const is_async_class_method =
+                (flags == ast_mod.MethodFlags.is_async or
+                    flags == (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static)) and
+                method_owner.tag == .class_body;
+            if (flags != 0 and flags != ast_mod.MethodFlags.is_static and
+                !is_async_object_method and !is_async_class_method) return false;
             const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]);
             if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
             const key = ast.getNode(key_idx);

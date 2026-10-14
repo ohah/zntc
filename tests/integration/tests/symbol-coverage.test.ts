@@ -6913,14 +6913,115 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(nestedArrowSuperOutput.status, nestedArrowSuperOutput.stderr).toBe(0);
       expect(nestedArrowSuperOutput.stdout).toBe('42 50 true 50\n');
 
-      // An async arrow owns a separate state machine and stays outside this sync-arrow slice.
+      // One async arrow keeps the class method's exact home graph after both
+      // state-machine preflights pass.
       const asyncArrowSuper = run(
+        [
+          'var receiver;',
+          'class Base {',
+          '  get current() { return this.value; }',
+          '  set current(value) { receiver = this; this.value = value; }',
+          '}',
+          'class Service extends Base {',
+          '  async readWrite() {',
+          '    await Promise.resolve();',
+          '    var readWrite = async value => {',
+          '      await Promise.resolve();',
+          '      var before = super.current;',
+          '      var assigned = super.current = value;',
+          '      return [before, assigned, this === receiver, this.current].join(" ");',
+          '    };',
+          '    return await readWrite(50);',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readWrite().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(asyncArrowSuper.status, asyncArrowSuper.stderr).toBe(0);
+      expectRetainedClean(asyncArrowSuper.stderr ?? '');
+      const asyncArrowSuperOutput = runOutput();
+      expect(asyncArrowSuperOutput.status, asyncArrowSuperOutput.stderr).toBe(0);
+      expect(asyncArrowSuperOutput.stdout).toBe('42 50 true 50\n');
+
+      // Static async-arrow super keeps the inherited constructor as receiver.
+      const staticAsyncArrowSuper = run(
+        [
+          'var receiver;',
+          'class Base {',
+          '  static get current() { return this.value; }',
+          '  static set current(value) { receiver = this; this.value = value; }',
+          '}',
+          'class Service extends Base {',
+          '  static async readWrite() {',
+          '    await Promise.resolve();',
+          '    var readWrite = async value => {',
+          '      await Promise.resolve();',
+          '      var before = super.current;',
+          '      var assigned = super.current = value;',
+          '      return [before, assigned, this === receiver, this.current].join(" ");',
+          '    };',
+          '    return await readWrite(50);',
+          '  }',
+          '}',
+          'class Derived extends Service {}',
+          'Derived.value = 42;',
+          'Derived.readWrite().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(staticAsyncArrowSuper.status, staticAsyncArrowSuper.stderr).toBe(0);
+      expectRetainedClean(staticAsyncArrowSuper.stderr ?? '');
+      const staticAsyncArrowSuperOutput = runOutput();
+      expect(staticAsyncArrowSuperOutput.status, staticAsyncArrowSuperOutput.stderr).toBe(0);
+      expect(staticAsyncArrowSuperOutput.stdout).toBe('42 50 true 50\n');
+
+      // A direct method-body super mixed with async-arrow super stays on reanalysis.
+      const mixedMethodAndAsyncArrowSuper = run(
         [
           'class Base { get current() { return this.value; } }',
           'class Service extends Base {',
           '  async readAsync() {',
           '    await Promise.resolve();',
           '    var read = async () => { await Promise.resolve(); return super.current; };',
+          '    return super.current + await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedMethodAndAsyncArrowSuper, '84\n');
+
+      // Multiple async arrows owning super remain outside the one-owner proof.
+      const multipleAsyncArrowSuperOwners = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var first = async () => { await Promise.resolve(); return super.current; };',
+          '    var second = async () => { await Promise.resolve(); return super.current; };',
+          '    return await first() + await second();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(multipleAsyncArrowSuperOwners, '84\n');
+
+      // Deeper async-arrow nesting still changes the super-owner scope shape.
+      const deepAsyncArrowSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      var nested = async () => { await Promise.resolve(); return super.current; };',
+          '      return nested();',
+          '    };',
           '    return await read();',
           '  }',
           '}',
@@ -6928,7 +7029,24 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(asyncArrowSuper, '42\n');
+      expectReanalyzedOutput(deepAsyncArrowSuper, '42\n');
+
+      // A super default in async-arrow parameters runs before its state machine.
+      const asyncArrowParameterSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async (value = super.current) => value;',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(asyncArrowParameterSuper, '42\n');
 
       // A method-body super mixed with the arrow capture keeps the class on reanalysis.
       const mixedMethodAndArrowSuper = run(
