@@ -281,6 +281,10 @@ pub const Linker = struct {
     /// Graph-wide names for the raw ESM interop preamble bindings.
     esm_interop_runtime_names: ?rt_names.EsmInteropRuntimeNames = null,
     esm_interop_runtime_names_owned: bool = false,
+    /// `graphMayNeedEsmInteropRuntime` is queried during serial emit setup,
+    /// then from every module metadata build. Keep the post-shake decision so
+    /// a no-interop graph does not get rescanned once per emitted module.
+    graph_esm_interop_runtime_needed: ?bool = null,
     esm_interop_runtime_symbol_ids: [rt_names.ESM_INTEROP_RUNTIME_HELPERS.len]?bundler_symbol.SymbolID = @splat(null),
     /// Parse-backed owner for lexical locals in raw ESM interop templates.
     esm_interop_runtime_internal_owner: ?ModuleIndex = null,
@@ -1191,7 +1195,7 @@ pub const Linker = struct {
             try self.reserveEsmRuntimeName();
             break;
         }
-        if (self.esm_interop_runtime_names != null or self.graphMayNeedEsmInteropRuntime()) {
+        if (self.esm_interop_runtime_names != null or self.graphMayNeedEsmInteropRuntimeUncached()) {
             try self.reserveEsmInteropRuntimeNames();
         }
         if (self.dev_mode) try self.reserveHmrRuntimeInternalNames();
@@ -2732,6 +2736,17 @@ pub const Linker = struct {
     }
 
     fn graphMayNeedEsmInteropRuntime(self: *const Linker) bool {
+        if (self.graph_esm_interop_runtime_needed) |needed| return needed;
+
+        const needed = self.graphMayNeedEsmInteropRuntimeUncached();
+        @constCast(self).graph_esm_interop_runtime_needed = needed;
+        return needed;
+    }
+
+    /// The pre-shake rename pass may prepare helpers for modules that are later
+    /// excluded. Leave the emit cache untouched there so the serial pre-emit
+    /// check can record the final included-module result before workers start.
+    fn graphMayNeedEsmInteropRuntimeUncached(self: *const Linker) bool {
         var modules = self.graph.modulesIterator();
         while (modules.next()) |module| {
             if (self.tree_shaker_active and !module.is_included) continue;

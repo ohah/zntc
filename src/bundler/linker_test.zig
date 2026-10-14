@@ -1108,6 +1108,24 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
     try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, regenerated_ids);
 }
 
+test "linker: graph-wide missing ESM interop need is cached" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "export const value = 1;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.js");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    try std.testing.expect(r.linker.graph_esm_interop_runtime_needed == null);
+    try r.linker.prepareEsmInteropRuntimeNamesForEmit();
+    try std.testing.expectEqual(false, r.linker.graph_esm_interop_runtime_needed.?);
+    try r.linker.prepareEsmInteropRuntimeNamesIfNeeded();
+    try std.testing.expectEqual(false, r.linker.graph_esm_interop_runtime_needed.?);
+    try std.testing.expect(r.linker.esm_interop_runtime_names == null);
+}
+
 test "linker: HMR preamble names are graph-owned and recover exact identities" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
