@@ -968,11 +968,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     .switch_statement => {
                         switch_depth += 1;
                     },
+                    // 클로저 경계: 내부 무시. 메서드도 함수다 — 빠지면 클래스/객체
+                    // 메서드 안 `return` 을 루프의 return 으로 셌다 (#4766).
                     .function_expression,
                     .function_declaration,
                     .arrow_function_expression,
                     .function,
-                    => continue, // 클로저 경계: 내부 무시
+                    .method_definition,
+                    => continue,
 
                     .return_statement => {
                         flow.has_return = true;
@@ -1031,7 +1034,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
                 const node = self.ast.getNode(idx);
                 switch (node.tag) {
-                    .function_expression, .function_declaration, .arrow_function_expression, .function => continue,
+                    .function_expression, .function_declaration, .arrow_function_expression, .function, .method_definition => continue,
                     .labeled_statement => if (!node.data.binary.left.isNone()) {
                         out.append(self.allocator, self.ast.getText(self.ast.getNode(node.data.binary.left).span)) catch {};
                     },

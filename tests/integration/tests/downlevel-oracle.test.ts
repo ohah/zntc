@@ -86,10 +86,6 @@ const KNOWN_FAILURES: Record<string, string[]> = {
   ],
   // #4740 esnext 번들에서 의존 모듈 최상위 using 의 dispose 가 번들 끝으로 밀린다
   '4730-using-module': ['esnext/plain', 'esnext/minify'],
-  // #4766 `_loop` 의 return 스캔이 메서드 경계를 무시해 모듈 최상위에 `return _ret.v` 를 낸다
-  // (번들은 IIFE 로 감싸 가려진다)
-  '4729-super-16': ['transpile/es5/plain', 'transpile/es5/minify'],
-  '4743-capture-11': ['transpile/es5/plain', 'transpile/es5/minify'],
 };
 
 type Run = { stdout: string; exitCode: number };
