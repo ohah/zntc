@@ -6604,6 +6604,105 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async object methods retain direct super with their exact home graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-super-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+
+    try {
+      const retained = run(
+        [
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async read() {',
+          '    await Promise.resolve();',
+          '    return super.read();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.read().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(retained.status, retained.stderr).toBe(0);
+      const retainedMode = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(retainedMode, retained.stderr).toContain('semantic_graph=retained');
+      const retainedReport = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(retainedReport, retained.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(retainedReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${retainedReport}`,
+        ).toBe(0);
+      }
+      expect(retainedReport).toMatch(/clean=1(?:\s|$)/);
+      const retainedOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(retainedOutput.status, retainedOutput.stderr).toBe(0);
+      expect(retainedOutput.stdout).toBe('42\n');
+
+      // A lexical super nested in an arrow has another moved function scope;
+      // leave that combined shape on semantic reanalysis for now.
+      const nestedArrow = run(
+        [
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async read() {',
+          '    await Promise.resolve();',
+          '    var read = () => super.read();',
+          '    return read();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.read().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(nestedArrow.status, nestedArrow.stderr).toBe(0);
+      const nestedArrowMode = (nestedArrow.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(nestedArrowMode, nestedArrow.stderr).toContain('semantic_graph=reanalyzed');
+      const nestedArrowOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(nestedArrowOutput.status, nestedArrowOutput.stderr).toBe(0);
+      expect(nestedArrowOutput.stdout).toBe('42\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('async function state machines and top-level await use audited graph paths', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-await-retained-'));
     const output = join(dir, 'out.cjs');
