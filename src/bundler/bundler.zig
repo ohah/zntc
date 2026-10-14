@@ -97,11 +97,13 @@ pub const MfBundleConfig = types.MfBundleConfig;
 /// 기본(--jobs 미지정) worker 풀 상한. graph discovery 가 같은 디렉토리의 모듈 파일을
 /// 여러 워커로 동시 `openat` 하면 **커널 디렉토리 vnode 락에서 직렬화**된다(macOS `sample`
 /// 실증: 단일 dir 5000파일에서 jobs=15 의 `__openat` 누적 시간이 jobs=4 대비 17×, 50개
-/// dir 로 분산하면 7× 감소). 따라서 cpu-1 풀은 high-core 에서 open 경합을 증폭해 *음의
-/// 스케일링*(실측 단일dir: jobs=4 119ms → 16스레드 250ms)을 낸다. open 처리량은 vnode
-/// 직렬화로 ~8 스레드에서 포화하므로 기본 총 스레드를 8 로 cap 한다(esbuild/Bun 도 I/O
-/// 스레드를 cpu 수만큼 안 쓰고 바운드). cpu ≤ 8 이면 기본(총 cpu)이 이미 ≤ 8 이라 무변경.
-const DEFAULT_THREAD_CAP = 8;
+/// dir 로 분산하면 7× 감소). 이전 기본 상한 8도 고코어 환경에서 경합을 남겼다. 2026-10-14
+/// macOS ReleaseFast 동일 10/100/200/1000/5000-module splitting fixture를 9쌍 교차 측정:
+/// cap 8→4가 각각 1.01×/1.11×/1.15×/1.40×/1.52× 빨랐고 출력 해시는 모두 같았다. 별도
+/// jobs sweep 에서 jobs=2는 5000 modules에서 jobs=4와 비슷했지만, jobs=4가 100~1000 modules
+/// 에서 더 빨라 4를 기본 총 스레드 수로 선택한다. cpu ≤ 4이면 기존 기본(cpu 수) 그대로;
+/// 명시 --jobs 는 계속 존중한다.
+const DEFAULT_THREAD_CAP = 4;
 
 /// 기본(--jobs 미지정) async_limit *값* 을 cpu 수로 계산. null = 기본(cpu-1) 유지.
 /// 순수 함수라 머신 독립적으로 단위 테스트 가능(아래 test). 총 스레드 = async_limit+1.
@@ -131,10 +133,11 @@ test "asyncLimitForJobs: 명시 --jobs 매핑 (#4004)" {
 }
 
 test "defaultAsyncLimitValue: high-core 만 cap (vnode open 경합 회피)" {
-    // 총 cpu ≤ cap(8) → 무변경(null). cap 초과 → 총 8 스레드(async_limit=7) 로 제한.
+    // 총 cpu ≤ cap(4) → 무변경(null). cap 초과 → 총 4 스레드(async_limit=3) 로 제한.
     try std.testing.expectEqual(@as(?u32, null), defaultAsyncLimitValue(2));
     try std.testing.expectEqual(@as(?u32, null), defaultAsyncLimitValue(4)); // 전형적 CI 러너
-    try std.testing.expectEqual(@as(?u32, null), defaultAsyncLimitValue(8));
+    try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(5));
+    try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(8));
     try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(9));
     try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(16));
     try std.testing.expectEqual(@as(?u32, DEFAULT_THREAD_CAP - 1), defaultAsyncLimitValue(64));
