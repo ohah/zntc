@@ -1638,6 +1638,11 @@ fn transpileWithCallbackInternal(
         try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__propKey", options.minify_whitespace));
     }
     if (analyzer_storage) |*analyzer| {
+        // The transformer took the analyzer's map header by value and kept
+        // adding classes to it; a put that grows the map frees the backing the
+        // analyzer's copy still points at. Hand the live map back instead of
+        // copying the stale header over it (#5757).
+        analyzer.class_self_symbol_map = transformer.class_self_symbol_map;
         if (transformer.finishSemanticEdit() catch return error.TransformError) |edited| {
             analyzer.applyEdit(edited);
             transformer.symbols = analyzer.symbols.items;
@@ -1645,7 +1650,6 @@ fn transpileWithCallbackInternal(
             transformer.scopes = analyzer.scopes.items;
             transformer.scope_maps = analyzer.scope_maps.items;
             transformer.scope_owner_map = analyzer.scope_owner_map;
-            transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
             transformer.helper_scope_map = analyzer.helper_scope_map;
         }
     }

@@ -10,7 +10,8 @@ import { createFixture, ZNTC_BIN } from './helpers';
 //  - lowered to es2015/es5, a decorated named class (or one with decorated
 //    members only) was named after its generated binding (`_a`, `_Class`).
 // Expected values are tsc's output run in Node. The symbol gate must stay
-// clean: `export default Named` reads the hoisted declaration.
+// clean: `export default Named` reads the hoisted declaration. Under minify the
+// post-minify gate must be clean too (#5757).
 const source = `function logged(v: any, ctx: any) { return v; }
 export default @logged class Named {}
 const Anon = @logged class {};
@@ -34,19 +35,21 @@ describe('Stage 3 decorated class names (#4811)', () => {
         const out = join(created.dir, 'out.mjs');
         const proc = spawnSync(ZNTC_BIN, ['input.mts', `--target=${target}`, ...extra, '-o', out], {
           cwd: created.dir,
-          env:
-            extra.length === 0 ? { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } : process.env,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
           encoding: 'utf8',
         });
         expect(proc.status, proc.stderr).toBe(0);
-        // The post-minify gate has its own open debt on this input (#5757).
-        if (extra.length === 0) {
-          const report = (proc.stderr ?? '')
-            .split(/\r?\n/)
-            .find(
-              (line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.mts'),
-            );
-          expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const report = lines.find(
+          (line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.mts'),
+        );
+        expect(report, proc.stderr).toMatch(/clean=1(?:\s|$)/);
+        // The post-minify gate once read a freed class-self map here (#5757).
+        if (extra.length > 0) {
+          const postMinify = lines.find((line) =>
+            line.startsWith('zntc: symbol-identity-post-minify '),
+          );
+          expect(postMinify, proc.stderr).toMatch(/clean=1(?:\s|$)/);
         }
         const run = spawnSync('node', [out], { encoding: 'utf8' });
         expect(run.status, run.stderr).toBe(0);

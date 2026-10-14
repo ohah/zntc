@@ -216,6 +216,8 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
     const root = try t.transform();
     if (has_ts_namespace) {
         if (analyzer_storage) |*analyzer| {
+            // The transformer's map may have grown past the analyzer's header (#5757).
+            analyzer.class_self_symbol_map = t.class_self_symbol_map;
             if (try t.finishSemanticEdit()) |edited| {
                 analyzer.applyEdit(edited);
                 t.symbols = analyzer.symbols.items;
@@ -223,7 +225,6 @@ pub fn e2eFull(backing_allocator: std.mem.Allocator, source: []const u8, t_optio
                 t.scopes = analyzer.scopes.items;
                 t.scope_maps = analyzer.scope_maps.items;
                 t.scope_owner_map = analyzer.scope_owner_map;
-                t.class_self_symbol_map = analyzer.class_self_symbol_map;
                 t.helper_scope_map = analyzer.helper_scope_map;
             }
         }
