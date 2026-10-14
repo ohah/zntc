@@ -800,6 +800,12 @@ pub const ImportRecord = struct {
     /// source: TypeScript drops the whole import, so its module is neither
     /// resolved nor evaluated (like `import type`, #5581).
     ts_elided: bool = false,
+    /// Known source-level result for tree-shaker evaluation: every binding in
+    /// this import record is type-only. Kept separate from `ts_elided` because
+    /// `verbatimModuleSyntax` preserves the emitted import while its bindings
+    /// still do not require TypeScript evaluation semantics. Null means the
+    /// parse-time reference fallback must decide.
+    ts_all_bindings_type_only: ?bool = null,
     /// --external로 명시적으로 제외된 모듈 (resolve 실패와 구분)
     is_external: bool = false,
     /// external 로 방출할 때 쓸 **대체 지정자** (`--external-alias:K=V`, #4616).

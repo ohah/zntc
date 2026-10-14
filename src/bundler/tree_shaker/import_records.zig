@@ -95,6 +95,9 @@ fn ensureImportRecordStmtIndices(self: anytype, mod_idx: u32, infos: StmtInfos) 
 /// `metadata.isImportElided` 가 reference 기준으로 판정한다.
 fn importRecordIsTypeOnly(m: *const Module, rec_idx: u32) bool {
     if (!m.module_type.isTypeScript()) return false;
+    const record_index: usize = @intCast(rec_idx);
+    if (record_index >= m.import_records.len) return false;
+    if (m.import_records[record_index].ts_all_bindings_type_only) |known| return known;
     const sem = if (m.semantic) |*s| s else return false;
     var any = false;
     for (m.import_bindings) |ib| {
@@ -103,6 +106,47 @@ fn importRecordIsTypeOnly(m: *const Module, rec_idx: u32) bool {
         any = true;
     }
     return any;
+}
+
+test "import-record type-only check reuses parse-time classification" {
+    var records = [_]types.ImportRecord{
+        .{
+            .specifier = "./types",
+            .kind = .static_import,
+            .span = .{ .start = 0, .end = 1 },
+            .ts_all_bindings_type_only = true,
+        },
+        .{
+            .specifier = "./values",
+            .kind = .static_import,
+            .span = .{ .start = 2, .end = 3 },
+            .ts_all_bindings_type_only = false,
+        },
+    };
+    const module: Module = .{
+        .index = ModuleIndex.fromUsize(0),
+        .path = "entry.ts",
+        .source = "",
+        .ast = null,
+        .parse_arena = null,
+        .semantic = null,
+        .dependencies = .empty,
+        .importers = .empty,
+        .dynamic_imports = .empty,
+        .dynamic_importers = .empty,
+        .module_type = .ts,
+        .import_records = &records,
+        .side_effects = false,
+        .exec_index = 0,
+        .cycle_group = 0,
+        .state = .ready,
+    };
+
+    // No semantic data is available, so both expectations verify the cached
+    // record answers are used before the reference-scan fallback.
+    try std.testing.expect(importRecordIsTypeOnly(&module, 0));
+    try std.testing.expect(!importRecordIsTypeOnly(&module, 1));
+    try std.testing.expect(!importRecordIsTypeOnly(&module, 2));
 }
 
 /// `isImportLiveInModule` 은 reachable_stmts 미초기화 시 보수적으로 true 를 반환하지만,

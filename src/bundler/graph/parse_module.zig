@@ -67,8 +67,9 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     // An import whose every binding is a type alone is dropped whole: its
     // module is not loaded (#5581) — default and namespace bindings too
     // (#5595); the classic JSX factory head above keeps an implicit
-    // `React` use (#1793).
-    if (verbatim_module_syntax) return;
+    // `React` use (#1793). Keep the source-level classification even when
+    // verbatimModuleSyntax preserves the emitted import; tree shaking uses it
+    // to avoid re-scanning every binding for each import record.
     const RecordBindingSummary = struct {
         count: usize = 0,
         all_type_only: bool = true,
@@ -92,7 +93,9 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     for (module.import_records, 0..) |*rec, rec_i| {
         if (rec.kind != .static_import) continue;
         const summary = summaries[rec_i];
-        rec.ts_elided = summary.count > 0 and summary.all_type_only;
+        const all_bindings_type_only = summary.count > 0 and summary.all_type_only;
+        rec.ts_all_bindings_type_only = all_bindings_type_only;
+        if (!verbatim_module_syntax) rec.ts_elided = all_bindings_type_only;
     }
 }
 
