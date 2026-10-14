@@ -1598,8 +1598,10 @@ fn emitChunksImpl(
         else
             (std.Thread.getCpuCount() catch 8));
         const parallel_emit = io != null and sorted_mods.len >= 32 and graph.max_threads != 1 and parallelism > 1;
+        // Four workers reduce a 5k-module chunk from five group/await rounds
+        // (80 range tasks) to three (48); local paired median improved 1.035x.
         const emit_batch_size = if (parallel_emit)
-            @min(sorted_mods.len, @min(@as(usize, 2048), @max(@as(usize, 1024), parallelism *| @as(usize, 128))))
+            @min(sorted_mods.len, @min(@as(usize, 2048), @max(@as(usize, 1024), parallelism *| @as(usize, 512))))
         else
             1;
         var batch_start: usize = 0;
