@@ -6825,6 +6825,140 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async object methods retain audited super property reads', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-super-get-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+
+    try {
+      const retained = run(
+        [
+          'var prototype = { get read() { return this.value; } };',
+          "var key = 'read';",
+          'var service = {',
+          '  value: 42,',
+          '  async readDirect() {',
+          '    await Promise.resolve();',
+          '    return super.read;',
+          '  },',
+          '  async readArrow() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      return super[key];',
+          '    };',
+          '    return await read();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'Promise.all([service.readDirect(), service.readArrow()]).then(values => console.log(values.join(":")));',
+        ].join('\n'),
+      );
+      expect(retained.status, retained.stderr).toBe(0);
+      const retainedMode = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(retainedMode, retained.stderr).toContain('semantic_graph=retained');
+      const retainedReport = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(retainedReport, retained.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(retainedReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${retainedReport}`,
+        ).toBe(0);
+      }
+      expect(retainedReport).toMatch(/clean=1(?:\s|$)/);
+      const retainedOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(retainedOutput.status, retainedOutput.stderr).toBe(0);
+      expect(retainedOutput.stdout).toBe('42:42\n');
+
+      // A super read in a synchronous sibling method must not authorize the
+      // helper import for the async-method retained graph.
+      const synchronousSuper = run(
+        [
+          'var prototype = { get read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    return super.read;',
+          '  },',
+          '  readSync() { return super.read; },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.readAsync().then(value => console.log(value, service.readSync.call({ value: 7 })));',
+        ].join('\n'),
+      );
+      expect(synchronousSuper.status, synchronousSuper.stderr).toBe(0);
+      const synchronousSuperMode = (synchronousSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(synchronousSuperMode, synchronousSuper.stderr).toContain('semantic_graph=reanalyzed');
+      const synchronousSuperOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(synchronousSuperOutput.status, synchronousSuperOutput.stderr).toBe(0);
+      expect(synchronousSuperOutput.stdout).toBe('42 7\n');
+
+      const superWrite = run(
+        [
+          'var prototype = { set read(value) { this.value = value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async writeSuper() {',
+          '    await Promise.resolve();',
+          '    return super.read = 50;',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.writeSuper().then(value => console.log(value, service.value));',
+        ].join('\n'),
+      );
+      expect(superWrite.status, superWrite.stderr).toBe(0);
+      const superWriteMode = (superWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(superWriteMode, superWrite.stderr).toContain('semantic_graph=reanalyzed');
+      const superWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(superWriteOutput.status, superWriteOutput.stderr).toBe(0);
+      expect(superWriteOutput.stdout).toBe('50 50\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('async function state machines and top-level await use audited graph paths', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-await-retained-'));
     const output = join(dir, 'out.cjs');
