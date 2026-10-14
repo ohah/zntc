@@ -1462,7 +1462,7 @@ var temp1 = [true, false, true];
 var [d3, d4] = [1, "string", ...temp1];
 //  Combining both forms of destructuring,
 var { e:[e1, e2, e3={ b1: 1000, b4: 200 }] } = { e: [1, 2, { b1: 4, b4: 0 }] };
-var { f:[f1, f2, { f3:f4, f5:f5 }, ] } = { f: [1, 2, { f3: 4, f5: 0 }] };
+var { f:[f1, f2, { f3:f4, f5:f5 }, ,] } = { f: [1, 2, { f3: 4, f5: 0 }] };
 // When a destructuring variable declaration, binding property, or binding element specifies
 // an initializer expression, the type of the initializer expression is required to be assignable
 // to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
@@ -1500,7 +1500,7 @@ var temp1 = [true, false, true];
 var [d3, d4] = [1, "string", ...temp1];
 //  Combining both forms of destructuring,
 var { e:[e1, e2, e3={ b1: 1000, b4: 200 }] } = { e: [1, 2, { b1: 4, b4: 0 }] };
-var { f:[f1, f2, { f3:f4, f5:f5 }, ] } = { f: [1, 2, { f3: 4, f5: 0 }] };
+var { f:[f1, f2, { f3:f4, f5:f5 }, ,] } = { f: [1, 2, { f3: 4, f5: 0 }] };
 // When a destructuring variable declaration, binding property, or binding element specifies
 // an initializer expression, the type of the initializer expression is required to be assignable
 // to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
@@ -1538,7 +1538,7 @@ var temp1 = [true, false, true];
 var [d3, d4] = [1, "string", ...temp1];
 //  Combining both forms of destructuring,
 var { e:[e1, e2, e3={ b1: 1000, b4: 200 }] } = { e: [1, 2, { b1: 4, b4: 0 }] };
-var { f:[f1, f2, { f3:f4, f5:f5 }, ] } = { f: [1, 2, { f3: 4, f5: 0 }] };
+var { f:[f1, f2, { f3:f4, f5:f5 }, ,] } = { f: [1, 2, { f3: 4, f5: 0 }] };
 // When a destructuring variable declaration, binding property, or binding element specifies
 // an initializer expression, the type of the initializer expression is required to be assignable
 // to the widened form of the type associated with the destructuring variable declaration, binding property, or binding element.
@@ -1729,7 +1729,7 @@ exports[`TSC: es6/destructuring emptyAssignmentPatterns01_ES5 1`] = `
 "var a;
 ({} = a);
 [] = a;
-var [] = [1, 2];
+var [,] = [1, 2];
 "
 `;
 
