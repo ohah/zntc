@@ -394,7 +394,7 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
-    name: 'keeps ES5 async-arrow state machines with lexical this on reanalysis',
+    name: 'retains ES5 async-arrow state machines with lexical this',
     target: 'es5',
     source: `
       function read(value) {
@@ -406,8 +406,44 @@ const cases = [
       read.call({ prefix: 'value:' }, 42).then(console.log);
     `,
     expected: 'value:42\n',
-    expectsSyntheticBinding: false,
-    expectsRetainedGraph: false,
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'retains ES5 async-arrow lexical this through source-name collisions',
+    target: 'es5',
+    source: `
+      function read(_this, value) {
+        return (async () => {
+          var local = _this;
+          await Promise.resolve();
+          return [this.prefix, local].join(':');
+        })();
+      }
+      read.call({ prefix: 'value:' }, 'source:_this', 42).then(console.log);
+    `,
+    expected: 'value::source:_this\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'retains nested ES5 async-arrow state machines with lexical this',
+    target: 'es5',
+    source: `
+      function read(value) {
+        return (async () => {
+          await Promise.resolve();
+          return (async () => {
+            await Promise.resolve();
+            return this.prefix + value;
+          })();
+        })();
+      }
+      read.call({ prefix: 'value:' }, 42).then(console.log);
+    `,
+    expected: 'value:42\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
     name: 'keeps ES5 async-arrow state machines with lexical new.target on reanalysis',
