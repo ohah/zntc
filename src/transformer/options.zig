@@ -295,7 +295,6 @@ pub const TransformOptions = struct {
     /// silent 하게 fall-through 하지 않는다.
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
         if (self.drop_console and drop_scan.hasDroppedConsoleStatement(ast)) return true;
-        if (self.drop_console and drop_scan.hasDroppedConsoleStatement(ast)) return true;
         if (self.drop_debugger and astHasDebuggerStatement(ast)) return true;
         if (drop_scan.hasDroppedLabelStatement(ast, self.drop_labels)) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
