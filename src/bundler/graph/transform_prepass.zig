@@ -3528,7 +3528,26 @@ fn isRetainableEs5AsyncObjectMethodNode(
     const body_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, body_idx) catch return false;
     defer ast.allocator.free(body_nodes);
     for (body_nodes) |raw_idx| {
-        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .super_expression) return false;
+        if (raw_idx >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[raw_idx].tag != .super_expression) continue;
+        var current = raw_idx;
+        var hops: usize = 0;
+        while (current != @intFromEnum(method_idx) and hops < ast.nodes.items.len) : (hops += 1) {
+            current = parents.get(current) orelse return false;
+            if (current == @intFromEnum(method_idx)) break;
+            switch (ast.nodes.items[current].tag) {
+                .function_declaration,
+                .function_expression,
+                .function,
+                .arrow_function_expression,
+                .class_declaration,
+                .class_expression,
+                .method_definition,
+                => return false,
+                else => {},
+            }
+        }
+        if (current != @intFromEnum(method_idx)) return false;
     }
     return true;
 }
