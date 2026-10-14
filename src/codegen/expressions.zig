@@ -10,6 +10,7 @@ const unicode = @import("../lexer/unicode.zig");
 const calls = @import("calls.zig");
 const cg_options = @import("options.zig");
 const precedence = @import("precedence.zig");
+const statements = @import("statements.zig");
 const Level = precedence.Level;
 const ExprFlags = precedence.ExprFlags;
 const ConstValue = @import("../semantic/symbol.zig").ConstValue;
@@ -476,7 +477,22 @@ pub fn emitArray(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     try self.writeByte('[');
     try self.emitExpressionList(node, self.listSep());
+    // elision 은 아무것도 출력하지 않으므로, 마지막 요소가 구멍이면 그 구멍을 닫는 쉼표가
+    // 없어 trailing comma 로 읽힌다 (`[1, ,]` → `[1, ]`, 길이 2 → 1). 쉼표를 하나 더 쓴다 (#5822).
+    if (lastEmittedIsElision(self, node)) try self.writeByte(',');
     try self.writeByte(']');
+}
+
+fn lastEmittedIsElision(self: anytype, node: Node) bool {
+    const list = node.data.list;
+    var i = list.len;
+    while (i > 0) {
+        i -= 1;
+        const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        if (idx.isNone() or statements.isSkipped(self, idx)) continue;
+        return self.ast.getNode(idx).tag == .elision;
+    }
+    return false;
 }
 
 pub fn emitObject(self: anytype, node: Node) !void {
