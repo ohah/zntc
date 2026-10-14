@@ -1984,6 +1984,36 @@ test "graph: TS import record type-only classification is grouped by record" {
     try std.testing.expect(module.import_records[0].ts_elided);
     try std.testing.expect(module.import_records[1].ts_elided);
     try std.testing.expect(!module.import_records[2].ts_elided);
+    try std.testing.expectEqual(@as(?bool, true), module.import_records[0].ts_all_bindings_type_only);
+    try std.testing.expectEqual(@as(?bool, true), module.import_records[1].ts_all_bindings_type_only);
+    try std.testing.expectEqual(@as(?bool, false), module.import_records[2].ts_all_bindings_type_only);
+}
+
+test "graph: verbatim TS import keeps output but records type-only evaluation" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "types.ts", "export interface TypeA { a: string }\n");
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { TypeA } from './types';
+        \\export function f(a: TypeA): string { return a.a; }
+    );
+
+    const dp = try dirPath(&tmp);
+    defer std.testing.allocator.free(dp);
+    const entry = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "entry.ts" });
+    defer std.testing.allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(std.testing.allocator, .{});
+    defer cache.deinit();
+    var graph = ModuleGraph.init(std.testing.allocator, &cache);
+    defer graph.deinit();
+    graph.transform_options_base.verbatim_module_syntax = true;
+    try graph.build(std.testing.io, &.{entry});
+
+    const module = graph.getModule(ModuleIndex.fromUsize(0)).?;
+    try std.testing.expectEqual(@as(usize, 1), module.import_records.len);
+    try std.testing.expect(!module.import_records[0].ts_elided);
+    try std.testing.expectEqual(@as(?bool, true), module.import_records[0].ts_all_bindings_type_only);
 }
 
 test "graph: load hit 게이트 — legal comment 모듈은 load OFF (#4438 통합3 PR2)" {
