@@ -750,6 +750,118 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
     return found_super;
 }
 
+// A class async method can keep its home-object graph when every `super` use
+// belongs to one synchronous arrow scope. Keep direct method-body uses, async
+// arrows, multiple owning arrows, and deeper arrow nesting on reanalysis.
+fn methodSuperUsesOnlySingleSyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    if (method.tag != .method_definition) return false;
+    const extra = method.data.extra;
+    if (extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return false;
+    const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]);
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
+    if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len or
+        body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+
+    const params_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, params_idx) catch return false;
+    defer ast.allocator.free(params_nodes);
+    for (params_nodes) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .super_expression) return false;
+    }
+
+    const Work = struct {
+        node: ast_mod.NodeIndex,
+        arrow_depth: u8 = 0,
+        arrow_owner: ?u32 = null,
+        nested_non_arrow_function: bool = false,
+    };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(ast.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(ast.allocator);
+    stack.append(ast.allocator, .{ .node = body_idx }) catch return false;
+    var super_arrow_owner: ?u32 = null;
+    while (stack.pop()) |work| {
+        if (work.node.isNone() or @intFromEnum(work.node) >= ast.nodes.items.len) return false;
+        const raw_idx = @intFromEnum(work.node);
+        if (seen.contains(raw_idx)) continue;
+        seen.put(ast.allocator, raw_idx, {}) catch return false;
+        const node = ast.nodes.items[raw_idx];
+
+        if (node.tag == .arrow_function_expression) {
+            const arrow_extra = node.data.extra;
+            if (arrow_extra > ast.extra_data.items.len or
+                ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.params or
+                ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags) return false;
+            const arrow_params: ast_mod.NodeIndex = @enumFromInt(
+                ast.extra_data.items[arrow_extra + ast_mod.ArrowExtra.params],
+            );
+            if (!arrow_params.isNone()) {
+                if (@intFromEnum(arrow_params) >= ast.nodes.items.len) return false;
+                const arrow_params_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                    ast.allocator,
+                    ast,
+                    arrow_params,
+                ) catch return false;
+                var arrow_params_have_super = false;
+                for (arrow_params_nodes) |parameter_raw_idx| {
+                    if (parameter_raw_idx >= ast.nodes.items.len or
+                        ast.nodes.items[parameter_raw_idx].tag == .super_expression)
+                    {
+                        arrow_params_have_super = true;
+                        break;
+                    }
+                }
+                ast.allocator.free(arrow_params_nodes);
+                if (arrow_params_have_super) return false;
+            }
+        }
+
+        if (node.tag == .super_expression) {
+            if (work.nested_non_arrow_function or work.arrow_depth != 1) return false;
+            const arrow_raw = work.arrow_owner orelse return false;
+            if (arrow_raw >= ast.nodes.items.len or
+                ast.nodes.items[arrow_raw].tag != .arrow_function_expression) return false;
+            const arrow_extra = ast.nodes.items[arrow_raw].data.extra;
+            if (arrow_extra > ast.extra_data.items.len or
+                ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags or
+                (ast.extra_data.items[arrow_extra + ast_mod.ArrowExtra.flags] &
+                    ast_mod.ArrowFlags.is_async) != 0) return false;
+            if (super_arrow_owner) |first_owner| {
+                if (first_owner != arrow_raw) return false;
+            } else {
+                super_arrow_owner = arrow_raw;
+            }
+            continue;
+        }
+
+        const nested_non_arrow_function = work.nested_non_arrow_function or switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .method_definition,
+            .class_declaration,
+            .class_expression,
+            => true,
+            else => false,
+        };
+        const is_arrow = node.tag == .arrow_function_expression;
+        if (is_arrow and work.arrow_depth == std.math.maxInt(u8)) return false;
+        const arrow_depth = if (is_arrow) work.arrow_depth + 1 else work.arrow_depth;
+        const arrow_owner = if (is_arrow) @as(?u32, raw_idx) else work.arrow_owner;
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| {
+            if (!child.isNone()) stack.append(ast.allocator, .{
+                .node = child,
+                .arrow_depth = arrow_depth,
+                .arrow_owner = arrow_owner,
+                .nested_non_arrow_function = nested_non_arrow_function,
+            }) catch return false;
+        }
+    }
+    return super_arrow_owner != null;
+}
+
 fn hasValidSourceSymbol(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3275,8 +3387,9 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// function scope. Static fields must pass
 /// `isRetainableSimpleStaticClassField`; computed/escaped keys, class-self
 /// heritage reads, direct `super` in sync methods, and nested lexical `super`
-/// in async class methods stay excluded. Direct `super` in async instance and
-/// static methods stays within the owning method body. Async-arrow super uses
+/// outside the audited async-class-method shapes stay excluded. Direct
+/// `super` in async instance and static methods stays within the owning method
+/// body; one synchronous arrow scope may also capture it. Async-arrow super uses
 /// retain their separate single-arrow home-object preflight.
 fn isSimpleClass(
     allocator: std.mem.Allocator,
@@ -3381,9 +3494,14 @@ fn isSimpleClass(
             (is_es5_async_instance_method or is_es5_async_static_method) and
             allow_es5_async_class_methods and !super.isNone() and
             methodSuperUsesOnlyDirectMethodBody(ast, member);
+        const retains_async_class_method_sync_arrow_super =
+            (is_es5_async_instance_method or is_es5_async_static_method) and
+            allow_es5_async_class_methods and !super.isNone() and
+            methodSuperUsesOnlySingleSyncArrow(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or
-            (has_super and !retains_async_arrow_super and !retains_async_class_method_super)) return false;
+            (has_super and !retains_async_arrow_super and !retains_async_class_method_super and
+                !retains_async_class_method_sync_arrow_super)) return false;
     }
     if (accessor_count > 2) return false;
     if (accessor_pair) |accessor| {
@@ -3525,7 +3643,9 @@ fn registerRetainableEs5AsyncClassMethods(
             (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
         if (!is_async_instance_method and !is_async_static_method) continue;
         if (methodHasSuperExpression(ast, member) and
-            (super_idx.isNone() or !methodSuperUsesOnlyDirectMethodBody(ast, member))) return false;
+            (super_idx.isNone() or
+                (!methodSuperUsesOnlyDirectMethodBody(ast, member) and
+                    !methodSuperUsesOnlySingleSyncArrow(ast, member)))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;

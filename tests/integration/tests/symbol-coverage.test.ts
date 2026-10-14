@@ -6557,6 +6557,44 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         stderr: readFileSync(runtimeStderr, 'utf8') + (proc.stderr ?? ''),
       };
     };
+    const expectRetainedClean = (stderr: string) => {
+      const mode = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, stderr).toContain('semantic_graph=retained');
+      const report = stderr
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(report, stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${report}`,
+        ).toBe(0);
+      }
+      expect(report).toMatch(/clean=1(?:\s|$)/);
+    };
+    const expectReanalyzedOutput = (
+      result: { status: number | null; stderr: string },
+      expected: string,
+    ) => {
+      expect(result.status, result.stderr).toBe(0);
+      const mode = result.stderr
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, result.stderr).toContain('semantic_graph=reanalyzed');
+      const actual = runOutput();
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(expected);
+    };
 
     try {
       const retained = run(
@@ -6754,36 +6792,35 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(staticSuperOutput.status, staticSuperOutput.stderr).toBe(0);
       expect(staticSuperOutput.stdout).toBe('42 50 true 50\n');
 
-      // A nested lexical super capture remains outside the direct method-body boundary.
+      // One synchronous arrow can keep static super on the exact constructor home graph.
       const staticNestedArrowSuper = run(
         [
+          'var receiver;',
           'class Base {',
           '  static get current() { return this.value; }',
+          '  static set current(value) { receiver = this; this.value = value; }',
           '}',
           'class Service extends Base {',
-          '  static async readCurrent() {',
+          '  static async readWrite() {',
           '    await Promise.resolve();',
-          '    var read = () => super.current;',
-          '    return read();',
+          '    var readWrite = value => {',
+          '      var before = super.current;',
+          '      var assigned = super.current = value;',
+          '      return [before, assigned, this === receiver, this.current].join(" ");',
+          '    };',
+          '    return readWrite(50);',
           '  }',
           '}',
-          'Service.value = 42;',
-          'Service.readCurrent().then(value => console.log(value));',
+          'class Derived extends Service {}',
+          'Derived.value = 42;',
+          'Derived.readWrite().then(value => console.log(value));',
         ].join('\n'),
       );
       expect(staticNestedArrowSuper.status, staticNestedArrowSuper.stderr).toBe(0);
-      const staticNestedArrowMode = (staticNestedArrowSuper.stderr ?? '')
-        .split(/\r?\n/)
-        .find(
-          (line) =>
-            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
-        );
-      expect(staticNestedArrowMode, staticNestedArrowSuper.stderr).toContain(
-        'semantic_graph=reanalyzed',
-      );
+      expectRetainedClean(staticNestedArrowSuper.stderr ?? '');
       const staticNestedArrowOutput = runOutput();
       expect(staticNestedArrowOutput.status, staticNestedArrowOutput.stderr).toBe(0);
-      expect(staticNestedArrowOutput.stdout).toBe('42\n');
+      expect(staticNestedArrowOutput.stdout).toBe('42 50 true 50\n');
 
       // A synchronous static sibling with super keeps the whole class on reanalysis.
       const synchronousStaticSuper = run(
@@ -6846,35 +6883,121 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(synchronousSuperOutput.status, synchronousSuperOutput.stderr).toBe(0);
       expect(synchronousSuperOutput.stdout).toBe('42 42\n');
 
-      // A nested closure has a separate lexical super capture and stays gated.
+      // One synchronous arrow keeps instance super and its lexical receiver on the home graph.
       const nestedArrowSuper = run(
         [
+          'var receiver;',
           'class Base {',
           '  get current() { return this.value; }',
+          '  set current(value) { receiver = this; this.value = value; }',
           '}',
           'class Service extends Base {',
-          '  async readAsync() {',
+          '  async readWrite() {',
           '    await Promise.resolve();',
-          '    var read = () => super.current;',
-          '    return read();',
+          '    var readWrite = value => {',
+          '      var before = super.current;',
+          '      var assigned = super.current = value;',
+          '      return [before, assigned, this === receiver, this.current].join(" ");',
+          '    };',
+          '    return readWrite(50);',
           '  }',
           '}',
           'var service = new Service();',
           'service.value = 42;',
-          'service.readAsync().then(value => console.log(value));',
+          'service.readWrite().then(value => console.log(value));',
         ].join('\n'),
       );
       expect(nestedArrowSuper.status, nestedArrowSuper.stderr).toBe(0);
-      const nestedArrowSuperMode = (nestedArrowSuper.stderr ?? '')
-        .split(/\r?\n/)
-        .find(
-          (line) =>
-            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
-        );
-      expect(nestedArrowSuperMode, nestedArrowSuper.stderr).toContain('semantic_graph=reanalyzed');
+      expectRetainedClean(nestedArrowSuper.stderr ?? '');
       const nestedArrowSuperOutput = runOutput();
       expect(nestedArrowSuperOutput.status, nestedArrowSuperOutput.stderr).toBe(0);
-      expect(nestedArrowSuperOutput.stdout).toBe('42\n');
+      expect(nestedArrowSuperOutput.stdout).toBe('42 50 true 50\n');
+
+      // An async arrow owns a separate state machine and stays outside this sync-arrow slice.
+      const asyncArrowSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async () => { await Promise.resolve(); return super.current; };',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(asyncArrowSuper, '42\n');
+
+      // A method-body super mixed with the arrow capture keeps the class on reanalysis.
+      const mixedMethodAndArrowSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = () => super.current;',
+          '    return super.current + read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedMethodAndArrowSuper, '84\n');
+
+      // Separate arrow owners are not covered by the one-scope home-object gate.
+      const multipleArrowSuperOwners = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var first = () => super.current;',
+          '    var second = () => super.current;',
+          '    return first() + second();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(multipleArrowSuperOwners, '84\n');
+
+      // Deeper arrow nesting introduces another lexical owner and stays gated.
+      const deepArrowSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = () => { var nested = () => super.current; return nested(); };',
+          '    return read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(deepArrowSuper, '42\n');
+
+      // A super read in the arrow parameter initializer runs outside the body capture proof.
+      const arrowParameterSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = (value = super.current) => value;',
+          '    return read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(arrowParameterSuper, '42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
