@@ -26,20 +26,6 @@ r.push(late());
 console.log(r.join());
 `;
 
-// Sibling blocks declaring the same top-level name still split under
-// identifier mangling (a separate issue); keep the minified case to one block
-// function per name.
-const minifySource = `var r = [];
-if (r) { function dup() { return 'if'; } r.push(dup()); }
-r.push(dup());
-function f(x) {
-  if (x) { function g() { return 'g1'; } } else { function g() { return 'g2'; } }
-  return g();
-}
-r.push(f(1), f(0));
-console.log(r.join());
-`;
-
 describe('sloppy if-block functions keep Annex B semantics (#5746)', () => {
   let cleanup: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -50,7 +36,7 @@ describe('sloppy if-block functions keep Annex B semantics (#5746)', () => {
   const cases: [string, string, string[]][] = [];
   for (const target of ['esnext', 'es2015', 'es5']) {
     cases.push([`${target}`, source, [`--target=${target}`]]);
-    cases.push([`${target} --minify`, minifySource, [`--target=${target}`, '--minify']]);
+    cases.push([`${target} --minify`, source, [`--target=${target}`, '--minify']]);
   }
 
   for (const [name, code, args] of cases) {
