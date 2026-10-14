@@ -2510,7 +2510,7 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
             .data = .{ .binary = .{ .left = left, .right = elem, .flags = 0 } },
         });
         const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
-        const lowered_seq = try es2015_destruct.lowerDestructuringAssignment(self, self.ast.getNode(assign));
+        const lowered_seq = try es2015_destruct.lowerDestructuringAssignment(self, self.ast.getNode(assign), false);
         return makeExprStmt(self, lowered_seq, span);
     } else {
         const new_left = try self.visitNode(left);

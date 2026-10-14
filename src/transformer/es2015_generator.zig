@@ -538,7 +538,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                             // `[this.#y, o.b] = yield v` lowers like any assignment (#5728).
                             const assign_stmt = if (patternNeedsLowering(self, expr.data.binary.left)) pattern: {
                                 const sent = try buildSentCall(self, stmt.span);
-                                const lowered = try es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, expr, sent);
+                                const lowered = try es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, expr, sent, false);
                                 break :pattern try es_helpers.makeExprStmt(self, lowered, stmt.span);
                             } else plain: {
                                 const new_left = try self.visitNode(expr.data.binary.left);
@@ -2227,7 +2227,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // assignment, with the right side whose yields became temps (#5728).
                 if (patternNeedsLowering(self, node.data.binary.left)) {
                     const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
-                    return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, node, new_right);
+                    return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignmentWithRight(self, node, new_right, true);
                 }
                 const new_left = try visitExprWithYieldExtraction(self, node.data.binary.left, ops, next_label);
                 const new_right = try visitExprWithYieldExtraction(self, node.data.binary.right, ops, next_label);
