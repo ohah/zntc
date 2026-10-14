@@ -1891,7 +1891,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('unmatched dropped labels retain the graph while matched labels reanalyze', () => {
+  test('unmatched dropped labels skip the pre-pass while matched labels reanalyze', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-unmatched-drop-label-retained-graph-'));
     const input = join(dir, 'entry.ts');
     const retainedOutput = join(dir, 'retained.cjs');
@@ -1929,23 +1929,30 @@ describe('symbol identity coverage gate (#4819)', () => {
           encoding: 'utf8',
         },
       );
-    const expectPrepass = (stderr: string, graph: 'retained' | 'reanalyzed') => {
+    const expectPrepass = (stderr: string, graph: 'skipped' | 'reanalyzed') => {
       const lines = stderr.split(/\r?\n/);
       const scopeAudits = lines.filter((line) =>
         line.startsWith('zntc: symbol-source-scope-owner '),
       );
+      const reports = lines.filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
+      const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+      if (graph === 'skipped') {
+        expect(scopeAudits, stderr).toHaveLength(0);
+        expect(reports, stderr).toHaveLength(0);
+        expect(mode, stderr).toBeUndefined();
+        return;
+      }
+
       expect(scopeAudits, stderr).toHaveLength(1);
       expect(scopeOwnerAuditProblems(scopeAudits[0]), stderr).toEqual([]);
-      const reports = lines.filter((line) => line.startsWith('zntc: symbol-identity-prepass '));
       expect(reports, stderr).toHaveLength(1);
       expect(exactSchemaProblems(reports[0]), stderr).toEqual([]);
-      const mode = lines.find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
       expect(mode, stderr).toContain(`semantic_graph=${graph}`);
     };
     try {
       const retained = bundle(retainedOutput, 'TEST');
       expect(retained.status, retained.stderr).toBe(0);
-      expectPrepass(retained.stderr ?? '', 'retained');
+      expectPrepass(retained.stderr ?? '', 'skipped');
       const retainedRun = spawnSync('node', [retainedOutput], { encoding: 'utf8' });
       expect(retainedRun.status, retainedRun.stderr).toBe(0);
       expect(retainedRun.stdout).toBe('41\n42\n');

@@ -11,6 +11,26 @@ pub fn hasDroppedConsoleStatement(ast: *const ast_mod.Ast) bool {
     return false;
 }
 
+pub fn hasDroppedLabelStatement(ast: *const ast_mod.Ast, labels: []const []const u8) bool {
+    if (labels.len == 0) return false;
+    for (ast.nodes.items) |node| {
+        if (node.tag == .labeled_statement and isDroppedLabel(ast, node, labels)) return true;
+    }
+    return false;
+}
+
+pub fn isDroppedLabel(ast: *const ast_mod.Ast, node: Node, labels: []const []const u8) bool {
+    if (node.tag != .labeled_statement) return false;
+    const label_index = node.data.binary.left;
+    if (label_index.isNone() or @as(usize, @intFromEnum(label_index)) >= ast.nodes.items.len) return false;
+    const label_node = ast.getNode(label_index);
+    const label_name = ast.getText(label_node.span);
+    for (labels) |label| {
+        if (std.mem.eql(u8, label_name, label)) return true;
+    }
+    return false;
+}
+
 /// expression_statement가 console.* 호출인지 판별.
 /// console.log(...), console.warn(...), console.error(...) 등.
 pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {

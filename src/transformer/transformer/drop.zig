@@ -1,9 +1,7 @@
 //! Drop-option filters for Transformer.
 
-const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
-const NodeIndex = ast_mod.NodeIndex;
 const drop_scan = @import("../drop_scan.zig");
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
@@ -26,10 +24,5 @@ pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {
 }
 
 fn hasDroppedLabel(self: *const Transformer, node: Node) bool {
-    const label_node = self.ast.getNode(node.data.binary.left);
-    const label_name = self.ast.getText(label_node.span);
-    for (self.options.drop_labels) |drop| {
-        if (std.mem.eql(u8, label_name, drop)) return true;
-    }
-    return false;
+    return drop_scan.isDroppedLabel(self.ast, node, self.options.drop_labels);
 }
