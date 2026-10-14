@@ -6708,20 +6708,25 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(staticAsyncOutput.status, staticAsyncOutput.stderr).toBe(0);
       expect(staticAsyncOutput.stdout).toBe('82\n');
 
-      // Direct static super has a distinct constructor home and stays gated.
+      // A direct static async super access preserves the constructor home and receiver.
       const staticSuper = run(
         [
+          'var receiver;',
           'class Base {',
           '  static get current() { return this.value; }',
+          '  static set current(value) { receiver = this; this.value = value; }',
           '}',
           'class Service extends Base {',
-          '  static async readCurrent() {',
+          '  static async readWrite() {',
           '    await Promise.resolve();',
-          '    return super.current;',
+          '    var before = super.current;',
+          '    var assigned = super.current = 50;',
+          '    return [before, assigned, this === receiver, this.current].join(" ");',
           '  }',
           '}',
-          'Service.value = 42;',
-          'Service.readCurrent().then(value => console.log(value));',
+          'class Derived extends Service {}',
+          'Derived.value = 42;',
+          'Derived.readWrite().then(value => console.log(value));',
         ].join('\n'),
       );
       expect(staticSuper.status, staticSuper.stderr).toBe(0);
@@ -6731,10 +6736,85 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(staticSuperMode, staticSuper.stderr).toContain('semantic_graph=reanalyzed');
+      expect(staticSuperMode, staticSuper.stderr).toContain('semantic_graph=retained');
+      const staticSuperReport = (staticSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(staticSuperReport, staticSuper.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(staticSuperReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${staticSuperReport}`,
+        ).toBe(0);
+      }
+      expect(staticSuperReport).toMatch(/clean=1(?:\s|$)/);
       const staticSuperOutput = runOutput();
       expect(staticSuperOutput.status, staticSuperOutput.stderr).toBe(0);
-      expect(staticSuperOutput.stdout).toBe('42\n');
+      expect(staticSuperOutput.stdout).toBe('42 50 true 50\n');
+
+      // A nested lexical super capture remains outside the direct method-body boundary.
+      const staticNestedArrowSuper = run(
+        [
+          'class Base {',
+          '  static get current() { return this.value; }',
+          '}',
+          'class Service extends Base {',
+          '  static async readCurrent() {',
+          '    await Promise.resolve();',
+          '    var read = () => super.current;',
+          '    return read();',
+          '  }',
+          '}',
+          'Service.value = 42;',
+          'Service.readCurrent().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(staticNestedArrowSuper.status, staticNestedArrowSuper.stderr).toBe(0);
+      const staticNestedArrowMode = (staticNestedArrowSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(staticNestedArrowMode, staticNestedArrowSuper.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const staticNestedArrowOutput = runOutput();
+      expect(staticNestedArrowOutput.status, staticNestedArrowOutput.stderr).toBe(0);
+      expect(staticNestedArrowOutput.stdout).toBe('42\n');
+
+      // A synchronous static sibling with super keeps the whole class on reanalysis.
+      const synchronousStaticSuper = run(
+        [
+          'class Base {',
+          '  static get current() { return this.value; }',
+          '}',
+          'class Service extends Base {',
+          '  static async readAsync() {',
+          '    await Promise.resolve();',
+          '    return 40;',
+          '  }',
+          '  static readSync() { return super.current; }',
+          '}',
+          'Service.value = 42;',
+          'Service.readAsync().then(value => console.log(value, Service.readSync()));',
+        ].join('\n'),
+      );
+      expect(synchronousStaticSuper.status, synchronousStaticSuper.stderr).toBe(0);
+      const synchronousStaticMode = (synchronousStaticSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(synchronousStaticMode, synchronousStaticSuper.stderr).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const synchronousStaticOutput = runOutput();
+      expect(synchronousStaticOutput.status, synchronousStaticOutput.stderr).toBe(0);
+      expect(synchronousStaticOutput.stdout).toBe('40 42\n');
 
       // A synchronous sibling with super keeps the whole class on reanalysis.
       const synchronousSuper = run(

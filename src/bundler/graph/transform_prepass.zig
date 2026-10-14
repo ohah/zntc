@@ -3275,8 +3275,9 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// function scope. Static fields must pass
 /// `isRetainableSimpleStaticClassField`; computed/escaped keys, class-self
 /// heritage reads, direct `super` in sync methods, and nested lexical `super`
-/// in async class methods stay excluded. Async-arrow super uses retain their
-/// separate single-arrow home-object preflight.
+/// in async class methods stay excluded. Direct `super` in async instance and
+/// static methods stays within the owning method body. Async-arrow super uses
+/// retain their separate single-arrow home-object preflight.
 fn isSimpleClass(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -3376,7 +3377,8 @@ fn isSimpleClass(
         const retains_async_arrow_super = allow_es5_async_arrow_super and !super.isNone() and
             (flags == 0 or flags == ast_mod.MethodFlags.is_static) and
             methodSuperUsesOnlyAsyncArrows(ast, member);
-        const retains_async_class_method_super = is_es5_async_instance_method and
+        const retains_async_class_method_super =
+            (is_es5_async_instance_method or is_es5_async_static_method) and
             allow_es5_async_class_methods and !super.isNone() and
             methodSuperUsesOnlyDirectMethodBody(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
@@ -3523,8 +3525,7 @@ fn registerRetainableEs5AsyncClassMethods(
             (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
         if (!is_async_instance_method and !is_async_static_method) continue;
         if (methodHasSuperExpression(ast, member) and
-            (!is_async_instance_method or super_idx.isNone() or
-                !methodSuperUsesOnlyDirectMethodBody(ast, member))) return false;
+            (super_idx.isNone() or !methodSuperUsesOnlyDirectMethodBody(ast, member))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
