@@ -339,6 +339,10 @@ pub const Category = enum {
     emit_module_pass,
     emit_concat,
     emit_sourcemap_finalize,
+    emit_output_purity,
+    emit_output_purity_candidates,
+    emit_output_purity_bindings,
+    emit_output_purity_apply,
 
     // ── HMR ──
     hmr,
