@@ -3200,8 +3200,10 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 }
 
 /// A downleveled class preserves its graph when it has no base or a simple
-/// bound identifier base, and is empty, contains only plain methods, or has
-/// plain methods followed by one accessor or a compatible getter/setter pair.
+/// bound identifier base, and contains supported plain methods, optionally
+/// followed by one accessor or a compatible getter/setter pair. ES5 async
+/// class methods are admitted only when their bodies have no `super` use and
+/// their state-machine scopes pass the retained async preflight.
 /// One explicit constructor with only simple identifier parameters or
 /// identifier parameters with literal defaults may accompany those members
 /// when its body contains only audited declarations, expressions, control
@@ -3221,6 +3223,7 @@ fn isSimpleClass(
     raw_node: usize,
     source_object_shadows_class: bool,
     allow_es5_async_arrow_super: bool,
+    allow_es5_async_class_methods: bool,
 ) bool {
     if (node.tag != .class_declaration and node.tag != .class_expression) return false;
     const extra = node.data.extra;
@@ -3270,7 +3273,9 @@ fn isSimpleClass(
         if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
         const flags = extras[method_extra + ast_mod.MethodExtra.flags];
-        const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static;
+        const is_es5_async_method = allow_es5_async_class_methods and
+            flags == ast_mod.MethodFlags.is_async;
+        const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static or is_es5_async_method;
         const is_plain_accessor = flags == ast_mod.MethodFlags.is_getter or
             flags == ast_mod.MethodFlags.is_setter or
             flags == (ast_mod.MethodFlags.is_static | ast_mod.MethodFlags.is_getter) or
@@ -3304,7 +3309,9 @@ fn isSimpleClass(
         }
         const has_super = methodHasSuperExpression(ast, member);
         const retains_async_arrow_super = allow_es5_async_arrow_super and !super.isNone() and
-            is_plain_method and methodSuperUsesOnlyAsyncArrows(ast, member);
+            (flags == 0 or flags == ast_mod.MethodFlags.is_static) and
+            methodSuperUsesOnlyAsyncArrows(ast, member);
+        if (is_es5_async_method and has_super) return false;
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or (has_super and !retains_async_arrow_super)) return false;
     }
@@ -3318,7 +3325,8 @@ fn isSimpleClass(
             if (member.tag != .method_definition) continue;
             const method_extra = member.data.extra;
             const flags = extras[method_extra + ast_mod.MethodExtra.flags];
-            const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static;
+            const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static or
+                (allow_es5_async_class_methods and flags == ast_mod.MethodFlags.is_async);
             if (!is_plain_method or ((flags & ast_mod.MethodFlags.is_static) != 0) != accessor_is_static) continue;
             const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
             const key_text = ast.getText(ast.getNode(key_idx).span);
@@ -3396,6 +3404,7 @@ fn isRetainableGraphClass(
     direct_var_class_expressions: *const std.AutoHashMapUnmanaged(u32, void),
     source_object_shadows_class: bool,
     allow_es5_async_arrow_super: bool,
+    allow_es5_async_class_methods: bool,
 ) bool {
     const raw: u32 = @intCast(raw_node);
     const has_safe_owner = switch (node.tag) {
@@ -3411,7 +3420,38 @@ fn isRetainableGraphClass(
         raw_node,
         source_object_shadows_class,
         allow_es5_async_arrow_super,
+        allow_es5_async_class_methods,
     );
+}
+
+fn registerRetainableEs5AsyncClassMethods(
+    ast: *const ast_mod.Ast,
+    class_node: ast_mod.Node,
+    retained_async_functions: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    if (class_node.tag != .class_declaration and class_node.tag != .class_expression) return false;
+    const class_extra = class_node.data.extra;
+    if (class_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.body) return false;
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]);
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len or
+        ast.getNode(body_idx).tag != .class_body) return false;
+    const members = ast.getNode(body_idx).data.list;
+    if (members.start > ast.extra_data.items.len or
+        members.len > ast.extra_data.items.len - members.start) return false;
+    for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_member_idx| {
+        if (raw_member_idx >= ast.nodes.items.len) return false;
+        const member = ast.nodes.items[raw_member_idx];
+        if (member.tag != .method_definition) continue;
+        const method_extra = member.data.extra;
+        if (method_extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags) return false;
+        if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags] != ast_mod.MethodFlags.is_async)
+            continue;
+        if (methodHasSuperExpression(ast, member)) return false;
+        retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
+    }
+    return true;
 }
 
 fn collectSimpleConstructorDefaultParameterNodes(
@@ -4370,8 +4410,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 &direct_var_class_expressions,
                 source_object_shadows_class,
                 options.unsupported.async_await and options.unsupported.generator,
+                options.unsupported.async_await and options.unsupported.generator,
             )) continue;
             retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
+            if (options.unsupported.async_await and options.unsupported.generator and
+                !registerRetainableEs5AsyncClassMethods(ast, class_node, &retained_async_functions)) return false;
             if (options.unsupported.default_params and
                 !collectSimpleConstructorDefaultParameterNodes(
                     ast,

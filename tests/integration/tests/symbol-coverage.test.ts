@@ -6502,6 +6502,129 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async class methods retain the exact state-machine graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-class-method-'));
+    const output = join(dir, 'out.cjs');
+    const input = join(dir, 'entry.ts');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+
+    try {
+      const retained = run(
+        [
+          'var service;',
+          'class Service {',
+          '  async calculate(value) {',
+          '    var _state = 1, _context = 1, _arguments = arguments[0];',
+          '    await Promise.resolve(value);',
+          '    return this === service ? value + _state + _context + _arguments : 0;',
+          '  }',
+          '}',
+          'service = new Service();',
+          'service.calculate(40).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(retained.status, retained.stderr).toBe(0);
+      const retainedMode = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(retainedMode, retained.stderr).toContain('semantic_graph=retained');
+      const retainedReport = (retained.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(retainedReport, retained.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(retainedReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${retainedReport}`,
+        ).toBe(0);
+      }
+      expect(retainedReport).toMatch(/clean=1(?:\s|$)/);
+      const retainedOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(retainedOutput.status, retainedOutput.stderr).toBe(0);
+      expect(retainedOutput.stdout).toBe('82\n');
+
+      // Direct eval can observe state-machine locals and stays on semantic resync.
+      const directEval = run(
+        [
+          'class Service {',
+          '  async calculate(value) {',
+          '    await Promise.resolve();',
+          "    return eval('value') + 1;",
+          '  }',
+          '}',
+          'new Service().calculate(41).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(directEval.status, directEval.stderr).toBe(0);
+      const directEvalMode = (directEval.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(directEvalMode, directEval.stderr).toContain('semantic_graph=reanalyzed');
+      const directEvalOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
+      expect(directEvalOutput.stdout).toBe('42\n');
+
+      // Class-method super has a separate home-object gate and remains reanalyzed.
+      const classSuper = run(
+        [
+          'class Base {',
+          '  get read() { return this.value; }',
+          '  set read(value) { this.value = value; }',
+          '}',
+          'class Service extends Base {',
+          '  async write() {',
+          '    await Promise.resolve();',
+          '    return super.read = 50;',
+          '  }',
+          '}',
+          'var service = new Service();',
+          'service.write().then(value => console.log(value, service.read));',
+        ].join('\n'),
+      );
+      expect(classSuper.status, classSuper.stderr).toBe(0);
+      const classSuperMode = (classSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(classSuperMode, classSuper.stderr).toContain('semantic_graph=reanalyzed');
+      const classSuperOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(classSuperOutput.status, classSuperOutput.stderr).toBe(0);
+      expect(classSuperOutput.stdout).toBe('50 50\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async object methods retain the exact state-machine graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-method-'));
     const output = join(dir, 'out.cjs');
