@@ -727,12 +727,24 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         // decorators run (`ctx.name`), as tsc does; the wrapper `var _Class`
         // would name it `_Class` (#5669). Lowered ES5/ES2015 classes are named
         // by the class lowering already, which this call agrees with.
-        const anonymous_default = class_name_origin.isNone() and source_idx == self.default_export_operand;
-        const name_stmt = if (anonymous_default) blk: {
+        // An anonymous class expression takes its NamedEvaluation name the
+        // same way (`const Anon = @d class {}` is "Anon", tsc alike, #4811).
+        // A class lowering names a lowered class from the same record itself.
+        const anonymous_name: ?Span = if (!class_name_origin.isNone())
+            null
+        else if (source_idx == self.default_export_operand)
+            try self.ast.addString("default")
+        else if (self.options.unsupported.class or stage3OutputNeedsClassLowering(self))
+            null
+        else if (self.class_inferred_names.get(@intFromEnum(source_idx))) |inferred|
+            (if (inferred.end > inferred.start) inferred else null)
+        else
+            null;
+        const name_stmt = if (anonymous_name) |name_span| blk: {
             const class_this_read = try es_helpers.makeExactSyntheticRefFromSpan(self, classThis_span);
             try class_this_initialization_read_refs.append(self.allocator, class_this_read);
             const callee = try es_helpers.makeRuntimeHelperRef(self, "__setFunctionName");
-            const name_literal = try es_helpers.buildQuotedKeyLiteral(self, try self.ast.addString("default"));
+            const name_literal = try es_helpers.buildQuotedKeyLiteral(self, name_span);
             const call = try es_helpers.makeCallExpr(self, callee, &.{ class_this_read, name_literal }, zero_span);
             break :blk try es_helpers.makeExprStmt(self, call, zero_span);
         } else NodeIndex.none;
@@ -1067,6 +1079,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         empty_decos.start, empty_decos.len,
     });
     try self.remapCopiedScopeOwner(source_idx, inner_class);
+    // `var Foo = class {…}` names the class "Foo"; a later class lowering binds
+    // it to a generated name, so it restores this one (#4811).
+    if (!class_name_origin.isNone())
+        try self.class_inferred_names.put(self.allocator, @intFromEnum(inner_class), self.ast.getNode(name_idx).data.string_ref);
     // The rewritten class is intentionally anonymous: the source class-self
     // symbol belongs to the wrapper's `var Foo`, not the ES5 `_Class` helper.
     if (self.semantic_edit_enabled and !class_name_origin.isNone())

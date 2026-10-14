@@ -607,9 +607,12 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
 /// name NamedEvaluation gives each anonymous class instead (#5519).
 pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
     const u = self.options.unsupported;
+    // Stage 3 decorators rewrite a class into an anonymous class expression
+    // that needs its NamedEvaluation name too (#4811).
     const lowers_classes = u.class or u.class_field or u.class_static_block or u.class_private_method or
         u.class_private_field or !self.options.use_define_for_class_fields;
-    if (!lowers_classes) return;
+    const stage3_names_only = !lowers_classes and self.ast.has_decorator and !self.options.experimental_decorators;
+    if (!lowers_classes and !stage3_names_only) return;
     const nodes_len = self.ast.nodes.items.len;
     var i: usize = 0;
     while (i < nodes_len) : (i += 1) {
@@ -640,7 +643,7 @@ pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
         };
         // A lowered field becomes `__publicField(C, "k", value)` / `this.k = value`
         // (or a descriptor `value:`), outside NamedEvaluation (#5519).
-        if (node.tag == .property_definition) if (name) |n| if (functionRoot(self, value)) |fn_raw| {
+        if (node.tag == .property_definition and !stage3_names_only) if (name) |n| if (functionRoot(self, value)) |fn_raw| {
             const slot = try self.parameter_inferred_names.getOrPut(self.allocator, fn_raw);
             if (!slot.found_existing) slot.value_ptr.* = n;
         };

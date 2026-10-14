@@ -47,7 +47,14 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
                 const ref = try es_helpers.makeExactSyntheticRefFromSpan(self, name_span);
                 try self.trackExactOutputRead(ref, symbol_id);
                 break :blk ref;
-            } else try self.makeIdentifierRefWithSymbol(name_span, name_idx);
+            } else blk: {
+                const ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
+                // `export default Named` reads the declaration the lowering
+                // hoisted before it (#4811).
+                if (!name_idx.isNone() and self.semantic_edit_enabled)
+                    try self.trackUserReadFromBinding(ref, name_idx, self.current_scope);
+                break :blk ref;
+            };
             return self.ast.addNode(.{
                 .tag = node.tag,
                 .span = node.span,
