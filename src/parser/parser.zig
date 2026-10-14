@@ -290,6 +290,9 @@ pub const Parser = struct {
         /// in_function=true, is_top_level=false, async/generator는 인자로 설정.
         pub fn enterFunction(self: Context, is_async: bool, is_generator: bool) Context {
             var new = self;
+            // FunctionBody/ClassBody 는 [+In] — for 초기화절의 ~In 을 상속하지 않는다 (#5824).
+            // arrow 의 ConciseBody[?In] 만 예외라 parseArrowBody 가 되돌린다.
+            new.allow_in = true;
             new.in_function = true;
             new.in_async = is_async;
             new.in_generator = is_generator;

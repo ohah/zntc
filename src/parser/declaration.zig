@@ -556,7 +556,9 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
             self.in_switch = false;
             self.ctx.in_generator = false;
             self.ctx.in_async = true;
+            const saved_allow_in = self.enterAllowInContext(true); // ClassStaticBlockBody 는 [+In] (#5824)
             const body = try self.parseBlockStatement();
+            self.ctx.allow_in = saved_allow_in.allow_in;
             self.in_static_initializer = saved_in_static;
             self.allow_new_target = saved_new_target;
             self.ctx.in_function = saved_in_function;
@@ -899,7 +901,9 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
         self.allow_super_property = true; // class field에서 super.prop 허용 (ECMAScript 15.7.5)
         self.ctx.in_async = false; // class field: ~Await (await는 식별자)
         self.ctx.in_generator = false; // class field: ~Yield (yield는 식별자)
+        const saved_allow_in = self.enterAllowInContext(true); // Initializer[+In] (#5824)
         init_val = try self.parseAssignmentExpression();
+        self.ctx.allow_in = saved_allow_in.allow_in;
         self.in_class_field = saved_in_class_field;
         self.allow_new_target = saved_new_target;
         self.allow_super_property = saved_super_property;
