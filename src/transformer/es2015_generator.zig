@@ -830,7 +830,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             ops: *std.ArrayList(Operation),
             next_label: *u32,
         ) Transformer.Error!NodeIndex {
-            if (!self.options.unsupported.block_scoping) return .none;
+            // The state machine hoists the bindings whether or not the target
+            // has native `let` (chrome49 lowers async this way with native
+            // block scoping), so the extraction does not depend on it (#4734).
             if (body_idx.isNone()) return .none;
 
             const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
