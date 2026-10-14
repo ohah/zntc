@@ -52,19 +52,6 @@ const KNOWN_FAILURES: Record<string, string[]> = {
     'transpile/es2017/plain',
     'transpile/es2017/minify',
   ],
-  // #4735 클래스 계산된 키 안 super 가 바깥 home 대신 클래스 자신의 super 문맥으로 낮춰진다
-  '4729-super-41': [
-    'es5/plain',
-    'es5/minify',
-    'es2015/plain',
-    'es2015/minify',
-    'hermes/plain',
-    'hermes/minify',
-    'transpile/es5/plain',
-    'transpile/es5/minify',
-    'transpile/es2015/plain',
-    'transpile/es2015/minify',
-  ],
   // #4739 상수 접기가 const 의 TDZ 를 무시한다
   '4730-using-25': [
     'es5/plain',
