@@ -43,11 +43,76 @@ const appendRunBeforeMainCalls = parent.appendRunBeforeMainCalls;
 const isRunBeforeMainPath = parent.isRunBeforeMainPath;
 const shouldInsertRunBeforeMainBefore = parent.shouldInsertRunBeforeMainBefore;
 const collectRunBeforeMainClosure = parent.collectRunBeforeMainClosure;
+const util = @import("../../util/mod.zig");
 
 const RunBeforeMainCrossImport = struct {
     source_chunk: ChunkIndex,
     name: []const u8,
 };
+
+const ChunkModuleEmitResult = struct {
+    code: ?[]const u8 = null,
+    mappings: ?[]const SourceMap.Mapping = null,
+    names: []const []const u8 = &.{},
+    preamble_lines: u32 = 0,
+    err: ?anyerror = null,
+
+    fn deinit(self: *ChunkModuleEmitResult, allocator: std.mem.Allocator) void {
+        if (self.code) |code| allocator.free(code);
+        if (self.mappings) |mappings| allocator.free(mappings);
+        for (self.names) |name| allocator.free(name);
+        if (self.names.len > 0) allocator.free(self.names);
+    }
+};
+
+/// Emit the independent module bodies in one chunk. The caller joins the
+/// results in sorted module order before rewriting imports and appending code.
+fn emitChunkModuleRange(
+    allocator: std.mem.Allocator,
+    sorted_mods: []const ModuleIndex,
+    graph: *const ModuleGraph,
+    options: *const EmitOptions,
+    linker: ?*Linker,
+    entry_mod_idx: ?u32,
+    used_names_by_modidx: []const UsedNamesEntry,
+    shaker: ?*const TreeShaker,
+    with_sourcemap: bool,
+    results: []ChunkModuleEmitResult,
+    lo: usize,
+    hi: usize,
+) void {
+    var i = lo;
+    while (i < hi) : (i += 1) {
+        const mod_idx = sorted_mods[i];
+        const mi = @intFromEnum(mod_idx);
+        if (mi >= graph.moduleCount()) continue;
+        const module = graph.getModule(mod_idx) orelse continue;
+        const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
+        const used_names: ?[]const []const u8 = if (mi < used_names_by_modidx.len and !used_names_by_modidx[mi].all_used)
+            used_names_by_modidx[mi].names
+        else
+            null;
+        results[i].code = emitModule(
+            allocator,
+            module,
+            options,
+            linker,
+            is_entry,
+            used_names,
+            shaker,
+            null,
+            if (with_sourcemap) &results[i].mappings else null,
+            if (with_sourcemap) &results[i].names else null,
+            if (with_sourcemap) &results[i].preamble_lines else null,
+            null,
+            null,
+            null,
+        ) catch |err| {
+            results[i].err = err;
+            continue;
+        };
+    }
+}
 
 /// 동적 청크가 자기 CSS 를 런타임 `<link>` 로 로드하는 prologue 를 buf 에 append.
 /// `./<href>` 는 `import.meta.url`(=청크 자신 URL) 기준 해석 → public path/해시
@@ -452,6 +517,28 @@ fn writeCjsInteropMaterialize(
 }
 
 pub fn emitChunks(
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    options: *const EmitOptions,
+    linker: ?*Linker,
+) ![]OutputFile {
+    return emitChunksImpl(null, allocator, graph, chunk_graph, options, linker);
+}
+
+pub fn emitChunksWithIo(
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    graph: *const ModuleGraph,
+    chunk_graph: *const ChunkGraph,
+    options: *const EmitOptions,
+    linker: ?*Linker,
+) ![]OutputFile {
+    return emitChunksImpl(io, allocator, graph, chunk_graph, options, linker);
+}
+
+fn emitChunksImpl(
+    io: ?std.Io,
     allocator: std.mem.Allocator,
     graph: *const ModuleGraph,
     chunk_graph: *const ChunkGraph,
@@ -1502,123 +1589,171 @@ pub fn emitChunks(
             parent.sortEarlyCjsInits(early_cjs_inits.items);
         }
 
-        for (sorted_mods, 0..) |mod_idx, sorted_pos| {
-            const mi = @intFromEnum(mod_idx);
-            if (mi >= module_count) continue;
-            const m = graph.getModule(mod_idx) orelse continue;
-
-            const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
-            var module_mappings: ?[]const SourceMap.Mapping = null;
-            defer if (module_mappings) |maps| allocator.free(maps);
-            var module_names: []const []const u8 = &.{};
+        // Each module body is independent after this chunk's rename table is
+        // finalized. Emit large chunks in parallel, then keep import rewriting,
+        // sourcemap assembly, and output concatenation in deterministic order.
+        const module_emit_options = if (reg_split) &iife_emit_opts else options;
+        const parallelism: usize = @max(1, if (graph.max_threads != 0)
+            @as(usize, @intCast(graph.max_threads))
+        else
+            (std.Thread.getCpuCount() catch 8));
+        const parallel_emit = io != null and sorted_mods.len >= 32 and graph.max_threads != 1 and parallelism > 1;
+        const emit_batch_size = if (parallel_emit)
+            @min(sorted_mods.len, @min(@as(usize, 2048), @max(@as(usize, 1024), parallelism *| @as(usize, 128))))
+        else
+            1;
+        var batch_start: usize = 0;
+        while (batch_start < sorted_mods.len) {
+            const batch_end = @min(batch_start + emit_batch_size, sorted_mods.len);
+            const batch_mods = sorted_mods[batch_start..batch_end];
+            var single_result = [1]ChunkModuleEmitResult{.{}};
+            const module_results: []ChunkModuleEmitResult = if (parallel_emit)
+                try allocator.alloc(ChunkModuleEmitResult, batch_mods.len)
+            else
+                single_result[0..];
             defer {
-                for (module_names) |n| allocator.free(n);
-                if (module_names.len > 0) allocator.free(module_names);
+                for (module_results) |*result| result.deinit(allocator);
+                if (parallel_emit) allocator.free(module_results);
             }
-            var module_preamble_lines: u32 = 0;
-            // IIFE splitting: emitModule 에 wrapped `return{}` 억제 플래그 전달
-            // (factory 가 함수 스코프 제공, export 는 emitCjsEntryExports/
-            // xchunk_exports 가 담당). iife_emit_opts 는 빌드당 1회 복사.
-            const mod_used_names: ?[]const []const u8 = if (mi < used_names_by_modidx.len and !used_names_by_modidx[mi].all_used)
-                used_names_by_modidx[mi].names
-            else
-                null;
-            const raw_code = try emitModule(
-                allocator,
-                m,
-                if (reg_split) &iife_emit_opts else options,
-                linker,
-                is_entry,
-                mod_used_names,
-                shaker,
-                null,
-                if (chunk_sm != null) &module_mappings else null,
-                if (chunk_sm != null) &module_names else null,
-                if (chunk_sm != null) &module_preamble_lines else null,
-                null,
-                null,
-                null,
-            ) orelse continue;
-            defer allocator.free(raw_code);
-
-            // 동적 import 경로 리라이트: import('./page') → import('./page.js')
-            const rewritten_code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids, linker);
-            defer if (rewritten_code) |code| allocator.free(code);
-            const code = rewritten_code orelse raw_code;
-
-            // entry 모듈(또는 preserve-modules의 단일 모듈)의 directive prologue 추출.
-            // "use client"/"use server"는 청크 최상단으로 호이스팅되어야 RSC가 인식.
-            const should_hoist = is_entry or options.preserve_modules;
-            const stripped = if (should_hoist)
-                extractLeadingDirectives(code, &hoisted_directives, allocator) catch code
-            else
-                code;
-
-            if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(sorted_pos, rbm_insert_after_pos)) {
-                const before_len = chunk_output.items.len;
-                try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
-                if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
-                rbm_calls_emitted = true;
+            if (parallel_emit) {
+                for (module_results) |*result| result.* = .{};
             }
 
-            if (early_cjs_inits.items.len > 0) {
-                const before_len = chunk_output.items.len;
-                try parent.appendEarlyCjsInitsBefore(&chunk_output, allocator, early_cjs_inits.items, m, linker, options.minify_whitespace);
-                if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
+            if (parallel_emit) {
+                const emit_io = io.?;
+                var group: std.Io.Group = .init;
+                const range_size = util.chunkSize(batch_mods.len, parallelism);
+                var start: usize = 0;
+                while (start < batch_mods.len) {
+                    const end = @min(start + range_size, batch_mods.len);
+                    group.async(emit_io, emitChunkModuleRange, .{
+                        allocator,
+                        batch_mods,
+                        graph,
+                        module_emit_options,
+                        linker,
+                        entry_mod_idx,
+                        used_names_by_modidx,
+                        shaker,
+                        chunk_sm != null,
+                        module_results,
+                        start,
+                        end,
+                    });
+                    start = end;
+                }
+                group.await(emit_io) catch {};
+            } else {
+                emitChunkModuleRange(
+                    allocator,
+                    batch_mods,
+                    graph,
+                    module_emit_options,
+                    linker,
+                    entry_mod_idx,
+                    used_names_by_modidx,
+                    shaker,
+                    chunk_sm != null,
+                    module_results,
+                    0,
+                    batch_mods.len,
+                );
             }
+            for (module_results) |result| if (result.err) |err| return err;
 
-            if (!options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, "//#region ");
-                try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
-                try chunk_output.append(allocator, '\n');
-                if (module_line) |*ml| ml.* += 1;
+            for (batch_mods, 0..) |mod_idx, batch_pos| {
+                const sorted_pos = batch_start + batch_pos;
+                const mi = @intFromEnum(mod_idx);
+                if (mi >= module_count) continue;
+                const m = graph.getModule(mod_idx) orelse continue;
+
+                const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
+                const module_result = &module_results[batch_pos];
+                const raw_code = module_result.code orelse continue;
+                const module_mappings = module_result.mappings;
+                const module_names = module_result.names;
+                const module_preamble_lines = module_result.preamble_lines;
+
+                // 동적 import 경로 리라이트: import('./page') → import('./page.js')
+                const rewritten_code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids, linker);
+                defer if (rewritten_code) |code| allocator.free(code);
+                const code = rewritten_code orelse raw_code;
+
+                // entry 모듈(또는 preserve-modules의 단일 모듈)의 directive prologue 추출.
+                // "use client"/"use server"는 청크 최상단으로 호이스팅되어야 RSC가 인식.
+                const should_hoist = is_entry or options.preserve_modules;
+                const stripped = if (should_hoist)
+                    extractLeadingDirectives(code, &hoisted_directives, allocator) catch code
+                else
+                    code;
+
+                if (emit_top_level_rbm and !rbm_calls_emitted and shouldInsertRunBeforeMainBefore(sorted_pos, rbm_insert_after_pos)) {
+                    const before_len = chunk_output.items.len;
+                    try appendRunBeforeMainCalls(&chunk_output, allocator, graph, options.run_before_main, options, if (linker) |l| &l.rename_table else null);
+                    if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
+                    rbm_calls_emitted = true;
+                }
+
+                if (early_cjs_inits.items.len > 0) {
+                    const before_len = chunk_output.items.len;
+                    try parent.appendEarlyCjsInitsBefore(&chunk_output, allocator, early_cjs_inits.items, m, linker, options.minify_whitespace);
+                    if (module_line) |*ml| ml.* += @intCast(std.mem.count(u8, chunk_output.items[before_len..], "\n"));
+                }
+
+                if (!options.minify_whitespace) {
+                    try chunk_output.appendSlice(allocator, "//#region ");
+                    try chunk_output.appendSlice(allocator, std.fs.path.basename(m.path));
+                    try chunk_output.append(allocator, '\n');
+                    if (module_line) |*ml| ml.* += 1;
+                }
+
+                // 모듈 매핑: codegen mapping + region/endregion fill 까지 dev.zig 가 처리.
+                // base_line = module_line - region_lines (region marker 시작 지점 기준).
+                // stripped 의 줄 수는 module_line 누적용 + addModuleMappings 인자에 모두
+                // 쓰이므로 한 번만 카운트.
+                const stripped_lines: u32 = if (chunk_sm != null) @intCast(std.mem.count(u8, stripped, "\n")) else 0;
+                if (chunk_sm) |*sm| if (module_mappings) |maps| {
+                    const region_lines: u32 = if (options.minify_whitespace) 0 else 1;
+                    const endregion_lines: u32 = if (options.minify_whitespace) 0 else 1;
+                    try parent.addModuleMappings(.{
+                        .sm = sm,
+                        .module_id = parent.sourcemapSourcePath(m.path, options),
+                        .source = m.source,
+                        .maps = maps,
+                        .module_names = module_names,
+                        .base_line = module_line.? - region_lines,
+                        .preamble_lines = module_preamble_lines,
+                        .sources_content = options.sourcemap.sources_content,
+                        .indent_offset = false,
+                        .pre_lines = region_lines,
+                        .total_code_lines = stripped_lines,
+                        .post_lines = endregion_lines,
+                        .plugin_source_maps = m.plugin_source_maps,
+                    });
+                };
+
+                try chunk_output.appendSlice(allocator, stripped);
+                if (module_line) |*ml| ml.* += stripped_lines;
+                if (!options.minify_whitespace) {
+                    try chunk_output.appendSlice(allocator, "//#endregion\n");
+                    if (module_line) |*ml| ml.* += 1;
+                }
+
+                // dev+split per-module HMR code 수집 (RFC_LAZY_DEV_MODULE_HMR PR-1).
+                // 단일 번들(emitter.zig)과 *동일* 형식(wrapDevModuleCode)으로 모은다 — HMR
+                // client 가 두 경로 산출을 구분 없이 eval. concat 용 region marker 는 제외하고
+                // rewriteDynamicImports 거친 `code` 를 wrap. PR-1 은 수집(인프라)만 — 글로벌
+                // 레지스트리 부트스트랩/클라이언트 적용은 후속 PR. sourcemap 은 후속(PR 범위 축소).
+                if (collect_dev_codes) {
+                    const mod_id = parent.makeModuleId(m.path, options.root_dir);
+                    const hmr_code = try parent.wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable, hmr_runtime_names);
+                    errdefer allocator.free(hmr_code);
+                    const id_dup = try allocator.dupe(u8, mod_id);
+                    errdefer allocator.free(id_dup);
+                    try chunk_dev_codes.append(allocator, .{ .id = id_dup, .code = hmr_code });
+                }
             }
-
-            // 모듈 매핑: codegen mapping + region/endregion fill 까지 dev.zig 가 처리.
-            // base_line = module_line - region_lines (region marker 시작 지점 기준).
-            // stripped 의 줄 수는 module_line 누적용 + addModuleMappings 인자에 모두
-            // 쓰이므로 한 번만 카운트.
-            const stripped_lines: u32 = if (chunk_sm != null) @intCast(std.mem.count(u8, stripped, "\n")) else 0;
-            if (chunk_sm) |*sm| if (module_mappings) |maps| {
-                const region_lines: u32 = if (options.minify_whitespace) 0 else 1;
-                const endregion_lines: u32 = if (options.minify_whitespace) 0 else 1;
-                try parent.addModuleMappings(.{
-                    .sm = sm,
-                    .module_id = parent.sourcemapSourcePath(m.path, options),
-                    .source = m.source,
-                    .maps = maps,
-                    .module_names = module_names,
-                    .base_line = module_line.? - region_lines,
-                    .preamble_lines = module_preamble_lines,
-                    .sources_content = options.sourcemap.sources_content,
-                    .indent_offset = false,
-                    .pre_lines = region_lines,
-                    .total_code_lines = stripped_lines,
-                    .post_lines = endregion_lines,
-                    .plugin_source_maps = m.plugin_source_maps,
-                });
-            };
-
-            try chunk_output.appendSlice(allocator, stripped);
-            if (module_line) |*ml| ml.* += stripped_lines;
-            if (!options.minify_whitespace) {
-                try chunk_output.appendSlice(allocator, "//#endregion\n");
-                if (module_line) |*ml| ml.* += 1;
-            }
-
-            // dev+split per-module HMR code 수집 (RFC_LAZY_DEV_MODULE_HMR PR-1).
-            // 단일 번들(emitter.zig)과 *동일* 형식(wrapDevModuleCode)으로 모은다 — HMR
-            // client 가 두 경로 산출을 구분 없이 eval. concat 용 region marker 는 제외하고
-            // rewriteDynamicImports 거친 `code` 를 wrap. PR-1 은 수집(인프라)만 — 글로벌
-            // 레지스트리 부트스트랩/클라이언트 적용은 후속 PR. sourcemap 은 후속(PR 범위 축소).
-            if (collect_dev_codes) {
-                const mod_id = parent.makeModuleId(m.path, options.root_dir);
-                const hmr_code = try parent.wrapDevModuleCode(allocator, code, mod_id, options.sourcemap.enable, hmr_runtime_names);
-                errdefer allocator.free(hmr_code);
-                const id_dup = try allocator.dupe(u8, mod_id);
-                errdefer allocator.free(id_dup);
-                try chunk_dev_codes.append(allocator, .{ .id = id_dup, .code = hmr_code });
-            }
+            batch_start = batch_end;
         }
         if (emit_top_level_rbm and !rbm_calls_emitted) {
             const before_len = chunk_output.items.len;

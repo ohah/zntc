@@ -447,6 +447,71 @@ test "emitChunks: single chunk produces one OutputFile" {
     try std.testing.expect(std.mem.indexOf(u8, outputs[0].contents, "const x = 1;") != null);
 }
 
+test "emitChunks: parallel module emit preserves ordered output" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const module_count = 40;
+    var entry_source: std.ArrayList(u8) = .empty;
+    defer entry_source.deinit(std.testing.allocator);
+    for (0..module_count) |i| {
+        const import_line = try std.fmt.allocPrint(std.testing.allocator, "import {{ value{d} }} from './mod{d}';\n", .{ i, i });
+        defer std.testing.allocator.free(import_line);
+        try entry_source.appendSlice(std.testing.allocator, import_line);
+    }
+    try entry_source.appendSlice(std.testing.allocator, "console.log(");
+    for (0..module_count) |i| {
+        if (i > 0) try entry_source.appendSlice(std.testing.allocator, ", ");
+        const name = try std.fmt.allocPrint(std.testing.allocator, "value{d}", .{i});
+        defer std.testing.allocator.free(name);
+        try entry_source.appendSlice(std.testing.allocator, name);
+    }
+    try entry_source.appendSlice(std.testing.allocator, ");\n");
+    try writeFile(tmp.dir, "index.ts", entry_source.items);
+    for (0..module_count) |i| {
+        const file_name = try std.fmt.allocPrint(std.testing.allocator, "mod{d}.ts", .{i});
+        defer std.testing.allocator.free(file_name);
+        const source = try std.fmt.allocPrint(std.testing.allocator, "export const value{d} = {d};\n", .{ i, i });
+        defer std.testing.allocator.free(source);
+        try writeFile(tmp.dir, file_name, source);
+    }
+
+    var result = try buildGraph(std.testing.allocator, &tmp, "index.ts");
+    defer result.graph.deinit();
+    defer result.cache.deinit();
+    result.graph.max_threads = 2;
+
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(dp);
+    const entry_path = try std.fs.path.resolve(std.testing.allocator, &.{ dp, "index.ts" });
+    defer std.testing.allocator.free(entry_path);
+
+    var serial_graph = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer serial_graph.deinit();
+    var parallel_graph = try chunk_mod.generateChunks(std.testing.allocator, &result.graph, &.{entry_path}, .{});
+    defer parallel_graph.deinit();
+
+    const emit_options: EmitOptions = .{ .sourcemap = .{ .enable = true } };
+    const serial = try emitter.emitChunks(std.testing.allocator, &result.graph, &serial_graph, &emit_options, null);
+    defer {
+        for (serial) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(serial);
+    }
+    const parallel = try emitter.emitChunksWithIo(std.testing.io, std.testing.allocator, &result.graph, &parallel_graph, &emit_options, null);
+    defer {
+        for (parallel) |o| o.deinit(std.testing.allocator);
+        std.testing.allocator.free(parallel);
+    }
+
+    try std.testing.expectEqual(serial.len, parallel.len);
+    try std.testing.expectEqual(@as(usize, 1), serial.len);
+    for (serial, parallel) |serial_file, parallel_file| {
+        try std.testing.expectEqualStrings(serial_file.path, parallel_file.path);
+        try std.testing.expectEqualStrings(serial_file.contents, parallel_file.contents);
+        try std.testing.expectEqualStrings(serial_file.sourcemap.?, parallel_file.sourcemap.?);
+    }
+}
+
 test "emitChunks: sourcemap.enable=false 시 OutputFile.sourcemap 은 null (#2654)" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

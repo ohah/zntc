@@ -2143,7 +2143,8 @@ pub const Bundler = struct {
                 }
             }
 
-            outputs = try emitter.emitChunks(
+            outputs = try emitter.emitChunksWithIo(
+                io,
                 self.allocator,
                 graph,
                 &chunk_graph,
