@@ -293,7 +293,8 @@ pub const TransformOptions = struct {
     /// 새 transformer-driven 옵션을 추가하면 여기에도 반영해야 graph 의 게이트가
     /// silent 하게 fall-through 하지 않는다.
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
-        if (self.drop_console or self.drop_debugger or self.drop_labels.len > 0) return true;
+        if (self.drop_console or self.drop_labels.len > 0) return true;
+        if (self.drop_debugger and astHasDebuggerStatement(ast)) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
         if (astHasMappedImportSource(ast, self.module_specifier_map)) return true;
         // Whitespace-only minification changes emission, not the AST or graph.
@@ -784,6 +785,12 @@ fn astHasClassFieldSyntax(ast: *const Ast) bool {
     return false;
 }
 
+fn astHasDebuggerStatement(ast: *const Ast) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag == .debugger_statement) return true;
+    }
+    return false;
+}
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게
 /// `factory[0..첫 '.']` 를 root-scope binding 으로 attach 하므로 둘이 일치해야 한다.
 fn jsxHeadIdent(spec: []const u8) []const u8 {
@@ -823,6 +830,26 @@ test "useDefineForClassFields false requires graph pre-pass only when class fiel
         _ = try parser.parse();
 
         const options: TransformOptions = .{ .use_define_for_class_fields = false };
+        try std.testing.expectEqual(fixture.expected, options.requiresGraphPrePass(&parser.ast));
+    }
+}
+
+test "drop debugger requires graph pre-pass only when debugger statements are present" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct { source: []const u8, expected: bool }{
+        .{ .source = "const answer = 42;", .expected = false },
+        .{ .source = "function run() { debugger; }", .expected = true },
+    };
+
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".js");
+        _ = try parser.parse();
+
+        const options: TransformOptions = .{ .drop_debugger = true };
         try std.testing.expectEqual(fixture.expected, options.requiresGraphPrePass(&parser.ast));
     }
 }
