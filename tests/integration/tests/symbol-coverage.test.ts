@@ -7412,7 +7412,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES2015 async-arrow this captures retain exact graphs while unsupported cases reanalyze', () => {
+  test('ES2015 async-arrow and ES5 async-function graphs retain while unsupported cases reanalyze', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es2015-async-fallback-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -7492,7 +7492,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'read(41).then(result => console.log(result));',
         ].join('\n'),
       );
-      expectReanalyzedAndRuns(run('--target=es5'), '42\n');
+      expectRetainedAndRuns(run('--target=es5'), '42\n');
 
       writeFileSync(
         input,
@@ -12406,7 +12406,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       {
         name: 'async object method without await lowers on node5',
         target: 'node5',
-        graph: 'reanalyzed',
+        graph: 'retained',
         source: [
           'var methods = { async value() { return (() => this.amount)(); } };',
           'methods.amount = 42;',
