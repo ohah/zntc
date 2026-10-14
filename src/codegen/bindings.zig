@@ -148,10 +148,35 @@ pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void 
         }
     }
 
+    // A `var` nested in the factory's top-level blocks is hoisted out as well
+    // (#4749). In a loop head it is `i = 0, j = 1` / `x` (for-in/of left).
+    const nested_hoisted = if (self.options.esm_nested_var_decls) |set|
+        set.contains(@intFromEnum(declaration_idx))
+    else
+        false;
+    if (nested_hoisted and self.in_for_init) {
+        const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
+        for (declarators, 0..) |raw_decl_idx, i| {
+            const decl_node = self.ast.nodes.items[raw_decl_idx];
+            const dextras2 = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
+            const n_idx: NodeIndex = @enumFromInt(dextras2[0]);
+            const init_idx: NodeIndex = @enumFromInt(dextras2[2]);
+            if (i > 0) try self.writeByte(',');
+            try self.emitNode(n_idx);
+            if (!init_idx.isNone() and !self.skip_var_init) {
+                try writeSpace(self);
+                try self.writeByte('=');
+                try writeSpace(self);
+                try self.emitExpr(init_idx, .assign, .{ .forbid_in = true });
+            }
+        }
+        return;
+    }
+
     // __esm 호이스팅: top-level 변수 선언은 래퍼 밖 `var`에 대응하는 할당문으로 변환.
     // indent_level == 0: factory body의 top-level에서만 적용.
     // 함수 안의 const/let/var는 그대로 유지해야 함.
-    if (self.options.esm_var_assign_only and self.indent_level == 0 and self.namespace_body_depth == 0 and !self.in_for_init) {
+    if (self.options.esm_var_assign_only and ((self.indent_level == 0 and self.namespace_body_depth == 0 and !self.in_for_init) or nested_hoisted)) {
         const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
         var has_output = false;
         for (declarators) |raw_decl_idx| {
@@ -175,6 +200,8 @@ pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void 
             try self.writeByte(';');
             has_output = true;
         }
+        // `if (c) var k;` keeps a statement as the body.
+        if (!has_output and nested_hoisted) try self.writeByte(';');
         return;
     }
 

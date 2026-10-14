@@ -163,6 +163,9 @@ pub const CodegenOptions = struct {
     /// __esm 호이스팅 모드: variable_declaration을 할당문으로 변환 (키워드 제거).
     /// emitter가 var 선언을 래퍼 밖에 별도 배치.
     esm_var_assign_only: bool = false,
+    /// `var` declarations nested in the `__esm` factory's top-level blocks: the
+    /// wrapper hoists them too, so they are written as assignments (#4749).
+    esm_nested_var_decls: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
     /// 번들러가 strict 모듈 코드를 `"use strict"` 없는 함수 안에 내보낼 때(iife/umd/amd
     /// scope hoisting, `__esm` 래퍼, dev HMR eval) 켠다. sloppy 실행에서는 Annex B 가 블록
     /// 함수 선언을 바깥 함수의 `var` 로 끌어올려 다른 모듈 바인딩을 덮는다. 블록 함수 선언을

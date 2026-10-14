@@ -216,6 +216,10 @@ pub fn emitEsmWrappedModule(
     var body_func_stmts: std.ArrayList(u32) = .empty;
     defer body_func_stmts.deinit(allocator);
     var hoisted_var_names: std.ArrayList([]const u8) = .empty;
+    // `var` declarations nested in top-level blocks (`if (c) { var k = 1 }`):
+    // they bind module scope too, so they are hoisted out of the factory and
+    // codegen writes them as assignments (esbuild alike, #4749).
+    var nested_var_decls: std.AutoHashMapUnmanaged(u32, void) = .empty;
     // (#4650) top-level 로 호이스팅된 **함수 선언**의 이름.
     //
     // `function foo(){}` 선언 자체가 모듈 top-level 바인딩을 만든다. 그런데 이 이름들은
@@ -460,6 +464,8 @@ pub fn emitEsmWrappedModule(
                 if (stmt_node.tag == .export_default_declaration) {
                     const def_name = defaultExportName(metadata);
                     try hoisted_var_names.append(allocator, def_name);
+                } else {
+                    try collectNestedVarDecls(allocator, arena_alloc, esm_ast, metadata, @enumFromInt(raw_idx), &nested_var_decls, &hoisted_var_names);
                 }
                 try body_stmts.append(allocator, raw_idx);
             },
@@ -878,6 +884,7 @@ pub fn emitEsmWrappedModule(
         .skip_cjs_exports = true,
         .use_var_for_imports = true,
         .esm_var_assign_only = true,
+        .esm_nested_var_decls = &nested_var_decls,
         .linking_metadata = cg_linking,
         .semantic_symbol_ids = semantic_symbol_ids,
         .semantic_symbols = if (module.semantic) |sem| sem.symbols.items else &.{},
@@ -1677,5 +1684,59 @@ fn makeStarGetterValue(
             defer allocator.free(rv);
             return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ rv, name });
         },
+    }
+}
+
+/// Collects the `var` declarations under a top-level statement that bind the
+/// module scope: nested blocks, `if`/`try`/`switch` bodies and loop heads, not
+/// functions, classes or namespaces (#4749).
+fn collectNestedVarDecls(
+    allocator: std.mem.Allocator,
+    arena_alloc: std.mem.Allocator,
+    esm_ast: *const Ast,
+    metadata: ?*const LinkingMetadata,
+    root: NodeIndex,
+    decls: *std.AutoHashMapUnmanaged(u32, void),
+    names: *std.ArrayList([]const u8),
+) !void {
+    var stack: std.ArrayList(NodeIndex) = .empty;
+    defer stack.deinit(allocator);
+    try stack.append(allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= esm_ast.nodes.items.len) continue;
+        const node = esm_ast.nodes.items[@intFromEnum(idx)];
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .arrow_function_expression,
+            .class_declaration,
+            .class_expression,
+            .ts_module_declaration,
+            => continue,
+            .variable_declaration => if (!esm_ast.variableDeclarationKind(node).isLexical()) {
+                try decls.put(arena_alloc, @intFromEnum(idx), {});
+                const de = node.data.extra;
+                const list_start = esm_ast.extra_data.items[de + 1];
+                const list_len = esm_ast.extra_data.items[de + 2];
+                var d: u32 = 0;
+                while (d < list_len) : (d += 1) {
+                    const decl = esm_ast.nodes.items[esm_ast.extra_data.items[list_start + d]];
+                    const pattern: NodeIndex = @enumFromInt(esm_ast.extra_data.items[decl.data.extra]);
+                    var it = try ast_walk.bindingIdentifiers(allocator, esm_ast, pattern, .{});
+                    defer it.deinit();
+                    while (try it.next()) |bind_idx| {
+                        const bind_node = esm_ast.nodes.items[@intFromEnum(bind_idx)];
+                        if (bind_node.tag != .binding_identifier) continue;
+                        const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(bind_node.data.string_ref));
+                        try names.append(allocator, try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(bind_idx), raw_name)));
+                    }
+                }
+                // Initializers hold no further module-scope `var`.
+                continue;
+            },
+            else => {},
+        }
+        var children = ast_walk.children(esm_ast, node);
+        while (children.next()) |child| try stack.append(allocator, child);
     }
 }
