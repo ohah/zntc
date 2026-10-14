@@ -6712,6 +6712,51 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(nestedArrowOutput.status, nestedArrowOutput.stderr).toBe(0);
       expect(nestedArrowOutput.stdout).toBe('42\n');
 
+      // A single async arrow keeps lexical super on the method's exact
+      // home-object graph after its own state-machine preflight succeeds.
+      const asyncArrow = run(
+        [
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async read() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      return super.read();',
+          '    };',
+          '    return await read();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.read().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(asyncArrow.status, asyncArrow.stderr).toBe(0);
+      const asyncArrowMode = (asyncArrow.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(asyncArrowMode, asyncArrow.stderr).toContain('semantic_graph=retained');
+      const asyncArrowReport = (asyncArrow.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(asyncArrowReport, asyncArrow.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(asyncArrowReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${asyncArrowReport}`,
+        ).toBe(0);
+      }
+      expect(asyncArrowReport).toMatch(/clean=1(?:\s|$)/);
+      const asyncArrowOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(asyncArrowOutput.status, asyncArrowOutput.stderr).toBe(0);
+      expect(asyncArrowOutput.stdout).toBe('42\n');
+
       // Deeper arrow nesting introduces more moved scopes than this allowlist
       // currently audits, so it continues through semantic reanalysis.
       const deepArrow = run(
@@ -6743,6 +6788,38 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const deepArrowOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(deepArrowOutput.status, deepArrowOutput.stderr).toBe(0);
       expect(deepArrowOutput.stdout).toBe('42\n');
+
+      // A direct method super mixed with async-arrow super is outside the
+      // async-arrow owner's all-super audit and keeps semantic reanalysis.
+      const mixedSuper = run(
+        [
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async read() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      return super.read();',
+          '    };',
+          '    return super.read() + await read();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.read().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(mixedSuper.status, mixedSuper.stderr).toBe(0);
+      const mixedSuperMode = (mixedSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mixedSuperMode, mixedSuper.stderr).toContain('semantic_graph=reanalyzed');
+      const mixedSuperOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(mixedSuperOutput.status, mixedSuperOutput.stderr).toBe(0);
+      expect(mixedSuperOutput.stdout).toBe('84\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

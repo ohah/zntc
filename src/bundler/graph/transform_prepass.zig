@@ -3550,8 +3550,9 @@ fn isRetainableEs5AsyncObjectMethodNode(
                     const arrow_extra = nested_arrow.data.extra;
                     if (lexical_arrow_depth > 1 or arrow_extra > ast.extra_data.items.len or
                         ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags) return false;
-                    const flags_at = arrow_extra + ast_mod.ArrowExtra.flags;
-                    if ((ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0) return false;
+                    // A single async arrow is admitted only when its own
+                    // state-machine preflight retains the exact method home
+                    // graph; deeper arrow scopes remain outside this gate.
                 },
                 else => {},
             }
@@ -3739,7 +3740,12 @@ fn isRetainableEs5AsyncArrowSuper(
                 ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key or
                 ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.body) return false;
             const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
-            if (flags != 0 and flags != ast_mod.MethodFlags.is_static) return false;
+            const method_owner_raw = parents.get(current) orelse return false;
+            if (method_owner_raw >= ast.nodes.items.len) return false;
+            const method_owner = ast.nodes.items[method_owner_raw];
+            const is_async_object_method = flags == ast_mod.MethodFlags.is_async and
+                method_owner.tag == .object_expression;
+            if (flags != 0 and flags != ast_mod.MethodFlags.is_static and !is_async_object_method) return false;
             const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]);
             if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
             const key = ast.getNode(key_idx);
@@ -3758,11 +3764,15 @@ fn isRetainableEs5AsyncArrowSuper(
                 }
             }
             if (!inside_method_body) return false;
-            const method_owner_raw = parents.get(current) orelse return false;
-            if (method_owner_raw >= ast.nodes.items.len) return false;
-            const method_owner = ast.nodes.items[method_owner_raw];
-            if (method_owner.tag == .object_expression)
+            if (method_owner.tag == .object_expression) {
+                if (is_async_object_method and !isRetainableEs5AsyncObjectMethodNode(
+                    ast,
+                    @enumFromInt(current),
+                    options,
+                    parents,
+                )) return false;
                 return methodSuperUsesOnlyAsyncArrows(ast, node);
+            }
             if (method_owner.tag != .class_body or std.mem.eql(u8, ast.getText(key.span), "constructor"))
                 return false;
             const class_raw = parents.get(method_owner_raw) orelse return false;
