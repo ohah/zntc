@@ -299,7 +299,7 @@ pub const TransformOptions = struct {
         // Whitespace-only minification changes emission, not the AST or graph.
         // Any syntax that creates helper identities has its own pre-pass gate.
         if (self.minify_syntax) return true;
-        if (!self.use_define_for_class_fields) return true;
+        if (!self.use_define_for_class_fields and astHasClassFieldSyntax(ast)) return true;
         if (self.experimental_decorators or self.emit_decorator_metadata) return true;
         if (self.unsupportedGraphPrePassFeatureUsed(ast)) return true;
         return false;
@@ -777,6 +777,13 @@ fn astHasMappedImportSource(ast: *const Ast, entries: []const ModuleSpecifierMap
     return false;
 }
 
+fn astHasClassFieldSyntax(ast: *const Ast) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag == .property_definition) return true;
+    }
+    return false;
+}
+
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게
 /// `factory[0..첫 '.']` 를 root-scope binding 으로 attach 하므로 둘이 일치해야 한다.
 fn jsxHeadIdent(spec: []const u8) []const u8 {
@@ -797,6 +804,27 @@ test "whitespace minification alone skips graph pre-pass while syntax minificati
 
     const syntax_minification: TransformOptions = .{ .minify_whitespace = true, .minify_syntax = true };
     try std.testing.expect(syntax_minification.requiresGraphPrePass(&parser.ast));
+}
+
+test "useDefineForClassFields false requires graph pre-pass only when class fields are present" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct { source: []const u8, expected: bool }{
+        .{ .source = "const answer = 42;", .expected = false },
+        .{ .source = "class Example { method() { return 1; } }", .expected = false },
+        .{ .source = "class Example { value = 1; }", .expected = true },
+    };
+
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".js");
+        _ = try parser.parse();
+
+        const options: TransformOptions = .{ .use_define_for_class_fields = false };
+        try std.testing.expectEqual(fixture.expected, options.requiresGraphPrePass(&parser.ast));
+    }
 }
 
 test "lowered syntax discovers helpers and generated globals before linking" {
