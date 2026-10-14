@@ -52,24 +52,14 @@ const KNOWN_FAILURES: Record<string, string[]> = {
     'transpile/es2017/plain',
     'transpile/es2017/minify',
   ],
-  // #4739 상수 접기가 const 의 TDZ 를 무시한다
+  // es5 는 `const` 를 `var` 로 낮춰 TDZ 자체가 없다(tsc 동일) — 선언 전 호출이 에러 대신 undefined 를 본다 (#4739)
   '4730-using-25': [
     'es5/plain',
     'es5/minify',
-    'es2015/plain',
-    'es2015/minify',
-    'es2017/plain',
-    'es2017/minify',
-    'esnext/plain',
-    'esnext/minify',
     'hermes/plain',
     'hermes/minify',
     'transpile/es5/plain',
     'transpile/es5/minify',
-    'transpile/es2015/minify',
-    'transpile/es2017/minify',
-    'transpile/esnext/minify',
-    'transpile/hermes/minify',
   ],
   // #4740 esnext 번들에서 의존 모듈 최상위 using 의 dispose 가 번들 끝으로 밀린다
   '4730-using-module': ['esnext/plain', 'esnext/minify'],

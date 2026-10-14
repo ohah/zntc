@@ -325,7 +325,7 @@ pub fn minify(ast: *Ast, ctx_in: MinifyCtx, scratch: std.mem.Allocator, root: No
             markReachableNodes(ast, root, b, &bfs_queue, scratch);
             break :blk b;
         } else null;
-        if (!runOnce(ast, ctx, skip_ptr, live_ptr, protected_ptr, scratch)) break;
+        if (!runOnce(ast, ctx, skip_ptr, live_ptr, protected_ptr, root, scratch)) break;
     }
 }
 
@@ -346,6 +346,7 @@ fn runOnce(
     skip_for_binding: ?*const std.DynamicBitSet,
     live_nodes: ?*const std.DynamicBitSet,
     protected_sequences: ?*const std.DynamicBitSet,
+    root: NodeIndex,
     scratch: std.mem.Allocator,
 ) bool {
     var changed = false;
@@ -393,8 +394,10 @@ fn runOnce(
         // 순서 고정 (#1631): inlineSingleUse → inlineTopLevelPrimitiveConstants.
         // 뒤집으면 multi-use inline 이 ref_count 를 0 으로 떨궈 single-use declaration 이
         // 잔존 (e.g. `const kn="["; const out=\`<!--${kn}-->\`;` → `const e="["` 잔존).
-        inlineSingleUse(ast, ctx, skip_for_binding, live_nodes, &changed, scratch);
-        inlineTopLevelPrimitiveConstants(ast, ctx, live_nodes, &changed, scratch);
+        var sites: InlineSites = .{ .root = root };
+        defer sites.deinit(scratch);
+        inlineSingleUse(ast, ctx, skip_for_binding, live_nodes, &sites, &changed, scratch);
+        inlineTopLevelPrimitiveConstants(ast, ctx, live_nodes, &sites, &changed, scratch);
         removeDeadStores(ast, ctx, skip_for_binding, live_nodes, &changed, scratch);
     }
     return changed;
@@ -798,6 +801,157 @@ pub fn markStatementRootExpressions(ast: *const Ast, roots: *std.DynamicBitSet) 
     };
 }
 
+/// 선언 뒤에 적힌 read 가 실제로도 선언 뒤에 실행되는지 (#4739).
+///
+/// 같은 함수 안의 read 는 적힌 순서대로 실행된다. 하지만 함수·클래스 안의 read 는 선언보다
+/// 뒤에 적혀 있어도 선언 **전에** 실행될 수 있다(호이스팅된 함수 선언, 먼저 만들어 호출한
+/// 클로저). 그때 `const` 는 TDZ 라 `ReferenceError` 여야 하는데, 값을 인라인하면 그 에러가
+/// 사라진다. esbuild 와 같이, 선언이 스코프 맨 앞의 "상수 리터럴 `const` 연속 구간"(지시문
+/// 허용)에 있을 때만 그런 read 에 인라인한다 — 그 앞에선 어떤 코드도 실행되지 않으므로 클로저가
+/// 선언 전에 불릴 수 없다.
+///
+/// 노드별 가장 가까운 함수/클래스 경계와 문장 목록 부모는 처음 필요할 때 한 번 계산한다.
+const InlineSites = struct {
+    root: NodeIndex,
+    built: bool = false,
+    /// 노드 → 가장 가까운 함수/클래스 경계 노드 (`none_owner` 는 최상위).
+    owner: []u32 = &.{},
+    /// 문장 노드 → 그 문장을 담은 목록 노드 (program/block/static block). 아니면 `none_owner`.
+    stmt_parent: []u32 = &.{},
+
+    const none_owner = std.math.maxInt(u32);
+
+    fn deinit(self: *InlineSites, scratch: std.mem.Allocator) void {
+        if (self.owner.len > 0) scratch.free(self.owner);
+        if (self.stmt_parent.len > 0) scratch.free(self.stmt_parent);
+    }
+
+    fn isBoundary(tag: Node.Tag) bool {
+        return switch (tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .method_definition,
+            .class_declaration,
+            .class_expression,
+            => true,
+            else => false,
+        };
+    }
+
+    fn build(self: *InlineSites, ast: *const Ast, scratch: std.mem.Allocator) bool {
+        if (self.built) return self.owner.len > 0;
+        self.built = true;
+        var root = self.root;
+        if (root.isNone()) {
+            // 루트를 모르는 호출(유닛 테스트 등) — 마지막 program 노드를 루트로 쓴다.
+            var i = ast.nodes.items.len;
+            while (i > 0) {
+                i -= 1;
+                if (ast.nodes.items[i].tag == .program) {
+                    root = @enumFromInt(i);
+                    break;
+                }
+            }
+            if (root.isNone()) return false;
+        }
+        const len = ast.nodes.items.len;
+        const owner = scratch.alloc(u32, len) catch return false;
+        const stmt_parent = scratch.alloc(u32, len) catch {
+            scratch.free(owner);
+            return false;
+        };
+        @memset(owner, none_owner);
+        @memset(stmt_parent, none_owner);
+        var visited = std.DynamicBitSet.initEmpty(scratch, len) catch {
+            scratch.free(owner);
+            scratch.free(stmt_parent);
+            return false;
+        };
+        defer visited.deinit();
+        const Work = struct { node: NodeIndex, owner: u32 };
+        var stack: std.ArrayList(Work) = .empty;
+        defer stack.deinit(scratch);
+        stack.append(scratch, .{ .node = root, .owner = none_owner }) catch {
+            scratch.free(owner);
+            scratch.free(stmt_parent);
+            return false;
+        };
+        while (stack.pop()) |work| {
+            const ni = @intFromEnum(work.node);
+            if (ni >= len or visited.isSet(ni)) continue;
+            visited.set(ni);
+            owner[ni] = work.owner;
+            const node = ast.nodes.items[ni];
+            const child_owner = if (isBoundary(node.tag)) ni else work.owner;
+            const is_list = switch (node.tag) {
+                .program, .block_statement, .static_block => true,
+                else => false,
+            };
+            var it = ast_walk.children(ast, node);
+            while (it.next()) |child| {
+                if (child.isNone()) continue;
+                const ci = @intFromEnum(child);
+                if (is_list and ci < len) stmt_parent[ci] = ni;
+                stack.append(scratch, .{ .node = child, .owner = child_owner }) catch {
+                    scratch.free(owner);
+                    scratch.free(stmt_parent);
+                    return false;
+                };
+            }
+        }
+        self.owner = owner;
+        self.stmt_parent = stmt_parent;
+        return true;
+    }
+
+    /// 실패(OOM 등)면 보수적으로 false — 인라인하지 않는다.
+    fn readRunsAfterDecl(self: *InlineSites, ast: *const Ast, scratch: std.mem.Allocator, read_ni: u32, decl_stmt: u32) bool {
+        if (!self.build(ast, scratch)) return false;
+        if (read_ni >= self.owner.len or decl_stmt >= self.owner.len) return false;
+        if (self.owner[read_ni] == self.owner[decl_stmt]) return true;
+        return self.declLeadsItsScope(ast, decl_stmt);
+    }
+
+    fn declLeadsItsScope(self: *const InlineSites, ast: *const Ast, decl_stmt: u32) bool {
+        const parent = self.stmt_parent[decl_stmt];
+        if (parent == none_owner) return false;
+        const list = ast.nodes.items[parent].data.list;
+        if (list.start + list.len > ast.extra_data.items.len) return false;
+        for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+            if (raw == decl_stmt) return true;
+            if (raw >= ast.nodes.items.len) return false;
+            const stmt = ast.nodes.items[raw];
+            switch (stmt.tag) {
+                .directive, .empty_statement => continue,
+                .variable_declaration => if (!isConstantConstDeclaration(ast, stmt)) return false,
+                else => return false,
+            }
+        }
+        return false;
+    }
+
+    /// `const a = 1, b = "x";` — 모든 declarator 가 원시 리터럴로 초기화되는 `const`.
+    fn isConstantConstDeclaration(ast: *const Ast, stmt: Node) bool {
+        if (ast.variableDeclarationKind(stmt) != .@"const") return false;
+        const extra = stmt.data.extra;
+        if (extra + 2 >= ast.extra_data.items.len) return false;
+        const list_start = ast.extra_data.items[extra + 1];
+        const list_len = ast.extra_data.items[extra + 2];
+        if (list_start + list_len > ast.extra_data.items.len) return false;
+        for (ast.extra_data.items[list_start .. list_start + list_len]) |decl_raw| {
+            if (decl_raw >= ast.nodes.items.len) return false;
+            const decl = ast.nodes.items[decl_raw];
+            if (decl.tag != .variable_declarator) return false;
+            const de = decl.data.extra;
+            if (de + 2 >= ast.extra_data.items.len) return false;
+            if (!isPrimitiveConstantExpr(ast, @enumFromInt(ast.extra_data.items[de + 2]))) return false;
+        }
+        return true;
+    }
+};
+
 fn isPrimitiveConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
     const ni = @intFromEnum(idx);
@@ -808,7 +962,7 @@ fn isPrimitiveConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
     };
 }
 
-fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*const std.DynamicBitSet, changed: *bool, scratch: std.mem.Allocator) void {
+fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*const std.DynamicBitSet, sites: *InlineSites, changed: *bool, scratch: std.mem.Allocator) void {
     if (!ctx.allow_top_level_inline) return;
     if (!ctx.hasSemantic()) return;
 
@@ -816,8 +970,9 @@ fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*con
     defer forbidden.deinit();
     markForbiddenInlineSites(ast, &forbidden);
 
-    for (ast.nodes.items) |node| {
+    for (ast.nodes.items, 0..) |node, node_index| {
         if (node.tag != .variable_declaration) continue;
+        const node_i: u32 = @intCast(node_index);
         const kind = ast.variableDeclarationKind(node);
         if (kind == .@"var" or kind.isUsing()) continue;
 
@@ -860,6 +1015,7 @@ fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*con
                 if (forbidden.isSet(read_i)) continue;
                 if (!isLiveMinifyNode(live_nodes, @intCast(read_i))) continue;
                 if (sourceSpanStart(read_node) <= decl_start) continue;
+                if (!sites.readRunsAfterDecl(ast, scratch, @intCast(read_i), node_i)) continue;
                 ast.nodes.items[read_i] = .{
                     .tag = init_node.tag,
                     .span = init_node.span,
@@ -875,7 +1031,7 @@ fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*con
 }
 
 /// Phase 2+3 inline: constant-expr init 을 유일 read 에 inline.
-fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, changed: *bool, scratch: std.mem.Allocator) void {
+fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.DynamicBitSet, live_nodes: ?*const std.DynamicBitSet, sites: *InlineSites, changed: *bool, scratch: std.mem.Allocator) void {
     if (!ctx.hasSemantic()) return;
     const skip = skip_for_binding orelse return;
 
@@ -923,11 +1079,11 @@ fn inlineSingleUse(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyna
         if (node.tag != .variable_declaration) continue;
         if (skip.isSet(i)) continue;
         if (!isLiveMinifyNode(live_nodes, @intCast(i))) continue;
-        tryInlineDecl(ast, ctx, counts, first_loc, &stmt_roots, @intCast(i), node, changed);
+        tryInlineDecl(ast, ctx, counts, first_loc, &stmt_roots, sites, scratch, @intCast(i), node, changed);
     }
 }
 
-fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []const u32, stmt_roots: *const std.DynamicBitSet, decl_stmt_idx: u32, node: Node, changed: *bool) void {
+fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []const u32, stmt_roots: *const std.DynamicBitSet, sites: *InlineSites, scratch: std.mem.Allocator, decl_stmt_idx: u32, node: Node, changed: *bool) void {
     const kind = ast.variableDeclarationKind(node);
     if (kind.isUsing()) return;
     if (kind == .@"var") return;
@@ -1027,6 +1183,7 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     // 위반 아님인데, 그래도 sourceSpan 비교만으로 conservative 하게 inline 거부 →
     // 안전 우선 (semantic-preserving).
     if (sourceSpanStart(ast.nodes.items[read_ni]) <= sourceSpanStart(node)) return;
+    if (!sites.readRunsAfterDecl(ast, scratch, read_ni, decl_stmt_idx)) return;
 
     // in-place swap: read 위치의 identifier_reference 를 init 의 tag/data 로 덮어쓴다.
     // init 의 자식은 extra_data 공유 → codegen 은 read_ni 에서 init 전체를 출력.
