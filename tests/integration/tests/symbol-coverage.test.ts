@@ -1968,7 +1968,7 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  test('drop-console retains the graph only when no console call is present', () => {
+  test('drop-console skips the pre-pass without a console call and reanalyzes when one is removed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-no-console-drop-retained-graph-'));
     const input = join(dir, 'entry.ts');
     const retainedOutput = join(dir, 'retained.cjs');
@@ -2010,7 +2010,17 @@ describe('symbol identity coverage gate (#4819)', () => {
       );
       const retained = bundle(retainedOutput);
       expect(retained.status, retained.stderr).toBe(0);
-      expectPrepass(retained.stderr ?? '', 'retained');
+      // Without a console call there is nothing to drop, so the graph
+      // pre-pass is skipped entirely and reports nothing (#5795).
+      const retainedLines = (retained.stderr ?? '').split(/\r?\n/);
+      expect(
+        retainedLines.filter(
+          (line) =>
+            line.startsWith('zntc: symbol-source-scope-owner ') ||
+            line.startsWith('zntc: symbol-identity-prepass'),
+        ),
+        retained.stderr,
+      ).toEqual([]);
       const retainedRun = spawnSync('node', [retainedOutput], { encoding: 'utf8' });
       expect(retainedRun.status, retainedRun.stderr).toBe(0);
       expect(retainedRun.stdout).toBe('42\n');
@@ -14108,7 +14118,18 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-eval-reanalysis-'));
     const output = join(dir, 'out.cjs');
     writeFileSync(join(dir, 'zntc.config.json'), JSON.stringify({ compiler: { emotion: true } }));
-    writeFileSync(join(dir, 'entry.tsx'), "void eval('40 + 2');\n");
+    // The Emotion pre-pass only runs for a module importing Emotion (#5795).
+    const emotionDir = join(dir, 'node_modules', '@emotion', 'react');
+    mkdirSync(emotionDir, { recursive: true });
+    writeFileSync(
+      join(emotionDir, 'package.json'),
+      JSON.stringify({ name: '@emotion/react', version: '0.0.0-test', main: 'index.js' }),
+    );
+    writeFileSync(join(emotionDir, 'index.js'), 'exports.css = function() { return 1; };');
+    writeFileSync(
+      join(dir, 'entry.tsx'),
+      "import { css } from '@emotion/react';\nvoid css;\nvoid eval('40 + 2');\n",
+    );
     try {
       const proc = spawnSync(
         'bun',
