@@ -3657,8 +3657,7 @@ fn isRetainableEs5AsyncArrowSuper(
         arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
     const arrow = ast.getNode(arrow_idx);
     const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
-    if (arrow.tag != .arrow_function_expression or !captures.super_value or captures.this_value or
-        captures.new_target) return false;
+    if (arrow.tag != .arrow_function_expression or !captures.super_value or captures.new_target) return false;
     const extra = arrow.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.flags or
         (ast.extra_data.items[extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) == 0) return false;

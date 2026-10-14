@@ -504,26 +504,30 @@ const cases = [
     expectsRetainedGraph: false,
   },
   {
-    name: 'keeps ES5 async-arrow super with an additional lexical this capture on reanalysis',
+    name: 'retains ES5 async-arrow super with lexical this and arguments',
     target: 'es5',
     source: `
       class Base {
         read(value) { return this.prefix + value; }
       }
       class Child extends Base {
-        readAsync(value) {
+        readAsync(_this, _arguments, value) {
           this.prefix = 'value:';
+          var outer = _this;
+          var outerArguments = _arguments;
           return (async () => {
+            var _this = 99;
+            var _arguments = 88;
             await Promise.resolve();
-            return super.read(value) + this.prefix;
+            return super.read(arguments[2]) + this.prefix + ':' + _this + ':' + outer + ':' + _arguments + ':' + outerArguments;
           })();
         }
       }
-      new Child().readAsync(42).then(console.log);
+      new Child().readAsync('source:this', 'source:arguments', 42).then(console.log);
     `,
-    expected: 'value:42value:\n',
-    expectsSyntheticBinding: false,
-    expectsRetainedGraph: false,
+    expected: 'value:42value::99:source:this:88:source:arguments\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
     name: 'retains ES5 async-arrow super with lexical arguments',
@@ -569,6 +573,29 @@ const cases = [
       child.readAsync('object:_arguments').then(console.log);
     `,
     expected: 'object:object:_arguments:99:object:_arguments\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'retains ES5 object-method async-arrow super with lexical this',
+    target: 'es5',
+    source: `
+      var base = { read(value) { return this.prefix + value; } };
+      var child = {
+        __proto__: base,
+        prefix: 'object:',
+        readAsync(_this, value) {
+          var outer = _this;
+          return (async () => {
+            var _this = 99;
+            await Promise.resolve();
+            return super.read(value) + this.prefix + ':' + _this + ':' + outer;
+          })();
+        },
+      };
+      child.readAsync('source:_this', 42).then(console.log);
+    `,
+    expected: 'object:42object::99:source:_this\n',
     expectsBundleSyntheticBinding: true,
     expectsRetainedGraph: true,
   },
