@@ -305,7 +305,23 @@ pub fn checkGetterSetterParams(
 
     if ((flags & METHOD_FLAG_SETTER) != 0 and params_len != 1) {
         try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Setter must have exactly one formal parameter", .{}), .setter_one_param);
+    } else if ((flags & METHOD_FLAG_SETTER) != 0 and isRestParam(ast, ast.functionParams(node)[0])) {
+        // PropertySetParameterList 는 FormalParameter 하나 — rest 는 개수가 1이어도 불가 (#5823).
+        try addErrorCode(errors, allocator, node.span, try std.fmt.allocPrint(allocator, "Setter function argument must not be a rest parameter", .{}), .setter_one_param);
     }
+}
+
+/// 파라미터가 rest 인지 — TS 수식어·데코레이터가 붙으면 formal_parameter 래퍼 안의 pattern 을 본다.
+fn isRestParam(ast: *const Ast, raw: u32) bool {
+    var idx: NodeIndex = @enumFromInt(raw);
+    if (idx.isNone()) return false;
+    var param = ast.getNode(idx);
+    if (param.tag == .formal_parameter) {
+        idx = @enumFromInt(ast.extra_data.items[param.data.extra]);
+        if (idx.isNone()) return false;
+        param = ast.getNode(idx);
+    }
+    return param.tag == .rest_element or param.tag == .binding_rest_element;
 }
 
 // ====================================================================
