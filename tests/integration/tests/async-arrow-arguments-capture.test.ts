@@ -484,24 +484,48 @@ const cases = [
     expectsCleanIdentity: false,
   },
   {
-    name: 'keeps ES5 async-arrow super with lexical new.target on reanalysis',
+    name: 'retains ES5 object-method async-arrow super with lexical new.target',
     target: 'es5',
     source: `
-      const proto = { read() { return 'base'; } };
-      const child = {
+      var proto = { read() { return 'base'; } };
+      var child = {
         __proto__: proto,
-        readAsync() {
+        readAsync(_newTarget) {
+          var outer = _newTarget;
           return (async () => {
+            var _newTarget = 99;
             await Promise.resolve();
-            return super.read() + ':' + String(new.target);
+            return super.read() + ':' + String(new.target) + ':' + _newTarget + ':' + outer;
           })();
         },
       };
-      child.readAsync().then(console.log);
+      child.readAsync('source:_newTarget').then(console.log);
     `,
-    expected: 'base:undefined\n',
-    expectsSyntheticBinding: false,
-    expectsRetainedGraph: false,
+    expected: 'base:undefined:99:source:_newTarget\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'retains ES5 class-method async-arrow super with lexical new.target',
+    target: 'es5',
+    source: `
+      class Base { read() { return this.prefix; } }
+      class Child extends Base {
+        readAsync(_newTarget) {
+          this.prefix = 'class:';
+          var outer = _newTarget;
+          return (async () => {
+            var _newTarget = 99;
+            await Promise.resolve();
+            return super.read() + ':' + String(new.target) + ':' + _newTarget + ':' + outer;
+          })();
+        }
+      }
+      new Child().readAsync('source:_newTarget').then(console.log);
+    `,
+    expected: 'class::undefined:99:source:_newTarget\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
   },
   {
     name: 'retains ES5 async-arrow super with lexical this and arguments',
