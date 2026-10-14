@@ -3160,7 +3160,7 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass
 /// `isRetainableSimpleStaticClassField`; computed/escaped keys, class-self
-/// heritage reads, and `super` methods stay excluded.
+/// heritage reads, and direct/non-async-arrow `super` methods stay excluded.
 fn isSimpleClass(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -3168,6 +3168,7 @@ fn isSimpleClass(
     node: ast_mod.Node,
     raw_node: usize,
     source_object_shadows_class: bool,
+    allow_es5_async_arrow_super: bool,
 ) bool {
     if (node.tag != .class_declaration and node.tag != .class_expression) return false;
     const extra = node.data.extra;
@@ -3249,8 +3250,11 @@ fn isSimpleClass(
             // descriptors. Keep source order observable on the retained path.
             return false;
         }
+        const has_super = methodHasSuperExpression(ast, member);
+        const retains_async_arrow_super = allow_es5_async_arrow_super and !super.isNone() and
+            is_plain_method and methodSuperUsesOnlyAsyncArrows(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
-            std.mem.indexOfScalar(u8, key_text, '\\') != null or methodHasSuperExpression(ast, member)) return false;
+            std.mem.indexOfScalar(u8, key_text, '\\') != null or (has_super and !retains_async_arrow_super)) return false;
     }
     if (accessor_count > 2) return false;
     if (accessor_pair) |accessor| {
@@ -3339,6 +3343,7 @@ fn isRetainableGraphClass(
     function_body_class_declarations: *const std.AutoHashMapUnmanaged(u32, void),
     direct_var_class_expressions: *const std.AutoHashMapUnmanaged(u32, void),
     source_object_shadows_class: bool,
+    allow_es5_async_arrow_super: bool,
 ) bool {
     const raw: u32 = @intCast(raw_node);
     const has_safe_owner = switch (node.tag) {
@@ -3346,7 +3351,15 @@ fn isRetainableGraphClass(
         .class_expression => direct_var_class_expressions.contains(raw),
         else => false,
     };
-    return has_safe_owner and isSimpleClass(allocator, ast, semantic, node, raw_node, source_object_shadows_class);
+    return has_safe_owner and isSimpleClass(
+        allocator,
+        ast,
+        semantic,
+        node,
+        raw_node,
+        source_object_shadows_class,
+        allow_es5_async_arrow_super,
+    );
 }
 
 fn collectSimpleConstructorDefaultParameterNodes(
@@ -3513,6 +3526,175 @@ fn isRetainableAsyncArrowNode(
     return true;
 }
 
+fn asyncArrowHasLexicalSuper(ast: *const ast_mod.Ast, arrow_idx: ast_mod.NodeIndex) bool {
+    if (arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+    const arrow = ast.getNode(arrow_idx);
+    if (arrow.tag != .arrow_function_expression) return false;
+    const extra = arrow.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.body)
+        return false;
+
+    var stack: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    defer stack.deinit(ast.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(ast.allocator);
+    for ([_]ast_mod.NodeIndex{
+        @enumFromInt(ast.extra_data.items[extra + ast_mod.ArrowExtra.params]),
+        @enumFromInt(ast.extra_data.items[extra + ast_mod.ArrowExtra.body]),
+    }) |root| {
+        if (!root.isNone()) stack.append(ast.allocator, root) catch return false;
+    }
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
+        const raw_idx = @intFromEnum(idx);
+        if (seen.contains(raw_idx)) continue;
+        seen.put(ast.allocator, raw_idx, {}) catch return false;
+        const node = ast.getNode(idx);
+        if (node.tag == .super_expression) return true;
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .class_declaration,
+            .class_expression,
+            .method_definition,
+            => continue,
+            else => {},
+        }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| {
+            if (!child.isNone()) stack.append(ast.allocator, child) catch return false;
+        }
+    }
+    return false;
+}
+
+fn methodSuperUsesOnlyAsyncArrows(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    if (method.tag != .method_definition) return false;
+    const extra = method.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body)
+        return false;
+
+    const Work = struct { node: ast_mod.NodeIndex, inside_async_arrow: bool };
+    var stack: std.ArrayList(Work) = .empty;
+    defer stack.deinit(ast.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(ast.allocator);
+    for ([_]ast_mod.NodeIndex{
+        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]),
+        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]),
+    }) |root| {
+        if (!root.isNone()) stack.append(ast.allocator, .{ .node = root, .inside_async_arrow = false }) catch return false;
+    }
+
+    var found_super = false;
+    while (stack.pop()) |work| {
+        if (work.node.isNone() or @intFromEnum(work.node) >= ast.nodes.items.len) return false;
+        const raw_idx = @intFromEnum(work.node);
+        if (seen.contains(raw_idx)) continue;
+        seen.put(ast.allocator, raw_idx, {}) catch return false;
+        const node = ast.getNode(work.node);
+        if (node.tag == .super_expression) {
+            if (!work.inside_async_arrow) return false;
+            found_super = true;
+            continue;
+        }
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .class_declaration,
+            .class_expression,
+            .method_definition,
+            => continue,
+            else => {},
+        }
+        const inside_async_arrow = work.inside_async_arrow or
+            (node.tag == .arrow_function_expression and
+                node.data.extra <= ast.extra_data.items.len and
+                ast.extra_data.items.len - node.data.extra > ast_mod.ArrowExtra.flags and
+                (ast.extra_data.items[node.data.extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) != 0);
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| {
+            if (!child.isNone()) stack.append(ast.allocator, .{
+                .node = child,
+                .inside_async_arrow = inside_async_arrow,
+            }) catch return false;
+        }
+    }
+    return found_super;
+}
+
+fn isRetainableEs5AsyncArrowSuper(
+    ast: *const ast_mod.Ast,
+    arrow_idx: ast_mod.NodeIndex,
+    options: TransformOptions,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+) bool {
+    if (!options.unsupported.async_await or !options.unsupported.generator or
+        arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+    const arrow = ast.getNode(arrow_idx);
+    if (arrow.tag != .arrow_function_expression or !asyncArrowHasLexicalSuper(ast, arrow_idx)) return false;
+    const extra = arrow.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.flags or
+        (ast.extra_data.items[extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) == 0) return false;
+
+    var current = parents.get(@intFromEnum(arrow_idx)) orelse return false;
+    var hops: usize = 0;
+    while (hops < ast.nodes.items.len) : (hops += 1) {
+        if (current >= ast.nodes.items.len) return false;
+        const node = ast.nodes.items[current];
+        if (node.tag == .method_definition) {
+            const method_extra = node.data.extra;
+            if (method_extra > ast.extra_data.items.len or
+                ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags or
+                ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.key or
+                ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.body) return false;
+            const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
+            if (flags != 0 and flags != ast_mod.MethodFlags.is_static) return false;
+            const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]);
+            if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+            const key = ast.getNode(key_idx);
+            if (key.tag != .identifier_reference or std.mem.eql(u8, ast.getText(key.span), "constructor"))
+                return false;
+            if (method_extra > ast.extra_data.items.len or
+                ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.body) return false;
+            const body_raw = ast.extra_data.items[method_extra + ast_mod.MethodExtra.body];
+            if (body_raw >= ast.nodes.items.len) return false;
+            var child_raw = @intFromEnum(arrow_idx);
+            var inside_method_body = false;
+            while (child_raw != current) {
+                child_raw = parents.get(child_raw) orelse return false;
+                if (child_raw == body_raw) {
+                    inside_method_body = true;
+                    break;
+                }
+            }
+            if (!inside_method_body) return false;
+            const class_body_raw = parents.get(current) orelse return false;
+            if (class_body_raw >= ast.nodes.items.len or ast.nodes.items[class_body_raw].tag != .class_body)
+                return false;
+            const class_raw = parents.get(class_body_raw) orelse return false;
+            if (class_raw >= ast.nodes.items.len) return false;
+            const class = ast.nodes.items[class_raw];
+            return (class.tag == .class_declaration or class.tag == .class_expression) and
+                methodSuperUsesOnlyAsyncArrows(ast, node);
+        }
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .class_declaration,
+            .class_expression,
+            .class_body,
+            => return false,
+            else => {},
+        }
+        current = parents.get(current) orelse return false;
+    }
+    return false;
+}
+
 fn awaitBelongsToRetainableAsyncFunction(
     ast: *const ast_mod.Ast,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -3542,10 +3724,10 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// binding or scope edges. Tagged-template lowering registers its cache
 /// functions, data bindings, and references with exact identities. Keep these
 /// paths only for the audited syntax subset. Ordinary async functions may also
-/// retain their graph when they lower to a native generator wrapper. Async
-/// arrows are admitted only when the moved generator body has no lexical
-/// captures; methods, async generators, and generator-state-machine lowering
-/// remain on reanalysis.
+/// retain their graph when they lower to a native generator wrapper. ES5
+/// state-machine lowering remains conservative except for lexical `super` in
+/// a plain class method's async arrow, whose generated captures and helper
+/// references are tracked by the transformer.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
@@ -3586,14 +3768,33 @@ fn canRetainGraphForAuditedSyntaxSubset(
     defer lowered_for_of_heads.deinit(ast.allocator);
     var lowered_classic_for_heads: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer lowered_classic_for_heads.deinit(ast.allocator);
+    var source_parent_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer source_parent_map.deinit(ast.allocator);
+    var source_parent_map_ready = false;
     var retained_async_functions: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_async_functions.deinit(ast.allocator);
-    if (options.unsupported.async_await and !options.unsupported.generator) {
+    if (options.unsupported.async_await) {
         for (reachable_nodes) |raw_idx| {
             const node = ast.nodes.items[raw_idx];
-            if (isRetainableAsyncFunctionNode(ast, node, options) or
-                isRetainableAsyncArrowNode(ast, @enumFromInt(raw_idx), options))
-            {
+            const arrow_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
+            var retainable = false;
+            if (options.unsupported.generator) {
+                if (node.tag != .arrow_function_expression) continue;
+                const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
+                if (flags_at >= ast.extra_data.items.len or
+                    (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) == 0 or
+                    !asyncArrowHasLexicalSuper(ast, arrow_idx)) continue;
+                if (!source_parent_map_ready) {
+                    if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map))
+                        return false;
+                    source_parent_map_ready = true;
+                }
+                retainable = isRetainableEs5AsyncArrowSuper(ast, arrow_idx, options, &source_parent_map);
+            } else {
+                retainable = isRetainableAsyncFunctionNode(ast, node, options) or
+                    isRetainableAsyncArrowNode(ast, arrow_idx, options);
+            }
+            if (retainable) {
                 retained_async_functions.put(ast.allocator, raw_idx, {}) catch return false;
             }
         }
@@ -3849,10 +4050,6 @@ fn canRetainGraphForAuditedSyntaxSubset(
         if (std.mem.eql(u8, name, "Object")) source_binds_object = true;
         if (source_binds_object) break;
     }
-    var source_parent_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    defer source_parent_map.deinit(ast.allocator);
-    var source_parent_map_ready = false;
-
     var found_lowered_async_function = false;
 
     // Default-parameter lowering replaces only these literal assignment
@@ -3898,6 +4095,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 &function_body_class_declarations,
                 &direct_var_class_expressions,
                 source_object_shadows_class,
+                options.unsupported.async_await and options.unsupported.generator,
             )) continue;
             retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
             if (options.unsupported.default_params and
@@ -5068,8 +5266,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         hasReachableDerivedClass(ast_ptr);
     const allow_stage3_decorator_helpers = can_keep_semantic_graph and
         canRetainStage3DecoratorGraph(ast_ptr, opts);
-    const allow_async_helper = can_keep_semantic_graph and opts.unsupported.async_await and
-        !opts.unsupported.generator;
+    const allow_async_helper = can_keep_semantic_graph and opts.unsupported.async_await;
     const lowered_simple_static_class_field_global = can_keep_semantic_graph and
         (downlevel_static_public_class_field_scan orelse
             (opts.unsupported.class or opts.unsupported.class_field));

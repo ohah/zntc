@@ -168,6 +168,107 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
+    name: 'retains exact graph for ES5 async-arrow state machine with class lexical super',
+    target: 'es5',
+    source: `
+      class Base {
+        read(suffix) { return this.prefix + suffix; }
+      }
+      class Child extends Base {
+        readAsync(suffix, _a) {
+          this.prefix = 'instance:';
+          return (async () => {
+            await Promise.resolve();
+            return super.read(suffix);
+          })();
+        }
+      }
+      new Child().readAsync('instance', 42).then(console.log);
+    `,
+    expected: 'instance:instance\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'retains exact graph for ES5 async-arrow state machine with static lexical super',
+    target: 'es5',
+    source: `
+      class Base {
+        static read(suffix) { return this.prefix + suffix; }
+      }
+      class Child extends Base {
+        static readAsync(suffix, _a) {
+          this.prefix = 'static:';
+          return (async () => {
+            await Promise.resolve();
+            return super.read(suffix);
+          })();
+        }
+      }
+      Child.readAsync('static', 42).then(console.log);
+    `,
+    expected: 'static:static\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'reanalyzes ES5 class methods with direct and async-arrow super together',
+    target: 'es5',
+    source: `
+      class Base {
+        read(suffix) { return this.prefix + suffix; }
+      }
+      class Child extends Base {
+        readAsync(suffix) {
+          this.prefix = 'instance:';
+          var direct = super.read('direct:');
+          return (async () => {
+            await Promise.resolve();
+            return direct + ':' + super.read(suffix);
+          })();
+        }
+      }
+      new Child().readAsync('instance').then(console.log);
+    `,
+    expected: 'instance:direct::instance:instance\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'keeps other ES5 async-arrow state machines on the conservative graph path',
+    target: 'es5',
+    source: `
+      function read(value) {
+        return (async () => {
+          await Promise.resolve();
+          return value + 2;
+        })();
+      }
+      read(40).then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'does not retain ES5 class async arrows that do not capture lexical super',
+    target: 'es5',
+    source: `
+      class Child {
+        readAsync(value) {
+          return (async () => {
+            await Promise.resolve();
+            return value + 2;
+          })();
+        }
+      }
+      new Child().readAsync(40).then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
     name: 'lowers static lexical super through the constructor base',
     source: `
       class Base {
@@ -283,7 +384,7 @@ describe('async arrow arguments capture (#4819)', () => {
             ZNTC_BIN,
             [
               ...(bundle ? ['--bundle', input, '--platform=node', '--format=cjs'] : [input]),
-              '--target=es2015',
+              `--target=${scenario.target ?? 'es2015'}`,
               ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
               '-o',
               output,
