@@ -4957,7 +4957,7 @@ fn canKeepPrepassSemanticGraph(
     if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
         (options.drop_console and hasDroppedConsoleStatement(ast)) or
         hasDroppedLabeledStatement(ast, options.drop_labels) or define_mod.astUsesDefine(ast, options.define) or
-        options.module_specifier_map.len != 0 or
+        options.hasMappedImportSource(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
         options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable or
         options.tla_module_awaited) return false;

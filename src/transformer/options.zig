@@ -3,6 +3,7 @@
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
 const ast_walk = @import("../parser/ast_walk.zig");
+const module_parser = @import("../parser/module.zig");
 const token_mod = @import("../lexer/token.zig");
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Ast = ast_mod.Ast;
@@ -294,12 +295,19 @@ pub const TransformOptions = struct {
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
         if (self.drop_console or self.drop_debugger or self.drop_labels.len > 0) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
-        if (self.module_specifier_map.len > 0) return true;
+        if (astHasMappedImportSource(ast, self.module_specifier_map)) return true;
         if (self.minify_syntax or self.minify_whitespace) return true;
         if (!self.use_define_for_class_fields) return true;
         if (self.experimental_decorators or self.emit_decorator_metadata) return true;
         if (self.unsupportedGraphPrePassFeatureUsed(ast)) return true;
         return false;
+    }
+
+    /// True when a static import source matches a configured cherry-pick map.
+    /// A map configured for another package does not change this module's AST
+    /// or import graph and should not force the graph pre-pass.
+    pub fn hasMappedImportSource(self: *const TransformOptions, ast: *const Ast) bool {
+        return astHasMappedImportSource(ast, self.module_specifier_map);
     }
 
     fn unsupportedGraphPrePassFeatureUsed(self: *const TransformOptions, ast: *const Ast) bool {
@@ -748,6 +756,25 @@ pub const TransformOptions = struct {
         "a lexical-capturing arrow is emitted unchanged because a non-literal direct eval argument can observe generated capture bindings; the configured target may not support arrow syntax retained inside it.";
 };
 
+fn astHasMappedImportSource(ast: *const Ast, entries: []const ModuleSpecifierMapEntry) bool {
+    if (entries.len == 0) return false;
+    for (ast.nodes.items) |node| {
+        if (node.tag != ast_mod.Node.Tag.import_declaration) continue;
+        const extra = node.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return true;
+        const import = module_parser.readImportDeclExtras(ast, extra);
+        const source_idx = import.source;
+        if (source_idx.isNone() or @intFromEnum(source_idx) >= ast.nodes.items.len) return true;
+        const source = ast.getNode(source_idx);
+        if (source.tag != .string_literal) continue;
+        const module_name = Ast.stripStringQuotes(ast.getText(source.data.string_ref));
+        for (entries) |entry| {
+            if (std.mem.eql(u8, module_name, entry.module)) return true;
+        }
+    }
+    return false;
+}
+
 /// 점-구분 pragma 의 head segment. `jsx_lowering.makeFactoryCallee` 가 동일하게
 /// `factory[0..첫 '.']` 를 root-scope binding 으로 attach 하므로 둘이 일치해야 한다.
 fn jsxHeadIdent(spec: []const u8) []const u8 {
@@ -787,6 +814,31 @@ test "lowered syntax discovers helpers and generated globals before linking" {
         const native: TransformOptions = .{ .unsupported = TransformOptions.compat.fromESTarget(.es2020) };
         try std.testing.expectEqual(fixture.es5_prepass, es5.requiresGraphPrePass(&parser.ast));
         try std.testing.expect(!native.requiresGraphPrePass(&parser.ast));
+    }
+}
+
+test "module specifier maps require a graph pre-pass only for mapped imports" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const map: []const ModuleSpecifierMapEntry = &.{
+        .{ .module = "lodash", .template = "lodash/{name}" },
+    };
+    const options: TransformOptions = .{ .module_specifier_map = map };
+    const fixtures = [_]struct { source: []const u8, needs_prepass: bool }{
+        .{ .source = "import { map } from 'lodash';", .needs_prepass = true },
+        .{ .source = "import { map } from 'react';", .needs_prepass = false },
+        .{ .source = "const packageName = 'lodash';", .needs_prepass = false },
+    };
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+        try std.testing.expectEqual(
+            fixture.needs_prepass,
+            options.requiresGraphPrePass(&parser.ast),
+        );
     }
 }
 
