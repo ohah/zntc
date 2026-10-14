@@ -373,7 +373,12 @@ pub fn ES2017(comptime Transformer: type) type {
             // The in-place rewrite already binds each generated temp and links its exact references
             // under the inner function scope. Keep those identities through lowering; do not recover
             // them by rescanning generated names after the inner function is transformed.
+            // An `await` the inner visit itself creates (`await using`'s dispose)
+            // is an async generator await too: `yield __await(…)` (#4798).
+            const saved_async_gen_body = self.in_async_generator_body;
+            self.in_async_generator_body = true;
             const lowered_inner = try self.visitNode(inner_func);
+            self.in_async_generator_body = saved_async_gen_body;
             // 위 rewriteAwaitToYieldAwait 는 inner visit **전** 이라, 그 visit 중 for-await
             // 다운레벨이 새로 만든 await 를 놓친다 → 한 번 더 훑는다 (#4488).
             // 주의 — visit 은 body 를 **새 노드로 교체**하므로 원래 `body_idx` 가 아니라
@@ -438,8 +443,13 @@ pub fn ES2017(comptime Transformer: type) type {
         /// `await expr` → `(yield expr)`
         pub fn lowerAwaitExpression(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
             const new_operand = try self.visitNode(node.data.unary.operand);
-            const yield_node = try es_helpers.makeYieldExpression(self, new_operand, node.span);
-            return yield_node;
+            // In an async generator, `__await` tells an await from a user `yield`.
+            const yielded = if (self.in_async_generator_body) blk: {
+                self.runtime_helpers.await_helper = true;
+                const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
+                break :blk try es_helpers.makeCallExpr(self, await_ref, &.{new_operand}, node.span);
+            } else new_operand;
+            return es_helpers.makeYieldExpression(self, yielded, node.span);
         }
 
         /// async function foo() { ... } → function foo() { return __async(function*() { ... }); }
@@ -459,7 +469,10 @@ pub fn ES2017(comptime Transformer: type) type {
             // body 가 `__async(function*(){…})` 안쪽으로 옮겨진다 → `arguments` 캡처 필요.
             const saved_extracted = self.in_extracted_fn_body;
             self.in_extracted_fn_body = true;
+            const saved_async_gen_body = self.in_async_generator_body;
+            self.in_async_generator_body = false;
             const new_body = try self.visitBodyWorkletAware(body_idx);
+            self.in_async_generator_body = saved_async_gen_body;
             self.in_extracted_fn_body = saved_extracted;
             // body 를 visit 하는 도중 for-await 다운레벨이 **새로 만든** await 노드는 visitor 의
             // await→yield 변환을 못 받는다 → 여기서 정리 (#4488).
@@ -559,6 +572,9 @@ pub fn ES2017(comptime Transformer: type) type {
                 if (self.current_method_is_static) self.current_super_is_static = true;
                 defer self.current_super_in_extracted_fn = saved_super_in_extracted_fn;
                 defer self.current_super_is_static = saved_super_is_static;
+                const saved_async_gen_body = self.in_async_generator_body;
+                self.in_async_generator_body = false;
+                defer self.in_async_generator_body = saved_async_gen_body;
                 break :blk try self.visitBodyWorkletAware(body_idx);
             };
             self.in_extracted_fn_body = saved_extracted_body;
@@ -677,7 +693,10 @@ pub fn ES2017(comptime Transformer: type) type {
             const state_parent_scope = self.stateMachineOwnerScope(source_owner);
             var saved_sm_temps = try GenMod.enterStateMachineTempsForScope(self, state_parent_scope);
             defer GenMod.leaveStateMachineTemps(self, &saved_sm_temps);
+            const saved_async_gen_body = self.in_async_generator_body;
+            self.in_async_generator_body = false;
             var sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
+            self.in_async_generator_body = saved_async_gen_body;
             defer sm_result.hoisted_temps.deinit(self.allocator);
             self.in_extracted_fn_body = saved_ext_sm;
             if (sm_result.body.isNone()) return .none;
@@ -759,7 +778,10 @@ pub fn ES2017(comptime Transformer: type) type {
                 defer self.arrow_this_depth -= 1;
 
                 const params_list = try es2015_arrow.ES2015Arrow(Transformer).arrowParamsToList(self, params_idx);
+                const saved_async_gen_body = self.in_async_generator_body;
+                self.in_async_generator_body = false;
                 const sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
+                self.in_async_generator_body = saved_async_gen_body;
                 break :blk .{ .params_list = params_list, .sm_result = sm_result };
             };
             const params_list = lowered.params_list;

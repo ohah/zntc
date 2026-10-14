@@ -210,6 +210,9 @@ pub const Transformer = struct {
     /// The expression an expression statement is visiting: its value is
     /// dropped (an array destructuring then needs no value temp, #4799).
     discarded_expression: NodeIndex = .none,
+    /// Visiting an async generator's inner `function*` body: an `await` lowers
+    /// to `yield __await(…)` rather than a plain `yield` (#4798).
+    in_async_generator_body: bool = false,
     /// ES5 destructuring declaration temp span -> exact generated SymbolId.
     /// The unique string-table span survives counter resets in nested functions.
     destructuring_temp_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,
