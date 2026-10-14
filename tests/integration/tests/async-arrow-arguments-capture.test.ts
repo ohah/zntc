@@ -528,6 +528,34 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
+    name: 'retains ES5 class async-arrow super with every lexical capture',
+    target: 'es5',
+    source: `
+      class Base { read(value) { return this.prefix + value; } }
+      class Child extends Base {
+        readAsync(_this, _arguments, _newTarget, value) {
+          this.prefix = 'all:';
+          var outerThis = _this;
+          var outerArguments = _arguments;
+          var outerNewTarget = _newTarget;
+          return (async () => {
+            var _this = 99;
+            var _arguments = 88;
+            var _newTarget = 77;
+            await Promise.resolve();
+            return super.read(arguments[3]) + ':' + this.prefix + ':' + String(new.target) + ':' +
+              _this + ':' + outerThis + ':' + _arguments + ':' + outerArguments + ':' +
+              _newTarget + ':' + outerNewTarget;
+          })();
+        }
+      }
+      new Child().readAsync('source:this', 'source:arguments', 'source:newTarget', 42).then(console.log);
+    `,
+    expected: 'all:42:all::undefined:99:source:this:88:source:arguments:77:source:newTarget\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
     name: 'retains ES5 async-arrow super with lexical this and arguments',
     target: 'es5',
     source: `
