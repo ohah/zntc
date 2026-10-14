@@ -3531,6 +3531,7 @@ fn isRetainableEs5AsyncObjectMethodNode(
         if (raw_idx >= ast.nodes.items.len) return false;
         if (ast.nodes.items[raw_idx].tag != .super_expression) continue;
         var current = raw_idx;
+        var lexical_arrow_depth: usize = 0;
         var hops: usize = 0;
         while (current != @intFromEnum(method_idx) and hops < ast.nodes.items.len) : (hops += 1) {
             current = parents.get(current) orelse return false;
@@ -3539,11 +3540,19 @@ fn isRetainableEs5AsyncObjectMethodNode(
                 .function_declaration,
                 .function_expression,
                 .function,
-                .arrow_function_expression,
                 .class_declaration,
                 .class_expression,
                 .method_definition,
                 => return false,
+                .arrow_function_expression => {
+                    lexical_arrow_depth += 1;
+                    const nested_arrow = ast.nodes.items[current];
+                    const arrow_extra = nested_arrow.data.extra;
+                    if (lexical_arrow_depth > 1 or arrow_extra > ast.extra_data.items.len or
+                        ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags) return false;
+                    const flags_at = arrow_extra + ast_mod.ArrowExtra.flags;
+                    if ((ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) != 0) return false;
+                },
                 else => {},
             }
         }

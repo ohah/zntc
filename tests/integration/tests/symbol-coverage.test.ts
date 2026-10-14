@@ -6670,8 +6670,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(retainedOutput.status, retainedOutput.stderr).toBe(0);
       expect(retainedOutput.stdout).toBe('42\n');
 
-      // A lexical super nested in an arrow has another moved function scope;
-      // leave that combined shape on semantic reanalysis for now.
+      // One synchronous arrow scope can keep its lexical super on the method's
+      // exact home-object graph.
       const nestedArrow = run(
         [
           'var prototype = { read() { return this.value; } };',
@@ -6694,10 +6694,55 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(nestedArrowMode, nestedArrow.stderr).toContain('semantic_graph=reanalyzed');
+      expect(nestedArrowMode, nestedArrow.stderr).toContain('semantic_graph=retained');
+      const nestedArrowReport = (nestedArrow.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(nestedArrowReport, nestedArrow.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(nestedArrowReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${nestedArrowReport}`,
+        ).toBe(0);
+      }
+      expect(nestedArrowReport).toMatch(/clean=1(?:\s|$)/);
       const nestedArrowOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(nestedArrowOutput.status, nestedArrowOutput.stderr).toBe(0);
       expect(nestedArrowOutput.stdout).toBe('42\n');
+
+      // Deeper arrow nesting introduces more moved scopes than this allowlist
+      // currently audits, so it continues through semantic reanalysis.
+      const deepArrow = run(
+        [
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async read() {',
+          '    await Promise.resolve();',
+          '    var read = () => {',
+          '      var nestedRead = () => super.read();',
+          '      return nestedRead();',
+          '    };',
+          '    return read();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.read().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(deepArrow.status, deepArrow.stderr).toBe(0);
+      const deepArrowMode = (deepArrow.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(deepArrowMode, deepArrow.stderr).toContain('semantic_graph=reanalyzed');
+      const deepArrowOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(deepArrowOutput.status, deepArrowOutput.stderr).toBe(0);
+      expect(deepArrowOutput.stdout).toBe('42\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
