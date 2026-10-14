@@ -304,7 +304,7 @@ pub const TransformOptions = struct {
         // Any syntax that creates helper identities has its own pre-pass gate.
         if (self.minify_syntax) return true;
         if (!self.use_define_for_class_fields and astHasClassFieldSyntax(ast)) return true;
-        if (self.experimental_decorators or self.emit_decorator_metadata) return true;
+        if ((self.experimental_decorators or self.emit_decorator_metadata) and ast.has_decorator) return true;
         if (self.unsupportedGraphPrePassFeatureUsed(ast)) return true;
         return false;
     }
@@ -902,6 +902,31 @@ test "drop labels requires graph pre-pass only when a configured label is presen
 
         const options: TransformOptions = .{ .drop_labels = fixture.labels };
         try std.testing.expectEqual(fixture.expected, options.requiresGraphPrePass(&parser.ast));
+    }
+}
+
+test "decorator options require graph pre-pass only when decorators are present" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    const fixtures = [_]struct {
+        source: []const u8,
+        options: TransformOptions,
+        expected: bool,
+    }{
+        .{ .source = "const answer = 42;", .options = .{ .experimental_decorators = true }, .expected = false },
+        .{ .source = "const answer = 42;", .options = .{ .emit_decorator_metadata = true }, .expected = false },
+        .{ .source = "@mark class Example {}", .options = .{ .experimental_decorators = true }, .expected = true },
+        .{ .source = "@mark class Example {}", .options = .{ .emit_decorator_metadata = true }, .expected = true },
+    };
+
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var scanner = try Scanner.init(arena.allocator(), fixture.source);
+        var parser = Parser.init(arena.allocator(), &scanner);
+        parser.configureFromExtension(".ts");
+        _ = try parser.parse();
+
+        try std.testing.expectEqual(fixture.expected, fixture.options.requiresGraphPrePass(&parser.ast));
     }
 }
 
