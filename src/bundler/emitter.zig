@@ -1689,6 +1689,7 @@ fn shouldSkipLazyBarrelEmit(
 // --- Chunks functions (emitter/chunks.zig) ---
 const chunks = @import("emitter/chunks.zig");
 pub const emitChunks = chunks.emitChunks;
+pub const emitChunksWithIo = chunks.emitChunksWithIo;
 pub const contentHash = chunks.contentHash;
 pub const applyNamingPattern = chunks.applyNamingPattern;
 pub const applyNamingPatternWithDir = chunks.applyNamingPatternWithDir;
