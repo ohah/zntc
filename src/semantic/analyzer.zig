@@ -545,12 +545,13 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// label 이름으로 검색한다. 없으면 null.
+    /// 이름은 원문 슬라이스라 `l\u0061b` 와 `lab` 이 같은 label 이 되도록 escape 를 풀어 비교한다 (#5825).
     fn findLabel(self: *const SemanticAnalyzer, name: []const u8) ?LabelEntry {
         var i = self.labels.items.len;
         // label_fence 이후의 label만 검색 (함수 경계 외부 label 숨김)
         while (i > self.label_fence) {
             i -= 1;
-            if (std.mem.eql(u8, self.labels.items[i].name, name)) {
+            if (Scanner.identifierNamesEqual(self.labels.items[i].name, name)) {
                 return self.labels.items[i];
             }
         }

@@ -1202,7 +1202,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var i = stack.len;
                 while (i > 0) {
                     i -= 1;
-                    if (std.mem.eql(u8, stack[i].name, label_text)) {
+                    if (Scanner.identifierNamesEqual(stack[i].name, label_text)) {
                         if (stmt.tag == .continue_statement)
                             return stack[i].continue_label orelse stack[i].break_label;
                         return stack[i].break_label;
