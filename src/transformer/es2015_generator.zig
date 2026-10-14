@@ -2322,7 +2322,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var i_elem: u32 = 0;
                 while (i_elem < list_len) : (i_elem += 1) {
                     const raw_idx = self.ast.extra_data.items[list_start + i_elem];
-                    const new_elem = try visitExprWithYieldExtraction(self, @enumFromInt(raw_idx), ops, next_label);
+                    const elem_idx: NodeIndex = @enumFromInt(raw_idx);
+                    // An object method lowers like in any object literal (`n() {}` →
+                    // `n: function () {}`); its body is its own function (#4736).
+                    const new_elem = if (node.tag == .object_expression and
+                        self.ast.getNode(elem_idx).tag == .method_definition and
+                        !es2015_scan.containsYield(self, elem_idx))
+                        try @import("es2015_object_methods.zig").ES2015ObjectMethods(Transformer).lowerObjectMember(self, elem_idx)
+                    else
+                        try visitExprWithYieldExtraction(self, elem_idx, ops, next_label);
                     try self.scratch.append(self.allocator, new_elem);
                 }
                 const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
