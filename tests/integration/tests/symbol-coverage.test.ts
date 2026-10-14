@@ -6502,7 +6502,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async class methods retain exact state-machine and direct super graphs', () => {
+  test('ES5 async class methods retain state-machine, home, and inherited static graphs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-class-method-'));
     const output = join(dir, 'out.cjs');
     const input = join(dir, 'entry.ts');
@@ -6666,6 +6666,75 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const classSuperOutput = runOutput();
       expect(classSuperOutput.status, classSuperOutput.stderr).toBe(0);
       expect(classSuperOutput.stdout).toBe('42 50 50\n');
+
+      // Static async state machines preserve an inherited call's receiver.
+      const staticAsync = run(
+        [
+          'var receiver;',
+          'class Service {',
+          '  static async calculate(value) {',
+          '    var _state = 1, _context = 1, _arguments = arguments[0];',
+          '    await Promise.resolve(value);',
+          '    return this === receiver ? value + _state + _context + _arguments : 0;',
+          '  }',
+          '}',
+          'class Derived extends Service {}',
+          'receiver = Derived;',
+          'Derived.calculate(40).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(staticAsync.status, staticAsync.stderr).toBe(0);
+      const staticAsyncMode = (staticAsync.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(staticAsyncMode, staticAsync.stderr).toContain('semantic_graph=retained');
+      const staticAsyncReport = (staticAsync.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(staticAsyncReport, staticAsync.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(staticAsyncReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${staticAsyncReport}`,
+        ).toBe(0);
+      }
+      expect(staticAsyncReport).toMatch(/clean=1(?:\s|$)/);
+      const staticAsyncOutput = runOutput();
+      expect(staticAsyncOutput.status, staticAsyncOutput.stderr).toBe(0);
+      expect(staticAsyncOutput.stdout).toBe('82\n');
+
+      // Direct static super has a distinct constructor home and stays gated.
+      const staticSuper = run(
+        [
+          'class Base {',
+          '  static get current() { return this.value; }',
+          '}',
+          'class Service extends Base {',
+          '  static async readCurrent() {',
+          '    await Promise.resolve();',
+          '    return super.current;',
+          '  }',
+          '}',
+          'Service.value = 42;',
+          'Service.readCurrent().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(staticSuper.status, staticSuper.stderr).toBe(0);
+      const staticSuperMode = (staticSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(staticSuperMode, staticSuper.stderr).toContain('semantic_graph=reanalyzed');
+      const staticSuperOutput = runOutput();
+      expect(staticSuperOutput.status, staticSuperOutput.stderr).toBe(0);
+      expect(staticSuperOutput.stdout).toBe('42\n');
 
       // A synchronous sibling with super keeps the whole class on reanalysis.
       const synchronousSuper = run(
