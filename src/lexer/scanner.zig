@@ -2116,6 +2116,18 @@ pub const Scanner = struct {
         return decodeIdentifierEscapesInto(raw, &self.decode_buf);
     }
 
+    /// 원문 식별자 두 개가 같은 이름(StringValue)인지 — `l\u0061b` 와 `lab` 은 같다.
+    /// label 처럼 심볼 없이 이름 텍스트로 짝을 찾는 곳에서 쓴다 (#5825).
+    pub fn identifierNamesEqual(a: []const u8, b: []const u8) bool {
+        if (std.mem.eql(u8, a, b)) return true;
+        if (std.mem.indexOfScalar(u8, a, '\\') == null and std.mem.indexOfScalar(u8, b, '\\') == null) return false;
+        var a_buf: [256]u8 = undefined;
+        var b_buf: [256]u8 = undefined;
+        const a_name = decodeIdentifierEscapesInto(a, &a_buf) orelse return false;
+        const b_name = decodeIdentifierEscapesInto(b, &b_buf) orelse return false;
+        return std.mem.eql(u8, a_name, b_name);
+    }
+
     /// Caller-owned scratch buffer를 사용해 identifier의 Unicode escape를
     /// StringValue UTF-8 표기로 디코딩한다. 이스케이프가 없으면 원본 슬라이스를 반환한다.
     pub fn decodeIdentifierEscapesInto(raw: []const u8, decode_buf: []u8) ?[]const u8 {

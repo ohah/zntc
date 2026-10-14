@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Node = ast_mod.Node;
 
 /// Check the graph-prepass drop options in one AST walk. These options are
@@ -29,7 +30,7 @@ pub fn isDroppedLabel(ast: *const ast_mod.Ast, node: Node, labels: []const []con
     const label_node = ast.getNode(label_index);
     const label_name = ast.getText(label_node.span);
     for (labels) |label| {
-        if (std.mem.eql(u8, label_name, label)) return true;
+        if (Scanner.identifierNamesEqual(label_name, label)) return true;
     }
     return false;
 }

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../../parser/ast.zig");
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const NodeIndex = ast_mod.NodeIndex;
 
 fn pushNode(self: anytype, stack: *std.ArrayList(NodeIndex), child: NodeIndex) bool {
@@ -41,7 +42,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const label_node = self.ast.getNode(node.data.unary.operand);
                 const label_text = self.ast.getText(label_node.span);
                 for (self.generator_label_stack.items) |entry| {
-                    if (std.mem.eql(u8, entry.name, label_text)) return true;
+                    if (Scanner.identifierNamesEqual(entry.name, label_text)) return true;
                 }
             }
         }

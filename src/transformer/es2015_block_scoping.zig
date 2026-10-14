@@ -27,6 +27,7 @@
 
 const std = @import("std");
 const ast_mod = @import("../parser/ast.zig");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const ast_walk = @import("../parser/ast_walk.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
@@ -1021,7 +1022,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         }
 
         fn containsLabel(labels: []const []const u8, name: []const u8) bool {
-            for (labels) |l| if (std.mem.eql(u8, l, name)) return true;
+            for (labels) |l| if (Scanner.identifierNamesEqual(l, name)) return true;
             return false;
         }
 
@@ -1050,7 +1051,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         /// label 중복 없이 추가
         fn appendUniqueLabel(flow: *FlowResult, alloc: std.mem.Allocator, label_text: []const u8) void {
             for (flow.labels.items) |l| {
-                if (std.mem.eql(u8, l, label_text)) return;
+                if (Scanner.identifierNamesEqual(l, label_text)) return;
             }
             flow.labels.append(alloc, label_text) catch {};
         }
@@ -1387,7 +1388,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             while (i > 0) {
                 i -= 1;
                 const entry = self.label_scope.items[i] orelse return false;
-                if (std.mem.eql(u8, entry, label)) return true;
+                if (Scanner.identifierNamesEqual(entry, label)) return true;
             }
             return false;
         }
@@ -1528,7 +1529,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     // 예전엔 자기 루프 라벨(local_label)만 점프로 봤다 — 바깥 루프가 **추출되지 않은
                     // 같은 함수의 루프**여도 return 으로 전달해 함수 전체를 빠져나갔다(동기 코드에서도).
                     // 반대로 무조건 점프하면 중첩 추출에서 `break B` 가 정의 안 된 라벨이 된다.
-                    const jump = (local_label != null and std.mem.eql(u8, local_label.?, label)) or
+                    const jump = (local_label != null and Scanner.identifierNamesEqual(local_label.?, label)) or
                         labelVisibleWithoutBoundary(self, label);
                     const ctrl_stmt = if (jump) blk: {
                         // 라벨 이름 — 변수가 아니라 심볼이 없다.
