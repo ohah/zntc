@@ -6437,10 +6437,10 @@ pub fn resyncAfterConstMaterializationRetainingGraph(
         if (!isMaterializedPrimitiveLiteral(ast.nodes.items[@intFromEnum(node_index)].tag)) {
             return error.InvalidMaterializedNode;
         }
-        // The materializer supplies the exact read sites it changed. Missing
-        // identity evidence fails closed into the existing full-analyzer path.
-        try editor.removeReference(node_index);
     }
+    // The materializer supplies exact read sites. Remove them in one stable
+    // compaction pass instead of reindexing the remaining references per node.
+    try editor.removeReferences(materialized_nodes);
 
     semantic.applyEdit(try editor.finish());
     if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;

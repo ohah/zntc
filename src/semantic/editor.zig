@@ -1152,6 +1152,49 @@ pub const SemanticEditor = struct {
         }
         if (key < self.symbol_ids.items.len) self.symbol_ids.items[key] = null;
     }
+
+    /// Remove several references while preserving the order of the survivors.
+    /// Compacting once avoids shifting and reindexing the full tail for every
+    /// removed reference. The editor allocator is the module arena, so the
+    /// selection bitset is released with the semantic snapshot.
+    pub fn removeReferences(self: *SemanticEditor, nodes: []const NodeIndex) Error!void {
+        if (nodes.len == 0) return;
+        try self.ensureReferenceIndex();
+
+        var removed = try std.DynamicBitSet.initEmpty(self.allocator, self.references.items.len);
+        for (nodes) |node| {
+            const key = @intFromEnum(node);
+            const i = self.reference_index.get(key) orelse return error.ReferenceNotFound;
+            if (i >= self.references.items.len or removed.isSet(i)) return error.ReferenceNotFound;
+            const ref = self.references.items[i];
+            if (!self.validSymbol(ref.symbol_id)) return error.InvalidSymbol;
+            removed.set(i);
+        }
+
+        var write: usize = 0;
+        for (self.references.items, 0..) |ref, read| {
+            if (removed.isSet(read)) {
+                self.removeCounts(ref.symbol_id, ref.flags);
+                if (!ref.node_index.isNone()) {
+                    const key = @intFromEnum(ref.node_index);
+                    _ = self.reference_index.remove(key);
+                    if (key < self.symbol_ids.items.len) self.symbol_ids.items[key] = null;
+                }
+                continue;
+            }
+
+            if (write != read) {
+                self.references.items[write] = ref;
+                if (!ref.node_index.isNone()) {
+                    if (self.reference_index.getPtr(@intFromEnum(ref.node_index))) |indexed| {
+                        indexed.* = write;
+                    }
+                }
+            }
+            write += 1;
+        }
+        self.references.shrinkRetainingCapacity(write);
+    }
 };
 
 test "parameter rename preserves the body function binding and rejects inconsistent maps" {
@@ -1928,6 +1971,53 @@ test "compound assignment split keeps one write and adds one exact read" {
     try std.testing.expectError(error.InvalidNode, editor.updateReferenceFlags(target, .{ .declare = true }));
     try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
     try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
+}
+
+test "batched reference removal preserves survivor order and updates indices" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var editor = try SemanticEditor.init(allocator, &ast, &.{}, &.{}, &.{}, .empty, &.{}, &.{}, .empty);
+    defer editor.deinit();
+
+    const root = try editor.addScope(.none, .none, .global, false);
+    const a_name = try ast.addString("a");
+    const b_name = try ast.addString("b");
+    const a_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = a_name, .data = .{ .string_ref = a_name } });
+    const b_binding = try ast.addNode(.{ .tag = .binding_identifier, .span = b_name, .data = .{ .string_ref = b_name } });
+    const a_symbol = try editor.declare(a_binding, a_name, Span.EMPTY, root, .variable_const, 0, 0);
+    const b_symbol = try editor.declare(b_binding, b_name, Span.EMPTY, root, .variable_let, 0, 0);
+
+    const a_first = try ast.addNode(.{ .tag = .identifier_reference, .span = a_name, .data = .{ .string_ref = a_name } });
+    const b_write = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = b_name, .data = .{ .string_ref = b_name } });
+    const a_second = try ast.addNode(.{ .tag = .identifier_reference, .span = a_name, .data = .{ .string_ref = a_name } });
+    const b_read = try ast.addNode(.{ .tag = .identifier_reference, .span = b_name, .data = .{ .string_ref = b_name } });
+    try editor.addReference(a_first, a_symbol, root, .{ .read = true }, 1, 0);
+    try editor.addReference(b_write, b_symbol, root, .{ .write = true }, 2, 0);
+    try editor.addReference(a_second, a_symbol, root, .{ .read = true }, 3, 0);
+    try editor.addReference(b_read, b_symbol, root, .{ .read = true }, 4, 0);
+
+    try editor.removeReferences(&.{ a_first, a_second });
+    try std.testing.expectEqual(@as(usize, 4), editor.references.items.len);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(a_symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(b_symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(b_symbol)].write_count);
+    try std.testing.expectError(error.ReferenceNotFound, editor.removeReferences(&.{a_first}));
+    try std.testing.expectError(error.ReferenceNotFound, editor.removeReferences(&.{ b_write, b_write }));
+
+    const first_survivor = (try editor.referenceForNode(b_write)).?;
+    const second_survivor = (try editor.referenceForNode(b_read)).?;
+    try std.testing.expectEqual(@as(u32, 2), first_survivor.stmt_idx);
+    try std.testing.expectEqual(@as(u32, 4), second_survivor.stmt_idx);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(a_first)]);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(a_second)]);
+
+    const result = try editor.finish();
+    try std.testing.expectEqual(@as(usize, 4), result.references.len);
+    try std.testing.expectEqual(@as(u32, 2), result.references[2].stmt_idx);
+    try std.testing.expectEqual(@as(u32, 4), result.references[3].stmt_idx);
 }
 
 test "invalid identities and type-only references cannot corrupt liveness" {
