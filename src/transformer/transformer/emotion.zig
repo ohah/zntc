@@ -77,13 +77,19 @@ pub fn isEmotionStyledSource(source: []const u8) bool {
 
 /// 사용자 옵션 (`emotion.extraCssSources`) 에 등록된 vendored re-export 패키지 매칭.
 fn isEmotionCssSourceWithExtras(self: *const Transformer, source: []const u8) bool {
-    if (isEmotionCssSource(source)) return true;
-    return string_list.contains(self.options.emotion_extra_css_sources, source);
+    return isEmotionCssSourceWithExtraSources(source, self.options.emotion_extra_css_sources);
 }
 
 fn isEmotionStyledSourceWithExtras(self: *const Transformer, source: []const u8) bool {
-    if (isEmotionStyledSource(source)) return true;
-    return string_list.contains(self.options.emotion_extra_styled_sources, source);
+    return isEmotionStyledSourceWithExtraSources(source, self.options.emotion_extra_styled_sources);
+}
+
+pub fn isEmotionCssSourceWithExtraSources(source: []const u8, extra_sources: []const []const u8) bool {
+    return isEmotionCssSource(source) or string_list.contains(extra_sources, source);
+}
+
+pub fn isEmotionStyledSourceWithExtraSources(source: []const u8, extra_sources: []const []const u8) bool {
+    return isEmotionStyledSource(source) or string_list.contains(extra_sources, source);
 }
 
 /// emotion named-import (`{ X }` 형태) 별 EmotionState 필드 매핑. 새 named API 가
