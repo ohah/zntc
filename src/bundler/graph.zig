@@ -620,6 +620,8 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "console.log('x'); debugger;", "drop.ts", .{ .transform_options = .{ .drop_console = true, .drop_debugger = true } });
     try expectPrePassDecision(true, "export const value = 1;", "plugin.ts", .{ .plugin_transform_applied = true });
     try expectPrePassDecision(true, "export function App() { return null; }", "refresh.tsx", .{ .react_refresh = true });
+    try expectPrePassDecision(false, "export function App() { return null; }", "refresh.cjs", .{ .react_refresh = true });
+    try expectPrePassDecision(true, "export function App() { return null; }", "refresh.mjs", .{ .react_refresh = true });
     try expectPrePassDecision(true, "import styled from 'styled-components'; export const Box = styled.div``;", "styled.ts", .{ .styled_components = true });
     try expectPrePassDecision(true, "import { css } from '@emotion/react'; export const c = css``;", "emotion.ts", .{ .emotion = true });
     try expectPrePassDecision(false, "export const value = 42;", "styled-unused.ts", .{ .styled_components = true });
