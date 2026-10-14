@@ -59,18 +59,16 @@ describe('class computed keys see the outer super (#4735)', () => {
         const expected = spawnSync('node', [join(created.dir, 'entry.js')], { encoding: 'utf8' });
         expect(expected.status, expected.stderr).toBe(0);
         const out = join(created.dir, 'out.cjs');
-        // The post-minify gate has its own open debt on this input (#5757).
-        const env =
-          extra.length === 0 ? { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } : process.env;
         const result = await runZntc(
           [join(created.dir, 'entry.js'), `--target=${target}`, ...extra, '-o', out],
-          { env },
+          { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
         );
         expect(result.exitCode, result.stderr).toBe(0);
-        if (extra.length === 0) {
-          expect(result.stderr).not.toMatch(/clean=0/);
-          expect(result.stderr).toMatch(/clean=1/);
-        }
+        expect(result.stderr).not.toMatch(/clean=0/);
+        expect(result.stderr).toMatch(/clean=1/);
+        // The post-minify gate once crashed on a freed class-self map here (#5757).
+        if (extra.length > 0)
+          expect(result.stderr).toMatch(/symbol-identity-post-minify .*clean=1/);
         const run = spawnSync('node', [out], { encoding: 'utf8' });
         expect(run.status, run.stderr).toBe(0);
         expect(run.stdout).toBe(expected.stdout);
