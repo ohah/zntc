@@ -3335,8 +3335,11 @@ fn isSimpleClass(
         if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
         const flags = extras[method_extra + ast_mod.MethodExtra.flags];
+        const is_es5_async_instance_method = flags == ast_mod.MethodFlags.is_async;
+        const is_es5_async_static_method = flags ==
+            (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
         const is_es5_async_method = allow_es5_async_class_methods and
-            flags == ast_mod.MethodFlags.is_async;
+            (is_es5_async_instance_method or is_es5_async_static_method);
         const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static or is_es5_async_method;
         const is_plain_accessor = flags == ast_mod.MethodFlags.is_getter or
             flags == ast_mod.MethodFlags.is_setter or
@@ -3373,7 +3376,8 @@ fn isSimpleClass(
         const retains_async_arrow_super = allow_es5_async_arrow_super and !super.isNone() and
             (flags == 0 or flags == ast_mod.MethodFlags.is_static) and
             methodSuperUsesOnlyAsyncArrows(ast, member);
-        const retains_async_class_method_super = is_es5_async_method and !super.isNone() and
+        const retains_async_class_method_super = is_es5_async_instance_method and
+            allow_es5_async_class_methods and !super.isNone() and
             methodSuperUsesOnlyDirectMethodBody(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or
@@ -3390,7 +3394,9 @@ fn isSimpleClass(
             const method_extra = member.data.extra;
             const flags = extras[method_extra + ast_mod.MethodExtra.flags];
             const is_plain_method = flags == 0 or flags == ast_mod.MethodFlags.is_static or
-                (allow_es5_async_class_methods and flags == ast_mod.MethodFlags.is_async);
+                (allow_es5_async_class_methods and
+                    (flags == ast_mod.MethodFlags.is_async or
+                        flags == (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static)));
             if (!is_plain_method or ((flags & ast_mod.MethodFlags.is_static) != 0) != accessor_is_static) continue;
             const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
             const key_text = ast.getText(ast.getNode(key_idx).span);
@@ -3511,10 +3517,14 @@ fn registerRetainableEs5AsyncClassMethods(
         const method_extra = member.data.extra;
         if (method_extra > ast.extra_data.items.len or
             ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags) return false;
-        if (ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags] != ast_mod.MethodFlags.is_async)
-            continue;
+        const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
+        const is_async_instance_method = flags == ast_mod.MethodFlags.is_async;
+        const is_async_static_method = flags ==
+            (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static);
+        if (!is_async_instance_method and !is_async_static_method) continue;
         if (methodHasSuperExpression(ast, member) and
-            (super_idx.isNone() or !methodSuperUsesOnlyDirectMethodBody(ast, member))) return false;
+            (!is_async_instance_method or super_idx.isNone() or
+                !methodSuperUsesOnlyDirectMethodBody(ast, member))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
