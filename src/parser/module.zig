@@ -628,6 +628,22 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 break :blk fn_decl;
             },
             .kw_class => try self.parseClassWithDecorators(.class_declaration, decorators),
+            // `export default @dec class Named {}` is a class declaration too (the
+            // decorators proposal allows decorators after `export default`), so
+            // `Named` binds the module scope (#4811).
+            .at => blk: {
+                const scratch_top = self.saveScratch();
+                for (self.ast.extra_data.items[decorators.start .. decorators.start + decorators.len]) |dec|
+                    try self.scratch.append(self.allocator, @enumFromInt(dec));
+                while (self.current() == .at) {
+                    const dec = try self.parseDecorator();
+                    try self.scratch.append(self.allocator, dec);
+                }
+                const all_decorators = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
+                self.restoreScratch(scratch_top);
+                if (self.current() == .identifier and self.isContextual("abstract")) try self.advance();
+                break :blk try self.parseClassWithDecorators(.class_declaration, all_decorators);
+            },
             else => blk: {
                 // export default interface Foo {} — TS 전용, 런타임에 제거
                 if (self.current() == .kw_interface) {
