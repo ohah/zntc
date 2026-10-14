@@ -48,6 +48,34 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     cleanup = undefined;
   });
 
+  test('whitespace-only bundle minification skips the graph semantic prepass', async () => {
+    const fixture = await createFixture({
+      'input.js': 'const baseValue = 41; console.log(baseValue + 1);',
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.cjs');
+    const result = await runZntc(
+      [
+        '--bundle',
+        input,
+        '-o',
+        output,
+        '--platform=node',
+        '--format=cjs',
+        '--target=esnext',
+        '--minify-whitespace',
+      ],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).not.toContain('zntc: symbol-identity-prepass-mode ');
+    expect(readFileSync(output, 'utf8')).toContain('console.log(baseValue+1)');
+    const execution = await runNode(output);
+    expect(execution.stderr).toBe('');
+    expect(execution.stdout).toBe('42');
+  });
+
   async function expectNativeParity(source: string, expected: string) {
     const fixture = await createFixture({ 'input.js': source });
     cleanup = fixture.cleanup;

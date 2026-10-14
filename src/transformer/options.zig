@@ -296,7 +296,9 @@ pub const TransformOptions = struct {
         if (self.drop_console or self.drop_debugger or self.drop_labels.len > 0) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
         if (astHasMappedImportSource(ast, self.module_specifier_map)) return true;
-        if (self.minify_syntax or self.minify_whitespace) return true;
+        // Whitespace-only minification changes emission, not the AST or graph.
+        // Any syntax that creates helper identities has its own pre-pass gate.
+        if (self.minify_syntax) return true;
         if (!self.use_define_for_class_fields) return true;
         if (self.experimental_decorators or self.emit_decorator_metadata) return true;
         if (self.unsupportedGraphPrePassFeatureUsed(ast)) return true;
@@ -779,6 +781,22 @@ fn astHasMappedImportSource(ast: *const Ast, entries: []const ModuleSpecifierMap
 /// `factory[0..첫 '.']` 를 root-scope binding 으로 attach 하므로 둘이 일치해야 한다.
 fn jsxHeadIdent(spec: []const u8) []const u8 {
     return std.mem.sliceTo(spec, '.');
+}
+
+test "whitespace minification alone skips graph pre-pass while syntax minification retains it" {
+    const Parser = @import("../parser/parser.zig").Parser;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var scanner = try Scanner.init(arena.allocator(), "const answer = 42; console.log(answer);");
+    var parser = Parser.init(arena.allocator(), &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+
+    const whitespace_only: TransformOptions = .{ .minify_whitespace = true };
+    try std.testing.expect(!whitespace_only.requiresGraphPrePass(&parser.ast));
+
+    const syntax_minification: TransformOptions = .{ .minify_whitespace = true, .minify_syntax = true };
+    try std.testing.expect(syntax_minification.requiresGraphPrePass(&parser.ast));
 }
 
 test "lowered syntax discovers helpers and generated globals before linking" {
