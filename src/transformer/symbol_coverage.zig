@@ -1988,9 +1988,11 @@ const ExactCtx = struct {
                         false;
                     const retained_source_scope = !hasReachableScopeOwner(ctx, @intFromEnum(symbol.scope_id)) and
                         (resolved == null or resolved.? == raw_id);
+                    const annex_b_alias = lexical_binding_matches and
+                        isAnnexBBlockFunctionAlias(ctx.scopes, &symbol, expected);
                     if (shadowed_lexical_owner or shadowed_storage_owner or
                         (symbol.scope_id.toIndex() != expected and
-                            !symbol_keeps_lexical_scope and
+                            !symbol_keeps_lexical_scope and !annex_b_alias and
                             !retained_source_scope and !isRetainedCatchBinding(ctx, raw, raw_id, symbol.scope_id)))
                     {
                         ctx.report.binding_scope_mismatch += 1;
@@ -2943,6 +2945,19 @@ fn checkExactImpl(
         const sid = symbol_ids[raw] orelse continue;
         if (sid < symbols.len) ast_declaration_counts[sid] += 1;
     }
+    // Shared Annex B block-function bindings: their block declarations all
+    // anchor one var-scope symbol, so its declaration rows stay unanchored.
+    var annex_b_alias_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer annex_b_alias_symbols.deinit(allocator);
+    for (scope_maps, 0..) |scope_map, scope_i| {
+        if (scope_i >= scopes.len) break;
+        var aliases = scope_map.iterator();
+        while (aliases.next()) |entry| {
+            if (entry.value_ptr.* >= symbols.len) continue;
+            if (isAnnexBBlockFunctionAlias(scopes, &symbols[entry.value_ptr.*], @intCast(scope_i)))
+                try annex_b_alias_symbols.put(allocator, @intCast(entry.value_ptr.*), {});
+        }
+    }
 
     const cjs_wrapper = exactCjsWrapperBindings(ast, root, symbols, scopes, scope_maps, scope_owner_map);
     if (scope_maps.len != scopes.len) recordScopeMapMismatch(&report, "scope-map-count", null, null, null);
@@ -2986,7 +3001,8 @@ fn checkExactImpl(
                     (std.mem.eql(u8, entry.key_ptr.*, "module") and entry.value_ptr.* == wrapper.module_symbol_id);
             } else false;
             if (!exactScopeMapKeyMatchesSymbol(ast, &mapped_symbol, entry.key_ptr.*) or
-                (mapped_symbol.scope_id != mapped_scope and !is_cjs_root_alias))
+                (mapped_symbol.scope_id != mapped_scope and !is_cjs_root_alias and
+                    !isAnnexBBlockFunctionAlias(scopes, &mapped_symbol, @intCast(scope_i))))
             {
                 recordScopeMapMismatch(&report, "entry-name-or-owner", @intCast(scope_i), @intCast(entry.value_ptr.*), entry.key_ptr.*);
             }
@@ -3508,7 +3524,7 @@ fn checkExactImpl(
         if (reference.flags.declare) {
             declaration_counts[sid] += 1;
             if (reference.declaration_node_index.isNone()) {
-                if (ast_declaration_counts[sid] > 0) {
+                if (ast_declaration_counts[sid] > 0 and !annex_b_alias_symbols.contains(@intCast(sid))) {
                     report.declaration_identity_mismatch += 1;
                 }
             } else {
@@ -3605,7 +3621,7 @@ fn checkExactImpl(
             const checked = try checked_declaration_symbols.getOrPut(allocator, maybe_id);
             if (checked.found_existing) continue;
             report.declaration_anchors_checked += 1;
-            if (!declaration_anchor_symbols.contains(maybe_id)) {
+            if (!declaration_anchor_symbols.contains(maybe_id) and !annex_b_alias_symbols.contains(maybe_id)) {
                 report.declaration_anchor_mismatch += 1;
                 if (report.first_declaration_anchor_mismatch == null) {
                     const node = ast.nodes.items[raw];
@@ -4787,6 +4803,20 @@ const ScopeVisitKey = struct {
 
 fn validScope(scope: ScopeId, scopes: []const Scope) bool {
     return !scope.isNone() and @as(usize, scope.toIndex()) < scopes.len;
+}
+
+/// Sloppy Annex B (B.3.3): a function declared in a block is also assigned to
+/// the enclosing function's var binding each time the block runs. The analyzer
+/// models that as one binding — the block's scope map aliases the var-scope
+/// function symbol — and output keeps that single shared identity (#5773), as
+/// esbuild and SWC do. Such a block entry/declaration is not a scope mismatch.
+fn isAnnexBBlockFunctionAlias(scopes: []const Scope, symbol: *const Symbol, block_scope: u32) bool {
+    if (!symbol.kind.isFunctionLike()) return false;
+    if (!validScope(symbol.scope_id, scopes) or block_scope >= scopes.len) return false;
+    if (!scopes[symbol.scope_id.toIndex()].kind.isVarScope()) return false;
+    const block = scopes[block_scope];
+    if (block.kind.isVarScope() or block.is_strict) return false;
+    return nearestVarScope(block_scope, scopes) == @as(?u32, symbol.scope_id.toIndex());
 }
 
 fn nearestVarScope(start: u32, scopes: []const Scope) ?u32 {

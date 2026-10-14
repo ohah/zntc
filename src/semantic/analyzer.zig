@@ -5478,6 +5478,13 @@ pub const SemanticAnalyzer = struct {
                     const name_text = self.ast.getText(name_node.span);
                     if (self.findSymbolInScope(var_scope, name_text)) |existing| {
                         if (existing.kind.isBlockScoped()) return;
+                        // 같은 var 스코프의 같은 이름 함수 선언(중복 선언, Annex B 블록 함수)은 런타임
+                        // 바인딩 하나다. 새 심볼을 만들면 앞 심볼이 스코프 맵에서 밀려나 선언도 참조도 없는
+                        // 고아가 된다. 재선언이 허용되는 경우만 기존 심볼을 그대로 쓴다 — 허용되지 않으면
+                        // 아래 선언이 early error 를 낸다.
+                        if (existing.kind.isFunctionLike() and
+                            self.canRedeclare(existing.kind, functionSymbolKind(extras[extra_start + ast_mod.FunctionExtra.flags]), var_scope))
+                            return;
                     }
                     // generator / async / async-generator 는 block-scoped function-like 이므로
                     // 1st pass 부터 정확한 SymbolKind 로 등록해야 후속 같은-이름 function-like
