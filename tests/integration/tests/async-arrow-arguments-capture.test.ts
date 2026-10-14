@@ -550,6 +550,29 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
+    name: 'retains ES5 object-method async-arrow super with lexical arguments',
+    target: 'es5',
+    source: `
+      var proto = { read(value) { return this.prefix + value; } };
+      var child = {
+        __proto__: proto,
+        readAsync(_arguments) {
+          this.prefix = 'object:';
+          var outer = _arguments;
+          return (async () => {
+            var _arguments = 99;
+            await Promise.resolve();
+            return super.read(arguments[0]) + ':' + _arguments + ':' + outer;
+          })();
+        },
+      };
+      child.readAsync('object:_arguments').then(console.log);
+    `,
+    expected: 'object:object:_arguments:99:object:_arguments\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
     name: 'lowers static lexical super through the constructor base',
     source: `
       class Base {
