@@ -761,7 +761,10 @@ pub const TransformOptions = struct {
 
 fn astHasMappedImportSource(ast: *const Ast, entries: []const ModuleSpecifierMapEntry) bool {
     if (entries.len == 0) return false;
-    for (ast.nodes.items) |node| {
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return true;
+    for (statements) |raw_stmt| {
+        if (raw_stmt >= ast.nodes.items.len) return true;
+        const node = ast.nodes.items[raw_stmt];
         if (node.tag != ast_mod.Node.Tag.import_declaration) continue;
         const extra = node.data.extra;
         if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return true;
@@ -994,6 +997,7 @@ test "module specifier maps require a graph pre-pass only for mapped imports" {
     const fixtures = [_]struct { source: []const u8, needs_prepass: bool }{
         .{ .source = "import { map } from 'lodash';", .needs_prepass = true },
         .{ .source = "import { map } from 'react';", .needs_prepass = false },
+        .{ .source = "function f() { return 1; } import { map } from 'lodash';", .needs_prepass = true },
         .{ .source = "const packageName = 'lodash';", .needs_prepass = false },
     };
     for (fixtures) |fixture| {
