@@ -1542,8 +1542,9 @@ pub fn emitChunks(
             defer allocator.free(raw_code);
 
             // 동적 import 경로 리라이트: import('./page') → import('./page.js')
-            const code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids, linker);
-            defer allocator.free(code);
+            const rewritten_code = try rewriteDynamicImports(allocator, raw_code, m, graph, chunk_graph, options.public_path, ext, options, reg_ids, linker);
+            defer if (rewritten_code) |code| allocator.free(code);
+            const code = rewritten_code orelse raw_code;
 
             // entry 모듈(또는 preserve-modules의 단일 모듈)의 directive prologue 추출.
             // "use client"/"use server"는 청크 최상단으로 호이스팅되어야 RSC가 인식.
@@ -2694,7 +2695,8 @@ fn skipWhitespaceAndComments(code: []const u8, start: usize) usize {
 /// 모듈의 import_records에서 dynamic_import 레코드를 찾아,
 /// resolve된 대상 모듈이 속한 청크의 파일명으로 specifier를 교체한다.
 ///
-/// 반환값은 항상 allocator 소유 — 리라이트 여부와 무관하게 caller가 free해야 한다.
+/// 내용이 바뀌지 않으면 null 을 반환해 입력 슬라이스를 빌린다. 리라이트한 결과만 소유하며
+/// caller 가 free 해야 한다.
 fn rewriteDynamicImports(
     allocator: std.mem.Allocator,
     code: []const u8,
@@ -2706,10 +2708,27 @@ fn rewriteDynamicImports(
     emit_options: *const EmitOptions,
     reg_ids: []const []const u8,
     linker: ?*const Linker,
-) ![]const u8 {
-    // dynamic import가 없으면 그대로 복사해서 반환
-    if (module.import_records.len == 0) {
-        return try allocator.dupe(u8, code);
+) !?[]const u8 {
+    // 경로 정보나 출력 버퍼를 준비하기 전에 리라이트 대상부터 확인한다. 동적 import 가
+    // 없거나 모두 이 청크에 없는 대상이면 호출자는 원본 코드를 그대로 쓸 수 있다.
+    var has_dynamic = false;
+    for (module.import_records) |rec| {
+        // #4616: external 동적 import 는 `resolved == .none` 이라 아래 판정에 안 걸린다.
+        // `--external-alias` 대상이면 지정자를 바꿔야 하므로 여기서도 켠다.
+        if (rec.kind == .dynamic_import and rec.resolved == .none and rec.external_specifier != null) {
+            has_dynamic = true;
+            break;
+        }
+        if (rec.kind == .dynamic_import and rec.resolved != .none) {
+            const target_chunk = chunk_graph.getModuleChunk(rec.resolved);
+            if (target_chunk != .none) {
+                has_dynamic = true;
+                break;
+            }
+        }
+    }
+    if (!has_dynamic) {
+        return null;
     }
 
     // PR B-4b-1 blocker #1: importer(현재 module 의) chunk dir 정보 캐싱 —
@@ -2731,27 +2750,6 @@ fn rewriteDynamicImports(
         try chunkPlaceholderStem(chunk_graph.getChunk(src_chunk_idx), &importer_stem_buf, allocator, emit_options);
         break :blk std.fs.path.dirname(importer_stem_buf.items) orelse "";
     };
-
-    // 리라이트할 레코드가 있는지 먼저 확인 (불필요한 할당 방지)
-    var has_dynamic = false;
-    for (module.import_records) |rec| {
-        // #4616: external 동적 import 는 `resolved == .none` 이라 아래 판정에 안 걸린다.
-        // `--external-alias` 대상이면 지정자를 바꿔야 하므로 여기서도 켠다.
-        if (rec.kind == .dynamic_import and rec.resolved == .none and rec.external_specifier != null) {
-            has_dynamic = true;
-            break;
-        }
-        if (rec.kind == .dynamic_import and rec.resolved != .none) {
-            const target_chunk = chunk_graph.getModuleChunk(rec.resolved);
-            if (target_chunk != .none) {
-                has_dynamic = true;
-                break;
-            }
-        }
-    }
-    if (!has_dynamic) {
-        return try allocator.dupe(u8, code);
-    }
 
     // 리라이트 수행: 각 dynamic import specifier를 청크 파일명으로 교체.
     // import_records를 순회하면서 코드 내의 specifier 문자열을 찾아 교체한다.
