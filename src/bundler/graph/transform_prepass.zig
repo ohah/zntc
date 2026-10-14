@@ -3657,7 +3657,7 @@ fn isRetainableEs5AsyncArrowSuper(
         arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
     const arrow = ast.getNode(arrow_idx);
     const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
-    if (arrow.tag != .arrow_function_expression or !captures.super_value or captures.new_target) return false;
+    if (arrow.tag != .arrow_function_expression or !captures.super_value) return false;
     const extra = arrow.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.flags or
         (ast.extra_data.items[extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) == 0) return false;
@@ -3782,10 +3782,11 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// functions, data bindings, and references with exact identities. Keep these
 /// paths only for the audited syntax subset. Ordinary async functions may also
 /// retain their graph when they lower to a native generator wrapper. ES5 state
-/// machine lowering retains arrows without lexical `this`/`arguments`/
-/// `new.target` captures, plus arrows whose only special lexical capture is
-/// `super` in a plain class/object method. Their generated state and helper
-/// references are tracked by the transformer.
+/// machine lowering retains arrows with audited lexical `this`, `arguments`,
+/// and `new.target` captures when the transformer has registered their exact
+/// bindings and references. When `super` is present, admit it only for a plain
+/// class/object method whose `super` uses are all inside async arrows. Direct
+/// eval and parameter-initializer arrows remain outside this subset.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
