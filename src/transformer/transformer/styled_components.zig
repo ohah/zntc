@@ -69,9 +69,9 @@ pub fn isStyledImportSource(source: []const u8) bool {
 /// 사용자 옵션 (`styled_components_top_level_import_paths`) 매칭 포함 — vendored fork
 /// 인식. babel-plugin-styled-components 의 `topLevelImportPaths` 와 동등 — 단일 `*`
 /// glob 지원 (e.g. `@my-org/*`). picomatch 풀 스펙은 미지원.
-fn isStyledImportSourceWithExtras(self: *const Transformer, source: []const u8) bool {
+pub fn isStyledImportSourceWithExtras(source: []const u8, top_level_import_paths: []const []const u8) bool {
     if (isStyledImportSource(source)) return true;
-    return string_list.anyGlobMatch(self.options.styled_components_top_level_import_paths, source);
+    return string_list.anyGlobMatch(top_level_import_paths, source);
 }
 
 /// styled-components 의 named helper imports — minify 등 transform 에 사용.
@@ -104,7 +104,7 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     const source_node = self.ast.getNode(x.source);
     if (source_node.tag != .string_literal) return;
     const source_text = import_scanner.stripQuotes(self.ast.getText(source_node.span)) orelse return;
-    if (!isStyledImportSourceWithExtras(self, source_text)) return;
+    if (!isStyledImportSourceWithExtras(source_text, self.options.styled_components_top_level_import_paths)) return;
 
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {

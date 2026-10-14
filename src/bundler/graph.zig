@@ -491,7 +491,10 @@ const PrePassPredicateTestOptions = struct {
     plugin_transform_applied: bool = false,
     react_refresh: bool = false,
     styled_components: bool = false,
+    styled_components_top_level_import_paths: []const []const u8 = &.{},
     emotion: bool = false,
+    emotion_extra_css_sources: []const []const u8 = &.{},
+    emotion_extra_styled_sources: []const []const u8 = &.{},
     worklet_transform: bool = false,
     minify_identifiers: bool = false,
 };
@@ -525,7 +528,10 @@ fn shouldRunPrePassForTest(
     graph.transform_options_base = opts.transform_options;
     graph.react_refresh = opts.react_refresh;
     graph.styled_components = opts.styled_components;
+    graph.styled_components_top_level_import_paths = opts.styled_components_top_level_import_paths;
     graph.emotion = opts.emotion;
+    graph.emotion_extra_css_sources = opts.emotion_extra_css_sources;
+    graph.emotion_extra_styled_sources = opts.emotion_extra_styled_sources;
     graph.worklet_transform = opts.worklet_transform;
     graph.minify_identifiers = opts.minify_identifiers;
 
@@ -616,6 +622,23 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "export function App() { return null; }", "refresh.tsx", .{ .react_refresh = true });
     try expectPrePassDecision(true, "import styled from 'styled-components'; export const Box = styled.div``;", "styled.ts", .{ .styled_components = true });
     try expectPrePassDecision(true, "import { css } from '@emotion/react'; export const c = css``;", "emotion.ts", .{ .emotion = true });
+    try expectPrePassDecision(false, "export const value = 42;", "styled-unused.ts", .{ .styled_components = true });
+    try expectPrePassDecision(false, "import styled from 'other-package'; export const value = 42;", "styled-unmatched.ts", .{ .styled_components = true });
+    try expectPrePassDecision(true, "import styled from '@acme/styled'; export const Box = styled.div``;", "styled-custom.ts", .{
+        .styled_components = true,
+        .styled_components_top_level_import_paths = &.{"@acme/*"},
+    });
+    try expectPrePassDecision(false, "export const value = 42;", "emotion-unused.ts", .{ .emotion = true });
+    try expectPrePassDecision(false, "import { css } from 'other-package'; export const value = 42;", "emotion-unmatched.ts", .{ .emotion = true });
+    try expectPrePassDecision(false, "import type { Emotion } from '@emotion/react'; export const value = 42;", "emotion-type-only.ts", .{ .emotion = true });
+    try expectPrePassDecision(true, "import { css } from '@acme/emotion'; export const value = 42;", "emotion-custom.ts", .{
+        .emotion = true,
+        .emotion_extra_css_sources = &.{"@acme/emotion"},
+    });
+    try expectPrePassDecision(true, "import styled from '@acme/emotion-styled'; export const value = 42;", "emotion-custom-styled.ts", .{
+        .emotion = true,
+        .emotion_extra_styled_sources = &.{"@acme/emotion-styled"},
+    });
     try expectPrePassDecision(true, "export function f() { 'worklet'; return 1; }", "worklet.ts", .{ .worklet_transform = true });
 }
 

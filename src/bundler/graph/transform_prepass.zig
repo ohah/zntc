@@ -24,6 +24,8 @@ const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").is
 const define_mod = @import("../../transformer/transformer/define.zig");
 const drop_mod = @import("../../transformer/transformer/drop.zig");
 const worklet_mod = @import("../../transformer/transformer/worklet.zig");
+const styled_components_scan = @import("../../transformer/transformer/styled_components.zig");
+const emotion_scan = @import("../../transformer/transformer/emotion.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
@@ -109,7 +111,13 @@ pub fn shouldRun(
         // code 에만 적용된다 (`/node_modules/` 밖). node_modules 의 plain ESM/ES5 dep 까지
         // pre-pass 를 돌리던 게 가장 큰 낭비였다 — 그 모듈들은 helper import 도 안 만든다.
         const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
-        if (is_user_code and (self.react_refresh or self.styled_components or self.emotion)) return true;
+        if (is_user_code and self.react_refresh) return true;
+        if (is_user_code and (self.styled_components or self.emotion)) {
+            // These transforms can only recognize bindings from their configured
+            // package imports. JSX is gated below independently for css-prop paths.
+            if (module.ast == null) return true;
+            if (hasConfiguredStylePluginImport(self, &module.ast.?)) return true;
+        }
         // worklet 변환은 react-native / @react-native 코어를 제외한 모든 모듈 대상 (`run` 의
         // exclude_worklet 과 동일). 워크릿 디렉티브가 없으면 plugin 은 no-op 이지만, 변환이
         // helper 를 주입할 수 있으니 게이트는 보수적으로 유지.
@@ -136,6 +144,28 @@ pub fn shouldRun(
         defer options_scope.end();
         return self.transform_options_base.requiresGraphPrePass(ast);
     }
+}
+
+/// Scan imports once when one or both CSS plugins are configured. Their exact
+/// source matchers are shared with the transformer so aliases and custom paths
+/// keep the same behavior in the pre-pass gate.
+fn hasConfiguredStylePluginImport(self: anytype, ast: *const ast_mod.Ast) bool {
+    for (ast.nodes.items) |node| {
+        if (node.tag != .import_declaration) continue;
+        const x = module_parser.readImportDeclExtras(ast, node.data.extra);
+        if (module_parser.isDeclarationTypeOnly(x) or x.source.isNone()) continue;
+        const source_node = ast.getNode(x.source);
+        if (source_node.tag != .string_literal) continue;
+        const source = import_scanner.stripQuotes(ast.getText(source_node.span)) orelse continue;
+        if (self.styled_components and styled_components_scan.isStyledImportSourceWithExtras(
+            source,
+            self.styled_components_top_level_import_paths,
+        )) return true;
+        if (self.emotion and
+            (emotion_scan.isEmotionCssSourceWithExtraSources(source, self.emotion_extra_css_sources) or
+                emotion_scan.isEmotionStyledSourceWithExtraSources(source, self.emotion_extra_styled_sources))) return true;
+    }
+    return false;
 }
 
 /// Type erasure, Flow match/enum/component lowering, and local TS import-equals
