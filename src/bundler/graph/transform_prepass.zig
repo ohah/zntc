@@ -159,10 +159,16 @@ pub fn shouldRun(
 /// source matchers are shared with the transformer so aliases and custom paths
 /// keep the same behavior in the pre-pass gate.
 fn hasConfiguredStylePluginImport(self: anytype, ast: *const ast_mod.Ast) bool {
-    for (ast.nodes.items) |node| {
+    const statements = ast_walk.topLevelStatementIndices(ast) orelse return true;
+    for (statements) |raw_stmt| {
+        if (raw_stmt >= ast.nodes.items.len) return true;
+        const node = ast.nodes.items[raw_stmt];
         if (node.tag != .import_declaration) continue;
-        const x = module_parser.readImportDeclExtras(ast, node.data.extra);
+        const extra = node.data.extra;
+        if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return true;
+        const x = module_parser.readImportDeclExtras(ast, extra);
         if (module_parser.isDeclarationTypeOnly(x) or x.source.isNone()) continue;
+        if (@intFromEnum(x.source) >= ast.nodes.items.len) return true;
         const source_node = ast.getNode(x.source);
         if (source_node.tag != .string_literal) continue;
         const source = import_scanner.stripQuotes(ast.getText(source_node.span)) orelse continue;

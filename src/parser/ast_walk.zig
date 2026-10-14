@@ -351,18 +351,29 @@ pub fn collectReachableNodeIndicesFrom(allocator: std.mem.Allocator, ast: *const
 /// Direct statements of the program root. Namespace `export` nodes are
 /// reachable descendants but are properties of the namespace IIFE, not ESM
 /// exports of the containing file.
+pub fn topLevelStatementIndices(ast: *const Ast) ?[]const u32 {
+    if (ast.nodes.items.len == 0) return &.{};
+
+    const root_idx = ast.transformed_root orelse @as(
+        NodeIndex,
+        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+    );
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return null;
+    const root = ast.getNode(root_idx);
+    if (root.tag != .program) return null;
+
+    const list = root.data.list;
+    const extras = ast.extra_data.items;
+    if (list.start > extras.len or list.len > extras.len - list.start) return null;
+    return extras[list.start .. list.start + list.len];
+}
+
 pub fn topLevelStatementMask(ast: *const Ast) !std.DynamicBitSet {
     // The scanners receive a module arena. This transient mask has its own
     // allocator so callers can release it before the module arena is retired.
     var mask = try std.DynamicBitSet.initEmpty(std.heap.page_allocator, ast.nodes.items.len);
-    if (ast.nodes.items.len == 0) return mask;
-    const root_idx = ast.transformed_root orelse @as(NodeIndex, @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return mask;
-    const root = ast.getNode(root_idx);
-    if (root.tag != .program) return mask;
-    const list = root.data.list;
-    if (list.start + list.len > ast.extra_data.items.len) return mask;
-    for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
+    const statements = topLevelStatementIndices(ast) orelse return mask;
+    for (statements) |raw| {
         if (raw < ast.nodes.items.len) mask.set(raw);
     }
     return mask;
@@ -499,4 +510,26 @@ test "import and named export specifiers are reachable AST children" {
     try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(import_local)) != null);
     try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(local)) != null);
     try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(exported)) != null);
+}
+
+test "top-level statement indices omit nested AST nodes and retain later imports" {
+    const Parser = @import("parser.zig").Parser;
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var scanner = try Scanner.init(
+        arena.allocator(),
+        "function Component() { const nested = () => 1; }\nimport styled from 'styled-components';\nexport const value = 1;",
+    );
+    var parser = Parser.init(arena.allocator(), &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+
+    const statements = topLevelStatementIndices(&parser.ast) orelse return error.InvalidProgramRoot;
+    try std.testing.expectEqual(@as(usize, 3), statements.len);
+    try std.testing.expect(statements.len < parser.ast.nodes.items.len);
+    try std.testing.expectEqual(.function_declaration, parser.ast.nodes.items[statements[0]].tag);
+    try std.testing.expectEqual(.import_declaration, parser.ast.nodes.items[statements[1]].tag);
+    try std.testing.expectEqual(.export_named_declaration, parser.ast.nodes.items[statements[2]].tag);
 }
