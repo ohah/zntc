@@ -336,13 +336,15 @@ fn isSupportedExternalRequireImportEquals(ast: *const ast_mod.Ast, node: ast_mod
 /// Plain top-level `export * from "specifier"` keeps the same re-export
 /// loader record through lowering. Namespace re-exports and import attributes
 /// stay on the full graph-resync path.
-fn isSupportedPlainExportAll(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+fn isSupportedPlainExportAll(
+    ast: *const ast_mod.Ast,
+    node_idx: ast_mod.NodeIndex,
+    top_level_statements: *const std.DynamicBitSet,
+) bool {
     if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.getNode(node_idx);
     if (node.tag != .export_all_declaration) return false;
-    var top_level = ast_walk.topLevelStatementMask(ast) catch return false;
-    defer top_level.deinit();
-    if (!top_level.isSet(@intFromEnum(node_idx))) return false;
+    if (!top_level_statements.isSet(@intFromEnum(node_idx))) return false;
 
     const export_all = module_parser.readExportAllExtras(ast, node.data.extra);
     if (!export_all.exported_name.isNone() or export_all.attrs_len != 0) return false;
@@ -5228,8 +5230,10 @@ fn canKeepPrepassSemanticGraph(
     if (module.ast == null or module.semantic == null) return false;
     const ast = &module.ast.?;
     const semantic = &module.semantic.?;
-    var top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
-    defer top_level_statements.deinit();
+    var top_level_statements: ?std.DynamicBitSet = null;
+    defer {
+        if (top_level_statements) |*mask| mask.deinit();
+    }
     // The Reanimated visitor edits only the module AST. Its generated factory
     // bindings/references and scopes are attached to the semantic editor, so
     // preserve that graph when it is the sole built-in plugin. Arbitrary user
@@ -5321,7 +5325,11 @@ fn canKeepPrepassSemanticGraph(
             },
             .export_all_declaration => {
                 const node_idx: ast_mod.NodeIndex = @enumFromInt(@as(u32, @intCast(raw_node_idx)));
-                if (!isSupportedPlainExportAll(ast, node_idx)) return false;
+                if (top_level_statements == null) {
+                    top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
+                }
+                const top_level_mask = if (top_level_statements) |*mask| mask else return false;
+                if (!isSupportedPlainExportAll(ast, node_idx, top_level_mask)) return false;
                 found_transform = true;
             },
             // These constructs can alter the import/export graph or create
