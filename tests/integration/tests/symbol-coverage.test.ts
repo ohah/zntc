@@ -6963,6 +6963,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-native-await-retained-'));
     const output = join(dir, 'out.cjs');
     const esmOutput = join(dir, 'tla-out.mjs');
+    const iifeOutput = join(dir, 'iife-out.js');
     const input = join(dir, 'entry.ts');
     writeFileSync(
       input,
@@ -7022,6 +7023,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const nativeOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(nativeOutput.status, nativeOutput.stderr).toBe(0);
       expect(nativeOutput.stdout).toBe('42\n');
+
+      // The IIFE async-factory option is a no-op for modules without TLA.
+      // Keep their edited graph instead of forcing an unnecessary rescan.
+      const nonTlaIife = run('--target=es2022', 'iife', iifeOutput);
+      expect(nonTlaIife.status, nonTlaIife.stderr).toBe(0);
+      const nonTlaIifeMode = (nonTlaIife.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(nonTlaIifeMode, nonTlaIife.stderr).toContain('semantic_graph=retained');
+      const nonTlaIifeOutput = spawnSync('node', [iifeOutput], { encoding: 'utf8' });
+      expect(nonTlaIifeOutput.status, nonTlaIifeOutput.stderr).toBe(0);
+      expect(nonTlaIifeOutput.stdout).toBe('42\n');
 
       // Ordinary async function lowering now keeps its edited generator scope
       // and helper identity without replacing the source semantic graph.

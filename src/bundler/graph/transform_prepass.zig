@@ -5145,11 +5145,12 @@ fn canKeepPrepassSemanticGraph(
         hasDroppedLabeledStatement(ast, options.drop_labels) or define_mod.astUsesDefine(ast, options.define) or
         options.hasMappedImportSource(ast) or
         (!options.use_define_for_class_fields and hasClassFieldSyntax(ast)) or options.experimental_decorators or
-        options.emit_decorator_metadata or options.tla_chunk_wrapped or options.tla_export_decl_deferrable or
-        options.tla_module_awaited) return false;
+        options.emit_decorator_metadata) return false;
     const has_top_level_await = module.uses_top_level_await or module.self_uses_top_level_await;
     // The parser already records native TLA exactly. Lowered TLA moves await
     // into a generated async IIFE, so keep that case on the full resync path.
+    // The TLA wrapper/deferral options only affect this program-level lowering
+    // when the module actually contains top-level await.
     if (has_top_level_await and options.unsupported.top_level_await) return false;
     if (!hasSupportedTopLevelExportDeclarations(module)) return false;
     if (!hasStableRuntimeImports(ast, options)) return false;
