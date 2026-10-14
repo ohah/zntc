@@ -207,6 +207,9 @@ pub const Transformer = struct {
     /// Exact binding nodes created while lowering destructuring declarations.
     /// Namespace export printing keeps these temporary stores local to its IIFE.
     destructuring_temp_bindings: std.AutoHashMapUnmanaged(u32, void) = .empty,
+    /// The expression an expression statement is visiting: its value is
+    /// dropped (an array destructuring then needs no value temp, #4799).
+    discarded_expression: NodeIndex = .none,
     /// ES5 destructuring declaration temp span -> exact generated SymbolId.
     /// The unique string-table span survives counter resets in nested functions.
     destructuring_temp_symbol_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty,

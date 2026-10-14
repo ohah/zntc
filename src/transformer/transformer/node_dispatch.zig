@@ -238,6 +238,13 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
 
         // === 단항 노드: 자식 1개 재귀 방문 ===
         .expression_statement => {
+            // The statement drops its expression's value (#4799).
+            const saved_discarded = self.discarded_expression;
+            var discarded = node.data.unary.operand;
+            while (!discarded.isNone() and self.ast.getNode(discarded).tag == .parenthesized_expression)
+                discarded = self.ast.getNode(discarded).data.unary.operand;
+            self.discarded_expression = discarded;
+            defer self.discarded_expression = saved_discarded;
             // emotion `injectGlobal\`...\`;` 같은 expression-statement form 에 sourceMap
             // 적용. autoLabel 은 var 이름이 없어 미적용 — sourceMap 만 부여.
             if (self.options.emotion and self.options.emotion_source_map) {
@@ -391,7 +398,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 const left_idx = node.data.binary.left;
                 if (!left_idx.isNone()) {
                     if (needsDestructuringAssignmentLowering(self, left_idx)) {
-                        return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node);
+                        return es2015_destructuring.ES2015Destructuring(Transformer).lowerDestructuringAssignment(self, node, idx != self.discarded_expression);
                     }
                 }
             }

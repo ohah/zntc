@@ -496,25 +496,36 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         /// assignment destructuring을 sequence expression으로 변환.
         /// ({a, b} = obj) → (_ref = obj, a = _ref.a, b = _ref.b, _ref)
-        pub fn lowerDestructuringAssignment(self: *Transformer, node: Node) Transformer.Error!NodeIndex {
-            return lowerDestructuringAssignmentWithRight(self, node, try self.visitNode(node.data.binary.right));
+        /// `value_used`: the assignment's value is read (not a discarded
+        /// expression statement).
+        pub fn lowerDestructuringAssignment(self: *Transformer, node: Node, value_used: bool) Transformer.Error!NodeIndex {
+            return lowerDestructuringAssignmentWithRight(self, node, try self.visitNode(node.data.binary.right), value_used);
         }
 
         /// `new_right` is the right side already in the output AST (a state
         /// machine replaced its `yield`s, #5728).
-        pub fn lowerDestructuringAssignmentWithRight(self: *Transformer, node: Node, new_right: NodeIndex) Transformer.Error!NodeIndex {
+        pub fn lowerDestructuringAssignmentWithRight(self: *Transformer, node: Node, new_right: NodeIndex, value_used: bool) Transformer.Error!NodeIndex {
             const span = node.span;
             const left_idx = node.data.binary.left;
 
             const left_node = self.ast.getNode(left_idx);
-            const assignment_right = if (left_node.tag == .array_assignment_target or left_node.tag == .array_pattern)
-                try buildArrayRead(self, new_right, left_node, span)
+            const scratch_top = self.scratch.items.len;
+            defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+            // An array pattern reads a `__read` copy, but the assignment's value
+            // is the right side itself (`([a] = arr) === arr`): keep it in a
+            // temp when the value is read (#4799).
+            const is_array = left_node.tag == .array_assignment_target or left_node.tag == .array_pattern;
+            const value_temp: ?es_helpers.TempCapture = if (is_array and value_used)
+                try es_helpers.captureToTrackedTemp(self, new_right, span)
+            else
+                null;
+            const array_source = if (value_temp) |temp| temp.paren_assign else new_right;
+            const assignment_right = if (is_array)
+                try buildArrayRead(self, array_source, left_node, span)
             else
                 new_right;
             const temp_span = try es_helpers.makeTempVarSpan(self);
-
-            const scratch_top = self.scratch.items.len;
-            defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             // _ref = obj
             const temp_ref = try makeDestructuringTempWrite(self, temp_span, temp_span);
@@ -532,8 +543,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 try emitArrayAssignments(self, left_node, temp_span, span);
             }
 
-            // 마지막에 _ref 반환
-            try self.scratch.append(self.allocator, try makeDestructuringTempRead(self, temp_span, temp_span));
+            // 마지막에 _ref 반환 (array pattern 의 값은 원래 우변)
+            try self.scratch.append(self.allocator, if (value_temp) |temp|
+                try es_helpers.makeTrackedTempRef(self, temp.span, span, .{ .read = true })
+            else
+                try makeDestructuringTempRead(self, temp_span, temp_span));
 
             // sequence expression
             const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
