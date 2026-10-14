@@ -863,7 +863,10 @@ pub const SemanticAnalyzer = struct {
         // 기준의 linker rename / reference 와 어긋난다 (#2714 LogBox 회귀).
         // alias 후 같은 block 의 후속 lexical/function 선언은 block_scope.map 에서 X 를 발견
         // 해 canRedeclare 체크가 정상 작동한다.
-        if (!is_annex_b_fn and kind.isFunctionLike() and !target_scope.isNone() and
+        // Strict code keeps the block function its own lexical binding (#4767):
+        // aliasing it to the var-scope X made the block's later visit see X
+        // as an earlier declaration of the same name.
+        if (!is_annex_b_fn and !self.isCurrentStrict() and kind.isFunctionLike() and !target_scope.isNone() and
             !self.scopes.items[target_scope.toIndex()].kind.isVarScope())
         {
             const var_scope_for_alias = self.findVarScope();
