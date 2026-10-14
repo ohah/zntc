@@ -3737,7 +3737,6 @@ fn isRetainableEs5AsyncArrowStateMachine(
         (ast.extra_data.items[flags_at] & ast_mod.ArrowFlags.is_async) == 0) return false;
 
     const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
-    if (captures.new_target) return false;
     if (captures.super_value)
         return isRetainableEs5AsyncArrowSuper(ast, arrow_idx, options, parents);
 
