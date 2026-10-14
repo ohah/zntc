@@ -482,7 +482,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (value_node.tag == .yield_expression or value_node.tag == .await_expression) {
                 const inner_value = value_node.data.unary.operand;
                 const new_inner = try visitExprWithYieldExtraction(self, inner_value, ops, next_label);
-                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(value_node), .arg = .{ .node = new_inner } });
+                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(value_node), .arg = .{ .node = try asyncGenAwaitValue(self, value_node, new_inner) } });
                 next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                 return buildSentCall(self, span);
@@ -516,7 +516,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     if (expr.tag == .yield_expression or expr.tag == .await_expression) {
                         const value_idx = expr.data.unary.operand;
                         const new_value = try visitExprWithYieldExtraction(self, value_idx, ops, next_label);
-                        try ops.append(self.allocator, .{ .code = yieldOpCodeFor(expr), .arg = .{ .node = new_value } });
+                        try ops.append(self.allocator, .{ .code = yieldOpCodeFor(expr), .arg = .{ .node = try asyncGenAwaitValue(self, expr, new_value) } });
                         next_label.* += 1;
                         try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                         // _state.sent() — resume 시 throw된 에러를 발생시키기 위해 필수
@@ -1909,7 +1909,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // var x = yield/await value → yield value + x = _state.sent()
                     const yield_val = init_node.data.unary.operand;
                     const new_val = try visitExprWithYieldExtraction(self, yield_val, ops, next_label);
-                    try ops.append(self.allocator, .{ .code = yieldOpCodeFor(init_node), .arg = .{ .node = new_val } });
+                    try ops.append(self.allocator, .{ .code = yieldOpCodeFor(init_node), .arg = .{ .node = try asyncGenAwaitValue(self, init_node, new_val) } });
                     next_label.* += 1;
                     try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
@@ -2071,6 +2071,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return self.needsDestructuringAssignmentLowering(left_idx) and !es2015_scan.containsYield(self, left_idx);
         }
 
+        /// In an async generator, an `await` the state machine meets (one that
+        /// a lowering created during the body visit, like `await using`'s
+        /// dispose) is `yield __await(v)`, not a plain yield (#4798).
+        fn asyncGenAwaitValue(self: *Transformer, node: Node, value: NodeIndex) Transformer.Error!NodeIndex {
+            if (node.tag != .await_expression or !self.in_async_generator_body) return value;
+            self.runtime_helpers.await_helper = true;
+            const await_ref = try es_helpers.makeRuntimeHelperRef(self, "__await");
+            return es_helpers.makeCallExpr(self, await_ref, &.{value}, node.span);
+        }
+
         fn visitExprWithYieldExtraction(self: *Transformer, expr_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!NodeIndex {
             if (expr_idx.isNone()) return .none;
             const node = self.ast.getNode(expr_idx);
@@ -2083,7 +2093,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try visitExprWithYieldExtraction(self, value_idx, ops, next_label)
                 else
                     NodeIndex.none;
-                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(node), .arg = .{ .node = new_value } });
+                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(node), .arg = .{ .node = try asyncGenAwaitValue(self, node, new_value) } });
                 next_label.* += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                 // temp 변수에 _state.sent() 결과 저장
@@ -2447,7 +2457,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try visitExprWithYieldExtraction(self, inner_value, &ops, &next_label)
                 else
                     NodeIndex.none;
-                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(body), .arg = .{ .node = new_inner } });
+                try ops.append(self.allocator, .{ .code = yieldOpCodeFor(body), .arg = .{ .node = try asyncGenAwaitValue(self, body, new_inner) } });
                 next_label += 1;
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
                 const sent = try buildSentCall(self, span);
