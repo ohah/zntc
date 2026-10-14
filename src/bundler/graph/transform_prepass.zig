@@ -3499,6 +3499,40 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
+fn isRetainableEs5AsyncObjectMethodNode(
+    ast: *const ast_mod.Ast,
+    method_idx: ast_mod.NodeIndex,
+    options: TransformOptions,
+    parents: *const std.AutoHashMapUnmanaged(u32, u32),
+) bool {
+    if (!options.unsupported.async_await or !options.unsupported.generator or
+        method_idx.isNone() or @intFromEnum(method_idx) >= ast.nodes.items.len) return false;
+    const method = ast.getNode(method_idx);
+    if (method.tag != .method_definition) return false;
+    const extra = method.data.extra;
+    if (extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.flags or
+        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.key or
+        ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return false;
+    const flags = ast.extra_data.items[extra + ast_mod.MethodExtra.flags];
+    if (flags != ast_mod.MethodFlags.is_async) return false;
+    const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.key]);
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    const key = ast.getNode(key_idx);
+    if (key.tag != .identifier_reference) return false;
+
+    const owner_raw = parents.get(@intFromEnum(method_idx)) orelse return false;
+    if (owner_raw >= ast.nodes.items.len or ast.nodes.items[owner_raw].tag != .object_expression) return false;
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+    const body_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, body_idx) catch return false;
+    defer ast.allocator.free(body_nodes);
+    for (body_nodes) |raw_idx| {
+        if (raw_idx >= ast.nodes.items.len or ast.nodes.items[raw_idx].tag == .super_expression) return false;
+    }
+    return true;
+}
+
 /// Async arrows keep their source arrow scope while the lowered generator is
 /// nested inside it. Lexical `this`, `arguments`, and `new.target` references
 /// are safe once the transformer has represented them with exact capture
@@ -3862,6 +3896,22 @@ fn canRetainGraphForAuditedSyntaxSubset(
                             &source_parent_map,
                         );
                     }
+                } else if (node.tag == .method_definition) {
+                    if (!source_parent_map_ready) {
+                        if (!collectRetainedPreflightParents(
+                            ast.allocator,
+                            ast,
+                            root_idx,
+                            &source_parent_map,
+                        )) return false;
+                        source_parent_map_ready = true;
+                    }
+                    retainable = isRetainableEs5AsyncObjectMethodNode(
+                        ast,
+                        arrow_idx,
+                        options,
+                        &source_parent_map,
+                    );
                 } else {
                     retainable = isRetainableAsyncFunctionNode(ast, node, options);
                 }
@@ -4649,8 +4699,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const is_async = (flags & ast_mod.MethodFlags.is_async) != 0;
                 const is_generator = (flags & ast_mod.MethodFlags.is_generator) != 0;
                 if ((is_async and is_generator and options.unsupported.async_generator) or
-                    (is_async and options.unsupported.async_await) or
+                    (is_async and options.unsupported.async_await and
+                        !retained_async_functions.contains(raw_idx)) or
                     (is_generator and options.unsupported.generator)) return false;
+                if (is_async and options.unsupported.async_await) found_lowered_async_function = true;
                 const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
                 if (options.unsupported.object_extensions and !is_accessor) {
                     // The object-method lowering reuses this method's function
