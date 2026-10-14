@@ -2693,7 +2693,6 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 심볼 없는 바인딩은 변환기가 만든 임시 변수(`_d`, `_using`, `_` …)로, 만들 때 함수 안에서
         /// 고유하게 지어지므로 이름을 그대로 올린다.
         fn registerStateMachineBindings(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!void {
-            if (!stateMachineRenamesBlockScope(self)) return;
             for (bindings) |binding| {
                 const bi = @intFromEnum(binding);
                 const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
@@ -2701,6 +2700,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
                     continue;
                 };
+                // 블록 스코프가 네이티브인 타깃(chrome49)은 소스 바인딩을 제자리에 둔다. 다만 분석 후
+                // 하강이 만든 바인딩(for-of 의 `catch (_err)`, 이름이 string table 에 있음)은 어느
+                // hoist 스캔에도 없으므로 여기서 선언해야 strict 코드에서 ReferenceError 가 안 난다 (#5769).
+                if (!stateMachineRenamesBlockScope(self)) {
+                    const name_span = self.ast.getNode(binding).data.string_ref;
+                    if (name_span.start & ast_mod.Ast.STRING_TABLE_BIT != 0 and !isRegisteredGeneratorBinding(self, binding))
+                        try registerGeneratorVar(self, name_span, binding);
+                    continue;
+                }
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution and
                     !self.options.emit_runtime_helper_imports and sid < symbols.len and
