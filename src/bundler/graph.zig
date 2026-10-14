@@ -644,6 +644,24 @@ test "graph pre-pass predicate: syntax and options that mutate graph-visible sur
     try expectPrePassDecision(true, "export function f() { 'worklet'; return 1; }", "worklet.ts", .{ .worklet_transform = true });
 }
 
+test "graph pre-pass predicate: worklet transforms stay gated by conservative AST signals" {
+    const worklet: PrePassPredicateTestOptions = .{ .worklet_transform = true };
+    try expectPrePassDecision(false, "export const answer = 42;", "worklet-noop.ts", worklet);
+    try expectPrePassDecision(true, "export function f() { 'worklet'; return 1; }", "worklet-function.ts", worklet);
+    try expectPrePassDecision(true, "'worklet'; export function f() { return 1; }", "worklet-file.ts", worklet);
+    try expectPrePassDecision(true, "runOnUI(() => 1);", "worklet-auto.ts", worklet);
+    try expectPrePassDecision(true, "const context = { __workletContextObject: true };", "worklet-context.ts", worklet);
+    try expectPrePassDecision(true, "class Context { __workletClass = true; }", "worklet-class.ts", worklet);
+    try expectPrePassDecision(false, "class Plain { value = true; }", "worklet-class-noop.ts", worklet);
+    try expectPrePassDecision(false, "isWeb();", "worklet-web-check-disabled.ts", worklet);
+    try expectPrePassDecision(true, "isWeb();", "worklet-web-check.ts", .{
+        .worklet_transform = true,
+        .transform_options = .{ .substitute_web_platform_checks = true },
+    });
+    try expectPrePassDecision(false, "function f() { 'worklet'; return 1; }", "/repo/node_modules/react-native/index.js", worklet);
+    try expectPrePassDecision(true, "function f() { 'worklet'; return 1; }", "/repo/node_modules/react-native-reanimated/worklet.js", worklet);
+}
+
 // Regression: `toPosixPath` 가 Debug/ReleaseSafe 빌드에서 null byte path 를
 // `reached unreachable code` 로 panic 시키던 걸 `getMtime` 이 error 로
 // 폴백하도록 만든 가드. plugin 합성 virtual path / AssetRegistry / 빈 경로

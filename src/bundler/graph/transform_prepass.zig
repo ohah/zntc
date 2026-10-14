@@ -27,6 +27,7 @@ const worklet_mod = @import("../../transformer/transformer/worklet.zig");
 const styled_components_scan = @import("../../transformer/transformer/styled_components.zig");
 const emotion_scan = @import("../../transformer/transformer/emotion.zig");
 const refresh_mod = @import("../../transformer/transformer/refresh.zig");
+const worklet_plugin = @import("../../transformer/plugins/worklet_plugin.zig");
 const Transformer = @import("../../transformer/transformer.zig").Transformer;
 const TransformOptions = @import("../../transformer/transformer.zig").TransformOptions;
 const builtin_plugins = @import("../../transformer/plugins/builtin.zig");
@@ -122,14 +123,6 @@ pub fn shouldRun(
             if (module.ast == null) return true;
             if (hasConfiguredStylePluginImport(self, &module.ast.?)) return true;
         }
-        // worklet 변환은 react-native / @react-native 코어를 제외한 모든 모듈 대상 (`run` 의
-        // exclude_worklet 과 동일). 워크릿 디렉티브가 없으면 plugin 은 no-op 이지만, 변환이
-        // helper 를 주입할 수 있으니 게이트는 보수적으로 유지.
-        if (self.worklet_transform) {
-            const is_rn_core = std.mem.indexOf(u8, module.path, "/node_modules/react-native/") != null or
-                std.mem.indexOf(u8, module.path, "/node_modules/@react-native/") != null;
-            if (!is_rn_core) return true;
-        }
     }
 
     const ast = &module.ast.?;
@@ -139,6 +132,18 @@ pub fn shouldRun(
         if (ast.has_jsx or ast.has_decorator or ast.has_ts_namespace_or_enum or
             ast.has_ts_import_equals or ast.has_ts_export_equals)
         {
+            return true;
+        }
+    }
+
+    // The built-in worklet plugin changes only modules containing a supported
+    // directive, auto-worklet call, marker, or enabled web-platform check.
+    // Keep a conservative AST signal scan so ordinary RN dependencies avoid
+    // the graph pre-pass while every transform-capable module stays on it.
+    if (self.worklet_transform) {
+        const is_rn_core = std.mem.indexOf(u8, module.path, "/node_modules/react-native/") != null or
+            std.mem.indexOf(u8, module.path, "/node_modules/@react-native/") != null;
+        if (!is_rn_core and hasWorkletTransformSignal(ast, self.transform_options_base.substitute_web_platform_checks)) {
             return true;
         }
     }
@@ -5071,6 +5076,82 @@ fn hasClassFieldSyntax(ast: *const ast_mod.Ast) bool {
         if (node.tag == .property_definition) return true;
     }
     return false;
+}
+
+fn hasWorkletTransformSignal(ast: *const ast_mod.Ast, substitute_web_platform_checks: bool) bool {
+    if (hasFileWorkletDirective(ast)) return true;
+
+    const worklet = worklet_plugin.plugin();
+    for (ast.nodes.items) |node| {
+        switch (node.tag) {
+            .function_declaration,
+            .function_expression,
+            .function,
+            .arrow_function_expression,
+            .method_definition,
+            => if (functionHasWorkletDirective(ast, node)) return true,
+            .identifier_reference => {
+                const name = ast.getText(node.span);
+                if (std.mem.eql(u8, name, "__workletContextObject") or
+                    std.mem.eql(u8, name, "__workletClass")) return true;
+            },
+            .call_expression => {
+                const name = workletCallCalleeName(ast, node) orelse continue;
+                for (worklet.autoWorkletCallees) |callee| {
+                    if (std.mem.eql(u8, callee.name, name)) return true;
+                }
+                if (substitute_web_platform_checks) {
+                    for (worklet_plugin.WEB_PLATFORM_CHECK_NAMES) |web_name| {
+                        if (std.mem.eql(u8, web_name, name)) return true;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn hasFileWorkletDirective(ast: *const ast_mod.Ast) bool {
+    if (ast.nodes.items.len == 0) return false;
+    const root_idx = ast.transformed_root orelse @as(
+        ast_mod.NodeIndex,
+        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+    );
+    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return true;
+    const root = ast.getNode(root_idx);
+    if (root.tag != .program) return true;
+
+    const list = root.data.list;
+    if (list.start > ast.extra_data.items.len or list.len > ast.extra_data.items.len - list.start) return true;
+    var i: u32 = 0;
+    while (i < list.len) : (i += 1) {
+        const raw_stmt = ast.extra_data.items[list.start + i];
+        if (raw_stmt >= ast.nodes.items.len) return true;
+        const text = worklet_mod.directiveText(ast, @enumFromInt(raw_stmt)) orelse return false;
+        if (std.mem.eql(u8, text, "worklet")) return true;
+    }
+    return false;
+}
+
+fn workletCallCalleeName(ast: *const ast_mod.Ast, node: ast_mod.Node) ?[]const u8 {
+    const extras = ast.extra_data.items;
+    const call_extra = node.data.extra;
+    if (call_extra >= extras.len) return null;
+    const callee_raw = extras[call_extra];
+    if (callee_raw >= ast.nodes.items.len) return null;
+    const callee = ast.nodes.items[callee_raw];
+    return switch (callee.tag) {
+        .identifier_reference => ast.getText(callee.span),
+        .static_member_expression => blk: {
+            const member_extra = callee.data.extra;
+            if (member_extra >= extras.len or extras.len - member_extra <= 1) break :blk null;
+            const property_raw = extras[member_extra + 1];
+            if (property_raw >= ast.nodes.items.len) break :blk null;
+            break :blk ast.getText(ast.nodes.items[property_raw].span);
+        },
+        else => null,
+    };
 }
 
 fn functionHasWorkletDirective(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
