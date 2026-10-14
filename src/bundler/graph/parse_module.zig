@@ -37,7 +37,11 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     base.jsx_transform = ast.has_jsx;
     const options = base.withModuleJsxPragmas(ast);
     const is_user_code = std.mem.indexOf(u8, module.path, "/node_modules/") == null;
-    if (((self.emotion or self.styled_components) and is_user_code) or options.emit_decorator_metadata) return;
+    // Decorator metadata only writes type references into code for decorated
+    // members. Without decorators the graph pre-pass is skipped too, so this
+    // pass must judge the imports (#5794).
+    if (((self.emotion or self.styled_components) and is_user_code) or
+        (options.emit_decorator_metadata and ast.has_decorator)) return;
     const verbatim_module_syntax = options.verbatim_module_syntax;
     if (!verbatim_module_syntax) markInlineTypeOnlyImports(module, ast);
     const sem = if (module.semantic) |*s| s else return;
