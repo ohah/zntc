@@ -3923,8 +3923,22 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
+fn isRetainableAsyncObjectMethodKey(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    key_idx: ast_mod.NodeIndex,
+) bool {
+    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    const key = ast.getNode(key_idx);
+    if (key.tag == .identifier_reference or isStaticLiteralObjectMethodKey(ast, key_idx)) return true;
+    if (key.tag != .computed_property_key) return false;
+    const value_idx = key.data.unary.operand;
+    return isBoundSourceIdentifierReference(ast, semantic, value_idx);
+}
+
 fn isRetainableEs5AsyncObjectMethodNode(
     ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
     method_idx: ast_mod.NodeIndex,
     options: TransformOptions,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -3942,8 +3956,7 @@ fn isRetainableEs5AsyncObjectMethodNode(
     if (flags != ast_mod.MethodFlags.is_async) return false;
     const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.key]);
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
-    const key = ast.getNode(key_idx);
-    if (key.tag != .identifier_reference and !isStaticLiteralObjectMethodKey(ast, key_idx)) return false;
+    if (!isRetainableAsyncObjectMethodKey(ast, semantic, key_idx)) return false;
 
     const owner_raw = parents.get(@intFromEnum(method_idx)) orelse return false;
     if (owner_raw >= ast.nodes.items.len or ast.nodes.items[owner_raw].tag != .object_expression) return false;
@@ -4207,6 +4220,7 @@ fn methodSuperUsesInAsyncArrowScopesOrDirectBody(
 
 fn isRetainableEs5AsyncArrowSuper(
     ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
     arrow_idx: ast_mod.NodeIndex,
     options: TransformOptions,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -4246,8 +4260,9 @@ fn isRetainableEs5AsyncArrowSuper(
             const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]);
             if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
             const key = ast.getNode(key_idx);
-            if (key.tag != .identifier_reference and
-                !(method_owner.tag == .object_expression and isStaticLiteralObjectMethodKey(ast, key_idx))) return false;
+            if (method_owner.tag == .object_expression) {
+                if (!isRetainableAsyncObjectMethodKey(ast, semantic, key_idx)) return false;
+            } else if (key.tag != .identifier_reference) return false;
             if (method_extra > ast.extra_data.items.len or
                 ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.body) return false;
             const body_raw = ast.extra_data.items[method_extra + ast_mod.MethodExtra.body];
@@ -4265,6 +4280,7 @@ fn isRetainableEs5AsyncArrowSuper(
             if (method_owner.tag == .object_expression) {
                 if (is_async_object_method and !isRetainableEs5AsyncObjectMethodNode(
                     ast,
+                    semantic,
                     @enumFromInt(current),
                     options,
                     parents,
@@ -4296,6 +4312,7 @@ fn isRetainableEs5AsyncArrowSuper(
 
 fn isRetainableEs5AsyncArrowStateMachine(
     ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
     arrow_idx: ast_mod.NodeIndex,
     options: TransformOptions,
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
@@ -4310,7 +4327,7 @@ fn isRetainableEs5AsyncArrowStateMachine(
 
     const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
     if (captures.super_value)
-        return isRetainableEs5AsyncArrowSuper(ast, arrow_idx, options, parents);
+        return isRetainableEs5AsyncArrowSuper(ast, semantic, arrow_idx, options, parents);
 
     // Parameter initializers run before the async arrow's body wrapper exists.
     var current = parents.get(@intFromEnum(arrow_idx)) orelse return false;
@@ -4432,6 +4449,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         }
                         retainable = isRetainableEs5AsyncArrowStateMachine(
                             ast,
+                            semantic,
                             arrow_idx,
                             options,
                             &source_parent_map,
@@ -4457,6 +4475,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         }
                         retainable = isRetainableEs5AsyncObjectMethodNode(
                             ast,
+                            semantic,
                             arrow_idx,
                             options,
                             &source_parent_map,
@@ -4659,11 +4678,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
         }
     }
 
-    // Plain computed data properties, synchronous object methods, computed
-    // accessors without `super`, and audited static class-field keys lower
-    // through tracked temps and output scopes. Accessor `super` may add a
-    // runtime helper module, so it stays on reanalysis. Async/generator methods
-    // and unaudited class keys remain gated out.
+    // Plain computed data properties, synchronous object methods, async object
+    // methods with static or bound-identifier keys, computed accessors without
+    // `super`, and audited static class-field keys lower through tracked temps
+    // and output scopes. Accessor `super` may add a runtime helper module, so it
+    // stays on reanalysis. Generator methods and other async keys stay gated out.
     const ComputedObjectKeyOwner = enum { data_property, method, accessor, static_class_field };
     const ComputedObjectKey = struct { node: ast_mod.NodeIndex, owner: ComputedObjectKeyOwner };
     var computed_object_keys: std.AutoHashMapUnmanaged(u32, ComputedObjectKeyOwner) = .empty;
@@ -4703,7 +4722,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         const key_idx: ast_mod.NodeIndex = @enumFromInt(
                             ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
                         );
-                        if (is_async and !isStaticLiteralObjectMethodKey(ast, key_idx)) break :blk null;
+                        if (is_async and !isRetainableAsyncObjectMethodKey(ast, semantic, key_idx)) break :blk null;
                         const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
                         break :blk .{
                             .node = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]),

@@ -8140,7 +8140,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(directEvalOutput.status, directEvalOutput.stderr).toBe(0);
       expect(directEvalOutput.stdout).toBe('42\n');
 
-      // Computed keys are evaluated outside the method scope and remain gated.
+      // A bound computed key keeps its outer-scope reference; effectful keys remain gated.
       const computedKey = run(
         [
           "var key = 'calculate';",
@@ -8160,7 +8160,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(computedKeyMode, computedKey.stderr).toContain('semantic_graph=reanalyzed');
+      expect(computedKeyMode, computedKey.stderr).toContain('semantic_graph=retained');
+      const computedKeyReport = (computedKey.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(computedKeyReport, computedKey.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(computedKeyReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${computedKeyReport}`,
+        ).toBe(0);
+      }
+      expect(computedKeyReport).toMatch(/clean=1(?:\s|$)/);
       const computedKeyOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(computedKeyOutput.status, computedKeyOutput.stderr).toBe(0);
       expect(computedKeyOutput.stdout).toBe('42\n');
@@ -8558,7 +8571,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async object super keeps static computed method keys on the retained graph', () => {
+  test('ES5 async object super retains static and bound computed method keys', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-literal-object-super-key-'));
     const input = join(dir, 'entry.ts');
     const nativeInput = join(dir, 'oracle.mjs');
@@ -8588,6 +8601,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       return [
         'var events = []; var receiver;',
         'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0, methodKeyCalls = 0;',
+        "var methodName = 'update';",
         'function getMethodName() { methodKeyCalls += 1; return "update"; }',
         'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
         'function getNext() { rhsEvaluations += 1; events.push("rhs"); return 84; }',
@@ -8646,6 +8660,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         { key: '[typeof !1n]', call: 'service.boolean', retainsGraph: true, keyCalls: 0 },
         { key: '[~~1n]', call: 'service[1]', retainsGraph: true, keyCalls: 0 },
         { key: '[void !1n]', call: 'service.undefined', retainsGraph: true, keyCalls: 0 },
+        { key: '[methodName]', call: 'service[methodName]', retainsGraph: true, keyCalls: 0 },
         { key: '[`update`]', call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[`up${"date"}`]', call: 'service.update', retainsGraph: false, keyCalls: 0 },
         { key: '[getMethodName()]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
