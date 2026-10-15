@@ -948,9 +948,9 @@ fn isUnresolvedGlobalUndefinedReference(
     return std.mem.eql(u8, ast.getText(ast.getNode(node_idx).span), "undefined");
 }
 
-/// `var` bindings are initialized to `undefined` at function entry, so
+/// `var` and function bindings are initialized by scope instantiation, so
 /// `typeof` and `void` cannot observe a lexical TDZ while preserving the exact SID.
-fn isInitializedVarSourceIdentifierReference(
+fn isInitializedSourceIdentifierReference(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
@@ -958,7 +958,8 @@ fn isInitializedVarSourceIdentifierReference(
     if (!hasValidSourceSymbol(ast, semantic, node_idx, .identifier_reference)) return false;
     const raw_idx = @intFromEnum(node_idx);
     const symbol_raw = semantic.symbol_ids[raw_idx] orelse return false;
-    return semantic.symbols.items[symbol_raw].kind == .variable_var;
+    const kind = semantic.symbols.items[symbol_raw].kind;
+    return kind == .variable_var or kind == .function_decl;
 }
 
 fn isBoundSourceIdentifierBinding(
@@ -4030,7 +4031,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             if (operator == .kw_typeof and
                 isUnresolvedSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
             if ((operator == .kw_typeof or operator == .kw_void) and
-                isInitializedVarSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
+                isInitializedSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
             break :blk isSafeConstructorUnaryOperator(operator) and
                 isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
