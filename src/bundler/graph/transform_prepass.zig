@@ -887,8 +887,8 @@ fn methodSuperUsesOnlyAsyncArrowsAtMethodDepth(ast: *const ast_mod.Ast, method: 
     return methodSuperUsesOnlyArrowScopes(ast, method, true, 1, true);
 }
 
-fn methodSuperUsesOnlyOneNestedAsyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
-    return methodSuperUsesOnlyArrowScopes(ast, method, true, 2, false);
+fn methodSuperUsesOnlyAsyncArrowsAtNestedMethodDepth(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    return methodSuperUsesOnlyArrowScopes(ast, method, true, 2, true);
 }
 
 fn hasValidSourceSymbol(
@@ -3534,7 +3534,7 @@ fn isSimpleClass(
         const retains_async_class_method_nested_async_arrow_super =
             (is_es5_async_instance_method or is_es5_async_static_method) and
             allow_es5_async_class_methods and !super.isNone() and
-            methodSuperUsesOnlyOneNestedAsyncArrow(ast, member);
+            methodSuperUsesOnlyAsyncArrowsAtNestedMethodDepth(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or
             (has_super and !retains_async_arrow_super and !retains_async_class_method_super and
@@ -3686,7 +3686,7 @@ fn registerRetainableEs5AsyncClassMethods(
                 (!methodSuperUsesOnlyDirectMethodBody(ast, member) and
                     !methodSuperUsesOnlySingleSyncArrow(ast, member) and
                     !methodSuperUsesOnlyAsyncArrowsAtMethodDepth(ast, member) and
-                    !methodSuperUsesOnlyOneNestedAsyncArrow(ast, member)))) return false;
+                    !methodSuperUsesOnlyAsyncArrowsAtNestedMethodDepth(ast, member)))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
