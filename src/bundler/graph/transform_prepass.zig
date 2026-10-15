@@ -3880,19 +3880,31 @@ fn isRetainableAsyncFunctionNode(
 }
 
 fn isPureLiteralUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
-    const extra = value.data.extra;
     const extras = ast.extra_data.items;
-    if (extra > extras.len or extras.len - extra < 2) return false;
-    const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
-    switch (operator) {
-        .plus, .minus, .bang, .tilde, .kw_delete, .kw_typeof, .kw_void => {},
-        else => return false,
+    var current = value;
+    var found_unary = false;
+    // Walk outer-to-inner: type-changing operators make any outer unary plus
+    // safe by preventing it from receiving the underlying BigInt value.
+    var plus_before_type_change = false;
+    while (current.tag == .unary_expression) {
+        found_unary = true;
+        const extra = current.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+        switch (operator) {
+            .plus => plus_before_type_change = true,
+            .minus, .tilde => {},
+            .bang, .kw_delete, .kw_typeof, .kw_void => plus_before_type_change = false,
+            else => return false,
+        }
+        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
+        current = ast.getNode(operand_idx);
     }
-    const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
-    const operand = ast.getNode(operand_idx);
-    if (operand.tag == .numeric_literal) return true;
-    return operand.tag == .bigint_literal and operator != .plus;
+
+    if (!found_unary) return false;
+    if (current.tag == .numeric_literal) return true;
+    return current.tag == .bigint_literal and !plus_before_type_change;
 }
 
 fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
