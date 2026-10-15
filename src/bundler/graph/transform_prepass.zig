@@ -962,6 +962,31 @@ fn isInitializedSourceIdentifierReference(
     return kind == .variable_var or kind == .function_decl;
 }
 
+/// A synchronous function expression is discarded by `typeof` and `void`.
+/// Its body is not evaluated, so these operators cannot observe its captures,
+/// parameters, or local declarations while the surrounding graph is retained.
+fn isDiscardedSynchronousFunctionExpression(
+    ast: *const ast_mod.Ast,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    var current_idx = node_idx;
+    var hops: usize = 0;
+    while (hops <= ast.nodes.items.len) : (hops += 1) {
+        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        const node = ast.getNode(current_idx);
+        if (node.tag == .parenthesized_expression) {
+            current_idx = node.data.unary.operand;
+            continue;
+        }
+        if (node.tag != .function_expression) return false;
+        const flags_at = node.data.extra + ast_mod.FunctionExtra.flags;
+        if (flags_at >= ast.extra_data.items.len) return false;
+        const flags = ast.extra_data.items[flags_at];
+        return (flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) == 0;
+    }
+    return false;
+}
+
 fn isBoundSourceIdentifierBinding(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -4032,6 +4057,8 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 isUnresolvedSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
             if ((operator == .kw_typeof or operator == .kw_void) and
                 isInitializedSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
+            if ((operator == .kw_typeof or operator == .kw_void) and
+                isDiscardedSynchronousFunctionExpression(ast, operand_idx)) break :blk true;
             break :blk isSafeConstructorUnaryOperator(operator) and
                 isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
