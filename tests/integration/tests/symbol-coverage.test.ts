@@ -7112,6 +7112,149 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       ).toBe(0);
       expect(nestedComputedClassAsyncSuperCallsOutput.stdout).toBe('42 84 2\n');
 
+      // Computed getter and setter super accesses evaluate each key once and
+      // preserve both instance and inherited constructor receivers.
+      const nestedComputedClassAsyncSuperAccesses = run(
+        [
+          'var instanceReceiver;',
+          'var constructorReceiver;',
+          'var instanceWrites = 0;',
+          'var constructorWrites = 0;',
+          'var keyEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'class InstanceBase {',
+          '  get value() { return this._value; }',
+          '  set value(next) { instanceWrites += 1; instanceReceiver = this; this._value = next; }',
+          '}',
+          'class InstanceService extends InstanceBase {',
+          '  async readWrite(next) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var before = super[getKey()];',
+          '        var assigned = super[getKey()] = next;',
+          '        return [before, assigned, this === instanceReceiver, this.value, instanceWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class StaticBase {',
+          '  static get value() { return this._value; }',
+          '  static set value(next) { constructorWrites += 1; constructorReceiver = this; this._value = next; }',
+          '}',
+          'class StaticService extends StaticBase {',
+          '  static async readWrite(next) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var before = super[getKey()];',
+          '        var assigned = super[getKey()] = next;',
+          '        return [before, assigned, this === constructorReceiver, this.value, constructorWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class Derived extends StaticService {}',
+          'var instance = new InstanceService();',
+          'instance._value = 42;',
+          'Derived._value = 84;',
+          'Promise.all([instance.readWrite(50), Derived.readWrite(90)]).then(values => console.log(values.join("|"), keyEvaluations));',
+        ].join('\n'),
+      );
+      expect(
+        nestedComputedClassAsyncSuperAccesses.status,
+        nestedComputedClassAsyncSuperAccesses.stderr,
+      ).toBe(0);
+      expectRetainedClean(nestedComputedClassAsyncSuperAccesses.stderr ?? '');
+      const nestedComputedClassAsyncSuperAccessesOutput = runOutput();
+      expect(
+        nestedComputedClassAsyncSuperAccessesOutput.status,
+        nestedComputedClassAsyncSuperAccessesOutput.stderr,
+      ).toBe(0);
+      expect(nestedComputedClassAsyncSuperAccessesOutput.stdout).toBe(
+        '42 50 true 50 1|84 90 true 90 1 4\n',
+      );
+
+      // Computed super compound assignments and updates keep their single
+      // key evaluation, accessor effects, and lexical receivers in nested arrows.
+      const nestedComputedClassAsyncSuperUpdates = run(
+        [
+          'var instanceReceiver;',
+          'var constructorReceiver;',
+          'var instanceReads = 0;',
+          'var constructorReads = 0;',
+          'var instanceWrites = 0;',
+          'var constructorWrites = 0;',
+          'var keyEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'class InstanceBase {',
+          '  get value() { instanceReads += 1; return this._value; }',
+          '  set value(next) { instanceWrites += 1; instanceReceiver = this; this._value = next; }',
+          '}',
+          'class InstanceService extends InstanceBase {',
+          '  async update(next) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var sum = super[getKey()] += next;',
+          '        var previous = super[getKey()]++;',
+          '        return [sum, previous, this === instanceReceiver, this._value, instanceReads, instanceWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class StaticBase {',
+          '  static get value() { constructorReads += 1; return this._value; }',
+          '  static set value(next) { constructorWrites += 1; constructorReceiver = this; this._value = next; }',
+          '}',
+          'class StaticService extends StaticBase {',
+          '  static async update(next) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var sum = super[getKey()] += next;',
+          '        var previous = super[getKey()]++;',
+          '        return [sum, previous, this === constructorReceiver, this._value, constructorReads, constructorWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class Derived extends StaticService {}',
+          'var instance = new InstanceService(); instance._value = 42;',
+          'Derived._value = 84;',
+          'Promise.all([instance.update(8), Derived.update(6)]).then(values => console.log(values.join("|"), keyEvaluations));',
+        ].join('\n'),
+      );
+      expect(
+        nestedComputedClassAsyncSuperUpdates.status,
+        nestedComputedClassAsyncSuperUpdates.stderr,
+      ).toBe(0);
+      expectRetainedClean(nestedComputedClassAsyncSuperUpdates.stderr ?? '');
+      const nestedComputedClassAsyncSuperUpdatesOutput = runOutput();
+      expect(
+        nestedComputedClassAsyncSuperUpdatesOutput.status,
+        nestedComputedClassAsyncSuperUpdatesOutput.stderr,
+      ).toBe(0);
+      expect(nestedComputedClassAsyncSuperUpdatesOutput.stdout).toBe(
+        '50 50 true 51 2 2|90 90 true 91 2 2 4\n',
+      );
+
       // Static nested super uses at different arrow depths stay on reanalysis.
       const mixedNestedStaticAsyncArrowSuper = run(
         [
