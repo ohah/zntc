@@ -8558,6 +8558,109 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async object super keeps literal computed method keys on the retained graph', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-literal-object-super-key-'));
+    const input = join(dir, 'entry.ts');
+    const nativeInput = join(dir, 'oracle.mjs');
+    const output = join(dir, 'out.cjs');
+    const run = (source: string) => {
+      writeFileSync(input, source);
+      return spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+    };
+    const sourceFor = (methodKey: string) =>
+      [
+        'var events = []; var receiver;',
+        'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0, methodKeyCalls = 0;',
+        'function getMethodName() { methodKeyCalls += 1; return "update"; }',
+        'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+        'function getNext() { rhsEvaluations += 1; events.push("rhs"); return 84; }',
+        'var keySource = { get key() { events.push("source-key"); return "undefined"; } };',
+        'var prototype = {',
+        '  read() { events.push("direct-read"); return this.value; },',
+        '  get undefined() { reads += 1; events.push("get-undefined"); return this._missing; },',
+        '  set undefined(next) { writes += 1; events.push("set-undefined"); receiver = this; this._missing = next; },',
+        '};',
+        'var service = {',
+        '  value: 42, _missing: null,',
+        `  async ${methodKey}(source) {`,
+        '    await Promise.resolve();',
+        '    var update = async () => {',
+        '      await Promise.resolve();',
+        '      return super[source?.[getKey()]] ??= getNext();',
+        '    };',
+        '    var direct = super.read();',
+        '    var assigned = await update();',
+        '    return [direct, assigned].join(" ");',
+        '  },',
+        '};',
+        'Object.setPrototypeOf(service, prototype);',
+        'service.update(keySource).then(first => { var firstEvents = events.join(","); events.length = 0; return service.update(null).then(second => console.log(first, second, service._missing, service === receiver, methodKeyCalls, firstEvents, events.join(","), reads, writes, keyEvaluations, rhsEvaluations)); });',
+      ].join('\n');
+
+    try {
+      for (const methodKey of ["['update']", '[getMethodName()]']) {
+        const source = sourceFor(methodKey);
+        writeFileSync(nativeInput, source);
+        const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+        expect(native.status, `${methodKey}: ${native.stderr}`).toBe(0);
+
+        const bundled = run(source);
+        expect(bundled.status, `${methodKey}: ${bundled.stderr}`).toBe(0);
+        const mode = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        const keepsGraph = methodKey === "['update']";
+        expect(mode, `${methodKey}: ${bundled.stderr}`).toContain(
+          keepsGraph ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
+        );
+        if (keepsGraph) {
+          const report = (bundled.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            );
+          expect(report, bundled.stderr).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report).toMatch(/clean=1(?:\s|$)/);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${methodKey}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, methodKey).toBe(native.stdout);
+        expect(native.stdout, methodKey).toBe(
+          `42 84 42 84 84 true ${keepsGraph ? 0 : 1} direct-read,key,source-key,get-undefined,rhs,set-undefined direct-read,get-undefined 2 1 1 1\n`,
+        );
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async object methods retain audited super property reads and writes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-super-get-'));
     const output = join(dir, 'out.cjs');
