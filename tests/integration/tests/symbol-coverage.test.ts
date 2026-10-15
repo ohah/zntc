@@ -7059,6 +7059,62 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(deepAsyncArrowSuperOutput.status, deepAsyncArrowSuperOutput.stderr).toBe(0);
       expect(deepAsyncArrowSuperOutput.stdout).toBe('42\n');
 
+      // Multiple nested async-arrow owners can retain their separate
+      // state machines and the intermediate async-arrow scope.
+      const multipleNestedAsyncArrowSuperOwners = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      var first = async () => { await Promise.resolve(); return super.current; };',
+          '      var second = async () => { await Promise.resolve(); return super.current; };',
+          '      return await first() + await second();',
+          '    };',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(
+        multipleNestedAsyncArrowSuperOwners.status,
+        multipleNestedAsyncArrowSuperOwners.stderr,
+      ).toBe(0);
+      expectRetainedClean(multipleNestedAsyncArrowSuperOwners.stderr ?? '');
+      const multipleNestedAsyncArrowSuperOutput = runOutput();
+      expect(
+        multipleNestedAsyncArrowSuperOutput.status,
+        multipleNestedAsyncArrowSuperOutput.stderr,
+      ).toBe(0);
+      expect(multipleNestedAsyncArrowSuperOutput.stdout).toBe('84\n');
+
+      // A synchronous nested owner mixed with async nested owners stays on
+      // semantic reanalysis.
+      const mixedNestedAsyncArrowSuperOwners = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      var first = async () => { await Promise.resolve(); return super.current; };',
+          '      var second = () => super.current;',
+          '      return await first() + second();',
+          '    };',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedNestedAsyncArrowSuperOwners, '84\n');
+
       // A method-depth and nested-depth super mix stays on reanalysis.
       const mixedAsyncArrowDepthSuper = run(
         [
