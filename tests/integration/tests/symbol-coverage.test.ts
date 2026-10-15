@@ -6502,6 +6502,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  // Builds and runs dozens of fixtures one after another; the 5s default timeout no longer fits.
   test('ES5 async class methods retain state-machine, home, and inherited static graphs', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-class-method-'));
     const output = join(dir, 'out.cjs');
@@ -8048,7 +8049,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   test('ES5 async object methods retain the exact state-machine graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-method-'));
@@ -8571,6 +8572,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  // Builds and runs dozens of fixtures one after another; the 5s default timeout no longer fits.
   test('ES5 async object super retains static and source-bound computed method keys', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-literal-object-super-key-'));
     const input = join(dir, 'entry.ts');
@@ -8889,7 +8891,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   test('ES5 async object super keeps unary plus BigInt chains on reanalysis and preserves TypeError', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-bigint-plus-super-key-'));

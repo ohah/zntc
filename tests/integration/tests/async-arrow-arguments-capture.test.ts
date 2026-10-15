@@ -236,7 +236,7 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
-    name: 'reanalyzes ES5 object methods with direct and async-arrow super together',
+    name: 'retains ES5 object methods with direct and async-arrow super together',
     target: 'es5',
     source: `
       var base = {
@@ -257,10 +257,10 @@ const cases = [
     `,
     expected: 'object:direct::object:ok\n',
     expectsSyntheticBinding: false,
-    expectsRetainedGraph: false,
+    expectsRetainedGraph: true,
   },
   {
-    name: 'keeps computed-key ES5 object methods with async-arrow super on reanalysis',
+    name: 'retains computed-key ES5 object methods with async-arrow super',
     target: 'es5',
     source: `
       var base = {
@@ -281,7 +281,7 @@ const cases = [
     `,
     expected: 'object:ok\n',
     expectsSyntheticBinding: false,
-    expectsRetainedGraph: false,
+    expectsRetainedGraph: true,
   },
   {
     name: 'reanalyzes ES5 class methods with direct and async-arrow super together',
