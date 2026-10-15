@@ -3907,6 +3907,21 @@ fn isPureLiteralUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Nod
     return current.tag == .bigint_literal and !plus_before_type_change;
 }
 
+fn isUnaryObjectMethodKeyEndingInBigInt(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
+    const extras = ast.extra_data.items;
+    var current = value;
+    var found_unary = false;
+    while (current.tag == .unary_expression) {
+        found_unary = true;
+        const extra = current.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
+        current = ast.getNode(operand_idx);
+    }
+    return found_unary and current.tag == .bigint_literal;
+}
+
 fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
@@ -3969,6 +3984,8 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 );
         },
         .unary_expression => blk: {
+            if (isUnaryObjectMethodKeyEndingInBigInt(ast, value))
+                break :blk isPureLiteralUnaryObjectMethodKey(ast, value);
             const extras = ast.extra_data.items;
             const extra = value.data.extra;
             if (extra > extras.len or extras.len - extra < 2) break :blk false;
@@ -4079,6 +4096,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             }
             break :blk true;
         },
+        .bigint_literal => true,
         else => false,
     };
 }

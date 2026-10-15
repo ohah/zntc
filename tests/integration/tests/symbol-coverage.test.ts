@@ -8695,12 +8695,21 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           retainsGraph: true,
           keyCalls: 0,
         },
+        { key: '[`${1n}`]', call: "service['1']", retainsGraph: true, keyCalls: 0 },
+        { key: '[`${-1n}`]', call: "service['-1']", retainsGraph: true, keyCalls: 0 },
+        {
+          key: '[`${methodPrefix + 1n}`]',
+          call: 'service.up1',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
         {
           key: '[`${methodNameEnabled ? methodName : "other"}`]',
           call: 'service[methodNameEnabled ? methodName : "other"]',
           retainsGraph: true,
           keyCalls: 0,
         },
+        { key: '[`${`${1n}`}`]', call: "service['1']", retainsGraph: true, keyCalls: 0 },
         {
           key: '[`${`${methodPrefix}`}${methodSuffix}`]',
           call: 'service[methodPrefix + methodSuffix]',
@@ -8936,6 +8945,64 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(actual.status, `${key}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, key).toBe(native.stdout);
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async object super keeps unary plus BigInt template keys on reanalysis', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-bigint-template-super-key-'));
+    const input = join(dir, 'entry.ts');
+    const nativeInput = join(dir, 'oracle.mjs');
+    const output = join(dir, 'out.cjs');
+    const source = [
+      'var result;',
+      'try {',
+      '  var service = { async [`${+1n}`]() { return super.value; } };',
+      '  result = "created";',
+      '} catch (error) {',
+      '  result = error instanceof TypeError ? "TypeError" : "unexpected";',
+      '}',
+      'console.log(result);',
+    ].join('\n');
+    try {
+      writeFileSync(input, source);
+      writeFileSync(nativeInput, source);
+
+      const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('TypeError\n');
+
+      const bundled = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(bundled.status, bundled.stderr).toBe(0);
+      const mode = (bundled.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, bundled.stderr).toContain('semantic_graph=reanalyzed');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
