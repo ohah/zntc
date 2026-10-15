@@ -3923,37 +3923,101 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
-fn isRetainableAsyncObjectMethodTemplateValue(
+fn isRetainableAsyncObjectMethodTemplateExpression(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
-    template_idx: ast_mod.NodeIndex,
-    nesting_depth: u8,
+    expression_idx: ast_mod.NodeIndex,
+    traversal_depth: u8,
 ) bool {
-    if (nesting_depth >= 64 or template_idx.isNone() or
-        @intFromEnum(template_idx) >= ast.nodes.items.len) return false;
-    const value = ast.getNode(template_idx);
-    if (value.tag == .template_literal) {
-        const list = value.data.list;
-        if (list.len == 0) return true;
-        const extras = ast.extra_data.items;
-        if (list.len < 3 or list.len % 2 == 0 or list.start > extras.len or
-            list.len > extras.len - list.start) return false;
-        var offset: u32 = 1;
-        while (offset < list.len) : (offset += 2) {
-            const expression_raw = extras[list.start + offset];
-            if (expression_raw >= ast.nodes.items.len) return false;
-            const expression_idx: ast_mod.NodeIndex = @enumFromInt(expression_raw);
-            if (isSafeConstructorValue(ast, semantic, expression_idx)) continue;
-            if (!isRetainableAsyncObjectMethodTemplateValue(
+    if (traversal_depth >= 64 or expression_idx.isNone() or
+        @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (isSafeConstructorValue(ast, semantic, expression_idx)) return true;
+    const value = ast.getNode(expression_idx);
+    return switch (value.tag) {
+        .template_literal => blk: {
+            const list = value.data.list;
+            if (list.len == 0) break :blk true;
+            const extras = ast.extra_data.items;
+            if (list.len < 3 or list.len % 2 == 0 or list.start > extras.len or
+                list.len > extras.len - list.start) break :blk false;
+            var offset: u32 = 1;
+            while (offset < list.len) : (offset += 2) {
+                const raw_child = extras[list.start + offset];
+                if (raw_child >= ast.nodes.items.len or !isRetainableAsyncObjectMethodTemplateExpression(
+                    ast,
+                    semantic,
+                    @enumFromInt(raw_child),
+                    traversal_depth + 1,
+                )) break :blk false;
+            }
+            break :blk true;
+        },
+        .binary_expression => blk: {
+            const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+            break :blk isSafeConstructorBinaryOperator(operator) and
+                isRetainableAsyncObjectMethodTemplateExpression(
+                    ast,
+                    semantic,
+                    value.data.binary.left,
+                    traversal_depth + 1,
+                ) and
+                isRetainableAsyncObjectMethodTemplateExpression(
+                    ast,
+                    semantic,
+                    value.data.binary.right,
+                    traversal_depth + 1,
+                );
+        },
+        .unary_expression => blk: {
+            const extras = ast.extra_data.items;
+            const extra = value.data.extra;
+            if (extra > extras.len or extras.len - extra < 2) break :blk false;
+            const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+            const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            break :blk isSafeConstructorUnaryOperator(operator) and
+                isRetainableAsyncObjectMethodTemplateExpression(
+                    ast,
+                    semantic,
+                    operand_idx,
+                    traversal_depth + 1,
+                );
+        },
+        .logical_expression => blk: {
+            const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+            break :blk isSafeConstructorLogicalOperator(operator) and
+                isRetainableAsyncObjectMethodTemplateExpression(
+                    ast,
+                    semantic,
+                    value.data.binary.left,
+                    traversal_depth + 1,
+                ) and
+                isRetainableAsyncObjectMethodTemplateExpression(
+                    ast,
+                    semantic,
+                    value.data.binary.right,
+                    traversal_depth + 1,
+                );
+        },
+        .conditional_expression => isRetainableAsyncObjectMethodTemplateExpression(
+            ast,
+            semantic,
+            value.data.ternary.a,
+            traversal_depth + 1,
+        ) and
+            isRetainableAsyncObjectMethodTemplateExpression(
                 ast,
                 semantic,
-                expression_idx,
-                nesting_depth + 1,
-            )) return false;
-        }
-        return true;
-    }
-    return false;
+                value.data.ternary.b,
+                traversal_depth + 1,
+            ) and
+            isRetainableAsyncObjectMethodTemplateExpression(
+                ast,
+                semantic,
+                value.data.ternary.c,
+                traversal_depth + 1,
+            ),
+        else => false,
+    };
 }
 
 fn isRetainableAsyncObjectMethodKey(
@@ -3969,7 +4033,7 @@ fn isRetainableAsyncObjectMethodKey(
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     if (value.tag == .template_literal) {
-        return isRetainableAsyncObjectMethodTemplateValue(ast, semantic, value_idx, 0);
+        return isRetainableAsyncObjectMethodTemplateExpression(ast, semantic, value_idx, 0);
     }
     return isSafeConstructorValue(ast, semantic, value_idx);
 }

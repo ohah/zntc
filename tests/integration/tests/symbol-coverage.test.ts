@@ -8699,10 +8699,22 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           retainsGraph: true,
           keyCalls: 0,
         },
+        {
+          key: '[`${methodPrefix + `${methodSuffix}`}`]',
+          call: 'service[methodPrefix + methodSuffix]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
         { key: '[`up${"date"}`]', call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[`${getMethodName()}`]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
         {
           key: '[`${`${getMethodName()}`}`]',
+          call: 'service.update',
+          retainsGraph: false,
+          keyCalls: 1,
+        },
+        {
+          key: '[`${"" + `${getMethodName()}`}`]',
           call: 'service.update',
           retainsGraph: false,
           keyCalls: 1,
