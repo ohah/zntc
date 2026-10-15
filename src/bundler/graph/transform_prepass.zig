@@ -3933,7 +3933,7 @@ fn isRetainableAsyncObjectMethodKey(
     if (key.tag == .identifier_reference or isStaticLiteralObjectMethodKey(ast, key_idx)) return true;
     if (key.tag != .computed_property_key) return false;
     const value_idx = key.data.unary.operand;
-    return isBoundSourceIdentifierReference(ast, semantic, value_idx);
+    return isSafeConstructorValue(ast, semantic, value_idx);
 }
 
 fn isRetainableEs5AsyncObjectMethodNode(
@@ -4679,10 +4679,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
     }
 
     // Plain computed data properties, synchronous object methods, async object
-    // methods with static or bound-identifier keys, computed accessors without
-    // `super`, and audited static class-field keys lower through tracked temps
-    // and output scopes. Accessor `super` may add a runtime helper module, so it
-    // stays on reanalysis. Generator methods and other async keys stay gated out.
+    // methods with static keys or safe source-bound key expressions, computed
+    // accessors without `super`, and audited static class-field keys lower
+    // through tracked temps and output scopes. Accessor `super` may add a
+    // runtime helper module, so it stays on reanalysis. Generator methods and
+    // other async keys stay gated out.
     const ComputedObjectKeyOwner = enum { data_property, method, accessor, static_class_field };
     const ComputedObjectKey = struct { node: ast_mod.NodeIndex, owner: ComputedObjectKeyOwner };
     var computed_object_keys: std.AutoHashMapUnmanaged(u32, ComputedObjectKeyOwner) = .empty;
