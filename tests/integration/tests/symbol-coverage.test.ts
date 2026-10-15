@@ -8619,6 +8619,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const methodCases = [
         { key: "['update']", call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[0]', call: 'service[0]', retainsGraph: true, keyCalls: 0 },
+        { key: '[true]', call: "service['true']", retainsGraph: true, keyCalls: 0 },
+        { key: '[false]', call: "service['false']", retainsGraph: true, keyCalls: 0 },
+        { key: '[null]', call: "service['null']", retainsGraph: true, keyCalls: 0 },
+        { key: '[1n]', call: "service['1']", retainsGraph: false, keyCalls: 0 },
         { key: '[`update`]', call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[`up${"date"}`]', call: 'service.update', retainsGraph: false, keyCalls: 0 },
         { key: '[getMethodName()]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
