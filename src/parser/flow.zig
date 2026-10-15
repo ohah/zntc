@@ -1016,6 +1016,7 @@ fn parseFlowObjectMembers(self: *Parser, terminator: Kind) ParseError2!ast_mod.N
 ///   - `...Type`           — spread (PR #3b 에서 별도 처리)
 ///   - `[key: T]: U`       — indexer
 ///   - `key(args): R`      — method
+///   - `get key(): R` / `set key(v: T): void` — accessor (#5840)
 ///   - `(args): R`         — call signature
 ///   - `new (args): R`     — construct signature
 ///
@@ -1032,6 +1033,19 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
         const next = try self.peekNextKind();
         if (next != .colon and next != .question and next != .l_paren and next != .l_angle) {
             try self.advance(); // consume `proto` modifier
+        }
+    }
+
+    // Accessor: `{ get x(): T, set x(v: T): void }` (babel/hermes ObjectTypeProperty
+    // kind get/set). 수식어만 소비하면 아래 method signature 경로가 `x(...): T` 를
+    // strip 한다. `get`/`set` 이 key 자체인 경우(`{ get: T }`/`{ get?: T }`/`{ get(): R }`/
+    // `{ get<T>(): R }`/`{ get, ... }`)는 뒤 토큰으로 구분 (#5840).
+    if (self.current() == .kw_get or self.current() == .kw_set) {
+        const next = try self.peekNextKind();
+        if (next != .colon and next != .question and next != .l_paren and next != .l_angle and
+            next != .comma and next != .semicolon and next != .r_curly and next != .pipe)
+        {
+            try self.advance(); // consume `get`/`set` modifier
         }
     }
 
