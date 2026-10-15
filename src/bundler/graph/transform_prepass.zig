@@ -1189,12 +1189,17 @@ fn isRetainableAssignmentTarget(
     return true;
 }
 
-/// Logical assignment lowering can preserve a direct `super` property target
-/// through the class/object super-property transformer, which registers its
-/// generated key/value temps and helper references in the edited graph. Keep this separate from
-/// ordinary member targets so private access and nested `super` expressions
-/// remain on semantic reanalysis.
-fn isRetainableDirectSuperAssignmentTarget(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+/// Logical and exponentiation assignment lowering can preserve a direct
+/// `super` property target through the class/object super-property transformer,
+/// which registers its generated key/value temps and helper references in the
+/// edited graph. A caller may admit optional computed-key transforms only when
+/// the full graph preflight checks them; nested `super` and private access stay
+/// outside this target proof.
+fn isRetainableDirectSuperAssignmentTarget(
+    ast: *const ast_mod.Ast,
+    node_idx: ast_mod.NodeIndex,
+    allow_optional_computed_key: bool,
+) bool {
     if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
     const target = ast.getNode(node_idx);
     if (target.tag != .static_member_expression and target.tag != .computed_member_expression) return false;
@@ -1220,7 +1225,7 @@ fn isRetainableDirectSuperAssignmentTarget(ast: *const ast_mod.Ast, node_idx: as
         if (seen.contains(raw)) continue;
         seen.put(ast.allocator, raw, {}) catch return false;
         const node = ast.getNode(current);
-        if (ast_mod.spineHasOptionalChain(ast, current)) return false;
+        if (!allow_optional_computed_key and ast_mod.spineHasOptionalChain(ast, current)) return false;
         switch (node.tag) {
             .super_expression, .private_field_expression, .private_identifier => return false,
             else => {},
@@ -4945,7 +4950,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // Ordinary member temps and direct super-property temps
                     // are registered by their respective semantic editors.
                     if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left) and
-                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left))
+                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left, true))
                         return false;
                     found_lowered_exponentiation = true;
                 }
@@ -4955,7 +4960,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // Ordinary member temps and direct super-property temps are
                     // registered by their respective transform semantic editors.
                     if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left) and
-                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left))
+                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left, false))
                         return false;
                     found_lowered_logical_assignment = true;
                 }
@@ -4987,7 +4992,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 {
                     if (node.tag != .call_expression or
                         (!isRetainableOptionalCall(ast, semantic, @enumFromInt(raw_idx)) and
-                            !retained_static_field_optional_nodes.contains(raw_idx))) return false;
+                            !retained_static_field_optional_nodes.contains(raw_idx)))
+                        return false;
                     found_lowered_optional_chaining = true;
                 }
                 if (options.unsupported.spread and hasDirectSpreadElement(ast, node)) {
