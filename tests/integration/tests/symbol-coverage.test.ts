@@ -8322,8 +8322,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(asyncArrowOutput.status, asyncArrowOutput.stderr).toBe(0);
       expect(asyncArrowOutput.stdout).toBe('42\n');
 
-      // Deeper arrow nesting introduces more moved scopes than this allowlist
-      // currently audits, so it continues through semantic reanalysis.
+      // Direct method super mixed with a two-level async-arrow super chain
+      // introduces more owners than this allowlist currently audits.
       const deepArrow = run(
         [
           'var prototype = { read() { return this.value; } };',
@@ -8331,11 +8331,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           '  value: 42,',
           '  async read() {',
           '    await Promise.resolve();',
-          '    var read = () => {',
-          '      var nestedRead = () => super.read();',
-          '      return nestedRead();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      var nestedRead = async () => { await Promise.resolve(); return super.read(); };',
+          '      return await nestedRead();',
           '    };',
-          '    return read();',
+          '    return super.read() + await read();',
           '  },',
           '};',
           'Object.setPrototypeOf(service, prototype);',
@@ -8352,26 +8353,37 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(deepArrowMode, deepArrow.stderr).toContain('semantic_graph=reanalyzed');
       const deepArrowOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(deepArrowOutput.status, deepArrowOutput.stderr).toBe(0);
-      expect(deepArrowOutput.stdout).toBe('42\n');
+      expect(deepArrowOutput.stdout).toBe('84\n');
 
-      // A direct method super mixed with async-arrow super is outside the
-      // async-arrow owner's all-super audit and keeps semantic reanalysis.
+      // Direct method-body super and one async-arrow super owner share the
+      // exact method home-object graph and retain both helper references.
       const mixedSuper = run(
         [
-          'var prototype = { read() { return this.value; } };',
+          'var events = []; var receiver;',
+          'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+          'function getNext() { rhsEvaluations += 1; events.push("rhs"); return 84; }',
+          'var keySource = { get key() { events.push("source-key"); return "undefined"; } };',
+          'var prototype = {',
+          '  read() { events.push("direct-read"); return this.value; },',
+          '  get undefined() { reads += 1; events.push("get-undefined"); return this._missing; },',
+          '  set undefined(next) { writes += 1; events.push("set-undefined"); receiver = this; this._missing = next; },',
+          '};',
           'var service = {',
-          '  value: 42,',
-          '  async read() {',
+          '  value: 42, _missing: null,',
+          '  async update(source) {',
           '    await Promise.resolve();',
-          '    var read = async () => {',
+          '    var update = async () => {',
           '      await Promise.resolve();',
-          '      return super.read();',
+          '      return super[source?.[getKey()]] ??= getNext();',
           '    };',
-          '    return super.read() + await read();',
+          '    var direct = super.read();',
+          '    var assigned = await update();',
+          '    return [direct, assigned].join(" ");',
           '  },',
           '};',
           'Object.setPrototypeOf(service, prototype);',
-          'service.read().then(value => console.log(value));',
+          'service.update(keySource).then(first => { var firstEvents = events.join(","); events.length = 0; return service.update(null).then(second => console.log(first, second, service._missing, service === receiver, firstEvents, events.join(","), reads, writes, keyEvaluations, rhsEvaluations)); });',
         ].join('\n'),
       );
       expect(mixedSuper.status, mixedSuper.stderr).toBe(0);
@@ -8381,10 +8393,25 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mixedSuperMode, mixedSuper.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mixedSuperMode, mixedSuper.stderr).toContain('semantic_graph=retained');
+      const mixedSuperReport = (mixedSuper.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(mixedSuperReport, mixedSuper.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(mixedSuperReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${mixedSuperReport}`,
+        ).toBe(0);
+      }
+      expect(mixedSuperReport).toMatch(/clean=1(?:\s|$)/);
       const mixedSuperOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(mixedSuperOutput.status, mixedSuperOutput.stderr).toBe(0);
-      expect(mixedSuperOutput.stdout).toBe('84\n');
+      expect(mixedSuperOutput.stdout).toBe(
+        '42 84 42 84 84 true direct-read,key,source-key,get-undefined,rhs,set-undefined direct-read,get-undefined 2 1 1 1\n',
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

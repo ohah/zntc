@@ -3574,7 +3574,7 @@ fn isSimpleClass(
         const has_super = methodHasSuperExpression(ast, member);
         const retains_async_arrow_super = allow_es5_async_arrow_super and !super.isNone() and
             (flags == 0 or flags == ast_mod.MethodFlags.is_static) and
-            methodSuperUsesOnlyAsyncArrows(ast, member);
+            methodSuperUsesInAsyncArrowScopesOrDirectBody(ast, member, false);
         const retains_async_class_method_super =
             (is_es5_async_instance_method or is_es5_async_static_method) and
             allow_es5_async_class_methods and !super.isNone() and
@@ -4082,25 +4082,41 @@ fn es5AsyncArrowLexicalCaptures(
     return captures;
 }
 
-fn methodSuperUsesOnlyAsyncArrows(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+// Object async methods can keep method-body super uses beside super captures
+// in one audited async-arrow owner. Class-method gates remain arrow-only or
+// direct-body-only so their separate home-object paths do not get combined.
+fn methodSuperUsesInAsyncArrowScopesOrDirectBody(
+    ast: *const ast_mod.Ast,
+    method: ast_mod.Node,
+    allow_direct_method_body: bool,
+) bool {
     if (method.tag != .method_definition) return false;
     const extra = method.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body)
         return false;
 
-    const Work = struct { node: ast_mod.NodeIndex, inside_async_arrow: bool };
+    const Work = struct {
+        node: ast_mod.NodeIndex,
+        in_method_body: bool,
+        inside_arrow: bool = false,
+        inside_async_arrow: bool = false,
+    };
     var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(ast.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(ast.allocator);
-    for ([_]ast_mod.NodeIndex{
-        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]),
-        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]),
-    }) |root| {
-        if (!root.isNone()) stack.append(ast.allocator, .{ .node = root, .inside_async_arrow = false }) catch return false;
-    }
+    const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]);
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
+    if (!params_idx.isNone()) stack.append(ast.allocator, .{
+        .node = params_idx,
+        .in_method_body = false,
+    }) catch return false;
+    if (!body_idx.isNone()) stack.append(ast.allocator, .{
+        .node = body_idx,
+        .in_method_body = true,
+    }) catch return false;
 
-    var found_super = false;
+    var found_async_arrow_super = false;
     while (stack.pop()) |work| {
         if (work.node.isNone() or @intFromEnum(work.node) >= ast.nodes.items.len) return false;
         const raw_idx = @intFromEnum(work.node);
@@ -4108,8 +4124,12 @@ fn methodSuperUsesOnlyAsyncArrows(ast: *const ast_mod.Ast, method: ast_mod.Node)
         seen.put(ast.allocator, raw_idx, {}) catch return false;
         const node = ast.getNode(work.node);
         if (node.tag == .super_expression) {
-            if (!work.inside_async_arrow) return false;
-            found_super = true;
+            if (!work.in_method_body) return false;
+            if (work.inside_async_arrow) {
+                found_async_arrow_super = true;
+                continue;
+            }
+            if (!allow_direct_method_body or !work.in_method_body or work.inside_arrow) return false;
             continue;
         }
         switch (node.tag) {
@@ -4122,20 +4142,23 @@ fn methodSuperUsesOnlyAsyncArrows(ast: *const ast_mod.Ast, method: ast_mod.Node)
             => continue,
             else => {},
         }
-        const inside_async_arrow = work.inside_async_arrow or
-            (node.tag == .arrow_function_expression and
-                node.data.extra <= ast.extra_data.items.len and
-                ast.extra_data.items.len - node.data.extra > ast_mod.ArrowExtra.flags and
-                (ast.extra_data.items[node.data.extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) != 0);
+        const is_arrow = node.tag == .arrow_function_expression;
+        if (is_arrow and (node.data.extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - node.data.extra <= ast_mod.ArrowExtra.flags)) return false;
+        const is_async_arrow = is_arrow and
+            (ast.extra_data.items[node.data.extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) != 0;
+        const inside_async_arrow = work.inside_async_arrow or is_async_arrow;
         var children = ast_walk.children(ast, node);
         while (children.next()) |child| {
             if (!child.isNone()) stack.append(ast.allocator, .{
                 .node = child,
+                .in_method_body = work.in_method_body,
+                .inside_arrow = work.inside_arrow or is_arrow,
                 .inside_async_arrow = inside_async_arrow,
             }) catch return false;
         }
     }
-    return found_super;
+    return found_async_arrow_super;
 }
 
 fn isRetainableEs5AsyncArrowSuper(
@@ -4201,7 +4224,7 @@ fn isRetainableEs5AsyncArrowSuper(
                     options,
                     parents,
                 )) return false;
-                return methodSuperUsesOnlyAsyncArrows(ast, node);
+                return methodSuperUsesInAsyncArrowScopesOrDirectBody(ast, node, true);
             }
             if (method_owner.tag != .class_body or std.mem.eql(u8, ast.getText(key.span), "constructor"))
                 return false;
@@ -4209,7 +4232,7 @@ fn isRetainableEs5AsyncArrowSuper(
             if (class_raw >= ast.nodes.items.len) return false;
             const class = ast.nodes.items[class_raw];
             return (class.tag == .class_declaration or class.tag == .class_expression) and
-                methodSuperUsesOnlyAsyncArrows(ast, node);
+                methodSuperUsesInAsyncArrowScopesOrDirectBody(ast, node, false);
         }
         switch (node.tag) {
             .function_declaration,
