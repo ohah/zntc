@@ -3988,6 +3988,16 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             value.data.unary.operand,
             traversal_depth + 1,
         ),
+        .ts_as_expression,
+        .ts_satisfies_expression,
+        .ts_non_null_expression,
+        .ts_type_assertion,
+        => isRetainableAsyncObjectMethodTemplateExpression(
+            ast,
+            semantic,
+            value.data.unary.operand,
+            traversal_depth + 1,
+        ),
         .logical_expression => blk: {
             const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
             break :blk isSafeConstructorLogicalOperator(operator) and

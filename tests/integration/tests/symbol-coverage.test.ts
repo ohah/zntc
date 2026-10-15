@@ -8631,7 +8631,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     };
 
     try {
-      const methodCases = [
+      const methodCases: Array<{
+        key: string;
+        nativeKey?: string;
+        call: string;
+        retainsGraph: boolean;
+        keyCalls: number;
+      }> = [
         { key: "['update']", call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[0]', call: 'service[0]', retainsGraph: true, keyCalls: 0 },
         { key: '[+0]', call: 'service[0]', retainsGraph: true, keyCalls: 0 },
@@ -8717,6 +8723,34 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           retainsGraph: true,
           keyCalls: 0,
         },
+        {
+          key: '[`${methodName as string}`]',
+          nativeKey: '[`${methodName}`]',
+          call: 'service[methodName]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
+        {
+          key: '[`${methodName satisfies string}`]',
+          nativeKey: '[`${methodName}`]',
+          call: 'service[methodName]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
+        {
+          key: '[`${methodName!}`]',
+          nativeKey: '[`${methodName}`]',
+          call: 'service[methodName]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
+        {
+          key: '[`${<string>methodName}`]',
+          nativeKey: '[`${methodName}`]',
+          call: 'service[methodName]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
         { key: '[`up${"date"}`]', call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[`${getMethodName()}`]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
         {
@@ -8737,11 +8771,24 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           retainsGraph: false,
           keyCalls: 1,
         },
+        {
+          key: '[`${getMethodName() as string}`]',
+          nativeKey: '[`${getMethodName()}`]',
+          call: 'service.update',
+          retainsGraph: false,
+          keyCalls: 1,
+        },
         { key: '[getMethodName()]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
       ];
-      for (const { key: methodKey, call: methodCall, retainsGraph, keyCalls } of methodCases) {
+      for (const {
+        key: methodKey,
+        nativeKey = methodKey,
+        call: methodCall,
+        retainsGraph,
+        keyCalls,
+      } of methodCases) {
         const source = sourceFor(methodKey, methodCall);
-        writeFileSync(nativeInput, source);
+        writeFileSync(nativeInput, sourceFor(nativeKey, methodCall));
         const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
         expect(native.status, `${methodKey}: ${native.stderr}`).toBe(0);
 
