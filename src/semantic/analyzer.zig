@@ -1507,6 +1507,34 @@ pub const SemanticAnalyzer = struct {
         _ = try self.checkVarHoistingConflict(var_scope, name, bnode.span);
     }
 
+    /// `var x = 1; var x = 2;` 의 뒤 선언은 1st pass 에서 앞 심볼로 합쳐져 선언 행이 없다.
+    /// 그러면 번들 tree shaker 가 그 문장을 `x` 를 쓰지 않는 순수 문으로 보고 지운다 (#5847).
+    /// 원래 선언 위치가 아닌 바인딩마다 선언 행을 남겨 이 문장도 `x` 의 선언으로 잇는다.
+    fn recordVarRedeclarations(self: *SemanticAnalyzer, idx: NodeIndex) void {
+        if (idx.isNone()) return;
+        const ni = @intFromEnum(idx);
+        if (ni >= self.ast.nodes.items.len) return;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .binding_identifier => {
+                if (ni >= self.symbol_ids.items.len) return;
+                const sid = self.symbol_ids.items[ni] orelse return;
+                if (sid >= self.symbols.items.len) return;
+                const symbol = self.symbols.items[sid];
+                if (symbol.kind != .variable_var or symbol.name.start == node.span.start) return;
+                self.recordDeclareRef(sid, symbol.scope_id, ni);
+            },
+            .array_pattern, .object_pattern => {
+                const split = self.ast.nodeListSplitRest(node.data.list);
+                for (split.elements) |raw| self.recordVarRedeclarations(@enumFromInt(raw));
+                if (split.rest_operand) |op| self.recordVarRedeclarations(op);
+            },
+            .binding_property => self.recordVarRedeclarations(node.data.binary.right),
+            .assignment_pattern => self.recordVarRedeclarations(node.data.binary.left),
+            else => {},
+        }
+    }
+
     fn setSymbolIdForPredeclaredBinding(self: *SemanticAnalyzer, idx: NodeIndex) void {
         if (idx.isNone()) return;
         const ni = @intFromEnum(idx);
@@ -4597,6 +4625,7 @@ pub const SemanticAnalyzer = struct {
                     // 실제 위치로 정정 + block 체인 충돌 재검사 (ECMA §sec-block-static-semantics-early-errors).
                     if (sym_kind == .variable_var) {
                         try self.recheckPredeclaredVar(binding_idx);
+                        self.recordVarRedeclarations(binding_idx);
                     }
                     // predeclared인 경우에도, destructuring 패턴 내부의 default value
                     // 표현식은 순회해야 한다 (registerBinding이 수행하던 visitNode 호출 대체).
