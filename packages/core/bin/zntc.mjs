@@ -1240,6 +1240,7 @@ async function runTranspile(opts) {
     platform: opts.platform,
     dropConsole: opts.drop.includes('console'),
     dropDebugger: opts.drop.includes('debugger'),
+    dropLabels: opts.dropLabels.length > 0 ? opts.dropLabels : undefined,
     target: opts.target,
     browserslist: opts.browserslist,
     tsconfigRaw: opts.tsconfigRaw,

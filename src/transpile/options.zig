@@ -41,6 +41,8 @@ pub const TranspileOptions = struct {
 
     // --- 변환 ---
     define: []const DefineEntry = &.{},
+    /// `--drop-labels=A,B` — 이 이름의 labeled statement 를 지운다 (번들과 동일, #5839).
+    drop_labels: []const []const u8 = &.{},
     unsupported: TransformOptions.compat.UnsupportedFeatures = .{},
     use_define_for_class_fields: bool = true,
     experimental_decorators: bool = false,
@@ -143,6 +145,7 @@ pub const ConfigOptionsDto = struct {
     sourcesContent: ?bool = null,
     sourceRoot: ?[]const u8 = null,
     define: ?[]const DefineEntry = null,
+    dropLabels: ?[]const []const u8 = null,
     /// `--stop-after=<phase>` 동등. JSON 값은 `scan`/`parse`/`semantic`/`transform`/`codegen`.
     stopAfter: ?StopAfter = null,
 
@@ -440,6 +443,7 @@ pub fn optionsFromJson(
 
     try applyTranspileSharedFields(&opts, &parsed, allocator, false);
     if (parsed.define) |d| opts.define = d;
+    if (parsed.dropLabels) |labels| opts.drop_labels = labels;
     if (parsed.stopAfter) |v| opts.stop_after = v;
 
     // tsconfig 로드 + merge — JSON 에 명시적으로 설정된 값이 tsconfig 값을 덮어쓴다.

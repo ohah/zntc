@@ -80,6 +80,8 @@ export interface TranspileOptions {
   dropConsole?: boolean;
   /** Remove debugger statements. */
   dropDebugger?: boolean;
+  /** Remove labeled statements with these label names. */
+  dropLabels?: string[];
   /** Escape non-ASCII to \uXXXX. */
   asciiOnly?: boolean;
   /** Do not escape non-ASCII. */
@@ -285,6 +287,7 @@ export function buildOptionsJson(
   if (opts.jsxImportSource) payload.jsxImportSource = opts.jsxImportSource;
   if (opts.dropConsole) payload.dropConsole = true;
   if (opts.dropDebugger) payload.dropDebugger = true;
+  if (opts.dropLabels && opts.dropLabels.length > 0) payload.dropLabels = opts.dropLabels;
   if (opts.asciiOnly) payload.asciiOnly = true;
   if (opts.charsetUtf8) payload.charsetUtf8 = true;
   if (opts.experimentalDecorators) payload.experimentalDecorators = true;
