@@ -8578,6 +8578,68 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(superLogicalWriteOutput.status, superLogicalWriteOutput.stderr).toBe(0);
       expect(superLogicalWriteOutput.stdout).toBe('42 42 true 1 1 1\n');
 
+      const optionalSuperLogicalWrite = run(
+        [
+          'var events = []; var receiver;',
+          'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+          'function getNext() { rhsEvaluations += 1; events.push("rhs"); return 42; }',
+          'var keySource = { get key() { events.push("source-key"); return "value"; } };',
+          'var prototype = {',
+          '  get value() { reads += 1; events.push("get-value"); return this._value; },',
+          '  set value(next) { writes += 1; events.push("set-value"); receiver = this; this._value = next; },',
+          '  get undefined() { reads += 1; events.push("get-undefined"); return this._missing; },',
+          '  set undefined(next) { writes += 1; events.push("set-undefined"); receiver = this; this._missing = next; },',
+          '};',
+          'var service = {',
+          '  _value: null,',
+          '  _missing: 5,',
+          '  async writeOptional(source) {',
+          '    await Promise.resolve();',
+          '    var write = async () => {',
+          '      await Promise.resolve();',
+          '      return super[source?.[getKey()]] ??= getNext();',
+          '    };',
+          '    return await write();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.writeOptional(keySource).then(first => service.writeOptional(null).then(second => console.log(first, service._value, second, service._missing, service === receiver, events.join(","), reads, writes, keyEvaluations, rhsEvaluations)));',
+        ].join('\n'),
+      );
+      expect(optionalSuperLogicalWrite.status, optionalSuperLogicalWrite.stderr).toBe(0);
+      const optionalSuperLogicalWriteMode = (optionalSuperLogicalWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(optionalSuperLogicalWriteMode, optionalSuperLogicalWrite.stderr).toContain(
+        'semantic_graph=retained',
+      );
+      const optionalSuperLogicalWriteReport = (optionalSuperLogicalWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(optionalSuperLogicalWriteReport, optionalSuperLogicalWrite.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(
+            optionalSuperLogicalWriteReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1,
+          ),
+          `${counter}: ${optionalSuperLogicalWriteReport}`,
+        ).toBe(0);
+      }
+      expect(optionalSuperLogicalWriteReport).toMatch(/clean=1(?:\s|$)/);
+      const optionalSuperLogicalWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(optionalSuperLogicalWriteOutput.status, optionalSuperLogicalWriteOutput.stderr).toBe(
+        0,
+      );
+      expect(optionalSuperLogicalWriteOutput.stdout).toBe(
+        '42 42 5 5 true key,source-key,get-value,rhs,set-value,get-undefined 2 1 1 1\n',
+      );
+
       const superExponentiationWrite = run(
         [
           'var reads = 0; var writes = 0; var keyEvaluations = 0; var receiver;',
