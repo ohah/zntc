@@ -3885,8 +3885,10 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     const is_computed = key.tag == .computed_property_key;
     const value_idx = if (is_computed) key.data.unary.operand else key_idx;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
-    const value_tag = ast.getNode(value_idx).tag;
-    return value_tag == .string_literal or (is_computed and value_tag == .numeric_literal);
+    const value = ast.getNode(value_idx);
+    return value.tag == .string_literal or
+        (is_computed and (value.tag == .numeric_literal or
+            (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
 fn isRetainableEs5AsyncObjectMethodNode(
