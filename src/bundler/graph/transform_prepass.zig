@@ -3879,12 +3879,15 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
-fn isSignedNumericObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
+fn isPureNumericUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
     const extra = value.data.extra;
     const extras = ast.extra_data.items;
     if (extra > extras.len or extras.len - extra < 2) return false;
     const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
-    if (operator != .plus and operator != .minus) return false;
+    switch (operator) {
+        .plus, .minus, .bang, .tilde, .kw_delete, .kw_typeof, .kw_void => {},
+        else => return false,
+    }
     const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
     return !operand_idx.isNone() and @intFromEnum(operand_idx) < ast.nodes.items.len and
         ast.getNode(operand_idx).tag == .numeric_literal;
@@ -3897,12 +3900,12 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     const value_idx = if (is_computed) key.data.unary.operand else key_idx;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
-    const is_signed_numeric_key = is_computed and value.tag == .unary_expression and
-        isSignedNumericObjectMethodKey(ast, value);
+    const is_pure_numeric_unary_key = is_computed and value.tag == .unary_expression and
+        isPureNumericUnaryObjectMethodKey(ast, value);
     return value.tag == .string_literal or
         (is_computed and (value.tag == .numeric_literal or value.tag == .boolean_literal or
             value.tag == .null_literal or
-            is_signed_numeric_key or
+            is_pure_numeric_unary_key or
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
