@@ -9509,6 +9509,121 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async object super retains discarded synchronous function expressions in template keys', () => {
+    const dir = mkdtempSync(
+      join(tmpdir(), 'zntc-bundle-es5-function-expression-template-super-key-'),
+    );
+    const input = join(dir, 'entry.ts');
+    const nativeInput = join(dir, 'oracle.mjs');
+    const output = join(dir, 'out.cjs');
+    const run = (
+      source: string,
+      expectedMode: 'retained' | 'reanalyzed',
+      expectedStdout: string,
+    ) => {
+      writeFileSync(input, source);
+      writeFileSync(nativeInput, source);
+
+      const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe(expectedStdout);
+
+      const bundled = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(bundled.status, bundled.stderr).toBe(0);
+      const mode = (bundled.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, bundled.stderr).toContain(`semantic_graph=${expectedMode}`);
+      if (expectedMode === 'retained') {
+        const report = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, bundled.stderr).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1)).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+      }
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+    };
+
+    try {
+      run(
+        [
+          'var calls = 0;',
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async [`${typeof (function () { calls += 1; })}`]() { return super.read(); },',
+          '  async [`${void (function () { calls += 10; })}`]() { return super.read(); },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'Promise.all([service.function(), service.undefined()]).then(values =>',
+          '  console.log(Object.keys(service).sort().join(","), values.join(","), calls),',
+          ');',
+        ].join('\n'),
+        'retained',
+        'function,undefined,value 42,42 0\n',
+      );
+      run(
+        [
+          'var calls = 0;',
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async [`${typeof (async function () { calls += 1; })}`]() { return super.read(); },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.function().then(value => console.log(Object.keys(service).join(","), value, calls));',
+        ].join('\n'),
+        'reanalyzed',
+        'value,function 42 0\n',
+      );
+      run(
+        [
+          'var calls = 0;',
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async [`${typeof (function* () { calls += 1; })}`]() { return super.read(); },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.function().then(value => console.log(Object.keys(service).join(","), value, calls));',
+        ].join('\n'),
+        'reanalyzed',
+        'value,function 42 0\n',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async object methods retain audited super property reads and writes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-super-get-'));
     const output = join(dir, 'out.cjs');
