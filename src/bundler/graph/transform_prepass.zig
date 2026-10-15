@@ -949,7 +949,7 @@ fn isUnresolvedGlobalUndefinedReference(
 }
 
 /// `var` bindings are initialized to `undefined` at function entry, so
-/// `typeof name` cannot observe a lexical TDZ while preserving its exact SID.
+/// `typeof` and `void` cannot observe a lexical TDZ while preserving the exact SID.
 fn isInitializedVarSourceIdentifierReference(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -4028,8 +4028,9 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
             const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
             if (operator == .kw_typeof and
-                (isUnresolvedSourceIdentifierReference(ast, semantic, operand_idx) or
-                    isInitializedVarSourceIdentifierReference(ast, semantic, operand_idx))) break :blk true;
+                isUnresolvedSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
+            if ((operator == .kw_typeof or operator == .kw_void) and
+                isInitializedVarSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
             break :blk isSafeConstructorUnaryOperator(operator) and
                 isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
