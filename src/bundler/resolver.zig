@@ -49,6 +49,11 @@ pub const ResolveResult = struct {
 
 pub const ResolveError = error{
     ModuleNotFound,
+    /// 사용자가 `--alias`/`--fallback` 으로 매핑한 대상이 해석되지 않았다 (#4606). 실패
+    /// **지점**(매핑을 적용한 resolver)이 이 사실을 기록한다 — 소비 쪽에서 원래 specifier 로
+    /// "매핑됐었나" 를 되짚으면 alias(prefix)·fallback(exact)·`browser` remap 이 어긋난다.
+    /// 그 외 의미는 `ModuleNotFound` 와 같다.
+    MappedTargetNotFound,
     OutOfMemory,
 };
 
@@ -552,7 +557,10 @@ pub const Resolver = struct {
                 const saved_scope = self.paths_scope_bypass;
                 self.paths_scope_bypass = true;
                 defer self.paths_scope_bypass = saved_scope;
-                return try self.resolve(self.io, source_dir, target);
+                return self.resolve(self.io, source_dir, target) catch |err| switch (err) {
+                    error.ModuleNotFound => error.MappedTargetNotFound,
+                    else => err,
+                };
             }
             // target=null → 빈 모듈 (webpack `false`)
             const path_dup = self.allocator.dupe(u8, specifier) catch return error.OutOfMemory;
@@ -834,7 +842,8 @@ pub const Resolver = struct {
         defer if (alias_applied) self.allocator.free(effective_specifier);
 
         return self.resolveResolved(source_dir, specifier, effective_specifier, alias_applied) catch |err| {
-            if (err != error.ModuleNotFound or !self.url_relative) return err;
+            const mapped_err = if (alias_applied and err == error.ModuleNotFound) error.MappedTargetNotFound else err;
+            if (err != error.ModuleNotFound or !self.url_relative) return mapped_err;
             // **마지막 수단** — 원문 철자로 전체 경로 사다리를 태운다 (확장자 추론·`.js`→`.ts`
             // 매핑·디렉토리 인덱스·RN `@2x`).
             //
@@ -849,7 +858,7 @@ pub const Resolver = struct {
             // 않으므로** alias·`--fallback`·`browser` 필드·external 패턴·캐시 키가 어긋나지
             // 않는다. alias 대상이 없을 때 원문 형제로 구제되는 것도 이 경로다 (main 동일).
             if (try self.tryJoinedPath(source_dir, specifier)) |r| return r;
-            return err;
+            return mapped_err;
         };
     }
 

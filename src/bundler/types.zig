@@ -822,6 +822,9 @@ pub const ImportRecord = struct {
     /// shouldResolveRecordForModule / resolveModuleImports 가 resolved==.none 만 보고
     /// 이미 실패 처리된 record 를 미처리로 오판해 재resolve → 진단 중복 출력 (#3966 후속).
     resolve_failed: bool = false,
+    /// 이 record 의 해석 실패가 사용자 `--alias`/`--fallback` 대상의 실패였다 (#4606).
+    /// browser 의 Node 빌트인 빈 모듈 대체가 명시 매핑까지 삼키지 않게 한다.
+    mapped_target_missing: bool = false,
     /// try-block 안의 `require("xxx")` 또는 동적 `import("xxx")` —
     /// resolve 실패 시 hard error 가 아니라 warning 으로 격하하고 stub 으로 대체.
     /// follow-redirects/debug.js 같은 Metro 식 optional dep 패턴 지원

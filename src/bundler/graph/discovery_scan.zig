@@ -18,6 +18,8 @@ const expandRequireContextRecords = graph_require_context.expandRecords;
 pub const ResolveOutput = struct {
     resolved: ?plugin_mod.ResolvedModule = null,
     is_error: bool = false,
+    /// 실패가 `--alias`/`--fallback` 대상 해석 실패였다 (#4606).
+    mapped_target_missing: bool = false,
     skipped: bool = false,
 };
 
@@ -80,6 +82,7 @@ pub fn applyScanResult(self: *ModuleGraph, io: std.Io, result: ScanResult) !void
                 if (resolves[rec_i].resolved) |resolved| self.discardResolvedModule(resolved);
                 continue;
             }
+            self.modules.at(mod_idx).import_records[rec_i].mapped_target_missing = resolves[rec_i].mapped_target_missing;
             try self.applyResolveResult(io, mod_idx, rec_i, record, resolves[rec_i].resolved, resolves[rec_i].is_error);
         }
     }
@@ -178,8 +181,12 @@ pub fn scanModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) ScanResult {
                 record.specifier,
                 record.kind,
             ) catch |err| switch (err) {
-                error.ModuleNotFound => {
-                    results[rec_i] = .{ .is_error = true, .skipped = !should_link };
+                error.ModuleNotFound, error.MappedTargetNotFound => {
+                    results[rec_i] = .{
+                        .is_error = true,
+                        .mapped_target_missing = err == error.MappedTargetNotFound,
+                        .skipped = !should_link,
+                    };
                     continue;
                 },
                 error.OutOfMemory => {
