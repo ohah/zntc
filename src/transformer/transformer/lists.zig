@@ -8,6 +8,7 @@ const NodeList = ast_mod.NodeList;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const es2015_block_scoping = @import("../es2015_block_scoping.zig");
 const es2025_using = @import("../es2025_using.zig");
 const es_helpers = @import("../es_helpers.zig");
@@ -150,6 +151,17 @@ pub fn stableName(self: *Transformer, name: []const u8) Error![]const u8 {
     if (name.len == 0 or p < start or p >= start + table.len) return name;
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     return self.name_arena.?.allocator().dupe(u8, name) catch return Error.OutOfMemory;
+}
+
+/// 소스 식별자 원문을 이름 값으로 — `\u0078` 을 `x` 로 디코딩해 `stableName` 처럼 보관한다.
+/// 변환기가 이 이름으로 새 바인딩을 만들면 scope map 키가 analyzer(디코딩 키)와 같아져
+/// `x`·`\u0078` 어느 표기의 참조도 같은 심볼에 닿는다 (#5667).
+pub fn decodedName(self: *Transformer, raw: []const u8) Error![]const u8 {
+    var buf: [256]u8 = undefined;
+    const decoded = Scanner.decodeIdentifierEscapesInto(raw, &buf) orelse return self.stableName(raw);
+    if (decoded.ptr == raw.ptr) return self.stableName(raw);
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    return self.name_arena.?.allocator().dupe(u8, decoded) catch return Error.OutOfMemory;
 }
 
 /// var <name> = <init_value>; 문 생성 (범용 헬퍼).

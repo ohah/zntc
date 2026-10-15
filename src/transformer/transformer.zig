@@ -1074,6 +1074,7 @@ pub const Transformer = struct {
     pub const visitListNode = lists_mod.visitListNode;
     pub const visitExtraList = lists_mod.visitExtraList;
     pub const stableName = lists_mod.stableName;
+    pub const decodedName = lists_mod.decodedName;
     pub const buildUniqueName = lists_mod.buildUniqueName;
     pub const buildUniqueNameAvoidingDynamicEval = lists_mod.buildUniqueNameAvoidingDynamicEval;
     pub const buildVarDecl = lists_mod.buildVarDecl;
