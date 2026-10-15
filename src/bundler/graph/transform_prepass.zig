@@ -4942,9 +4942,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .assignment_expression => {
                 const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
                 if (options.unsupported.exponentiation and operator == .star2_eq) {
-                    // The transform editor tracks both source identifiers and
-                    // generated member receiver/key temps by exact identity.
-                    if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left))
+                    // Ordinary member temps and direct super-property temps
+                    // are registered by their respective semantic editors.
+                    if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left) and
+                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left))
                         return false;
                     found_lowered_exponentiation = true;
                 }

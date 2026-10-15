@@ -7755,6 +7755,121 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ].join('\n'),
       );
       expectReanalyzedOutput(arrowParameterSuper, '42\n');
+
+      // Computed super exponentiation assignments keep the exact nested class
+      // home graph while preserving the key, accessor, and receiver behavior.
+      const nestedClassSuperExponentiationAssignment = run(
+        [
+          'var instanceReceiver;',
+          'var constructorReceiver;',
+          'var instanceReads = 0, constructorReads = 0;',
+          'var instanceWrites = 0, constructorWrites = 0;',
+          'var keyEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'class InstanceBase {',
+          '  get value() { instanceReads += 1; return this._value; }',
+          '  set value(next) { instanceWrites += 1; instanceReceiver = this; this._value = next; }',
+          '}',
+          'class InstanceService extends InstanceBase {',
+          '  async update(power) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var result = super[getKey()] **= power;',
+          '        return [result, this === instanceReceiver, this._value, instanceReads, instanceWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class StaticBase {',
+          '  static get value() { constructorReads += 1; return this._value; }',
+          '  static set value(next) { constructorWrites += 1; constructorReceiver = this; this._value = next; }',
+          '}',
+          'class StaticService extends StaticBase {',
+          '  static async update(power) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var result = super[getKey()] **= power;',
+          '        return [result, this === constructorReceiver, this._value, constructorReads, constructorWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class Derived extends StaticService {}',
+          'var instance = new InstanceService(); instance._value = 3; Derived._value = 4;',
+          'Promise.all([instance.update(2), Derived.update(2)]).then(values => console.log(values.join("|"), keyEvaluations));',
+        ].join('\n'),
+      );
+      expect(
+        nestedClassSuperExponentiationAssignment.status,
+        nestedClassSuperExponentiationAssignment.stderr,
+      ).toBe(0);
+      expectRetainedClean(nestedClassSuperExponentiationAssignment.stderr ?? '');
+      const nestedClassSuperExponentiationAssignmentOutput = runOutput();
+      expect(
+        nestedClassSuperExponentiationAssignmentOutput.status,
+        nestedClassSuperExponentiationAssignmentOutput.stderr,
+      ).toBe(0);
+      expect(nestedClassSuperExponentiationAssignmentOutput.stdout).toBe(
+        '9 true 9 1 1|16 true 16 1 1 2\n',
+      );
+
+      // A method-body super use beside the nested assignment still requires
+      // semantic reanalysis for the mixed home-object owners.
+      const mixedMethodAndArrowSuperExponentiationAssignment = run(
+        [
+          'var reads = 0, writes = 0, keyEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'class Base {',
+          '  get value() { reads += 1; return this._value; }',
+          '  set value(next) { writes += 1; this._value = next; }',
+          '}',
+          'class Service extends Base {',
+          '  async update(power) {',
+          '    await Promise.resolve();',
+          '    var nested = async () => { await Promise.resolve(); return super[getKey()] **= power; };',
+          '    var assigned = await nested();',
+          '    var direct = super[getKey()];',
+          '    return [assigned, direct, this._value, keyEvaluations, reads, writes].join(" ");',
+          '  }',
+          '}',
+          'var instance = new Service(); instance._value = 3;',
+          'instance.update(2).then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedMethodAndArrowSuperExponentiationAssignment, '9 9 9 2 2 1\n');
+
+      // A computed key containing another super access remains outside the
+      // direct-super target proof and continues through semantic reanalysis.
+      const nestedSuperKeyExponentiationAssignment = run(
+        [
+          'var reads = 0, writes = 0;',
+          'class Base {',
+          '  get key() { return "value"; }',
+          '  get value() { reads += 1; return this._value; }',
+          '  set value(next) { writes += 1; this._value = next; }',
+          '}',
+          'class Service extends Base {',
+          '  async update(power) {',
+          '    await Promise.resolve();',
+          '    var nested = async () => { await Promise.resolve(); return super[super.key] **= power; };',
+          '    return await nested();',
+          '  }',
+          '}',
+          'var instance = new Service(); instance._value = 3;',
+          'instance.update(2).then(value => console.log(value, instance._value, reads, writes));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(nestedSuperKeyExponentiationAssignment, '9 9 1 1\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -8287,6 +8402,53 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const superLogicalWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(superLogicalWriteOutput.status, superLogicalWriteOutput.stderr).toBe(0);
       expect(superLogicalWriteOutput.stdout).toBe('42 42 true 1 1 1\n');
+
+      const superExponentiationWrite = run(
+        [
+          'var reads = 0; var writes = 0; var keyEvaluations = 0; var receiver;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'var prototype = {',
+          '  get value() { reads += 1; return this._value; },',
+          '  set value(next) { writes += 1; receiver = this; this._value = next; },',
+          '};',
+          'var service = {',
+          '  _value: 3,',
+          '  async writeExponentiation(power) {',
+          '    await Promise.resolve();',
+          '    var write = async () => { await Promise.resolve(); return super[getKey()] **= power; };',
+          '    return await write();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.writeExponentiation(2).then(value => console.log(value, service._value, service === receiver, reads, writes, keyEvaluations));',
+        ].join('\n'),
+      );
+      expect(superExponentiationWrite.status, superExponentiationWrite.stderr).toBe(0);
+      const superExponentiationWriteMode = (superExponentiationWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(superExponentiationWriteMode, superExponentiationWrite.stderr).toContain(
+        'semantic_graph=retained',
+      );
+      const superExponentiationWriteReport = (superExponentiationWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(superExponentiationWriteReport, superExponentiationWrite.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(superExponentiationWriteReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${superExponentiationWriteReport}`,
+        ).toBe(0);
+      }
+      expect(superExponentiationWriteReport).toMatch(/clean=1(?:\s|$)/);
+      const superExponentiationWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(superExponentiationWriteOutput.status, superExponentiationWriteOutput.stderr).toBe(0);
+      expect(superExponentiationWriteOutput.stdout).toBe('9 9 true 1 1 1\n');
 
       // A synchronous sibling's super write must not authorize __superSet
       // for the async-method retained graph.
