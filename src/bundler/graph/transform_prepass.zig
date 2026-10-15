@@ -3879,10 +3879,7 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
-fn isSignedNumericObjectMethodKey(ast: *const ast_mod.Ast, value_idx: ast_mod.NodeIndex) bool {
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
-    const value = ast.getNode(value_idx);
-    if (value.tag != .unary_expression) return false;
+fn isSignedNumericObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
     const extra = value.data.extra;
     const extras = ast.extra_data.items;
     if (extra > extras.len or extras.len - extra < 2) return false;
@@ -3900,10 +3897,12 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     const value_idx = if (is_computed) key.data.unary.operand else key_idx;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
+    const is_signed_numeric_key = is_computed and value.tag == .unary_expression and
+        isSignedNumericObjectMethodKey(ast, value);
     return value.tag == .string_literal or
         (is_computed and (value.tag == .numeric_literal or value.tag == .boolean_literal or
             value.tag == .null_literal or
-            isSignedNumericObjectMethodKey(ast, value_idx) or
+            is_signed_numeric_key or
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
