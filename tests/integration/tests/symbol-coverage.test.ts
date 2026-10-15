@@ -8761,6 +8761,118 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       ).toBe(0);
       expect(untrackedOptionalObjectSuperExponentiationKeyOutput.stdout).toBe('9 9 1 1 1\n');
 
+      const methodDepthOptionalSuperAssignment = run(
+        [
+          'var events = []; var receiver;',
+          'var keyEvaluations = 0, nullishEvaluations = 0, powerEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+          'function getNullish() { nullishEvaluations += 1; events.push("rhs-nullish"); return 8; }',
+          'function getPower() { powerEvaluations += 1; events.push("rhs-power"); return 2; }',
+          'var keySource = { get key() { events.push("source-key"); return "value"; } };',
+          'var prototype = {',
+          '  get value() { reads += 1; events.push("get-value"); return this._value; },',
+          '  set value(next) { writes += 1; events.push("set-value"); receiver = this; this._value = next; },',
+          '  get undefined() { reads += 1; events.push("get-undefined"); return this._missing; },',
+          '  set undefined(next) { writes += 1; events.push("set-undefined"); receiver = this; this._missing = next; },',
+          '};',
+          'var service = {',
+          '  _value: null,',
+          '  _missing: 5,',
+          '  async updateOptional(source) {',
+          '    await Promise.resolve();',
+          '    var nullish = super[source?.[getKey()]] ??= getNullish();',
+          '    var powered = super[source?.[getKey()]] **= getPower();',
+          '    return [nullish, powered].join(" ");',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.updateOptional(keySource).then(first => service.updateOptional(null).then(second => console.log(first, service._value, second, service._missing, service === receiver, events.join(","), reads, writes, keyEvaluations, nullishEvaluations, powerEvaluations)));',
+        ].join('\n'),
+      );
+      expect(
+        methodDepthOptionalSuperAssignment.status,
+        methodDepthOptionalSuperAssignment.stderr,
+      ).toBe(0);
+      const methodDepthOptionalSuperAssignmentMode = (
+        methodDepthOptionalSuperAssignment.stderr ?? ''
+      )
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(methodDepthOptionalSuperAssignmentMode).toContain('semantic_graph=retained');
+      const methodDepthOptionalSuperAssignmentReport = (
+        methodDepthOptionalSuperAssignment.stderr ?? ''
+      )
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(methodDepthOptionalSuperAssignmentReport).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(
+            methodDepthOptionalSuperAssignmentReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ??
+              -1,
+          ),
+          `${counter}: ${methodDepthOptionalSuperAssignmentReport}`,
+        ).toBe(0);
+      }
+      expect(methodDepthOptionalSuperAssignmentReport).toMatch(/clean=1(?:\s|$)/);
+      const methodDepthOptionalSuperAssignmentOutput = spawnSync('node', [output], {
+        encoding: 'utf8',
+      });
+      expect(
+        methodDepthOptionalSuperAssignmentOutput.status,
+        methodDepthOptionalSuperAssignmentOutput.stderr,
+      ).toBe(0);
+      expect(methodDepthOptionalSuperAssignmentOutput.stdout).toBe(
+        '8 64 64 5 25 25 true key,source-key,get-value,rhs-nullish,set-value,key,source-key,get-value,rhs-power,set-value,get-undefined,get-undefined,rhs-power,set-undefined 4 3 2 1 2\n',
+      );
+
+      const untrackedMethodDepthOptionalObjectSuperKey = run(
+        [
+          'var keyEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; return "key"; }',
+          'globalThis.__zntcUntrackedDirectObjectSuperKey = { key: "value" };',
+          'var prototype = {',
+          '  get value() { reads += 1; return this._value; },',
+          '  set value(next) { writes += 1; this._value = next; },',
+          '};',
+          'var service = {',
+          '  _value: null,',
+          '  async update() {',
+          '    await Promise.resolve();',
+          '    return super[globalThis.__zntcUntrackedDirectObjectSuperKey?.[getKey()]] ??= 8;',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.update().then(value => console.log(value, service._value, keyEvaluations, reads, writes));',
+        ].join('\n'),
+      );
+      expect(
+        untrackedMethodDepthOptionalObjectSuperKey.status,
+        untrackedMethodDepthOptionalObjectSuperKey.stderr,
+      ).toBe(0);
+      const untrackedMethodDepthOptionalObjectSuperKeyMode = (
+        untrackedMethodDepthOptionalObjectSuperKey.stderr ?? ''
+      )
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(untrackedMethodDepthOptionalObjectSuperKeyMode).toContain('semantic_graph=reanalyzed');
+      const untrackedMethodDepthOptionalObjectSuperKeyOutput = spawnSync('node', [output], {
+        encoding: 'utf8',
+      });
+      expect(
+        untrackedMethodDepthOptionalObjectSuperKeyOutput.status,
+        untrackedMethodDepthOptionalObjectSuperKeyOutput.stderr,
+      ).toBe(0);
+      expect(untrackedMethodDepthOptionalObjectSuperKeyOutput.stdout).toBe('8 8 1 1 1\n');
+
       const superExponentiationWrite = run(
         [
           'var reads = 0; var writes = 0; var keyEvaluations = 0; var receiver;',
