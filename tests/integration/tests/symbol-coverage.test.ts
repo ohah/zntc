@@ -8631,7 +8631,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         { key: '[null]', call: "service['null']", retainsGraph: true, keyCalls: 0 },
         { key: '[1n]', call: "service['1']", retainsGraph: true, keyCalls: 0 },
         { key: '[0x10n]', call: "service['16']", retainsGraph: true, keyCalls: 0 },
-        { key: '[-1n]', call: "service['-1']", retainsGraph: false, keyCalls: 0 },
+        { key: '[-1n]', call: "service['-1']", retainsGraph: true, keyCalls: 0 },
+        { key: '[!1n]', call: 'service.false', retainsGraph: true, keyCalls: 0 },
+        { key: '[~1n]', call: "service['-2']", retainsGraph: true, keyCalls: 0 },
+        { key: '[typeof 1n]', call: 'service.bigint', retainsGraph: true, keyCalls: 0 },
+        { key: '[void 1n]', call: 'service.undefined', retainsGraph: true, keyCalls: 0 },
+        { key: '[delete 1n]', call: "service['true']", retainsGraph: true, keyCalls: 0 },
         { key: '[`update`]', call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[`up${"date"}`]', call: 'service.update', retainsGraph: false, keyCalls: 0 },
         { key: '[getMethodName()]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
@@ -8676,6 +8681,64 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           `42 84 42 84 84 true ${keyCalls} direct-read,key,source-key,get-undefined,rhs,set-undefined direct-read,get-undefined 2 1 1 1\n`,
         );
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('ES5 async object super keeps unary plus BigInt on reanalysis and preserves its TypeError', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-bigint-plus-super-key-'));
+    const input = join(dir, 'entry.ts');
+    const nativeInput = join(dir, 'oracle.mjs');
+    const output = join(dir, 'out.cjs');
+    const source = [
+      'var result;',
+      'try {',
+      '  var service = { async [+1n]() { return super.value; } };',
+      '  result = "created";',
+      '} catch (error) {',
+      '  result = error instanceof TypeError ? "TypeError" : "unexpected";',
+      '}',
+      'console.log(result);',
+    ].join('\n');
+    writeFileSync(input, source);
+    writeFileSync(nativeInput, source);
+
+    try {
+      const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('TypeError\n');
+
+      const bundled = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          input,
+          '--target=es5',
+          '--platform=node',
+          '--format=cjs',
+          '--minify-identifiers',
+          '-o',
+          output,
+        ],
+        {
+          cwd: dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(bundled.status, bundled.stderr).toBe(0);
+      const mode = (bundled.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(mode, bundled.stderr).toContain('semantic_graph=reanalyzed');
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

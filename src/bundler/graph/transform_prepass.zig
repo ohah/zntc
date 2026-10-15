@@ -3879,7 +3879,7 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
-fn isPureNumericUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
+fn isPureLiteralUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
     const extra = value.data.extra;
     const extras = ast.extra_data.items;
     if (extra > extras.len or extras.len - extra < 2) return false;
@@ -3889,8 +3889,10 @@ fn isPureNumericUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Nod
         else => return false,
     }
     const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    return !operand_idx.isNone() and @intFromEnum(operand_idx) < ast.nodes.items.len and
-        ast.getNode(operand_idx).tag == .numeric_literal;
+    if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
+    const operand = ast.getNode(operand_idx);
+    if (operand.tag == .numeric_literal) return true;
+    return operand.tag == .bigint_literal and operator != .plus;
 }
 
 fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
@@ -3900,12 +3902,12 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     const value_idx = if (is_computed) key.data.unary.operand else key_idx;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
-    const is_pure_numeric_unary_key = is_computed and value.tag == .unary_expression and
-        isPureNumericUnaryObjectMethodKey(ast, value);
+    const is_pure_literal_unary_key = is_computed and value.tag == .unary_expression and
+        isPureLiteralUnaryObjectMethodKey(ast, value);
     return value.tag == .string_literal or
         (is_computed and (value.tag == .numeric_literal or value.tag == .bigint_literal or
             value.tag == .boolean_literal or value.tag == .null_literal or
-            is_pure_numeric_unary_key or
+            is_pure_literal_unary_key or
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
