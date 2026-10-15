@@ -127,7 +127,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         fn namesOf(self: *Transformer, bindings: []const NodeIndex) !std.ArrayList([]const u8) {
             var names: std.ArrayList([]const u8) = .empty;
             errdefer names.deinit(self.allocator);
-            for (bindings) |binding| try names.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(binding).span)));
+            for (bindings) |binding| try names.append(self.allocator, try self.decodedName(self.ast.getText(self.ast.getNode(binding).span)));
             return names;
         }
 
@@ -145,7 +145,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             while (try it.next()) |leaf_idx| {
                 const leaf = self.ast.getNode(leaf_idx);
                 if (leaf.tag != .binding_identifier) continue;
-                try names.append(self.allocator, try self.stableName(self.ast.getText(leaf.span)));
+                try names.append(self.allocator, try self.decodedName(self.ast.getText(leaf.span)));
             }
         }
 
@@ -212,7 +212,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     if (!in_closure or node.tag != .identifier_reference) return false;
                     const name = c.self.ast.getText(node.span);
                     for (c.names) |ln| {
-                        if (std.mem.eql(u8, name, ln)) return true;
+                        if (Scanner.identifierNamesEqual(name, ln)) return true;
                     }
                     return false;
                 }
@@ -251,7 +251,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             var bindings: std.ArrayList(NodeIndex) = .empty;
             defer bindings.deinit(self.allocator);
             try collectLoopBodyVarBindings(self, body_idx, &bindings);
-            for (bindings.items) |binding| try out.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(binding).span)));
+            for (bindings.items) |binding| try out.append(self.allocator, try self.decodedName(self.ast.getText(self.ast.getNode(binding).span)));
         }
 
         /// `collectLoopBodyVarNames` 의 노드판 (같은 순서).
@@ -495,7 +495,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
         fn nameIn(name: []const u8, names: []const []const u8) bool {
             for (names) |n| {
-                if (std.mem.eql(u8, n, name)) return true;
+                if (Scanner.identifierNamesEqual(n, name)) return true;
             }
             return false;
         }

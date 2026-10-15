@@ -69,7 +69,7 @@ pub const LoopCapture = struct {
             c.body_captured = BlockScoping.hasCapturedClosure(self, body, c.names.items[head_names.len..]);
         }
         try BlockScoping.collectLoopBodyVarBindings(self, body, &c.var_bindings);
-        for (c.var_bindings.items) |binding| try c.var_names.append(self.allocator, try self.stableName(self.ast.getText(self.ast.getNode(binding).span)));
+        for (c.var_bindings.items) |binding| try c.var_names.append(self.allocator, try self.decodedName(self.ast.getText(self.ast.getNode(binding).span)));
         return c;
     }
 

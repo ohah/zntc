@@ -1,5 +1,6 @@
 //! 변환 중 합성 바인딩과 참조를 원래 semantic SymbolId 공간에 추가한다 (#4819).
 const std = @import("std");
+const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const Transformer = @import("../transformer.zig").Transformer;
 const ast_mod = @import("../../parser/ast.zig");
 const Node = ast_mod.Node;
@@ -1151,12 +1152,19 @@ fn nearestOutputSymbolAtScope(editor: *SemanticEditor, name: []const u8, start: 
 
 fn nearestOutputSymbolBySpelling(editor: *SemanticEditor, spelling: []const u8, start: ScopeId) ?u32 {
     if (start.isNone()) return null;
+    // `\u0078` 과 `x` 는 같은 이름이다. 변환기가 만든 바인딩은 디코딩 키 하나만 갖기도 하므로
+    // 스코프마다 두 표기를 함께 봐야 안쪽 바인딩이 이긴다 (#5667).
+    var decode_buf: [256]u8 = undefined;
+    const decoded = Scanner.decodeIdentifierEscapesInto(spelling, &decode_buf) orelse spelling;
     var current = start;
     var hops: usize = 0;
     while (!current.isNone() and hops < editor.scopes.items.len) : (hops += 1) {
         if (current.toIndex() >= editor.scopes.items.len) return null;
         const map = editor.scope_maps.items[current.toIndex()];
         if (map.get(spelling)) |symbol| return @intCast(symbol);
+        if (decoded.ptr != spelling.ptr) {
+            if (map.get(decoded)) |symbol| return @intCast(symbol);
+        }
         current = editor.scopes.items[current.toIndex()].parent;
     }
     return null;

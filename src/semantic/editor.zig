@@ -4,6 +4,7 @@
 //! 소스 위치로 바인딩을 다시 찾지 않고, 생성자가 넘긴 scope와 SymbolId를 사용한다.
 
 const std = @import("std");
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const ast_mod = @import("../parser/ast.zig");
 const scope_mod = @import("scope.zig");
 const symbol_mod = @import("symbol.zig");
@@ -230,6 +231,12 @@ pub const SemanticEditor = struct {
         // emitted binding was string-table backed.
         try target_map.put(self.allocator, stable_output_name orelse target_name, @intFromEnum(id));
         _ = source_map.remove(name);
+        if (self.takeDecodedAlias(source, name, @intFromEnum(id))) |alias| {
+            // 같은 표기로 옮길 때만 디코딩 별칭도 따라간다. 새 이름으로 바뀌면 별칭은 더 이상 맞지 않는다.
+            if (std.mem.eql(u8, target_name, name) and target_map.get(alias) == null) {
+                try target_map.put(self.allocator, alias, @intFromEnum(id));
+            }
+        }
         if (source != target) {
             self.scopes.items[source.toIndex()].symbol_count -= 1;
             self.scopes.items[target.toIndex()].symbol_count += 1;
@@ -321,6 +328,7 @@ pub const SemanticEditor = struct {
         const stable_name = try self.allocator.dupe(u8, output_name);
         try map.put(self.allocator, stable_name, @intFromEnum(id));
         if (old_id == @intFromEnum(id)) _ = map.remove(old_name);
+        _ = self.takeDecodedAlias(symbol.scope_id, old_name, @intFromEnum(id));
         symbol.synthetic_name = stable_name;
         const declaration_node = self.bindingNodeForSymbol(id) orelse .none;
         try self.ensureDeclarationAtNode(id, symbol.scope_id, declaration_node);
@@ -427,7 +435,11 @@ pub const SemanticEditor = struct {
             self.symbol_ids.items[slot] = @intFromEnum(expected);
         }
         const old_span = binding.data.string_ref;
-        const name = self.ast.getText(old_span);
+        // 출력 바인딩은 디코딩한 이름으로 선언한다 — `\u0078` 원문 키만 두면 `x` 로 쓴 참조가
+        // 이 심볼을 scope map 에서 찾지 못한다 (#5667). 같은 식별자라 출력 의미는 같다.
+        var decode_buf: [256]u8 = undefined;
+        const raw_name = self.ast.getText(old_span);
+        const name = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buf) orelse raw_name;
         const target = try self.bindingScope(lexical_scope, kind);
         if (self.scope_maps.items[target.toIndex()].get(name)) |existing_raw| {
             if (existing_raw >= self.symbols.items.len) return error.InvalidSymbol;
@@ -437,7 +449,7 @@ pub const SemanticEditor = struct {
             // scope and name are one JavaScript binding. Preserve that exact
             // runtime identity instead of manufacturing a duplicate map key.
             if (kind == .variable_var and existing.kind == .variable_var and
-                existing.scope_id == target and std.mem.eql(u8, existing_name, name))
+                existing.scope_id == target and Scanner.identifierNamesEqual(existing_name, name))
             {
                 const existing_id: SymbolId = @enumFromInt(@as(u32, @intCast(existing_raw)));
                 self.symbol_ids.items[slot] = @intFromEnum(existing_id);
@@ -665,6 +677,18 @@ pub const SemanticEditor = struct {
         }
     }
 
+    /// analyzer 는 escape 로 쓴 이름(`\u0078`)을 원문 키와 디코딩 키(`x`) 둘 다로 넣는다.
+    /// 원문 키를 옮기거나 지울 때 디코딩 키가 옛 스코프에 남으면 `x` 참조가 이 심볼로
+    /// 잘못 풀린다 (#5667). 디코딩 키가 같은 심볼을 가리키면 떼어내 그 키를 돌려준다.
+    fn takeDecodedAlias(self: *SemanticEditor, scope: ScopeId, name: []const u8, symbol_index: usize) ?[]const u8 {
+        var decode_buf: [256]u8 = undefined;
+        const decoded = Scanner.decodeIdentifierEscapesInto(name, &decode_buf) orelse return null;
+        if (std.mem.eql(u8, decoded, name)) return null;
+        const map = &self.scope_maps.items[scope.toIndex()];
+        if (map.get(decoded) != symbol_index) return null;
+        return (map.fetchRemove(decoded) orelse return null).key;
+    }
+
     /// Move one exact binding when lowering replaces its lexical boundary with
     /// a generated boundary that encloses all surviving references.
     pub fn moveSymbolToScope(self: *SemanticEditor, symbol: SymbolId, new_scope: ScopeId) Error!void {
@@ -686,6 +710,11 @@ pub const SemanticEditor = struct {
             try self.scope_maps.items[new_scope.toIndex()].put(self.allocator, name, symbol_index);
         }
         _ = self.scope_maps.items[old_scope.toIndex()].remove(name);
+        if (self.takeDecodedAlias(old_scope, name, symbol_index)) |alias| {
+            if (self.scope_maps.items[new_scope.toIndex()].get(alias) == null) {
+                try self.scope_maps.items[new_scope.toIndex()].put(self.allocator, alias, symbol_index);
+            }
+        }
         std.debug.assert(self.scopes.items[old_scope.toIndex()].symbol_count > 0);
         self.scopes.items[old_scope.toIndex()].symbol_count -= 1;
         self.scopes.items[new_scope.toIndex()].symbol_count +|= 1;
