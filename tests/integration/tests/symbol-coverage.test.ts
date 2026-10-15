@@ -8640,6 +8640,127 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '42 42 5 5 true key,source-key,get-value,rhs,set-value,get-undefined 2 1 1 1\n',
       );
 
+      const optionalSuperAssignmentMatrix = run(
+        [
+          'var events = []; var receiver;',
+          'var keyEvaluations = 0, nullishEvaluations = 0, logicalOrEvaluations = 0, logicalAndEvaluations = 0, powerEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+          'function getNullish() { nullishEvaluations += 1; events.push("rhs-nullish"); return 8; }',
+          'function getLogicalOr() { logicalOrEvaluations += 1; events.push("rhs-or"); return 11; }',
+          'function getLogicalAnd() { logicalAndEvaluations += 1; events.push("rhs-and"); return 12; }',
+          'function getPower() { powerEvaluations += 1; events.push("rhs-power"); return 2; }',
+          'var keySource = { get key() { events.push("source-key"); return "value"; } };',
+          'var prototype = {',
+          '  get value() { reads += 1; events.push("get-value"); return this._value; },',
+          '  set value(next) { writes += 1; events.push("set-value"); receiver = this; this._value = next; },',
+          '  get undefined() { reads += 1; events.push("get-undefined"); return this._missing; },',
+          '  set undefined(next) { writes += 1; events.push("set-undefined"); receiver = this; this._missing = next; },',
+          '};',
+          'var service = {',
+          '  _value: null,',
+          '  _missing: 5,',
+          '  async updateOptional(source) {',
+          '    await Promise.resolve();',
+          '    var update = async () => {',
+          '      await Promise.resolve();',
+          '      var nullish = super[source?.[getKey()]] ??= getNullish();',
+          '      var either = super[source?.[getKey()]] ||= getLogicalOr();',
+          '      var both = super[source?.[getKey()]] &&= getLogicalAnd();',
+          '      var powered = super[source?.[getKey()]] **= getPower();',
+          '      return [nullish, either, both, powered].join(" ");',
+          '    };',
+          '    return await update();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.updateOptional(keySource).then(first => service.updateOptional(null).then(second => console.log(first, service._value, second, service._missing, service === receiver, events.join(","), reads, writes, keyEvaluations, nullishEvaluations, logicalOrEvaluations, logicalAndEvaluations, powerEvaluations)));',
+        ].join('\n'),
+      );
+      expect(optionalSuperAssignmentMatrix.status, optionalSuperAssignmentMatrix.stderr).toBe(0);
+      const optionalSuperAssignmentMatrixMode = (optionalSuperAssignmentMatrix.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(optionalSuperAssignmentMatrixMode, optionalSuperAssignmentMatrix.stderr).toContain(
+        'semantic_graph=retained',
+      );
+      const optionalSuperAssignmentMatrixReport = (optionalSuperAssignmentMatrix.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(
+        optionalSuperAssignmentMatrixReport,
+        optionalSuperAssignmentMatrix.stderr,
+      ).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(
+            optionalSuperAssignmentMatrixReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1,
+          ),
+          `${counter}: ${optionalSuperAssignmentMatrixReport}`,
+        ).toBe(0);
+      }
+      expect(optionalSuperAssignmentMatrixReport).toMatch(/clean=1(?:\s|$)/);
+      const optionalSuperAssignmentMatrixOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(
+        optionalSuperAssignmentMatrixOutput.status,
+        optionalSuperAssignmentMatrixOutput.stderr,
+      ).toBe(0);
+      expect(optionalSuperAssignmentMatrixOutput.stdout).toBe(
+        '8 8 12 144 144 5 5 12 144 144 true key,source-key,get-value,rhs-nullish,set-value,key,source-key,get-value,key,source-key,get-value,rhs-and,set-value,key,source-key,get-value,rhs-power,set-value,get-undefined,get-undefined,get-undefined,rhs-and,set-undefined,get-undefined,rhs-power,set-undefined 8 5 4 1 0 2 2\n',
+      );
+
+      const untrackedOptionalObjectSuperExponentiationKey = run(
+        [
+          'var keyEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; return "key"; }',
+          'globalThis.__zntcUntrackedObjectSuperKey = { key: "value" };',
+          'var prototype = {',
+          '  get value() { reads += 1; return this._value; },',
+          '  set value(next) { writes += 1; this._value = next; },',
+          '};',
+          'var service = {',
+          '  _value: 3,',
+          '  async update() {',
+          '    await Promise.resolve();',
+          '    var update = async () => {',
+          '      await Promise.resolve();',
+          '      return super[globalThis.__zntcUntrackedObjectSuperKey?.[getKey()]] **= 2;',
+          '    };',
+          '    return await update();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.update().then(value => console.log(value, service._value, keyEvaluations, reads, writes));',
+        ].join('\n'),
+      );
+      expect(
+        untrackedOptionalObjectSuperExponentiationKey.status,
+        untrackedOptionalObjectSuperExponentiationKey.stderr,
+      ).toBe(0);
+      const untrackedOptionalObjectSuperExponentiationKeyMode = (
+        untrackedOptionalObjectSuperExponentiationKey.stderr ?? ''
+      )
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(untrackedOptionalObjectSuperExponentiationKeyMode).toContain(
+        'semantic_graph=reanalyzed',
+      );
+      const untrackedOptionalObjectSuperExponentiationKeyOutput = spawnSync('node', [output], {
+        encoding: 'utf8',
+      });
+      expect(
+        untrackedOptionalObjectSuperExponentiationKeyOutput.status,
+        untrackedOptionalObjectSuperExponentiationKeyOutput.stderr,
+      ).toBe(0);
+      expect(untrackedOptionalObjectSuperExponentiationKeyOutput.stdout).toBe('9 9 1 1 1\n');
+
       const superExponentiationWrite = run(
         [
           'var reads = 0; var writes = 0; var keyEvaluations = 0; var receiver;',
