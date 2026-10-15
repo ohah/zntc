@@ -3923,6 +3923,39 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
+fn isRetainableAsyncObjectMethodTemplateValue(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    template_idx: ast_mod.NodeIndex,
+    nesting_depth: u8,
+) bool {
+    if (nesting_depth >= 64 or template_idx.isNone() or
+        @intFromEnum(template_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(template_idx);
+    if (value.tag == .template_literal) {
+        const list = value.data.list;
+        if (list.len == 0) return true;
+        const extras = ast.extra_data.items;
+        if (list.len < 3 or list.len % 2 == 0 or list.start > extras.len or
+            list.len > extras.len - list.start) return false;
+        var offset: u32 = 1;
+        while (offset < list.len) : (offset += 2) {
+            const expression_raw = extras[list.start + offset];
+            if (expression_raw >= ast.nodes.items.len) return false;
+            const expression_idx: ast_mod.NodeIndex = @enumFromInt(expression_raw);
+            if (isSafeConstructorValue(ast, semantic, expression_idx)) continue;
+            if (!isRetainableAsyncObjectMethodTemplateValue(
+                ast,
+                semantic,
+                expression_idx,
+                nesting_depth + 1,
+            )) return false;
+        }
+        return true;
+    }
+    return false;
+}
+
 fn isRetainableAsyncObjectMethodKey(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3936,18 +3969,7 @@ fn isRetainableAsyncObjectMethodKey(
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     if (value.tag == .template_literal) {
-        const list = value.data.list;
-        const extras = ast.extra_data.items;
-        if (list.len < 3 or list.len % 2 == 0 or list.start > extras.len or
-            list.len > extras.len - list.start) return false;
-        var offset: u32 = 1;
-        while (offset < list.len) : (offset += 2) {
-            const expression_raw = extras[list.start + offset];
-            if (expression_raw >= ast.nodes.items.len) return false;
-            const expression_idx: ast_mod.NodeIndex = @enumFromInt(expression_raw);
-            if (!isSafeConstructorValue(ast, semantic, expression_idx)) return false;
-        }
-        return true;
+        return isRetainableAsyncObjectMethodTemplateValue(ast, semantic, value_idx, 0);
     }
     return isSafeConstructorValue(ast, semantic, value_idx);
 }
