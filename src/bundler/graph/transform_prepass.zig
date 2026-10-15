@@ -4001,6 +4001,25 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 traversal_depth + 1,
             );
         },
+        .computed_member_expression => blk: {
+            const extras = ast.extra_data.items;
+            const extra = value.data.extra;
+            if (extra > extras.len or extras.len - extra < 3 or
+                (extras[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) break :blk false;
+            const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+            break :blk isRetainableAsyncObjectMethodTemplateExpression(
+                ast,
+                semantic,
+                object_idx,
+                traversal_depth + 1,
+            ) and isRetainableAsyncObjectMethodTemplateExpression(
+                ast,
+                semantic,
+                property_idx,
+                traversal_depth + 1,
+            );
+        },
         .ts_as_expression,
         .ts_satisfies_expression,
         .ts_non_null_expression,
