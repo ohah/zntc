@@ -8603,6 +8603,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0, methodKeyCalls = 0;',
         "var methodName = 'update';",
         "var methodPrefix = 'up', methodSuffix = 'date', methodNameEnabled = true;",
+        'var keyConfig = { get methodPrefix() { events.push("method-prefix"); return methodPrefix; } };',
         'function getMethodName() { methodKeyCalls += 1; return "update"; }',
         'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
         'function getNext() { rhsEvaluations += 1; events.push("rhs"); return 84; }',
@@ -8637,6 +8638,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         call: string;
         retainsGraph: boolean;
         keyCalls: number;
+        keyEventPrefix?: string;
       }> = [
         { key: "['update']", call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[0]', call: 'service[0]', retainsGraph: true, keyCalls: 0 },
@@ -8724,6 +8726,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           keyCalls: 0,
         },
         {
+          key: '[`${keyConfig.methodPrefix}${methodSuffix}`]',
+          call: 'service[methodPrefix + methodSuffix]',
+          retainsGraph: true,
+          keyCalls: 0,
+          keyEventPrefix: 'method-prefix,',
+        },
+        {
+          key: '[`${keyConfig?.methodPrefix}${methodSuffix}`]',
+          call: 'service[methodPrefix + methodSuffix]',
+          retainsGraph: false,
+          keyCalls: 0,
+          keyEventPrefix: 'method-prefix,',
+        },
+        {
           key: '[`${methodName as string}`]',
           nativeKey: '[`${methodName}`]',
           call: 'service[methodName]',
@@ -8798,6 +8814,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         call: methodCall,
         retainsGraph,
         keyCalls,
+        keyEventPrefix = '',
       } of methodCases) {
         const source = sourceFor(methodKey, methodCall);
         writeFileSync(nativeInput, sourceFor(nativeKey, methodCall));
@@ -8835,7 +8852,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(actual.status, `${methodKey}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, methodKey).toBe(native.stdout);
         expect(native.stdout, methodKey).toBe(
-          `42 84 42 84 84 true ${keyCalls} direct-read,key,source-key,get-undefined,rhs,set-undefined direct-read,get-undefined 2 1 1 1\n`,
+          `42 84 42 84 84 true ${keyCalls} ${keyEventPrefix}direct-read,key,source-key,get-undefined,rhs,set-undefined direct-read,get-undefined 2 1 1 1\n`,
         );
       }
     } finally {
