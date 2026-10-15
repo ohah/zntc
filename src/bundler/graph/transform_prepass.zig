@@ -938,6 +938,16 @@ fn isUnresolvedSourceIdentifierReference(
     return semantic.unresolved_references.contains(ast.getText(node.span));
 }
 
+/// Global `undefined` is immutable; other unresolved names remain on reanalysis.
+fn isUnresolvedGlobalUndefinedReference(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    node_idx: ast_mod.NodeIndex,
+) bool {
+    if (!isUnresolvedSourceIdentifierReference(ast, semantic, node_idx)) return false;
+    return std.mem.eql(u8, ast.getText(ast.getNode(node_idx).span), "undefined");
+}
+
 fn isBoundSourceIdentifierBinding(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3967,6 +3977,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             }
             break :blk true;
         },
+        .identifier_reference => isUnresolvedGlobalUndefinedReference(ast, semantic, expression_idx),
         .binary_expression => blk: {
             const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
             break :blk isSafeConstructorBinaryOperator(operator) and
