@@ -4032,6 +4032,21 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 value.data.ternary.c,
                 traversal_depth + 1,
             ),
+        .sequence_expression => blk: {
+            const list = value.data.list;
+            const extras = ast.extra_data.items;
+            if (list.len < 2 or list.start > extras.len or
+                list.len > extras.len - list.start) break :blk false;
+            for (extras[list.start .. list.start + list.len]) |raw_child| {
+                if (raw_child >= ast.nodes.items.len or !isRetainableAsyncObjectMethodTemplateExpression(
+                    ast,
+                    semantic,
+                    @enumFromInt(raw_child),
+                    traversal_depth + 1,
+                )) break :blk false;
+            }
+            break :blk true;
+        },
         else => false,
     };
 }
