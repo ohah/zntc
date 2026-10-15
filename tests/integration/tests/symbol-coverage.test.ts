@@ -7255,6 +7255,111 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '50 50 true 51 2 2|90 90 true 91 2 2 4\n',
       );
 
+      // Logical computed super assignments preserve key, accessor, and
+      // inherited-receiver behavior while their generated state stays exact.
+      const nestedComputedClassAsyncSuperLogicalAssignments = run(
+        [
+          'var instanceReceiver;',
+          'var constructorReceiver;',
+          'var instanceReads = 0;',
+          'var constructorReads = 0;',
+          'var instanceWrites = 0;',
+          'var constructorWrites = 0;',
+          'var keyEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'class InstanceBase {',
+          '  get value() { instanceReads += 1; return this._value; }',
+          '  set value(next) { instanceWrites += 1; instanceReceiver = this; this._value = next; }',
+          '}',
+          'class InstanceService extends InstanceBase {',
+          '  async update(first, second, third) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var nullish = super[getKey()] ??= first;',
+          '        var either = super[getKey()] ||= second;',
+          '        var both = super[getKey()] &&= third;',
+          '        return [nullish, either, both, this === instanceReceiver, this._value, instanceReads, instanceWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class StaticBase {',
+          '  static get value() { constructorReads += 1; return this._value; }',
+          '  static set value(next) { constructorWrites += 1; constructorReceiver = this; this._value = next; }',
+          '}',
+          'class StaticService extends StaticBase {',
+          '  static async update(first, second, third) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => {',
+          '        await Promise.resolve();',
+          '        var nullish = super[getKey()] ??= first;',
+          '        var either = super[getKey()] ||= second;',
+          '        var both = super[getKey()] &&= third;',
+          '        return [nullish, either, both, this === constructorReceiver, this._value, constructorReads, constructorWrites].join(" ");',
+          '      };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class Derived extends StaticService {}',
+          'var instance = new InstanceService(); instance._value = null;',
+          'Derived._value = 0;',
+          'Promise.all([instance.update(8, 9, 10), Derived.update(6, 7, 8)]).then(values => console.log(values.join("|"), keyEvaluations));',
+        ].join('\n'),
+      );
+      expect(
+        nestedComputedClassAsyncSuperLogicalAssignments.status,
+        nestedComputedClassAsyncSuperLogicalAssignments.stderr,
+      ).toBe(0);
+      expectRetainedClean(nestedComputedClassAsyncSuperLogicalAssignments.stderr ?? '');
+      const nestedComputedClassAsyncSuperLogicalAssignmentsOutput = runOutput();
+      expect(
+        nestedComputedClassAsyncSuperLogicalAssignmentsOutput.status,
+        nestedComputedClassAsyncSuperLogicalAssignmentsOutput.stderr,
+      ).toBe(0);
+      expect(nestedComputedClassAsyncSuperLogicalAssignmentsOutput.stdout).toBe(
+        '8 8 10 true 10 3 2|0 7 8 true 8 3 2 6\n',
+      );
+
+      // A synchronous super owner keeps the whole class on semantic reanalysis.
+      const mixedAsyncAndSyncSuperLogicalAssignment = run(
+        [
+          'var keyEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'class Base {',
+          '  get value() { return this._value; }',
+          '  set value(next) { this._value = next; }',
+          '}',
+          'class Service extends Base {',
+          '  async update(next) {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => { await Promise.resolve(); return super[getKey()] ||= next; };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '  updateSync(next) { return super[getKey()] ||= next; }',
+          '}',
+          'var service = new Service(); service._value = 0;',
+          'var other = { _value: 0 };',
+          'service.update(8).then(asyncValue => {',
+          '  var syncValue = service.updateSync.call(other, 9);',
+          '  console.log(asyncValue, service._value, syncValue, other._value, keyEvaluations);',
+          '});',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedAsyncAndSyncSuperLogicalAssignment, '8 8 9 9 2\n');
+
       // Static nested super uses at different arrow depths stay on reanalysis.
       const mixedNestedStaticAsyncArrowSuper = run(
         [
@@ -8137,6 +8242,51 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       const superWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
       expect(superWriteOutput.status, superWriteOutput.stderr).toBe(0);
       expect(superWriteOutput.stdout).toBe('50 50\n');
+
+      const superLogicalWrite = run(
+        [
+          'var reads = 0; var writes = 0; var keyEvaluations = 0; var receiver;',
+          'function getKey() { keyEvaluations += 1; return "value"; }',
+          'var prototype = {',
+          '  get value() { reads += 1; return this._value; },',
+          '  set value(next) { writes += 1; receiver = this; this._value = next; },',
+          '};',
+          'var service = {',
+          '  _value: null,',
+          '  async writeLogical(next) {',
+          '    await Promise.resolve();',
+          '    var write = async () => { await Promise.resolve(); return super[getKey()] ??= next; };',
+          '    return await write();',
+          '  },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.writeLogical(42).then(value => console.log(value, service._value, service === receiver, reads, writes, keyEvaluations));',
+        ].join('\n'),
+      );
+      expect(superLogicalWrite.status, superLogicalWrite.stderr).toBe(0);
+      const superLogicalWriteMode = (superLogicalWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) =>
+            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+        );
+      expect(superLogicalWriteMode, superLogicalWrite.stderr).toContain('semantic_graph=retained');
+      const superLogicalWriteReport = (superLogicalWrite.stderr ?? '')
+        .split(/\r?\n/)
+        .find(
+          (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+        );
+      expect(superLogicalWriteReport, superLogicalWrite.stderr).toBeDefined();
+      for (const counter of EXACT_ZERO_COUNTERS) {
+        expect(
+          Number(superLogicalWriteReport?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+          `${counter}: ${superLogicalWriteReport}`,
+        ).toBe(0);
+      }
+      expect(superLogicalWriteReport).toMatch(/clean=1(?:\s|$)/);
+      const superLogicalWriteOutput = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(superLogicalWriteOutput.status, superLogicalWriteOutput.stderr).toBe(0);
+      expect(superLogicalWriteOutput.stdout).toBe('42 42 true 1 1 1\n');
 
       // A synchronous sibling's super write must not authorize __superSet
       // for the async-method retained graph.

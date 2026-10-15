@@ -1189,6 +1189,50 @@ fn isRetainableAssignmentTarget(
     return true;
 }
 
+/// Logical assignment lowering can preserve a direct `super` property target
+/// through the class/object super-property transformer, which registers its
+/// generated key/value temps and helper references in the edited graph. Keep this separate from
+/// ordinary member targets so private access and nested `super` expressions
+/// remain on semantic reanalysis.
+fn isRetainableDirectSuperAssignmentTarget(ast: *const ast_mod.Ast, node_idx: ast_mod.NodeIndex) bool {
+    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    const target = ast.getNode(node_idx);
+    if (target.tag != .static_member_expression and target.tag != .computed_member_expression) return false;
+    if (ast_mod.spineHasOptionalChain(ast, node_idx)) return false;
+
+    const extra = target.data.extra;
+    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
+    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    if (receiver.isNone() or @intFromEnum(receiver) >= ast.nodes.items.len or
+        ast.getNode(receiver).tag != .super_expression) return false;
+    if (target.tag == .static_member_expression) return true;
+
+    const property: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + 1]);
+    if (property.isNone() or @intFromEnum(property) >= ast.nodes.items.len) return false;
+    var pending: std.ArrayList(ast_mod.NodeIndex) = .empty;
+    defer pending.deinit(ast.allocator);
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer seen.deinit(ast.allocator);
+    pending.append(ast.allocator, property) catch return false;
+    while (pending.pop()) |current| {
+        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        const raw = @intFromEnum(current);
+        if (seen.contains(raw)) continue;
+        seen.put(ast.allocator, raw, {}) catch return false;
+        const node = ast.getNode(current);
+        if (ast_mod.spineHasOptionalChain(ast, current)) return false;
+        switch (node.tag) {
+            .super_expression, .private_field_expression, .private_identifier => return false,
+            else => {},
+        }
+        var children = ast_walk.children(ast, node);
+        while (children.next()) |child| {
+            if (!child.isNone()) pending.append(ast.allocator, child) catch return false;
+        }
+    }
+    return true;
+}
+
 fn isSafeConstructorBinaryOperator(operator: token_mod.Kind) bool {
     return switch (operator) {
         .l_angle,
@@ -4907,9 +4951,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (options.unsupported.logical_assignment and
                     (operator == .question2_eq or operator == .pipe2_eq or operator == .amp2_eq))
                 {
-                    // Member receiver/key temps and the value capture for ??=
-                    // are registered by the same transform semantic editor.
-                    if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left))
+                    // Ordinary member temps and direct super-property temps are
+                    // registered by their respective transform semantic editors.
+                    if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left) and
+                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left))
                         return false;
                     found_lowered_logical_assignment = true;
                 }
