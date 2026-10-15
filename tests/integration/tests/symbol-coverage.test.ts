@@ -7823,6 +7823,54 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '9 true 9 1 1|16 true 16 1 1 2\n',
       );
 
+      // An audited optional computed-key access composes with super `**=`.
+      // The optional null branch skips key evaluation while both operations
+      // retain their generated references in the original graph.
+      const optionalComputedSuperExponentiationKey = run(
+        [
+          'var events = []; var receiver;',
+          'var keyEvaluations = 0, powerEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+          'function getPower() { powerEvaluations += 1; events.push("power"); return 2; }',
+          'var keySource = { get key() { events.push("source-key"); return "value"; } };',
+          'class Base {',
+          '  get value() { events.push("get-value"); return this._value; }',
+          '  set value(next) { events.push("set-value"); receiver = this; this._value = next; }',
+          '}',
+          'Object.defineProperty(Base.prototype, "undefined", {',
+          '  get: function() { events.push("get-undefined"); return this._missing; },',
+          '  set: function(next) { events.push("set-undefined"); receiver = this; this._missing = next; },',
+          '});',
+          'class Service extends Base {',
+          '  async update(source) {',
+          '    await Promise.resolve();',
+          '    var nested = async () => {',
+          '      await Promise.resolve();',
+          '      var result = super[source?.[getKey()]] **= getPower();',
+          '      return [result, this === receiver].join(" ");',
+          '    };',
+          '    return await nested();',
+          '  }',
+          '}',
+          'var present = new Service(); present._value = 3;',
+          'var absent = new Service(); absent._missing = 5;',
+          'present.update(keySource).then(first => absent.update(null).then(second => console.log(first + "|" + second, events.join(","), keyEvaluations, powerEvaluations)));',
+        ].join('\n'),
+      );
+      expect(
+        optionalComputedSuperExponentiationKey.status,
+        optionalComputedSuperExponentiationKey.stderr,
+      ).toBe(0);
+      expectRetainedClean(optionalComputedSuperExponentiationKey.stderr ?? '');
+      const optionalComputedSuperExponentiationKeyOutput = runOutput();
+      expect(
+        optionalComputedSuperExponentiationKeyOutput.status,
+        optionalComputedSuperExponentiationKeyOutput.stderr,
+      ).toBe(0);
+      expect(optionalComputedSuperExponentiationKeyOutput.stdout).toBe(
+        '9 true|25 true key,source-key,get-value,power,set-value,get-undefined,power,set-undefined 1 2\n',
+      );
+
       // A method-body super use beside the nested assignment still requires
       // semantic reanalysis for the mixed home-object owners.
       const mixedMethodAndArrowSuperExponentiationAssignment = run(
@@ -7870,6 +7918,57 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ].join('\n'),
       );
       expectReanalyzedOutput(nestedSuperKeyExponentiationAssignment, '9 9 1 1\n');
+
+      // A computed optional key rooted in an untracked member chain remains
+      // outside the audited optional-member proof even though the outer target
+      // itself is a direct super property.
+      const untrackedOptionalComputedSuperExponentiationKey = run(
+        [
+          'var reads = 0, writes = 0, keyEvaluations = 0;',
+          'function getKey() { keyEvaluations += 1; return "key"; }',
+          'function getPower() { return 2; }',
+          'globalThis.__zntcUntrackedSuperKey = { key: "value" };',
+          'class Base {',
+          '  get value() { reads += 1; return this._value; }',
+          '  set value(next) { writes += 1; this._value = next; }',
+          '}',
+          'class Service extends Base {',
+          '  async update() {',
+          '    await Promise.resolve();',
+          '    var nested = async () => { await Promise.resolve(); return super[globalThis.__zntcUntrackedSuperKey?.[getKey()]] **= getPower(); };',
+          '    return await nested();',
+          '  }',
+          '}',
+          'var instance = new Service(); instance._value = 3;',
+          'instance.update().then(result => console.log(result, instance._value, keyEvaluations, reads, writes));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(untrackedOptionalComputedSuperExponentiationKey, '9 9 1 1 1\n');
+
+      // The same optional-key composition remains outside logical assignment
+      // retention until its transform has its own exact proof.
+      const optionalComputedSuperLogicalAssignmentKey = run(
+        [
+          'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; return "key"; }',
+          'function getNext() { rhsEvaluations += 1; return 8; }',
+          'var keySource = { key: "value" };',
+          'class Base {',
+          '  get value() { reads += 1; return this._value; }',
+          '  set value(next) { writes += 1; this._value = next; }',
+          '}',
+          'class Service extends Base {',
+          '  async update(source) {',
+          '    await Promise.resolve();',
+          '    var nested = async () => { await Promise.resolve(); return super[source?.[getKey()]] ??= getNext(); };',
+          '    return await nested();',
+          '  }',
+          '}',
+          'var instance = new Service(); instance._value = 0;',
+          'instance.update(keySource).then(result => console.log(result, instance._value, keyEvaluations, rhsEvaluations, reads, writes));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(optionalComputedSuperLogicalAssignmentKey, '0 0 1 0 1 0\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
