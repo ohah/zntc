@@ -3889,7 +3889,11 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
-fn isPureLiteralUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
+fn isPureLiteralUnaryObjectMethodKey(
+    ast: *const ast_mod.Ast,
+    value: ast_mod.Node,
+    allow_other_primitive_literals: bool,
+) bool {
     const extras = ast.extra_data.items;
     var current = value;
     var found_unary = false;
@@ -3914,10 +3918,12 @@ fn isPureLiteralUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Nod
 
     if (!found_unary) return false;
     if (current.tag == .numeric_literal) return true;
-    return current.tag == .bigint_literal and !plus_before_type_change;
+    if (current.tag == .bigint_literal) return !plus_before_type_change;
+    return allow_other_primitive_literals and
+        (current.tag == .string_literal or current.tag == .boolean_literal or current.tag == .null_literal);
 }
 
-fn isUnaryObjectMethodKeyEndingInNumericOrBigInt(
+fn isUnaryObjectMethodKeyEndingInPrimitiveLiteral(
     ast: *const ast_mod.Ast,
     value: ast_mod.Node,
 ) bool {
@@ -3932,7 +3938,10 @@ fn isUnaryObjectMethodKeyEndingInNumericOrBigInt(
         if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
         current = ast.getNode(operand_idx);
     }
-    return found_unary and (current.tag == .numeric_literal or current.tag == .bigint_literal);
+    return found_unary and switch (current.tag) {
+        .numeric_literal, .bigint_literal, .string_literal, .boolean_literal, .null_literal => true,
+        else => false,
+    };
 }
 
 fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
@@ -3943,7 +3952,7 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     const is_pure_literal_unary_key = is_computed and value.tag == .unary_expression and
-        isPureLiteralUnaryObjectMethodKey(ast, value);
+        isPureLiteralUnaryObjectMethodKey(ast, value, false);
     return value.tag == .string_literal or
         (is_computed and (value.tag == .numeric_literal or value.tag == .bigint_literal or
             value.tag == .boolean_literal or value.tag == .null_literal or
@@ -3998,8 +4007,8 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 );
         },
         .unary_expression => blk: {
-            if (isUnaryObjectMethodKeyEndingInNumericOrBigInt(ast, value))
-                break :blk isPureLiteralUnaryObjectMethodKey(ast, value);
+            if (isUnaryObjectMethodKeyEndingInPrimitiveLiteral(ast, value))
+                break :blk isPureLiteralUnaryObjectMethodKey(ast, value, true);
             const extras = ast.extra_data.items;
             const extra = value.data.extra;
             if (extra > extras.len or extras.len - extra < 2) break :blk false;
