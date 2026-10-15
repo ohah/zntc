@@ -7033,7 +7033,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       expectReanalyzedOutput(mixedSyncAndAsyncArrowSuperOwners, '84\n');
 
-      // Deeper async-arrow nesting still changes the super-owner scope shape.
+      // One nested async arrow can retain its own state machine and the
+      // intermediate async-arrow scope on the same method home graph.
       const deepAsyncArrowSuper = run(
         [
           'class Base { get current() { return this.value; } }',
@@ -7052,7 +7053,98 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(deepAsyncArrowSuper, '42\n');
+      expect(deepAsyncArrowSuper.status, deepAsyncArrowSuper.stderr).toBe(0);
+      expectRetainedClean(deepAsyncArrowSuper.stderr ?? '');
+      const deepAsyncArrowSuperOutput = runOutput();
+      expect(deepAsyncArrowSuperOutput.status, deepAsyncArrowSuperOutput.stderr).toBe(0);
+      expect(deepAsyncArrowSuperOutput.stdout).toBe('42\n');
+
+      // A method-depth and nested-depth super mix stays on reanalysis.
+      const mixedAsyncArrowDepthSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      var nested = async () => { await Promise.resolve(); return super.current; };',
+          '      return await nested() + super.current;',
+          '    };',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedAsyncArrowDepthSuper, '84\n');
+
+      // A synchronous intermediate arrow has no async state-machine proof.
+      const nestedSyncArrowSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      var nested = () => super.current;',
+          '      return nested();',
+          '    };',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(nestedSyncArrowSuper, '42\n');
+
+      // A synchronous outer arrow also stays out of the nested async proof.
+      const nestedAsyncArrowInSyncOuter = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = () => {',
+          '      var nested = async () => { await Promise.resolve(); return super.current; };',
+          '      return nested();',
+          '    };',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(nestedAsyncArrowInSyncOuter, '42\n');
+
+      // Three async arrow owners exceed the audited two-depth boundary.
+      const threeDeepAsyncArrowSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var first = async () => {',
+          '      await Promise.resolve();',
+          '      var second = async () => {',
+          '        await Promise.resolve();',
+          '        var third = async () => { await Promise.resolve(); return super.current; };',
+          '        return third();',
+          '      };',
+          '      return second();',
+          '    };',
+          '    return await first();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(threeDeepAsyncArrowSuper, '42\n');
 
       // A super default in async-arrow parameters runs before its state machine.
       const asyncArrowParameterSuper = run(
