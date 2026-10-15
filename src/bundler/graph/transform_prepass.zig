@@ -4014,6 +4014,8 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             if (extra > extras.len or extras.len - extra < 2) break :blk false;
             const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
             const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            if (operator == .kw_typeof and
+                isUnresolvedSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
             break :blk isSafeConstructorUnaryOperator(operator) and
                 isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
