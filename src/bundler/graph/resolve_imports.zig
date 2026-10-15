@@ -198,7 +198,7 @@ pub fn applyContextDepResults(self: *ModuleGraph, io: std.Io, mod_idx: usize) !v
     const source_dir = mod_ptr.sourceDir();
     for (context_deps) |dep| {
         const resolved = self.resolve_cache.resolveThreadSafe(io, source_dir, dep.specifier, dep.kind) catch |err| switch (err) {
-            error.ModuleNotFound => {
+            error.ModuleNotFound, error.MappedTargetNotFound => {
                 self.addDiag(
                     .unresolved_import,
                     .warning,
@@ -351,7 +351,11 @@ pub fn applyResolveResult(
         // (`util/types`) `url(path/gone.png)` 같은 참조가 여기서 빈 CJS stub 으로 삼켜져
         // "Cannot resolve CSS url()" 경고가 사라졌다 — bare url() 이 형제 파일로 해석되는
         // 지금은 그 경고가 오탈자를 잡아주는 유일한 안전망이라 삼키면 안 된다.
-        if (record.kind != .css_url and
+        // 사용자가 그 빌트인을 `--alias`/`--fallback` 으로 **명시 매핑**했는데 대상이 없으면
+        // 빈 모듈로 삼키지 않는다 (#4606) — 아래 일반 실패 경로로 보내 오류로 보고한다.
+        // esbuild·rspack·rolldown 도 이 경우 빌드를 실패시킨다.
+        const mapped_target_missing = self.modules.at(mod_idx).import_records[rec_i].mapped_target_missing;
+        if (record.kind != .css_url and !mapped_target_missing and
             self.resolve_cache.platform.isBrowserLike() and
             resolve_cache_mod.isNodeBuiltin(record.specifier))
         {
@@ -720,12 +724,14 @@ pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !v
             record.specifier,
             record.kind,
         ) catch |err| switch (err) {
-            error.ModuleNotFound => {
+            error.ModuleNotFound, error.MappedTargetNotFound => {
+                self.modules.at(mod_idx).import_records[rec_i].mapped_target_missing = err == error.MappedTargetNotFound;
                 try applyResolveResult(self, io, mod_idx, rec_i, record, null, true);
                 continue;
             },
             error.OutOfMemory => return error.OutOfMemory,
         };
+        self.modules.at(mod_idx).import_records[rec_i].mapped_target_missing = false;
         if (should_link) {
             try applyResolveResult(self, io, mod_idx, rec_i, record, resolved, false);
         } else if (resolved) |resolved_module| {

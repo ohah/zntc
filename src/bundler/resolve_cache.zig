@@ -253,6 +253,8 @@ pub const ResolveCache = struct {
     const CachedResult = union(enum) {
         resolved: ResolvedModule,
         not_found,
+        /// `--alias`/`--fallback` 대상 해석 실패 (#4606) — 캐시 적중에서도 같은 사실을 돌려준다.
+        mapped_not_found,
     };
 
     /// 플랫폼 + import kind에 따른 기본 조건 세트.
@@ -538,6 +540,7 @@ pub const ResolveCache = struct {
                         .virtual, .dataurl, .external, .custom => unreachable,
                     },
                     .not_found => error.ModuleNotFound,
+                    .mapped_not_found => error.MappedTargetNotFound,
                 };
             }
         }
@@ -626,13 +629,13 @@ pub const ResolveCache = struct {
             var audit = debug_log.auditScope(.resolve_audit);
             defer if (audit.on) debug_log.print(.resolve_audit, "resolve bare={d} spec_len={d} src_len={d} ns={d}\n", .{ @intFromBool(!resolver_mod.isRelativeOrAbsolute(effective_spec)), effective_spec.len, source_dir.len, audit.elapsedNs() });
             break :blk resolve_ptr.resolve(io, source_dir, effective_spec) catch |err| switch (err) {
-                error.ModuleNotFound => {
+                error.ModuleNotFound, error.MappedTargetNotFound => {
                     var store_scope = profile.begin(.resolve_cache_store);
                     defer store_scope.end();
                     if (thread_safe) cache_shard.mutex.lock();
                     defer if (thread_safe) cache_shard.mutex.unlock();
-                    self.putCache(cache_key, .not_found) catch {};
-                    return error.ModuleNotFound;
+                    self.putCache(cache_key, if (err == error.MappedTargetNotFound) .mapped_not_found else .not_found) catch {};
+                    return err;
                 },
                 else => return err,
             };

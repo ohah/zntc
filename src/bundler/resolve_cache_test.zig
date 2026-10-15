@@ -1064,8 +1064,9 @@ test "#4604 resolve: alias 대상이 없으면 마지막 수단으로 원문 형
     try std.testing.expect(std.mem.endsWith(u8, resolved.?.file.path, "logo.png"));
 
     // 대조군 — URL kind 가 아니면 이 마지막 수단은 없다 (진짜 모듈 import 는 alias 실패 = 실패).
+    // 실패는 매핑 대상 실패로 기록된다 (#4606).
     try std.testing.expectError(
-        error.ModuleNotFound,
+        error.MappedTargetNotFound,
         cache.resolve(std.testing.io, dir_path, "logo.png", .static_import),
     );
 }
