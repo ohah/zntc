@@ -3933,6 +3933,23 @@ fn isRetainableAsyncObjectMethodKey(
     if (key.tag == .identifier_reference or isStaticLiteralObjectMethodKey(ast, key_idx)) return true;
     if (key.tag != .computed_property_key) return false;
     const value_idx = key.data.unary.operand;
+    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(value_idx);
+    if (value.tag == .template_literal) {
+        const list = value.data.list;
+        const extras = ast.extra_data.items;
+        if (list.len < 3 or list.len % 2 == 0 or list.start > extras.len or
+            list.len > extras.len - list.start) return false;
+        var offset: u32 = 1;
+        while (offset < list.len) : (offset += 2) {
+            const expression_raw = extras[list.start + offset];
+            if (expression_raw >= ast.nodes.items.len) return false;
+            const expression_idx: ast_mod.NodeIndex = @enumFromInt(expression_raw);
+            if (ast.getNode(expression_idx).tag != .identifier_reference or
+                !isBoundSourceIdentifierReference(ast, semantic, expression_idx)) return false;
+        }
+        return true;
+    }
     return isSafeConstructorValue(ast, semantic, value_idx);
 }
 
