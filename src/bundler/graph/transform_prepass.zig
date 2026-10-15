@@ -3887,7 +3887,8 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     return value.tag == .string_literal or
-        (is_computed and (value.tag == .numeric_literal or
+        (is_computed and (value.tag == .numeric_literal or value.tag == .boolean_literal or
+            value.tag == .null_literal or
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
