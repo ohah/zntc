@@ -8417,6 +8417,147 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async object methods retain mixed direct-super assignment operators', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-mixed-object-super-operators-'));
+    const input = join(dir, 'entry.ts');
+    const nativeInput = join(dir, 'oracle.mjs');
+    const output = join(dir, 'out.cjs');
+    const cases = [
+      {
+        operator: '??=',
+        initialKey: 'null',
+        initialMissing: '84',
+        rhsValue: '84',
+        assignmentValue: '84',
+        writes: 1,
+        rhsCalls: 1,
+        secondEvents: 'direct-read,get-undefined',
+      },
+      {
+        operator: '||=',
+        initialKey: '0',
+        initialMissing: '84',
+        rhsValue: '84',
+        assignmentValue: '84',
+        writes: 1,
+        rhsCalls: 1,
+        secondEvents: 'direct-read,get-undefined',
+      },
+      {
+        operator: '&&=',
+        initialKey: '1',
+        initialMissing: '1',
+        rhsValue: '84',
+        assignmentValue: '84',
+        writes: 2,
+        rhsCalls: 2,
+        secondEvents: 'direct-read,get-undefined,rhs,set-undefined',
+      },
+      {
+        operator: '**=',
+        initialKey: '2',
+        initialMissing: '2',
+        rhsValue: '3',
+        assignmentValue: '8',
+        writes: 2,
+        rhsCalls: 2,
+        secondEvents: 'direct-read,get-undefined,rhs,set-undefined',
+      },
+    ] as const;
+
+    const sourceFor = (testCase: (typeof cases)[number]) =>
+      [
+        'var events = []; var receiver;',
+        'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0;',
+        'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+        `function getNext() { rhsEvaluations += 1; events.push("rhs"); return ${testCase.rhsValue}; }`,
+        'var keySource = { get key() { events.push("source-key"); return "key"; } };',
+        'var prototype = {',
+        '  read() { events.push("direct-read"); return this.value; },',
+        '  get key() { reads += 1; events.push("get-key"); return this._key; },',
+        '  set key(next) { writes += 1; events.push("set-key"); receiver = this; this._key = next; },',
+        '  get undefined() { reads += 1; events.push("get-undefined"); return this._missing; },',
+        '  set undefined(next) { writes += 1; events.push("set-undefined"); receiver = this; this._missing = next; },',
+        '};',
+        'var service = {',
+        `  value: 42, _key: ${testCase.initialKey}, _missing: ${testCase.initialMissing},`,
+        '  async update(source) {',
+        '    await Promise.resolve();',
+        '    var update = async () => {',
+        '      await Promise.resolve();',
+        `      return super[source?.[getKey()]] ${testCase.operator} getNext();`,
+        '    };',
+        '    var direct = super.read();',
+        '    var assigned = await update();',
+        '    return [direct, assigned].join(" ");',
+        '  },',
+        '};',
+        'Object.setPrototypeOf(service, prototype);',
+        'service.update(keySource).then(first => { var firstEvents = events.join(","); events.length = 0; return service.update(null).then(second => console.log(first, second, service._key, service._missing, service === receiver, firstEvents, events.join(","), reads, writes, keyEvaluations, rhsEvaluations)); });',
+      ].join('\n');
+
+    try {
+      // The async arrow owns the optional super key while method-body super stays direct.
+      for (const testCase of cases) {
+        const source = sourceFor(testCase);
+        writeFileSync(nativeInput, source);
+        const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+        expect(native.status, `${testCase.operator}: ${native.stderr}`).toBe(0);
+        const expected = `42 ${testCase.assignmentValue} 42 ${testCase.assignmentValue} ${testCase.assignmentValue} ${testCase.assignmentValue} true direct-read,key,source-key,get-key,rhs,set-key ${testCase.secondEvents} 2 ${testCase.writes} 1 ${testCase.rhsCalls}\n`;
+        expect(native.stdout, testCase.operator).toBe(expected);
+
+        writeFileSync(input, source);
+        const bundled = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(bundled.status, `${testCase.operator}: ${bundled.stderr}`).toBe(0);
+        const mode = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(mode, `${testCase.operator}: ${bundled.stderr}`).toContain(
+          'semantic_graph=retained',
+        );
+        const report = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+          );
+        expect(report, `${testCase.operator}: ${bundled.stderr}`).toBeDefined();
+        for (const counter of EXACT_ZERO_COUNTERS) {
+          expect(
+            Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+            `${testCase.operator} ${counter}: ${report}`,
+          ).toBe(0);
+        }
+        expect(report).toMatch(/clean=1(?:\s|$)/);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${testCase.operator}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, testCase.operator).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async object methods retain audited super property reads and writes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-super-get-'));
     const output = join(dir, 'out.cjs');
