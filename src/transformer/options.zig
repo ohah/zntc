@@ -97,6 +97,10 @@ pub const TransformOptions = struct {
     /// wait, exports keep their place after the wrapper so importers that run
     /// right away still see a value.
     tla_module_awaited: bool = false,
+    /// #4598: es5 등 async 문법이 없는 타겟 + 비-ESM 출력. 최상위 await 를 기다릴 수단이
+    /// async 초기화 함수(`__esm({ async "m"() {…} })` + `await init_m()`)뿐이라, webpack 처럼
+    /// 그 래퍼만 네이티브 async 로 내고 경고한다. 모듈 본문은 그대로 타겟에 맞게 낮춘다.
+    tla_async_init_fallback: bool = false,
     /// TS 타입 스트리핑 활성화 (기본: true)
     strip_types: bool = true,
     /// console.* 호출 제거 (--drop=console)
@@ -293,6 +297,19 @@ pub const TransformOptions = struct {
     /// minify_identifiers) 는 ModuleGraph 가 별도로 결합한다.
     /// 새 transformer-driven 옵션을 추가하면 여기에도 반영해야 graph 의 게이트가
     /// silent 하게 fall-through 하지 않는다.
+    /// TLA 모듈 초기화를 async `__esm` 래퍼로 기다려도 되는지 — 타겟이 async 를 지원하거나
+    /// 비-ESM es5 대체 경로(`tla_async_init_fallback`)일 때.
+    pub fn asyncInitWrappersAllowed(self: *const TransformOptions) bool {
+        return !self.unsupported.async_await or self.tla_async_init_fallback;
+    }
+
+    /// `isAwaitableInit` 에 넘길 기능 집합 — 대체 경로에서는 async 래퍼를 허용한 것으로 본다.
+    pub fn tlaWaitUnsupported(self: *const TransformOptions) compat.UnsupportedFeatures {
+        var unsupported = self.unsupported;
+        if (self.tla_async_init_fallback) unsupported.async_await = false;
+        return unsupported;
+    }
+
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
         if (drop_scan.hasDroppedTransformStatement(ast, self.drop_console, self.drop_debugger, self.drop_labels)) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
@@ -360,7 +377,9 @@ pub const TransformOptions = struct {
                     }
                 },
                 .for_of_statement => if (u.for_of) return true,
-                .for_await_of_statement => if (u.needsForAwaitOfDownlevel()) return true,
+                // 최상위 `for await` 도 top-level await 다 — 아래 await_expression 과 같이 TLA 를
+                // 낮춰야 하면 pre-pass 가 래퍼 promise 를 기록해야 importer 가 기다린다 (#4598).
+                .for_await_of_statement => if (u.needsForAwaitOfDownlevel() or u.top_level_await) return true,
                 .spread_element => if (u.spread) return true,
                 .object_expression => {
                     if (u.object_spread) {

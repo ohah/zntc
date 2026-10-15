@@ -1134,7 +1134,7 @@ pub fn emitEsmWrappedModule(
     // 이 단계만으로는 동작이 바뀌면 안 된다: `init_X()` 반환이 undefined → promise 로
     // 바뀌지만 소비자는 아직 `(init_X(), exports_X)` 로 무시한다.
     const is_async = module.uses_top_level_await or
-        (module.in_async_cone and !options.transform_options_base.unsupported.async_await);
+        (module.in_async_cone and options.transform_options_base.asyncInitWrappersAllowed());
 
     // entry dependency chain은 entry factory 안의 nested require로 남긴다.
     // dependency를 top-level 개별 guard로 풀면 ErrorUtils 설치 후 throw가 swallow되어
@@ -1388,7 +1388,7 @@ fn appendWrappedInitCall(
     rename_tbl: ?*const RenameTable,
     hmr_names: rt_names.HmrRuntimeInternalNames,
 ) !void {
-    const is_tla = @import("../module.zig").isAwaitableInit(src_mod, importer, options.transform_options_base.unsupported);
+    const is_tla = @import("../module.zig").isAwaitableInit(src_mod, importer, options.transform_options_base.tlaWaitUnsupported());
     const guard = src_mod.shouldGuard(options.entry_error_guard);
     switch (src_mod.wrap_kind) {
         .esm => {

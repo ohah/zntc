@@ -929,6 +929,17 @@ pub const Bundler = struct {
     /// 위임의 전제는 "이 모듈의 await 를 감싸 줄 **async factory 가 실제로 생긴다**" 이다.
     /// 전제가 깨지는 위상은 아래처럼 명시적으로 뺀다 — 빼면 모듈 단위 래핑(여전히 #4598 로
     /// 깨져 있음)으로 돌아가지만, 적어도 **파싱은 되는** 산물이 나온다.
+    /// 최상위 await 는 ES 모듈에서만 합법이다. cjs·iife·umd·amd 출력은 타겟이 es2022+ 여도
+    /// 네이티브 TLA 를 그대로 둘 수 없다 — cjs 는 Node 가 ESM 으로 오인해야만 돌고, umd 는
+    /// 동기 factory 안이라 SyntaxError 였다 (#4598). 이 포맷에서는 TLA 를 미지원으로 보고
+    /// es2017 과 같은 낮추기 경로(청크 async factory / async 초기화 함수)를 태운다.
+    /// webpack 도 출력 포맷과 무관하게 async 모듈 런타임으로 평가 순서를 지킨다.
+    fn unsupportedForFormat(self: *const Bundler, format: EmitOptions.Format) compat.UnsupportedFeatures {
+        var unsupported = self.options.unsupported;
+        if (format != .esm) unsupported.top_level_await = true;
+        return unsupported;
+    }
+
     fn tlaChunkWrapped(self: *const Bundler, format: EmitOptions.Format) bool {
         // code splitting 의 IIFE 청크는 async factory 가 아니라
         // `__zntc_register({"m.js": function(exports, module, require) {...}})` — plain
@@ -958,6 +969,12 @@ pub const Bundler = struct {
                 format == .esm,
             // #5575: without async functions the module stays scope-hoisted and
             // the single-file emitter awaits its wrapper promise (emitter.zig).
+            // RN(Hermes)은 출력의 async 를 그대로 못 돌릴 수 있어 제외한다.
+            .tla_async_init_fallback = self.options.unsupported.async_await and
+                self.options.platform != .react_native and
+                format != .esm and
+                !self.options.code_splitting and
+                !self.options.preserve_modules,
             .tla_module_awaited = self.options.unsupported.top_level_await and
                 self.options.unsupported.async_await and
                 !self.options.code_splitting and
@@ -969,7 +986,7 @@ pub const Bundler = struct {
             .module_specifier_map = self.options.module_specifier_map,
             .use_define_for_class_fields = self.options.use_define_for_class_fields,
             .verbatim_module_syntax = self.options.verbatim_module_syntax,
-            .unsupported = self.options.unsupported,
+            .unsupported = self.unsupportedForFormat(format),
             .drop_labels = self.options.drop_labels,
             .drop_console = self.options.drop_console,
             .drop_debugger = self.options.drop_debugger,

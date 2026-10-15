@@ -842,7 +842,8 @@ pub fn emitWithTreeShaking(
     // 정적 import 체인으로 닿는 모듈만 확인한다 — `import()` 로만 도달하는 모듈은
     // 비동기 로딩이라 경고 불필요. (#4520 전에는 `exec_index == maxInt` 로 대신
     // 판별했으나, 이제 그 모듈들도 exec_index 를 받으므로 명시 플래그를 본다.)
-    if (options.format != .esm) {
+    // 청크 factory 가 async 면(#4598 위임) 네이티브 await 가 그 안에서 정상 동작한다 — 경고하지 않는다.
+    if (options.format != .esm and !factory_async) {
         for (sorted.items) |m| {
             if (m.uses_top_level_await and !m.only_dynamically_reached) {
                 try output.appendSlice(allocator, tla_warning_comment);
