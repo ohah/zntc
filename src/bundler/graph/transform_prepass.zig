@@ -3917,7 +3917,10 @@ fn isPureLiteralUnaryObjectMethodKey(ast: *const ast_mod.Ast, value: ast_mod.Nod
     return current.tag == .bigint_literal and !plus_before_type_change;
 }
 
-fn isUnaryObjectMethodKeyEndingInBigInt(ast: *const ast_mod.Ast, value: ast_mod.Node) bool {
+fn isUnaryObjectMethodKeyEndingInNumericOrBigInt(
+    ast: *const ast_mod.Ast,
+    value: ast_mod.Node,
+) bool {
     const extras = ast.extra_data.items;
     var current = value;
     var found_unary = false;
@@ -3929,7 +3932,7 @@ fn isUnaryObjectMethodKeyEndingInBigInt(ast: *const ast_mod.Ast, value: ast_mod.
         if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
         current = ast.getNode(operand_idx);
     }
-    return found_unary and current.tag == .bigint_literal;
+    return found_unary and (current.tag == .numeric_literal or current.tag == .bigint_literal);
 }
 
 fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
@@ -3995,7 +3998,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 );
         },
         .unary_expression => blk: {
-            if (isUnaryObjectMethodKeyEndingInBigInt(ast, value))
+            if (isUnaryObjectMethodKeyEndingInNumericOrBigInt(ast, value))
                 break :blk isPureLiteralUnaryObjectMethodKey(ast, value);
             const extras = ast.extra_data.items;
             const extra = value.data.extra;
