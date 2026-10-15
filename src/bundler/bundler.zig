@@ -1078,6 +1078,16 @@ pub const Bundler = struct {
         return if (self.options.platform == .node and self.options.format == .cjs) .cjs else .iife;
     }
 
+    /// `new Worker(url, { type: 'module' })` 로만 참조되는 worker 는 ESM 으로 방출한다 (#4603).
+    /// classic(IIFE) 은 `import` 를 표현할 수 없어 external import 가 진단 없이 사라지고 참조만
+    /// 남았다. module worker 는 브라우저가 `import` 를 지원하므로 그대로 보존한다 — Vite 도 worker
+    /// 출력이 `es` 일 때 `type: 'module'` 과 짝을 맞춘다.
+    fn workerFormatFor(self: *const Bundler, module_worker: bool) EmitOptions.Format {
+        const classic = self.workerFormat();
+        if (classic == .cjs) return classic;
+        return if (module_worker) .esm else classic;
+    }
+
     fn workerExtension(format: EmitOptions.Format) []const u8 {
         return switch (format) {
             .cjs => ".cjs",
@@ -1086,7 +1096,7 @@ pub const Bundler = struct {
     }
 
     /// Worker 파일을 별도 번들로 빌드한다.
-    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8) !WorkerBuildResult {
+    fn buildWorker(self: *Bundler, io: std.Io, worker_path: []const u8, format: EmitOptions.Format, parent_graph: *ModuleGraph) !WorkerBuildResult {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
         const arena_alloc = arena.allocator();
@@ -1141,14 +1151,12 @@ pub const Bundler = struct {
         worker_graph.preserve_modules = self.options.preserve_modules;
         worker_graph.minify_identifiers = self.options.minify_identifiers;
         // #4598: worker 는 자기 자신의 방출 format(`workerFormat()`) 으로 판정해야 한다.
-        worker_graph.transform_options_base = self.buildTransformOptionsBase(self.workerFormat());
+        worker_graph.transform_options_base = self.buildTransformOptionsBase(format);
         defer worker_graph.deinit();
 
         const entry_path = try arena_alloc.dupe(u8, worker_path);
         const entry_arr: [1][]const u8 = .{entry_path};
         try worker_graph.build(io, &entry_arr);
-
-        const format = self.workerFormat();
 
         // 링킹
         var worker_linker = Linker.init(arena_alloc, &worker_graph, format);
@@ -1176,6 +1184,23 @@ pub const Bundler = struct {
             null,
         );
         const worker_output = worker_result.output;
+
+        // classic(IIFE) worker 는 external import 를 표현할 수 없어 linker 가 오류로 기록하지만,
+        // worker 서브빌드 진단은 부모로 올라가지 않아 import 가 조용히 사라졌다 (#4603). 이
+        // 사실만 경고로 올린다 — 서브빌드 진단 전체를 열면 아직 맞추지 않은 다른 축(resolve·
+        // linker 설정)의 거짓 실패가 쏟아진다(에픽 기록).
+        for (worker_linker.fatal_diagnostics.items) |d| {
+            if (d.code != .unresolved_import or std.mem.indexOf(u8, d.message, "cannot be emitted in IIFE format") == null) continue;
+            parent_graph.addOwnedDiag(
+                .unresolved_import,
+                .warning,
+                d.file_path,
+                d.span,
+                .resolve,
+                d.message,
+                "A classic worker cannot import an external module. Create it with `new Worker(url, { type: 'module' })` so the import is kept.",
+            ) catch {};
+        }
 
         // content hash로 파일명 생성
         const hash = std.hash.Crc32.hash(worker_output);
@@ -1574,10 +1599,20 @@ pub const Bundler = struct {
         {
             var gw_scope = profile.begin(.graph_worker);
             defer gw_scope.end();
+            // 같은 worker 파일을 참조하는 `new Worker` 가 **모두** `type: 'module'` 일 때만 ESM 으로
+            // 빌드한다 — classic 으로 로드하는 곳이 하나라도 있으면 ESM 은 거기서 SyntaxError.
+            var classic_workers: std.StringHashMapUnmanaged(void) = .empty;
+            defer classic_workers.deinit(self.allocator);
+            for (graph.worker_entries.items) |we| {
+                const mod = graph.getModule(we.source_module) orelse continue;
+                if (we.record_index >= mod.import_records.len or !mod.import_records[we.record_index].worker_module)
+                    try classic_workers.put(self.allocator, we.resolved_path, {});
+            }
             for (graph.worker_entries.items) |we| {
                 // 같은 worker 파일이 여러 곳에서 참조되면 한 번만 빌드
                 if (!worker_output_map.contains(we.resolved_path)) {
-                    const worker_result = self.buildWorker(io, we.resolved_path) catch {
+                    const worker_format = self.workerFormatFor(!classic_workers.contains(we.resolved_path));
+                    const worker_result = self.buildWorker(io, we.resolved_path, worker_format, graph) catch {
                         continue;
                     };
                     try worker_output_map.put(self.allocator, we.resolved_path, worker_result.filename);

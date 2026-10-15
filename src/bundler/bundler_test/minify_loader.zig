@@ -4783,8 +4783,15 @@ test "#4598 IIFE: async 미지원 타겟은 위임하지 않는다 (회귀 가�
 
 /// worker 서브빌드 산출물(별도 청크)의 본문을 돌려준다.
 fn bundleTlaWorker(tmp: *std.testing.TmpDir, parent_format: @import("../emitter.zig").EmitOptions.Format) ![]const u8 {
+    return bundleTlaWorkerWith(tmp, parent_format, "");
+}
+
+/// `worker_options` 가 `, { type: 'module' }` 면 module worker(#4603 — ESM 으로 방출), 빈 문자열이면 classic.
+fn bundleTlaWorkerWith(tmp: *std.testing.TmpDir, parent_format: @import("../emitter.zig").EmitOptions.Format, worker_options: []const u8) ![]const u8 {
     try writeFile(tmp.dir, "w.ts", "const v = await Promise.resolve(41);\nexport const val = v + 1;\nconsole.log(val);");
-    try writeFile(tmp.dir, "main.ts", "const w = new Worker(new URL('./w.ts', import.meta.url), { type: 'module' });\nconsole.log(w);");
+    const main_src = try std.fmt.allocPrint(std.testing.allocator, "const w = new Worker(new URL('./w.ts', import.meta.url){s});\nconsole.log(w);", .{worker_options});
+    defer std.testing.allocator.free(main_src);
+    try writeFile(tmp.dir, "main.ts", main_src);
     const entry = try absPath(tmp, "main.ts");
     defer std.testing.allocator.free(entry);
     var b = Bundler.init(std.testing.allocator, .{
@@ -4828,6 +4835,17 @@ test "#4598 worker 서브빌드는 부모 format 이 아니라 자기 방출 for
         // 모듈 단위 래퍼가 **추가로** 있으면 안 된다 (factory 말고 두 번째 async 화살표).
         const first = std.mem.indexOf(u8, js, "(async") orelse return error.MissingAsyncFactory;
         try std.testing.expect(std.mem.indexOfPos(u8, js, first + 6, "(async") == null);
+    }
+}
+
+test "#4603 module worker 는 ESM 으로 방출해 IIFE factory 로 감싸지 않는다" {
+    for ([_]@import("../emitter.zig").EmitOptions.Format{ .esm, .iife }) |pf| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const js = try bundleTlaWorkerWith(&tmp, pf, ", { type: 'module' }");
+        defer std.testing.allocator.free(js);
+        try std.testing.expect(std.mem.indexOf(u8, js, "var App = ") == null);
+        try std.testing.expect(std.mem.indexOf(u8, js, "export {") != null);
     }
 }
 

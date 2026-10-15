@@ -30,6 +30,32 @@ pub fn addDiag(
     }) catch {};
 }
 
+/// `message`·`file_path` 를 복사해 그래프가 소유하게 한 뒤 진단을 추가한다 — 원본이 곧
+/// 해제되는 메모리(예: worker 서브빌드 arena)에 있을 때 쓴다.
+pub fn addOwnedDiag(
+    self: *ModuleGraph,
+    code: BundlerDiagnostic.ErrorCode,
+    severity: BundlerDiagnostic.Severity,
+    file_path_src: []const u8,
+    span: Span,
+    step: BundlerDiagnostic.Step,
+    message_src: []const u8,
+    suggestion: ?[]const u8,
+) !void {
+    const message = try self.allocator.dupe(u8, message_src);
+    errdefer self.allocator.free(message);
+    const file_path = try self.allocator.dupe(u8, file_path_src);
+    errdefer self.allocator.free(file_path);
+    {
+        self.diag_mutex.lock();
+        defer self.diag_mutex.unlock();
+        try self.owned_diagnostic_strings.ensureUnusedCapacity(self.allocator, 2);
+        self.owned_diagnostic_strings.appendAssumeCapacity(message);
+        self.owned_diagnostic_strings.appendAssumeCapacity(file_path);
+    }
+    addDiag(self, code, severity, file_path, span, step, message, suggestion);
+}
+
 pub fn addPluginFailureDiag(
     self: *ModuleGraph,
     failure: ?plugin_mod.PluginFailure,

@@ -53,6 +53,8 @@ pub const ScanImportRecord = struct {
     span: Span,
     /// worker: new URL(...) 전체 범위
     url_span: ?Span = null,
+    /// worker: `new Worker(url, { type: 'module' })` — ESM 으로 방출한다 (#4603).
+    worker_module: bool = false,
     /// import.meta.glob: eager 모드
     glob_eager: bool = false,
     /// import.meta.glob: named export 추출 (e.g., "setup")

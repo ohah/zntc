@@ -199,6 +199,8 @@ pub fn scanWorkerNewExpression(self: *Parser, callee_raw: NodeIndex, arg_list: N
         .kind = .worker,
         .span = spec_node.span,
         .url_span = url_new.span,
+        .worker_module = arg_list.len >= 2 and arg_list.start + 1 < self.ast.extra_data.items.len and
+            import_scanner.isModuleWorkerOptions(&self.ast, @enumFromInt(self.ast.extra_data.items[arg_list.start + 1])),
     }) catch {};
 }
 
