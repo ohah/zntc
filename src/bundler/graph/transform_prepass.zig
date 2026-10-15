@@ -751,13 +751,14 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
 }
 
 // A class async method can keep its home-object graph when every `super` use
-// belongs to one arrow scope whose state-machine kind is separately audited.
-// Keep direct method-body uses, multiple owning arrows, and deeper nesting on
-// reanalysis.
-fn methodSuperUsesOnlySingleArrow(
+// belongs to an audited arrow scope at one lexical level below the method.
+// Synchronous arrows have one owner; async arrows may have multiple owners
+// because each retained arrow gets its own state-machine preflight.
+fn methodSuperUsesOnlyArrowScopes(
     ast: *const ast_mod.Ast,
     method: ast_mod.Node,
     expected_async: bool,
+    allow_multiple_owners: bool,
 ) bool {
     if (method.tag != .method_definition) return false;
     const extra = method.data.extra;
@@ -835,7 +836,7 @@ fn methodSuperUsesOnlySingleArrow(
                     ast_mod.ArrowFlags.is_async) != 0;
             if (arrow_is_async != expected_async) return false;
             if (super_arrow_owner) |first_owner| {
-                if (first_owner != arrow_raw) return false;
+                if (first_owner != arrow_raw and !allow_multiple_owners) return false;
             } else {
                 super_arrow_owner = arrow_raw;
             }
@@ -870,11 +871,11 @@ fn methodSuperUsesOnlySingleArrow(
 }
 
 fn methodSuperUsesOnlySingleSyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
-    return methodSuperUsesOnlySingleArrow(ast, method, false);
+    return methodSuperUsesOnlyArrowScopes(ast, method, false, false);
 }
 
-fn methodSuperUsesOnlySingleAsyncArrow(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
-    return methodSuperUsesOnlySingleArrow(ast, method, true);
+fn methodSuperUsesOnlyAsyncArrowsAtMethodDepth(ast: *const ast_mod.Ast, method: ast_mod.Node) bool {
+    return methodSuperUsesOnlyArrowScopes(ast, method, true, true);
 }
 
 fn hasValidSourceSymbol(
@@ -3516,7 +3517,7 @@ fn isSimpleClass(
         const retains_async_class_method_async_arrow_super =
             (is_es5_async_instance_method or is_es5_async_static_method) and
             allow_es5_async_class_methods and !super.isNone() and
-            methodSuperUsesOnlySingleAsyncArrow(ast, member);
+            methodSuperUsesOnlyAsyncArrowsAtMethodDepth(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or
             (has_super and !retains_async_arrow_super and !retains_async_class_method_super and
@@ -3666,7 +3667,7 @@ fn registerRetainableEs5AsyncClassMethods(
             (super_idx.isNone() or
                 (!methodSuperUsesOnlyDirectMethodBody(ast, member) and
                     !methodSuperUsesOnlySingleSyncArrow(ast, member) and
-                    !methodSuperUsesOnlySingleAsyncArrow(ast, member)))) return false;
+                    !methodSuperUsesOnlyAsyncArrowsAtMethodDepth(ast, member)))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;

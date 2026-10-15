@@ -6992,7 +6992,8 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       expectReanalyzedOutput(mixedMethodAndAsyncArrowSuper, '84\n');
 
-      // Multiple async arrows owning super remain outside the one-owner proof.
+      // Sibling async arrows can keep separate state machines on the same
+      // method home graph.
       const multipleAsyncArrowSuperOwners = run(
         [
           'class Base { get current() { return this.value; } }',
@@ -7008,7 +7009,29 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(multipleAsyncArrowSuperOwners, '84\n');
+      expect(multipleAsyncArrowSuperOwners.status, multipleAsyncArrowSuperOwners.stderr).toBe(0);
+      expectRetainedClean(multipleAsyncArrowSuperOwners.stderr ?? '');
+      const multipleAsyncArrowSuperOutput = runOutput();
+      expect(multipleAsyncArrowSuperOutput.status, multipleAsyncArrowSuperOutput.stderr).toBe(0);
+      expect(multipleAsyncArrowSuperOutput.stdout).toBe('84\n');
+
+      // Mixing synchronous and async arrow owners remains on reanalysis.
+      const mixedSyncAndAsyncArrowSuperOwners = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var first = async () => { await Promise.resolve(); return super.current; };',
+          '    var second = () => super.current;',
+          '    return await first() + second();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedSyncAndAsyncArrowSuperOwners, '84\n');
 
       // Deeper async-arrow nesting still changes the super-owner scope shape.
       const deepAsyncArrowSuper = run(
