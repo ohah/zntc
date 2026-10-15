@@ -8731,6 +8731,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           keyCalls: 0,
         },
         {
+          key: '[`${(methodPrefix + methodSuffix, methodName)}`]',
+          call: 'service[methodName]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
+        {
           key: '[`${methodName satisfies string}`]',
           nativeKey: '[`${methodName}`]',
           call: 'service[methodName]',
@@ -8774,6 +8780,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         {
           key: '[`${getMethodName() as string}`]',
           nativeKey: '[`${getMethodName()}`]',
+          call: 'service.update',
+          retainsGraph: false,
+          keyCalls: 1,
+        },
+        {
+          key: '[`${(getMethodName(), methodName)}`]',
           call: 'service.update',
           retainsGraph: false,
           keyCalls: 1,
