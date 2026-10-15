@@ -8571,7 +8571,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async object super retains static and bound computed method keys', () => {
+  test('ES5 async object super retains static and source-bound computed method keys', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-literal-object-super-key-'));
     const input = join(dir, 'entry.ts');
     const nativeInput = join(dir, 'oracle.mjs');
@@ -8602,6 +8602,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         'var events = []; var receiver;',
         'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0, methodKeyCalls = 0;',
         "var methodName = 'update';",
+        "var methodPrefix = 'up', methodSuffix = 'date', methodNameEnabled = true;",
         'function getMethodName() { methodKeyCalls += 1; return "update"; }',
         'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
         'function getNext() { rhsEvaluations += 1; events.push("rhs"); return 84; }',
@@ -8661,6 +8662,18 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         { key: '[~~1n]', call: 'service[1]', retainsGraph: true, keyCalls: 0 },
         { key: '[void !1n]', call: 'service.undefined', retainsGraph: true, keyCalls: 0 },
         { key: '[methodName]', call: 'service[methodName]', retainsGraph: true, keyCalls: 0 },
+        {
+          key: '[methodPrefix + methodSuffix]',
+          call: 'service[methodPrefix + methodSuffix]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
+        {
+          key: '[methodNameEnabled ? methodName : "other"]',
+          call: 'service[methodNameEnabled ? methodName : "other"]',
+          retainsGraph: true,
+          keyCalls: 0,
+        },
         { key: '[`update`]', call: 'service.update', retainsGraph: true, keyCalls: 0 },
         { key: '[`up${"date"}`]', call: 'service.update', retainsGraph: false, keyCalls: 0 },
         { key: '[getMethodName()]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
