@@ -7012,6 +7012,53 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       ).toBe(0);
       expect(nestedStaticAsyncArrowSuperOutput.stdout).toBe('42 50 true 50\n');
 
+      // Nested async-arrow calls keep the lexical instance and constructor
+      // receivers for both instance and static class super methods.
+      const nestedClassAsyncSuperCalls = run(
+        [
+          'var instanceReceiver;',
+          'var constructorReceiver;',
+          'class Base {',
+          '  read() { return this === instanceReceiver ? this.value : 0; }',
+          '  static read() { return this === constructorReceiver ? this.value : 0; }',
+          '}',
+          'class Service extends Base {',
+          '  async readInstance() {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => { await Promise.resolve(); return super.read(); };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '  static async readStatic() {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async () => { await Promise.resolve(); return super.read(); };',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'class Derived extends Service {}',
+          'var instance = new Service();',
+          'instance.value = 42;',
+          'instanceReceiver = instance;',
+          'Derived.value = 84;',
+          'constructorReceiver = Derived;',
+          'Promise.all([instance.readInstance(), Derived.readStatic()]).then(values => console.log(values.join(" ")));',
+        ].join('\n'),
+      );
+      expect(nestedClassAsyncSuperCalls.status, nestedClassAsyncSuperCalls.stderr).toBe(0);
+      expectRetainedClean(nestedClassAsyncSuperCalls.stderr ?? '');
+      const nestedClassAsyncSuperCallsOutput = runOutput();
+      expect(nestedClassAsyncSuperCallsOutput.status, nestedClassAsyncSuperCallsOutput.stderr).toBe(
+        0,
+      );
+      expect(nestedClassAsyncSuperCallsOutput.stdout).toBe('42 84\n');
+
       // Static nested super uses at different arrow depths stay on reanalysis.
       const mixedNestedStaticAsyncArrowSuper = run(
         [
