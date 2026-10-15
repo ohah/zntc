@@ -40,6 +40,7 @@
     "sourcesContent": {"type": "boolean", "description": "Include original source in sourcemap (default: true)."},
     "sourceRoot": {"type": "string", "description": "SourceMap `sourceRoot` field."},
     "define": {"type": "array", "items": {"type": "object", "properties": {"key": {"type": "string"}, "value": {"type": "string"}}, "additionalProperties": false}, "description": "Define list: `{ key, value }` pairs. `value` is raw JSON (strings must include quotes)."},
+    "dropLabels": {"type": "array", "items": {"type": "string"}},
     "stopAfter": {"type": "string", "enum": ["scan", "parse", "semantic", "transform", "codegen"]},
     "external": {"type": "array", "items": {"type": "string"}},
     "alias": {"type": "array", "items": {"type": "object", "properties": {"from": {"type": "string"}, "to": {"type": "string"}, "exact": {"type": "boolean"}}, "additionalProperties": false}},

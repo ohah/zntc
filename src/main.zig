@@ -1295,6 +1295,7 @@ pub fn main(init: std.process.Init) !void {
             .minify_syntax = opts.minify_syntax,
             .drop_console = opts.drop_console,
             .drop_debugger = opts.drop_debugger,
+            .drop_labels = opts.drop_labels_list.items,
             .sourcemap = opts.sourcemap,
             .sourcemap_debug_ids = opts.sourcemap_debug_ids,
             .ascii_only = opts.ascii_only,

@@ -575,6 +575,7 @@ fn optionsRequireTransformSemantic(options: TranspileOptions) bool {
         options.minify_whitespace or
         options.drop_console or
         options.drop_debugger or
+        options.drop_labels.len > 0 or
         options.define.len > 0 or
         !options.use_define_for_class_fields or
         options.experimental_decorators or
@@ -1521,6 +1522,7 @@ fn transpileWithCallbackInternal(
     const transform_opts: TransformOptions = .{
         .drop_console = options.drop_console,
         .drop_debugger = options.drop_debugger,
+        .drop_labels = options.drop_labels,
         .define = options.define,
         .use_define_for_class_fields = options.use_define_for_class_fields,
         .experimental_decorators = options.experimental_decorators,
