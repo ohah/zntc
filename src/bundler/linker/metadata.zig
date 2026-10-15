@@ -245,7 +245,7 @@ fn appendEsmInitCall(
     target_mod: *const Module,
     importer: *const Module,
 ) !void {
-    const needs_await = @import("../module.zig").isAwaitableInit(target_mod, importer, self.graph.transform_options_base.unsupported);
+    const needs_await = @import("../module.zig").isAwaitableInit(target_mod, importer, self.graph.transform_options_base.tlaWaitUnsupported());
     const guard = target_mod.shouldGuard(self.entry_error_guard);
     if (needs_await) try preamble.write("await ");
     try writeEsmInitExprBody(self, preamble, target_mod, guard);

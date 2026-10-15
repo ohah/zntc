@@ -5946,6 +5946,15 @@ fn captureWorkletFactoryLocalBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
+/// 비-ESM 출력은 TLA 를 항상 미지원으로 둔다(#4598). TLA 가 없는 모듈에는 그 비트가 출력에
+/// 영향을 주지 않으므로, 그래프 유지 판정(`hasAny`)과 변환에서 빼고 보아 이전과 같게 둔다.
+/// TLA 유무는 파싱 때(변환 전) 기록한 `self_uses_top_level_await` 다.
+fn moduleUnsupported(unsupported: TransformOptions.compat.UnsupportedFeatures, module: *const Module) TransformOptions.compat.UnsupportedFeatures {
+    var result = unsupported;
+    if (!module.self_uses_top_level_await) result.top_level_await = false;
+    return result;
+}
+
 pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void {
     if (module.ast == null) return;
     const ast_ptr = &(module.ast.?);
@@ -5965,13 +5974,14 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         true;
     const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
         !self.react_refresh and !self.styled_components and !self.emotion and
-        !self.transform_options_base.unsupported.hasAny() and !ast_ptr.has_jsx and !ast_ptr.has_decorator and
+        !moduleUnsupported(self.transform_options_base.unsupported, module).hasAny() and !ast_ptr.has_jsx and !ast_ptr.has_decorator and
         !has_nested_worklet_function_scopes and
         isBuiltinWorkletPluginSet(merged_plugins);
 
     const parser_node_count: u32 = @intCast(ast_ptr.nodes.items.len);
 
     var opts = self.transform_options_base;
+    opts.unsupported = moduleUnsupported(opts.unsupported, module);
     opts.react_refresh = self.react_refresh and is_user_code;
     opts.styled_components = self.styled_components and is_user_code;
     opts.styled_components_ssr = self.styled_components_ssr;

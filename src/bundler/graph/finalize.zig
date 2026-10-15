@@ -1492,12 +1492,13 @@ pub fn computeAsyncCone(self: *ModuleGraph) void {
 pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
     const base = &self.transform_options_base;
     if (!base.unsupported.top_level_await) return; // 타겟이 TLA 지원 → 손대지 않음
-    if (base.unsupported.async_await) return; // es5 는 아직 대상 아님
+    if (!base.asyncInitWrappersAllowed()) return; // es5 ESM 은 단일 파일 `await` 경로(#5575)
     if (self.code_splitting or self.preserve_modules) return;
     // 청크 위임(#4625)이 이 청크를 async factory 로 감싸면 모듈을 또 래핑하지 않는다.
     // 위임 산물이 scope-hoist 라 더 작고 이미 검증돼 있다 — 겹치면 커지기만 한다.
     if (base.tla_chunk_wrapped) return;
 
+    var warned_async_fallback = false;
     var it = self.modules.iterator(0);
     while (it.next()) |m| {
         if (!m.in_async_cone) continue;
@@ -1517,6 +1518,19 @@ pub fn promoteAsyncConeToEsmWrap(self: *ModuleGraph) void {
         if (hasOnlyReExportImporters(self, m)) continue;
         if (m.exports_kind == .none) m.exports_kind = .esm;
         if (m.exports_kind.isEsm()) m.wrap_kind = .esm;
+        // webpack 과 같이 경고: 기다리려면 async 초기화 함수가 필요한데 타겟에 async 가 없다.
+        if (base.tla_async_init_fallback and !warned_async_fallback and m.wrap_kind == .esm) {
+            warned_async_fallback = true;
+            self.addDiag(
+                .top_level_await_target,
+                .warning,
+                m.path,
+                Span.EMPTY,
+                .link,
+                "Top-level await is kept in order with async module initializers, but the configured target does not support async/await",
+                "Use --format=esm, or set --target=es2017 or later.",
+            );
+        }
     }
     promoteModulesAfterFirstAsync(self);
 }

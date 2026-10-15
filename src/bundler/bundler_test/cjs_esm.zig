@@ -1739,7 +1739,7 @@ test "TLA: propagated to importer" {
     const entry = try absPath(&tmp, "a.ts");
     defer std.testing.allocator.free(entry);
 
-    // CJS 포맷: A가 B(TLA)를 import → A도 TLA → 경고 발생
+    // CJS 포맷: A가 B(TLA)를 import → A 의 초기화가 B 를 기다린다 (#4598 — 경고 대신 낮춤)
     var b = Bundler.init(std.testing.allocator, .{
         .entry_points = &.{entry},
         .format = .cjs,
@@ -1749,8 +1749,9 @@ test "TLA: propagated to importer" {
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
-    // TLA 전파 → CJS에서 경고 주석 포함
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZNTC0002]") != null);
+    // TLA 전파 → importer 가 `await init_b()` 로 기다린다
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "await init_b()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZNTC0002]") == null);
 }
 
 test "TLA: not propagated via dynamic import" {
@@ -1778,7 +1779,8 @@ test "TLA: not propagated via dynamic import" {
 }
 
 test "TLA: warning for CJS output" {
-    // CJS 포맷에서 TLA 사용 시 경고 주석이 삽입되어야 한다.
+    // CJS 출력에는 최상위 await 가 합법이 아니다 — 경고만 붙이고 네이티브로 두는 대신
+    // async 초기화로 낮춰 실제로 동작하게 한다 (#4598, webpack 의 async module 과 같다).
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "const x = await Promise.resolve(1);\nconsole.log(x);");
@@ -1795,9 +1797,8 @@ test "TLA: warning for CJS output" {
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZNTC0002] Top-level await requires ESM output format.") != null);
-    // 중복 경고 방지: 정확히 한 번만 emit되어야 함 (이전엔 iife/umd/amd prologue가 추가로 emit했음)
-    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, result.output, "[ZNTC0002]"));
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZNTC0002]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "async \"entry.ts\"()") != null);
 }
 
 test "TLA: no warning for ESM output" {
@@ -1844,7 +1845,7 @@ test "TLA: for-await-of detected" {
     const result = try b.bundle(std.testing.io);
     defer result.deinit(std.testing.allocator);
 
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "[ZNTC0002]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "async \"entry.ts\"()") != null);
 }
 
 test "TLA: await inside object literal at top level" {
@@ -1866,7 +1867,8 @@ test "TLA: await inside object literal at top level" {
 
     try std.testing.expect(!result.hasErrors());
     // object literal 내부 await도 TLA로 감지 → CJS 경고
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZNTC0002") != null);
+    // export 가 있는 entry 는 승격하지 않고 async IIFE 로 낮춘다 (#4598).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(async () => {") != null);
 }
 
 test "TLA: await inside array literal at top level" {
@@ -1886,7 +1888,8 @@ test "TLA: await inside array literal at top level" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZNTC0002") != null);
+    // export 가 있는 entry 는 승격하지 않고 async IIFE 로 낮춘다 (#4598).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(async () => {") != null);
 }
 
 test "TLA: await inside ternary expression at top level" {
@@ -1906,7 +1909,8 @@ test "TLA: await inside ternary expression at top level" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expect(!result.hasErrors());
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZNTC0002") != null);
+    // export 가 있는 entry 는 승격하지 않고 async IIFE 로 낮춘다 (#4598).
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "(async () => {") != null);
 }
 
 test "TLA: for_await_of_statement detected via AST tag" {
@@ -1929,7 +1933,7 @@ test "TLA: for_await_of_statement detected via AST tag" {
 
     try std.testing.expect(!result.hasErrors());
     // for await 감지 → CJS 경고
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "ZNTC0002") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "async \"entry.ts\"()") != null);
     // codegen이 for await of를 올바르게 출력
     try std.testing.expect(std.mem.indexOf(u8, result.output, "for await") != null);
 }
