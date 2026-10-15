@@ -8584,8 +8584,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       );
     };
-    const sourceFor = (methodKey: string) => {
-      const methodCall = methodKey === '[0]' ? 'service[0]' : 'service.update';
+    const sourceFor = (methodKey: string, methodCall: string) => {
       return [
         'var events = []; var receiver;',
         'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0, methodKeyCalls = 0;',
@@ -8617,8 +8616,15 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     };
 
     try {
-      for (const methodKey of ["['update']", '[0]', '[getMethodName()]']) {
-        const source = sourceFor(methodKey);
+      const methodCases = [
+        { key: "['update']", call: 'service.update', retainsGraph: true, keyCalls: 0 },
+        { key: '[0]', call: 'service[0]', retainsGraph: true, keyCalls: 0 },
+        { key: '[`update`]', call: 'service.update', retainsGraph: true, keyCalls: 0 },
+        { key: '[`up${"date"}`]', call: 'service.update', retainsGraph: false, keyCalls: 0 },
+        { key: '[getMethodName()]', call: 'service.update', retainsGraph: false, keyCalls: 1 },
+      ];
+      for (const { key: methodKey, call: methodCall, retainsGraph, keyCalls } of methodCases) {
+        const source = sourceFor(methodKey, methodCall);
         writeFileSync(nativeInput, source);
         const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
         expect(native.status, `${methodKey}: ${native.stderr}`).toBe(0);
@@ -8631,11 +8637,10 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        const keepsGraph = methodKey !== '[getMethodName()]';
         expect(mode, `${methodKey}: ${bundled.stderr}`).toContain(
-          keepsGraph ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
+          retainsGraph ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
         );
-        if (keepsGraph) {
+        if (retainsGraph) {
           const report = (bundled.stderr ?? '')
             .split(/\r?\n/)
             .find(
@@ -8655,7 +8660,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expect(actual.status, `${methodKey}: ${actual.stderr}`).toBe(0);
         expect(actual.stdout, methodKey).toBe(native.stdout);
         expect(native.stdout, methodKey).toBe(
-          `42 84 42 84 84 true ${keepsGraph ? 0 : 1} direct-read,key,source-key,get-undefined,rhs,set-undefined direct-read,get-undefined 2 1 1 1\n`,
+          `42 84 42 84 84 true ${keyCalls} direct-read,key,source-key,get-undefined,rhs,set-undefined direct-read,get-undefined 2 1 1 1\n`,
         );
       }
     } finally {
