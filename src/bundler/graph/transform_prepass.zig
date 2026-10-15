@@ -3903,8 +3903,8 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     const is_pure_numeric_unary_key = is_computed and value.tag == .unary_expression and
         isPureNumericUnaryObjectMethodKey(ast, value);
     return value.tag == .string_literal or
-        (is_computed and (value.tag == .numeric_literal or value.tag == .boolean_literal or
-            value.tag == .null_literal or
+        (is_computed and (value.tag == .numeric_literal or value.tag == .bigint_literal or
+            value.tag == .boolean_literal or value.tag == .null_literal or
             is_pure_numeric_unary_key or
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
