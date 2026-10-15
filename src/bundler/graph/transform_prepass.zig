@@ -3879,6 +3879,20 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
+fn isSignedNumericObjectMethodKey(ast: *const ast_mod.Ast, value_idx: ast_mod.NodeIndex) bool {
+    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(value_idx);
+    if (value.tag != .unary_expression) return false;
+    const extra = value.data.extra;
+    const extras = ast.extra_data.items;
+    if (extra > extras.len or extras.len - extra < 2) return false;
+    const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+    if (operator != .plus and operator != .minus) return false;
+    const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    return !operand_idx.isNone() and @intFromEnum(operand_idx) < ast.nodes.items.len and
+        ast.getNode(operand_idx).tag == .numeric_literal;
+}
+
 fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
@@ -3889,6 +3903,7 @@ fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.Node
     return value.tag == .string_literal or
         (is_computed and (value.tag == .numeric_literal or value.tag == .boolean_literal or
             value.tag == .null_literal or
+            isSignedNumericObjectMethodKey(ast, value_idx) or
             (value.tag == .template_literal and value.data.list.len == 0)));
 }
 
