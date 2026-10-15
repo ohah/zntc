@@ -713,14 +713,10 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         if (node.tag == .catch_clause) {
             const param = node.data.binary.left;
             if (!param.isNone() and @intFromEnum(param) >= self.parser_node_count and self.ast.getNode(param).tag == .binding_identifier) {
-                // Optional catch bindings materialized by lowering are unused,
-                // but still own a real binding in this exact output catch scope.
-                // Other generated catch params must have been registered by
-                // their producer because their references are bound there.
-                if (self.getSymbolIdAt(param) == null) {
-                    _ = (try self.declareSyntheticInScope(param, self.ast.getNode(param).span, .catch_binding, scope)) orelse
-                        std.debug.panic("generated catch binding has no direct SymbolId", .{});
-                }
+                // A generated catch binding must arrive with its producer-owned
+                // identity. Finalization must not repair missing identities.
+                if (self.getSymbolIdAt(param) == null)
+                    std.debug.panic("generated catch binding has no producer SymbolId", .{});
             }
         }
         if ((node.tag == .for_statement or node.tag == .for_in_statement or node.tag == .for_of_statement or node.tag == .for_await_of_statement) and

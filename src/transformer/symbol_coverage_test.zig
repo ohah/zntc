@@ -4388,6 +4388,23 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    var producer_symbol_ids: [2]u32 = undefined;
+    var producer_symbol_count: usize = 0;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .catch_clause) continue;
+        const param = node.data.binary.left;
+        if (param.isNone() or @intFromEnum(param) < transformer.parser_node_count or
+            transformer.ast.getNode(param).tag != .binding_identifier) continue;
+        if (producer_symbol_count == producer_symbol_ids.len) return error.UnexpectedGeneratedCatchBinding;
+        const symbol_id = transformer.getSymbolIdAt(param) orelse return error.MissingProducerCatchBindingSymbolId;
+        try std.testing.expect(@as(usize, @intCast(symbol_id)) >= original_symbols);
+        for (producer_symbol_ids[0..producer_symbol_count]) |prior_id| {
+            try std.testing.expect(symbol_id != prior_id);
+        }
+        producer_symbol_ids[producer_symbol_count] = symbol_id;
+        producer_symbol_count += 1;
+    }
+    try std.testing.expectEqual(producer_symbol_ids.len, producer_symbol_count);
     const edited = (try transformer.finishSemanticEdit()).?;
     try std.testing.expectEqual(original_symbols + 2, edited.symbols.items.len);
     try std.testing.expect(edited.symbols.items[original_symbols].scope_id != edited.symbols.items[original_symbols + 1].scope_id);

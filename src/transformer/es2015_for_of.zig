@@ -235,13 +235,15 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 .right = catch_body,
                 .flags = 0,
             } } });
-            if (stable_scope or (register_sm_temps and self.semantic_edit_enabled)) {
+            if (self.semantic_edit_enabled) {
                 const catch_scope = try self.addGeneratedCatchScope(outer_scope, catch_clause);
                 const catch_symbol = (try self.declareSyntheticInScope(catch_binding, span, .catch_binding, catch_scope)) orelse
                     std.debug.panic("generated for-of catch binding has no SymbolId", .{});
                 try self.addSyntheticRefInScope(catch_param_read, catch_symbol, catch_scope, .{ .read = true });
-                try self.addSyntheticRefInScope(did_catch_write, did_symbol orelse std.debug.panic("for-of error flag has no SymbolId", .{}), catch_scope, .{ .write = true });
-                try self.addSyntheticRefInScope(err_catch_write, err_symbol orelse std.debug.panic("for-of error value has no SymbolId", .{}), catch_scope, .{ .write = true });
+                if (stable_scope or register_sm_temps) {
+                    try self.addSyntheticRefInScope(did_catch_write, did_symbol orelse std.debug.panic("for-of error flag has no SymbolId", .{}), catch_scope, .{ .write = true });
+                    try self.addSyntheticRefInScope(err_catch_write, err_symbol orelse std.debug.panic("for-of error value has no SymbolId", .{}), catch_scope, .{ .write = true });
+                }
 
                 if (stable_scope) {
                     // These names already have explicit bindings in the lowered
