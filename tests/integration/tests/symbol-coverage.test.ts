@@ -7945,30 +7945,106 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       expectReanalyzedOutput(untrackedOptionalComputedSuperExponentiationKey, '9 9 1 1 1\n');
 
-      // The same optional-key composition remains outside logical assignment
-      // retention until its transform has its own exact proof.
+      // Optional keys stay retainable for logical super assignments only with
+      // coverage for all short-circuit forms and their evaluation order.
       const optionalComputedSuperLogicalAssignmentKey = run(
+        [
+          'var events = []; var receiver;',
+          'var keyEvaluations = 0, nullishEvaluations = 0, logicalOrEvaluations = 0, logicalAndEvaluations = 0, reads = 0, writes = 0;',
+          'function getKey() { keyEvaluations += 1; events.push("key"); return "key"; }',
+          'function getNullish() { nullishEvaluations += 1; events.push("rhs-nullish"); return 8; }',
+          'function getLogicalOr() { logicalOrEvaluations += 1; events.push("rhs-or"); return 9; }',
+          'function getLogicalAnd() { logicalAndEvaluations += 1; events.push("rhs-and"); return 10; }',
+          'var keySource = { get key() { events.push("source-key"); return "value"; } };',
+          'class Base {',
+          '  get value() { reads += 1; events.push("get-value"); return this._value; }',
+          '  set value(next) { writes += 1; events.push("set-value"); receiver = this; this._value = next; }',
+          '}',
+          'Object.defineProperty(Base.prototype, "undefined", {',
+          '  get: function() { reads += 1; events.push("get-undefined"); return this._missing; },',
+          '  set: function(next) { writes += 1; events.push("set-undefined"); receiver = this; this._missing = next; },',
+          '});',
+          'class Service extends Base {',
+          '  async update(source) {',
+          '    await Promise.resolve();',
+          '    var nested = async () => {',
+          '      await Promise.resolve();',
+          '      var nullish = super[source?.[getKey()]] ??= getNullish();',
+          '      var either = super[source?.[getKey()]] ||= getLogicalOr();',
+          '      var both = super[source?.[getKey()]] &&= getLogicalAnd();',
+          '      var value = source === null ? this._missing : this._value;',
+          '      return [nullish, either, both, this === receiver, value, reads, writes].join(" ");',
+          '    };',
+          '    return await nested();',
+          '  }',
+          '}',
+          'var present = new Service(); present._value = null;',
+          'var absent = new Service(); absent._missing = 5;',
+          'present.update(keySource).then(first => absent.update(null).then(second => console.log(first + "|" + second, events.join(","), keyEvaluations, nullishEvaluations, logicalOrEvaluations, logicalAndEvaluations, reads, writes)));',
+        ].join('\n'),
+      );
+      expect(
+        optionalComputedSuperLogicalAssignmentKey.status,
+        optionalComputedSuperLogicalAssignmentKey.stderr,
+      ).toBe(0);
+      expectRetainedClean(optionalComputedSuperLogicalAssignmentKey.stderr ?? '');
+      const optionalComputedSuperLogicalAssignmentKeyOutput = runOutput();
+      expect(
+        optionalComputedSuperLogicalAssignmentKeyOutput.status,
+        optionalComputedSuperLogicalAssignmentKeyOutput.stderr,
+      ).toBe(0);
+      expect(optionalComputedSuperLogicalAssignmentKeyOutput.stdout).toBe(
+        '8 8 10 true 10 3 2|5 5 10 true 10 6 3 key,source-key,get-value,rhs-nullish,set-value,key,source-key,get-value,key,source-key,get-value,rhs-and,set-value,get-undefined,get-undefined,get-undefined,rhs-and,set-undefined 3 1 0 2 6 3\n',
+      );
+
+      // An optional chain rooted in an untracked global member chain must
+      // continue through semantic reanalysis for logical super assignment.
+      const untrackedOptionalComputedSuperLogicalAssignmentKey = run(
         [
           'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0;',
           'function getKey() { keyEvaluations += 1; return "key"; }',
           'function getNext() { rhsEvaluations += 1; return 8; }',
-          'var keySource = { key: "value" };',
+          'globalThis.__zntcUntrackedLogicalSuperKey = { key: "value" };',
           'class Base {',
+          '  get value() { reads += 1; return this._value; }',
+          '  set value(next) { writes += 1; this._value = next; }',
+          '}',
+          'class Service extends Base {',
+          '  async update() {',
+          '    await Promise.resolve();',
+          '    var nested = async () => { await Promise.resolve(); return super[globalThis.__zntcUntrackedLogicalSuperKey?.[getKey()]] ??= getNext(); };',
+          '    return await nested();',
+          '  }',
+          '}',
+          'var instance = new Service(); instance._value = null;',
+          'instance.update().then(result => console.log(result, instance._value, keyEvaluations, rhsEvaluations, reads, writes));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(untrackedOptionalComputedSuperLogicalAssignmentKey, '8 8 1 1 1 1\n');
+
+      // A nested super access inside the optional key remains outside the
+      // direct-super target proof even when optional keys are admitted.
+      const nestedSuperOptionalComputedLogicalAssignmentKey = run(
+        [
+          'var reads = 0, writes = 0;',
+          'function getNext() { return 8; }',
+          'class Base {',
+          '  get key() { return "value"; }',
           '  get value() { reads += 1; return this._value; }',
           '  set value(next) { writes += 1; this._value = next; }',
           '}',
           'class Service extends Base {',
           '  async update(source) {',
           '    await Promise.resolve();',
-          '    var nested = async () => { await Promise.resolve(); return super[source?.[getKey()]] ??= getNext(); };',
+          '    var nested = async () => { await Promise.resolve(); return super[source?.[super.key]] ??= getNext(); };',
           '    return await nested();',
           '  }',
           '}',
-          'var instance = new Service(); instance._value = 0;',
-          'instance.update(keySource).then(result => console.log(result, instance._value, keyEvaluations, rhsEvaluations, reads, writes));',
+          'var instance = new Service(); instance._value = null;',
+          'instance.update({ value: "value" }).then(result => console.log(result, instance._value, reads, writes));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(optionalComputedSuperLogicalAssignmentKey, '0 0 1 0 1 0\n');
+      expectReanalyzedOutput(nestedSuperOptionalComputedLogicalAssignmentKey, '8 8 1 1\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

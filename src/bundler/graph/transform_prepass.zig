@@ -4960,7 +4960,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // Ordinary member temps and direct super-property temps are
                     // registered by their respective transform semantic editors.
                     if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left) and
-                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left, false))
+                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left, true))
                         return false;
                     found_lowered_logical_assignment = true;
                 }
