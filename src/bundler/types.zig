@@ -790,6 +790,8 @@ pub const ImportRecord = struct {
     span: Span,
     /// worker: new URL(...) 전체 범위 (리라이트 대상)
     url_span: ?Span = null,
+    /// worker: `new Worker(url, { type: 'module' })` — ESM 으로 방출한다 (#4603).
+    worker_module: bool = false,
     /// resolve 완료 후 채워지는 모듈 인덱스
     resolved: ModuleIndex = .none,
     /// resolve는 성공했지만 `sideEffects:false` lazy barrel 최적화로 target module graph

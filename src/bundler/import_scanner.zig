@@ -933,6 +933,30 @@ fn getStringLiteralText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     return import_specifier_unescape.unescape(ast.allocator, stripped);
 }
 
+/// `new Worker(url, { type: 'module' })` 의 두 번째 인자가 module worker 옵션인지 (#4603).
+/// module worker 는 ESM 으로 방출해야 external `import` 를 보존할 수 있다.
+pub fn isModuleWorkerOptions(ast: *const Ast, idx: NodeIndex) bool {
+    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
+    const obj = ast.getNode(idx);
+    if (obj.tag != .object_expression) return false;
+    var key_buf: [64]u8 = undefined;
+    var props = ast.iterateExtraList(obj.data.list);
+    while (props.next()) |prop_idx| {
+        const prop = ast.getNode(prop_idx);
+        if (prop.tag != .object_property) continue;
+        var fba = std.heap.FixedBufferAllocator.init(&key_buf);
+        const key = (ast.staticKeyName(fba.allocator(), prop.data.binary.left) catch null) orelse continue;
+        if (!std.mem.eql(u8, key, "type")) continue;
+        const value_idx = prop.data.binary.right;
+        if (value_idx.isNone()) return false;
+        const value = ast.getNode(value_idx);
+        if (value.tag != .string_literal) return false;
+        const text = stripQuotes(ast.getText(value.span)) orelse return false;
+        return std.mem.eql(u8, text, "module");
+    }
+    return false;
+}
+
 /// new Worker(new URL('./worker.ts', import.meta.url)) 패턴 감지.
 /// new_expression extra: [callee, args_start, args_len, flags]
 fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
@@ -995,6 +1019,8 @@ fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
         .kind = .worker,
         .span = spec_node.span,
         .url_span = url_new.span, // new URL(...) 전체 범위
+        .worker_module = args_len >= 2 and args_start + 1 < ast.extra_data.items.len and
+            isModuleWorkerOptions(ast, @enumFromInt(ast.extra_data.items[args_start + 1])),
     };
 }
 

@@ -41,6 +41,7 @@ pub fn materialize(
                 .kind = ik,
                 .span = sr.span,
                 .url_span = sr.url_span,
+                .worker_module = sr.worker_module,
                 .glob_eager = sr.glob_eager,
                 .glob_import_name = sr.glob_import_name,
                 .context_recursive = sr.context_recursive,
