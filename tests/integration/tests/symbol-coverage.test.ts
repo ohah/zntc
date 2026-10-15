@@ -9281,6 +9281,84 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('ES5 async object super retains typeof of var template references without admitting lexical bindings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-typeof-var-template-super-key-'));
+    const input = join(dir, 'entry.ts');
+    const nativeInput = join(dir, 'oracle.mjs');
+    const output = join(dir, 'out.cjs');
+    try {
+      for (const declaration of ['var', 'let']) {
+        const source = [
+          `${declaration} methodName = "unused";`,
+          'var prototype = { read() { return this.value; } };',
+          'var service = {',
+          '  value: 42,',
+          '  async [`${typeof methodName}`]() { return super.read(); },',
+          '};',
+          'Object.setPrototypeOf(service, prototype);',
+          'service.string().then(value => console.log(Object.keys(service).sort().join(","), value));',
+        ].join('\n');
+        writeFileSync(input, source);
+        writeFileSync(nativeInput, source);
+
+        const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
+        expect(native.status, `${declaration}: ${native.stderr}`).toBe(0);
+        expect(native.stdout, declaration).toBe('string,value 42\n');
+
+        const bundled = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            input,
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(bundled.status, `${declaration}: ${bundled.stderr}`).toBe(0);
+        const mode = (bundled.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
+          );
+        expect(mode, `${declaration}: ${bundled.stderr}`).toContain(
+          declaration === 'var' ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
+        );
+        if (declaration === 'var') {
+          const report = (bundled.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts'),
+            );
+          expect(report, bundled.stderr).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report).toMatch(/clean=1(?:\s|$)/);
+        }
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${declaration}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, declaration).toBe(native.stdout);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 async object methods retain audited super property reads and writes', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-async-object-super-get-'));
     const output = join(dir, 'out.cjs');
