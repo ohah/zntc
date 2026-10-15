@@ -3879,12 +3879,14 @@ fn isRetainableAsyncFunctionNode(
         (flags & ast_mod.FunctionFlags.is_generator) == 0;
 }
 
-fn isStaticStringObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
+fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
-    const value_idx = if (key.tag == .computed_property_key) key.data.unary.operand else key_idx;
+    const is_computed = key.tag == .computed_property_key;
+    const value_idx = if (is_computed) key.data.unary.operand else key_idx;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
-    return ast.getNode(value_idx).tag == .string_literal;
+    const value_tag = ast.getNode(value_idx).tag;
+    return value_tag == .string_literal or (is_computed and value_tag == .numeric_literal);
 }
 
 fn isRetainableEs5AsyncObjectMethodNode(
@@ -3907,7 +3909,7 @@ fn isRetainableEs5AsyncObjectMethodNode(
     const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.key]);
     if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
-    if (key.tag != .identifier_reference and !isStaticStringObjectMethodKey(ast, key_idx)) return false;
+    if (key.tag != .identifier_reference and !isStaticLiteralObjectMethodKey(ast, key_idx)) return false;
 
     const owner_raw = parents.get(@intFromEnum(method_idx)) orelse return false;
     if (owner_raw >= ast.nodes.items.len or ast.nodes.items[owner_raw].tag != .object_expression) return false;
@@ -4211,7 +4213,7 @@ fn isRetainableEs5AsyncArrowSuper(
             if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
             const key = ast.getNode(key_idx);
             if (key.tag != .identifier_reference and
-                !(method_owner.tag == .object_expression and isStaticStringObjectMethodKey(ast, key_idx))) return false;
+                !(method_owner.tag == .object_expression and isStaticLiteralObjectMethodKey(ast, key_idx))) return false;
             if (method_extra > ast.extra_data.items.len or
                 ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.body) return false;
             const body_raw = ast.extra_data.items[method_extra + ast_mod.MethodExtra.body];
@@ -4667,7 +4669,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         const key_idx: ast_mod.NodeIndex = @enumFromInt(
                             ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
                         );
-                        if (is_async and !isStaticStringObjectMethodKey(ast, key_idx)) break :blk null;
+                        if (is_async and !isStaticLiteralObjectMethodKey(ast, key_idx)) break :blk null;
                         const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
                         break :blk .{
                             .node = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]),
