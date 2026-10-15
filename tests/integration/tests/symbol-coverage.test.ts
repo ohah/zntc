@@ -7177,7 +7177,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       expectReanalyzedOutput(nestedAsyncArrowInSyncOuter, '42\n');
 
-      // Three async arrow owners exceed the audited two-depth boundary.
+      // Three async-arrow scopes at one uniform depth retain their state machines.
       const threeDeepAsyncArrowSuper = run(
         [
           'class Base { get current() { return this.value; } }',
@@ -7200,7 +7200,69 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(threeDeepAsyncArrowSuper, '42\n');
+      expect(threeDeepAsyncArrowSuper.status, threeDeepAsyncArrowSuper.stderr).toBe(0);
+      expectRetainedClean(threeDeepAsyncArrowSuper.stderr ?? '');
+      const threeDeepAsyncArrowSuperOutput = runOutput();
+      expect(threeDeepAsyncArrowSuperOutput.status, threeDeepAsyncArrowSuperOutput.stderr).toBe(0);
+      expect(threeDeepAsyncArrowSuperOutput.stdout).toBe('42\n');
+
+      // Depth four follows the same uniform async-arrow proof.
+      const fourDeepAsyncArrowSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var first = async () => {',
+          '      await Promise.resolve();',
+          '      var second = async () => {',
+          '        await Promise.resolve();',
+          '        var third = async () => {',
+          '          await Promise.resolve();',
+          '          var fourth = async () => { await Promise.resolve(); return super.current; };',
+          '          return fourth();',
+          '        };',
+          '        return third();',
+          '      };',
+          '      return second();',
+          '    };',
+          '    return await first();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expect(fourDeepAsyncArrowSuper.status, fourDeepAsyncArrowSuper.stderr).toBe(0);
+      expectRetainedClean(fourDeepAsyncArrowSuper.stderr ?? '');
+      const fourDeepAsyncArrowSuperOutput = runOutput();
+      expect(fourDeepAsyncArrowSuperOutput.status, fourDeepAsyncArrowSuperOutput.stderr).toBe(0);
+      expect(fourDeepAsyncArrowSuperOutput.stdout).toBe('42\n');
+
+      // Mixed nested depths remain on reanalysis even when every arrow is async.
+      const mixedNestedAsyncArrowDepthSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var read = async () => {',
+          '      await Promise.resolve();',
+          '      var second = async () => {',
+          '        await Promise.resolve();',
+          '        var third = async () => { await Promise.resolve(); return super.current; };',
+          '        return await third() + super.current;',
+          '      };',
+          '      return await second();',
+          '    };',
+          '    return await read();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(mixedNestedAsyncArrowDepthSuper, '84\n');
 
       // A super default in async-arrow parameters runs before its state machine.
       const asyncArrowParameterSuper = run(
