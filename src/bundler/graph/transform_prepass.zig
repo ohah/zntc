@@ -3945,8 +3945,7 @@ fn isRetainableAsyncObjectMethodKey(
             const expression_raw = extras[list.start + offset];
             if (expression_raw >= ast.nodes.items.len) return false;
             const expression_idx: ast_mod.NodeIndex = @enumFromInt(expression_raw);
-            if (ast.getNode(expression_idx).tag != .identifier_reference or
-                !isBoundSourceIdentifierReference(ast, semantic, expression_idx)) return false;
+            if (!isSafeConstructorValue(ast, semantic, expression_idx)) return false;
         }
         return true;
     }
