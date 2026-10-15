@@ -8558,7 +8558,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
-  test('ES5 async object super keeps literal computed method keys on the retained graph', () => {
+  test('ES5 async object super keeps static computed method keys on the retained graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-bundle-es5-literal-object-super-key-'));
     const input = join(dir, 'entry.ts');
     const nativeInput = join(dir, 'oracle.mjs');
@@ -8584,8 +8584,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       );
     };
-    const sourceFor = (methodKey: string) =>
-      [
+    const sourceFor = (methodKey: string) => {
+      const methodCall = methodKey === '[0]' ? 'service[0]' : 'service.update';
+      return [
         'var events = []; var receiver;',
         'var keyEvaluations = 0, rhsEvaluations = 0, reads = 0, writes = 0, methodKeyCalls = 0;',
         'function getMethodName() { methodKeyCalls += 1; return "update"; }',
@@ -8611,11 +8612,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '  },',
         '};',
         'Object.setPrototypeOf(service, prototype);',
-        'service.update(keySource).then(first => { var firstEvents = events.join(","); events.length = 0; return service.update(null).then(second => console.log(first, second, service._missing, service === receiver, methodKeyCalls, firstEvents, events.join(","), reads, writes, keyEvaluations, rhsEvaluations)); });',
+        `${methodCall}(keySource).then(first => { var firstEvents = events.join(","); events.length = 0; return ${methodCall}(null).then(second => console.log(first, second, service._missing, service === receiver, methodKeyCalls, firstEvents, events.join(","), reads, writes, keyEvaluations, rhsEvaluations)); });`,
       ].join('\n');
+    };
 
     try {
-      for (const methodKey of ["['update']", '[getMethodName()]']) {
+      for (const methodKey of ["['update']", '[0]', '[getMethodName()]']) {
         const source = sourceFor(methodKey);
         writeFileSync(nativeInput, source);
         const native = spawnSync('node', [nativeInput], { encoding: 'utf8' });
@@ -8629,7 +8631,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             (line) =>
               line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
           );
-        const keepsGraph = methodKey === "['update']";
+        const keepsGraph = methodKey !== '[getMethodName()]';
         expect(mode, `${methodKey}: ${bundled.stderr}`).toContain(
           keepsGraph ? 'semantic_graph=retained' : 'semantic_graph=reanalyzed',
         );
