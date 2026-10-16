@@ -3077,9 +3077,9 @@ fn isSafePostSuperPropertyRead(
 }
 
 /// A source-bound initializer may combine direct `super` reads with the same
-/// side-effect-free binary operators already allowed for ordinary constructor
-/// values. Calls, logical short-circuiting, conditionals, and member chains
-/// keep their separate reanalysis boundary.
+/// bounded binary and logical operators already allowed for ordinary
+/// constructor values. Calls, conditionals, and member chains keep their
+/// separate reanalysis boundary.
 fn isSafePostSuperInitializerValue(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3089,6 +3089,12 @@ fn isSafePostSuperInitializerValue(
         isSafePostSuperPropertyRead(ast, semantic, value_idx)) return true;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
+    if (value.tag == .logical_expression) {
+        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        return isSafeConstructorLogicalOperator(operator) and
+            isSafePostSuperInitializerValue(ast, semantic, value.data.binary.left) and
+            isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
+    }
     if (value.tag != .binary_expression) return false;
     const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
     return isSafeConstructorBinaryOperator(operator) and
