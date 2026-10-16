@@ -28,6 +28,7 @@ pub const precedence = @import("precedence.zig");
 test {
     _ = codegen;
     _ = options;
+    _ = @import("type_runtime.zig");
     _ = sourcemap;
     _ = function_map;
     _ = mangler;

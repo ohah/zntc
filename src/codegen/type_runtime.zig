@@ -7,6 +7,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
 const FlowEnumBaseType = @import("../parser/flow.zig").FlowEnumBaseType;
 const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
+const Symbol = @import("../semantic/symbol.zig").Symbol;
 const rt = @import("../bundler/runtime_helpers.zig");
 pub const Error = std.mem.Allocator.Error || @import("errors.zig").Error;
 const bindings = @import("bindings.zig");
@@ -393,7 +394,7 @@ fn namespaceIifeParameter(self: anytype, namespace_idx: NodeIndex) !?NamespaceIi
         return error.MissingNamespaceIifeParameterSymbol;
     return .{
         .symbol_id = symbol_id,
-        .name = generatedIifeParamNameFromSymbolId(self, symbol_id),
+        .name = try generatedIifeParamNameFromSymbolId(self, symbol_id),
     };
 }
 
@@ -404,7 +405,7 @@ fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) !?[]const u8 {
     }
     const symbol_id = generatedIifeParamSymbolId(self, enum_idx, .enum_iife_parameter) orelse
         return error.MissingEnumIifeParameterSymbol;
-    return generatedIifeParamNameFromSymbolId(self, symbol_id);
+    return try generatedIifeParamNameFromSymbolId(self, symbol_id);
 }
 
 /// Emit a semantic bare enum-member reference as a property read on the
@@ -418,7 +419,7 @@ pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !
     const parameter = self.options.semantic_symbols[owner_raw];
     if (parameter.synthetic_kind != .enum_iife_parameter or parameter.scope_id != member.scope_id)
         return error.InvalidEnumIifeMemberSymbol;
-    const parameter_name = generatedIifeParamNameFromSymbolId(self, owner_raw);
+    const parameter_name = try generatedIifeParamNameFromSymbolId(self, owner_raw);
 
     try self.addSourceMappingWithName(node.span, self.ast.identifierNameText(node));
     try self.write(parameter_name);
@@ -434,9 +435,10 @@ pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !
     return true;
 }
 
-fn generatedIifeParamNameFromSymbolId(self: anytype, raw_id: u32) []const u8 {
-    const symbol = self.options.semantic_symbols[@intCast(raw_id)];
-    return self.finalSymbolName(raw_id) orelse symbol.synthetic_name;
+fn generatedIifeParamNameFromSymbolId(self: anytype, raw_id: u32) ![]const u8 {
+    const name = self.finalSymbolName(raw_id) orelse return error.MissingGeneratedIifeParameterFinalName;
+    if (name.len == 0) return error.MissingGeneratedIifeParameterFinalName;
+    return name;
 }
 
 fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?u32 {
@@ -1081,4 +1083,88 @@ fn writeIifeHead(self: anytype, param_name: []const u8) !void {
         try self.write(param_name);
         try self.write(") => {");
     }
+}
+
+test "#4819 generated IIFE parameter names require an exact final-name result" {
+    const span = @import("../lexer/token.zig").Span{ .start = 0, .end = 0 };
+    const ScopeMap = std.StringHashMapUnmanaged(usize);
+    const OwnerMap = std.AutoHashMapUnmanaged(u32, u32);
+    const allocator = std.testing.allocator;
+    const symbols = [_]Symbol{
+        .{
+            .name = span,
+            .scope_id = @enumFromInt(0),
+            .kind = .parameter,
+            .declaration_span = span,
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_Namespace",
+        },
+        .{
+            .name = span,
+            .scope_id = @enumFromInt(1),
+            .kind = .parameter,
+            .declaration_span = span,
+            .synthetic_kind = .enum_iife_parameter,
+            .synthetic_name = "_Enum",
+        },
+    };
+    var scope_maps: [2]ScopeMap = .{ .empty, .empty };
+    defer for (&scope_maps) |*scope_map| scope_map.deinit(allocator);
+    try scope_maps[0].put(allocator, "_Namespace", 0);
+    try scope_maps[1].put(allocator, "_Enum", 1);
+    var owners: OwnerMap = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, 0, 0);
+    try owners.put(allocator, 1, 1);
+
+    const TestCodegen = struct {
+        options: struct {
+            semantic_symbols: []const Symbol,
+            semantic_scope_maps: []const ScopeMap,
+            generated_iife_scope_owner_map: ?*const OwnerMap,
+            require_generated_iife_symbols: bool = false,
+        },
+        final_names: [2]?[]const u8 = .{ null, null },
+        last_symbol_id: ?u32 = null,
+
+        fn finalSymbolName(self: *@This(), symbol_id: u32) ?[]const u8 {
+            self.last_symbol_id = symbol_id;
+            if (symbol_id >= self.final_names.len) return null;
+            return self.final_names[symbol_id];
+        }
+    };
+
+    var cg: TestCodegen = .{ .options = .{
+        .semantic_symbols = &symbols,
+        .semantic_scope_maps = &scope_maps,
+        .generated_iife_scope_owner_map = &owners,
+    } };
+    try std.testing.expectError(
+        error.MissingGeneratedIifeParameterFinalName,
+        namespaceIifeParameter(&cg, @enumFromInt(0)),
+    );
+    try std.testing.expectEqual(@as(?u32, 0), cg.last_symbol_id);
+
+    try std.testing.expectError(
+        error.MissingGeneratedIifeParameterFinalName,
+        enumIifeParamName(&cg, @enumFromInt(1)),
+    );
+    try std.testing.expectEqual(@as(?u32, 1), cg.last_symbol_id);
+
+    cg.final_names[0] = "";
+    try std.testing.expectError(
+        error.MissingGeneratedIifeParameterFinalName,
+        namespaceIifeParameter(&cg, @enumFromInt(0)),
+    );
+    try std.testing.expectEqual(@as(?u32, 0), cg.last_symbol_id);
+
+    cg.final_names[0] = "renamedNamespace";
+    const namespace_parameter = (try namespaceIifeParameter(&cg, @enumFromInt(0))) orelse return error.MissingNamespaceParameter;
+    try std.testing.expectEqualStrings("renamedNamespace", namespace_parameter.name);
+    try std.testing.expectEqual(@as(?u32, 0), cg.last_symbol_id);
+
+    cg.final_names[1] = "renamedEnum";
+    const enum_parameter = (try enumIifeParamName(&cg, @enumFromInt(1))) orelse return error.MissingEnumParameter;
+    try std.testing.expectEqualStrings("renamedEnum", enum_parameter);
+    try std.testing.expectEqual(@as(?u32, 1), cg.last_symbol_id);
 }
