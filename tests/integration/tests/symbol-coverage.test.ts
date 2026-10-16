@@ -7002,6 +7002,41 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       ).toBe(0);
       expect(derivedConstructorSuperPropertyBinaryInitializersOutput.stdout).toBe('14 2 2 true\n');
 
+      const derivedConstructorSuperPropertyLogicalInitializers = run(
+        [
+          'var reads = 0, receiverReads = 0;',
+          'class Base {',
+          '  constructor() { this.slot = 9; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.slot; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(flag) {',
+          '    super();',
+          '    var andValue = flag && super.current;',
+          '    var orValue = flag || super.current;',
+          '    this.andValue = andValue;',
+          '    this.orValue = orValue;',
+          '  }',
+          '}',
+          'var first = new Child(true);',
+          'var second = new Child(false);',
+          'console.log(first.andValue, first.orValue, second.andValue, second.orValue, reads, receiverReads, first instanceof Child, second instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyLogicalInitializers.status,
+        derivedConstructorSuperPropertyLogicalInitializers.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyLogicalInitializers.stderr);
+      const derivedConstructorSuperPropertyLogicalInitializersOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyLogicalInitializersOutput.status,
+        derivedConstructorSuperPropertyLogicalInitializersOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyLogicalInitializersOutput.stdout).toBe(
+        '9 true false 9 2 2 true true\n',
+      );
+
       const hostileDerivedConstructorSuperReadVariants: Array<{
         name: string;
         constructor: string;
@@ -7244,6 +7279,92 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             '}',
             `class Child extends Base { ${variant.constructor} }`,
             `try { var child = new Child("current", 2); console.log("ok", child.result, child.slot, reads, writes, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }`,
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorSuperLogicalInitializerVariants: Array<{
+        name: string;
+        constructor: string;
+        expected: string;
+      }> = [
+        {
+          name: 'nullish initializer contains super read',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ?? super.current; this.result = result; }',
+          expected: 'ok current 9 0 0 0 0 true\n',
+        },
+        {
+          name: 'logical initializer has effectful left side',
+          constructor:
+            'constructor(key, amount) { super(); var result = choose() && super.current; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 1 true\n',
+        },
+        {
+          name: 'logical initializer has effectful right side',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && consume(super.current); this.result = result; }',
+          expected: 'ok 9 9 1 0 0 1 true\n',
+        },
+        {
+          name: 'logical initializer has computed key call',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && super[getKey()]; this.result = result; }',
+          expected: 'ok 9 9 1 0 1 0 true\n',
+        },
+        {
+          name: 'logical initializer has computed key member',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && super[keys.name]; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'logical initializer has optional computed key',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && super[keys?.name]; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'conditional initializer contains super reads',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super.current : super.other; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'logical initializer invokes nested arrow',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && (() => super.current)(); this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'logical initializer contains assignment',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && (this.copy = super.current); this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'logical initializer contains binary call',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && (super.current + consume(amount)); this.result = result; }',
+          expected: 'ok 11 9 1 0 0 1 true\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperLogicalInitializerVariants) {
+        const result = run(
+          [
+            'var reads = 0, writes = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function consume(value) { callCount++; return value; }',
+            'function choose() { callCount++; return true; }',
+            'class Base {',
+            '  constructor() { this.slot = 9; }',
+            '  get current() { reads++; return this.slot; }',
+            '  set current(value) { writes++; this.slot = value; }',
+            '  get other() { reads++; return this.slot + 1; }',
+            '}',
+            'class Child extends Base { ' + variant.constructor + ' }',
+            'try { var child = new Child("current", 2); console.log("ok", child.result, child.slot, reads, writes, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }',
           ].join('\n'),
         );
         expectReanalyzedOutput(result, variant.expected, variant.name);
