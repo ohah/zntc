@@ -6905,6 +6905,123 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       expect(synchronousSuperReadWriteOutput.stdout).toBe('10 11 11 20 21 21 true true\n');
 
+      // The explicit derived constructor keeps direct post-super assignments
+      // on the same exact home-object graph as ordinary class methods.
+      const derivedConstructorSuperLogicalAssignment = run(
+        [
+          'var reads = 0, writes = 0;',
+          'class Base {',
+          '  constructor() { this.slot = 0; }',
+          '  get current() { reads++; return this.slot; }',
+          '  set current(value) { writes++; this.slot = value; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(value) {',
+          '    super();',
+          '    super.current ||= value;',
+          '    super.current = value;',
+          '    super.current &&= value + 1;',
+          '    super.current ??= value + 2;',
+          '    super.current **= 2;',
+          '  }',
+          '}',
+          'var child = new Child(7);',
+          'console.log(child.slot, reads, writes, child instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperLogicalAssignment.status,
+        derivedConstructorSuperLogicalAssignment.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperLogicalAssignment.stderr);
+      const derivedConstructorSuperLogicalAssignmentOutput = runOutput();
+      expect(
+        derivedConstructorSuperLogicalAssignmentOutput.status,
+        derivedConstructorSuperLogicalAssignmentOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperLogicalAssignmentOutput.stdout).toBe('64 4 4 true\n');
+
+      const hostileDerivedConstructorSuperVariants: Array<{
+        name: string;
+        constructor: string;
+        creation?: string;
+        expected: string;
+      }> = [
+        {
+          name: 'standalone super property read',
+          constructor: 'constructor(value) { super(); super.current; this.slot = value; }',
+          expected: 'ok 7 1 0 0 0\n',
+        },
+        {
+          name: 'nested arrow owns super read',
+          constructor:
+            'constructor(value) { super(); var read = () => super.current; this.slot = read(); }',
+          expected: 'ok undefined 1 0 0 0\n',
+        },
+        {
+          name: 'computed key call',
+          constructor: 'constructor(value) { super(); super[getKey()] ||= value; }',
+          expected: 'ok 7 1 1 1 0\n',
+        },
+        {
+          name: 'computed key member read',
+          constructor:
+            'constructor(value) { super(); var keys = { name: "current" }; super[keys.name] ||= value; this.slot = keys.name; }',
+          expected: 'ok current 1 1 0 0\n',
+        },
+        {
+          name: 'optional computed key',
+          constructor:
+            'constructor(value) { super(); var keys = { name: "current" }; super[keys?.name] ||= value; this.slot = keys.name; }',
+          expected: 'ok current 1 1 0 0\n',
+        },
+        {
+          name: 'right side call',
+          constructor:
+            'constructor(value) { super(); super.current ||= compute(value); this.slot = rhsCalls; }',
+          expected: 'ok 1 1 1 0 1\n',
+        },
+        {
+          name: 'nested block assignment',
+          constructor:
+            'constructor(value) { super(); { super.current ||= value; } this.slot = 9; }',
+          expected: 'ok 9 1 1 0 0\n',
+        },
+        {
+          name: 'conditional branch assignment',
+          constructor:
+            'constructor(value) { super(); if (value > 0) super.current ||= value; else super.current ||= -1; }',
+          expected: 'ok 7 1 1 0 0\n',
+        },
+        {
+          name: 'parameter default reads super before initialization',
+          constructor: 'constructor(value = super.current) { super(); this.slot = value; }',
+          creation: 'new Child()',
+          expected: 'ReferenceError\n',
+        },
+        {
+          name: 'super property assignment before super call',
+          constructor: 'constructor(value) { super.current ||= value; super(); }',
+          expected: 'ReferenceError\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperVariants) {
+        const result = run(
+          [
+            'var reads = 0, writes = 0, keyCalls = 0, rhsCalls = 0;',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function compute(value) { rhsCalls++; return value; }',
+            'class Base {',
+            '  get current() { reads++; return this.slot; }',
+            '  set current(value) { writes++; this.slot = value; }',
+            '}',
+            `class Child extends Base { ${variant.constructor} }`,
+            `try { var child = ${variant.creation ?? 'new Child(7)'}; console.log("ok", child.slot, reads, writes, keyCalls, rhsCalls); } catch (error) { console.log(error.name); }`,
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
       // Hostile owner and scope variants must stay on reanalysis. Each case
       // would otherwise look like a retained simple class to a broad gate.
       const hostileSyncSuperVariants: Array<{
