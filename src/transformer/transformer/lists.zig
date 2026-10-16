@@ -220,6 +220,24 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
 /// 이 helper 는 항상 non-none `sm_body` 로 호출된다.
 pub const HoistedStateTemp = transformer_mod.GeneratedTempBinding;
 
+/// Reuse a callback temp binding that a producer gave to its references before
+/// the callback body was hoisted. The generated name span is unique per temp
+/// allocation, so this hands the exact binding node through the hoist boundary.
+fn generatedCallbackTempBinding(self: *Transformer, name_span: Span) ?NodeIndex {
+    var found: ?NodeIndex = null;
+    for (self.generator_state_temp_refs.items) |pending| {
+        const binding = pending.binding;
+        if (binding.isNone() or @intFromEnum(binding) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(binding);
+        if (node.tag != .binding_identifier or node.data.string_ref.start != name_span.start or
+            node.data.string_ref.end != name_span.end) continue;
+        if (found) |prior| {
+            if (prior != binding) std.debug.panic("callback temp span has multiple producer binding nodes", .{});
+        } else found = binding;
+    }
+    return found;
+}
+
 pub fn hoistStateMachineTempsAndRestore(self: *Transformer, sm_body: NodeIndex, saved_counter: u32, span: Span, bindings: *std.ArrayListUnmanaged(HoistedStateTemp)) Error!NodeIndex {
     std.debug.assert(!sm_body.isNone());
     var body = sm_body;
@@ -369,7 +387,10 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
         if (tempSpanInSpans(name_span, skip_spans)) continue;
         if (has_block and bodyHasTopLevelVarBinding(self, body_node, name)) continue;
         try self.generated_temp_spans.append(self.allocator, name_span);
-        const binding = try es_helpers.makeSyntheticBinding(self, name_span);
+        const binding = if (state_bindings != null)
+            (generatedCallbackTempBinding(self, name_span) orelse try es_helpers.makeSyntheticBinding(self, name_span))
+        else
+            try es_helpers.makeSyntheticBinding(self, name_span);
         if (state_bindings) |bindings| try bindings.append(self.allocator, .{ .binding = binding, .name_span = name_span });
         if (body_node.tag == .program and self.semantic_edit_enabled) {
             try self.bindHoistedTemp(binding, name_span, span, .none);
