@@ -3079,17 +3079,18 @@ fn isSafePostSuperPropertyRead(
     return true;
 }
 
-/// A source-bound initializer may combine direct `super` reads with the same
-/// bounded unary, binary, and logical operators already allowed for ordinary
-/// constructor values. Conditional tests use the audited post-super condition
-/// allowlist, while their branches use this value set; calls and member chains
-/// keep their separate reanalysis boundary.
+/// A source-bound initializer may combine direct `super` and static `this`
+/// property reads with the same bounded unary, binary, and logical operators
+/// already allowed for ordinary constructor values. Conditional tests use the
+/// audited post-super condition allowlist, while their branches use this value
+/// set; calls and member chains keep their separate reanalysis boundary.
 fn isSafePostSuperInitializerValue(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     value_idx: ast_mod.NodeIndex,
 ) bool {
     if (isSafeConstructorValue(ast, semantic, value_idx) or
+        isSafeConstructorThisPropertyTarget(ast, value_idx) or
         isSafePostSuperPropertyRead(ast, semantic, value_idx)) return true;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
