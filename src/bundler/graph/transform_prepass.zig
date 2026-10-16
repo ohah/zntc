@@ -4297,8 +4297,6 @@ fn allSuperUsesBelongToRetainedOwners(
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
 ) bool {
     var has_super = false;
-    var has_retained_async_method_super = false;
-    var has_retained_sync_method_super = false;
     for (reachable_nodes) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len) return false;
         if (ast.nodes.items[raw_idx].tag != .super_expression) continue;
@@ -4322,10 +4320,6 @@ fn allSuperUsesBelongToRetainedOwners(
                     const is_retained_async_method = retained_async_functions.contains(current);
                     const is_retained_sync_method = retained_sync_super_methods.contains(current);
                     if (!is_retained_async_method and !is_retained_sync_method) return false;
-                    has_retained_async_method_super = has_retained_async_method_super or
-                        is_retained_async_method;
-                    has_retained_sync_method_super = has_retained_sync_method_super or
-                        is_retained_sync_method;
                     found_method = true;
                     break;
                 },
@@ -4340,10 +4334,7 @@ fn allSuperUsesBelongToRetainedOwners(
         }
         if (!found_method) return false;
     }
-    // Keep the existing async state-machine super path isolated from the new
-    // direct synchronous-method path until the two helper lifecycles share a
-    // single ownership proof.
-    return has_super and !(has_retained_async_method_super and has_retained_sync_method_super);
+    return has_super;
 }
 
 /// Async arrows keep their source arrow scope while the lowered generator is
@@ -4676,9 +4667,9 @@ fn awaitBelongsToRetainableAsyncFunction(
 /// their graph when they lower to either a native generator wrapper or an ES5
 /// state machine. Async arrows also retain their graph with audited lexical
 /// captures when their exact bindings and references are registered. When
-/// `super` is present, admit it only for plain class/object methods or when
-/// every use belongs to an audited async class/object method with a retained
-/// home-object graph. Its async-arrow captures must pass their own preflight.
+/// `super` is present, admit it only when every use belongs to a plain method
+/// or an audited async class/object method with a retained home-object graph.
+/// Async-arrow captures must pass their own preflight.
 /// Direct eval and parameter initializer arrows remain outside this subset.
 fn canRetainGraphForAuditedSyntaxSubset(
     allocator: std.mem.Allocator,
