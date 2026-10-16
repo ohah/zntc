@@ -519,8 +519,9 @@ pub fn Members(comptime Transformer: type) type {
                 _ = try es_helpers.trackKnownHoistedTempRef(self, ref, scope, .{ .read = true });
 
             for (cm.computed_key_temp_bindings.items) |memo| {
-                try self.trackHoistedTempRefInScope(memo.temp_span, memo.computed_ref, scope, .{ .read = true });
-                try self.bindSyntheticTempInScope(memo.binding, memo.temp_span, span, .variable_var, scope);
+                const symbol = (try self.declareSyntheticTempInScope(memo.binding, span, scope)) orelse
+                    std.debug.panic("computed class key temp binding has no exact SymbolId", .{});
+                try self.addSyntheticRefInScope(memo.computed_ref, symbol, scope, .{ .read = true });
             }
 
             for (cm.computed_accessor_key_bindings.items) |memo| {
