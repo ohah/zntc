@@ -1238,13 +1238,11 @@ fn isRetainableAssignmentTarget(
     return true;
 }
 
-/// Logical and exponentiation assignment lowering can preserve a direct
-/// `super` property target through the class/object super-property transformer,
-/// which registers its generated key/value temps and helper references in the
-/// edited graph. A caller may admit optional computed-key transforms only when
-/// the full graph preflight checks them; nested `super` and private access stay
-/// outside this target proof.
-fn isRetainableDirectSuperAssignmentTarget(
+/// A direct `super` property access can keep its exact home-object identity
+/// through the class/object super-property transformer. A caller may admit
+/// optional computed-key transforms only when the full graph preflight checks
+/// them; nested `super` and private access stay outside this proof.
+fn isRetainableDirectSuperPropertyAccess(
     ast: *const ast_mod.Ast,
     node_idx: ast_mod.NodeIndex,
     allow_optional_computed_key: bool,
@@ -3057,7 +3055,25 @@ fn isSafePostSuperExpressionStatement(
     const expression_idx = statement.data.unary.operand;
     return isSafeConstructorExpressionStatement(ast, semantic, statement) or
         isSafePostSuperCallExpression(ast, semantic, expression_idx, true) or
-        isSafePostSuperPropertyAssignment(ast, semantic, expression_idx);
+        isSafePostSuperPropertyAssignment(ast, semantic, expression_idx) or
+        isSafePostSuperPropertyRead(ast, semantic, expression_idx);
+}
+
+/// A bare direct `super` property read after initialization can retain its
+/// exact home-object reference. Keep computed keys to source-bound values so
+/// their single evaluation stays easy to audit.
+fn isSafePostSuperPropertyRead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    expression_idx: ast_mod.NodeIndex,
+) bool {
+    if (!isRetainableDirectSuperPropertyAccess(ast, expression_idx, false)) return false;
+    const member = ast.getNode(expression_idx);
+    if (member.tag == .computed_member_expression) {
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member.data.extra + 1]);
+        return isSafeConstructorValue(ast, semantic, property_idx);
+    }
+    return true;
 }
 
 /// A derived constructor can use an exact direct `super` property assignment
@@ -3081,7 +3097,7 @@ fn isSafePostSuperPropertyAssignment(
 
     const target_idx = assignment.data.binary.left;
     const value_idx = assignment.data.binary.right;
-    if (!isRetainableDirectSuperAssignmentTarget(ast, target_idx, false) or
+    if (!isRetainableDirectSuperPropertyAccess(ast, target_idx, false) or
         !isSafeConstructorValue(ast, semantic, value_idx)) return false;
 
     const target = ast.getNode(target_idx);
@@ -5376,7 +5392,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // Ordinary member temps and direct super-property temps
                     // are registered by their respective semantic editors.
                     if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left) and
-                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left, true))
+                        !isRetainableDirectSuperPropertyAccess(ast, node.data.binary.left, true))
                         return false;
                     found_lowered_exponentiation = true;
                 }
@@ -5386,7 +5402,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                     // Ordinary member temps and direct super-property temps are
                     // registered by their respective transform semantic editors.
                     if (!isRetainableAssignmentTarget(ast, semantic, node.data.binary.left) and
-                        !isRetainableDirectSuperAssignmentTarget(ast, node.data.binary.left, true))
+                        !isRetainableDirectSuperPropertyAccess(ast, node.data.binary.left, true))
                         return false;
                     found_lowered_logical_assignment = true;
                 }
