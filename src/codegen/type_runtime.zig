@@ -445,15 +445,17 @@ fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind
     const owners = self.options.generated_iife_scope_owner_map orelse return null;
     const scope = owners.get(@intFromEnum(owner_idx)) orelse return null;
     if (scope >= self.options.semantic_scope_maps.len) return null;
+    var selected: ?u32 = null;
     var scope_bindings = self.options.semantic_scope_maps[scope].iterator();
     while (scope_bindings.next()) |binding| {
         const raw_id = binding.value_ptr.*;
         if (raw_id >= self.options.semantic_symbols.len) continue;
         const symbol = self.options.semantic_symbols[raw_id];
         if (symbol.synthetic_kind != expected_kind or @intFromEnum(symbol.scope_id) != scope) continue;
-        return @intCast(raw_id);
+        if (selected != null) return null;
+        selected = @intCast(raw_id);
     }
-    return null;
+    return selected;
 }
 
 fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, placement: NamespacePlacement) !void {

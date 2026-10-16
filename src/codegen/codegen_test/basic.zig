@@ -20,6 +20,94 @@ const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer
 const Symbol = @import("../../semantic/symbol.zig").Symbol;
 const LinkingMetadata = @import("../../bundler/linker.zig").LinkingMetadata;
 
+fn expectAmbiguousGeneratedIifeParameter(
+    parent_allocator: std.mem.Allocator,
+    source: []const u8,
+    owner_kind: enum { namespace, enum_decl },
+    expected_error: anyerror,
+    expected_output: []const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    defer parser.deinit();
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    defer analyzer.deinit();
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |edited| {
+        analyzer.applyEdit(edited);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+    }
+
+    const parameter_kind = switch (owner_kind) {
+        .namespace => @import("../../semantic/symbol.zig").SyntheticKind.namespace_iife_parameter,
+        .enum_decl => @import("../../semantic/symbol.zig").SyntheticKind.enum_iife_parameter,
+    };
+    var parameter_id: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.synthetic_kind != parameter_kind) continue;
+        if (parameter_id != null) return error.AmbiguousGeneratedIifeParameterFixture;
+        parameter_id = raw;
+    }
+    const selected_parameter = parameter_id orelse return error.MissingGeneratedIifeParameterFixture;
+    const owner_scope = @intFromEnum(analyzer.symbols.items[selected_parameter].scope_id);
+
+    const semantic_options: CodegenOptions = .{
+        .semantic_symbol_ids = transformer.symbol_ids.items,
+        .semantic_symbols = analyzer.symbols.items,
+        .semantic_scope_maps = analyzer.scope_maps.items,
+        .generated_iife_scope_owner_map = &analyzer.scope_owner_map,
+        .require_generated_iife_symbols = true,
+    };
+    {
+        var valid_cg = Codegen.initWithOptions(allocator, transformer.ast, semantic_options);
+        defer valid_cg.deinit();
+        const valid_output = try valid_cg.generate(root);
+        try std.testing.expect(std.mem.indexOf(u8, valid_output, expected_output) != null);
+    }
+
+    const duplicate_name = "__ambiguousGeneratedIifeParameter";
+    const duplicate_name_span = try transformer.ast.addUniqueString(duplicate_name);
+    var duplicate = analyzer.symbols.items[selected_parameter];
+    duplicate.name = duplicate_name_span;
+    duplicate.synthetic_name = duplicate_name;
+    try analyzer.symbols.append(allocator, duplicate);
+    const duplicate_id = analyzer.symbols.items.len - 1;
+    try analyzer.scope_maps.items[owner_scope].put(allocator, duplicate_name, duplicate_id);
+
+    var ambiguous_options = semantic_options;
+    ambiguous_options.semantic_symbols = analyzer.symbols.items;
+    ambiguous_options.semantic_scope_maps = analyzer.scope_maps.items;
+    var ambiguous_cg = Codegen.initWithOptions(allocator, transformer.ast, ambiguous_options);
+    defer ambiguous_cg.deinit();
+    try std.testing.expectError(expected_error, ambiguous_cg.generate(root));
+}
+
 test "Codegen: empty program" {
     var r = try e2e(std.testing.allocator, "");
     defer r.deinit();
@@ -693,6 +781,23 @@ test "#4819 Codegen refuses to recover a missing namespace IIFE parameter from t
     });
     defer no_owner_cg.deinit();
     try std.testing.expectError(error.MissingNamespaceIifeParameterSymbol, no_owner_cg.generate(root));
+}
+
+test "#4819 Codegen rejects ambiguous namespace and enum IIFE parameter SymbolIds" {
+    try expectAmbiguousGeneratedIifeParameter(
+        std.testing.allocator,
+        "namespace N { export let value = 1; }",
+        .namespace,
+        error.MissingNamespaceIifeParameterSymbol,
+        "_N.value",
+    );
+    try expectAmbiguousGeneratedIifeParameter(
+        std.testing.allocator,
+        "enum Self { Self = 1 }",
+        .enum_decl,
+        error.MissingEnumIifeParameterSymbol,
+        "_Self[",
+    );
 }
 
 test "#4819 Codegen keeps namespace text fallback when semantic owners are absent" {
