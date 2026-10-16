@@ -2855,12 +2855,13 @@ fn isSimpleConstructorParameterGraphSafe(
     return isSafeConstructorParameterDefaultValue(ast, semantic, default_idx, params, parameter_index);
 }
 
-/// The retained explicit derived-constructor case is intentionally narrow: a
-/// zero-parameter constructor whose only statement is `super(...)`, with every
-/// argument in the audited constructor value allowlist. Lowering this
-/// shape adds tracked `_this`/`_newTarget` captures and derived-constructor
-/// runtime helpers. Call, member-access, and spread arguments, plus constructors
-/// with additional statements, remain on semantic reanalysis.
+/// The retained explicit derived-constructor case is intentionally narrow:
+/// simple identifier parameters with audited defaults, a leading `super(...)`
+/// whose arguments use the constructor value allowlist, then only audited
+/// post-super statements. Lowering this shape adds tracked `_this`/`_newTarget`
+/// captures and derived-constructor runtime helpers. Call, member-access, and
+/// spread arguments, plus unsupported post-super statements, remain on
+/// semantic reanalysis.
 fn isSafeSuperConstructorStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3055,7 +3056,40 @@ fn isSafePostSuperExpressionStatement(
     if (statement.tag != .expression_statement) return false;
     const expression_idx = statement.data.unary.operand;
     return isSafeConstructorExpressionStatement(ast, semantic, statement) or
-        isSafePostSuperCallExpression(ast, semantic, expression_idx, true);
+        isSafePostSuperCallExpression(ast, semantic, expression_idx, true) or
+        isSafePostSuperPropertyAssignment(ast, semantic, expression_idx);
+}
+
+/// A derived constructor can use an exact direct `super` property assignment
+/// after its first `super()` call. Keep this proof separate from the general
+/// constructor expression allowlist: before `super()` the receiver is still
+/// uninitialized, and nested scopes or effectful keys need their own graph
+/// proof. The transform registers the generated home-object reads and temps.
+fn isSafePostSuperPropertyAssignment(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    expression_idx: ast_mod.NodeIndex,
+) bool {
+    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    const assignment = ast.getNode(expression_idx);
+    if (assignment.tag != .assignment_expression) return false;
+    const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
+    switch (operator) {
+        .eq, .question2_eq, .pipe2_eq, .amp2_eq, .star2_eq => {},
+        else => return false,
+    }
+
+    const target_idx = assignment.data.binary.left;
+    const value_idx = assignment.data.binary.right;
+    if (!isRetainableDirectSuperAssignmentTarget(ast, target_idx, false) or
+        !isSafeConstructorValue(ast, semantic, value_idx)) return false;
+
+    const target = ast.getNode(target_idx);
+    if (target.tag == .computed_member_expression) {
+        const property_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[target.data.extra + 1]);
+        if (!isSafeConstructorValue(ast, semantic, property_idx)) return false;
+    }
+    return true;
 }
 
 fn isSafePostSuperSwitchExpressionStatement(
@@ -3327,13 +3361,13 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     if (body.tag != .block_statement) return false;
     const statements = body.data.list;
     if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
-    if (statements.len > 0 and params.data.list.len == 0) {
+    if (statements.len > 0) {
         const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
         if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
             // Keep the initialization boundary explicit: simple `var`
-            // declarations, direct `this` property writes, and bounded
-            // conditionals with simple branch blocks may follow, with an
-            // optional final return or throw.
+            // declarations, direct `this` writes, audited direct `super`
+            // property assignments, and bounded conditionals with simple
+            // branch blocks may follow, with an optional final return or throw.
             var completion_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
@@ -3519,11 +3553,11 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
 /// Anonymous expressions are safe because lowering registers the generated
 /// constructor self binding and call-check reference in the exact output
 /// function scope. Static fields must pass
-/// `isRetainableSimpleStaticClassField`; computed/escaped keys, class-self
-/// heritage reads, direct `super` in sync methods, and nested lexical `super`
-/// outside the audited async-class-method shapes stay excluded. Direct
-/// `super` in async instance and static methods stays within the owning method
-/// body; one synchronous arrow scope may also capture it. Async-arrow super uses
+/// `isRetainableSimpleStaticClassField`; unsafe computed/escaped keys, class-self
+/// heritage reads, and nested lexical `super` outside the audited async-class-
+/// method shapes stay excluded. Direct `super` in synchronous methods and async
+/// instance/static methods stays tied to the owning class home; one synchronous
+/// arrow scope may also capture an async method's use. Async-arrow super uses
 /// retain their separate single-arrow home-object preflight.
 fn isSimpleClass(
     allocator: std.mem.Allocator,
