@@ -295,8 +295,11 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const name_idx: NodeIndex = self.readNodeIdx(e, 0);
             const params_list = self.ast.functionParamsList(node);
+            const params_idx: NodeIndex = self.readNodeIdx(e, ast_mod.FunctionExtra.params);
             const body_idx: NodeIndex = self.readNodeIdx(e, 2);
             const flags = self.readU32(e, ast_mod.FunctionExtra.flags);
+            const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+            defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
 
             // An async generator is a new lexical `this`/`arguments` boundary.
             // In particular, a surrounding arrow must not make references in
@@ -310,8 +313,35 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_name = try self.visitNode(name_idx);
             const parameter_temp_start = self.temp_var_counter;
             const param_capture_use_start = self.lexical_capture_uses.items.len;
-            const new_params = try self.visitParameterList(.{ .start = params_list.start, .len = params_list.len });
-            const parameter_temp_end = self.temp_var_counter;
+            const state_parent_scope = self.stateMachineOwnerScope(source_owner);
+            var native_params_retained = saved_native_parameter_list_retained;
+            if (self.options.unsupported.default_params and es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
+                self,
+                params_list,
+            )) {
+                const parameter_environment = @import("parameter_environment.zig");
+                const params_dynamic_lookup = try parameter_environment.nodeHasDynamicLookup(self, params_idx);
+                const body_dynamic_lookup = try parameter_environment.functionBodyHasDynamicLookup(
+                    self,
+                    state_parent_scope,
+                    body_idx,
+                );
+                native_params_retained = params_dynamic_lookup or body_dynamic_lookup;
+            }
+            const parameter_visit = blk: {
+                const saved_parameter_output_owner = self.lowered_parameter_temp_output_owner;
+                const saved_parameter_scope = self.current_scope;
+                self.lowered_parameter_temp_output_owner = source_owner;
+                self.native_parameter_list_retained_for_dynamic_lookup = native_params_retained;
+                if (self.outputOwnedScope(params_idx)) |parameter_scope| self.current_scope = parameter_scope;
+                defer self.lowered_parameter_temp_output_owner = saved_parameter_output_owner;
+                defer self.current_scope = saved_parameter_scope;
+                defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
+                const new_params = try self.visitParameterList(.{ .start = params_list.start, .len = params_list.len });
+                break :blk .{ .params = new_params, .temp_end = self.temp_var_counter };
+            };
+            const new_params = parameter_visit.params;
+            const parameter_temp_end = parameter_visit.temp_end;
             const param_needs_this = self.needs_this_var;
             const param_needs_arguments = self.needs_arguments_var;
             const param_needs_new_target = self.hasLexicalCaptureSince(param_capture_use_start, arrow_env.capture.active_frame, .new_target_value);
@@ -422,7 +452,20 @@ pub fn ES2017(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = outer_body_list },
             });
-            const outer_body = try self.hoistParameterTempsAndRestore(unhoisted_body, parameter_temp_start, parameter_temp_end, span);
+            const outer_body = blk: {
+                const saved_native_before_parameter_hoist = self.native_parameter_list_retained_for_dynamic_lookup;
+                const saved_source_owner = self.synthetic_function_source_owner;
+                self.native_parameter_list_retained_for_dynamic_lookup = native_params_retained;
+                self.synthetic_function_source_owner = source_owner;
+                defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_before_parameter_hoist;
+                defer self.synthetic_function_source_owner = saved_source_owner;
+                break :blk try self.hoistParameterTempsAndRestore(
+                    unhoisted_body,
+                    parameter_temp_start,
+                    parameter_temp_end,
+                    span,
+                );
+            };
             const outer_params_node = try self.ast.addFormalParameters(new_params, span);
             const outer_flags = flags & ~(@as(u32, ast_mod.FunctionFlags.is_async) | @as(u32, ast_mod.FunctionFlags.is_generator));
             const outer_extra = try self.ast.addExtras(&.{

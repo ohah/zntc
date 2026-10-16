@@ -201,7 +201,7 @@ test "#4819 parameter optional-chain temp uses exact emitted storage scope" {
         "function get(){return {value:5}} async function* run(value=get()?.value){for await(const item of [1]) yield value+item} run().next();",
     };
     for (fixtures, 0..) |source, index| {
-        const expect_direct = index < 4 or index == 7;
+        const expect_direct = index < 4 or index == 5 or index == 7 or index >= 8;
         try checkParameterTempScopeImpl(source, .es5, false, expect_direct);
     }
     try checkParameterTempScopeImpl(
@@ -305,6 +305,34 @@ test "#4819 parameter eval keeps its output temp out of the function body scope"
     );
     try checkParameterTempScopeImplWithOutputScope(
         "function get(){return {value:5}} class C{async read(value=get()?.value){eval('0');return value}} new C().read();",
+        .es5,
+        true,
+        false,
+        false,
+    );
+    try checkParameterTempScopeImplWithOutputScope(
+        "function get(){return {value:5}} async function* read(value=(eval('0'),get()?.value)){yield value} read().next();",
+        .es5,
+        true,
+        false,
+        false,
+    );
+    try checkParameterTempScopeImplWithOutputScope(
+        "function get(){return {value:5}} async function* read(value=get()?.value){eval('0');yield value} read().next();",
+        .es5,
+        true,
+        false,
+        false,
+    );
+    try checkParameterTempScopeImplWithOutputScope(
+        "function get(){return {value:5}} class C{async *read(value=(eval('0'),get()?.value)){yield value}} new C().read().next();",
+        .es5,
+        true,
+        false,
+        false,
+    );
+    try checkParameterTempScopeImplWithOutputScope(
+        "function get(){return {value:5}} class C{async *read(value=get()?.value){eval('0');yield value}} new C().read().next();",
         .es5,
         true,
         false,
