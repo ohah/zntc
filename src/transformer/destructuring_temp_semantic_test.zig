@@ -6,6 +6,85 @@ const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const ast_walk = @import("../parser/ast_walk.zig");
 const ESTarget = @import("compat.zig").ESTarget;
+const es_helpers = @import("es_helpers.zig");
+
+test "#4819 assignment destructuring temp refs receive their producer SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "function run() { let target = 0; ({ target } = input); }";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const source_symbol_count = analyzer.symbols.items.len;
+
+    var function_scope: ?u32 = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag == .function_declaration)
+            function_scope = entry.value_ptr.*;
+    }
+    const owner = function_scope orelse return error.MissingFunctionScope;
+    var assignment: ?@import("../parser/ast.zig").NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .assignment_expression) continue;
+        if (parser.ast.getNode(node.data.binary.left).tag != .object_assignment_target) continue;
+        assignment = @enumFromInt(raw);
+        break;
+    }
+    const assignment_idx = assignment orelse return error.MissingDestructuringAssignment;
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @enumFromInt(owner);
+
+    const lowerer = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
+    _ = try lowerer.lowerDestructuringAssignment(&transformer, parser.ast.getNode(assignment_idx), false);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    var name_span: ?@import("../lexer/token.zig").Span = null;
+    var span_it = transformer.temp_span_by_counter.valueIterator();
+    while (span_it.next()) |span| name_span = span.*;
+    const temp_span = name_span orelse return error.MissingDestructuringTemp;
+    const id = transformer.lookupSyntheticTempSymbol(temp_span, transformer.current_scope) orelse
+        return error.MissingDestructuringTempSymbol;
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
+    var reads: usize = 0;
+    var writes: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (node.data.string_ref.start != temp_span.start or node.data.string_ref.end != temp_span.end) continue;
+        try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(@enumFromInt(raw)));
+        const reference = (try editor.referenceForNode(@enumFromInt(raw))) orelse return error.MissingDestructuringTempReference;
+        try std.testing.expectEqual(id, reference.symbol_id);
+        try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @enumFromInt(owner)), reference.scope_id);
+        if (reference.flags.read) reads += 1;
+        if (reference.flags.write) writes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), reads);
+    try std.testing.expectEqual(@as(usize, 1), writes);
+
+    const binding = try es_helpers.makeSyntheticBinding(&transformer, temp_span);
+    try transformer.bindHoistedTemp(binding, temp_span, parser.ast.getNode(assignment_idx).span, @enumFromInt(owner));
+    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(binding));
+    try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+}
 
 fn checkStandaloneDestructuringTempNameMarking(source: []const u8, expected_late: bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
