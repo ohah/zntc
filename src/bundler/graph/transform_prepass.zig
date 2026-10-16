@@ -3079,6 +3079,26 @@ fn isSafePostSuperPropertyRead(
     return true;
 }
 
+fn isSafePostSuperThisPropertyRead(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    expression_idx: ast_mod.NodeIndex,
+) bool {
+    if (isSafeConstructorThisPropertyTarget(ast, expression_idx)) return true;
+    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len or
+        ast_mod.spineHasOptionalChain(ast, expression_idx)) return false;
+    const member = ast.getNode(expression_idx);
+    if (member.tag != .computed_member_expression) return false;
+    const extras = ast.extra_data.items;
+    const extra = member.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+    return !receiver_idx.isNone() and @intFromEnum(receiver_idx) < ast.nodes.items.len and
+        ast.getNode(receiver_idx).tag == .this_expression and
+        isSafeConstructorValue(ast, semantic, property_idx);
+}
+
 /// A source-bound initializer may combine direct `super` and static `this`
 /// property reads with the same bounded unary, binary, and logical operators
 /// already allowed for ordinary constructor values. Conditional tests use the
@@ -3090,7 +3110,7 @@ fn isSafePostSuperInitializerValue(
     value_idx: ast_mod.NodeIndex,
 ) bool {
     if (isSafeConstructorValue(ast, semantic, value_idx) or
-        isSafeConstructorThisPropertyTarget(ast, value_idx) or
+        isSafePostSuperThisPropertyRead(ast, semantic, value_idx) or
         isSafePostSuperPropertyRead(ast, semantic, value_idx)) return true;
     if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
