@@ -2905,7 +2905,7 @@ fn isSafeConstructorThisPropertyAssignmentStatement(
     return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
 }
 
-fn isSafeDerivedConstructorReturnStatement(
+fn isSafePostSuperDerivedConstructorReturnStatement(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
@@ -2914,7 +2914,7 @@ fn isSafeDerivedConstructorReturnStatement(
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .return_statement) return false;
     const value_idx = statement.data.unary.operand;
-    return value_idx.isNone() or isSafeConstructorValue(ast, semantic, value_idx);
+    return value_idx.isNone() or isSafePostSuperInitializerValue(ast, semantic, value_idx);
 }
 
 fn isSafeDerivedConstructorThrowStatement(
@@ -2943,7 +2943,7 @@ fn isSafePostSuperConditionalBranch(
             if (raw_statement_idx >= ast.nodes.items.len) return false;
             if (index + 1 == statements.len) {
                 const final_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
-                if (isSafeDerivedConstructorReturnStatement(ast, semantic, final_statement) or
+                if (isSafePostSuperDerivedConstructorReturnStatement(ast, semantic, final_statement) or
                     isSafeDerivedConstructorThrowStatement(ast, semantic, final_statement)) return true;
             }
             const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
@@ -2967,7 +2967,7 @@ fn isSafePostSuperConditionalBranch(
         return true;
     }
     if (statement.tag == .return_statement)
-        return isSafeDerivedConstructorReturnStatement(ast, semantic, branch_idx);
+        return isSafePostSuperDerivedConstructorReturnStatement(ast, semantic, branch_idx);
     if (statement.tag == .throw_statement)
         return isSafeDerivedConstructorThrowStatement(ast, semantic, branch_idx);
     return isSafeConstructorThisPropertyAssignmentStatement(ast, semantic, branch_idx);
@@ -3278,7 +3278,7 @@ fn isSafePostSuperSwitchCase(
         const case_statement_idx: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
         const case_statement = ast.getNode(case_statement_idx);
         if (index + 1 == statements_len) {
-            if (isSafeDerivedConstructorReturnStatement(ast, semantic, case_statement_idx) or
+            if (isSafePostSuperDerivedConstructorReturnStatement(ast, semantic, case_statement_idx) or
                 isSafeDerivedConstructorThrowStatement(ast, semantic, case_statement_idx)) return true;
             if (case_statement.tag == .break_statement and case_statement.data.unary.operand.isNone()) return true;
         }
@@ -3490,7 +3490,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
                 if (!completion_seen and (ast.getNode(following_statement).tag == .empty_statement or
                     ast.getNode(following_statement).tag == .debugger_statement)) continue;
                 if (!completion_seen and
-                    (isSafeDerivedConstructorReturnStatement(ast, semantic, following_statement) or
+                    (isSafePostSuperDerivedConstructorReturnStatement(ast, semantic, following_statement) or
                         isSafeDerivedConstructorThrowStatement(ast, semantic, following_statement)))
                 {
                     completion_seen = true;
