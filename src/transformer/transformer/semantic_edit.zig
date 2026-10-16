@@ -2995,11 +2995,21 @@ fn bindRuntimeHelperImportWithId(
     try self.runtime_helper_import_bindings.put(self.allocator, raw_id, @intFromEnum(local));
 }
 
-/// nullish lowering의 temp 참조는 hoist 선언보다 먼저 생성된다. 이름 대신
-/// makeTempVarSpan의 고유 Span을 기록하고 선언 시점에 SymbolId를 연결한다.
+/// Generator lowering already knows a producer's SymbolId. Keep that identity
+/// on the reference node immediately and defer only its final output ScopeId.
 pub fn trackGeneratorStateReference(self: *Transformer, node: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
     if (!self.semantic_edit_enabled or !self.options.unsupported.generator) return;
     const symbol = id orelse return;
+    const raw_node = @intFromEnum(node);
+    if (node.isNone() or raw_node >= self.ast.nodes.items.len)
+        std.debug.panic("generator state reference has an invalid producer node", .{});
+    const tag = self.ast.getNode(node).tag;
+    if (tag != .identifier_reference and tag != .assignment_target_identifier)
+        std.debug.panic("generator state reference producer is not an identifier reference", .{});
+    if (self.getSymbolIdAt(node)) |existing| {
+        if (existing != @intFromEnum(symbol))
+            std.debug.panic("generator state reference disagrees with its producer SymbolId", .{});
+    } else try setSymbolId(self, node, symbol);
     try self.generator_state_semantic_refs.append(self.allocator, .{
         .node = node,
         .symbol_id = @intFromEnum(symbol),
