@@ -7070,6 +7070,36 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '9 10 2 2 true true\n',
       );
 
+      const derivedConstructorSuperPropertyReturn = run(
+        [
+          'var reads = 0, receiverReads = 0;',
+          'class Base {',
+          '  constructor(value) { this.value = value; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.value; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(value) { super(value); return super.current; }',
+          '}',
+          'var replacement = { kind: "object" };',
+          'var objectResult = new Child(replacement);',
+          'var undefinedResult = new Child(undefined);',
+          'console.log(objectResult === replacement, objectResult.kind, undefinedResult instanceof Child, undefinedResult.value, reads, receiverReads);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyReturn.status,
+        derivedConstructorSuperPropertyReturn.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyReturn.stderr);
+      const derivedConstructorSuperPropertyReturnOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyReturnOutput.status,
+        derivedConstructorSuperPropertyReturnOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyReturnOutput.stdout).toBe(
+        'true object true undefined 2 2\n',
+      );
+
       const hostileDerivedConstructorSuperReadVariants: Array<{
         name: string;
         constructor: string;
@@ -7483,6 +7513,84 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             '}',
             'class Child extends Base { ' + variant.constructor + ' }',
             'try { var child = new Child(true, 2); console.log("ok", child.result, child.slot, reads, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }',
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorSuperReturnVariants: Array<{
+        name: string;
+        returnValue: string;
+        expected: string;
+      }> = [
+        {
+          name: 'return call expression',
+          returnValue: 'getValue()',
+          expected: 'ok true false undefined true false 0 0 1\n',
+        },
+        {
+          name: 'return direct super method call',
+          returnValue: 'super.read()',
+          expected: 'ok true false undefined true false 0 0 1\n',
+        },
+        {
+          name: 'return super read with effectful computed key',
+          returnValue: 'super[getKey()]',
+          expected: 'ok true false undefined true false 1 1 0\n',
+        },
+        {
+          name: 'return super read with member computed key',
+          returnValue: 'super[keys.name]',
+          expected: 'ok true false undefined true false 1 0 0\n',
+        },
+        {
+          name: 'return super read with optional computed key',
+          returnValue: 'super[keys?.name]',
+          expected: 'ok true false undefined true false 1 0 0\n',
+        },
+        {
+          name: 'return nested arrow super read',
+          returnValue: '(() => super.current)()',
+          expected: 'ok true false undefined true false 1 0 0\n',
+        },
+        {
+          name: 'return member from super value',
+          returnValue: 'super.current.value',
+          expected: 'ok false true nested false false 1 0 0\n',
+        },
+        {
+          name: 'return call around super read',
+          returnValue: 'consume(super.current)',
+          expected: 'ok true false undefined true false 1 0 1\n',
+        },
+        {
+          name: 'return exponentiation result',
+          returnValue: 'super.current ** 2',
+          expected: 'TypeError\n',
+        },
+        {
+          name: 'return logical expression with call',
+          returnValue: 'super.current && consume(value)',
+          expected: 'ok true false undefined true false 1 0 1\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperReturnVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
+            'var nested = { kind: "nested" }, replacement = { value: nested };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function getValue() { callCount++; return replacement; }',
+            'function consume(value) { callCount++; return value; }',
+            'class Base {',
+            '  constructor(value) { this.value = value; }',
+            '  read() { callCount++; return this.value; }',
+            '  get current() { reads++; return this.value; }',
+            '}',
+            'class Child extends Base { constructor(value) { super(value); return ' +
+              variant.returnValue +
+              '; } }',
+            'try { var child = new Child(replacement); console.log("ok", child === replacement, child === nested, child.kind, child.value === nested, child instanceof Child, reads, keyCalls, callCount); } catch (error) { console.log(error.name); }',
           ].join('\n'),
         );
         expectReanalyzedOutput(result, variant.expected, variant.name);
