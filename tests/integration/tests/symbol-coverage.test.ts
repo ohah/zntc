@@ -7037,6 +7037,39 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '9 true false 9 2 2 true true\n',
       );
 
+      const derivedConstructorSuperPropertyConditionalInitializers = run(
+        [
+          'var reads = 0, receiverReads = 0;',
+          'class Base {',
+          '  constructor() { this.slot = 9; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.slot; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(flag) {',
+          '    super();',
+          '    var selected = flag ? super.current : super.current + 1;',
+          '    this.result = selected;',
+          '  }',
+          '}',
+          'var first = new Child(true);',
+          'var second = new Child(false);',
+          'console.log(first.result, second.result, reads, receiverReads, first instanceof Child, second instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyConditionalInitializers.status,
+        derivedConstructorSuperPropertyConditionalInitializers.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyConditionalInitializers.stderr);
+      const derivedConstructorSuperPropertyConditionalInitializersOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyConditionalInitializersOutput.status,
+        derivedConstructorSuperPropertyConditionalInitializersOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyConditionalInitializersOutput.stdout).toBe(
+        '9 10 2 2 true true\n',
+      );
+
       const hostileDerivedConstructorSuperReadVariants: Array<{
         name: string;
         constructor: string;
@@ -7161,9 +7194,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: 'ok 9 1 0 true\n',
         },
         {
-          name: 'conditional initializer includes super reads',
+          name: 'conditional initializer has effectful branch',
           constructor:
-            'constructor(key) { super(); var value = key ? super.current : super.other; this.result = value; }',
+            'constructor(key) { super(); var value = key ? super.current : getKey(); this.result = value; }',
           expected: 'ok 9 1 0 true\n',
         },
         {
@@ -7365,6 +7398,91 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             '}',
             'class Child extends Base { ' + variant.constructor + ' }',
             'try { var child = new Child("current", 2); console.log("ok", child.result, child.slot, reads, writes, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }',
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorSuperConditionalInitializerVariants: Array<{
+        name: string;
+        constructor: string;
+        expected: string;
+      }> = [
+        {
+          name: 'conditional initializer has effectful test',
+          constructor:
+            'constructor(key, amount) { super(); var result = choose() ? super.current : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 0 1 true\n',
+        },
+        {
+          name: 'conditional initializer has call in true branch',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? consume(super.current) : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 0 1 true\n',
+        },
+        {
+          name: 'conditional initializer has call in false branch',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super.current : consume(super.current + 1); this.result = result; }',
+          expected: 'ok 9 9 1 0 0 true\n',
+        },
+        {
+          name: 'conditional true branch has effectful computed key',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super[getKey()] : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 1 0 true\n',
+        },
+        {
+          name: 'conditional false branch has effectful computed key',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super.current : super[getKey()]; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 true\n',
+        },
+        {
+          name: 'conditional branch has computed member key',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super[keys.name] : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 true\n',
+        },
+        {
+          name: 'conditional branch has optional computed key',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super[keys?.name] : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 true\n',
+        },
+        {
+          name: 'conditional initializer invokes nested arrow',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? (() => super.current)() : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 true\n',
+        },
+        {
+          name: 'conditional branch contains assignment',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? (this.copy = super.current) : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 true\n',
+        },
+        {
+          name: 'conditional branch reads a member of super value',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super.record().value : super.current + 1; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 true\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperConditionalInitializerVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function consume(value) { callCount++; return value; }',
+            'function choose() { callCount++; return true; }',
+            'class Base {',
+            '  constructor() { this.slot = 9; }',
+            '  get current() { reads++; return this.slot; }',
+            '  record() { reads++; return { value: this.slot }; }',
+            '}',
+            'class Child extends Base { ' + variant.constructor + ' }',
+            'try { var child = new Child(true, 2); console.log("ok", child.result, child.slot, reads, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }',
           ].join('\n'),
         );
         expectReanalyzedOutput(result, variant.expected, variant.name);
