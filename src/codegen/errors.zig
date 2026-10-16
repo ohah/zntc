@@ -3,6 +3,7 @@
 pub const Error = error{
     MissingEnumIifeParameterSymbol,
     MissingNamespaceIifeParameterSymbol,
+    MissingGeneratedIifeParameterFinalName,
     InvalidNamespacePrefixSymbol,
     InvalidEnumIifeMemberSymbol,
     MissingNamespaceDeclarationSymbol,
