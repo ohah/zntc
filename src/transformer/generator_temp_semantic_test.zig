@@ -9,6 +9,7 @@ const TransformOptions = @import("transformer.zig").TransformOptions;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const output_scope = @import("output_scope_test_utils.zig");
 const es_helpers = @import("es_helpers.zig");
+const BlockScoping = @import("es2015_block_scoping.zig").ES2015BlockScoping(Transformer);
 
 fn checkGeneratedTemps(source: []const u8, target: TransformOptions.compat.ESTarget, expected: usize, has_state: bool) !void {
     return checkGeneratedTempsWithBlock(source, target, expected, has_state, false);
@@ -553,6 +554,114 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
             callback_scope_found = true;
     }
     try std.testing.expect(callback_scope_found);
+}
+
+test "#4819 callback temp reference binds through its exact producer node" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const source_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+
+    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const empty_list = try transformer.ast.addNodeList(&.{});
+    const owner_params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
+    const owner_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = empty_list },
+    });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(owner_params), @intFromEnum(owner_body), 0, none });
+    const owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = owner_extra },
+    });
+    const owner_scope = try transformer.addGeneratedFunctionScope(transformer.programScope(), owner);
+    transformer.current_scope = owner_scope;
+    transformer.state_machine_depth = 1;
+    defer transformer.state_machine_depth = 0;
+
+    const return_statement = try transformer.ast.addNode(.{
+        .tag = .return_statement,
+        .span = .EMPTY,
+        .data = .{ .unary = .{ .operand = .none, .flags = 0 } },
+    });
+    var flow = BlockScoping.FlowResult{ .has_return = true };
+    defer flow.labels.deinit(allocator);
+    const loop = try BlockScoping.buildLoopClosureWithFlow(
+        &transformer,
+        return_statement,
+        &.{},
+        &flow,
+        null,
+        .EMPTY,
+        false,
+        false,
+        false,
+        null,
+        &.{},
+        &.{},
+        &.{},
+        .none,
+        .none,
+    );
+    try std.testing.expectEqual(@as(usize, 2), transformer.generator_state_temp_refs.items.len);
+    const binding = transformer.generator_state_temp_refs.items[0].binding;
+    try std.testing.expectEqual(binding, transformer.generator_state_temp_refs.items[1].binding);
+    for (transformer.generator_state_temp_refs.items) |pending| {
+        try std.testing.expectEqual(binding, pending.binding);
+        for (transformer.pending_temp_refs.items) |by_name| {
+            try std.testing.expect(by_name.node != pending.reference);
+        }
+    }
+
+    const callback_body_list = try transformer.ast.addNodeList(&.{ loop.loop_fn, loop.call_and_check });
+    const callback_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = callback_body_list },
+    });
+    const state_name = try transformer.ast.addString("_state");
+    const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
+    const callback_params_list = try transformer.ast.addNodeList(&.{state_parameter});
+    const callback_params = try transformer.ast.addFormalParameters(callback_params_list, .EMPTY);
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(callback_params), @intFromEnum(callback_body), 0, none });
+    const callback = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = callback_extra },
+    });
+    try transformer.bindGeneratedState(owner_scope, owner_scope, callback, state_parameter, 0, &.{}, &.{}, .EMPTY);
+
+    const id_raw = transformer.getSymbolIdAt(binding) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+    const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
+    const id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(id_raw);
+    const callback_scope_raw = editor.scope_owner_map.get(@intFromEnum(callback)).?;
+    for (transformer.generator_state_temp_refs.items) |pending| {
+        try std.testing.expectEqual(@as(?u32, id_raw), transformer.getSymbolIdAt(pending.reference));
+        const reference_record = (try editor.referenceForNode(pending.reference)) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(id, reference_record.symbol_id);
+        try std.testing.expectEqual(callback_scope_raw, @intFromEnum(reference_record.scope_id));
+    }
+    try std.testing.expectEqual(@as(usize, source_symbol_count + 3), editor.symbols.items.len);
 }
 
 test "#4819 generator state-machine keeps late using temps for exact final naming" {

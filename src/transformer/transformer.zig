@@ -97,6 +97,15 @@ pub const GeneratedTempBinding = struct {
     owner_scope: ScopeId = .none,
 };
 
+/// Generated state-callback references retain their producer-selected binding
+/// node until the callback's final scope exists.
+pub const GeneratedTempReference = struct {
+    binding: NodeIndex,
+    reference: NodeIndex,
+    scope: ScopeId,
+    flags: @import("../semantic/symbol.zig").ReferenceFlags,
+};
+
 pub const ParameterBodyVarCopy = struct {
     function_scope: ScopeId,
     body_var_symbol_id: u32,
@@ -362,6 +371,9 @@ pub const Transformer = struct {
     /// They are registered only after the callback scope exists, so references
     /// can be attached with their final output ScopeIds.
     generator_state_bindings: std.ArrayListUnmanaged(GeneratedTempBinding) = .empty,
+    /// Exact pending uses for generated callback temps; these do not use the
+    /// temp-name reference chain.
+    generator_state_temp_refs: std.ArrayListUnmanaged(GeneratedTempReference) = .empty,
     generated_body_binding_moves: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Lowering helpers can run while their output is being assembled into a
     /// generated state-machine callback. Their temps must wait for that
@@ -1017,6 +1029,7 @@ pub const Transformer = struct {
     pub const bindRuntimeHelperImportById = @import("transformer/semantic_edit.zig").bindRuntimeHelperImportById;
     pub const trackHoistedTempRef = @import("transformer/semantic_edit.zig").trackHoistedTempRef;
     pub const trackHoistedTempRefInScope = @import("transformer/semantic_edit.zig").trackHoistedTempRefInScope;
+    pub const trackGeneratedCallbackTempReference = @import("transformer/semantic_edit.zig").trackGeneratedCallbackTempReference;
     pub const trackSyntheticTempReference = @import("transformer/semantic_edit.zig").trackSyntheticTempReference;
     pub const trackSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackSyntheticTempReferenceInScope;
     pub const trackKnownSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackKnownSyntheticTempReferenceInScope;
