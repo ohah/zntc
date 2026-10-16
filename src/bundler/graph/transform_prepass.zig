@@ -2983,7 +2983,8 @@ fn isSafePostSuperCondition(
     // Reads may invoke getters or Proxy traps. The retained AST preserves each
     // operand's evaluation count and short-circuit order through initialized this.
     if (isSafeConstructorValue(ast, semantic, condition_idx) or
-        isSafeConstructorThisPropertyTarget(ast, condition_idx)) return true;
+        isSafeConstructorThisPropertyTarget(ast, condition_idx) or
+        isSafePostSuperPropertyRead(ast, semantic, condition_idx)) return true;
     if (condition_idx.isNone() or @intFromEnum(condition_idx) >= ast.nodes.items.len) return false;
     const condition = ast.getNode(condition_idx);
     if (condition.tag == .binary_expression) {
@@ -3080,8 +3081,9 @@ fn isSafePostSuperPropertyRead(
 
 /// A source-bound initializer may combine direct `super` reads with the same
 /// bounded binary and logical operators already allowed for ordinary
-/// constructor values. Conditional tests and branches use this same bounded
-/// value set; calls and member chains keep their separate reanalysis boundary.
+/// constructor values. Conditional tests use the audited post-super condition
+/// allowlist, while their branches use this value set; calls and member chains
+/// keep their separate reanalysis boundary.
 fn isSafePostSuperInitializerValue(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3098,7 +3100,7 @@ fn isSafePostSuperInitializerValue(
             isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
     }
     if (value.tag == .conditional_expression) {
-        return isSafePostSuperInitializerValue(ast, semantic, value.data.ternary.a) and
+        return isSafePostSuperCondition(ast, semantic, value.data.ternary.a) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.ternary.b) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.ternary.c);
     }
