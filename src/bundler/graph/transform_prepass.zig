@@ -3080,8 +3080,8 @@ fn isSafePostSuperPropertyRead(
 
 /// A source-bound initializer may combine direct `super` reads with the same
 /// bounded binary and logical operators already allowed for ordinary
-/// constructor values. Conditional branches may use a source-bound pure test;
-/// calls and member chains keep their separate reanalysis boundary.
+/// constructor values. Conditional tests and branches use this same bounded
+/// value set; calls and member chains keep their separate reanalysis boundary.
 fn isSafePostSuperInitializerValue(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3098,7 +3098,7 @@ fn isSafePostSuperInitializerValue(
             isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
     }
     if (value.tag == .conditional_expression) {
-        return isSafeConstructorValue(ast, semantic, value.data.ternary.a) and
+        return isSafePostSuperInitializerValue(ast, semantic, value.data.ternary.a) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.ternary.b) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.ternary.c);
     }
