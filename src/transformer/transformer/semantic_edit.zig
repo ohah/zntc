@@ -1842,6 +1842,18 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     if (self.getSymbolIdAt(temp.binding)) |existing| {
         if (existing != @intFromEnum(id)) std.debug.panic("state callback temp binding changed SymbolId", .{});
     } else try setSymbolId(self, temp.binding, id);
+    for (self.generator_state_temp_refs.items) |pending| {
+        if (pending.binding != temp.binding or !live.contains(@intFromEnum(pending.reference))) continue;
+        const reference_scope = try generatedTempRefScope(self, source_scope, callback_scope, pending.scope, live_scopes);
+        if (editor.referenceForNode(pending.reference) catch |err| return editError(err)) |existing| {
+            if (existing.symbol_id != id or existing.scope_id != reference_scope or
+                existing.flags.read != pending.flags.read or existing.flags.write != pending.flags.write)
+                std.debug.panic("generated callback temp reference already has a different identity", .{});
+        } else {
+            editor.addReference(pending.reference, id, reference_scope, pending.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        }
+        try setSymbolId(self, pending.reference, id);
+    }
     // Source temps carry producer identity. Only callback temps created after
     // state-machine assembly lack it and may take the exact-scope late-name
     // path here.

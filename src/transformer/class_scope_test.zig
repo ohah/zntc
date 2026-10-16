@@ -157,7 +157,24 @@ test "#4819 ES5 computed super assignment and update temps have exact identity" 
     transformer.synthetic_idents = .empty;
 
     const root = try transformer.transform();
+    try std.testing.expect(transformer.generator_state_temp_refs.items.len > 0);
+    for (transformer.generator_state_temp_refs.items) |pending| {
+        for (transformer.pending_temp_refs.items) |by_name| {
+            try std.testing.expect(by_name.node != pending.reference);
+        }
+    }
     const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    defer allocator.free(reachable);
+    var live_exact_refs: usize = 0;
+    for (transformer.generator_state_temp_refs.items) |pending| {
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(pending.binding)) != null);
+        if (std.mem.indexOfScalar(u32, reachable, @intFromEnum(pending.reference)) == null) continue;
+        const binding_id = transformer.getSymbolIdAt(pending.binding) orelse return error.MissingSuperTempSymbol;
+        try std.testing.expectEqual(@as(?u32, binding_id), transformer.getSymbolIdAt(pending.reference));
+        live_exact_refs += 1;
+    }
+    try std.testing.expect(live_exact_refs > 0);
     var report = try coverage.checkStrict(
         allocator,
         transformer.ast,

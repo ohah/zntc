@@ -21,6 +21,7 @@ pub fn SuperProps(comptime Transformer: type) type {
         const SuperTemp = struct {
             name_span: Span,
             binding: ?Transformer.SyntheticBinding,
+            callback_binding: NodeIndex = .none,
         };
 
         fn beginSuperTemp(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!SuperTemp {
@@ -28,7 +29,11 @@ pub fn SuperProps(comptime Transformer: type) type {
                 try self.createSyntheticTempBinding(name_span, declaration_span, self.nearestVarScope(self.current_scope))
             else
                 null;
-            return .{ .name_span = name_span, .binding = binding };
+            const callback_binding = if (self.semantic_edit_enabled and self.state_machine_depth > 0)
+                try es_helpers.makeExactSyntheticBindingFromSpan(self, name_span)
+            else
+                .none;
+            return .{ .name_span = name_span, .binding = binding, .callback_binding = callback_binding };
         }
 
         fn registerSuperTempRef(self: *Transformer, temp: SuperTemp, ref: NodeIndex, flags: ReferenceFlags) Transformer.Error!void {
@@ -36,10 +41,12 @@ pub fn SuperProps(comptime Transformer: type) type {
             if (temp.binding) |binding| {
                 const symbol_id = binding.symbol_id orelse std.debug.panic("computed super temp has no exact SymbolId", .{});
                 try self.addSyntheticRefInScope(ref, symbol_id, self.current_scope, flags);
+            } else if (!temp.callback_binding.isNone()) {
+                try self.trackGeneratedCallbackTempReference(temp.callback_binding, ref, self.current_scope, flags);
             } else {
                 // State-machine callback scope is created after this expression is
-                // lowered. Keep its exact name span and attach the refs when that
-                // callback's owner scope is known.
+                // lowered only when semantic editing is disabled. Preserve the
+                // legacy spelling-based lowering for that isolated path.
                 try self.trackHoistedTempRefInScope(temp.name_span, ref, self.current_scope, flags);
             }
         }
@@ -47,6 +54,8 @@ pub fn SuperProps(comptime Transformer: type) type {
         fn makeSuperTempRef(self: *Transformer, temp: SuperTemp, node_span: Span, flags: ReferenceFlags) Transformer.Error!NodeIndex {
             const ref = if (temp.binding) |binding|
                 try es_helpers.makeExactSyntheticRefAt(self, binding.name_span, node_span)
+            else if (!temp.callback_binding.isNone())
+                try es_helpers.makeExactSyntheticRefAt(self, temp.name_span, node_span)
             else
                 try es_helpers.makeTempVarRef(self, temp.name_span, node_span);
             try registerSuperTempRef(self, temp, ref, flags);
