@@ -133,4 +133,40 @@ describe('parameter optional-chain temp scope (#4819)', () => {
       }
     }
   }
+
+  for (const bundle of [false, true]) {
+    for (const minify of [false, true]) {
+      test(`lowered arrow default temp is reentrant-safe, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+        const source = `let calls = 0;
+          let read;
+          function get() { return { value: ++calls }; }
+          function key() { if (calls === 1) read(); return 'value'; }
+          read = (value = get()?.[key()]) => value;
+          console.log(read());`;
+        const dir = await createFixture({
+          'input.mjs': source,
+          'package.json': '{"type":"module"}',
+        });
+        cleanup = dir.cleanup;
+        const input = join(dir.dir, 'input.mjs');
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, native.stderr).toBe(0);
+        expect(native.stdout).toBe('1\n');
+
+        const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
+        const result = await runZntcInDir(dir.dir, [
+          ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+          'input.mjs',
+          '--target=es5',
+          ...(minify ? ['--minify'] : []),
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(native.stdout);
+      });
+    }
+  }
 });

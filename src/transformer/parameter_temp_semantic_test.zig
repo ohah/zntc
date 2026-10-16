@@ -30,11 +30,15 @@ fn checkParameterTempScopeImpl(source: []const u8, target: ESTarget, native_defa
     while (owners.next()) |owner| {
         const node = parser.ast.nodes.items[owner.key_ptr.*];
         if (node.tag != .method_definition and node.tag != .function_declaration and
-            node.tag != .function_expression) continue;
+            node.tag != .function_expression and node.tag != .arrow_function_expression) continue;
         if (parser.ast.functionParamsList(node).len == 0) continue;
         try std.testing.expect(function_scope == null);
         function_scope = owner.value_ptr.*;
-        const params = parser.ast.readExtraNode(node.data.extra, 1);
+        const params_slot = if (node.tag == .arrow_function_expression)
+            @import("../parser/ast.zig").ArrowExtra.params
+        else
+            1;
+        const params = parser.ast.readExtraNode(node.data.extra, params_slot);
         parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(params));
     }
     // A retained default value is evaluated in its parameter environment, so
@@ -118,6 +122,57 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults
     return checkParameterTempScopeImpl(source, target, native_defaults, null);
 }
 
+fn expectArrowParameterTempDirectReservation(source: []const u8, target: ESTarget, expected: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var arrow_scope: ?u32 = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const node = parser.ast.nodes.items[entry.key_ptr.*];
+        if (node.tag != .arrow_function_expression or parser.ast.functionParamsList(node).len == 0) continue;
+        try std.testing.expect(arrow_scope == null);
+        arrow_scope = entry.value_ptr.*;
+    }
+    const expected_scope = arrow_scope orelse return error.MissingArrowScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(target),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+
+    const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
+    var reserved = false;
+    var ids = transformer.synthetic_temp_symbol_ids.valueIterator();
+    while (ids.next()) |raw_id| {
+        if (raw_id.* >= editor.symbols.items.len) continue;
+        const symbol = editor.symbols.items[raw_id.*];
+        if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "_a") and
+            @intFromEnum(symbol.scope_id) == expected_scope)
+        {
+            reserved = true;
+            break;
+        }
+    }
+    try std.testing.expectEqual(expected, reserved);
+}
+
 test "#4819 parameter optional-chain temp uses exact emitted storage scope" {
     const fixtures = [_][]const u8{
         "function get(){return {value:5}} class C{constructor(value=get()?.value){this.value=value}} new C();",
@@ -165,15 +220,119 @@ test "#4819 lowered synchronous parameter temp reserves its body SymbolId at cre
         false,
         true,
     );
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} const read=(value=get()?.value)=>value; read();",
+        .es5,
+        false,
+        true,
+    );
 }
 
 test "#4819 parameter eval keeps its output temp out of the function body scope" {
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} const read=(value=get()?.value)=>value; read();",
+        .es2015,
+        true,
+        false,
+    );
     try checkParameterTempScopeImpl(
         "function get(){return {value:5}} function read(value=(eval('0'),get()?.value)){return value} read();",
         .es5,
         true,
         false,
     );
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} const read=(value=(eval('0'),get()?.value))=>value; read();",
+        .es5,
+        true,
+        false,
+    );
+}
+
+test "#4819 unsafe arrow parameter temp owners stay deferred" {
+    try expectArrowParameterTempDirectReservation(
+        "function get(){return {value:5}} const read=async (value=get()?.value)=>value; read();",
+        .es5,
+        false,
+    );
+    try expectArrowParameterTempDirectReservation(
+        "function get(){return {value:5}} const read=(value=(eval('0'),get()?.value))=>value; read();",
+        .es5,
+        false,
+    );
+    try expectArrowParameterTempDirectReservation(
+        "function get(){return {value:5}} const read=(value=get()?.value)=>{eval('0');return value}; read();",
+        .es5,
+        false,
+    );
+    try expectArrowParameterTempDirectReservation(
+        "function get(){return {value:5}} const read=(value=get()?.value)=>value; read();",
+        .es2015,
+        false,
+    );
+}
+
+test "#4819 arrow temp defers when its parameter owner does not match its scope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function get(){return {value:5}} const read=(value=get()?.value)=>value; function other(input){return input}");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var arrow_owner: ?NodeIndex = null;
+    var arrow_scope: ?u32 = null;
+    var arrow_params: ?NodeIndex = null;
+    var parameter_scope: ?u32 = null;
+    var unrelated_params: ?NodeIndex = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const node = parser.ast.getNode(owner);
+        if (node.tag == .arrow_function_expression and parser.ast.functionParamsList(node).len > 0) {
+            arrow_owner = owner;
+            arrow_scope = entry.value_ptr.*;
+            arrow_params = parser.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").ArrowExtra.params);
+            parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(arrow_params.?));
+        } else if (node.tag == .function_declaration and parser.ast.functionParamsList(node).len > 0) {
+            unrelated_params = parser.ast.readExtraNode(node.data.extra, 1);
+        }
+    }
+    const owner: NodeIndex = arrow_owner orelse return error.MissingArrowOwner;
+    const body_scope: u32 = arrow_scope orelse return error.MissingArrowScope;
+    const params: NodeIndex = arrow_params orelse return error.MissingArrowParams;
+    const param_scope: u32 = parameter_scope orelse return error.MissingParameterScope;
+    const other_params: NodeIndex = unrelated_params orelse return error.MissingUnrelatedParams;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    transformer.ast.extra_data.items[parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").ArrowExtra.params] = @intFromEnum(other_params);
+    const name = try transformer.ast.addString("_a");
+    const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name);
+    try transformer.trackSyntheticTempReferenceInScope(
+        name,
+        parser.ast.getNode(params).span,
+        reference,
+        @enumFromInt(body_scope),
+        .{ .read = true },
+    );
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
+    try std.testing.expectEqual(param_scope, @intFromEnum(analyzer.scopes.items[body_scope].parent));
 }
 
 test "#4819 parameter temp defers when its output owner is misparented or ambiguous" {

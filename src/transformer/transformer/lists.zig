@@ -311,7 +311,7 @@ pub fn hoistParameterTempsAndRestore(self: *Transformer, body_idx: NodeIndex, be
     // enclosing hoist; in state-machine wrappers that is the program hoist.
     // This also applies when only an object-rest parameter is lowered.
     // Defaults lowered by Pass 2 execute in the body and can use its var scope.
-    if (!self.options.unsupported.default_params) return body_idx;
+    if (!self.options.unsupported.default_params or self.native_parameter_list_retained_for_dynamic_lookup) return body_idx;
     // Visit of a generated inner function can leave later body/state temps in
     // the counter. Restrict this hoist to the exact parameter allocation range.
     std.debug.assert(!body_idx.isNone() and self.temp_var_counter >= after_params and after_params > before_params);
