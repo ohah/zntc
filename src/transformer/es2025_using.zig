@@ -484,7 +484,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     try es_helpers.makeVoidZero(self, span);
 
                 const stack_ref = try es_helpers.makeSyntheticRefFromSpan(self, stack_span);
-                try registerUsingRef(self, stack_span, stack_ref, stack_id, reference_scope, .{ .read = true });
+                try registerUsingRef(self, stack_ref, stack_id, reference_scope, .{ .read = true });
                 const using_ref = try es_helpers.makeRuntimeHelperRef(self, "__using");
                 const using_call = if (is_await)
                     try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init, try es_helpers.makeBoolLiteral(self, true) }, span)
@@ -524,12 +524,12 @@ pub fn ES2025Using(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) {
                 const catch_scope = try self.addGeneratedScope(parent_scope, clause, .catch_clause);
                 const catch_id = try self.declareSyntheticInScope(catch_param, span, .catch_binding, catch_scope);
-                try registerUsingRef(self, names.err, err_target, err_id, catch_scope, .{ .write = true });
+                try registerUsingRef(self, err_target, err_id, catch_scope, .{ .write = true });
                 // The catch binding already has an exact SymbolId and scope.
                 // Do not defer this use as a hoisted temp during state-machine
                 // collection: it belongs to this generated catch clause.
                 try self.addSyntheticRefInScope(caught_ref, catch_id, catch_scope, .{ .read = true });
-                try registerUsingRef(self, names.has_err, has_err_target, has_err_id, catch_scope, .{ .write = true });
+                try registerUsingRef(self, has_err_target, has_err_id, catch_scope, .{ .write = true });
             }
             return clause;
         }
@@ -539,9 +539,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const stack_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.stack);
             const err_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.err);
             const has_err_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.has_err);
-            try registerUsingRef(self, names.stack, stack_ref, stack_id, reference_scope, .{ .read = true });
-            try registerUsingRef(self, names.err, err_ref, err_id, reference_scope, .{ .read = true });
-            try registerUsingRef(self, names.has_err, has_err_ref, has_err_id, reference_scope, .{ .read = true });
+            try registerUsingRef(self, stack_ref, stack_id, reference_scope, .{ .read = true });
+            try registerUsingRef(self, err_ref, err_id, reference_scope, .{ .read = true });
+            try registerUsingRef(self, has_err_ref, has_err_id, reference_scope, .{ .read = true });
             const call = try es_helpers.makeCallExpr(self, try es_helpers.makeRuntimeHelperRef(self, "__callDispose"), &.{
                 stack_ref,
                 err_ref,
@@ -563,19 +563,16 @@ fn registerUsingVar(self: anytype, binding: NodeIndex, name_span: Span, declarat
     return self.declareSyntheticInScope(binding, declaration_span, SymbolKind.variable_var, self.nearestVarScope(self.current_scope));
 }
 
-fn registerUsingRef(self: anytype, name_span: Span, ref: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) !void {
+fn registerUsingRef(self: anytype, ref: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) !void {
     if (!self.semantic_edit_enabled) return;
+    const symbol = id orelse std.debug.panic("using temp reference has no producer SymbolId", .{});
     if (self.state_machine_depth > 0) {
-        if (id) |symbol| {
-            if (self.options.unsupported.generator) {
-                try self.trackGeneratorStateReference(ref, symbol, scope, flags);
-                return;
-            }
-        }
-        try self.trackHoistedTempRefInScope(name_span, ref, scope, flags);
+        if (!self.options.unsupported.generator)
+            std.debug.panic("using temp reference entered a state machine without generator lowering", .{});
+        try self.trackGeneratorStateReference(ref, symbol, scope, flags);
         return;
     }
-    try self.addSyntheticRefInScope(ref, id, scope, flags);
+    try self.addSyntheticRefInScope(ref, symbol, scope, flags);
 }
 
 test "#4819 generator using refs retain their producer SymbolId" {
@@ -631,7 +628,7 @@ test "#4819 generator using refs retain their producer SymbolId" {
     const id = (try transformer.registerGeneratedWrapperTemp(binding, name_span, .EMPTY, owner_scope)) orelse
         return error.TestUnexpectedResult;
     const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name_span);
-    try registerUsingRef(&transformer, name_span, reference, id, owner_scope, .{ .read = true });
+    try registerUsingRef(&transformer, reference, id, owner_scope, .{ .read = true });
 
     try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_semantic_refs.items.len);
     try std.testing.expectEqual(@as(u32, @intFromEnum(id)), transformer.generator_state_semantic_refs.items[0].symbol_id);
