@@ -412,7 +412,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 } else if (!self.generator_var_origins.contains(spanKey(name_span))) {
                     for (self.generator_temp_var_spans.items) |state_span| {
                         if (state_span.start != name_span.start or state_span.end != name_span.end) continue;
-                        if (try ensureGeneratorStateTempSymbol(self, name_span, node_span)) |symbol| {
+                        if (self.state_machine_depth > 0) {
+                            const symbol = (try ensureGeneratorStateTempSymbol(self, name_span, node_span)) orelse
+                                std.debug.panic("generator state temp has no producer SymbolId", .{});
                             try self.trackGeneratorStateReference(ref, symbol, self.current_scope, flags);
                         } else {
                             try self.trackHoistedTempRef(name_span, ref, flags);
@@ -1996,7 +1998,9 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // Lowering-created var bindings become assignment targets in
                 // the state machine. Reserve their wrapper identity before
                 // the hoisted binding node is constructed.
-                if (try ensureGeneratorStateTempSymbol(self, node.data.string_ref, node.span)) |symbol| {
+                if (self.state_machine_depth > 0) {
+                    const symbol = (try ensureGeneratorStateTempSymbol(self, node.data.string_ref, node.span)) orelse
+                        std.debug.panic("generator assignment temp has no producer SymbolId", .{});
                     try self.trackGeneratorStateReference(target, symbol, self.current_scope, .{ .write = true });
                 } else {
                     try self.trackHoistedTempRef(node.data.string_ref, target, .{ .write = true });
