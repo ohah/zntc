@@ -7596,6 +7596,109 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         expectReanalyzedOutput(result, variant.expected, variant.name);
       }
 
+      const derivedConstructorSuperPropertyThrow = run(
+        [
+          'var reads = 0, receiverReads = 0, token = { kind: "token" };',
+          'class Base {',
+          '  constructor(value) { this.value = value; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.value; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(value) { super(value); throw super.current; }',
+          '}',
+          'try { new Child(token); } catch (error) { console.log(error === token, reads, receiverReads); }',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyThrow.status,
+        derivedConstructorSuperPropertyThrow.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyThrow.stderr);
+      const derivedConstructorSuperPropertyThrowOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyThrowOutput.status,
+        derivedConstructorSuperPropertyThrowOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyThrowOutput.stdout).toBe('true 1 1\n');
+
+      const hostileDerivedConstructorSuperThrowVariants: Array<{
+        name: string;
+        throwValue: string;
+        expected: string;
+      }> = [
+        {
+          name: 'throw call expression',
+          throwValue: 'getValue()',
+          expected: 'caught true false object 0 0 1\n',
+        },
+        {
+          name: 'throw direct super method call',
+          throwValue: 'super.read()',
+          expected: 'caught true false object 0 0 1\n',
+        },
+        {
+          name: 'throw super read with effectful computed key',
+          throwValue: 'super[getKey()]',
+          expected: 'caught true false object 1 1 0\n',
+        },
+        {
+          name: 'throw super read with member computed key',
+          throwValue: 'super[keys.name]',
+          expected: 'caught true false object 1 0 0\n',
+        },
+        {
+          name: 'throw super read with optional computed key',
+          throwValue: 'super[keys?.name]',
+          expected: 'caught true false object 1 0 0\n',
+        },
+        {
+          name: 'throw nested arrow super read',
+          throwValue: '(() => super.current)()',
+          expected: 'caught true false object 1 0 0\n',
+        },
+        {
+          name: 'throw member from super value',
+          throwValue: 'super.current.value',
+          expected: 'caught false true object 1 0 0\n',
+        },
+        {
+          name: 'throw call around super read',
+          throwValue: 'consume(super.current)',
+          expected: 'caught true false object 1 0 1\n',
+        },
+        {
+          name: 'throw exponentiation result',
+          throwValue: 'super.current ** 2',
+          expected: 'caught false false number 1 0 0\n',
+        },
+        {
+          name: 'throw logical expression with call',
+          throwValue: 'super.current && consume(value)',
+          expected: 'caught true false object 1 0 1\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperThrowVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
+            'var nested = { kind: "nested" }, replacement = { value: nested };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function getValue() { callCount++; return replacement; }',
+            'function consume(value) { callCount++; return value; }',
+            'class Base {',
+            '  constructor(value) { this.value = value; }',
+            '  read() { callCount++; return this.value; }',
+            '  get current() { reads++; return this.value; }',
+            '}',
+            'class Child extends Base { constructor(value) { super(value); throw ' +
+              variant.throwValue +
+              '; } }',
+            'try { new Child(replacement); } catch (error) { console.log("caught", error === replacement, error === nested, typeof error, reads, keyCalls, callCount); }',
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
       // The explicit derived constructor keeps direct post-super assignments
       // on the same exact home-object graph as ordinary class methods.
       const derivedConstructorSuperLogicalAssignment = run(
