@@ -1994,6 +1994,18 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
             if (existing != @intFromEnum(id)) std.debug.panic("callback temp binding already has a different symbol", .{});
         } else try setSymbolId(self, temp.binding, id);
     } else try setSymbolId(self, temp.binding, id);
+    for (self.generator_state_temp_refs.items) |pending| {
+        if (pending.binding != temp.binding or !live.contains(@intFromEnum(pending.reference))) continue;
+        const scope = try generatedTempRefScope(self, source_scope, callback_scope, pending.scope, live_scopes);
+        if (editor.referenceForNode(pending.reference) catch |err| return editError(err)) |existing| {
+            if (existing.symbol_id != id or existing.scope_id != scope or
+                existing.flags.read != pending.flags.read or existing.flags.write != pending.flags.write)
+                std.debug.panic("generated callback temp reference already has a different identity", .{});
+        } else {
+            editor.addReference(pending.reference, id, scope, pending.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+        }
+        try setSymbolId(self, pending.reference, id);
+    }
     // A lowering performed while collecting the state machine may already
     // have emitted an initialized `var` declaration for this exact temp. The
     // callback hoister adds the canonical declaration above; every declaration
@@ -2991,6 +3003,35 @@ pub fn trackGeneratorStateReference(self: *Transformer, node: NodeIndex, id: ?Sy
     try self.generator_state_semantic_refs.append(self.allocator, .{
         .node = node,
         .symbol_id = @intFromEnum(symbol),
+        .scope = scope,
+        .flags = flags,
+    });
+}
+
+/// Preserve a generated callback temp reference against its exact binding
+/// node while the state-machine callback ScopeId is still being assembled.
+pub fn trackGeneratedCallbackTempReference(
+    self: *Transformer,
+    binding: NodeIndex,
+    reference: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    if (self.state_machine_depth == 0 or binding.isNone() or reference.isNone() or scope.isNone())
+        std.debug.panic("generated callback temp reference has no exact producer context", .{});
+    if (@intFromEnum(binding) >= self.ast.nodes.items.len or @intFromEnum(reference) >= self.ast.nodes.items.len)
+        std.debug.panic("generated callback temp reference has an invalid node", .{});
+    const binding_node = self.ast.getNode(binding);
+    const reference_node = self.ast.getNode(reference);
+    if (binding_node.tag != .binding_identifier or
+        (reference_node.tag != .identifier_reference and reference_node.tag != .assignment_target_identifier))
+        std.debug.panic("generated callback temp handle has an unexpected AST node kind", .{});
+    if (!std.mem.eql(u8, self.ast.getText(binding_node.data.string_ref), self.ast.getText(reference_node.data.string_ref)))
+        std.debug.panic("generated callback temp reference spelling disagrees with its binding handle", .{});
+    try self.generator_state_temp_refs.append(self.allocator, .{
+        .binding = binding,
+        .reference = reference,
         .scope = scope,
         .flags = flags,
     });
