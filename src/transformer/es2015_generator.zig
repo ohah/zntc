@@ -390,11 +390,17 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         fn makeGeneratorTempRef(self: *Transformer, name_span: Span, node_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
-            if (self.semantic_edit_enabled and !self.generator_var_origins.contains(spanKey(name_span))) {
-                for (self.generator_temp_var_spans.items) |state_span| {
-                    if (state_span.start != name_span.start or state_span.end != name_span.end) continue;
-                    try self.trackHoistedTempRef(name_span, ref, flags);
-                    break;
+            if (self.semantic_edit_enabled) {
+                // Producer-reserved state temps already have a stable ID;
+                // defer only their final callback reference scope.
+                if (self.generator_state_temp_symbols.get(name_span.start)) |raw_id| {
+                    try self.trackGeneratorStateReference(ref, @enumFromInt(raw_id), self.current_scope, flags);
+                } else if (!self.generator_var_origins.contains(spanKey(name_span))) {
+                    for (self.generator_temp_var_spans.items) |state_span| {
+                        if (state_span.start != name_span.start or state_span.end != name_span.end) continue;
+                        try self.trackHoistedTempRef(name_span, ref, flags);
+                        break;
+                    }
                 }
             }
             return ref;
@@ -2052,6 +2058,16 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const value = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
             const temp_span = try es_helpers.makeTempVarSpan(self);
             try self.generator_temp_var_spans.append(self.allocator, temp_span);
+            if (self.semantic_edit_enabled) {
+                if (self.generator_state_machine_scope.isNone())
+                    std.debug.panic("class-header generator temp has no exact wrapper ScopeId", .{});
+                const symbol = (try self.reserveSyntheticTempSymbolInScope(
+                    temp_span,
+                    self.ast.getNode(expr_idx).span,
+                    self.generator_state_machine_scope,
+                )) orelse std.debug.panic("class-header generator temp has no exact SymbolId", .{});
+                try self.recordGeneratorStateTempSymbol(temp_span, symbol);
+            }
             const lhs = try makeGeneratorTempRef(self, temp_span, temp_span, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
@@ -2979,6 +2995,71 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
 test "ES2015 generator module compiles" {
     _ = ES2015Generator;
+}
+
+test "#4819 generator temps attach their producer SymbolId immediately" {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "1;");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+    transformer.generator_state_machine_scope = transformer.programScope();
+    transformer.state_machine_depth = 1;
+
+    var expression: NodeIndex = .none;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .numeric_literal) continue;
+        expression = @enumFromInt(raw);
+        break;
+    }
+    if (expression.isNone()) return error.MissingGeneratorTempExpression;
+    var operations: std.ArrayList(Operation) = .empty;
+    var next_label: u32 = 1;
+    const temp_ref = try ES2015Generator(Transformer).evalIntoGeneratorTemp(
+        &transformer,
+        expression,
+        &operations,
+        &next_label,
+    );
+    try std.testing.expectEqual(@as(usize, 1), operations.items.len);
+    try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_temp_symbols.count());
+    try std.testing.expectEqual(@as(usize, 2), transformer.generator_state_semantic_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    const temp_span = transformer.ast.getNode(temp_ref).data.string_ref;
+    const raw_id = transformer.generator_state_temp_symbols.get(temp_span.start) orelse return error.MissingGeneratorTempSymbol;
+    var reads: usize = 0;
+    var writes: usize = 0;
+    for (transformer.generator_state_semantic_refs.items) |pending| {
+        try std.testing.expectEqual(raw_id, pending.symbol_id);
+        try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(pending.node));
+        try std.testing.expectEqual(transformer.programScope(), pending.scope);
+        if (pending.flags.read) reads += 1;
+        if (pending.flags.write) writes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), reads);
+    try std.testing.expectEqual(@as(usize, 1), writes);
 }
 
 test "generator state name handoff survives nested cache invalidation" {

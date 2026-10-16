@@ -1888,7 +1888,9 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
             if (trace.ambiguous_scope) std.debug.panic("generated temp reference has ambiguous output scopes", .{});
             const scope = try stateTempOutputScope(self, source_scope, callback_scope, binding_scope, ref.scope, trace.scope, live_scopes);
             editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-            try setSymbolId(self, ref.node, id);
+            if (self.getSymbolIdAt(ref.node)) |existing| {
+                if (existing != @intFromEnum(id)) std.debug.panic("generated temp reference changed its producer SymbolId", .{});
+            } else try setSymbolId(self, ref.node, id);
         }
         i = ref.next;
     }

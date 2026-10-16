@@ -231,6 +231,15 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
     }
 }
 
+test "#4819 class-header yield state scope remains attached" {
+    try checkStateScopes(
+        "function* g(B) { const C = class extends (yield B) { [yield 'k']() {} }; return C; }",
+        1,
+        false,
+        0,
+    );
+}
+
 test "#4819 generator state nested callbacks use distinct source function scopes" {
     try checkStateScopes(
         "export function* outer() { yield 1; const inner = function*() { yield 2; }; yield inner().next().value; }",
