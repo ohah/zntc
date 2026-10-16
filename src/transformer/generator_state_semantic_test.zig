@@ -240,6 +240,15 @@ test "#4819 class-header yield state scope remains attached" {
     );
 }
 
+test "#4819 extracted logical-yield state scope remains attached" {
+    try checkStateScopes(
+        "function* g(A) { return A && (yield 1); }",
+        1,
+        false,
+        0,
+    );
+}
+
 test "#4819 generator state nested callbacks use distinct source function scopes" {
     try checkStateScopes(
         "export function* outer() { yield 1; const inner = function*() { yield 2; }; yield inner().next().value; }",

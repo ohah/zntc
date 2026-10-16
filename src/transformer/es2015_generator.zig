@@ -388,6 +388,20 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             });
         }
 
+        fn ensureGeneratorStateTempSymbol(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!?@import("../semantic/symbol.zig").SymbolId {
+            if (!self.semantic_edit_enabled or self.state_machine_depth == 0) return null;
+            if (self.generator_state_temp_symbols.get(name_span.start)) |raw_id| return @enumFromInt(raw_id);
+            if (self.generator_state_machine_scope.isNone())
+                std.debug.panic("generator state temp has no exact wrapper ScopeId", .{});
+            const symbol = (try self.reserveSyntheticTempSymbolInScope(
+                name_span,
+                declaration_span,
+                self.generator_state_machine_scope,
+            )) orelse std.debug.panic("generator state temp has no exact SymbolId", .{});
+            try self.recordGeneratorStateTempSymbol(name_span, symbol);
+            return symbol;
+        }
+
         fn makeGeneratorTempRef(self: *Transformer, name_span: Span, node_span: Span, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
             if (self.semantic_edit_enabled) {
@@ -398,7 +412,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 } else if (!self.generator_var_origins.contains(spanKey(name_span))) {
                     for (self.generator_temp_var_spans.items) |state_span| {
                         if (state_span.start != name_span.start or state_span.end != name_span.end) continue;
-                        try self.trackHoistedTempRef(name_span, ref, flags);
+                        if (try ensureGeneratorStateTempSymbol(self, name_span, node_span)) |symbol| {
+                            try self.trackGeneratorStateReference(ref, symbol, self.current_scope, flags);
+                        } else {
+                            try self.trackHoistedTempRef(name_span, ref, flags);
+                        }
                         break;
                     }
                 }
@@ -2059,14 +2077,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             try self.generator_temp_var_spans.append(self.allocator, temp_span);
             if (self.semantic_edit_enabled) {
-                if (self.generator_state_machine_scope.isNone())
-                    std.debug.panic("class-header generator temp has no exact wrapper ScopeId", .{});
-                const symbol = (try self.reserveSyntheticTempSymbolInScope(
-                    temp_span,
-                    self.ast.getNode(expr_idx).span,
-                    self.generator_state_machine_scope,
-                )) orelse std.debug.panic("class-header generator temp has no exact SymbolId", .{});
-                try self.recordGeneratorStateTempSymbol(temp_span, symbol);
+                _ = (try ensureGeneratorStateTempSymbol(self, temp_span, self.ast.getNode(expr_idx).span)) orelse
+                    std.debug.panic("class-header generator temp has no exact SymbolId", .{});
             }
             const lhs = try makeGeneratorTempRef(self, temp_span, temp_span, .{ .write = true });
             const assign = try self.ast.addNode(.{
@@ -2997,7 +3009,7 @@ test "ES2015 generator module compiles" {
     _ = ES2015Generator;
 }
 
-test "#4819 generator temps attach their producer SymbolId immediately" {
+test "#4819 generator state temp producers attach their SymbolIds immediately" {
     const Transformer = @import("transformer.zig").Transformer;
     const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
     const TransformOptions = @import("options.zig").TransformOptions;
@@ -3060,6 +3072,30 @@ test "#4819 generator temps attach their producer SymbolId immediately" {
     }
     try std.testing.expectEqual(@as(usize, 1), reads);
     try std.testing.expectEqual(@as(usize, 1), writes);
+
+    const extracted_temp = try es_helpers.makeTempVarSpan(&transformer);
+    try transformer.generator_temp_var_spans.append(allocator, extracted_temp);
+    const extracted_write = try ES2015Generator(Transformer).makeGeneratorTempRef(
+        &transformer,
+        extracted_temp,
+        extracted_temp,
+        .{ .write = true },
+    );
+    const extracted_read = try ES2015Generator(Transformer).makeGeneratorTempRef(
+        &transformer,
+        extracted_temp,
+        extracted_temp,
+        .{ .read = true },
+    );
+    const extracted_id = transformer.generator_state_temp_symbols.get(extracted_temp.start) orelse
+        return error.MissingExtractedGeneratorTempSymbol;
+    try std.testing.expect(extracted_id != raw_id);
+    try std.testing.expectEqual(@as(?u32, extracted_id), transformer.getSymbolIdAt(extracted_write));
+    try std.testing.expectEqual(@as(?u32, extracted_id), transformer.getSymbolIdAt(extracted_read));
+    try std.testing.expectEqual(@as(usize, 2), transformer.generator_state_temp_symbols.count());
+    try std.testing.expectEqual(@as(usize, 4), transformer.generator_state_semantic_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 }
 
 test "generator state name handoff survives nested cache invalidation" {
