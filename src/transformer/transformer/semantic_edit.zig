@@ -212,8 +212,11 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
                 },
                 else => break :blk false,
             };
-            break :blk async_flags[0] and !async_flags[1] and
+            const exact_async_function = async_flags[0] and !async_flags[1] and
                 self.options.unsupported.async_await and self.options.unsupported.generator;
+            const exact_async_generator = async_flags[0] and async_flags[1] and
+                self.options.unsupported.async_generator;
+            break :blk exact_async_function or exact_async_generator;
         };
         if (!exact_async_arrow_state_machine and !exact_async_function_wrapper) return null;
         const owner_raw = @intFromEnum(output_owner);
@@ -222,9 +225,9 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
         if (output_scope_raw >= scopes.len or scopes[output_scope_raw].kind != .function) return null;
         const output_scope: ScopeId = @enumFromInt(output_scope_raw);
 
-        // The async arrow/function/method is lowered to an ordinary wrapper
-        // that keeps the source owner's function ScopeId. Its parameter temp
-        // can use that exact owner while state-machine temp collection is active.
+        // The async arrow/function/method wrapper keeps the source owner's
+        // function ScopeId. Its parameter temp can use that exact owner while
+        // state-machine temp collection is active.
         if (start_owner == output_owner) {
             const parameter_scope = scopes[start_scope.toIndex()].parent;
             if (parameter_scope.isNone()) return null;
@@ -340,6 +343,8 @@ fn ownerNeedsLoweredFunctionScope(self: *Transformer, owner: NodeIndex) bool {
         .function_declaration, .function_expression, .function => blk: {
             const flags = self.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
             break :blk ((flags & ast_mod.FunctionFlags.is_async) != 0 and self.options.unsupported.async_await) or
+                ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) ==
+                    (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) and self.options.unsupported.async_generator) or
                 ((flags & ast_mod.FunctionFlags.is_generator) != 0 and self.options.unsupported.generator);
         },
         .arrow_function_expression => blk: {
@@ -349,6 +354,8 @@ fn ownerNeedsLoweredFunctionScope(self: *Transformer, owner: NodeIndex) bool {
         .method_definition => blk: {
             const flags = self.readU32(node.data.extra, ast_mod.MethodExtra.flags);
             break :blk ((flags & ast_mod.MethodFlags.is_async) != 0 and self.options.unsupported.async_await) or
+                ((flags & (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator)) ==
+                    (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator) and self.options.unsupported.async_generator) or
                 ((flags & ast_mod.MethodFlags.is_generator) != 0 and self.options.unsupported.generator);
         },
         else => false,
