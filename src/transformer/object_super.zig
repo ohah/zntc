@@ -262,7 +262,12 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
         if (self.semantic_edit_enabled) {
             if (parent_scope.isNone()) std.debug.panic("function-scoped object home temp has no output scope", .{});
-            const symbol_id: ?SymbolId = if (self.syntheticTempOutputScopeIsDeferred(parent_scope))
+            const deferred_output_scope = self.syntheticTempOutputScopeIsDeferred(parent_scope);
+            const callback_binding = if (deferred_output_scope and self.state_machine_depth > 0)
+                try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span)
+            else
+                .none;
+            const symbol_id: ?SymbolId = if (deferred_output_scope)
                 null
             else blk: {
                 const owner_scope = self.nearestVarScope(parent_scope);
@@ -277,6 +282,7 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                 home.span,
                 parent_scope,
                 symbol_id,
+                callback_binding,
             );
         }
         return assign;
@@ -347,10 +353,13 @@ fn trackHoistedHomeReferences(
     name_span: Span,
     root_scope: ScopeId,
     symbol_id: ?SymbolId,
+    callback_binding: NodeIndex,
 ) Transformer.Error!void {
     if (!self.semantic_edit_enabled or root_scope.isNone()) return;
     if (symbol_id) |id|
         try self.addSyntheticRefInScope(write_ref, id, root_scope, .{ .write = true })
+    else if (!callback_binding.isNone())
+        try self.trackGeneratedCallbackTempReference(callback_binding, write_ref, root_scope, .{ .write = true })
     else
         try self.trackHoistedTempRefInScope(name_span, write_ref, root_scope, .{ .write = true });
     const name = self.ast.getText(name_span);
@@ -375,6 +384,8 @@ fn trackHoistedHomeReferences(
         {
             if (symbol_id) |id|
                 try self.addSyntheticRefInScope(work.node, id, scope, .{ .read = true })
+            else if (!callback_binding.isNone())
+                try self.trackGeneratedCallbackTempReference(callback_binding, work.node, scope, .{ .read = true })
             else
                 try self.trackHoistedTempRefInScope(name_span, work.node, scope, .{ .read = true });
         }

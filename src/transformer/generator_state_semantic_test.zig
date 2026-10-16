@@ -716,6 +716,146 @@ test "#4819 extracted generator control-flow temps reuse their exact ret names" 
     try std.testing.expectEqual(@as(usize, 2), generated_ret_temps);
 }
 
+test "#4819 generator object super home temp reuses its exact callback binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function* build(proto) {
+        \\  const object = {
+        \\    __proto__: proto,
+        \\    read() { return super.value; },
+        \\    yielded: yield 1,
+        \\  };
+        \\  yield object;
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    const root = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    defer allocator.free(reachable);
+
+    var home_ref: ?ast_mod.NodeIndex = null;
+    for (reachable) |raw| {
+        const call = transformer.ast.nodes.items[raw];
+        if (call.tag != .call_expression) continue;
+        const callee = transformer.readNodeIdx(call.data.extra, 0);
+        const callee_node = transformer.ast.getNode(callee);
+        if (callee_node.tag != .static_member_expression) continue;
+        const property = transformer.readNodeIdx(callee_node.data.extra, 1);
+        const property_node = transformer.ast.getNode(property);
+        if (property_node.tag != .identifier_reference or
+            !std.mem.eql(u8, transformer.ast.getText(property_node.data.string_ref), "getPrototypeOf")) continue;
+        const object = transformer.readNodeIdx(callee_node.data.extra, 0);
+        const object_node = transformer.ast.getNode(object);
+        if (object_node.tag != .identifier_reference or
+            !std.mem.eql(u8, transformer.ast.getText(object_node.data.string_ref), "Object")) continue;
+        if (transformer.readU32(call.data.extra, 2) == 0) continue;
+        const first_arg_raw = transformer.ast.extra_data.items[transformer.readU32(call.data.extra, 1)];
+        const first_arg: ast_mod.NodeIndex = @enumFromInt(first_arg_raw);
+        if (transformer.ast.getNode(first_arg).tag != .identifier_reference) continue;
+        try std.testing.expect(home_ref == null);
+        home_ref = first_arg;
+    }
+    const exact_home_ref = home_ref orelse return error.MissingObjectHomeReference;
+    const home_name = transformer.ast.getText(transformer.ast.getNode(exact_home_ref).data.string_ref);
+
+    var producer_binding: ?ast_mod.NodeIndex = null;
+    var producer_refs: usize = 0;
+    var found_home_reference = false;
+    for (transformer.generator_state_temp_refs.items) |pending| {
+        const reference_node = transformer.ast.getNode(pending.reference);
+        if (!std.mem.eql(u8, transformer.ast.getText(reference_node.data.string_ref), home_name)) continue;
+        const binding_node = transformer.ast.getNode(pending.binding);
+        try std.testing.expect(binding_node.tag == .binding_identifier);
+        try std.testing.expectEqualStrings(home_name, transformer.ast.getText(binding_node.data.string_ref));
+        if (producer_binding) |existing| {
+            try std.testing.expectEqual(existing, pending.binding);
+        } else {
+            producer_binding = pending.binding;
+        }
+        if (pending.reference == exact_home_ref) found_home_reference = true;
+        producer_refs += 1;
+    }
+    const exact_producer_binding = producer_binding orelse return error.MissingObjectHomeProducerBinding;
+    try std.testing.expect(producer_refs >= 2);
+    try std.testing.expect(found_home_reference);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const home_id = edited.symbol_ids[@intFromEnum(exact_home_ref)] orelse return error.MissingObjectHomeSymbol;
+    try std.testing.expect(home_id >= original_symbol_count);
+    try std.testing.expectEqual(@as(?u32, home_id), edited.symbol_ids[@intFromEnum(exact_producer_binding)]);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(exact_producer_binding)) != null);
+
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+    const symbol = edited.symbols.items[home_id];
+    var binding_count: usize = 0;
+    var reference_count: u32 = 0;
+    var write_count: u32 = 0;
+    for (edited.references) |reference| {
+        if (@intFromEnum(reference.symbol_id) != home_id or reference.flags.declare) continue;
+        try std.testing.expect(!reference.node_index.isNone());
+        const raw = @intFromEnum(reference.node_index);
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+        try std.testing.expectEqual(@as(?u32, home_id), edited.symbol_ids[raw]);
+        const expected_scope = output_scope.expectedScope(
+            transformer.ast,
+            root,
+            &output_parents,
+            &edited.scope_owner_map,
+            raw,
+        ) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(expected_scope, reference.scope_id);
+        reference_count += 1;
+        if (reference.flags.write) write_count += 1;
+    }
+    for (reachable) |raw| {
+        if (raw >= edited.symbol_ids.len or edited.symbol_ids[raw] != @as(?u32, home_id)) continue;
+        if (transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
+        binding_count += 1;
+        const binding_scope = output_scope.expectedScope(
+            transformer.ast,
+            root,
+            &output_parents,
+            &edited.scope_owner_map,
+            raw,
+        ) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(scopeHasAncestor(
+            edited.scopes,
+            @intFromEnum(binding_scope),
+            @intFromEnum(symbol.scope_id),
+        ));
+        try std.testing.expectEqual(exact_producer_binding, @as(ast_mod.NodeIndex, @enumFromInt(raw)));
+    }
+    try std.testing.expectEqual(@as(usize, 1), binding_count);
+    try std.testing.expectEqual(symbol.reference_count, reference_count);
+    try std.testing.expectEqual(symbol.write_count, write_count);
+}
+
 test "#4819 async generator inner function owns its ES5 state callback" {
     try checkStateScopes(
         "export async function* stream() { yield await Promise.resolve(1); }",
