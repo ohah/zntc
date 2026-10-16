@@ -661,14 +661,57 @@ test "#4819 extracted generator control-flow temps reuse their exact ret names" 
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
-    _ = try transformer.transform();
+    const root = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
 
     var generated_ret_temps: usize = 0;
-    for (edited.symbols.items[original_symbol_count..]) |symbol| {
+    for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, symbol_index| {
         if (symbol.kind != .variable_var or !std.mem.startsWith(u8, symbol.synthetic_name, "_ret")) continue;
         generated_ret_temps += 1;
-        try std.testing.expect(symbol.reference_count > 0);
+        var binding_count: usize = 0;
+        for (reachable) |raw| {
+            if (raw >= edited.symbol_ids.len or edited.symbol_ids[raw] != @as(?u32, @intCast(symbol_index))) continue;
+            if (transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
+            binding_count += 1;
+            const binding_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                raw,
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(symbol.scope_id, binding_scope);
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+
+        var value_reference_count: u32 = 0;
+        var read_count: u32 = 0;
+        var write_count: u32 = 0;
+        for (edited.references) |reference| {
+            if (@intFromEnum(reference.symbol_id) != symbol_index or reference.flags.declare) continue;
+            try std.testing.expect(!reference.node_index.isNone());
+            const raw = @intFromEnum(reference.node_index);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[raw]);
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                raw,
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected_scope, reference.scope_id);
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            value_reference_count += 1;
+            if (reference.flags.read) read_count += 1;
+            if (reference.flags.write) write_count += 1;
+        }
+        try std.testing.expect(read_count > 0);
+        try std.testing.expectEqual(symbol.reference_count, value_reference_count);
+        try std.testing.expectEqual(symbol.write_count, write_count);
     }
     try std.testing.expectEqual(@as(usize, 2), generated_ret_temps);
 }

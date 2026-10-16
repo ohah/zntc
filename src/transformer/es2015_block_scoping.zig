@@ -1397,7 +1397,6 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             self: *Transformer,
             binding: NodeIndex,
             name: []const u8,
-            name_span: Span,
             symbol: ?SymbolId,
             call_scope: ScopeId,
         ) Transformer.Error!NodeIndex {
@@ -1406,12 +1405,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const reference_scope = if (call_scope.isNone()) self.programScope() else call_scope;
                 try self.addSyntheticRefInScope(ref, id, reference_scope, .{ .read = true });
             } else if (self.semantic_edit_enabled and self.state_machine_depth > 0) {
-                const reference_scope = if (call_scope.isNone()) self.current_scope else call_scope;
-                if (call_scope.isNone()) {
-                    try self.trackGeneratedCallbackTempReference(binding, ref, reference_scope, .{ .read = true });
-                } else {
-                    try self.trackHoistedTempRefInScope(name_span, ref, reference_scope, .{ .read = true });
-                }
+                if (!call_scope.isNone())
+                    std.debug.panic("loop control-flow temp has an output scope but no producer SymbolId", .{});
+                try self.trackGeneratedCallbackTempReference(binding, ref, self.current_scope, .{ .read = true });
             }
             return ref;
         }
@@ -1461,7 +1457,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // if (typeof _ret === "object") return _ret.v;
             if (flow.has_return) {
-                const ret_ref = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_name_span, ret_symbol, call_scope);
+                const ret_ref = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_symbol, call_scope);
                 // variant-typed helper — `unary_expression` 은 `.extra = [operand, op]`
                 // layout. (이전엔 `.unary` variant 로 잘못 써서 `if (<= === "object")`
                 // syntax error — #1797.)
@@ -1477,7 +1473,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     .data = .{ .binary = .{ .left = typeof_expr, .right = obj_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
                 });
                 // _ret.v
-                const ret_ref2 = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_name_span, ret_symbol, call_scope);
+                const ret_ref2 = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_symbol, call_scope);
                 const v_prop = try es_helpers.makePropertyName(self, "v");
                 const ret_v = try es_helpers.makeStaticMember(self, ret_ref2, v_prop, span);
                 const return_stmt = try self.ast.addNode(.{
@@ -1495,7 +1491,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             // if (_ret === "break") break;
             if (flow.has_break) {
-                const ret_ref = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_name_span, ret_symbol, call_scope);
+                const ret_ref = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_symbol, call_scope);
                 const break_str = try es_helpers.buildStringNode(self, "\"break\"", span);
                 const break_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
@@ -1522,7 +1518,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 for ([_][]const u8{ "break", "continue" }) |kw| {
                     const sentinel = try std.fmt.allocPrint(self.allocator, "\"{s}|{s}\"", .{ kw, label });
                     defer self.allocator.free(sentinel);
-                    const ret_ref = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_name_span, ret_symbol, call_scope);
+                    const ret_ref = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_symbol, call_scope);
                     const sentinel_str = try es_helpers.buildStringNode(self, sentinel, span);
                     const check = try self.ast.addNode(.{
                         .tag = .binary_expression,
