@@ -173,6 +173,108 @@ fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
     return null;
 }
 
+/// A lowered default initializer is moved from its separate parameter
+/// environment into the function body. For a synchronous function whose
+/// parameters can be safely lowered, its body var scope already exists, so a
+/// temp reference can take its final SymbolId before the declaration is
+/// emitted. Dynamic-lookup and async/generator owners keep the deferred path.
+fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) ?ScopeId {
+    if (!self.semantic_edit_enabled or self.state_machine_depth > 0 or
+        !self.options.unsupported.default_params or !self.options.unsupported.arrow or
+        self.native_parameter_list_retained_for_dynamic_lookup or start_scope.isNone()) return null;
+
+    const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    if (start_scope.toIndex() >= scopes.len) return null;
+    const start_owner = scopeOwnerNode(self, start_scope) orelse return null;
+    if (self.ast.getNode(start_owner).tag != .formal_parameters) {
+        const parent_scope = scopes[start_scope.toIndex()].parent;
+        if (parent_scope.isNone()) return null;
+        const parameter_owner = scopeOwnerNode(self, parent_scope) orelse return null;
+        if (self.ast.getNode(parameter_owner).tag != .formal_parameters or
+            functionParametersNode(self, start_owner) != parameter_owner or
+            ownerNeedsLoweredFunctionScope(self, start_owner)) return null;
+        return start_scope;
+    }
+
+    const parameter_owner = start_owner;
+    var candidate: ?ScopeId = null;
+    var ambiguous = false;
+
+    var transformed = self.transformed_scope_owner_map.iterator();
+    while (transformed.next()) |entry| {
+        recordParameterOutputScopeCandidate(
+            self,
+            parameter_owner,
+            start_scope,
+            scopes,
+            entry.key_ptr.*,
+            entry.value_ptr.*,
+            &candidate,
+            &ambiguous,
+        );
+    }
+
+    var original = self.scope_owner_map.iterator();
+    while (original.next()) |entry| {
+        recordParameterOutputScopeCandidate(
+            self,
+            parameter_owner,
+            start_scope,
+            scopes,
+            entry.key_ptr.*,
+            entry.value_ptr.*,
+            &candidate,
+            &ambiguous,
+        );
+    }
+    return if (ambiguous) null else candidate;
+}
+
+fn recordParameterOutputScopeCandidate(
+    self: *Transformer,
+    parameter_owner: NodeIndex,
+    parameter_scope: ScopeId,
+    scopes: []const Scope,
+    owner_raw: u32,
+    scope_raw: u32,
+    candidate: *?ScopeId,
+    ambiguous: *bool,
+) void {
+    if (owner_raw >= self.ast.nodes.items.len) return;
+    const owner: NodeIndex = @enumFromInt(owner_raw);
+    if (functionParametersNode(self, owner) != parameter_owner) return;
+    if (ownerNeedsLoweredFunctionScope(self, owner) or scope_raw >= scopes.len) {
+        ambiguous.* = true;
+        return;
+    }
+    const scope: ScopeId = @enumFromInt(scope_raw);
+    if (scope == parameter_scope or scopes[scope_raw].kind != .function or
+        scopes[scope_raw].parent != parameter_scope)
+    {
+        ambiguous.* = true;
+        return;
+    }
+    if (candidate.*) |existing| {
+        if (existing != scope) ambiguous.* = true;
+    } else candidate.* = scope;
+}
+
+fn functionParametersNode(self: *Transformer, owner: NodeIndex) ?NodeIndex {
+    if (owner.isNone() or @intFromEnum(owner) >= self.ast.nodes.items.len) return null;
+    const node = self.ast.getNode(owner);
+    const slot: u32 = switch (node.tag) {
+        .function_declaration, .function_expression, .function => ast_mod.FunctionExtra.params,
+        .method_definition => ast_mod.MethodExtra.params,
+        else => return null,
+    };
+    const extra: usize = @intCast(node.data.extra);
+    const slot_index: usize = @intCast(slot);
+    if (extra + slot_index >= self.ast.extra_data.items.len) return null;
+    const raw = self.ast.extra_data.items[extra + slot_index];
+    if (raw == @intFromEnum(NodeIndex.none) or raw >= self.ast.nodes.items.len) return null;
+    return @enumFromInt(raw);
+}
+
 fn ownerNeedsLoweredFunctionScope(self: *Transformer, owner: NodeIndex) bool {
     const node = self.ast.getNode(owner);
     return switch (node.tag) {
@@ -3107,13 +3209,16 @@ pub fn trackSyntheticTempReferenceInScope(
     scope: ScopeId,
     flags: ReferenceFlags,
 ) Transformer.Error!void {
-    if (!self.semantic_edit_enabled or scope.isNone() or
-        self.static_field_initializer_depth > 0 or syntheticTempOutputScopeIsDeferred(self, scope))
+    if (!self.semantic_edit_enabled or scope.isNone()) return;
+    const parameter_output_scope = loweredDefaultParameterOutputScope(self, scope);
+    if (self.static_field_initializer_depth > 0 or
+        (parameter_output_scope == null and syntheticTempOutputScopeIsDeferred(self, scope)))
         return trackHoistedTempRefInScope(self, name_span, node, scope, flags);
 
-    const symbol_id = lookupSyntheticTempSymbol(self, name_span, scope) orelse
-        (try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, scope)) orelse return;
-    return addSyntheticRefInScope(self, node, symbol_id, scope, flags);
+    const output_scope = parameter_output_scope orelse scope;
+    const symbol_id = lookupSyntheticTempSymbol(self, name_span, output_scope) orelse
+        (try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, output_scope)) orelse return;
+    return addSyntheticRefInScope(self, node, symbol_id, output_scope, flags);
 }
 
 /// Attach a known generated reference only when its already-reserved temp ID
