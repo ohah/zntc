@@ -3076,6 +3076,39 @@ fn isSafePostSuperPropertyRead(
     return true;
 }
 
+/// A single simple `var` initializer may read one direct `super` property
+/// after the derived receiver has been initialized. Keep compound declarations
+/// and lexical bindings on reanalysis so their scope edits remain independently
+/// audited.
+fn isSafePostSuperVarDeclaration(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    declaration: ast_mod.Node,
+) bool {
+    if (isSafeConstructorVarDeclaration(ast, semantic, declaration)) return true;
+    if (declaration.tag != .variable_declaration or
+        ast.variableDeclarationKind(declaration) != .@"var") return false;
+
+    const extras = ast.extra_data.items;
+    const extra = declaration.data.extra;
+    if (extra > extras.len or extras.len - extra < 3) return false;
+    const declarators_start = extras[extra + 1];
+    const declarators_len = extras[extra + 2];
+    if (declarators_len != 1 or declarators_start >= extras.len or
+        extras[declarators_start] >= ast.nodes.items.len) return false;
+
+    const declarator = ast.nodes.items[extras[declarators_start]];
+    if (declarator.tag != .variable_declarator) return false;
+    const declarator_extra = declarator.data.extra;
+    if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
+    const binding_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
+    const type_annotation_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
+    const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+    return type_annotation_idx.isNone() and
+        isBoundSourceIdentifierBinding(ast, semantic, binding_idx) and
+        isSafePostSuperPropertyRead(ast, semantic, initializer_idx);
+}
+
 /// A derived constructor can use an exact direct `super` property assignment
 /// after its first `super()` call. Keep this proof separate from the general
 /// constructor expression allowlist: before `super()` the receiver is still
@@ -3381,14 +3414,14 @@ fn isSimpleParamsConstructorBodyGraphSafe(
         const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
         if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
             // Keep the initialization boundary explicit: simple `var`
-            // declarations, direct `this` writes, audited direct `super`
-            // property assignments, and bounded conditionals with simple
+            // declarations, direct `super` property reads and assignments,
+            // direct `this` writes, and bounded conditionals with simple
             // branch blocks may follow, with an optional final return or throw.
             var completion_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
                 const following_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
-                if (!completion_seen and isSafeConstructorVarDeclaration(
+                if (!completion_seen and isSafePostSuperVarDeclaration(
                     ast,
                     semantic,
                     ast.getNode(following_statement),
