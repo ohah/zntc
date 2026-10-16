@@ -175,9 +175,9 @@ fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
 
 /// A lowered default initializer is moved from its separate parameter
 /// environment into the function body. Synchronous functions use their
-/// existing body scope; an async arrow state-machine wrapper may also reserve
-/// directly when its exact source arrow scope owns both the parameters and
-/// emitted wrapper. Dynamic-lookup and other async/generator owners defer.
+/// existing body scope. An explicitly active async wrapper may reserve
+/// directly when its exact source scope owns both the parameters and emitted
+/// wrapper. Dynamic-lookup and other async/generator owners defer.
 fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) ?ScopeId {
     if (!self.semantic_edit_enabled or
         !self.options.unsupported.default_params or !self.options.unsupported.arrow or
@@ -186,20 +186,34 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
     const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     if (start_scope.toIndex() >= scopes.len) return null;
     const start_owner = scopeOwnerNode(self, start_scope) orelse return null;
-    if (self.state_machine_depth > 0) {
-        const output_owner = self.lowered_parameter_temp_output_owner;
-        if (output_owner.isNone() or
-            self.ast.getNode(output_owner).tag != .arrow_function_expression or
-            !ownerNeedsLoweredFunctionScope(self, output_owner)) return null;
+    const output_owner = self.lowered_parameter_temp_output_owner;
+    if (self.state_machine_depth > 0 or !output_owner.isNone()) {
+        if (output_owner.isNone()) return null;
+        const output_owner_node = self.ast.getNode(output_owner);
+        const exact_async_arrow_state_machine = self.state_machine_depth > 0 and
+            output_owner_node.tag == .arrow_function_expression and
+            ownerNeedsLoweredFunctionScope(self, output_owner);
+        const exact_async_function_wrapper = blk: {
+            if (!ownerNeedsLoweredFunctionScope(self, output_owner)) break :blk false;
+            const flags_index: u32 = switch (output_owner_node.tag) {
+                .function_declaration, .function_expression, .function => ast_mod.FunctionExtra.flags,
+                else => break :blk false,
+            };
+            const flags = self.readU32(output_owner_node.data.extra, flags_index);
+            break :blk (flags & ast_mod.FunctionFlags.is_async) != 0 and
+                (flags & ast_mod.FunctionFlags.is_generator) == 0 and
+                self.options.unsupported.async_await and self.options.unsupported.generator;
+        };
+        if (!exact_async_arrow_state_machine and !exact_async_function_wrapper) return null;
         const owner_raw = @intFromEnum(output_owner);
         const output_scope_raw = self.transformed_scope_owner_map.get(owner_raw) orelse
             self.scope_owner_map.get(owner_raw) orelse return null;
         if (output_scope_raw >= scopes.len or scopes[output_scope_raw].kind != .function) return null;
         const output_scope: ScopeId = @enumFromInt(output_scope_raw);
 
-        // The async arrow is lowered to an ordinary wrapper that keeps the
-        // source arrow's function ScopeId. Its parameter temp can use that
-        // exact owner even while state-machine temp collection is active.
+        // The async arrow/function is lowered to an ordinary wrapper that
+        // keeps the source owner's function ScopeId. Its parameter temp can
+        // use that exact owner while state-machine temp collection is active.
         if (start_owner == output_owner) {
             const parameter_scope = scopes[start_scope.toIndex()].parent;
             if (parameter_scope.isNone()) return null;
@@ -210,9 +224,13 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
             return output_scope;
         }
         if (self.ast.getNode(start_owner).tag == .formal_parameters and
-            functionParametersNode(self, output_owner) == start_owner and
-            scopes[start_scope.toIndex()].parent == output_scope)
-            return output_scope;
+            functionParametersNode(self, output_owner) == start_owner)
+        {
+            if (exact_async_arrow_state_machine and scopes[start_scope.toIndex()].parent == output_scope)
+                return output_scope;
+            if (exact_async_function_wrapper and scopes[output_scope.toIndex()].parent == start_scope)
+                return output_scope;
+        }
         return null;
     }
     if (self.ast.getNode(start_owner).tag != .formal_parameters) {
