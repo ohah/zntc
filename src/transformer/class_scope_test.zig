@@ -9,6 +9,8 @@ const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const coverage = @import("symbol_coverage.zig");
+const es_helpers = @import("es_helpers.zig");
+const Members = @import("es2015_class/members.zig").Members(Transformer);
 
 fn expectAnonymousClassTempNameMarks(
     source: []const u8,
@@ -400,6 +402,90 @@ test "#4819 class field computed-key prehoist binds temp identity exactly" {
     defer report.deinit(allocator);
     if (!report.hasCompleteExactCoverage()) coverage.printStrict("class-computed-field-prehoist-es5.ts", &report);
     try std.testing.expect(report.hasCompleteExactCoverage());
+}
+
+test "#4819 class computed-key memo binds only its producer reference" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const key = 'value'; key;");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    const source_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var key_reference: NodeIndex = .none;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "key")) continue;
+        key_reference = @enumFromInt(raw);
+        break;
+    }
+    if (key_reference.isNone()) return error.MissingComputedKeyReference;
+
+    const none = @intFromEnum(NodeIndex.none);
+    const empty_list = try transformer.ast.addNodeList(&.{});
+    const owner_params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
+    const owner_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = empty_list },
+    });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(owner_params), @intFromEnum(owner_body), 0, none });
+    const owner = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = owner_extra },
+    });
+    const owner_scope = try transformer.addGeneratedFunctionScope(transformer.programScope(), owner);
+    transformer.current_scope = transformer.programScope();
+
+    const memo = try es_helpers.memoizeComputedKey(&transformer, key_reference, .EMPTY, false);
+    var classified = Members.ClassifiedMembers{
+        .constructor_idx = null,
+        .methods = .empty,
+        .instance_fields = .empty,
+        .static_elements = .empty,
+        .accessors = .empty,
+        .private_fields = .empty,
+        .static_private_fields = .empty,
+        .private_methods = .empty,
+    };
+    defer classified.deinit(allocator);
+    try classified.computed_key_temp_bindings.append(allocator, memo);
+
+    // A same-span by-name decoy models an unrelated generated node that must
+    // not be swept into this memo's identity when its binding is finalized.
+    const decoy = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, memo.temp_span);
+    try transformer.trackHoistedTempRefInScope(memo.temp_span, decoy, owner_scope, .{ .read = true });
+    try Members.bindComputedKeyTemps(&transformer, &classified, owner_scope, .EMPTY);
+
+    const id_raw = transformer.getSymbolIdAt(memo.binding) orelse return error.MissingComputedKeyTempSymbol;
+    try std.testing.expectEqual(@as(?u32, id_raw), transformer.getSymbolIdAt(memo.computed_ref));
+    try std.testing.expect(transformer.getSymbolIdAt(decoy) == null);
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_refs.items.len);
+    try std.testing.expectEqual(decoy, transformer.pending_temp_refs.items[0].node);
+
+    const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
+    const reference_record = (try editor.referenceForNode(memo.computed_ref)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @enumFromInt(id_raw)), reference_record.symbol_id);
+    try std.testing.expectEqual(owner_scope, reference_record.scope_id);
+    try std.testing.expect((try editor.referenceForNode(decoy)) == null);
+    try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
 }
 
 test "#4819 anonymous private class wrapper owns its generated name exactly" {
