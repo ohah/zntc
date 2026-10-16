@@ -346,6 +346,7 @@ pub const Transformer = struct {
     /// prevents safe lowering. Lowered arrows in that environment need lexical
     /// capture wrappers because body aliases are out of scope.
     native_parameter_list_retained_for_dynamic_lookup: bool = false,
+    lowered_parameter_temp_output_owner: NodeIndex = .none,
     native_parameter_default_root: NodeIndex = .none,
     native_parameter_name_hint: ?[]const u8 = null,
     native_parameter_arrow_depth: u32 = 0,

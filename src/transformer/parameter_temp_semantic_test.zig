@@ -226,6 +226,12 @@ test "#4819 lowered synchronous parameter temp reserves its body SymbolId at cre
         false,
         true,
     );
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} const read=async (value=get()?.value)=>{await Promise.resolve();return value}; read();",
+        .es5,
+        false,
+        true,
+    );
 }
 
 test "#4819 parameter eval keeps its output temp out of the function body scope" {
@@ -251,7 +257,17 @@ test "#4819 parameter eval keeps its output temp out of the function body scope"
 
 test "#4819 unsafe arrow parameter temp owners stay deferred" {
     try expectArrowParameterTempDirectReservation(
-        "function get(){return {value:5}} const read=async (value=get()?.value)=>value; read();",
+        "function get(){return {value:5}} const read=async (value=get()?.value)=>{await Promise.resolve();return value}; read();",
+        .es5,
+        true,
+    );
+    try expectArrowParameterTempDirectReservation(
+        "function get(){return {value:5}} const read=async (value=(eval('0'),get()?.value))=>value; read();",
+        .es5,
+        false,
+    );
+    try expectArrowParameterTempDirectReservation(
+        "function get(){return {value:5}} const read=async (value=get()?.value)=>{eval('0');return value}; read();",
         .es5,
         false,
     );
@@ -276,7 +292,7 @@ test "#4819 arrow temp defers when its parameter owner does not match its scope"
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    var scanner = try Scanner.init(allocator, "function get(){return {value:5}} const read=(value=get()?.value)=>value; function other(input){return input}");
+    var scanner = try Scanner.init(allocator, "function get(){return {value:5}} const read=async (value=get()?.value)=>value; function other(input){return input}");
     var parser = Parser.init(allocator, &scanner);
     parser.configureFromExtension(".mjs");
     _ = try parser.parse();
@@ -319,6 +335,8 @@ test "#4819 arrow temp defers when its parameter owner does not match its scope"
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
+    transformer.state_machine_depth = 1;
+    transformer.lowered_parameter_temp_output_owner = owner;
 
     transformer.ast.extra_data.items[parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").ArrowExtra.params] = @intFromEnum(other_params);
     const name = try transformer.ast.addString("_a");
@@ -333,6 +351,20 @@ test "#4819 arrow temp defers when its parameter owner does not match its scope"
     try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
     try std.testing.expectEqual(param_scope, @intFromEnum(analyzer.scopes.items[body_scope].parent));
+
+    transformer.ast.extra_data.items[parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").ArrowExtra.params] = @intFromEnum(params);
+    analyzer.scopes.items[body_scope].parent = .none;
+    const bad_parent_name = try transformer.ast.addString("_b");
+    const bad_parent_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, bad_parent_name);
+    try transformer.trackSyntheticTempReferenceInScope(
+        bad_parent_name,
+        parser.ast.getNode(other_params).span,
+        bad_parent_ref,
+        @enumFromInt(body_scope),
+        .{ .read = true },
+    );
+    try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
 }
 
 test "#4819 parameter temp defers when its output owner is misparented or ambiguous" {

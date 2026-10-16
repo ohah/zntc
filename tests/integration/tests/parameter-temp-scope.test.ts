@@ -169,4 +169,67 @@ describe('parameter optional-chain temp scope (#4819)', () => {
       });
     }
   }
+
+  for (const bundle of [false, true]) {
+    for (const minify of [false, true]) {
+      test(`lowered async arrow default temp is reentrant-safe, ${bundle ? 'bundle' : 'single'}, ${minify ? 'minify' : 'plain'}`, async () => {
+        const source = `let calls = 0;
+          let read;
+          function get() { return { value: ++calls }; }
+          function key() { if (calls === 1) read(); return 'value'; }
+          read = async (value = get()?.[key()]) => { await Promise.resolve(); return value; };
+          read().then(value => console.log(value));`;
+        const dir = await createFixture({
+          'input.mjs': source,
+          'package.json': '{"type":"module"}',
+        });
+        cleanup = dir.cleanup;
+        const input = join(dir.dir, 'input.mjs');
+        const native = spawnSync('node', [input], { encoding: 'utf8' });
+        expect(native.status, native.stderr).toBe(0);
+        expect(native.stdout).toBe('1\n');
+
+        const output = join(dir.dir, bundle ? 'out.cjs' : 'out.mjs');
+        const result = await runZntcInDir(dir.dir, [
+          ...(bundle ? ['--bundle', '--platform=node', '--format=cjs'] : []),
+          'input.mjs',
+          '--target=es5',
+          ...(minify ? ['--minify'] : []),
+          '-o',
+          output,
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe(native.stdout);
+      });
+    }
+  }
+
+  for (const evalLocation of ['parameter', 'body'] as const) {
+    test(`lowered async arrow default temp preserves ${evalLocation} eval`, async () => {
+      const initializer =
+        evalLocation === 'parameter' ? '(eval("0"), get()?.value)' : 'get()?.value';
+      const body = evalLocation === 'body' ? '{ eval("0"); return value; }' : 'value';
+      const source = `function get() { return { value: 5 }; }
+        const read = async (value = ${initializer}) => ${body};
+        read().then(value => console.log(value));`;
+      const dir = await createFixture({
+        'input.mjs': source,
+        'package.json': '{"type":"module"}',
+      });
+      cleanup = dir.cleanup;
+      const input = join(dir.dir, 'input.mjs');
+      const native = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(native.status, native.stderr).toBe(0);
+      expect(native.stdout).toBe('5\n');
+
+      const output = join(dir.dir, 'out.mjs');
+      const result = await runZntcInDir(dir.dir, ['input.mjs', '--target=es5', '-o', output]);
+      expect(result.exitCode, result.stderr).toBe(0);
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(native.stdout);
+    });
+  }
 });
