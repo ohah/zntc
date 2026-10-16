@@ -3,6 +3,8 @@ const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
 const ast_walk = @import("../parser/ast_walk.zig");
+const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+const es_helpers = @import("es_helpers.zig");
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const ESTarget = @import("compat.zig").ESTarget;
@@ -10,7 +12,7 @@ const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const ScopeKind = @import("../semantic/scope.zig").ScopeKind;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 
-fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults: bool) !void {
+fn checkParameterTempScopeImpl(source: []const u8, target: ESTarget, native_defaults: bool, expect_direct_reservation: ?bool) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -27,7 +29,8 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |owner| {
         const node = parser.ast.nodes.items[owner.key_ptr.*];
-        if (node.tag != .method_definition and node.tag != .function_declaration) continue;
+        if (node.tag != .method_definition and node.tag != .function_declaration and
+            node.tag != .function_expression) continue;
         if (parser.ast.functionParamsList(node).len == 0) continue;
         try std.testing.expect(function_scope == null);
         function_scope = owner.value_ptr.*;
@@ -61,6 +64,22 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
+    if (expect_direct_reservation) |expected_direct_reservation| {
+        const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
+        var reserved = false;
+        var ids = transformer.synthetic_temp_symbol_ids.valueIterator();
+        while (ids.next()) |raw_id| {
+            if (raw_id.* >= editor.symbols.items.len) continue;
+            const symbol = editor.symbols.items[raw_id.*];
+            if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "_a") and
+                @intFromEnum(symbol.scope_id) == reference_scope)
+            {
+                reserved = true;
+                break;
+            }
+        }
+        try std.testing.expectEqual(expected_direct_reservation, reserved);
+    }
     const edited = (try transformer.finishSemanticEdit()).?;
 
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
@@ -95,6 +114,10 @@ fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults
     try std.testing.expectEqual(@as(usize, 1), temp_count);
 }
 
+fn checkParameterTempScope(source: []const u8, target: ESTarget, native_defaults: bool) !void {
+    return checkParameterTempScopeImpl(source, target, native_defaults, null);
+}
+
 test "#4819 parameter optional-chain temp uses exact emitted storage scope" {
     const fixtures = [_][]const u8{
         "function get(){return {value:5}} class C{constructor(value=get()?.value){this.value=value}} new C();",
@@ -108,17 +131,125 @@ test "#4819 parameter optional-chain temp uses exact emitted storage scope" {
         "function get(){return {value:5}} async function* run(value=get()?.value){yield value} run().next();",
         "function get(){return {value:5}} async function* run(value=get()?.value){for await(const item of [1]) yield value+item} run().next();",
     };
-    for (fixtures) |source| try checkParameterTempScope(source, .es5, false);
-    try checkParameterTempScope(
+    for (fixtures, 0..) |source, index| try checkParameterTempScopeImpl(source, .es5, false, index < 3);
+    try checkParameterTempScopeImpl(
         "function get(){return {value:5}} async function run(value=get()?.value){return value} run();",
         .es2016,
         true,
+        false,
     );
-    try checkParameterTempScope(
+    try checkParameterTempScopeImpl(
         "function get(){return {value:5}} async function* run(value=get()?.value){yield value} run().next();",
         .es2017,
         true,
+        false,
     );
+}
+
+test "#4819 lowered synchronous parameter temp reserves its body SymbolId at creation" {
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} function read(value=get()?.value){return value} read();",
+        .es5,
+        false,
+        true,
+    );
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} class C{method(value=get()?.value){return value}} new C().method();",
+        .es5,
+        false,
+        true,
+    );
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} const read=function(value=get()?.value){return value}; read();",
+        .es5,
+        false,
+        true,
+    );
+}
+
+test "#4819 parameter eval keeps its output temp out of the function body scope" {
+    try checkParameterTempScopeImpl(
+        "function get(){return {value:5}} function read(value=(eval('0'),get()?.value)){return value} read();",
+        .es5,
+        true,
+        false,
+    );
+}
+
+test "#4819 parameter temp defers when its output owner is misparented or ambiguous" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function get(){return {value:5}} function read(value=get()?.value){return value}");
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var function_scope: ?u32 = null;
+    var parameter_scope: ?u32 = null;
+    var parameter_node: ?NodeIndex = null;
+    var unrelated_function: ?NodeIndex = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const node = parser.ast.getNode(owner);
+        if (node.tag == .function_declaration and parser.ast.functionParamsList(node).len > 0) {
+            function_scope = entry.value_ptr.*;
+            parameter_node = parser.ast.readExtraNode(node.data.extra, 1);
+            parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(parameter_node.?));
+        } else if (node.tag == .function_declaration) {
+            unrelated_function = owner;
+        }
+    }
+    const body_scope: u32 = function_scope orelse return error.MissingFunctionScope;
+    const param_scope: u32 = parameter_scope orelse return error.MissingParameterScope;
+    const params: NodeIndex = parameter_node orelse return error.MissingParameterNode;
+    const other_function: NodeIndex = unrelated_function orelse return error.MissingUnrelatedFunction;
+    const other_extra: usize = @intCast(parser.ast.getNode(other_function).data.extra);
+    const original_other_params = parser.ast.readExtraNode(parser.ast.getNode(other_function).data.extra, 1);
+    const original_body_kind = analyzer.scopes.items[body_scope].kind;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const original_parent = analyzer.scopes.items[body_scope].parent;
+    analyzer.scopes.items[body_scope].parent = .none;
+    const first_name = try transformer.ast.addString("_a");
+    const first_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, first_name);
+    try transformer.trackSyntheticTempReferenceInScope(first_name, parser.ast.getNode(params).span, first_ref, @enumFromInt(param_scope), .{ .read = true });
+    try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
+
+    analyzer.scopes.items[body_scope].parent = original_parent;
+    if (transformer.semantic_editor) |*editor| editor.scopes.items[body_scope].parent = original_parent;
+    transformer.ast.extra_data.items[other_extra + 1] = @intFromEnum(params);
+    const second_name = try transformer.ast.addString("_b");
+    const second_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, second_name);
+    try transformer.trackSyntheticTempReferenceInScope(second_name, parser.ast.getNode(params).span, second_ref, @enumFromInt(param_scope), .{ .read = true });
+    try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
+
+    transformer.ast.extra_data.items[other_extra + 1] = @intFromEnum(original_other_params);
+    analyzer.scopes.items[body_scope].kind = .block;
+    if (transformer.semantic_editor) |*editor| editor.scopes.items[body_scope].kind = .block;
+    const third_name = try transformer.ast.addString("_c");
+    const third_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, third_name);
+    try transformer.trackSyntheticTempReferenceInScope(third_name, parser.ast.getNode(params).span, third_ref, @enumFromInt(param_scope), .{ .read = true });
+    try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
+    analyzer.scopes.items[body_scope].kind = original_body_kind;
+    if (transformer.semantic_editor) |*editor| editor.scopes.items[body_scope].kind = original_body_kind;
 }
 
 test "#4819 nullish-assignment parameter temp uses exact emitted storage scope" {
