@@ -195,13 +195,24 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
             ownerNeedsLoweredFunctionScope(self, output_owner);
         const exact_async_function_wrapper = blk: {
             if (!ownerNeedsLoweredFunctionScope(self, output_owner)) break :blk false;
-            const flags_index: u32 = switch (output_owner_node.tag) {
-                .function_declaration, .function_expression, .function => ast_mod.FunctionExtra.flags,
+            const async_flags = switch (output_owner_node.tag) {
+                .function_declaration, .function_expression, .function => blk_flags: {
+                    const flags = self.readU32(output_owner_node.data.extra, ast_mod.FunctionExtra.flags);
+                    break :blk_flags .{
+                        (flags & ast_mod.FunctionFlags.is_async) != 0,
+                        (flags & ast_mod.FunctionFlags.is_generator) != 0,
+                    };
+                },
+                .method_definition => blk_flags: {
+                    const flags = self.readU32(output_owner_node.data.extra, ast_mod.MethodExtra.flags);
+                    break :blk_flags .{
+                        (flags & ast_mod.MethodFlags.is_async) != 0,
+                        (flags & ast_mod.MethodFlags.is_generator) != 0,
+                    };
+                },
                 else => break :blk false,
             };
-            const flags = self.readU32(output_owner_node.data.extra, flags_index);
-            break :blk (flags & ast_mod.FunctionFlags.is_async) != 0 and
-                (flags & ast_mod.FunctionFlags.is_generator) == 0 and
+            break :blk async_flags[0] and !async_flags[1] and
                 self.options.unsupported.async_await and self.options.unsupported.generator;
         };
         if (!exact_async_arrow_state_machine and !exact_async_function_wrapper) return null;
@@ -211,9 +222,9 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
         if (output_scope_raw >= scopes.len or scopes[output_scope_raw].kind != .function) return null;
         const output_scope: ScopeId = @enumFromInt(output_scope_raw);
 
-        // The async arrow/function is lowered to an ordinary wrapper that
-        // keeps the source owner's function ScopeId. Its parameter temp can
-        // use that exact owner while state-machine temp collection is active.
+        // The async arrow/function/method is lowered to an ordinary wrapper
+        // that keeps the source owner's function ScopeId. Its parameter temp
+        // can use that exact owner while state-machine temp collection is active.
         if (start_owner == output_owner) {
             const parameter_scope = scopes[start_scope.toIndex()].parent;
             if (parameter_scope.isNone()) return null;
