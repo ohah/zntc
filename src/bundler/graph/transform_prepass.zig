@@ -3059,8 +3059,7 @@ fn isSafePostSuperExpressionStatement(
     return isSafeConstructorExpressionStatement(ast, semantic, statement) or
         isSafePostSuperCallExpression(ast, semantic, expression_idx, true) or
         isSafePostSuperPropertyAssignment(ast, semantic, expression_idx) or
-        isSafePostSuperThisPropertyRead(ast, semantic, expression_idx) or
-        isSafePostSuperPropertyRead(ast, semantic, expression_idx);
+        isSafePostSuperInitializerValue(ast, semantic, expression_idx);
 }
 
 /// A bare direct `super` property read after initialization can retain its

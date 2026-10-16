@@ -19534,6 +19534,162 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
+  test('post-super value expression statements retain only audited reads', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-post-super-value-expression-'));
+    const input = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.cjs');
+    const sourceForExpression = (expression: string) =>
+      [
+        'var events = [], key = "selected", keys = { name: "selected", prefix: "select", suffix: "ed" }, keyCalls = 0, callCount = 0, writes = 0;',
+        'function getKey() { keyCalls += 1; return "selected"; }',
+        'function consume(value) { callCount += 1; return value; }',
+        'function Base() { return new Proxy({ selected: true, nested: { selected: true }, current: { value: true }, ready: true }, {',
+        '  get(target, property, receiver) { if (property === "selected" || property === "nested" || property === "current" || property === "ready") events.push("get:" + property); return Reflect.get(target, property, receiver); },',
+        '  set(target, property, value, receiver) { writes += 1; events.push("set:" + property + ":" + value); return Reflect.set(target, property, value, receiver); }',
+        '}); }',
+        `class Child extends Base { constructor() { super(); ${expression} this.value = 1; } }`,
+        'var child = new Child();',
+        'console.log(child.value, events.join(",") || "-", keyCalls, callCount, writes, child instanceof Child);',
+      ].join('\n');
+    const fixtures: Array<{
+      name: string;
+      expression: string;
+      source?: string;
+      graph?: 'retained' | 'reanalyzed';
+      output: string;
+    }> = [
+      {
+        name: 'computed this read with one coercion retains its exact graph',
+        expression: 'this[key] + 1;',
+        source: [
+          'var events = [], key = "selected", writes = 0;',
+          'var selectedValue = { valueOf() { events.push("coerce"); return 3; } };',
+          'function Base() { return new Proxy({ selected: selectedValue }, {',
+          '  get(target, property, receiver) { if (property === "selected") events.push("get:selected"); return Reflect.get(target, property, receiver); },',
+          '  set(target, property, value, receiver) { writes += 1; events.push("set:" + property + ":" + value); return Reflect.set(target, property, value, receiver); }',
+          '}); }',
+          'class Child extends Base { constructor() { super(); this[key] + 1; this.value = 4; } }',
+          'var child = new Child();',
+          'console.log(child.value, events.join(","), writes, child instanceof Child);',
+        ].join('\n'),
+        graph: 'retained',
+        output: '4 get:selected,coerce,set:value:4 1 false\n',
+      },
+      {
+        name: 'logical computed this reads retain left-to-right evaluation',
+        expression: 'this[key] && this.ready;',
+        graph: 'retained',
+        output: '1 get:selected,get:ready,set:value:1 0 0 1 false\n',
+      },
+      {
+        name: 'effectful computed key',
+        expression: 'this[getKey()] + 1;',
+        output: '1 get:selected,set:value:1 1 0 1 false\n',
+      },
+      {
+        name: 'member expression computed key',
+        expression: 'this[keys.name] + 1;',
+        output: '1 get:selected,set:value:1 0 0 1 false\n',
+      },
+      {
+        name: 'optional member computed key',
+        expression: 'this[keys?.name] + 1;',
+        output: '1 get:selected,set:value:1 0 0 1 false\n',
+      },
+      {
+        name: 'binary computed key with member reads',
+        expression: 'this[keys.prefix + keys.suffix] + 1;',
+        output: '1 get:selected,set:value:1 0 0 1 false\n',
+      },
+      {
+        name: 'optional this receiver',
+        expression: 'this?.[key] + 1;',
+        output: '1 get:selected,set:value:1 0 0 1 false\n',
+      },
+      {
+        name: 'nested this property read',
+        expression: 'this.nested.selected + 1;',
+        output: '1 get:nested,set:value:1 0 0 1 false\n',
+      },
+      {
+        name: 'optional chained this property read',
+        expression: 'this.current?.value + 1;',
+        output: '1 get:current,set:value:1 0 0 1 false\n',
+      },
+      {
+        name: 'call wrapping computed this read',
+        expression: 'consume(this[key]);',
+        output: '1 get:selected,set:value:1 0 1 1 false\n',
+      },
+      {
+        name: 'computed this property update',
+        expression: 'this[key]++;',
+        output: '1 get:selected,set:selected:2,set:value:1 0 0 2 false\n',
+      },
+      {
+        name: 'computed this property assignment',
+        expression: '(this[key] = true);',
+        output: '1 set:selected:true,set:value:1 0 0 2 false\n',
+      },
+    ];
+
+    try {
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source ?? sourceForExpression(fixture.expression));
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const expectedGraph = fixture.graph ?? 'reanalyzed';
+        const mode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${expectedGraph}`,
+        );
+        if (expectedGraph === 'retained') {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 empty classes, safe static fields, plain methods and compatible accessors retain their graph; other forms resync', () => {
     let deeplyNestedComputedKey = 'makeKey()';
     for (let depth = 0; depth < 64; depth += 1) {
