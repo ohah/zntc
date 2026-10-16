@@ -1992,6 +1992,15 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 if (raw_id >= symbols.len) std.debug.panic("generator assignment binding id is out of range", .{});
                 try self.trackUserWriteFromBinding(target, binding, symbols[raw_id].scope_id);
+            } else if (self.semantic_edit_enabled and @intFromEnum(binding) >= self.parser_node_count) {
+                // Lowering-created var bindings become assignment targets in
+                // the state machine. Reserve their wrapper identity before
+                // the hoisted binding node is constructed.
+                if (try ensureGeneratorStateTempSymbol(self, node.data.string_ref, node.span)) |symbol| {
+                    try self.trackGeneratorStateReference(target, symbol, self.current_scope, .{ .write = true });
+                } else {
+                    try self.trackHoistedTempRef(node.data.string_ref, target, .{ .write = true });
+                }
             } else {
                 try self.trackHoistedTempRef(node.data.string_ref, target, .{ .write = true });
             }
@@ -3096,6 +3105,35 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     try std.testing.expectEqual(@as(usize, 4), transformer.generator_state_semantic_refs.items.len);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    const generated_binding_span = try es_helpers.makeTempVarSpan(&transformer);
+    const generated_binding = try es_helpers.makeSyntheticBinding(&transformer, generated_binding_span);
+    const assignment_ref = try ES2015Generator(Transformer).bindingToAssignTarget(&transformer, generated_binding);
+    const assignment_id = transformer.generator_state_temp_symbols.get(generated_binding_span.start) orelse
+        return error.MissingAssignmentTempSymbol;
+    try std.testing.expectEqual(@as(?u32, assignment_id), transformer.getSymbolIdAt(assignment_ref));
+    try ES2015Generator(Transformer).registerGeneratorVar(&transformer, generated_binding_span, generated_binding);
+    try std.testing.expectEqual(@as(usize, 5), transformer.generator_state_semantic_refs.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    var state_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    _ = try ES2015Generator(Transformer).buildHoistedVarDecl(
+        &transformer,
+        &.{},
+        .EMPTY,
+        &state_temps,
+        transformer.programScope(),
+    );
+    var hoisted_binding: ?NodeIndex = null;
+    for (state_temps.items) |temp| {
+        if (temp.name_span.start != generated_binding_span.start) continue;
+        hoisted_binding = temp.binding;
+        try std.testing.expectEqual(@as(?u32, assignment_id), temp.symbol_id);
+        break;
+    }
+    const exact_binding = hoisted_binding orelse return error.MissingAssignmentTempBinding;
+    try std.testing.expectEqual(@as(?u32, assignment_id), transformer.getSymbolIdAt(exact_binding));
 }
 
 test "generator state name handoff survives nested cache invalidation" {
