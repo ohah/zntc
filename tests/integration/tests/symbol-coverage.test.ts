@@ -7070,7 +7070,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '9 10 2 2 true true\n',
       );
 
-      const derivedConstructorSuperPropertyConditionalTest = run(
+      const derivedConstructorSuperPropertyConditionalUnaryTest = run(
         [
           'var reads = 0, receiverReads = 0, token = { kind: "token" };',
           'class Base {',
@@ -7078,24 +7078,24 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.value; }',
           '}',
           'class Child extends Base {',
-          '  constructor(value) { super(value); var selected = super.current ? 1 : 2; this.selected = selected; }',
+          '  constructor(value) { super(value); var selected = !super.current ? 1 : 2; this.selected = selected; }',
           '}',
           'var truthy = new Child(token);',
           'var falsy = new Child(0);',
-          'console.log(truthy.selected === 1, falsy.selected === 2, reads, receiverReads, truthy instanceof Child, falsy instanceof Child);',
+          'console.log(truthy.selected === 2, falsy.selected === 1, reads, receiverReads, truthy instanceof Child, falsy instanceof Child);',
         ].join('\n'),
       );
       expect(
-        derivedConstructorSuperPropertyConditionalTest.status,
-        derivedConstructorSuperPropertyConditionalTest.stderr,
+        derivedConstructorSuperPropertyConditionalUnaryTest.status,
+        derivedConstructorSuperPropertyConditionalUnaryTest.stderr,
       ).toBe(0);
-      expectRetainedClean(derivedConstructorSuperPropertyConditionalTest.stderr);
-      const derivedConstructorSuperPropertyConditionalTestOutput = runOutput();
+      expectRetainedClean(derivedConstructorSuperPropertyConditionalUnaryTest.stderr);
+      const derivedConstructorSuperPropertyConditionalUnaryTestOutput = runOutput();
       expect(
-        derivedConstructorSuperPropertyConditionalTestOutput.status,
-        derivedConstructorSuperPropertyConditionalTestOutput.stderr,
+        derivedConstructorSuperPropertyConditionalUnaryTestOutput.status,
+        derivedConstructorSuperPropertyConditionalUnaryTestOutput.stderr,
       ).toBe(0);
-      expect(derivedConstructorSuperPropertyConditionalTestOutput.stdout).toBe(
+      expect(derivedConstructorSuperPropertyConditionalUnaryTestOutput.stdout).toBe(
         'true true 2 2 true true\n',
       );
 
@@ -7604,6 +7604,84 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         },
       ];
       for (const variant of hostileDerivedConstructorSuperConditionalTestVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
+            'var nested = { kind: "nested" }, replacement = { value: nested };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function choose() { callCount++; return true; }',
+            'function consume(value) { callCount++; return value; }',
+            'class Base {',
+            '  constructor(value) { this.value = value; }',
+            '  get current() { reads++; return this.value; }',
+            '  get other() { reads++; return nested; }',
+            '}',
+            'class Child extends Base { constructor(value) { super(value); var selected = ' +
+              variant.test +
+              ' ? super.current : super.other; this.selected = selected; } }',
+            'try { var child = new Child(replacement); console.log("ok", child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorSuperUnaryConditionalTestVariants: Array<{
+        name: string;
+        test: string;
+        expected: string;
+      }> = [
+        {
+          name: 'conditional unary test uses typeof',
+          test: 'typeof super.current',
+          expected: 'ok true false 2 0 0\n',
+        },
+        {
+          name: 'conditional unary test uses void',
+          test: 'void super.current',
+          expected: 'ok false true 2 0 0\n',
+        },
+        {
+          name: 'conditional unary test invokes a function',
+          test: 'choose()',
+          expected: 'ok true false 1 0 1\n',
+        },
+        {
+          name: 'conditional unary test uses effectful computed super key',
+          test: 'super[getKey()]',
+          expected: 'ok true false 2 1 0\n',
+        },
+        {
+          name: 'conditional unary test uses member computed super key',
+          test: 'super[keys.name]',
+          expected: 'ok true false 2 0 0\n',
+        },
+        {
+          name: 'conditional unary test uses optional computed super key',
+          test: 'super[keys?.name]',
+          expected: 'ok true false 2 0 0\n',
+        },
+        {
+          name: 'conditional unary test invokes nested arrow',
+          test: '(() => super.current)()',
+          expected: 'ok true false 2 0 0\n',
+        },
+        {
+          name: 'conditional unary test reads member from super value',
+          test: 'super.current.value',
+          expected: 'ok true false 2 0 0\n',
+        },
+        {
+          name: 'conditional unary test calls around super read',
+          test: 'consume(super.current)',
+          expected: 'ok true false 2 0 1\n',
+        },
+        {
+          name: 'conditional unary test updates super property',
+          test: 'super.current++',
+          expected: 'TypeError 1 0 0\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperUnaryConditionalTestVariants) {
         const result = run(
           [
             'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
