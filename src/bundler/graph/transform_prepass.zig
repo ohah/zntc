@@ -3076,10 +3076,30 @@ fn isSafePostSuperPropertyRead(
     return true;
 }
 
+/// A source-bound initializer may combine direct `super` reads with the same
+/// side-effect-free binary operators already allowed for ordinary constructor
+/// values. Calls, logical short-circuiting, conditionals, and member chains
+/// keep their separate reanalysis boundary.
+fn isSafePostSuperInitializerValue(
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    value_idx: ast_mod.NodeIndex,
+) bool {
+    if (isSafeConstructorValue(ast, semantic, value_idx) or
+        isSafePostSuperPropertyRead(ast, semantic, value_idx)) return true;
+    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    const value = ast.getNode(value_idx);
+    if (value.tag != .binary_expression) return false;
+    const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+    return isSafeConstructorBinaryOperator(operator) and
+        isSafePostSuperInitializerValue(ast, semantic, value.data.binary.left) and
+        isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
+}
+
 /// A single simple `var` initializer may read one direct `super` property
-/// after the derived receiver has been initialized. Keep compound declarations
-/// and lexical bindings on reanalysis so their scope edits remain independently
-/// audited.
+/// or a bounded binary expression containing those reads after the derived
+/// receiver has been initialized. Keep compound declarations and lexical
+/// bindings on reanalysis so their scope edits remain independently audited.
 fn isSafePostSuperVarDeclaration(
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
@@ -3106,7 +3126,7 @@ fn isSafePostSuperVarDeclaration(
     const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
     return type_annotation_idx.isNone() and
         isBoundSourceIdentifierBinding(ast, semantic, binding_idx) and
-        isSafePostSuperPropertyRead(ast, semantic, initializer_idx);
+        isSafePostSuperInitializerValue(ast, semantic, initializer_idx);
 }
 
 /// A derived constructor can use an exact direct `super` property assignment

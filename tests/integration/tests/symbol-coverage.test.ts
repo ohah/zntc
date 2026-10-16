@@ -6971,6 +6971,37 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '14 2 2 true\n',
       );
 
+      const derivedConstructorSuperPropertyBinaryInitializers = run(
+        [
+          'var reads = 0, receiverReads = 0;',
+          'class Base {',
+          '  constructor() { this.slot = 7; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.slot; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(key, amount) {',
+          '    super();',
+          '    var staticValue = super.current + amount;',
+          '    var computedValue = super[key] - amount;',
+          '    this.value = staticValue + computedValue;',
+          '  }',
+          '}',
+          'var child = new Child("current", 2);',
+          'console.log(child.value, reads, receiverReads, child instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyBinaryInitializers.status,
+        derivedConstructorSuperPropertyBinaryInitializers.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyBinaryInitializers.stderr);
+      const derivedConstructorSuperPropertyBinaryInitializersOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyBinaryInitializersOutput.status,
+        derivedConstructorSuperPropertyBinaryInitializersOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyBinaryInitializersOutput.stdout).toBe('14 2 2 true\n');
+
       const hostileDerivedConstructorSuperReadVariants: Array<{
         name: string;
         constructor: string;
@@ -7127,6 +7158,92 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             '}',
             `class Child extends Base { ${variant.constructor} }`,
             `try { var child = ${variant.creation ?? 'new Child("current")'}; console.log("ok", child.result, reads, keyCalls, child instanceof Child); } catch (error) { console.log(error.name); }`,
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorSuperBinaryInitializerVariants: Array<{
+        name: string;
+        constructor: string;
+        expected: string;
+      }> = [
+        {
+          name: 'logical initializer contains super read',
+          constructor:
+            'constructor(key, amount) { super(); var result = key && super.current; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'conditional initializer contains super reads',
+          constructor:
+            'constructor(key, amount) { super(); var result = key ? super.current : super.other; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'unary initializer contains super read',
+          constructor:
+            'constructor(key, amount) { super(); var result = +super.current; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'assignment initializer contains super read',
+          constructor:
+            'constructor(key, amount) { super(); var result = (this.copy = super.current); this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'update initializer contains super read',
+          constructor:
+            'constructor(key, amount) { super(); var result = super.current++; this.result = result; }',
+          expected: 'ok 9 10 1 1 0 0 true\n',
+        },
+        {
+          name: 'call initializer contains super read',
+          constructor:
+            'constructor(key, amount) { super(); var result = consume(super.current); this.result = result; }',
+          expected: 'ok 9 9 1 0 0 1 true\n',
+        },
+        {
+          name: 'member chain initializer follows super read',
+          constructor:
+            'constructor(key, amount) { super(); var result = super.record.value; this.result = result; }',
+          expected: 'ok 9 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'effectful computed key in binary initializer',
+          constructor:
+            'constructor(key, amount) { super(); var result = super[getKey()] + amount; this.result = result; }',
+          expected: 'ok 11 9 1 0 1 0 true\n',
+        },
+        {
+          name: 'member computed key in binary initializer',
+          constructor:
+            'constructor(key, amount) { super(); var result = super[keys.name] + amount; this.result = result; }',
+          expected: 'ok 11 9 1 0 0 0 true\n',
+        },
+        {
+          name: 'exponentiation initializer stays on reanalysis',
+          constructor:
+            'constructor(key, amount) { super(); var result = super.current ** amount; this.result = result; }',
+          expected: 'ok 81 9 1 0 0 0 true\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperBinaryInitializerVariants) {
+        const result = run(
+          [
+            'var reads = 0, writes = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function consume(value) { callCount++; return value; }',
+            'class Base {',
+            '  constructor() { this.slot = 9; }',
+            '  get current() { reads++; return this.slot; }',
+            '  set current(value) { writes++; this.slot = value; }',
+            '  get other() { reads++; return this.slot + 1; }',
+            '  get record() { reads++; return { value: this.slot }; }',
+            '}',
+            `class Child extends Base { ${variant.constructor} }`,
+            `try { var child = new Child("current", 2); console.log("ok", child.result, child.slot, reads, writes, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }`,
           ].join('\n'),
         );
         expectReanalyzedOutput(result, variant.expected, variant.name);
