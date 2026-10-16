@@ -174,18 +174,47 @@ fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
 }
 
 /// A lowered default initializer is moved from its separate parameter
-/// environment into the function body. For a synchronous function whose
-/// parameters can be safely lowered, its body var scope already exists, so a
-/// temp reference can take its final SymbolId before the declaration is
-/// emitted. Dynamic-lookup and async/generator owners keep the deferred path.
+/// environment into the function body. Synchronous functions use their
+/// existing body scope; an async arrow state-machine wrapper may also reserve
+/// directly when its exact source arrow scope owns both the parameters and
+/// emitted wrapper. Dynamic-lookup and other async/generator owners defer.
 fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) ?ScopeId {
-    if (!self.semantic_edit_enabled or self.state_machine_depth > 0 or
+    if (!self.semantic_edit_enabled or
         !self.options.unsupported.default_params or !self.options.unsupported.arrow or
         self.native_parameter_list_retained_for_dynamic_lookup or start_scope.isNone()) return null;
 
     const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     if (start_scope.toIndex() >= scopes.len) return null;
     const start_owner = scopeOwnerNode(self, start_scope) orelse return null;
+    if (self.state_machine_depth > 0) {
+        const output_owner = self.lowered_parameter_temp_output_owner;
+        if (output_owner.isNone() or
+            self.ast.getNode(output_owner).tag != .arrow_function_expression or
+            !ownerNeedsLoweredFunctionScope(self, output_owner)) return null;
+        const owner_raw = @intFromEnum(output_owner);
+        const output_scope_raw = self.transformed_scope_owner_map.get(owner_raw) orelse
+            self.scope_owner_map.get(owner_raw) orelse return null;
+        if (output_scope_raw >= scopes.len or scopes[output_scope_raw].kind != .function) return null;
+        const output_scope: ScopeId = @enumFromInt(output_scope_raw);
+
+        // The async arrow is lowered to an ordinary wrapper that keeps the
+        // source arrow's function ScopeId. Its parameter temp can use that
+        // exact owner even while state-machine temp collection is active.
+        if (start_owner == output_owner) {
+            const parameter_scope = scopes[start_scope.toIndex()].parent;
+            if (parameter_scope.isNone()) return null;
+            const parameter_owner = scopeOwnerNode(self, parameter_scope) orelse return null;
+            if (self.ast.getNode(parameter_owner).tag != .formal_parameters or
+                functionParametersNode(self, start_owner) != parameter_owner or output_scope != start_scope)
+                return null;
+            return output_scope;
+        }
+        if (self.ast.getNode(start_owner).tag == .formal_parameters and
+            functionParametersNode(self, output_owner) == start_owner and
+            scopes[start_scope.toIndex()].parent == output_scope)
+            return output_scope;
+        return null;
+    }
     if (self.ast.getNode(start_owner).tag != .formal_parameters) {
         const parent_scope = scopes[start_scope.toIndex()].parent;
         if (parent_scope.isNone()) return null;

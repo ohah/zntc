@@ -17,6 +17,7 @@ const ast_walk = @import("../parser/ast_walk.zig");
 const es_helpers = @import("es_helpers.zig");
 const es2015_arrow = @import("es2015_arrow.zig");
 const es2015_generator = @import("es2015_generator.zig");
+const es2015_params = @import("es2015_params.zig");
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
@@ -766,7 +767,9 @@ pub fn ES2017(comptime Transformer: type) type {
             const params_idx: NodeIndex = self.readNodeIdx(e, 0);
             const body_idx: NodeIndex = self.readNodeIdx(e, 1);
 
-            const saved_temp_counter = self.temp_var_counter;
+            const parameter_temp_start = self.temp_var_counter;
+            const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+            defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
 
             const state_parent_scope = self.stateMachineOwnerScope(source_owner);
             var saved_sm_temps = try GenMod.enterStateMachineTempsForScope(self, state_parent_scope);
@@ -777,18 +780,60 @@ pub fn ES2017(comptime Transformer: type) type {
                 self.arrow_this_depth += 1;
                 defer self.arrow_this_depth -= 1;
 
-                const params_list = try es2015_arrow.ES2015Arrow(Transformer).arrowParamsToList(self, params_idx);
+                const parameter_visit = blk_params: {
+                    const saved_parameter_output_owner = self.lowered_parameter_temp_output_owner;
+                    self.lowered_parameter_temp_output_owner = source_owner;
+                    defer self.lowered_parameter_temp_output_owner = saved_parameter_output_owner;
+
+                    const arrow_has_lowered_params = es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
+                        self,
+                        self.ast.functionParamsList(node),
+                    );
+                    if (self.options.unsupported.default_params and arrow_has_lowered_params) {
+                        const parameter_environment = @import("parameter_environment.zig");
+                        const params_dynamic_lookup = try parameter_environment.nodeHasDynamicLookup(self, params_idx);
+                        const body_dynamic_lookup = try parameter_environment.functionBodyHasDynamicLookup(
+                            self,
+                            state_parent_scope,
+                            body_idx,
+                        );
+                        self.native_parameter_list_retained_for_dynamic_lookup =
+                            params_dynamic_lookup or body_dynamic_lookup;
+                    }
+                    const retained = self.native_parameter_list_retained_for_dynamic_lookup;
+                    const params_list = try es2015_arrow.ES2015Arrow(Transformer).arrowParamsToList(self, params_idx);
+                    const after_parameter_temps = self.temp_var_counter;
+                    self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
+                    break :blk_params .{
+                        .params_list = params_list,
+                        .after_parameter_temps = after_parameter_temps,
+                        .native_params_retained = retained,
+                    };
+                };
+                self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
+                const saved_temp_counter = parameter_visit.after_parameter_temps;
                 const saved_async_gen_body = self.in_async_generator_body;
                 self.in_async_generator_body = false;
                 const sm_result = try GenMod.buildStateMachine(self, body_idx, span, state_parent_scope);
                 self.in_async_generator_body = saved_async_gen_body;
-                break :blk .{ .params_list = params_list, .sm_result = sm_result };
+                break :blk .{
+                    .params_list = parameter_visit.params_list,
+                    .after_parameter_temps = parameter_visit.after_parameter_temps,
+                    .native_params_retained = parameter_visit.native_params_retained,
+                    .saved_temp_counter = saved_temp_counter,
+                    .sm_result = sm_result,
+                };
             };
             const params_list = lowered.params_list;
             var sm_result = lowered.sm_result;
             defer sm_result.hoisted_temps.deinit(self.allocator);
             if (sm_result.body.isNone()) return .none;
-            sm_result.body = try self.hoistStateMachineTempsAndRestore(sm_result.body, saved_temp_counter, span, &saved_sm_temps.callback_temps);
+            sm_result.body = try self.hoistStateMachineTempsAndRestore(
+                sm_result.body,
+                lowered.saved_temp_counter,
+                span,
+                &saved_sm_temps.callback_temps,
+            );
 
             const gen = try GenMod.buildGeneratorHelperCall(self, sm_result.body, span);
             const gen_wrapper_func = try es_helpers.wrapInFunction(self, gen.call, span);
@@ -807,11 +852,25 @@ pub fn ES2017(comptime Transformer: type) type {
             if (!sm_result.var_decl.isNone()) try self.scratch.append(self.allocator, sm_result.var_decl);
             try self.scratch.append(self.allocator, return_stmt);
             const body_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const func_body = try self.ast.addNode(.{
+            const unhoisted_body = try self.ast.addNode(.{
                 .tag = .block_statement,
                 .span = span,
                 .data = .{ .list = body_list },
             });
+            const func_body = blk: {
+                const saved_native_before_parameter_hoist = self.native_parameter_list_retained_for_dynamic_lookup;
+                const saved_source_owner = self.synthetic_function_source_owner;
+                self.native_parameter_list_retained_for_dynamic_lookup = lowered.native_params_retained;
+                self.synthetic_function_source_owner = source_owner;
+                defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_before_parameter_hoist;
+                defer self.synthetic_function_source_owner = saved_source_owner;
+                break :blk try self.hoistParameterTempsAndRestore(
+                    unhoisted_body,
+                    parameter_temp_start,
+                    lowered.after_parameter_temps,
+                    span,
+                );
+            };
 
             const none = @intFromEnum(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params_list, span);
