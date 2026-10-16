@@ -7180,6 +7180,32 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       ).toBe(0);
       expect(derivedConstructorThisPropertyReadOutput.stdout).toBe('true 1 1 true\n');
 
+      const derivedConstructorComputedThisPropertyRead = run(
+        [
+          'var reads = 0, receiverReads = 0, token = { kind: "token" };',
+          'class Base {',
+          '  constructor(value) { this.value = value; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.value; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(key, value) { super(value); var selected = this[key]; this.selected = selected; }',
+          '}',
+          'var child = new Child("current", token);',
+          'console.log(child.selected === token, reads, receiverReads, child instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorComputedThisPropertyRead.status,
+        derivedConstructorComputedThisPropertyRead.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorComputedThisPropertyRead.stderr);
+      const derivedConstructorComputedThisPropertyReadOutput = runOutput();
+      expect(
+        derivedConstructorComputedThisPropertyReadOutput.status,
+        derivedConstructorComputedThisPropertyReadOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorComputedThisPropertyReadOutput.stdout).toBe('true 1 1 true\n');
+
       const derivedConstructorSuperPropertyReturn = run(
         [
           'var reads = 0, receiverReads = 0;',
@@ -7922,6 +7948,84 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           [
             'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
             'var nested = { kind: "nested" }, replacement = { value: nested };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function consume(value) { callCount++; return value; }',
+            'class Base {',
+            '  constructor(value) { this.value = value; }',
+            '  get current() { reads++; return this.value; }',
+            '  read() { callCount++; return this.value; }',
+            '}',
+            'class Child extends Base { constructor(value) { super(value); var selected = ' +
+              variant.value +
+              '; this.selected = selected; } }',
+            'try { var child = new Child(replacement); console.log("ok", typeof child.selected, child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorComputedThisPropertyReadVariants: Array<{
+        name: string;
+        value: string;
+        expected: string;
+      }> = [
+        {
+          name: 'computed this read uses an effectful key',
+          value: 'this[getKey()]',
+          expected: 'ok object true false 1 1 0\n',
+        },
+        {
+          name: 'computed this read uses a member key',
+          value: 'this[keys.name]',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'computed this read uses an optional key',
+          value: 'this[keys?.name]',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'computed this read uses a member binary key',
+          value: 'this[keys.prefix + keys.suffix]',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'this read chains to a member',
+          value: 'this.current.value',
+          expected: 'ok object false true 1 0 0\n',
+        },
+        {
+          name: 'this read uses an optional member',
+          value: 'this.current?.value',
+          expected: 'ok object false true 1 0 0\n',
+        },
+        {
+          name: 'nested arrow reads computed this property',
+          value: '(() => this[key])()',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'call expression wraps computed this read',
+          value: 'consume(this[key])',
+          expected: 'ok object true false 1 0 1\n',
+        },
+        {
+          name: 'this method call reads the value',
+          value: 'this.read()',
+          expected: 'ok object true false 0 0 1\n',
+        },
+        {
+          name: 'computed this property is updated',
+          value: 'this[key]++',
+          expected: 'TypeError 1 0 0\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorComputedThisPropertyReadVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current", prefix: "cur", suffix: "rent" };',
+            'var nested = { kind: "nested" }, replacement = { value: nested };',
+            'var key = "current";',
             'function getKey() { keyCalls++; return "current"; }',
             'function consume(value) { callCount++; return value; }',
             'class Base {',
