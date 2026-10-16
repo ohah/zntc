@@ -2983,7 +2983,7 @@ fn isSafePostSuperCondition(
     // Reads may invoke getters or Proxy traps. The retained AST preserves each
     // operand's evaluation count and short-circuit order through initialized this.
     if (isSafeConstructorValue(ast, semantic, condition_idx) or
-        isSafeConstructorThisPropertyTarget(ast, condition_idx) or
+        isSafePostSuperThisPropertyRead(ast, semantic, condition_idx) or
         isSafePostSuperPropertyRead(ast, semantic, condition_idx)) return true;
     if (condition_idx.isNone() or @intFromEnum(condition_idx) >= ast.nodes.items.len) return false;
     const condition = ast.getNode(condition_idx);
