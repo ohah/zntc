@@ -6583,18 +6583,20 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     const expectReanalyzedOutput = (
       result: { status: number | null; stderr: string },
       expected: string,
+      label?: string,
     ) => {
-      expect(result.status, result.stderr).toBe(0);
+      const context = label ? `${label}: ` : '';
+      expect(result.status, `${context}${result.stderr}`).toBe(0);
       const mode = result.stderr
         .split(/\r?\n/)
         .find(
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, result.stderr).toContain('semantic_graph=reanalyzed');
+      expect(mode, `${context}${result.stderr}`).toContain('semantic_graph=reanalyzed');
       const actual = runOutput();
-      expect(actual.status, actual.stderr).toBe(0);
-      expect(actual.stdout).toBe(expected);
+      expect(actual.status, `${context}${actual.stderr}`).toBe(0);
+      expect(actual.stdout, context).toBe(expected);
     };
 
     try {
@@ -6823,7 +6825,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       expect(staticNestedArrowOutput.status, staticNestedArrowOutput.stderr).toBe(0);
       expect(staticNestedArrowOutput.stdout).toBe('42 50 true 50\n');
 
-      // A synchronous static sibling with super keeps the whole class on reanalysis.
+      // A direct synchronous static-method super use keeps its exact home graph.
       const synchronousStaticSuper = run(
         [
           'class Base {',
@@ -6841,20 +6843,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ].join('\n'),
       );
       expect(synchronousStaticSuper.status, synchronousStaticSuper.stderr).toBe(0);
-      const synchronousStaticMode = (synchronousStaticSuper.stderr ?? '')
-        .split(/\r?\n/)
-        .find(
-          (line) =>
-            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
-        );
-      expect(synchronousStaticMode, synchronousStaticSuper.stderr).toContain(
-        'semantic_graph=reanalyzed',
-      );
+      expectRetainedClean(synchronousStaticSuper.stderr ?? '');
       const synchronousStaticOutput = runOutput();
       expect(synchronousStaticOutput.status, synchronousStaticOutput.stderr).toBe(0);
       expect(synchronousStaticOutput.stdout).toBe('40 42\n');
 
-      // A synchronous sibling with super keeps the whole class on reanalysis.
+      // A direct synchronous instance-method super use keeps its exact home graph.
       const synchronousSuper = run(
         [
           'class Base {',
@@ -6863,7 +6857,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'class Service extends Base {',
           '  async readAsync() {',
           '    await Promise.resolve();',
-          '    return super.current;',
+          '    return 40;',
           '  }',
           '  readSync() { return super.current; }',
           '}',
@@ -6873,16 +6867,135 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         ].join('\n'),
       );
       expect(synchronousSuper.status, synchronousSuper.stderr).toBe(0);
-      const synchronousSuperMode = (synchronousSuper.stderr ?? '')
-        .split(/\r?\n/)
-        .find(
-          (line) =>
-            line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
-        );
-      expect(synchronousSuperMode, synchronousSuper.stderr).toContain('semantic_graph=reanalyzed');
+      expectRetainedClean(synchronousSuper.stderr ?? '');
       const synchronousSuperOutput = runOutput();
       expect(synchronousSuperOutput.status, synchronousSuperOutput.stderr).toBe(0);
-      expect(synchronousSuperOutput.stdout).toBe('42 42\n');
+      expect(synchronousSuperOutput.stdout).toBe('40 42\n');
+
+      // Both helper directions retain the dynamic instance or constructor receiver.
+      const synchronousSuperReadWrite = run(
+        [
+          'var instanceReceiver, constructorReceiver;',
+          'function getCurrent() { return this.value; }',
+          'function setInstanceCurrent(value) { instanceReceiver = this; this.value = value; }',
+          'function setConstructorCurrent(value) { constructorReceiver = this; this.value = value; }',
+          'class Base {}',
+          'Object.defineProperty(Base.prototype, "current", { get: getCurrent, set: setInstanceCurrent });',
+          'Object.defineProperty(Base, "current", { get: getCurrent, set: setConstructorCurrent });',
+          'class Service extends Base {',
+          '  async ready() { await Promise.resolve(); return 1; }',
+          '  read() { return super.current; }',
+          '  write(value) { return super.current = value; }',
+          '  static read() { return super.current; }',
+          '  static write(value) { return super.current = value; }',
+          '}',
+          'class Derived extends Service {}',
+          'var service = new Service(); service.value = 10; Derived.value = 20;',
+          'Promise.all([service.ready()]).then(() => {',
+          '  var values = [service.read(), service.write(11), service.value, Derived.read(), Derived.write(21), Derived.value, instanceReceiver === service, constructorReceiver === Derived];',
+          '  console.log(values.join(" "));',
+          '});',
+        ].join('\n'),
+      );
+      expect(synchronousSuperReadWrite.status, synchronousSuperReadWrite.stderr).toBe(0);
+      expectRetainedClean(synchronousSuperReadWrite.stderr ?? '');
+      const synchronousSuperReadWriteOutput = runOutput();
+      expect(synchronousSuperReadWriteOutput.status, synchronousSuperReadWriteOutput.stderr).toBe(
+        0,
+      );
+      expect(synchronousSuperReadWriteOutput.stdout).toBe('10 11 11 20 21 21 true true\n');
+
+      // Hostile owner and scope variants must stay on reanalysis. Each case
+      // would otherwise look like a retained simple class to a broad gate.
+      const hostileSyncSuperVariants: Array<{
+        name: string;
+        methods: string;
+        value: string;
+        expected: string;
+        setup?: string;
+      }> = [
+        {
+          name: 'returned sync arrow',
+          methods: 'readSync() { return () => super.current; }',
+          value: 'service.readSync()()',
+          expected: '40 42\n',
+        },
+        {
+          name: 'invoked async arrow',
+          methods: 'readSync() { return (async () => super.current)(); }',
+          value: 'service.readSync()',
+          expected: '40 42\n',
+        },
+        {
+          name: 'two nested arrows',
+          methods: 'readSync() { return () => () => super.current; }',
+          value: 'service.readSync()()()',
+          expected: '40 42\n',
+        },
+        {
+          name: 'arrow parameter initializer',
+          methods: 'readSync() { return ((value = super.current) => value)(); }',
+          value: 'service.readSync()',
+          expected: '40 42\n',
+        },
+        {
+          name: 'method parameter initializer',
+          methods: 'readSync(value = super.current) { return value; }',
+          value: 'service.readSync()',
+          expected: '40 42\n',
+        },
+        {
+          name: 'instance accessor owner',
+          methods: 'get readSync() { return super.current; }',
+          value: 'service.readSync',
+          expected: '40 42\n',
+        },
+        {
+          name: 'static accessor owner',
+          methods: 'static get readSync() { return super.current; }',
+          value: 'Service.readSync',
+          expected: '40 84\n',
+        },
+        {
+          name: 'computed sibling method key',
+          methods: 'readSync() { return super.current; } ["computed"]() { return 1; }',
+          value: 'service.readSync()',
+          expected: '40 42\n',
+        },
+        {
+          name: 'unregistered object-method owner',
+          methods: 'readSync() { return super.current; }',
+          setup:
+            'var object = { read() { return super.current; } }; Object.setPrototypeOf(object, Base.prototype); object.value = 7;',
+          value: 'service.readSync() + object.read()',
+          expected: '40 49\n',
+        },
+        {
+          name: 'mixed async and sync method owners',
+          methods:
+            'async readAsync() { await Promise.resolve(); return super.current; } readSync() { return super.current; }',
+          value: 'service.readAsync().then(value => value + " " + service.readSync())',
+          expected: '40 42 42\n',
+        },
+      ];
+      for (const variant of hostileSyncSuperVariants) {
+        const setup = variant.setup ? [variant.setup] : [];
+        const result = run(
+          [
+            'class Base {}',
+            'Object.defineProperty(Base.prototype, "current", { get: function() { return this.value; }, set: function(value) { this.value = value; } });',
+            'Object.defineProperty(Base, "current", { get: function() { return this.value; }, set: function(value) { this.value = value; } });',
+            'class Service extends Base {',
+            '  async ready() { await Promise.resolve(); return 40; }',
+            `  ${variant.methods}`,
+            '}',
+            'var service = new Service(); service.value = 42; Service.value = 84;',
+            ...setup,
+            `Promise.all([service.ready(), Promise.resolve(${variant.value})]).then(values => console.log(values.join(" ")));`,
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
 
       // One synchronous arrow keeps instance super and its lexical receiver on the home graph.
       const nestedArrowSuper = run(
@@ -20836,10 +20949,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: 'ReferenceError\n',
       },
       {
-        name: 'derived class with a super method stays on reanalysis',
+        name: 'derived class with a direct super method retains its exact graph',
         source:
           'function Base() {} Base.prototype.value = 4; class Child extends Base { read() { return super.value; } } console.log(new Child().read());',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '4\n',
       },
       {

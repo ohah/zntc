@@ -3636,11 +3636,14 @@ fn isSimpleClass(
             (is_es5_async_instance_method or is_es5_async_static_method) and
             allow_es5_async_class_methods and !super.isNone() and
             methodSuperUsesOnlyUniformAsyncArrowScopes(ast, member);
+        const retains_sync_class_method_super =
+            (flags == 0 or flags == ast_mod.MethodFlags.is_static) and
+            !super.isNone() and methodSuperUsesOnlyDirectMethodBody(ast, member);
         if (std.mem.eql(u8, key_text, "constructor") or std.mem.eql(u8, key_text, "__proto__") or
             std.mem.indexOfScalar(u8, key_text, '\\') != null or
             (has_super and !retains_async_arrow_super and !retains_async_class_method_super and
                 !retains_async_class_method_sync_arrow_super and
-                !retains_async_class_method_arrow_super)) return false;
+                !retains_async_class_method_arrow_super and !retains_sync_class_method_super)) return false;
     }
     if (accessor_count > 2) return false;
     if (accessor_pair) |accessor| {
@@ -3787,6 +3790,39 @@ fn registerRetainableEs5AsyncClassMethods(
                     !methodSuperUsesOnlySingleSyncArrow(ast, member) and
                     !methodSuperUsesOnlyUniformAsyncArrowScopes(ast, member)))) return false;
         retained_async_functions.put(ast.allocator, raw_member_idx, {}) catch return false;
+    }
+    return true;
+}
+
+// Downlevel class methods keep direct-body `super` accesses tied to their
+// source method and exact class home object. Nested scopes remain on resync.
+fn registerRetainableSyncClassSuperMethods(
+    ast: *const ast_mod.Ast,
+    class_node: ast_mod.Node,
+    retained_sync_super_methods: *std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    if (class_node.tag != .class_declaration and class_node.tag != .class_expression) return false;
+    const class_extra = class_node.data.extra;
+    if (class_extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.body) return false;
+    const super_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]);
+    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]);
+    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len or
+        ast.getNode(body_idx).tag != .class_body) return false;
+    const members = ast.getNode(body_idx).data.list;
+    if (members.start > ast.extra_data.items.len or
+        members.len > ast.extra_data.items.len - members.start) return false;
+    for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_member_idx| {
+        if (raw_member_idx >= ast.nodes.items.len) return false;
+        const member = ast.nodes.items[raw_member_idx];
+        if (member.tag != .method_definition or !methodHasSuperExpression(ast, member)) continue;
+        const method_extra = member.data.extra;
+        if (method_extra > ast.extra_data.items.len or
+            ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags) return false;
+        const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
+        if (flags != 0 and flags != ast_mod.MethodFlags.is_static) continue;
+        if (super_idx.isNone() or !methodSuperUsesOnlyDirectMethodBody(ast, member)) return false;
+        retained_sync_super_methods.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
 }
@@ -4250,13 +4286,19 @@ fn isRetainableEs5AsyncObjectMethodNode(
     return true;
 }
 
-fn allSuperUsesBelongToRetainedEs5AsyncMethods(
+// Super lowering may add runtime helpers. Suppress the reanalysis fallback
+// only when every reachable use resolves to an owner with an exact retained
+// home-object graph.
+fn allSuperUsesBelongToRetainedOwners(
     ast: *const ast_mod.Ast,
     reachable_nodes: []const u32,
     retained_async_functions: *const std.AutoHashMapUnmanaged(u32, void),
+    retained_sync_super_methods: *const std.AutoHashMapUnmanaged(u32, void),
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
 ) bool {
     var has_super = false;
+    var has_retained_async_method_super = false;
+    var has_retained_sync_method_super = false;
     for (reachable_nodes) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len) return false;
         if (ast.nodes.items[raw_idx].tag != .super_expression) continue;
@@ -4277,7 +4319,13 @@ fn allSuperUsesBelongToRetainedEs5AsyncMethods(
                         !retained_async_functions.contains(current)) return false;
                 },
                 .method_definition => {
-                    if (!retained_async_functions.contains(current)) return false;
+                    const is_retained_async_method = retained_async_functions.contains(current);
+                    const is_retained_sync_method = retained_sync_super_methods.contains(current);
+                    if (!is_retained_async_method and !is_retained_sync_method) return false;
+                    has_retained_async_method_super = has_retained_async_method_super or
+                        is_retained_async_method;
+                    has_retained_sync_method_super = has_retained_sync_method_super or
+                        is_retained_sync_method;
                     found_method = true;
                     break;
                 },
@@ -4292,7 +4340,10 @@ fn allSuperUsesBelongToRetainedEs5AsyncMethods(
         }
         if (!found_method) return false;
     }
-    return has_super;
+    // Keep the existing async state-machine super path isolated from the new
+    // direct synchronous-method path until the two helper lifecycles share a
+    // single ownership proof.
+    return has_super and !(has_retained_async_method_super and has_retained_sync_method_super);
 }
 
 /// Async arrows keep their source arrow scope while the lowered generator is
@@ -4678,6 +4729,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
     var source_parent_map_ready = false;
     var retained_async_functions: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer retained_async_functions.deinit(ast.allocator);
+    var retained_sync_super_methods: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer retained_sync_super_methods.deinit(ast.allocator);
     if (options.unsupported.async_await) {
         for (reachable_nodes) |raw_idx| {
             const node = ast.nodes.items[raw_idx];
@@ -5049,6 +5102,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 options.unsupported.async_await and options.unsupported.generator,
             )) continue;
             retained_simple_class_nodes.put(ast.allocator, raw_idx, {}) catch return false;
+            if (!registerRetainableSyncClassSuperMethods(
+                ast,
+                class_node,
+                &retained_sync_super_methods,
+            )) return false;
             if (options.unsupported.async_await and options.unsupported.generator and
                 !registerRetainableEs5AsyncClassMethods(ast, class_node, &retained_async_functions)) return false;
             if (options.unsupported.default_params and
@@ -5672,15 +5730,26 @@ fn canRetainGraphForAuditedSyntaxSubset(
         found_lowered_array_spread or found_lowered_exponentiation or found_lowered_nullish_coalescing or
         found_lowered_logical_assignment or found_lowered_object_rest or found_lowered_object_spread or
         found_lowered_optional_catch_binding or found_lowered_new_target;
-    if (safe_graph and source_parent_map_ready) {
-        const retained_async_method_super_uses = allSuperUsesBelongToRetainedEs5AsyncMethods(
-            ast,
-            reachable_nodes,
-            &retained_async_functions,
-            &source_parent_map,
-        );
-        allow_es5_async_method_super_get.* = retained_async_method_super_uses;
-        allow_es5_async_method_super_set.* = retained_async_method_super_uses;
+    if (safe_graph) {
+        const has_super_use = for (reachable_nodes) |raw_idx| {
+            if (raw_idx >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[raw_idx].tag == .super_expression) break true;
+        } else false;
+        if (has_super_use) {
+            if (!source_parent_map_ready) {
+                if (!collectRetainedPreflightParents(ast.allocator, ast, root_idx, &source_parent_map)) return false;
+                source_parent_map_ready = true;
+            }
+            const retained_super_uses = allSuperUsesBelongToRetainedOwners(
+                ast,
+                reachable_nodes,
+                &retained_async_functions,
+                &retained_sync_super_methods,
+                &source_parent_map,
+            );
+            allow_es5_async_method_super_get.* = retained_super_uses;
+            allow_es5_async_method_super_set.* = retained_super_uses;
+        }
     }
     return safe_graph;
 }
