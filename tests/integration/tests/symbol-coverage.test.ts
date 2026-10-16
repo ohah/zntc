@@ -19242,6 +19242,154 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   });
 
+  test('post-super computed this conditions retain exact graphs only for safe reads', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-post-super-computed-this-condition-'));
+    const input = join(dir, 'entry.mjs');
+    const output = join(dir, 'out.cjs');
+    const sourceForCondition = (condition: string) =>
+      [
+        'var reads = [], key = "selected", keys = { name: "selected", prefix: "select", suffix: "ed" }, keyCalls = 0, callCount = 0, writes = 0;',
+        'function getKey() { keyCalls += 1; return "selected"; }',
+        'function consume(value) { callCount += 1; return value; }',
+        'function Base() { return new Proxy({ selected: true, nested: { selected: true }, current: { value: true } }, {',
+        '  get(target, property, receiver) { if (property === "selected" || property === "nested" || property === "current") reads.push(property); return Reflect.get(target, property, receiver); },',
+        '  set(target, property, value, receiver) { writes += 1; return Reflect.set(target, property, value, receiver); }',
+        '}); }',
+        `class Child extends Base { constructor() { super(); if (${condition}) this.value = 1; else this.value = 2; } }`,
+        'var child = new Child();',
+        'console.log(child.value, reads.join(",") || "-", keyCalls, callCount, writes, child instanceof Child);',
+      ].join('\n');
+    const fixtures: Array<{
+      name: string;
+      source?: string;
+      condition?: string;
+      graph?: 'retained' | 'reanalyzed';
+      output: string;
+    }> = [
+      {
+        name: 'safe computed this reads preserve short-circuit order and exact identity',
+        source: [
+          'var reads = [], key = "selected", writes = 0;',
+          'function Base(selected) { return new Proxy({ selected: selected, ready: true }, {',
+          '  get(target, property, receiver) { if (property === "selected" || property === "ready") reads.push(property); return Reflect.get(target, property, receiver); },',
+          '  set(target, property, value, receiver) { writes += 1; return Reflect.set(target, property, value, receiver); }',
+          '}); }',
+          'class Child extends Base { constructor(selected) { super(selected); if (this[key] && this.ready) this.value = 1; else this.value = 2; } }',
+          'var first = new Child(true), second = new Child(false);',
+          'console.log(first.value, second.value, reads.join(","), writes, first instanceof Child, second instanceof Child);',
+        ].join('\n'),
+        graph: 'retained',
+        output: '1 2 selected,ready,selected 2 false false\n',
+      },
+      {
+        name: 'effectful computed key',
+        condition: 'this[getKey()]',
+        output: '1 selected 1 0 1 false\n',
+      },
+      {
+        name: 'member expression computed key',
+        condition: 'this[keys.name]',
+        output: '1 selected 0 0 1 false\n',
+      },
+      {
+        name: 'optional member computed key',
+        condition: 'this[keys?.name]',
+        output: '1 selected 0 0 1 false\n',
+      },
+      {
+        name: 'binary computed key with member reads',
+        condition: 'this[keys.prefix + keys.suffix]',
+        output: '1 selected 0 0 1 false\n',
+      },
+      {
+        name: 'optional this receiver',
+        condition: 'this?.[key]',
+        output: '1 selected 0 0 1 false\n',
+      },
+      {
+        name: 'nested this property read',
+        condition: 'this.nested.selected',
+        output: '1 nested 0 0 1 false\n',
+      },
+      {
+        name: 'optional chained this property read',
+        condition: 'this.current?.value',
+        output: '1 current 0 0 1 false\n',
+      },
+      {
+        name: 'call wrapping computed this read',
+        condition: 'consume(this[key])',
+        output: '1 selected 0 1 1 false\n',
+      },
+      {
+        name: 'computed this property update',
+        condition: 'this[key]++',
+        output: '1 selected 0 0 2 false\n',
+      },
+      {
+        name: 'computed this property assignment',
+        condition: '(this[key] = true)',
+        output: '1 - 0 0 2 false\n',
+      },
+    ] as const;
+
+    try {
+      for (const fixture of fixtures) {
+        writeFileSync(input, fixture.source ?? sourceForCondition(fixture.condition ?? ''));
+        const proc = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'entry.mjs',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-identifiers',
+            '-o',
+            output,
+          ],
+          {
+            cwd: dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, `${fixture.name}: ${proc.stderr}`).toBe(0);
+        const expectedGraph = fixture.graph ?? 'reanalyzed';
+        const mode = (proc.stderr ?? '')
+          .split(/\r?\n/)
+          .find(
+            (line) =>
+              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.mjs'),
+          );
+        expect(mode, `${fixture.name}: ${proc.stderr}`).toContain(
+          `semantic_graph=${expectedGraph}`,
+        );
+        if (expectedGraph === 'retained') {
+          const report = (proc.stderr ?? '')
+            .split(/\r?\n/)
+            .find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.mjs'),
+            );
+          expect(report, `${fixture.name}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(report?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              `${fixture.name}: ${counter}: ${report}`,
+            ).toBe(0);
+          }
+          expect(report, fixture.name).toMatch(/clean=1(?:\s|$)/);
+        }
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, `${fixture.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, fixture.name).toBe(fixture.output);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 empty classes, safe static fields, plain methods and compatible accessors retain their graph; other forms resync', () => {
     let deeplyNestedComputedKey = 'makeKey()';
     for (let depth = 0; depth < 64; depth += 1) {
@@ -22748,10 +22896,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '1 1\n',
       },
       {
-        name: 'post-super computed this-property condition stays on reanalysis',
+        name: 'post-super safe computed this-property condition retains its exact graph',
         source:
           'var reads = 0, key = "selected"; function Base() { return new Proxy({ selected: true }, { get(target, property, receiver) { if (property === "selected") reads += 1; return Reflect.get(target, property, receiver); } }); } class Child extends Base { constructor() { super(); if (this[key]) this.value = 1; else this.value = 2; } } var child = new Child(); console.log(child.value, reads);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 1\n',
       },
       {
@@ -23268,10 +23416,10 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
         output: '3 true\n',
       },
       {
-        name: 'post-super conditional branch nested computed this condition stays on reanalysis',
+        name: 'post-super conditional branch nested safe computed this condition retains its graph',
         source:
           'var key = "ready"; function Base() { this.ready = true; } class Child extends Base { constructor() { super(); if (true) { if (this[key]) this.value = 1; else this.value = 2; } } } var child = new Child(); console.log(child.value, child instanceof Child);',
-        graph: 'reanalyzed',
+        graph: 'retained',
         output: '1 true\n',
       },
       {
