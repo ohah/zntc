@@ -32,6 +32,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Tag = Node.Tag;
 const es_helpers = @import("es_helpers.zig");
+const es2015_params = @import("es2015_params.zig");
 const FunctionInfo = @import("ast_plugin.zig").FunctionInfo;
 
 pub const LexicalCaptureInfo = struct {
@@ -217,9 +218,19 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             const e = node.data.extra;
             if (e + 2 >= self.ast.extra_data.items.len) return NodeIndex.none;
 
+            const params_idx: NodeIndex = self.readNodeIdx(e, 0);
+            const body_idx: NodeIndex = self.readNodeIdx(e, 1);
+            const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
+            const arrow_has_lowered_params = es2015_params.ES2015Params(Transformer).hasDefaultOrRest(
+                self,
+                self.ast.functionParamsList(node),
+            );
+            const saved_native_parameter_list_retained = self.native_parameter_list_retained_for_dynamic_lookup;
+            defer self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
+
             const native_parameter_capture = self.options.unsupported.arrow and
                 (!self.options.unsupported.default_params or
-                    self.native_parameter_list_retained_for_dynamic_lookup) and self.capture_frame != 0 and
+                    saved_native_parameter_list_retained) and self.capture_frame != 0 and
                 self.native_parameter_initializer_frame == self.capture_frame;
             const native_parameter_arrow_depth = self.native_parameter_arrow_depth;
             const parent_native_parameter_arrow_owner = self.native_parameter_arrow_owner;
@@ -230,21 +241,37 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             defer self.native_parameter_arrow_depth = native_parameter_arrow_depth;
             defer self.native_parameter_arrow_owner = parent_native_parameter_arrow_owner;
 
-            const params_idx: NodeIndex = self.readNodeIdx(e, 0);
-            const body_idx: NodeIndex = self.readNodeIdx(e, 1);
-            const flags = self.readU32(e, ast_mod.ArrowExtra.flags);
-
             const saved_outermost_arrow = self.outermost_lowered_arrow_scope;
             if (self.arrow_this_depth == 0) self.outermost_lowered_arrow_scope = self.current_scope;
             defer self.outermost_lowered_arrow_scope = saved_outermost_arrow;
+            const parameter_temp_start = self.temp_var_counter;
             const visited = blk: {
                 // Defaults and body share the arrow's lexical this/arguments.
                 self.arrow_this_depth += 1;
                 defer self.arrow_this_depth -= 1;
-                const params = try arrowParamsToList(self, params_idx);
+                const parameter_visit = blk_params: {
+                    if (self.options.unsupported.default_params and arrow_has_lowered_params) {
+                        const parameter_environment = @import("parameter_environment.zig");
+                        const params_dynamic_lookup = try parameter_environment.nodeHasDynamicLookup(self, params_idx);
+                        const function_scope = self.outputOwnedScope(source_owner) orelse self.current_scope;
+                        const body_dynamic_lookup = try parameter_environment.functionBodyHasDynamicLookup(self, function_scope, body_idx);
+                        self.native_parameter_list_retained_for_dynamic_lookup =
+                            params_dynamic_lookup or body_dynamic_lookup;
+                    }
+                    const retained = self.native_parameter_list_retained_for_dynamic_lookup;
+                    const params = try arrowParamsToList(self, params_idx);
+                    self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
+                    break :blk_params .{ .params = params, .retained = retained };
+                };
+                self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
                 const body_temps = self.temp_var_counter;
                 const body = try self.visitBodyWorkletAware(body_idx);
-                break :blk .{ .params = params, .body_temps = body_temps, .body = body };
+                break :blk .{
+                    .params = parameter_visit.params,
+                    .body_temps = body_temps,
+                    .body = body,
+                    .native_params_retained = parameter_visit.retained,
+                };
             };
             const param_list = visited.params;
             const body_temp_start = visited.body_temps;
@@ -270,6 +297,15 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 break :blk new_body;
             };
             func_body = try self.hoistArrowBodyTemps(func_body, body_temp_start, node.span, source_owner);
+            const after_parameter_temps = body_temp_start;
+            self.native_parameter_list_retained_for_dynamic_lookup = visited.native_params_retained;
+            func_body = try self.hoistParameterTempsAndRestore(
+                func_body,
+                parameter_temp_start,
+                after_parameter_temps,
+                node.span,
+            );
+            self.native_parameter_list_retained_for_dynamic_lookup = saved_native_parameter_list_retained;
 
             // function_expression: extra = [name(0), params(1), body(2), flags(3), return_type(4)]
             const func_flags: u32 = if (flags & ast_mod.ArrowFlags.is_async != 0)

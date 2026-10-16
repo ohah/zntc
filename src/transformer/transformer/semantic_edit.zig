@@ -264,6 +264,7 @@ fn functionParametersNode(self: *Transformer, owner: NodeIndex) ?NodeIndex {
     const node = self.ast.getNode(owner);
     const slot: u32 = switch (node.tag) {
         .function_declaration, .function_expression, .function => ast_mod.FunctionExtra.params,
+        .arrow_function_expression => ast_mod.ArrowExtra.params,
         .method_definition => ast_mod.MethodExtra.params,
         else => return null,
     };
