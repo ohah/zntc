@@ -6936,6 +6936,41 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       ).toBe(0);
       expect(derivedConstructorSuperPropertyReadsOutput.stdout).toBe('2 true true\n');
 
+      // A single source-bound var may capture each direct super read after
+      // initialization without losing the getter's instance receiver.
+      const derivedConstructorSuperPropertyVariableInitializers = run(
+        [
+          'var reads = 0, receiverReads = 0;',
+          'class Base {',
+          '  constructor() { this.slot = 7; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.slot; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(key) {',
+          '    super();',
+          '    var staticValue = super.current;',
+          '    var computedValue = super[key];',
+          '    this.value = staticValue + computedValue;',
+          '  }',
+          '}',
+          'var child = new Child("current");',
+          'console.log(child.value, reads, receiverReads, child instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyVariableInitializers.status,
+        derivedConstructorSuperPropertyVariableInitializers.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyVariableInitializers.stderr);
+      const derivedConstructorSuperPropertyVariableInitializersOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyVariableInitializersOutput.status,
+        derivedConstructorSuperPropertyVariableInitializersOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyVariableInitializersOutput.stdout).toBe(
+        '14 2 2 true\n',
+      );
+
       const hostileDerivedConstructorSuperReadVariants: Array<{
         name: string;
         constructor: string;
@@ -6948,9 +6983,9 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: 'ok 1 0 true\n',
         },
         {
-          name: 'variable initializer reads super',
+          name: 'let initializer reads super',
           constructor:
-            'constructor(key) { super(); var value = super.current; this.slot = value; }',
+            'constructor(key) { super(); let value = super.current; this.slot = value; }',
           expected: 'ok 1 0 true\n',
         },
         {
@@ -7006,6 +7041,92 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'class Base { get current() { reads++; return this.slot; } }',
             `class Child extends Base { ${variant.constructor} }`,
             `try { var child = ${variant.creation ?? 'new Child("current")'}; console.log("ok", reads, keyCalls, child instanceof Child); } catch (error) { console.log(error.name); }`,
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorSuperInitializerVariants: Array<{
+        name: string;
+        constructor: string;
+        creation?: string;
+        expected: string;
+      }> = [
+        {
+          name: 'const direct super initializer',
+          constructor:
+            'constructor(key) { super(); const value = super.current; this.result = value; }',
+          expected: 'ok 9 1 0 true\n',
+        },
+        {
+          name: 'multiple var declarators include super read',
+          constructor:
+            'constructor(key) { super(); var value = super.current, other = 1; this.result = value + other; }',
+          expected: 'ok 10 1 0 true\n',
+        },
+        {
+          name: 'computed super key call in initializer',
+          constructor:
+            'constructor(key) { super(); var value = super[getKey()]; this.result = value; }',
+          expected: 'ok 9 1 1 true\n',
+        },
+        {
+          name: 'computed super key member in initializer',
+          constructor:
+            'constructor(key) { super(); var value = super[keys.name]; this.result = value; }',
+          expected: 'ok 9 1 0 true\n',
+        },
+        {
+          name: 'optional computed super key in initializer',
+          constructor:
+            'constructor(key) { super(); var value = super[keys?.name]; this.result = value; }',
+          expected: 'ok 9 1 0 true\n',
+        },
+        {
+          name: 'arrow invocation wraps initializer read',
+          constructor:
+            'constructor(key) { super(); var value = (() => super.current)(); this.result = value; }',
+          expected: 'ok 9 1 0 true\n',
+        },
+        {
+          name: 'super method call in initializer',
+          constructor:
+            'constructor(key) { super(); var value = super.read(); this.result = value; }',
+          expected: 'ok 9 1 0 true\n',
+        },
+        {
+          name: 'conditional initializer includes super reads',
+          constructor:
+            'constructor(key) { super(); var value = key ? super.current : super.other; this.result = value; }',
+          expected: 'ok 9 1 0 true\n',
+        },
+        {
+          name: 'nested block var initializer reads super',
+          constructor:
+            'constructor(key) { super(); { var value = super.current; this.result = value; } }',
+          expected: 'ok 9 1 0 true\n',
+        },
+        {
+          name: 'var initializer reads super before initialization',
+          constructor:
+            'constructor(key) { var value = super.current; super(); this.result = value; }',
+          creation: 'new Child("current")',
+          expected: 'ReferenceError\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperInitializerVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0, keys = { name: "current" };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'class Base {',
+            '  constructor() { this.slot = 9; }',
+            '  get current() { reads++; return this.slot; }',
+            '  get other() { reads++; return this.slot + 1; }',
+            '  read() { reads++; return this.slot; }',
+            '}',
+            `class Child extends Base { ${variant.constructor} }`,
+            `try { var child = ${variant.creation ?? 'new Child("current")'}; console.log("ok", child.result, reads, keyCalls, child instanceof Child); } catch (error) { console.log(error.name); }`,
           ].join('\n'),
         );
         expectReanalyzedOutput(result, variant.expected, variant.name);
