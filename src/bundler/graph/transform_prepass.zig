@@ -3080,7 +3080,7 @@ fn isSafePostSuperPropertyRead(
 }
 
 /// A source-bound initializer may combine direct `super` reads with the same
-/// bounded binary and logical operators already allowed for ordinary
+/// bounded unary, binary, and logical operators already allowed for ordinary
 /// constructor values. Conditional tests use the audited post-super condition
 /// allowlist, while their branches use this value set; calls and member chains
 /// keep their separate reanalysis boundary.
@@ -3098,6 +3098,15 @@ fn isSafePostSuperInitializerValue(
         return isSafeConstructorLogicalOperator(operator) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.binary.left) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
+    }
+    if (value.tag == .unary_expression) {
+        const extras = ast.extra_data.items;
+        const extra = value.data.extra;
+        if (extra > extras.len or extras.len - extra < 2) return false;
+        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        return isSafeConstructorUnaryOperator(operator) and
+            isSafePostSuperInitializerValue(ast, semantic, operand_idx);
     }
     if (value.tag == .conditional_expression) {
         return isSafePostSuperCondition(ast, semantic, value.data.ternary.a) and

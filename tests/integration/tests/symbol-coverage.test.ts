@@ -7099,6 +7099,60 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         'true true 2 2 true true\n',
       );
 
+      const derivedConstructorSuperPropertyUnaryConditionalBranches = run(
+        [
+          'var reads = 0, receiverReads = 0;',
+          'class Base {',
+          '  constructor(value) { this.value = value; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.value; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(flag, value) { super(value); var selected = flag ? !super.current : +super.current; this.selected = selected; }',
+          '}',
+          'var negated = new Child(true, 0);',
+          'var converted = new Child(false, 0);',
+          'console.log(negated.selected, converted.selected, reads, receiverReads, negated instanceof Child, converted instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyUnaryConditionalBranches.status,
+        derivedConstructorSuperPropertyUnaryConditionalBranches.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyUnaryConditionalBranches.stderr);
+      const derivedConstructorSuperPropertyUnaryConditionalBranchesOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyUnaryConditionalBranchesOutput.status,
+        derivedConstructorSuperPropertyUnaryConditionalBranchesOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyUnaryConditionalBranchesOutput.stdout).toBe(
+        'true 0 2 2 true true\n',
+      );
+
+      const derivedConstructorSuperPropertyUnaryThrow = run(
+        [
+          'var reads = 0, receiverReads = 0;',
+          'class Base {',
+          '  constructor(value) { this.value = value; }',
+          '  get current() { reads++; if (this instanceof Child) receiverReads++; return this.value; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(value) { super(value); throw !super.current; }',
+          '}',
+          'try { new Child(0); } catch (error) { console.log(error === true, reads, receiverReads); }',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyUnaryThrow.status,
+        derivedConstructorSuperPropertyUnaryThrow.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyUnaryThrow.stderr);
+      const derivedConstructorSuperPropertyUnaryThrowOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyUnaryThrowOutput.status,
+        derivedConstructorSuperPropertyUnaryThrowOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyUnaryThrowOutput.stdout).toBe('true 1 1\n');
+
       const derivedConstructorSuperPropertyReturn = run(
         [
           'var reads = 0, receiverReads = 0;',
@@ -7698,6 +7752,83 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
               variant.test +
               ' ? super.current : super.other; this.selected = selected; } }',
             'try { var child = new Child(replacement); console.log("ok", child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
+      const hostileDerivedConstructorSuperUnaryBranchVariants: Array<{
+        name: string;
+        value: string;
+        expected: string;
+      }> = [
+        {
+          name: 'conditional branch uses typeof',
+          value: 'typeof super.current',
+          expected: 'ok string false false 1 0 0\n',
+        },
+        {
+          name: 'conditional branch uses void',
+          value: 'void super.current',
+          expected: 'ok undefined false false 1 0 0\n',
+        },
+        {
+          name: 'conditional branch updates super property',
+          value: 'super.current++',
+          expected: 'TypeError 1 0 0\n',
+        },
+        {
+          name: 'conditional branch assigns to this',
+          value: '(this.copy = super.current)',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'conditional branch calls around super read',
+          value: 'consume(super.current)',
+          expected: 'ok object true false 1 0 1\n',
+        },
+        {
+          name: 'conditional branch uses effectful computed super key',
+          value: 'super[getKey()]',
+          expected: 'ok object true false 1 1 0\n',
+        },
+        {
+          name: 'conditional branch uses member computed super key',
+          value: 'super[keys.name]',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'conditional branch uses optional computed super key',
+          value: 'super[keys?.name]',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'conditional branch invokes nested arrow',
+          value: '(() => super.current)()',
+          expected: 'ok object true false 1 0 0\n',
+        },
+        {
+          name: 'conditional branch reads member from super value',
+          value: 'super.current.value',
+          expected: 'ok object false true 1 0 0\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperUnaryBranchVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0, callCount = 0, keys = { name: "current" };',
+            'var nested = { kind: "nested" }, replacement = { value: nested };',
+            'function getKey() { keyCalls++; return "current"; }',
+            'function consume(value) { callCount++; return value; }',
+            'class Base {',
+            '  constructor(value) { this.value = value; }',
+            '  get current() { reads++; return this.value; }',
+            '  get other() { reads++; return nested; }',
+            '}',
+            'class Child extends Base { constructor(value) { super(value); var selected = true ? ' +
+              variant.value +
+              ' : super.other; this.selected = selected; } }',
+            'try { var child = new Child(replacement); console.log("ok", typeof child.selected, child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
           ].join('\n'),
         );
         expectReanalyzedOutput(result, variant.expected, variant.name);
