@@ -468,6 +468,8 @@ pub const Codegen = struct {
             if (output_name.len == 0) return error.InvalidNamespacePrefixSymbol;
             return output_name;
         }
+        if (self.options.generated_iife_scope_owner_map != null or self.options.require_generated_iife_symbols)
+            return error.InvalidNamespacePrefixSymbol;
         return prefix.fallback_name;
     }
 

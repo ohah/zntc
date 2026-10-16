@@ -547,6 +547,29 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
     );
 }
 
+test "#4819 namespace IIFE prefix fails closed when semantic ownership lacks a SymbolId" {
+    const allocator = std.testing.allocator;
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var namespace_owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer namespace_owners.deinit(allocator);
+    var semantic_owner_cg = Codegen.initWithOptions(allocator, &ast, .{
+        .generated_iife_scope_owner_map = &namespace_owners,
+    });
+    defer semantic_owner_cg.deinit();
+    try std.testing.expectError(
+        error.InvalidNamespacePrefixSymbol,
+        semantic_owner_cg.namespacePrefixName(.{ .symbol_id = null, .fallback_name = "stalePrefix" }),
+    );
+
+    var strict_cg = Codegen.initWithOptions(allocator, &ast, .{ .require_generated_iife_symbols = true });
+    defer strict_cg.deinit();
+    try std.testing.expectError(
+        error.InvalidNamespacePrefixSymbol,
+        strict_cg.namespacePrefixName(.{ .symbol_id = null, .fallback_name = "stalePrefix" }),
+    );
+}
+
 test "#4819 Codegen rejects a missing namespace declaration SymbolId in linked semantic output" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
