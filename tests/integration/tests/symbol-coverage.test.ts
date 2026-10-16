@@ -6912,6 +6912,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         methods: string;
         value: string;
         expected: string;
+        prelude?: string;
         setup?: string;
       }> = [
         {
@@ -6971,11 +6972,11 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           expected: '40 49\n',
         },
         {
-          name: 'mixed async and sync method owners',
-          methods:
-            'async readAsync() { await Promise.resolve(); return super.current; } readSync() { return super.current; }',
-          value: 'service.readAsync().then(value => value + " " + service.readSync())',
-          expected: '40 42 42\n',
+          name: 'explicit derived constructor owner',
+          prelude: 'Base.prototype.value = 42;',
+          methods: 'constructor() { super(); this.value = super.current; }',
+          value: 'service.value',
+          expected: '40 42\n',
         },
       ];
       for (const variant of hostileSyncSuperVariants) {
@@ -6985,6 +6986,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'class Base {}',
             'Object.defineProperty(Base.prototype, "current", { get: function() { return this.value; }, set: function(value) { this.value = value; } });',
             'Object.defineProperty(Base, "current", { get: function() { return this.value; }, set: function(value) { this.value = value; } });',
+            ...(variant.prelude ? [variant.prelude] : []),
             'class Service extends Base {',
             '  async ready() { await Promise.resolve(); return 40; }',
             `  ${variant.methods}`,
@@ -7443,7 +7445,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         '8 8 10 true 10 3 2|0 7 8 true 8 3 2 6\n',
       );
 
-      // A synchronous super owner keeps the whole class on semantic reanalysis.
+      // Direct synchronous and state-machine super owners share their exact graph.
       const mixedAsyncAndSyncSuperLogicalAssignment = run(
         [
           'var keyEvaluations = 0;',
@@ -7472,7 +7474,17 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           '});',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedAsyncAndSyncSuperLogicalAssignment, '8 8 9 9 2\n');
+      expect(
+        mixedAsyncAndSyncSuperLogicalAssignment.status,
+        mixedAsyncAndSyncSuperLogicalAssignment.stderr,
+      ).toBe(0);
+      expectRetainedClean(mixedAsyncAndSyncSuperLogicalAssignment.stderr ?? '');
+      const mixedAsyncAndSyncSuperLogicalAssignmentOutput = runOutput();
+      expect(
+        mixedAsyncAndSyncSuperLogicalAssignmentOutput.status,
+        mixedAsyncAndSyncSuperLogicalAssignmentOutput.stderr,
+      ).toBe(0);
+      expect(mixedAsyncAndSyncSuperLogicalAssignmentOutput.stdout).toBe('8 8 9 9 2\n');
 
       // Static nested super uses at different arrow depths stay on reanalysis.
       const mixedNestedStaticAsyncArrowSuper = run(
