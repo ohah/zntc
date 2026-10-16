@@ -6905,6 +6905,112 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       );
       expect(synchronousSuperReadWriteOutput.stdout).toBe('10 11 11 20 21 21 true true\n');
 
+      // Direct static and source-keyed computed reads preserve the exact
+      // constructor home object and evaluate the inherited getter once each.
+      const derivedConstructorSuperPropertyReads = run(
+        [
+          'var reads = 0, receiverOk = false;',
+          'class Base {',
+          '  get current() { reads++; receiverOk = receiverOk || this instanceof Child; return this.slot; }',
+          '}',
+          'class Child extends Base {',
+          '  constructor(key) {',
+          '    super();',
+          '    super.current;',
+          '    super[key];',
+          '  }',
+          '}',
+          'var child = new Child("current");',
+          'console.log(reads, receiverOk, child instanceof Child);',
+        ].join('\n'),
+      );
+      expect(
+        derivedConstructorSuperPropertyReads.status,
+        derivedConstructorSuperPropertyReads.stderr,
+      ).toBe(0);
+      expectRetainedClean(derivedConstructorSuperPropertyReads.stderr);
+      const derivedConstructorSuperPropertyReadsOutput = runOutput();
+      expect(
+        derivedConstructorSuperPropertyReadsOutput.status,
+        derivedConstructorSuperPropertyReadsOutput.stderr,
+      ).toBe(0);
+      expect(derivedConstructorSuperPropertyReadsOutput.stdout).toBe('2 true true\n');
+
+      const hostileDerivedConstructorSuperReadVariants: Array<{
+        name: string;
+        constructor: string;
+        creation?: string;
+        expected: string;
+      }> = [
+        {
+          name: 'nested arrow owns super read',
+          constructor: 'constructor(key) { super(); var read = () => super.current; read(); }',
+          expected: 'ok 1 0 true\n',
+        },
+        {
+          name: 'variable initializer reads super',
+          constructor:
+            'constructor(key) { super(); var value = super.current; this.slot = value; }',
+          expected: 'ok 1 0 true\n',
+        },
+        {
+          name: 'computed key call',
+          constructor: 'constructor(key) { super(); super[getKey()]; }',
+          expected: 'ok 1 1 true\n',
+        },
+        {
+          name: 'computed key member read',
+          constructor:
+            'constructor(key) { super(); var keys = { name: "current" }; super[keys.name]; }',
+          expected: 'ok 1 0 true\n',
+        },
+        {
+          name: 'optional computed key',
+          constructor:
+            'constructor(key) { super(); var keys = { name: "current" }; super[keys?.name]; }',
+          expected: 'ok 1 0 true\n',
+        },
+        {
+          name: 'super property used as call target',
+          constructor: 'constructor(key) { super(); super.current(); }',
+          expected: 'TypeError\n',
+        },
+        {
+          name: 'nested block read',
+          constructor: 'constructor(key) { super(); { super.current; } }',
+          expected: 'ok 1 0 true\n',
+        },
+        {
+          name: 'conditional branch read',
+          constructor: 'constructor(key) { super(); if (key) super.current; }',
+          expected: 'ok 1 0 true\n',
+        },
+        {
+          name: 'parameter default reads super before initialization',
+          constructor: 'constructor(key = super.current) { super(); }',
+          creation: 'new Child()',
+          expected: 'ReferenceError\n',
+        },
+        {
+          name: 'super read before super call',
+          constructor: 'constructor() { super.current; super(); }',
+          creation: 'new Child()',
+          expected: 'ReferenceError\n',
+        },
+      ];
+      for (const variant of hostileDerivedConstructorSuperReadVariants) {
+        const result = run(
+          [
+            'var reads = 0, keyCalls = 0;',
+            'function getKey() { keyCalls++; return "current"; }',
+            'class Base { get current() { reads++; return this.slot; } }',
+            `class Child extends Base { ${variant.constructor} }`,
+            `try { var child = ${variant.creation ?? 'new Child("current")'}; console.log("ok", reads, keyCalls, child instanceof Child); } catch (error) { console.log(error.name); }`,
+          ].join('\n'),
+        );
+        expectReanalyzedOutput(result, variant.expected, variant.name);
+      }
+
       // The explicit derived constructor keeps direct post-super assignments
       // on the same exact home-object graph as ordinary class methods.
       const derivedConstructorSuperLogicalAssignment = run(
@@ -6947,11 +7053,6 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
         creation?: string;
         expected: string;
       }> = [
-        {
-          name: 'standalone super property read',
-          constructor: 'constructor(value) { super(); super.current; this.slot = value; }',
-          expected: 'ok 7 1 0 0 0\n',
-        },
         {
           name: 'nested arrow owns super read',
           constructor:
