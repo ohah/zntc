@@ -1205,9 +1205,24 @@ fn buildStandaloneLateOutputNameOverrides(
     var overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
     var reserved: std.StringHashMapUnmanaged(void) = .empty;
     defer reserved.deinit(allocator);
+    var enum_source_symbols: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer enum_source_symbols.deinit(allocator);
 
+    // An enum IIFE parameter intentionally shadows its own source enum
+    // binding: `((E) => { E[E.A]... })(E || {})`. Keep that one source SID
+    // available as the parameter's base name, while still reserving every
+    // other source/generated name. The declaration span maps the virtual
+    // parameter back to the exact enum name node, including merged enums.
     for (transformer.symbols) |symbol| {
-        if (isStandaloneLateOutputNameSymbol(symbol)) continue;
+        if (!shouldUseStandaloneLateOutputName(transformer, symbol) or
+            symbol.synthetic_kind != .enum_iife_parameter) continue;
+        if (enumIifeSourceSymbolId(transformer, symbol)) |source_id|
+            try enum_source_symbols.put(allocator, source_id, {});
+    }
+
+    for (transformer.symbols, 0..) |symbol, raw_id| {
+        if (shouldUseStandaloneLateOutputName(transformer, symbol) or
+            enum_source_symbols.contains(@intCast(raw_id))) continue;
         const raw_name = if (symbol.synthetic_name.len > 0)
             symbol.synthetic_name
         else
@@ -1228,7 +1243,7 @@ fn buildStandaloneLateOutputNameOverrides(
     }
 
     for (transformer.symbols, 0..) |symbol, raw_id| {
-        if (!isStandaloneLateOutputNameSymbol(symbol)) continue;
+        if (!shouldUseStandaloneLateOutputName(transformer, symbol)) continue;
         const base_name = if (symbol.output_name_hint.len > 0)
             symbol.output_name_hint
         else
@@ -1237,7 +1252,13 @@ fn buildStandaloneLateOutputNameOverrides(
 
         var candidate = base_name;
         var suffix: usize = 2;
-        while (try standaloneHelperNameIsUsed(allocator, transformer, &reserved, candidate)) : (suffix += 1) {
+        while (try standaloneHelperNameIsUsed(
+            allocator,
+            transformer,
+            &reserved,
+            &enum_source_symbols,
+            candidate,
+        )) : (suffix += 1) {
             candidate = try std.fmt.allocPrint(allocator, "{s}{d}", .{ base_name, suffix });
         }
         try reserved.put(allocator, candidate, {});
@@ -1261,7 +1282,7 @@ fn validateDeferredOutputNameSymbols(allocator: std.mem.Allocator, transformer: 
     }
     for (transformer.symbols) |symbol| {
         const state = deferred.getPtr(symbol.synthetic_name) orelse continue;
-        if (!isStandaloneLateOutputNameSymbol(symbol)) return error.TransformError;
+        if (!shouldUseStandaloneLateOutputName(transformer, symbol)) return error.TransformError;
         state.* = .found;
     }
     var states = deferred.valueIterator();
@@ -1274,9 +1295,33 @@ fn isStandaloneLateOutputNameSymbol(symbol: @import("semantic/symbol.zig").Symbo
     return es_helpers.isStandaloneLateOutputNameSymbol(symbol);
 }
 
+fn shouldUseStandaloneLateOutputName(transformer: *const Transformer, symbol: @import("semantic/symbol.zig").Symbol) bool {
+    if (!isStandaloneLateOutputNameSymbol(symbol)) return false;
+    return switch (symbol.synthetic_kind orelse return false) {
+        .namespace_iife_parameter, .enum_iife_parameter => es_helpers.canUseLateStandaloneOutputName(transformer, symbol.scope_id),
+        else => true,
+    };
+}
+
+fn enumIifeSourceSymbolId(transformer: *const Transformer, parameter: @import("semantic/symbol.zig").Symbol) ?u32 {
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .ts_enum_declaration or
+            node.span.start != parameter.declaration_span.start or
+            node.span.end != parameter.declaration_span.end) continue;
+        const extra = node.data.extra;
+        if (extra >= transformer.ast.extra_data.items.len) return null;
+        const name_idx: ast_mod.NodeIndex = @enumFromInt(transformer.ast.extra_data.items[extra]);
+        if (name_idx.isNone()) return null;
+        const name_raw = @intFromEnum(name_idx);
+        if (name_raw >= transformer.symbol_ids.items.len) return null;
+        return transformer.symbol_ids.items[name_raw];
+    }
+    return null;
+}
+
 fn isStandaloneLateOutputNameBase(transformer: *const Transformer, name: []const u8) bool {
     for (transformer.symbols) |symbol| {
-        if (isStandaloneLateOutputNameSymbol(symbol) and
+        if (shouldUseStandaloneLateOutputName(transformer, symbol) and
             (std.mem.eql(u8, symbol.synthetic_name, name) or std.mem.eql(u8, symbol.output_name_hint, name))) return true;
     }
     return false;
@@ -1286,14 +1331,16 @@ fn standaloneHelperNameIsUsed(
     allocator: std.mem.Allocator,
     transformer: *const Transformer,
     reserved: *const std.StringHashMapUnmanaged(void),
+    enum_source_symbols: *const std.AutoHashMapUnmanaged(u32, void),
     candidate: []const u8,
 ) TranspileError!bool {
     if (reserved.contains(candidate)) return true;
     const decode_scratch = try allocator.alloc(u8, candidate.len);
     defer allocator.free(decode_scratch);
 
-    for (transformer.symbols) |symbol| {
-        if (isStandaloneLateOutputNameSymbol(symbol)) continue;
+    for (transformer.symbols, 0..) |symbol, raw_id| {
+        if (shouldUseStandaloneLateOutputName(transformer, symbol) or
+            enum_source_symbols.contains(@intCast(raw_id))) continue;
         const raw_name = if (symbol.synthetic_name.len > 0)
             symbol.synthetic_name
         else
@@ -4596,10 +4643,152 @@ test "#4819 standalone final-name policy separates late IDs from other output ow
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.block_scoping_loop_ret_binding)));
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.standalone_temp_binding)));
     try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.standalone_generated_binding)));
+    try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.namespace_iife_parameter)));
+    try std.testing.expect(isStandaloneLateOutputNameSymbol(make_symbol(.enum_iife_parameter)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.default_export)));
-    try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.namespace_iife_parameter)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(.require_shim_local)));
     try std.testing.expect(!isStandaloneLateOutputNameSymbol(make_symbol(null)));
+}
+
+test "#4819 standalone namespace and enum IIFE parameters resolve late names by exact SymbolId" {
+    const Symbol = @import("semantic/symbol.zig").Symbol;
+    const Scope = @import("semantic/scope.zig").Scope;
+    const ScopeKind = @import("semantic/scope.zig").ScopeKind;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var ast = Ast.init(allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(allocator, &ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+    transformer.semantic_edit_enabled = true;
+    var scopes = [_]Scope{
+        .{ .parent = .none, .kind = .module, .is_strict = true },
+        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true },
+    };
+    transformer.scopes = &scopes;
+
+    const namespace_source = try transformer.ast.addString("_Namespace");
+    const namespace_staging = try transformer.ast.addString("_namespaceParam");
+    const enum_source = try transformer.ast.addString("_Color");
+    const enum_staging = try transformer.ast.addString("_enumParam");
+    const duplicate_staging = try transformer.ast.addString("_namespaceParam2");
+    var symbols = [_]Symbol{
+        .{
+            .name = namespace_source,
+            .scope_id = .none,
+            .kind = .variable_let,
+            .declaration_span = namespace_source,
+        },
+        .{
+            .name = namespace_staging,
+            .scope_id = @enumFromInt(1),
+            .kind = .parameter,
+            .declaration_span = namespace_staging,
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_namespaceParam",
+            .output_name_hint = "_Namespace",
+        },
+        .{
+            .name = enum_source,
+            .scope_id = .none,
+            .kind = .variable_let,
+            .declaration_span = enum_source,
+        },
+        .{
+            .name = enum_staging,
+            .scope_id = @enumFromInt(1),
+            .kind = .parameter,
+            .declaration_span = enum_staging,
+            .synthetic_kind = .enum_iife_parameter,
+            .synthetic_name = "_enumParam",
+            .output_name_hint = "_Color",
+        },
+        .{
+            .name = duplicate_staging,
+            .scope_id = @enumFromInt(1),
+            .kind = .parameter,
+            .declaration_span = duplicate_staging,
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_namespaceParam2",
+            .output_name_hint = "_Namespace",
+        },
+    };
+    transformer.symbols = &symbols;
+
+    var unresolved: std.StringHashMapUnmanaged(void) = .empty;
+    try unresolved.put(allocator, "_Namespace2", {});
+    transformer.unresolved_references = &unresolved;
+    try transformer.synthetic_taken.put(allocator, "_Color2", {});
+    var block_renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    try block_renames.put(allocator, 99, "_Color3");
+    transformer.block_rename_map = block_renames;
+
+    var names = try buildStandaloneLateOutputNameOverrides(allocator, &transformer);
+    defer names.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 3), names.count());
+    try std.testing.expectEqualStrings("_Namespace3", names.get(1).?);
+    try std.testing.expectEqualStrings("_Color4", names.get(3).?);
+    try std.testing.expectEqualStrings("_Namespace4", names.get(4).?);
+    try std.testing.expect(names.get(0) == null);
+    try std.testing.expect(names.get(2) == null);
+
+    // A direct eval/with owner observes the virtual parameter spelling. Keep
+    // its analyzer-selected spelling instead of applying the late rename map.
+    scopes[1].subtree_has_direct_eval = true;
+    var eval_names = try buildStandaloneLateOutputNameOverrides(allocator, &transformer);
+    defer eval_names.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), eval_names.count());
+    try std.testing.expectEqual(ScopeKind.function, scopes[1].kind);
+
+    scopes[1].subtree_has_direct_eval = false;
+    scopes[1].subtree_has_with = true;
+    var with_names = try buildStandaloneLateOutputNameOverrides(allocator, &transformer);
+    defer with_names.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 0), with_names.count());
+
+    try transformer.late_output_name_bases.put(allocator, "_namespaceParam", "_Namespace");
+    try std.testing.expectError(error.TransformError, buildStandaloneLateOutputNameOverrides(allocator, &transformer));
+}
+
+test "#4819 standalone enum IIFE final name preserves its exact source binding owner" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "enum E { A = 1 } enum E { B = E.A + 1 }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_ts = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.semantic_edit_enabled = true;
+
+    var parameter_ids: [2]?u32 = .{ null, null };
+    var parameter_count: usize = 0;
+    for (analyzer.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != .enum_iife_parameter) continue;
+        if (parameter_count >= parameter_ids.len) return error.TooManyEnumIifeParameters;
+        parameter_ids[parameter_count] = @intCast(raw_id);
+        parameter_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), parameter_count);
+    const first_parameter = parameter_ids[0] orelse return error.MissingFirstEnumIifeParameter;
+    const second_parameter = parameter_ids[1] orelse return error.MissingSecondEnumIifeParameter;
+    var names = try buildStandaloneLateOutputNameOverrides(allocator, &transformer);
+    defer names.deinit(allocator);
+    try std.testing.expectEqualStrings("E", names.get(first_parameter).?);
+    try std.testing.expectEqualStrings("E2", names.get(second_parameter).?);
 }
 
 test "#4819 standalone temp final name is selected for its exact SymbolId around source names" {
