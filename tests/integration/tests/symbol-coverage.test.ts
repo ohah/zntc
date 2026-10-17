@@ -9289,7 +9289,33 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(asyncArrowParameterSuper, '42\n');
+      expect(asyncArrowParameterSuper.status, asyncArrowParameterSuper.stderr).toBe(0);
+      expectRetainedClean(asyncArrowParameterSuper.stderr ?? '');
+      const asyncArrowParameterSuperOutput = runOutput();
+      expect(asyncArrowParameterSuperOutput.status, asyncArrowParameterSuperOutput.stderr).toBe(0);
+      expect(asyncArrowParameterSuperOutput.stdout).toBe('42\n');
+
+      // A parameter initializer owned by a nested async arrow is a different
+      // home-object scope and remains on semantic reanalysis.
+      const nestedAsyncArrowParameterSuper = run(
+        [
+          'class Base { get current() { return this.value; } }',
+          'class Service extends Base {',
+          '  async readAsync() {',
+          '    await Promise.resolve();',
+          '    var outer = async () => {',
+          '      await Promise.resolve();',
+          '      var inner = async (value = super.current) => value;',
+          '      return await inner();',
+          '    };',
+          '    return await outer();',
+          '  }',
+          '}',
+          'var service = new Service(); service.value = 42;',
+          'service.readAsync().then(value => console.log(value));',
+        ].join('\n'),
+      );
+      expectReanalyzedOutput(nestedAsyncArrowParameterSuper, '42\n');
 
       // A method-body super mixed with the arrow capture keeps the class on reanalysis.
       const mixedMethodAndArrowSuper = run(

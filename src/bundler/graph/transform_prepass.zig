@@ -824,7 +824,15 @@ fn methodSuperUsesOnlyArrowScopes(
                     }
                 }
                 ast.allocator.free(arrow_params_nodes);
-                if (arrow_params_have_super) return false;
+                if (arrow_params_have_super) {
+                    // A direct async arrow's parameter defaults are evaluated
+                    // before its state-machine body is created. Preserve this
+                    // one home-object read shape when its exact source scope
+                    // remains on the class method graph. The super-use check
+                    // below verifies the arrow chain is async. Nested parameter
+                    // owners and sync-arrow defaults still require reanalysis.
+                    if (!expected_async or work.arrow_depth != 0) return false;
+                }
             }
         }
 
