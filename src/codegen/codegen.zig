@@ -462,7 +462,7 @@ pub const Codegen = struct {
         if (prefix.symbol_id) |sid| {
             if (sid >= self.options.semantic_symbols.len) return error.InvalidNamespacePrefixSymbol;
             const symbol = self.options.semantic_symbols[sid];
-            if (symbol.synthetic_kind != .namespace_iife_parameter)
+            if (symbol.kind != .parameter or symbol.synthetic_kind != .namespace_iife_parameter)
                 return error.InvalidNamespacePrefixSymbol;
             const output_name = self.finalSymbolName(sid) orelse return error.InvalidNamespacePrefixSymbol;
             if (output_name.len == 0) return error.InvalidNamespacePrefixSymbol;
