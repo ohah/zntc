@@ -978,6 +978,7 @@ pub const Transformer = struct {
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
     pub const nearestVarScope = @import("transformer/semantic_edit.zig").nearestVarScope;
     pub const syntheticTempOutputScopeIsDeferred = @import("transformer/semantic_edit.zig").syntheticTempOutputScopeIsDeferred;
+    pub const tempOutputScopeIsDeferredIgnoringStateMachine = @import("transformer/semantic_edit.zig").tempOutputScopeIsDeferredIgnoringStateMachine;
     pub const objectSuperTempOutputScopeIsDeferred = @import("transformer/semantic_edit.zig").objectSuperTempOutputScopeIsDeferred;
     pub const loweredParameterEnvironmentOutputScope = @import("transformer/semantic_edit.zig").loweredParameterEnvironmentOutputScope;
     pub const lookupSyntheticTempSymbol = @import("transformer/semantic_edit.zig").lookupSyntheticTempSymbol;

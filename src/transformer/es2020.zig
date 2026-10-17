@@ -34,34 +34,59 @@ pub fn ES2020(comptime Transformer: type) type {
             reference_scope: ScopeId,
         };
 
+        const TempIdentityScopes = struct {
+            reservation_scope: ScopeId,
+            reference_scope: ScopeId,
+            generator_state_temp: bool = false,
+        };
+
         const TrackedTempCapture = struct {
             span: Span,
             paren_assign: NodeIndex,
             identity: ?TempIdentity,
         };
 
-        /// Reserve a producer-owned identity as soon as a known-scope
-        /// optional-chain/nullish temp is allocated. Parameter environments,
-        /// static initializers, and lowered function callbacks keep the
-        /// existing pending path until their emitted owner scope exists.
+        /// Reserve a producer-owned identity as soon as an optional-chain or
+        /// nullish temp is allocated in a stable output scope. Generator state
+        /// machines already know the wrapper var owner; only reference scopes
+        /// need relocation when the callback is assembled.
         fn reserveTempIdentity(
             self: *Transformer,
             name_span: Span,
             declaration_span: Span,
         ) Transformer.Error!?TempIdentity {
-            const reference_scope = knownTempReferenceScope(self) orelse return null;
-            const symbol_id = try self.reserveSyntheticTempSymbolInScope(name_span, declaration_span, reference_scope) orelse
+            const scopes = knownTempIdentityScopes(self) orelse return null;
+            const symbol_id = try self.reserveSyntheticTempSymbolInScope(
+                name_span,
+                declaration_span,
+                scopes.reservation_scope,
+            ) orelse
                 std.debug.panic("known-scope ES2020 temp identity reservation returned no SymbolId", .{});
-            return .{ .symbol_id = symbol_id, .reference_scope = reference_scope };
+            if (scopes.generator_state_temp)
+                try self.recordGeneratorStateTempSymbol(name_span, symbol_id);
+            return .{ .symbol_id = symbol_id, .reference_scope = scopes.reference_scope };
         }
 
-        fn knownTempReferenceScope(self: *Transformer) ?ScopeId {
+        fn knownTempIdentityScopes(self: *Transformer) ?TempIdentityScopes {
             if (!self.semantic_edit_enabled or self.current_scope.isNone() or self.static_field_initializer_depth > 0)
                 return null;
-            const parameter_output_scope = self.loweredParameterEnvironmentOutputScope(self.current_scope);
-            if (parameter_output_scope == null and self.syntheticTempOutputScopeIsDeferred(self.current_scope))
-                return null;
-            return parameter_output_scope orelse self.current_scope;
+            if (self.loweredParameterEnvironmentOutputScope(self.current_scope)) |parameter_output_scope|
+                return .{ .reservation_scope = parameter_output_scope, .reference_scope = parameter_output_scope };
+
+            if (self.state_machine_depth > 0 and !self.generator_state_machine_scope.isNone() and
+                self.nearestVarScope(self.current_scope) == self.generator_state_machine_scope)
+            {
+                const reservation_scope = self.nearestVarScope(self.current_scope);
+                if (reservation_scope.isNone()) return null;
+                return .{
+                    .reservation_scope = reservation_scope,
+                    .reference_scope = self.current_scope,
+                    .generator_state_temp = reservation_scope == self.generator_state_machine_scope,
+                };
+            }
+
+            if (self.syntheticTempOutputScopeIsDeferred(self.current_scope)) return null;
+            return .{ .reservation_scope = self.current_scope, .reference_scope = self.current_scope };
         }
 
         fn trackTempReference(
@@ -75,7 +100,7 @@ pub fn ES2020(comptime Transformer: type) type {
             if (identity) |exact| {
                 return self.addSyntheticRefInScope(ref, exact.symbol_id, exact.reference_scope, flags);
             }
-            if (knownTempReferenceScope(self) != null)
+            if (knownTempIdentityScopes(self) != null)
                 std.debug.panic("known-scope ES2020 temp reference is missing its producer SymbolId", .{});
             try self.trackSyntheticTempReference(name_span, declaration_span, ref, flags);
         }
