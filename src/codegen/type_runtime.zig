@@ -452,6 +452,7 @@ fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind
         if (raw_id >= self.options.semantic_symbols.len) continue;
         const symbol = self.options.semantic_symbols[raw_id];
         if (symbol.synthetic_kind != expected_kind or @intFromEnum(symbol.scope_id) != scope) continue;
+        if (symbol.kind != .parameter) return null;
         if (selected != null) return null;
         selected = @intCast(raw_id);
     }
@@ -1169,4 +1170,76 @@ test "#4819 generated IIFE parameter names require an exact final-name result" {
     const enum_parameter = (try enumIifeParamName(&cg, @enumFromInt(1))) orelse return error.MissingEnumParameter;
     try std.testing.expectEqualStrings("renamedEnum", enum_parameter);
     try std.testing.expectEqual(@as(?u32, 1), cg.last_symbol_id);
+}
+
+test "#4819 generated IIFE parameter identity requires a parameter declaration" {
+    const span = @import("../lexer/token.zig").Span{ .start = 0, .end = 0 };
+    const ScopeMap = std.StringHashMapUnmanaged(usize);
+    const OwnerMap = std.AutoHashMapUnmanaged(u32, u32);
+    const allocator = std.testing.allocator;
+    const corrupted_symbols = [_]Symbol{
+        .{
+            .name = span,
+            .scope_id = @enumFromInt(0),
+            .kind = .variable_const,
+            .declaration_span = span,
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_Namespace",
+        },
+        .{
+            .name = span,
+            .scope_id = @enumFromInt(1),
+            .kind = .catch_binding,
+            .declaration_span = span,
+            .synthetic_kind = .enum_iife_parameter,
+            .synthetic_name = "_Enum",
+        },
+    };
+    var scope_maps: [2]ScopeMap = .{ .empty, .empty };
+    defer for (&scope_maps) |*scope_map| scope_map.deinit(allocator);
+    try scope_maps[0].put(allocator, "_Namespace", 0);
+    try scope_maps[1].put(allocator, "_Enum", 1);
+    var owners: OwnerMap = .empty;
+    defer owners.deinit(allocator);
+    try owners.put(allocator, 10, 0);
+    try owners.put(allocator, 11, 1);
+
+    const Probe = struct {
+        options: struct {
+            semantic_symbols: []const Symbol,
+            semantic_scope_maps: []const ScopeMap,
+            generated_iife_scope_owner_map: ?*const OwnerMap,
+        },
+    };
+    var probe: Probe = .{ .options = .{
+        .semantic_symbols = &corrupted_symbols,
+        .semantic_scope_maps = &scope_maps,
+        .generated_iife_scope_owner_map = &owners,
+    } };
+
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @enumFromInt(10), .namespace_iife_parameter));
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @enumFromInt(11), .enum_iife_parameter));
+
+    var valid_symbols = corrupted_symbols;
+    valid_symbols[0].kind = .parameter;
+    valid_symbols[1].kind = .parameter;
+    probe.options.semantic_symbols = &valid_symbols;
+    try std.testing.expectEqual(@as(?u32, 0), generatedIifeParamSymbolId(&probe, @enumFromInt(10), .namespace_iife_parameter));
+    try std.testing.expectEqual(@as(?u32, 1), generatedIifeParamSymbolId(&probe, @enumFromInt(11), .enum_iife_parameter));
+
+    const corrupted_and_valid_symbols = [_]Symbol{
+        corrupted_symbols[0],
+        corrupted_symbols[1],
+        .{
+            .name = span,
+            .scope_id = @enumFromInt(0),
+            .kind = .parameter,
+            .declaration_span = span,
+            .synthetic_kind = .namespace_iife_parameter,
+            .synthetic_name = "_NamespaceDuplicate",
+        },
+    };
+    try scope_maps[0].put(allocator, "_NamespaceDuplicate", 2);
+    probe.options.semantic_symbols = &corrupted_and_valid_symbols;
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @enumFromInt(10), .namespace_iife_parameter));
 }
