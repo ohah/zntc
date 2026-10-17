@@ -330,7 +330,7 @@ pub const TransformOptions = struct {
         return astHasMappedImportToSplit(ast, self.module_specifier_map);
     }
 
-    fn unsupportedGraphPrePassFeatureUsed(self: *const TransformOptions, ast: *const Ast) bool {
+    pub fn unsupportedGraphPrePassFeatureUsed(self: *const TransformOptions, ast: *const Ast) bool {
         const u = self.unsupported;
         if (!u.hasAny()) return false;
 
