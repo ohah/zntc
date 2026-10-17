@@ -1014,7 +1014,6 @@ pub const Linker = struct {
         name_to_owners: *const NameToOwnersMap,
         only: ?[]const ModuleIndex,
     ) !void {
-        if (self.manglerActive()) return;
         const count = if (only) |modules| modules.len else self.graph.moduleCount();
         for (0..count) |i| {
             const module_index = if (only) |modules| modules[i].toU32() else @as(u32, @intCast(i));
@@ -1022,11 +1021,24 @@ pub const Linker = struct {
             const semantic = module.semantic orelse continue;
             for (semantic.symbols.items, 0..) |symbol, raw_symbol_id| {
                 const kind = symbol.synthetic_kind orelse continue;
+                // Runtime-helper imports share a spelling with generated call
+                // references and are emitted outside normal AST declarations.
+                // Give their exact SymbolId a collision-free linker name before
+                // identifier mangling too; the mangler can then shorten that
+                // already distinct identity. Other output-owned hints keep the
+                // existing mangle-first path.
+                if (self.manglerActive() and kind != .runtime_helper_import) continue;
                 const is_variable_local = switch (symbol.kind) {
                     .variable_var, .variable_let, .variable_const => true,
                     else => false,
                 };
                 switch (kind) {
+                    .runtime_helper_import => {
+                        if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+                            symbol.output_name_hint.len == 0 or
+                            !std.mem.eql(u8, symbol.synthetic_name, symbol.output_name_hint))
+                            return error.InvalidRuntimeHelperImportOutputBinding;
+                    },
                     .worklet_factory_local => {
                         if (symbol.output_name_hint.len == 0 or symbol.scope_id.isNone())
                             return error.InvalidWorkletFactoryLocal;
@@ -1060,7 +1072,13 @@ pub const Linker = struct {
                     @as(u32, @intCast(raw_symbol_id)),
                 );
                 const base = symbol.output_name_hint;
-                const selected = if (self.postGraphLocalNameAvailable(module_index, @intCast(raw_symbol_id), base, name_to_owners))
+                const selected = if (self.postGraphLocalNameAvailable(
+                    module_index,
+                    @intCast(raw_symbol_id),
+                    base,
+                    name_to_owners,
+                    kind == .runtime_helper_import,
+                ))
                     try self.allocator.dupe(u8, base)
                 else blk: {
                     var suffix: u32 = 1;
@@ -1079,9 +1097,14 @@ pub const Linker = struct {
         symbol_index: u32,
         name: []const u8,
         name_to_owners: *const NameToOwnersMap,
+        allow_same_module_owner: bool,
     ) bool {
-        if (self.isReservedOrGlobal(name) or name_to_owners.contains(name) or self.isCanonicalNameTaken(name))
-            return false;
+        if (self.isReservedOrGlobal(name) or self.isCanonicalNameTaken(name)) return false;
+        if (name_to_owners.get(name)) |owners| {
+            for (owners.items) |owner| {
+                if (!allow_same_module_owner or owner.module_index != module_index) return false;
+            }
+        }
         const module = self.getModule(module_index) orelse return false;
         const semantic = module.semantic orelse return false;
         for (semantic.scope_maps) |scope_map| {
@@ -3922,6 +3945,17 @@ pub const Linker = struct {
                         const sk = sym.synthetic_kind orelse continue;
                         switch (sk) {
                             .default_export, .cjs_exports, .cjs_require, .esm_init, .namespace_iife_parameter, .enum_iife_parameter, .runtime_helper_preamble, .runtime_helper_import, .worklet_factory_local, .enum_iife_member, .cjs_wrapper_exports_parameter, .cjs_wrapper_module_parameter, .cjs_runtime_factory, .cjs_runtime_internal_local, .esm_runtime_internal_local, .esm_interop_runtime_internal_local, .hmr_runtime_internal_local, .bundler_runtime_helper, .require_shim_local, .optional_catch_binding, .stage3_metadata_binding, .stage3_class_this_binding, .stage3_class_decorator_binding, .stage3_member_decorator_binding, .generator_state_parameter, .class_super_parameter, .new_target_capture_binding, .this_capture_binding, .arguments_capture_binding, .class_self_write_binding, .class_self_alias_binding, .anonymous_class_export_binding, .anonymous_class_expression_binding, .block_scoping_loop_binding, .for_of_step_binding, .object_super_home_binding, .block_scoping_loop_ret_binding, .tagged_template_function_binding, .standalone_temp_binding, .standalone_generated_binding => {},
+                        }
+                        if (sk == .runtime_helper_import) {
+                            if (sym.kind != .import_binding or sym.scope_id.isNone() or
+                                sym.scope_id.toIndex() != 0 or sym.output_name_hint.len == 0 or
+                                !std.mem.eql(u8, sym.synthetic_name, sym.output_name_hint))
+                                return error.InvalidRuntimeHelperImportMangleBinding;
+                            // Generated helper import locals are owned by the program
+                            // scope even when a same-spelled user binding occupies the
+                            // scope map's single textual key. Include both exact IDs in
+                            // the minifier's module-scope candidate set.
+                            bitsets[mi].set(si);
                         }
                         if (sk == .enum_iife_member) continue;
                         if (sk == .cjs_runtime_internal_local) continue;

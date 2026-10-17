@@ -862,26 +862,11 @@ fn emitChunksImpl(
             }
         }
 
-        // ESM external imports (#1962): chunk 모듈들의 external import 를 dedup
-        // 후 chunk top 에 단일 `import` 로 prepend. emitChunkExternalImports
-        // 가 `is_esm` 아니면 자체 no-op(iife/umd/amd 는 seam·factory-param 으로
-        // 완결 — ESM import 추가 시 reg_split factory 내 SyntaxError + 이중처리).
-        {
-            var chunk_mods: std.ArrayListUnmanaged(*const Module) = .empty;
-            defer chunk_mods.deinit(allocator);
-            try chunk_mods.ensureTotalCapacity(allocator, chunk.modules.items.len);
-            for (chunk.modules.items) |mod_idx| {
-                if (graph.getModule(mod_idx)) |m| chunk_mods.appendAssumeCapacity(m);
-            }
-            try external_imports.emitChunkExternalImports(
-                &chunk_output,
-                allocator,
-                options.format == .esm,
-                chunk_mods.items,
-                linker,
-                options.minify_whitespace,
-            );
-        }
+        // ESM external imports (#1962): keep their original prologue position,
+        // but emit them only after computeRenamesForModules below. Generated
+        // helper imports read exact linker-selected local names, and preserve-
+        // modules computes those names per chunk.
+        const external_imports_pos = chunk_output.items.len;
 
         // 이 청크의 정의자 모듈에 속한 namespace object literal 만 inline.
         // referrer 청크가 자기 self-preamble 에 inline 하던 동작 (entry 에 vendor
@@ -893,7 +878,7 @@ fn emitChunksImpl(
         // 썼고, 그 이름은 정작 이 청크 안엔 선언이 없어 ReferenceError 였다. 텍스트가 들어갈
         // **위치만** 기억해 두고 나중에 `insertSlice` 로 꽂는다 (출력 순서는 종전과 동일 —
         // sourcemap base 인 `module_line` 은 이 insert 이후에 계산되므로 영향 없음).
-        const ns_preamble_pos: ?usize = if (linker) |l|
+        var ns_preamble_pos: ?usize = if (linker) |l|
             (if (l.use_shared_ns_preamble) chunk_output.items.len else null)
         else
             null;
@@ -997,7 +982,7 @@ fn emitChunksImpl(
             })
         else
             null;
-        const fn_hoist_pos: ?usize = if (fn_hoist_entry != null) chunk_output.items.len else null;
+        var fn_hoist_pos: ?usize = if (fn_hoist_entry != null) chunk_output.items.len else null;
 
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
@@ -1511,6 +1496,34 @@ fn emitChunksImpl(
         // 청크 내 모듈들만 대상으로 이름 충돌을 감지한다.
         if (linker) |l| {
             try l.computeRenamesForModules(sorted_mods, occupied.items);
+        }
+
+        // Helper-import aliases must agree with body references after this
+        // chunk's final names are selected. Generate the ESM import block now,
+        // then place it at its original prologue offset before the saved
+        // preamble insertion points.
+        {
+            var chunk_mods: std.ArrayListUnmanaged(*const Module) = .empty;
+            defer chunk_mods.deinit(allocator);
+            try chunk_mods.ensureTotalCapacity(allocator, chunk.modules.items.len);
+            for (chunk.modules.items) |mod_idx| {
+                if (graph.getModule(mod_idx)) |m| chunk_mods.appendAssumeCapacity(m);
+            }
+            var imports_output: std.ArrayList(u8) = .empty;
+            defer imports_output.deinit(allocator);
+            try external_imports.emitChunkExternalImports(
+                &imports_output,
+                allocator,
+                options.format == .esm,
+                chunk_mods.items,
+                linker,
+                options.minify_whitespace,
+            );
+            if (imports_output.items.len > 0) {
+                try chunk_output.insertSlice(allocator, external_imports_pos, imports_output.items);
+                if (ns_preamble_pos) |*pos| pos.* += imports_output.items.len;
+                if (fn_hoist_pos) |*pos| pos.* += imports_output.items.len;
+            }
         }
 
         // (#4532 증상4) 리네임 확정 후 function-decl export 를 require 블록 앞에 insert.

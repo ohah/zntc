@@ -243,6 +243,13 @@ pub const Stage3OutputBinding = struct {
     binding_kind: semantic_symbol.SymbolKind,
 };
 
+/// Exact runtime-helper import local whose final spelling is assigned after
+/// linker scope collection and must survive semantic reanalysis by NodeIndex.
+pub const RuntimeHelperImportOutputBinding = struct {
+    node_index: u32,
+    output_name_hint: []const u8,
+};
+
 pub const TransformCache = struct {
     /// transformer 가 set 한 RuntimeHelpers 비트맵.
     /// emitter 의 chunk-level helper preamble 결정에 사용.
@@ -268,6 +275,9 @@ pub const TransformCache = struct {
     /// Exact Stage 3 generated bindings whose deferred output-name hints must
     /// be restored by binding NodeIndex after reanalysis.
     stage3_output_bindings: []const Stage3OutputBinding = &.{},
+    /// Exact generated JSX/runtime import locals whose deferred output names
+    /// must be restored by NodeIndex after semantic reanalysis.
+    runtime_helper_import_output_bindings: []const RuntimeHelperImportOutputBinding = &.{},
     /// #3267 N-step4 follow-up: prepass minify 의 cascade ref decrement 결과
     /// (`MinifyCtx.ref_deltas` snapshot, length == sem.symbols.len). emitter 의 minify
     /// 가 fresh ctx 에 hydrate 하여 prepass 에서 fold 된 dead branch 안 ref 감산

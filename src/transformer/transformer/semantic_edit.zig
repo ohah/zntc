@@ -3066,7 +3066,12 @@ pub fn trackRuntimeHelperImportRef(self: *Transformer, node: NodeIndex, local_na
 
 /// Reserve a standalone JSX runtime import local for late output naming.
 pub fn trackJsxRuntimeImportRef(self: *Transformer, node: NodeIndex, local_name: []const u8) Transformer.Error!?SymbolId {
-    return trackRuntimeHelperRefKind(self, node, local_name, true, self.options.defer_runtime_helper_name_resolution);
+    const defer_import_name = if (self.semantic_edit_enabled) blk: {
+        const program_scope = self.programScope();
+        break :blk es_helpers.canUseLateStandaloneOutputName(self, program_scope) or
+            es_helpers.canUseLateGraphOutputName(self, program_scope);
+    } else false;
+    return trackRuntimeHelperRefKind(self, node, local_name, true, defer_import_name);
 }
 
 fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []const u8, is_import: bool, defer_import_name: bool) Transformer.Error!?SymbolId {

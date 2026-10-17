@@ -5,6 +5,7 @@ const Module = @import("../module.zig").Module;
 const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
 const WorkletFactoryLocalBinding = @import("../module.zig").WorkletFactoryLocalBinding;
 const Stage3OutputBinding = @import("../module.zig").Stage3OutputBinding;
+const RuntimeHelperImportOutputBinding = @import("../module.zig").RuntimeHelperImportOutputBinding;
 const AliasTable = @import("../module.zig").AliasTable;
 const binding_scanner_mod = @import("../binding_scanner.zig");
 const bundler_symbol = @import("../symbol.zig");
@@ -6560,6 +6561,42 @@ fn captureStage3OutputBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
+/// Preserve generated runtime-import identity metadata through post-transform
+/// semantic reanalysis. The transformer map supplies exact import-local
+/// NodeIndices; no spelling or source-span recovery is involved.
+fn captureRuntimeHelperImportOutputBindings(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+    import_bindings: *const std.AutoHashMapUnmanaged(u32, u32),
+) ![]const RuntimeHelperImportOutputBinding {
+    var bindings: std.ArrayListUnmanaged(RuntimeHelperImportOutputBinding) = .empty;
+    var it = import_bindings.iterator();
+    while (it.next()) |entry| {
+        const raw_symbol_id = entry.key_ptr.*;
+        if (raw_symbol_id >= semantic.symbols.items.len) return error.InvalidRuntimeHelperImportSymbolId;
+        const symbol = semantic.symbols.items[raw_symbol_id];
+        if (symbol.synthetic_kind != .runtime_helper_import) continue;
+        if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+            symbol.output_name_hint.len == 0 or
+            !std.mem.eql(u8, symbol.synthetic_name, symbol.output_name_hint))
+            return error.InvalidRuntimeHelperImportOutputMetadata;
+
+        const raw_node = entry.value_ptr.*;
+        if (raw_node >= ast.nodes.items.len) return error.InvalidRuntimeHelperImportNode;
+        const node = ast.nodes.items[raw_node];
+        if (node.tag != .identifier_reference and node.tag != .import_default_specifier)
+            return error.InvalidRuntimeHelperImportNode;
+        if (!std.mem.eql(u8, ast.getText(node.data.string_ref), symbol.synthetic_name))
+            return error.RuntimeHelperImportNameMismatch;
+        try bindings.append(allocator, .{
+            .node_index = raw_node,
+            .output_name_hint = symbol.output_name_hint,
+        });
+    }
+    return bindings.toOwnedSlice(allocator);
+}
+
 /// 비-ESM 출력은 TLA 를 항상 미지원으로 둔다(#4598). TLA 가 없는 모듈에는 그 비트가 출력에
 /// 영향을 주지 않으므로, 그래프 유지 판정(`hasAny`)과 변환에서 빼고 보아 이전과 같게 둔다.
 /// TLA 유무는 파싱 때(변환 전) 기록한 `self_uses_top_level_await` 다.
@@ -6830,6 +6867,15 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         captureStage3OutputBindings(arena_alloc, transformer.ast, semantic) catch return
     else
         &[_]Stage3OutputBinding{};
+    const owned_runtime_helper_import_output_bindings = if (module.semantic) |*semantic|
+        captureRuntimeHelperImportOutputBindings(
+            arena_alloc,
+            transformer.ast,
+            semantic,
+            &transformer.runtime_helper_import_bindings,
+        ) catch return
+    else
+        &[_]RuntimeHelperImportOutputBinding{};
     // #2869 helper marker sidecar — sorted u32 slice. resync analyzer 가 binary search.
     const owned_helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch &[_]u32{};
     const owned_explicit_global_ref_nodes = transformer.ownedExplicitGlobalRefNodes(arena_alloc) catch {
@@ -6854,6 +6900,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .preserved_class_name_nodes = owned_preserved_class_names,
         .worklet_factory_local_bindings = owned_worklet_factory_local_bindings,
         .stage3_output_bindings = owned_stage3_output_bindings,
+        .runtime_helper_import_output_bindings = owned_runtime_helper_import_output_bindings,
         .ref_deltas = prepass_ref_deltas,
     };
 
@@ -7536,6 +7583,27 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 }
                 symbol.synthetic_kind = output_binding.synthetic_kind;
                 symbol.synthetic_name = ast.getText(ast.nodes.items[raw].data.string_ref);
+                symbol.output_name_hint = output_binding.output_name_hint;
+            }
+            for (cache.runtime_helper_import_output_bindings) |output_binding| {
+                const raw = output_binding.node_index;
+                if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len)
+                    return error.InvalidRuntimeHelperImportProvenance;
+                const local = ast.nodes.items[raw];
+                if (local.tag != .identifier_reference and local.tag != .import_default_specifier)
+                    return error.InvalidRuntimeHelperImportProvenance;
+                const id = analyzer.symbol_ids.items[raw] orelse return error.MissingRuntimeHelperImportSymbol;
+                if (id >= analyzer.symbols.items.len) return error.InvalidRuntimeHelperImportSymbolId;
+                const symbol = &analyzer.symbols.items[id];
+                if (symbol.kind != .import_binding or symbol.scope_id.isNone())
+                    return error.InvalidRuntimeHelperImportBindingKind;
+                if (symbol.synthetic_kind != null and symbol.synthetic_kind != .runtime_helper_import)
+                    return error.RuntimeHelperImportSyntheticKindConflict;
+                if (output_binding.output_name_hint.len == 0 or
+                    !std.mem.eql(u8, ast.getText(local.data.string_ref), output_binding.output_name_hint))
+                    return error.InvalidRuntimeHelperImportOutputHint;
+                symbol.synthetic_kind = .runtime_helper_import;
+                symbol.synthetic_name = ast.getText(local.data.string_ref);
                 symbol.output_name_hint = output_binding.output_name_hint;
             }
         }
