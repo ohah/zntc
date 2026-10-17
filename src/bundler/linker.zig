@@ -724,8 +724,9 @@ pub const Linker = struct {
         /// calculateRenames sort tie-break. exec_index 동률 시 path 사전순 (cross-chunk
         /// marker 는 ""), worker race 비결정성 방지.
         path: []const u8,
-        /// Output-owned bindings such as the CJS runtime factory already have
-        /// an exact identity even when no source scope map owns their name.
+        /// Generated output bindings such as runtime factories and default
+        /// export facades carry their exact identity even without a scope-map
+        /// entry for their output spelling.
         symbol_id: ?bundler_symbol.SymbolID = null,
     };
 
@@ -797,8 +798,8 @@ pub const Linker = struct {
     /// 등록하면 가드가 거짓 통과/실패한다(드리프트=정확성 버그). 그래서 필터 로직을
     /// 여기 한 곳에 두고 양쪽이 호출한다.
     ///
-    /// `cb(ctx, name)` 를 등록 대상 이름마다 호출한다. 두 소비자(collectModuleNames /
-    /// fingerprint 빌더) 모두 이름만 필요하므로 sym_idx 는 노출하지 않는다.
+    /// 등록 대상마다 이름을 전달하고, analyzer facade identity가 있는 경우에는 그
+    /// exact SymbolID도 함께 넘긴다. collision pass와 rename snapshot이 같은 입력을 쓴다.
     /// ES5 output cannot keep block scoping: in a scope-hoisted module, block-level
     /// `let`/`const`/`class` lower to `var`, and strict block functions are hoisted
     /// by Annex B, all into the shared bundle scope. Enumerate those bindings with
@@ -853,7 +854,7 @@ pub const Linker = struct {
         m: Module,
         comptime Ctx: type,
         ctx: Ctx,
-        comptime cb: fn (Ctx, []const u8) anyerror!void,
+        comptime cb: fn (Ctx, []const u8, ?bundler_symbol.SymbolID) anyerror!void,
     ) !void {
         const sem = m.semantic orelse return;
         if (sem.scope_maps.len == 0) return;
@@ -930,21 +931,41 @@ pub const Linker = struct {
                 if (!generates_top_level_var) continue;
             }
 
-            try cb(ctx, sym_name);
+            try cb(ctx, sym_name, null);
         }
 
         // codegen이 현재 모듈에 `_default` 합성 변수를 만드는 모든 export를 수집.
-        // 충돌 시 _default$N으로 리네이밍되도록 등록한다.
+        // exact producer ID를 owner로 보존해 source의 동명 _default와 연결이 뒤바뀌지 않게 한다.
         for (m.export_bindings) |eb| {
-            if (eb.hasSyntheticDefault(m.semanticSymbols())) {
-                try cb(ctx, "_default");
+            const is_default_export = std.mem.eql(u8, eb.exported_name, "default");
+            const expects_facade = is_default_export and
+                ((eb.kind == .local and eb.has_default_export_facade) or
+                    (eb.kind == .re_export and
+                        (std.mem.eql(u8, eb.local_name, "_default") or std.mem.eql(u8, eb.local_name, "default"))));
+            const has_facade = eb.hasSyntheticDefault(m.semanticSymbols());
+            if (expects_facade and !has_facade) return error.MissingDefaultExportFacadeSymbol;
+            if (has_facade) {
+                const symbol_id = bundler_symbol.SymbolID.fromRef(eb.symbol) orelse
+                    return error.MissingDefaultExportFacadeSymbolId;
+                if (symbol_id.module != m.index) return error.InvalidDefaultExportFacadeModule;
+                const symbol_index = @backingInt(symbol_id.inner);
+                if (symbol_index >= sem.symbols.items.len) return error.InvalidDefaultExportFacadeSymbolId;
+                const facade = sem.symbols.items[symbol_index];
+                if (facade.synthetic_kind != .default_export or
+                    !std.mem.eql(u8, facade.synthetic_name, "_default"))
+                    return error.InvalidDefaultExportFacadeSymbol;
+                if (facade.scope_id.isNone() or facade.scope_id.toIndex() >= sem.scopes.len)
+                    return error.MissingDefaultExportFacadeOwnerScope;
+                if (facade.scope_id.toIndex() != 0)
+                    return error.InvalidDefaultExportFacadeOwnerScope;
+                try cb(ctx, "_default", symbol_id);
                 continue;
             }
             if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default")) {
                 // export default function foo → foo 이름으로 등록
                 const local = m.exportBindingLocalName(eb);
                 if (module_scope.get(local) == null) {
-                    try cb(ctx, local);
+                    try cb(ctx, local, null);
                 }
             }
         }
@@ -963,8 +984,10 @@ pub const Linker = struct {
             linker: *Linker,
             map: *NameToOwnersMap,
             owner: NameOwner,
-            fn add(c: @This(), name: []const u8) anyerror!void {
-                try c.linker.addNameOwner(c.map, name, c.owner);
+            fn add(c: @This(), name: []const u8, symbol_id: ?bundler_symbol.SymbolID) anyerror!void {
+                var owner = c.owner;
+                owner.symbol_id = symbol_id;
+                try c.linker.addNameOwner(c.map, name, owner);
             }
         };
         const owner: NameOwner = .{ .module_index = module_index, .exec_index = m.exec_index, .path = m.path };
@@ -3393,9 +3416,10 @@ pub const Linker = struct {
         // top-level owner 이름집합 (G2) — collectModuleNames 와 동일 필터 공유.
         const Ctx = struct {
             acc: *u64,
-            fn add(c: @This(), name: []const u8) anyerror!void {
+            fn add(c: @This(), name: []const u8, symbol_id: ?bundler_symbol.SymbolID) anyerror!void {
                 // order-independent: 각 이름 해시를 wrapping-add. 같은 집합 → 같은 합.
                 c.acc.* +%= std.hash.Wyhash.hash(0xc0, name);
+                if (symbol_id) |id| c.acc.* +%= std.hash.Wyhash.hash(0xc2, std.mem.asBytes(&id));
             }
         };
         try self.forEachTopLevelOwnerName(m, Ctx, .{ .acc = &fp.toplevel_name_set_hash }, Ctx.add);
@@ -3409,7 +3433,13 @@ pub const Linker = struct {
 
         // nested binding 이름집합 (G5) — resolveNestedShadowConflicts/hasNestedBinding 입력.
         // forEachNestedBindingName 으로 shadow pass 와 동일한 scope_maps[1..] 집합을 본다.
-        try forEachNestedBindingName(m, Ctx, .{ .acc = &fp.nested_name_set_hash }, Ctx.add);
+        const NestedCtx = struct {
+            acc: *u64,
+            fn add(c: @This(), name: []const u8) anyerror!void {
+                c.acc.* +%= std.hash.Wyhash.hash(0xc0, name);
+            }
+        };
+        try forEachNestedBindingName(m, NestedCtx, .{ .acc = &fp.nested_name_set_hash }, NestedCtx.add);
 
         // (#4538) CJS 로 래핑된 소비자의 **scope 0** 은 `__commonJS` 클로저 안이라 번들 기준
         // 중첩이다 — `resolveWrapperConsumerShadows`(#4533)가 그 이름도 주입 래퍼와 대조해

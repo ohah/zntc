@@ -9,6 +9,7 @@ const binding_scanner_mod = @import("../binding_scanner.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const Span = @import("../../lexer/token.zig").Span;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const graph_loaders = @import("loaders.zig");
 const graph_parse_helpers = @import("parse_helpers.zig");
 const projectExportedNames = graph_parse_helpers.projectExportedNames;
@@ -99,7 +100,8 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
     if (module.semantic) |*sem| {
         const scope0: ?std.StringHashMapUnmanaged(usize) =
             if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
-        binding_scanner_mod.populateSyntheticSymbols(
+        const module_scope_id: ?ScopeId = if (sem.scopes.len > 0) @fromBackingInt(@as(u32, 0)) else null;
+        binding_scanner_mod.populateSyntheticSymbolsWithOwnerScope(
             &module.alias_table.?,
             module.index,
             module.export_bindings,
@@ -107,6 +109,7 @@ pub fn parse(self: *ModuleGraph, io: std.Io, module: *Module) void {
             arena_alloc,
             scope0,
             sem.symbol_ids,
+            module_scope_id,
         ) catch {
             self.addDiag(
                 .parse_error,

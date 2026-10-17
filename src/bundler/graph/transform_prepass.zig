@@ -23,6 +23,7 @@ const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticSyntheticKind = @import("../../semantic/symbol.zig").SyntheticKind;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
@@ -7712,7 +7713,8 @@ fn refreshStableBindingRefsFromSemanticGraph(
 
     if (module.alias_table) |*table| table.deinit();
     module.alias_table = AliasTable.init(self.allocator);
-    try binding_scanner_mod.populateSyntheticSymbols(
+    const module_scope_id: ?ScopeId = if (sem.scopes.len > 0) @fromBackingInt(@as(u32, 0)) else null;
+    try binding_scanner_mod.populateSyntheticSymbolsWithOwnerScope(
         &module.alias_table.?,
         module.index,
         module.export_bindings,
@@ -7720,6 +7722,7 @@ fn refreshStableBindingRefsFromSemanticGraph(
         arena_alloc,
         scope0,
         sem.symbol_ids,
+        module_scope_id,
     );
 }
 

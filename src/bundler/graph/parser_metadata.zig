@@ -5,6 +5,7 @@ const types = @import("../types.zig");
 const Module = @import("../module.zig").Module;
 const Parser = @import("../../parser/parser.zig").Parser;
 const Span = @import("../../lexer/token.zig").Span;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 const profile = @import("../../profile.zig");
 const import_scanner = @import("../import_scanner.zig");
 const binding_scanner = @import("../binding_scanner.zig");
@@ -148,7 +149,8 @@ pub fn materialize(
         if (module.semantic) |*sem| {
             const scope0: ?std.StringHashMapUnmanaged(usize) =
                 if (sem.scope_maps.len > 0) sem.scope_maps[0] else null;
-            binding_scanner.populateSyntheticSymbols(
+            const module_scope_id: ?ScopeId = if (sem.scopes.len > 0) @fromBackingInt(@as(u32, 0)) else null;
+            binding_scanner.populateSyntheticSymbolsWithOwnerScope(
                 &module.alias_table.?,
                 module.index,
                 module.export_bindings,
@@ -156,6 +158,7 @@ pub fn materialize(
                 arena_alloc,
                 scope0,
                 sem.symbol_ids,
+                module_scope_id,
             ) catch {
                 self.addDiag(
                     .parse_error,
