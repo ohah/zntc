@@ -6,6 +6,7 @@ const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const es_helpers = @import("../es_helpers.zig");
+const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
@@ -84,15 +85,19 @@ pub fn visitNamespaceDeclaration(self: *Transformer, node: Node) Error!NodeIndex
 
     var pushed_export_frame = false;
     if (self.semantic_edit_enabled) {
-        if (namespaceIifeParameterSymbolId(self, self.current_scope)) |parameter_sid| {
-            var frame = transformer_mod.NamespaceExportFrame{
-                .parameter_symbol_id = parameter_sid,
-                .owner_symbol_id = namespace_owner_symbol_id,
-            };
-            errdefer if (!pushed_export_frame) frame.exported_symbol_ids.deinit(self.allocator);
-            try collectDirectNamespaceExportSymbols(self, node.data.binary.right, &frame.exported_symbol_ids);
-            try self.namespace_export_frames.append(self.allocator, frame);
-            pushed_export_frame = true;
+        switch (namespaceIifeParameterSymbolId(self, self.current_scope)) {
+            .missing => {},
+            .invalid => std.debug.panic("namespace IIFE has ambiguous or invalid parameter SymbolIds", .{}),
+            .found => |parameter_sid| {
+                var frame = transformer_mod.NamespaceExportFrame{
+                    .parameter_symbol_id = parameter_sid,
+                    .owner_symbol_id = namespace_owner_symbol_id,
+                };
+                errdefer if (!pushed_export_frame) frame.exported_symbol_ids.deinit(self.allocator);
+                try collectDirectNamespaceExportSymbols(self, node.data.binary.right, &frame.exported_symbol_ids);
+                try self.namespace_export_frames.append(self.allocator, frame);
+                pushed_export_frame = true;
+            },
         }
     }
     defer if (pushed_export_frame) {
@@ -185,14 +190,24 @@ pub fn namespaceExportAccess(self: *Transformer, idx: NodeIndex) Error!?NodeInde
     return access;
 }
 
-fn namespaceIifeParameterSymbolId(self: *Transformer, namespace_scope: @import("../../semantic/scope.zig").ScopeId) ?u32 {
+const NamespaceIifeParameterLookup = union(enum) {
+    missing,
+    found: u32,
+    invalid,
+};
+
+fn namespaceIifeParameterSymbolId(
+    self: *Transformer,
+    namespace_scope: @import("../../semantic/scope.zig").ScopeId,
+) NamespaceIifeParameterLookup {
     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+    var selected: ?u32 = null;
     for (symbols, 0..) |symbol, sid| {
-        if (symbol.synthetic_kind == .namespace_iife_parameter and symbol.scope_id == namespace_scope) {
-            return @intCast(sid);
-        }
+        if (symbol.synthetic_kind != .namespace_iife_parameter or symbol.scope_id != namespace_scope) continue;
+        if (symbol.kind != .parameter or sid > std.math.maxInt(u32) or selected != null) return .invalid;
+        selected = @intCast(sid);
     }
-    return null;
+    return if (selected) |sid| .{ .found = sid } else .missing;
 }
 
 fn collectDirectNamespaceExportSymbols(
@@ -236,4 +251,49 @@ fn collectDirectNamespaceExportSymbols(
             try exported_symbols.put(self.allocator, sid, {});
         }
     }
+}
+
+// This helper is private to namespace transformation; keep its identity invariants in a white-box test.
+test "#4819 namespace transform requires one parameter SymbolId per owner scope" {
+    const allocator = std.testing.allocator;
+    var ast = ast_mod.Ast.init(allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(allocator, &ast, .{});
+    defer transformer.deinit();
+
+    const span = @import("../../lexer/token.zig").Span{ .start = 0, .end = 0 };
+    const symbols = [_]SemanticSymbol{
+        .{
+            .name = span,
+            .scope_id = @enumFromInt(0),
+            .kind = .parameter,
+            .declaration_span = span,
+            .synthetic_kind = .namespace_iife_parameter,
+        },
+    };
+    transformer.symbols = &symbols;
+    switch (namespaceIifeParameterSymbolId(&transformer, @enumFromInt(0))) {
+        .found => |sid| try std.testing.expectEqual(@as(u32, 0), sid),
+        else => return error.ExpectedUniqueNamespaceIifeParameter,
+    }
+
+    var wrong_kind = symbols;
+    wrong_kind[0].kind = .variable_const;
+    transformer.symbols = &wrong_kind;
+    try std.testing.expectEqual(
+        NamespaceIifeParameterLookup.invalid,
+        namespaceIifeParameterSymbolId(&transformer, @enumFromInt(0)),
+    );
+
+    const ambiguous = [_]SemanticSymbol{ symbols[0], symbols[0] };
+    transformer.symbols = &ambiguous;
+    try std.testing.expectEqual(
+        NamespaceIifeParameterLookup.invalid,
+        namespaceIifeParameterSymbolId(&transformer, @enumFromInt(0)),
+    );
+
+    try std.testing.expectEqual(
+        NamespaceIifeParameterLookup.missing,
+        namespaceIifeParameterSymbolId(&transformer, @enumFromInt(1)),
+    );
 }
