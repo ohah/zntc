@@ -133,6 +133,15 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // needs a class name treats it as a class expression (IIFE wrapper).
     const as_expression = node.tag == .class_expression or
         (node.tag == .class_declaration and self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name).isNone());
+    // Legacy decorators turn a class declaration into surrounding statements
+    // (`let C = class C {}; C = __decorateClass(...)`). That output has no
+    // class-expression IIFE, even though anonymous default declarations use
+    // the expression lowering paths below to synthesize their class name.
+    const legacy_decorator_statement_class = self.options.experimental_decorators and
+        node.tag == .class_declaration and classHasLegacyDecorators(self, node);
+    const legacy_decorator_class_expression = legacy_decorator_statement_class and
+        source_idx == self.default_export_operand and
+        self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name).isNone();
     const e = node.data.extra;
     const super_idx = self.readNodeIdx(e, ast_mod.ClassExtra.super);
     const has_super = !super_idx.isNone();
@@ -248,10 +257,20 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
             es_helpers.consumeTempVarSpan(self, tmp_span);
             if (self.semantic_edit_enabled) {
-                prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
-                const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
+                const class_name_scope = if (legacy_decorator_statement_class) blk: {
+                    const class_scope = self.outputOwnedScope(source_idx) orelse
+                        std.debug.panic("anonymous decorated class has no source scope", .{});
+                    break :blk if (legacy_decorator_class_expression)
+                        class_scope
+                    else
+                        self.outputScopeParent(class_scope);
+                } else blk: {
+                    prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+                    break :blk prepared_wrapper_scope;
+                };
+                const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, class_name_scope) orelse
                     std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
-                es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
+                es_helpers.markStandaloneLateSyntheticTemp(self, id, class_name_scope);
                 self.current_class_name_node = new_name;
                 self.current_class_self_symbol_id = @intFromEnum(id);
                 try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
@@ -264,14 +283,14 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             self.ast.getText(s)
         else
             null;
-        if (self.semantic_edit_enabled and as_expression and prepared_wrapper_scope.isNone() and
-            classBodyHasLowerableMember(self, body_idx, lower_pm, lower_pf, false))
+        if (self.semantic_edit_enabled and as_expression and !legacy_decorator_statement_class and
+            prepared_wrapper_scope.isNone() and classBodyHasLowerableMember(self, body_idx, lower_pm, lower_pf, false))
         {
             prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
         }
         const private_helper_scope = if (!self.semantic_edit_enabled)
             @as(ScopeId, .none)
-        else if (as_expression)
+        else if (as_expression and !legacy_decorator_statement_class)
             prepared_wrapper_scope
         else blk: {
             const class_scope = self.outputOwnedScope(source_idx) orelse
@@ -374,10 +393,20 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
         new_name = try es_helpers.makeSyntheticBinding(self, tmp_span);
         es_helpers.consumeTempVarSpan(self, tmp_span);
         if (self.semantic_edit_enabled) {
-            prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
-            const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
+            const class_name_scope = if (legacy_decorator_statement_class) blk: {
+                const class_scope = self.outputOwnedScope(source_idx) orelse
+                    std.debug.panic("anonymous decorated class has no source scope", .{});
+                break :blk if (legacy_decorator_class_expression)
+                    class_scope
+                else
+                    self.outputScopeParent(class_scope);
+            } else blk: {
+                prepared_wrapper_scope = try class_visit_mod.prepareClassExprWrapperScope(self, source_idx);
+                break :blk prepared_wrapper_scope;
+            };
+            const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, class_name_scope) orelse
                 std.debug.panic("anonymous class wrapper name has no direct SymbolId", .{});
-            es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
+            es_helpers.markStandaloneLateSyntheticTemp(self, id, class_name_scope);
             self.current_class_name_node = new_name;
             self.current_class_self_symbol_id = @intFromEnum(id);
             try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
@@ -780,6 +809,43 @@ pub const appendEsDecorateStmt = stage3_helpers.appendEsDecorateStmt;
 
 const stage3_transform = @import("stage3_decorator_transform.zig");
 pub const transformStage3Decorators = stage3_transform.transformStage3Decorators;
+
+/// Whether this anonymous class declaration will be lowered to surrounding
+/// statements by the legacy decorator transform. Such output has no generated
+/// class-expression IIFE, so its class body must stay under the source parent.
+fn classHasLegacyDecorators(self: *Transformer, node: Node) bool {
+    const class_extra = node.data.extra;
+    if (self.readU32(class_extra, ast_mod.ClassExtra.deco_len) > 0) return true;
+    const body_idx = self.readNodeIdx(class_extra, ast_mod.ClassExtra.body);
+    if (body_idx.isNone()) return false;
+    const body = self.ast.getNode(body_idx);
+    if (body.tag != .class_body) return false;
+    var members = self.ast.iterateExtraList(body.data.list);
+    while (members.next()) |member_idx| {
+        const member = self.ast.getNode(member_idx);
+        switch (member.tag) {
+            .property_definition, .accessor_property => {
+                if (self.readU32(member.data.extra, ast_mod.PropertyExtra.deco_len) > 0) return true;
+            },
+            .method_definition => {
+                const extra = member.data.extra;
+                if (self.readU32(extra, ast_mod.MethodExtra.deco_len) > 0) return true;
+                const params = self.ast.functionParamsList(member);
+                var i: u32 = 0;
+                while (i < params.len) : (i += 1) {
+                    const param_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[params.start + i]);
+                    if (param_idx.isNone()) continue;
+                    const param = self.ast.getNode(param_idx);
+                    if (param.tag == .formal_parameter and
+                        self.readU32(param.data.extra, ast_mod.FormalParameterExtra.deco_len) > 0)
+                        return true;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
 
 /// 클래스 본문에 **클래스 밖 문장으로 낮춰질** static 멤버가 있는지.
 /// `lowers_static_fields` = static field 를 할당문으로 빼는 중인지(ctx 기준).
