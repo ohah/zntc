@@ -64,7 +64,7 @@ pub fn transformExperimentalDecorators(
     // the generated `let` below retains the source declaration's outer ID.
     var class_expr_name = new_name;
     if (self.semantic_edit_enabled and node.tag == .class_declaration and class_name_text != null and
-        (old_deco_len > 0 or ctor_param_decos.len > 0))
+        (old_deco_len > 0 or ctor_param_decos.len > 0 or !anonymous_default_export_binding.isNone()))
     {
         if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |class_self_id| {
             const name_span = self.ast.getNode(new_name).data.string_ref;
@@ -135,6 +135,32 @@ pub fn transformExperimentalDecorators(
     // decorator 호출을 그 뒤에 추가한 후 .none을 반환한다.
     if (member_decos.len > 0 and class_name_text != null) {
         const name_span = self.ast.getNode(new_name).data.string_ref;
+
+        // 익명 default class는 export binding과 class-self binding이 다르므로
+        // `let C = class C {}`를 내보내고 바깥 binding으로 멤버 decorator를 호출한다.
+        if (!anonymous_default_export_binding.isNone()) {
+            const declarator = try self.addExtraNode(.variable_declarator, node.span, &.{
+                @intFromEnum(anonymous_default_export_binding),
+                @intFromEnum(NodeIndex.none),
+                @intFromEnum(class_node),
+            });
+            const decl_list = try self.ast.addNodeList(&.{declarator});
+            const var_decl = try self.addExtraNode(.variable_declaration, node.span, &.{
+                1, decl_list.start, decl_list.len,
+            });
+            try self.pending_nodes.append(self.allocator, var_decl);
+            try self.pending_nodes.appendSlice(self.allocator, static_statements);
+            for (member_decos) |md| {
+                const call_stmt = try buildDecorateClassMemberCall(
+                    self,
+                    name_span,
+                    anonymous_default_export_binding,
+                    md,
+                );
+                try self.pending_nodes.append(self.allocator, call_stmt);
+            }
+            return .none;
+        }
 
         // class 노드를 pending에 추가
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
