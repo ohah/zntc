@@ -399,7 +399,8 @@ const InotifyBackend = struct {
     /// 0.16: posix.inotify_add_watch 제거 → libc inotify_add_watch(sentinel path).
     /// 실패(-1) 시 null (caller 의 `orelse return` 으로 기존 `catch return` 보존).
     fn addWatch(self: *InotifyBackend, allocator: std.mem.Allocator, p: []const u8) ?i32 {
-        const path_z = allocator.dupeZ(u8, p) catch return null;
+        // 0.17: Allocator.dupeZ 제거 → Allocator.dupeSentinel.
+        const path_z = allocator.dupeSentinel(u8, p, 0) catch return null;
         defer allocator.free(path_z);
         const wd = std.c.inotify_add_watch(self.inotify_fd, path_z, dir_mask);
         if (wd < 0) return null;
