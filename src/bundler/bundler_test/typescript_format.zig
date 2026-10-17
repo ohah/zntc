@@ -52,6 +52,83 @@ test "TypeScript: enum across modules" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "Color") != null);
 }
 
+test "#4819 namespace and enum IIFE parameters choose linked output names by SymbolId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { enumValue } from './colors';
+        \\import { dynamicEnumValue } from './dynamic';
+        \\import { Color, DynamicEnum, _classDecorators, _dynamicNamespace, marker } from './collision';
+        \\import { classDecorators } from './namespace';
+        \\import { dynamicNamespace } from './dynamic';
+        \\import { nestedName } from './colors';
+        \\console.log(enumValue, dynamicEnumValue, Color, DynamicEnum, _classDecorators, classDecorators.value, dynamicNamespace.read(), _dynamicNamespace, nestedName(), marker);
+    );
+    try writeFile(tmp.dir, "colors.ts",
+        \\export enum Color { Red = 1, Green = 2 }
+        \\export const enumValue = Color.Red;
+        \\export function nestedName() { const Color$1 = 5; return Color$1; }
+    );
+    try writeFile(tmp.dir, "collision.ts",
+        \\export const Color = 99;
+        \\export const DynamicEnum = 96;
+        \\export const _classDecorators = 98;
+        \\export const _dynamicNamespace = 97;
+        \\export const marker = 1;
+    );
+    try writeFile(tmp.dir, "namespace.ts",
+        \\export namespace classDecorators {
+        \\  export const value = 2;
+        \\}
+    );
+    try writeFile(tmp.dir, "dynamic.ts",
+        \\export namespace dynamicNamespace {
+        \\  export function read() { return eval("_dynamicNamespace"); }
+        \\}
+        \\export enum DynamicEnum { A = eval("DynamicEnum") }
+        \\export const dynamicEnumValue = DynamicEnum.A;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{ .entry_points = &.{entry}, .format = .iife });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    // These virtual parameters are collision-resolved after the complete graph
+    // is available. Their generated-body references must consume the same SID.
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "((Color$2) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "Color$2[Color$2[\"Red\"]") != null);
+    try std.testing.expect(std.mem.count(u8, result.output, "_classDecorators$1") >= 2);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "((_dynamicNamespace) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "eval(\"_dynamicNamespace\")") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "((DynamicEnum) =>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "eval(\"DynamicEnum\")") != null);
+
+    const modes = [_]@import("../bundler.zig").BundleOptions{
+        .{ .entry_points = &.{entry}, .format = .iife, .minify_whitespace = true },
+        .{ .entry_points = &.{entry}, .format = .iife, .minify_identifiers = true },
+        .{ .entry_points = &.{entry}, .format = .iife, .minify_whitespace = true, .minify_identifiers = true, .minify_syntax = true },
+    };
+    for (modes) |options| {
+        var mode_bundler = Bundler.init(std.testing.allocator, options);
+        defer mode_bundler.deinit();
+        const mode_result = try mode_bundler.bundle(std.testing.io);
+        defer mode_result.deinit(std.testing.allocator);
+        try std.testing.expect(!mode_result.hasErrors());
+        if (options.minify_identifiers) {
+            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "[\"Red\"]") != null);
+            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "eval(\"_dynamicNamespace\")") != null);
+        } else {
+            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "((Color$2) =>") != null);
+            try std.testing.expect(std.mem.indexOf(u8, mode_result.output, "((_classDecorators$1) =>") != null);
+        }
+    }
+}
+
 test "TypeScript: type annotation stripping in bundle" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
