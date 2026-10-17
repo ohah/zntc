@@ -172,7 +172,23 @@ pub fn tempOutputScopeIsDeferredIgnoringStateMachine(self: *Transformer, start: 
 /// Other synthetic temps retain the conservative global state-machine rule.
 pub fn objectSuperTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bool {
     if (self.state_machine_depth == 0) return syntheticTempOutputScopeIsDeferred(self, start);
-    return tempOutputScopeIsDeferredIgnoringStateMachine(self, start);
+    if (start.isNone()) return false;
+    const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var current = start;
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        if (current.toIndex() >= scopes.len) return false;
+        if (scopes[current.toIndex()].kind == .function) {
+            const owner = scopeOwnerNode(self, current) orelse return true;
+            if (self.ast.getNode(owner).tag == .formal_parameters) return true;
+            // Stop at the nearest function owner. A stable nested sync
+            // function must not inherit the deferred output scope of an outer
+            // async/generator state machine.
+            return ownerNeedsLoweredFunctionScope(self, owner);
+        }
+        current = scopes[current.toIndex()].parent;
+    }
+    return false;
 }
 
 fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
