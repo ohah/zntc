@@ -158,6 +158,28 @@ pub fn syntheticTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bo
     return false;
 }
 
+/// Object-super homes use the scope of their emitted object tree. During an
+/// outer state-machine transform that tree can cross a nested synchronous
+/// function boundary; only this producer may use that nearest stable owner.
+/// Other synthetic temps retain the conservative global state-machine rule.
+pub fn objectSuperTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bool {
+    if (self.state_machine_depth == 0) return syntheticTempOutputScopeIsDeferred(self, start);
+    if (start.isNone()) return true;
+    const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var current = start;
+    var hops: usize = 0;
+    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
+        if (current.toIndex() >= scopes.len) return true;
+        if (scopes[current.toIndex()].kind == .function) {
+            const owner = scopeOwnerNode(self, current) orelse return true;
+            return self.ast.getNode(owner).tag == .formal_parameters or
+                ownerNeedsLoweredFunctionScope(self, owner);
+        }
+        current = scopes[current.toIndex()].parent;
+    }
+    return true;
+}
+
 fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
     const raw_scope = @intFromEnum(scope);
     var transformed = self.transformed_scope_owner_map.iterator();
@@ -291,6 +313,32 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
     return if (ambiguous) null else candidate;
 }
 
+/// Resolve the body scope for an expression emitted from a lowered formal
+/// parameter environment. Callers that only know a lexical output scope must
+/// not treat an ordinary function body as parameter output.
+pub fn loweredParameterEnvironmentOutputScope(self: *Transformer, start_scope: ScopeId) ?ScopeId {
+    const owner = scopeOwnerNode(self, start_scope) orelse return null;
+    if (self.ast.getNode(owner).tag != .formal_parameters) return null;
+    if (!parameterScopeHasLoweredOwner(self, owner)) return null;
+    return loweredDefaultParameterOutputScope(self, start_scope);
+}
+
+fn parameterScopeHasLoweredOwner(self: *Transformer, parameter_owner: NodeIndex) bool {
+    var transformed = self.transformed_scope_owner_map.iterator();
+    while (transformed.next()) |entry| {
+        if (entry.key_ptr.* >= self.ast.nodes.items.len) continue;
+        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        if (functionParametersNode(self, owner) == parameter_owner and functionHasLoweredParameterList(self, owner)) return true;
+    }
+    var original = self.scope_owner_map.iterator();
+    while (original.next()) |entry| {
+        if (entry.key_ptr.* >= self.ast.nodes.items.len) continue;
+        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        if (functionParametersNode(self, owner) == parameter_owner and functionHasLoweredParameterList(self, owner)) return true;
+    }
+    return false;
+}
+
 fn recordParameterOutputScopeCandidate(
     self: *Transformer,
     parameter_owner: NodeIndex,
@@ -335,6 +383,14 @@ fn functionParametersNode(self: *Transformer, owner: NodeIndex) ?NodeIndex {
     const raw = self.ast.extra_data.items[extra + slot_index];
     if (raw == @intFromEnum(NodeIndex.none) or raw >= self.ast.nodes.items.len) return null;
     return @enumFromInt(raw);
+}
+
+fn functionHasLoweredParameterList(self: *Transformer, owner: NodeIndex) bool {
+    const params_node = functionParametersNode(self, owner) orelse return false;
+    const params = self.ast.getNode(params_node);
+    if (params.tag != .formal_parameters) return false;
+    const Params = @import("../es2015_params.zig").ES2015Params(Transformer);
+    return Params.hasDefaultOrRest(self, params.data.list);
 }
 
 fn ownerNeedsLoweredFunctionScope(self: *Transformer, owner: NodeIndex) bool {
