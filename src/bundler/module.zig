@@ -234,6 +234,15 @@ pub const WorkletFactoryLocalBinding = struct {
     output_name_hint: []const u8,
 };
 
+/// Exact Stage 3 decorator bindings whose linker-selected names must survive
+/// post-transform semantic reanalysis.
+pub const Stage3OutputBinding = struct {
+    node_index: u32,
+    output_name_hint: []const u8,
+    synthetic_kind: semantic_symbol.SyntheticKind,
+    binding_kind: semantic_symbol.SymbolKind,
+};
+
 pub const TransformCache = struct {
     /// transformer 가 set 한 RuntimeHelpers 비트맵.
     /// emitter 의 chunk-level helper preamble 결정에 사용.
@@ -256,6 +265,9 @@ pub const TransformCache = struct {
     /// Exact Reanimated class-factory bindings whose linker naming metadata
     /// must survive post-transform semantic reanalysis.
     worklet_factory_local_bindings: []const WorkletFactoryLocalBinding = &.{},
+    /// Exact Stage 3 `_classThis` and `_metadata` bindings whose deferred
+    /// output-name hints must be restored by binding NodeIndex after reanalysis.
+    stage3_output_bindings: []const Stage3OutputBinding = &.{},
     /// #3267 N-step4 follow-up: prepass minify 의 cascade ref decrement 결과
     /// (`MinifyCtx.ref_deltas` snapshot, length == sem.symbols.len). emitter 의 minify
     /// 가 fresh ctx 에 hydrate 하여 prepass 에서 fold 된 dead branch 안 ref 감산

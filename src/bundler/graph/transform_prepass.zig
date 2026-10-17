@@ -4,6 +4,7 @@ const std = @import("std");
 const Module = @import("../module.zig").Module;
 const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
 const WorkletFactoryLocalBinding = @import("../module.zig").WorkletFactoryLocalBinding;
+const Stage3OutputBinding = @import("../module.zig").Stage3OutputBinding;
 const AliasTable = @import("../module.zig").AliasTable;
 const binding_scanner_mod = @import("../binding_scanner.zig");
 const bundler_symbol = @import("../symbol.zig");
@@ -6487,6 +6488,62 @@ fn captureWorkletFactoryLocalBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
+fn stage3OutputBaseName(kind: SemanticSyntheticKind) ?[]const u8 {
+    return switch (kind) {
+        .stage3_class_this_binding => "_classThis",
+        .stage3_metadata_binding => "_metadata",
+        else => null,
+    };
+}
+
+fn isStage3VariableKind(kind: SemanticSymbolKind) bool {
+    return switch (kind) {
+        .variable_var, .variable_let, .variable_const => true,
+        else => false,
+    };
+}
+
+/// Preserve the exact producer binding nodes for Stage 3 names selected by
+/// the linker after semantic reanalysis. Names are never recovered by text.
+fn captureStage3OutputBindings(
+    allocator: std.mem.Allocator,
+    ast: *const ast_mod.Ast,
+    semantic: *const ModuleSemanticData,
+) ![]const Stage3OutputBinding {
+    var binding_nodes: std.AutoHashMapUnmanaged(u32, u32) = .empty;
+    defer binding_nodes.deinit(allocator);
+
+    for (ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or raw >= semantic.symbol_ids.len) continue;
+        const raw_symbol_id = semantic.symbol_ids[raw] orelse continue;
+        if (raw_symbol_id >= semantic.symbols.items.len) return error.InvalidStage3OutputSymbolId;
+        const symbol = semantic.symbols.items[raw_symbol_id];
+        const expected_name = stage3OutputBaseName(symbol.synthetic_kind orelse continue) orelse continue;
+        if (!std.mem.eql(u8, symbol.output_name_hint, expected_name) or symbol.scope_id.isNone() or
+            !isStage3VariableKind(symbol.kind))
+            return error.InvalidStage3OutputBindingMetadata;
+        if (try binding_nodes.fetchPut(allocator, raw_symbol_id, @intCast(raw)) != null)
+            return error.AmbiguousStage3OutputBinding;
+    }
+
+    var bindings: std.ArrayListUnmanaged(Stage3OutputBinding) = .empty;
+    for (semantic.symbols.items, 0..) |symbol, raw_symbol_id| {
+        const kind = symbol.synthetic_kind orelse continue;
+        const expected_name = stage3OutputBaseName(kind) orelse continue;
+        if (!std.mem.eql(u8, symbol.output_name_hint, expected_name) or symbol.scope_id.isNone() or
+            !isStage3VariableKind(symbol.kind))
+            return error.InvalidStage3OutputBindingMetadata;
+        const raw = binding_nodes.get(@intCast(raw_symbol_id)) orelse return error.MissingStage3OutputBinding;
+        try bindings.append(allocator, .{
+            .node_index = raw,
+            .output_name_hint = symbol.output_name_hint,
+            .synthetic_kind = kind,
+            .binding_kind = symbol.kind,
+        });
+    }
+    return bindings.toOwnedSlice(allocator);
+}
+
 /// 비-ESM 출력은 TLA 를 항상 미지원으로 둔다(#4598). TLA 가 없는 모듈에는 그 비트가 출력에
 /// 영향을 주지 않으므로, 그래프 유지 판정(`hasAny`)과 변환에서 빼고 보아 이전과 같게 둔다.
 /// TLA 유무는 파싱 때(변환 전) 기록한 `self_uses_top_level_await` 다.
@@ -6753,6 +6810,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         captureWorkletFactoryLocalBindings(arena_alloc, transformer.ast, semantic) catch return
     else
         &[_]WorkletFactoryLocalBinding{};
+    const owned_stage3_output_bindings = if (module.semantic) |*semantic|
+        captureStage3OutputBindings(arena_alloc, transformer.ast, semantic) catch return
+    else
+        &[_]Stage3OutputBinding{};
     // #2869 helper marker sidecar — sorted u32 slice. resync analyzer 가 binary search.
     const owned_helper_ref_nodes = transformer.ownedHelperRefNodes(arena_alloc) catch &[_]u32{};
     const owned_explicit_global_ref_nodes = transformer.ownedExplicitGlobalRefNodes(arena_alloc) catch {
@@ -6776,6 +6837,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
         .preserved_class_name_nodes = owned_preserved_class_names,
         .worklet_factory_local_bindings = owned_worklet_factory_local_bindings,
+        .stage3_output_bindings = owned_stage3_output_bindings,
         .ref_deltas = prepass_ref_deltas,
     };
 
@@ -7441,6 +7503,28 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 symbol.synthetic_name = ast.getText(ast.nodes.items[raw].data.string_ref);
                 symbol.output_name_hint = factory_binding.output_name_hint;
             }
+            for (cache.stage3_output_bindings) |output_binding| {
+                const raw = output_binding.node_index;
+                if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len or
+                    ast.nodes.items[raw].tag != .binding_identifier)
+                    return error.InvalidStage3OutputBindingProvenance;
+                const id = analyzer.symbol_ids.items[raw] orelse return error.MissingStage3OutputBindingSymbol;
+                if (id >= analyzer.symbols.items.len) return error.InvalidStage3OutputSymbolId;
+                const symbol = &analyzer.symbols.items[id];
+                if (!isStage3VariableKind(output_binding.binding_kind) or !isStage3VariableKind(symbol.kind) or
+                    symbol.scope_id.isNone()) return error.InvalidStage3OutputBindingKind;
+                if (symbol.synthetic_kind != null and symbol.synthetic_kind != output_binding.synthetic_kind)
+                    return error.Stage3OutputBindingKindConflict;
+                if (stage3OutputBaseName(output_binding.synthetic_kind)) |expected_name| {
+                    if (!std.mem.eql(u8, output_binding.output_name_hint, expected_name))
+                        return error.InvalidStage3OutputNameHint;
+                } else {
+                    return error.InvalidStage3OutputNameKind;
+                }
+                symbol.synthetic_kind = output_binding.synthetic_kind;
+                symbol.synthetic_name = ast.getText(ast.nodes.items[raw].data.string_ref);
+                symbol.output_name_hint = output_binding.output_name_hint;
+            }
         }
 
         module.semantic = .{
@@ -7665,6 +7749,9 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
             if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
         }
         for (cache.worklet_factory_local_bindings) |binding| {
+            if (binding.node_index < ast.nodes.items.len and removed.isSet(binding.node_index)) return false;
+        }
+        for (cache.stage3_output_bindings) |binding| {
             if (binding.node_index < ast.nodes.items.len and removed.isSet(binding.node_index)) return false;
         }
         var destructuring_temps = cache.destructuring_temp_bindings.keyIterator();
