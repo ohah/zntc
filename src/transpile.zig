@@ -1179,10 +1179,12 @@ const StandaloneRuntimeHelperNameResolver = struct {
         const local_name = es_helpers.resolveRuntimeHelperName(transformer, canonical_name) catch return error.OutOfMemory;
         if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports) return local_name;
 
-        const raw_id = transformer.helper_scope_map.get(local_name) orelse return error.TransformError;
+        const symbol_id = transformer.runtime_helper_symbol_ids.get(base_name) orelse return error.TransformError;
+        const raw_id = @intFromEnum(symbol_id);
         if (raw_id >= transformer.symbols.len) return error.TransformError;
         const symbol = transformer.symbols[raw_id];
-        if (symbol.kind != .import_binding or !std.mem.eql(u8, symbol.synthetic_name, local_name))
+        if (symbol.kind != .import_binding or symbol.synthetic_kind != .runtime_helper_preamble or
+            !std.mem.eql(u8, symbol.synthetic_name, local_name))
             return error.TransformError;
         if (self.final_renames) |renames| {
             if (renames.get(@intCast(raw_id))) |renamed| return renamed;
@@ -1654,37 +1656,37 @@ fn transpileWithCallbackInternal(
     }
     const root = transformer.transform() catch return error.TransformError;
     if (transformer.runtime_helpers.values or transformer.runtime_helpers.async_values) {
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__values", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__values", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.await_helper or transformer.runtime_helpers.async_generator or transformer.runtime_helpers.yield_star) {
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__await", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__await", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.class_static_private_field) {
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classCheckPrivateStaticAccess", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classCheckPrivateStaticFieldDescriptor", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classStaticPrivateFieldSpecGet", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__classStaticPrivateFieldSpecSet", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__classCheckPrivateStaticAccess", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__classCheckPrivateStaticFieldDescriptor", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__classStaticPrivateFieldSpecGet", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__classStaticPrivateFieldSpecSet", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.spread_array) {
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__arrayLikeToArray", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__toConsumableArray", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__arrayLikeToArray", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__toConsumableArray", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.derived_constructor) {
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__assertThisInitialized", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__assertThisUninitialized", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__possibleConstructorReturn", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__assertThisInitialized", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__assertThisUninitialized", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__possibleConstructorReturn", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.legacy_decorator) {
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__decorateClass", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__decorateParam", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__defProp2", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__getOwnPropDesc", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__decorateClass", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__decorateParam", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__defProp2", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__getOwnPropDesc", options.minify_whitespace);
     }
     if (transformer.runtime_helpers.es_decorator) {
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__esDecorate", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__runInitializers", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__setFunctionName", options.minify_whitespace));
-        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol(runtime_helper_names.helperName("__propKey", options.minify_whitespace));
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__esDecorate", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__runInitializers", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__setFunctionName", options.minify_whitespace);
+        try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__propKey", options.minify_whitespace);
     }
     if (analyzer_storage) |*analyzer| {
         // The transformer took the analyzer's map header by value and kept
@@ -5040,7 +5042,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try helper_scope_map.put(allocator, "__runInitializers2", 39);
     try helper_scope_map.put(allocator, "__setFunctionName2", 40);
     try helper_scope_map.put(allocator, "__propKey2", 41);
-    const helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
+    var helper_symbols = [_]@import("semantic/symbol.zig").Symbol{
         .{
             .name = @import("lexer/token.zig").Span.EMPTY,
             .scope_id = .none,
@@ -5336,9 +5338,24 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             .synthetic_name = "__propKey2",
         },
     };
+    for (&helper_symbols) |*symbol| {
+        symbol.scope_id = @enumFromInt(0);
+        symbol.synthetic_kind = .runtime_helper_preamble;
+    }
+    var helper_symbol_ids: std.StringHashMapUnmanaged(@import("semantic/symbol.zig").SymbolId) = .empty;
+    var alias_entries = runtime_aliases.iterator();
+    while (alias_entries.next()) |entry| {
+        const raw_id = helper_scope_map.get(entry.value_ptr.*) orelse return error.MissingRuntimeHelperAliasSymbol;
+        const base_name = if (std.mem.eql(u8, entry.key_ptr.*, "__zntcClassPrivateFieldSet"))
+            "__classPrivateFieldSet"
+        else
+            entry.key_ptr.*;
+        try helper_symbol_ids.put(allocator, base_name, @enumFromInt(raw_id));
+    }
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
     transformer.runtime_helper_aliases = runtime_aliases;
+    transformer.runtime_helper_symbol_ids = helper_symbol_ids;
     transformer.helper_scope_map = helper_scope_map;
     transformer.symbols = &helper_symbols;
     transformer.semantic_edit_enabled = true;
@@ -5428,215 +5445,115 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     const prop_key_resolved = try standaloneRuntimeHelperSymbolName(&transformer, "__propKey", false);
     try std.testing.expectEqualStrings("__propKey2", prop_key_resolved);
 
-    _ = transformer.helper_scope_map.remove("__extends2");
+    const extends_id = transformer.runtime_helper_symbol_ids.get("__extends") orelse return error.MissingExtendsSymbolId;
+    try transformer.runtime_helper_symbol_ids.put(allocator, "__extends", @enumFromInt(1));
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__extends", false),
     );
-    _ = transformer.helper_scope_map.remove("__generator2");
+    try transformer.runtime_helper_symbol_ids.put(allocator, "__extends", extends_id);
+
+    const original_kind = helper_symbols[0].synthetic_kind;
+    helper_symbols[0].synthetic_kind = .runtime_helper_import;
     try std.testing.expectError(
         error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__generator", false),
+        standaloneRuntimeHelperSymbolName(&transformer, "__extends", false),
     );
-    _ = transformer.helper_scope_map.remove("__rest2");
+    helper_symbols[0].synthetic_kind = original_kind;
+
+    var final_renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    try final_renames.put(allocator, @intFromEnum(extends_id), "mangled_extends");
+    var final_output_names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    try final_output_names.put(allocator, @intFromEnum(extends_id), "late_extends");
+    var name_resolver = StandaloneRuntimeHelperNameResolver{
+        .transformer = &transformer,
+        .final_renames = &final_renames,
+        .final_output_names = &final_output_names,
+    };
+    try std.testing.expectEqualStrings("mangled_extends", try name_resolver.resolve("__extends", false));
+    _ = final_renames.remove(@intFromEnum(extends_id));
+    try std.testing.expectEqualStrings("late_extends", try name_resolver.resolve("__extends", false));
+
+    var helper_aliases = runtime_aliases.iterator();
+    while (helper_aliases.next()) |entry| {
+        _ = transformer.helper_scope_map.remove(entry.value_ptr.*);
+        const base_name = if (std.mem.eql(u8, entry.key_ptr.*, "__zntcClassPrivateFieldSet"))
+            "__classPrivateFieldSet"
+        else
+            entry.key_ptr.*;
+        try std.testing.expectEqualStrings(
+            entry.value_ptr.*,
+            try standaloneRuntimeHelperSymbolName(&transformer, base_name, false),
+        );
+    }
+
+    // An alias in helper_scope_map cannot substitute for the canonical-base
+    // to SymbolId producer record. This is the negative control for the old
+    // name-to-ID recovery path.
+    try transformer.helper_scope_map.put(allocator, "__extends2", 0);
+    _ = transformer.runtime_helper_symbol_ids.remove("__extends");
     try std.testing.expectError(
         error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__rest", false),
+        standaloneRuntimeHelperSymbolName(&transformer, "__extends", false),
     );
-    _ = transformer.helper_scope_map.remove("__async2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__async", false),
-    );
-    _ = transformer.helper_scope_map.remove("__asyncValues2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__asyncValues", false),
-    );
-    _ = transformer.helper_scope_map.remove("__values2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__values", false),
-    );
-    _ = transformer.helper_scope_map.remove("__read2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__read", false),
-    );
-    _ = transformer.helper_scope_map.remove("__publicField2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__publicField", false),
-    );
-    _ = transformer.helper_scope_map.remove("__tdz2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__tdz", false),
-    );
-    _ = transformer.helper_scope_map.remove("__classCallCheck2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__classCallCheck", false),
-    );
-    _ = transformer.helper_scope_map.remove("__classPrivateMethodInit2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodInit", false),
-    );
-    _ = transformer.helper_scope_map.remove("__classPrivateMethodGet2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateMethodGet", false),
-    );
-    _ = transformer.helper_scope_map.remove("__callSuper2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__callSuper", false),
-    );
-    _ = transformer.helper_scope_map.remove("__superGet2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__superGet", false),
-    );
-    _ = transformer.helper_scope_map.remove("__superSet2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__superSet", false),
-    );
-    _ = transformer.helper_scope_map.remove("__zntcClassPrivateFieldSet2");
+}
+
+test "#4819 standalone preamble-only helper keeps its producer SymbolId" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "");
+    defer scanner.deinit();
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    // No helper callsite exists. The exact SID is created with the preamble
+    // declaration and indexed by its canonical runtime-helper export name.
+    try transformer.ensureStandaloneRuntimeHelperPreambleSymbol("__classPrivateFieldSet", false);
+    const symbol_id = transformer.runtime_helper_symbol_ids.get("__classPrivateFieldSet") orelse return error.MissingPreambleHelperSymbolId;
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingSemanticEditResult;
+    transformer.symbols = edited.symbols.items;
+    transformer.scopes = edited.scopes;
+    transformer.scope_maps = edited.scope_maps;
+    transformer.scope_owner_map = edited.scope_owner_map;
+    transformer.helper_scope_map = edited.helper_scope_map;
+    transformer.references = edited.references;
+
+    const raw_id = @intFromEnum(symbol_id);
+    try std.testing.expect(raw_id < transformer.symbols.len);
+    const symbol = transformer.symbols[raw_id];
+    try std.testing.expectEqual(@import("semantic/symbol.zig").SymbolKind.import_binding, symbol.kind);
+    try std.testing.expectEqual(@as(?@import("semantic/symbol.zig").SyntheticKind, .runtime_helper_preamble), symbol.synthetic_kind);
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+    try std.testing.expectEqualStrings("__zntcClassPrivateFieldSet", symbol.synthetic_name);
+    try std.testing.expectEqualStrings("__zntcClassPrivateFieldSet", try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateFieldSet", false));
+
+    // The resolver must use the recorded ID even if the secondary name index
+    // is absent; it must not recover identity from a matching local spelling.
+    _ = transformer.helper_scope_map.remove("__zntcClassPrivateFieldSet");
+    try std.testing.expectEqualStrings("__zntcClassPrivateFieldSet", try standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateFieldSet", false));
+
+    try transformer.helper_scope_map.put(allocator, "__zntcClassPrivateFieldSet", raw_id);
+    _ = transformer.runtime_helper_symbol_ids.remove("__classPrivateFieldSet");
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__classPrivateFieldSet", false),
-    );
-    _ = transformer.helper_scope_map.remove("__taggedTemplateLiteral2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__taggedTemplateLiteral", false),
-    );
-    _ = transformer.helper_scope_map.remove("__name2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__name", false),
-    );
-    _ = transformer.helper_scope_map.remove("__wrapRegExp2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__wrapRegExp", false),
-    );
-    _ = transformer.helper_scope_map.remove("__await2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__await", false),
-    );
-    _ = transformer.helper_scope_map.remove("__asyncGenerator2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__asyncGenerator", false),
-    );
-    _ = transformer.helper_scope_map.remove("__yieldStar2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__yieldStar", false),
-    );
-    _ = transformer.helper_scope_map.remove("__metadata2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__metadata", false),
-    );
-    _ = transformer.helper_scope_map.remove("__using2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__using", false),
-    );
-    _ = transformer.helper_scope_map.remove("__callDispose2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__callDispose", false),
-    );
-    _ = transformer.helper_scope_map.remove("__classCheckPrivateStaticAccess2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__classCheckPrivateStaticAccess", false),
-    );
-    _ = transformer.helper_scope_map.remove("__classCheckPrivateStaticFieldDescriptor2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__classCheckPrivateStaticFieldDescriptor", false),
-    );
-    _ = transformer.helper_scope_map.remove("__classStaticPrivateFieldSpecGet2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__classStaticPrivateFieldSpecGet", false),
-    );
-    _ = transformer.helper_scope_map.remove("__classStaticPrivateFieldSpecSet2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__classStaticPrivateFieldSpecSet", false),
-    );
-    _ = transformer.helper_scope_map.remove("__arrayLikeToArray2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__arrayLikeToArray", false),
-    );
-    _ = transformer.helper_scope_map.remove("__toConsumableArray2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__toConsumableArray", false),
-    );
-    _ = transformer.helper_scope_map.remove("__assertThisInitialized2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__assertThisInitialized", false),
-    );
-    _ = transformer.helper_scope_map.remove("__assertThisUninitialized2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__assertThisUninitialized", false),
-    );
-    _ = transformer.helper_scope_map.remove("__possibleConstructorReturn2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__possibleConstructorReturn", false),
-    );
-    _ = transformer.helper_scope_map.remove("__decorateClass2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__decorateClass", false),
-    );
-    _ = transformer.helper_scope_map.remove("__decorateParam2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__decorateParam", false),
-    );
-    _ = transformer.helper_scope_map.remove("__defProp22");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__defProp2", false),
-    );
-    _ = transformer.helper_scope_map.remove("__getOwnPropDesc2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__getOwnPropDesc", false),
-    );
-    _ = transformer.helper_scope_map.remove("__esDecorate2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__esDecorate", false),
-    );
-    _ = transformer.helper_scope_map.remove("__runInitializers2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__runInitializers", false),
-    );
-    _ = transformer.helper_scope_map.remove("__setFunctionName2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__setFunctionName", false),
-    );
-    _ = transformer.helper_scope_map.remove("__propKey2");
-    try std.testing.expectError(
-        error.TransformError,
-        standaloneRuntimeHelperSymbolName(&transformer, "__propKey", false),
     );
 }
 
