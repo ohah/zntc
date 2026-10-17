@@ -2274,6 +2274,86 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('Stage 3 strict-module bundling rejects with before decorator lowering', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-with-boundary-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.cjs');
+    const source = [
+      'function mark(value, context) { return value; }',
+      '@mark class Example { @mark value = 1; }',
+      'function observe() { with (globalThis) { return typeof _classThis; } }',
+      'console.log(new Example().value, observe());',
+      'export {};',
+    ].join('\n');
+    writeFileSync(input, source);
+
+    try {
+      const strictModule = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.js',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(strictModule.status).not.toBe(0);
+      expect(strictModule.stderr).toContain("'with' is not allowed in strict mode");
+
+      const withoutWith = source.replace(
+        'function observe() { with (globalThis) { return typeof _classThis; } }',
+        'function observe() { return typeof _classThis; }',
+      );
+      writeFileSync(input, withoutWith);
+      const strictModuleControl = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'entry.js',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(strictModuleControl.status, strictModuleControl.stderr).toBe(0);
+
+      const scriptBundleInput = join(dir, 'script-bundle.js');
+      writeFileSync(scriptBundleInput, source.replace('\nexport {};', ''));
+      const scriptBundleControl = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'script-bundle.js',
+          '--target=esnext',
+          '--platform=node',
+          '--format=cjs',
+          '-o',
+          output,
+        ],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(scriptBundleControl.status, scriptBundleControl.stderr).toBe(0);
+
+      const scriptInput = join(dir, 'script.js');
+      writeFileSync(scriptInput, source.replace('\nexport {};', ''));
+      const script = spawnSync(
+        ZNTC_BIN,
+        [scriptInput, '--target=esnext', '--platform=node', '--format=cjs', '-o', output],
+        { cwd: dir, encoding: 'utf8' },
+      );
+      expect(script.status, script.stderr).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('styled-components display-name transform retains its exact prepass graph', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-styled-prepass-exact-'));
     const output = join(dir, 'out.cjs');
