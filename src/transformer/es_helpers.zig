@@ -29,6 +29,8 @@ pub fn isStandaloneLateOutputNameSymbol(symbol: symbol_mod.Symbol) bool {
     return switch (kind) {
         .runtime_helper_preamble,
         .runtime_helper_import,
+        .namespace_iife_parameter,
+        .enum_iife_parameter,
         .optional_catch_binding,
         .stage3_metadata_binding,
         .stage3_class_this_binding,
@@ -53,8 +55,6 @@ pub fn isStandaloneLateOutputNameSymbol(symbol: symbol_mod.Symbol) bool {
         => true,
 
         .default_export,
-        .namespace_iife_parameter,
-        .enum_iife_parameter,
         .enum_iife_member,
         .cjs_exports,
         .cjs_require,
