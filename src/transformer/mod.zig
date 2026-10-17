@@ -59,6 +59,7 @@ test {
 
     // test files
     _ = @import("transformer_test.zig");
+    _ = @import("es2025_using.zig");
     _ = @import("symbol_coverage.zig");
     _ = @import("symbol_coverage_test.zig");
     _ = @import("loop_semantic_test.zig");

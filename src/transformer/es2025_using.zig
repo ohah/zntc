@@ -86,14 +86,30 @@ pub fn ES2025Using(comptime Transformer: type) type {
         /// 없어 따로 다룬다.
         pub const ListKind = enum { program, body };
 
-        const Names = struct { stack: Span, err: Span, has_err: Span, catch_param: Span };
+        const Names = struct {
+            stack: Span,
+            err: Span,
+            has_err: Span,
+            catch_param: Span,
+            late_output_names: bool,
+        };
 
-        /// 낮추기마다 고유한 `_stack`/`_error`/`_hasError` 이름. 고정 이름이면 중첩 블록이
-        /// 서로의 스택을 덮어쓰고, 사용자 변수 `_stack` 과도 충돌한다 (#4730).
+        /// 안전한 standalone scope에서는 staging spelling만 정하고 최종 이름은 exact
+        /// SymbolId 집합을 만든 뒤 선택한다. semantic-less/dynamic scope에서는 기존처럼
+        /// 소스와 충돌하지 않는 spelling을 먼저 고른다 (#4730, #4819).
         fn allocNames(self: *Transformer) Transformer.Error!Names {
-            // catch 파라미터(`_`)도 번호를 붙여 함수 안에서 겹치지 않게 한다 — 상태 기계는 이름이
-            // 고유하다고 보고 심볼 없는 합성 바인딩을 바꾸지 않는다 (#4760).
             const bases = [_][]const u8{ "_stack", "_error", "_hasError", "_" };
+            if (es_helpers.canUseLateStandaloneOutputName(self, self.current_scope)) {
+                return .{
+                    .stack = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[0])),
+                    .err = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[1])),
+                    .has_err = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[2])),
+                    .catch_param = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[3])),
+                    .late_output_names = true,
+                };
+            }
+
+            // dynamic scope에서는 eval/with가 spelling을 관찰할 수 있으므로 기존 고유 이름을 유지한다.
             while (true) {
                 self.using_counter += 1;
                 const n = self.using_counter;
@@ -110,6 +126,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     .err = try self.ast.addString(names[1]),
                     .has_err = try self.ast.addString(names[2]),
                     .catch_param = try self.ast.addString(names[3]),
+                    .late_output_names = false,
                 };
             }
         }
@@ -174,12 +191,12 @@ pub fn ES2025Using(comptime Transformer: type) type {
             self.runtime_helpers.using_ctx = true;
             const names = try allocNames(self);
             const zero_span = Span{ .start = 0, .end = 0 };
-            const stack_binding = try es_helpers.makeSyntheticBinding(self, names.stack);
-            const err_binding = try es_helpers.makeSyntheticBinding(self, names.err);
-            const has_err_binding = try es_helpers.makeSyntheticBinding(self, names.has_err);
-            const stack_id = try registerUsingVar(self, stack_binding, names.stack, zero_span);
-            const err_id = try registerUsingVar(self, err_binding, names.err, zero_span);
-            const has_err_id = try registerUsingVar(self, has_err_binding, names.has_err, zero_span);
+            const stack_binding = try makeUsingBinding(self, names.stack, names.late_output_names);
+            const err_binding = try makeUsingBinding(self, names.err, names.late_output_names);
+            const has_err_binding = try makeUsingBinding(self, names.has_err, names.late_output_names);
+            const stack_id = try registerUsingVar(self, stack_binding, names.stack, zero_span, names.late_output_names);
+            const err_id = try registerUsingVar(self, err_binding, names.err, zero_span, names.late_output_names);
+            const has_err_id = try registerUsingVar(self, has_err_binding, names.has_err, zero_span, names.late_output_names);
             const hoist_functions = kind == .program or self.options.unsupported.block_scoping;
             // 블록·함수 본문의 `using` 은 native let/const 가 되는 타겟이면 const 로 남긴다.
             const using_kind: VariableDeclarationKind = if (kind == .program or self.options.unsupported.block_scoping) .@"var" else .@"const";
@@ -198,7 +215,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 if (node.tag == .variable_declaration and self.ast.hasExtra(node.data.extra, 3)) {
                     const vkind = self.ast.variableDeclarationKind(node);
                     if (vkind.isUsing()) {
-                        try transformUsingDeclarators(self, &body, self.readU32(node.data.extra, 1), self.readU32(node.data.extra, 2), vkind == .await_using, names.stack, stack_id, self.current_scope, using_kind, node.span);
+                        try transformUsingDeclarators(self, &body, self.readU32(node.data.extra, 1), self.readU32(node.data.extra, 2), vkind == .await_using, names.stack, stack_id, names.late_output_names, self.current_scope, using_kind, node.span);
                         continue;
                     }
                     if (kind == .program and (vkind == .let or vkind == .@"const")) {
@@ -461,6 +478,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             is_await: bool,
             stack_span: Span,
             stack_id: ?SymbolId,
+            late_output_names: bool,
             reference_scope: ScopeId,
             decl_kind: VariableDeclarationKind,
             span: Span,
@@ -483,7 +501,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                     // using은 항상 초기화가 필요하지만 방어적으로 void 0 사용
                     try es_helpers.makeVoidZero(self, span);
 
-                const stack_ref = try es_helpers.makeSyntheticRefFromSpan(self, stack_span);
+                const stack_ref = try makeUsingRef(self, stack_span, late_output_names);
                 try registerUsingRef(self, stack_ref, stack_id, reference_scope, .{ .read = true });
                 const using_ref = try es_helpers.makeRuntimeHelperRef(self, "__using");
                 const using_call = if (is_await)
@@ -501,10 +519,10 @@ pub fn ES2025Using(comptime Transformer: type) type {
 
         /// catch (_) { _error = _; _hasError = true; }
         fn buildCatchClause(self: *Transformer, names: Names, span: Span, err_id: ?SymbolId, has_err_id: ?SymbolId, parent_scope: ScopeId) Transformer.Error!NodeIndex {
-            const catch_param = try es_helpers.makeSyntheticBinding(self, names.catch_param);
-            const err_target = try es_helpers.makeSyntheticRefFromSpan(self, names.err);
-            const caught_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.catch_param);
-            const has_err_target = try es_helpers.makeSyntheticRefFromSpan(self, names.has_err);
+            const catch_param = try makeUsingBinding(self, names.catch_param, names.late_output_names);
+            const err_target = try makeUsingRef(self, names.err, names.late_output_names);
+            const caught_ref = try makeUsingRef(self, names.catch_param, names.late_output_names);
+            const has_err_target = try makeUsingRef(self, names.has_err, names.late_output_names);
             const set_err = try es_helpers.makeExprStmt(self, try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{
                 .left = err_target,
                 .right = caught_ref,
@@ -524,6 +542,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             if (self.semantic_edit_enabled) {
                 const catch_scope = try self.addGeneratedScope(parent_scope, clause, .catch_clause);
                 const catch_id = try self.declareSyntheticInScope(catch_param, span, .catch_binding, catch_scope);
+                if (names.late_output_names) es_helpers.markStandaloneLateSyntheticTemp(self, catch_id, catch_scope);
                 try registerUsingRef(self, err_target, err_id, catch_scope, .{ .write = true });
                 // The catch binding already has an exact SymbolId and scope.
                 // Do not defer this use as a hoisted temp during state-machine
@@ -536,9 +555,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
 
         /// finally { [await] __callDispose(_stack, _error, _hasError); }
         fn buildFinallyBlock(self: *Transformer, names: Names, has_await: bool, span: Span, stack_id: ?SymbolId, err_id: ?SymbolId, has_err_id: ?SymbolId, reference_scope: ScopeId) Transformer.Error!NodeIndex {
-            const stack_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.stack);
-            const err_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.err);
-            const has_err_ref = try es_helpers.makeSyntheticRefFromSpan(self, names.has_err);
+            const stack_ref = try makeUsingRef(self, names.stack, names.late_output_names);
+            const err_ref = try makeUsingRef(self, names.err, names.late_output_names);
+            const has_err_ref = try makeUsingRef(self, names.has_err, names.late_output_names);
             try registerUsingRef(self, stack_ref, stack_id, reference_scope, .{ .read = true });
             try registerUsingRef(self, err_ref, err_id, reference_scope, .{ .read = true });
             try registerUsingRef(self, has_err_ref, has_err_id, reference_scope, .{ .read = true });
@@ -554,13 +573,29 @@ pub fn ES2025Using(comptime Transformer: type) type {
     };
 }
 
-fn registerUsingVar(self: anytype, binding: NodeIndex, name_span: Span, declaration_span: Span) !?SymbolId {
+fn makeUsingBinding(self: anytype, name_span: Span, late_output_name: bool) !NodeIndex {
+    return if (late_output_name)
+        es_helpers.makeExactSyntheticBindingFromSpan(self, name_span)
+    else
+        es_helpers.makeSyntheticBinding(self, name_span);
+}
+
+fn makeUsingRef(self: anytype, name_span: Span, late_output_name: bool) !NodeIndex {
+    return if (late_output_name)
+        es_helpers.makeExactSyntheticRefFromSpan(self, name_span)
+    else
+        es_helpers.makeSyntheticRefFromSpan(self, name_span);
+}
+
+fn registerUsingVar(self: anytype, binding: NodeIndex, name_span: Span, declaration_span: Span, late_output_name: bool) !?SymbolId {
     if (!self.semantic_edit_enabled) return null;
-    if (self.state_machine_depth > 0) {
-        const owner_scope = self.nearestVarScope(self.current_scope);
-        return self.registerGeneratedWrapperTemp(binding, name_span, declaration_span, owner_scope);
-    }
-    return self.declareSyntheticInScope(binding, declaration_span, SymbolKind.variable_var, self.nearestVarScope(self.current_scope));
+    const owner_scope = self.nearestVarScope(self.current_scope);
+    const id = if (self.state_machine_depth > 0)
+        try self.registerGeneratedWrapperTemp(binding, name_span, declaration_span, owner_scope)
+    else
+        try self.declareSyntheticInScope(binding, declaration_span, SymbolKind.variable_var, owner_scope);
+    if (late_output_name) es_helpers.markStandaloneLateSyntheticTemp(self, id, self.current_scope);
+    return id;
 }
 
 fn registerUsingRef(self: anytype, ref: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) !void {
@@ -573,6 +608,102 @@ fn registerUsingRef(self: anytype, ref: NodeIndex, id: ?SymbolId, scope: ScopeId
         return;
     }
     try self.addSyntheticRefInScope(ref, symbol, scope, flags);
+}
+
+test "#4819 standalone using locals defer their names to exact SymbolIds" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("transformer.zig").TransformOptions;
+    const Transformer = @import("transformer.zig").Transformer;
+    const Using = ES2025Using(Transformer);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "var _stack = 0, _error = 0, _hasError = 0, _ = 0; export {};");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+
+    const names = try Using.allocNames(&transformer);
+    try std.testing.expect(names.late_output_names);
+    try std.testing.expectEqual(@as(usize, 4), transformer.late_output_name_bases.count());
+    try std.testing.expectEqualStrings("_stack2", transformer.ast.getText(names.stack));
+    try std.testing.expectEqualStrings("_error2", transformer.ast.getText(names.err));
+    try std.testing.expectEqualStrings("_hasError2", transformer.ast.getText(names.has_err));
+    try std.testing.expectEqualStrings("_2", transformer.ast.getText(names.catch_param));
+
+    const owner_scope = transformer.nearestVarScope(transformer.current_scope);
+    const spans = [_]Span{ names.stack, names.err, names.has_err };
+    var ids: [3]SymbolId = undefined;
+    for (spans, 0..) |name_span, i| {
+        const binding = try makeUsingBinding(&transformer, name_span, names.late_output_names);
+        try std.testing.expectEqualStrings(transformer.ast.getText(name_span), transformer.ast.getText(transformer.ast.getNode(binding).span));
+        ids[i] = (try registerUsingVar(&transformer, binding, name_span, .EMPTY, names.late_output_names)) orelse
+            return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(?u32, @backingInt(ids[i])), transformer.getSymbolIdAt(binding));
+    }
+
+    const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
+    for (ids) |id| {
+        const symbol = editor.symbols.items[@backingInt(id)];
+        try std.testing.expectEqual(owner_scope, symbol.scope_id);
+        try std.testing.expectEqual(@as(?@import("../semantic/symbol.zig").SyntheticKind, .standalone_temp_binding), symbol.synthetic_kind);
+    }
+
+    const stack_ref = try makeUsingRef(&transformer, names.stack, names.late_output_names);
+    try std.testing.expectEqualStrings(transformer.ast.getText(names.stack), transformer.ast.getText(transformer.ast.getNode(stack_ref).span));
+    try registerUsingRef(&transformer, stack_ref, ids[0], owner_scope, .{ .read = true });
+    const stack_reference = (try editor.referenceForNode(stack_ref)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(ids[0], stack_reference.symbol_id);
+    try std.testing.expect(stack_reference.flags.read);
+
+    const catch_clause = try Using.buildCatchClause(&transformer, names, .EMPTY, ids[1], ids[2], owner_scope);
+    const catch_node = transformer.ast.getNode(catch_clause);
+    const catch_binding = catch_node.data.binary.left;
+    try std.testing.expectEqualStrings(transformer.ast.getText(names.catch_param), transformer.ast.getText(transformer.ast.getNode(catch_binding).span));
+    const catch_raw_id = transformer.getSymbolIdAt(catch_binding) orelse return error.TestUnexpectedResult;
+    const catch_id: SymbolId = @fromBackingInt(@intCast(catch_raw_id));
+    const catch_symbol = editor.symbols.items[catch_raw_id];
+    try std.testing.expectEqual(@as(?@import("../semantic/symbol.zig").SyntheticKind, .standalone_temp_binding), catch_symbol.synthetic_kind);
+    try std.testing.expectEqual(
+        @import("../semantic/scope.zig").ScopeKind.catch_clause,
+        editor.scopes.items[catch_symbol.scope_id.toIndex()].kind,
+    );
+
+    const catch_body = transformer.ast.getNode(catch_node.data.binary.right);
+    const catch_statements = catch_body.data.list;
+    const set_error_stmt: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[catch_statements.start]));
+    const set_error = transformer.ast.getNode(transformer.ast.getNode(set_error_stmt).data.unary.operand);
+    const caught_ref = set_error.data.binary.right;
+    try std.testing.expectEqualStrings(transformer.ast.getText(names.catch_param), transformer.ast.getText(transformer.ast.getNode(caught_ref).span));
+    const caught_reference = (try editor.referenceForNode(caught_ref)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(catch_id, caught_reference.symbol_id);
+    try std.testing.expect(caught_reference.flags.read);
+    try std.testing.expect(!caught_reference.flags.write);
+
+    // A dynamic scope must keep the old source-safe spelling path.
+    editor.scopes.items[transformer.current_scope.toIndex()].subtree_has_direct_eval = true;
+    const dynamic_names = try Using.allocNames(&transformer);
+    try std.testing.expect(!dynamic_names.late_output_names);
 }
 
 test "#4819 generator using refs retain their producer SymbolId" {
