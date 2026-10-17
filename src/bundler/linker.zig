@@ -1074,6 +1074,11 @@ pub const Linker = struct {
                             !std.mem.eql(u8, symbol.output_name_hint, "_super"))
                             return error.InvalidClassSuperParameterOutputBinding;
                     },
+                    .generator_state_parameter => {
+                        if (symbol.kind != .parameter or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_state"))
+                            return error.InvalidGeneratorStateOutputBinding;
+                    },
                     else => continue,
                 }
 
