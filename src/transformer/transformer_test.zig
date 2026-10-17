@@ -969,6 +969,50 @@ test "stage3 decorator: access getter 멤버 이름이 손상되지 않는다 (s
     try std.testing.expect(std.mem.indexOf(u8, code, "\xaa") == null);
 }
 
+test "#4819 Stage 3 semantic-less lowering keeps early member names collision-free" {
+    // parseAndTransform intentionally does not run SemanticAnalyzer. This is
+    // the low-level fallback boundary: generated Stage 3 locals keep readable
+    // names, but must still avoid source bindings and one another.
+    var r = try parseAndTransform(
+        std.testing.allocator,
+        "const _same_decorators = 17, _same_decorators2 = 18, " ++
+            "_same_initializers = 19, _same_initializers2 = 20, " ++
+            "_same_extraInitializers = 23, _same_extraInitializers2 = 24; " ++
+            "function dec(value, context) { return value; } " ++
+            "class Example { @dec same = 1; @dec static same = 2; }",
+    );
+    defer r.deinit();
+    const code = try generateCode(&r);
+    defer r.allocator.free(code);
+
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_decorators2 = 18") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_initializers2 = 20") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_extraInitializers2 = 24") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_decorators3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_decorators_1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_initializers3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_initializers_1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_extraInitializers3") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "_same_extraInitializers_1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "let _same_decorators3;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "let _same_decorators_1;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "let _same_initializers3 = [];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "let _same_initializers_1 = [];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "let _same_extraInitializers3 = [];") != null);
+    try std.testing.expect(std.mem.indexOf(u8, code, "let _same_extraInitializers_1 = [];") != null);
+
+    inline for (.{
+        "_same_decorators3",
+        "_same_decorators_1",
+        "_same_initializers3",
+        "_same_initializers_1",
+        "_same_extraInitializers3",
+        "_same_extraInitializers_1",
+    }) |name| {
+        try std.testing.expect(std.mem.count(u8, code, name) >= 2);
+    }
+}
+
 // ============================================================
 // 두 옵션 동시 활성화 테스트
 // ============================================================
