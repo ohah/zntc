@@ -154,7 +154,7 @@ test "type modifier mixed with value spec → record kept" {
 test "default + namespace import → record kept (#2466 regression)" {
     // `import_default_specifier` / `import_namespace_specifier` 는 binary 레이아웃이 아니라
     // `data.string_ref` 라서, allSpecsAreTypeOnly 가 binary.flags 로 union punning 하면
-    // ReleaseFast 에서 garbage bits 가 우연히 SPEC_FLAG_TYPE_ONLY 로 읽혀 record 가 누락됐었다.
+    // fast 에서 garbage bits 가 우연히 SPEC_FLAG_TYPE_ONLY 로 읽혀 record 가 누락됐었다.
     const alloc = std.testing.allocator;
     const records = try parseAndExtractExt(alloc, "import dflt, * as ns from './foo';", ".ts");
     defer alloc.free(records);
@@ -342,12 +342,12 @@ test "transformed_root: orphan import declaration is ignored" {
     scanner.is_module = true;
     _ = try parser.parse();
 
-    const old_root_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(parser.ast.nodes.items.len - 1)));
+    const old_root_idx: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(parser.ast.nodes.items.len - 1))));
     const old_root = parser.ast.getNode(old_root_idx);
     const old_body = old_root.data.list;
     try std.testing.expectEqual(@as(u32, 2), old_body.len);
 
-    const expr_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[old_body.start + 1]);
+    const expr_idx: NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[old_body.start + 1]));
     const new_body = try parser.ast.addNodeList(&.{expr_idx});
     const new_root = try parser.ast.addNode(.{
         .tag = .program,

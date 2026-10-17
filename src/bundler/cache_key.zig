@@ -146,7 +146,7 @@ comptime {
     // 분류 (#4598): `tla_chunk_wrapped` 는 **transform-only**. 정밀 전략은 pre-transform 캐시
     // 전용이고(파일 상단) parse/semantic 은 이 값을 읽지 않는다. ⚠️ post-transform 캐시로
     // 확장하면 편입 필수 — 값에 따라 TLA 래핑 여부가 갈려 같은 소스가 다른 AST 를 낸다.
-    const tf_fields = @typeInfo(@import("../transformer/options.zig").TransformOptions).@"struct".fields.len;
+    const tf_fields = @typeInfo(@import("../transformer/options.zig").TransformOptions).@"struct".field_names.len;
     // `tla_export_decl_deferrable`, `tla_module_awaited`, `tla_async_init_fallback`(link·emit 전용),
     // standalone JSX import emit, late runtime-helper
     // naming 옵션은 transform/codegen 전용 (parse/pre-pass 결과에는 영향 없음) —
@@ -158,13 +158,14 @@ comptime {
 /// `SelectiveOptions` 의 모든 필드를 reflection 으로 해시(정밀 전략 options_hash).
 pub fn hashSelective(o: *const SelectiveOptions) u64 {
     var h = InputHasher.init(OPTS_SEED);
-    inline for (@typeInfo(SelectiveOptions).@"struct".fields) |f| {
-        const v = @field(o.*, f.name);
-        switch (@typeInfo(f.type)) {
+    const info = @typeInfo(SelectiveOptions).@"struct";
+    inline for (info.field_names, info.field_types) |name, field_type| {
+        const v = @field(o.*, name);
+        switch (@typeInfo(field_type)) {
             .bool => h.addBool(v),
             .int => h.addU64(@intCast(v)),
-            .@"enum" => h.addU64(@intFromEnum(v)),
-            else => @compileError("cache_key: SelectiveOptions." ++ f.name ++
+            .@"enum" => h.addU64(@backingInt(v)),
+            else => @compileError("cache_key: SelectiveOptions." ++ name ++
                 " 타입은 reflection 해시 미지원 — caller 가 u64 로 사전해시(`*_hash` 필드)해 넣을 것."),
         }
     }

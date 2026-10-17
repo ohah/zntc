@@ -75,7 +75,7 @@ pub fn merge(ts: *const TsConfig, explicit: ExplicitFlags) MergedFlags {
         // 버퍼 크기는 enum 최장 필드명에서 comptime 계산(compat.Engine.fromString 동형).
         const max_len = comptime blk2: {
             var m: usize = 0;
-            for (std.meta.fields(compat.ESTarget)) |f| m = @max(m, f.name.len);
+            for (@typeInfo(compat.ESTarget).@"enum".field_names) |name| m = @max(m, name.len);
             break :blk2 m;
         };
         var buf: [max_len]u8 = undefined;

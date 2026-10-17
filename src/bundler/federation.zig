@@ -64,7 +64,7 @@ pub fn matchesRemoteSpec(spec: []const u8, key: []const u8) bool {
 /// 는 null(MF 는 web/native 기능 — wasm-bundler 경로 매칭은 비정규화
 /// fallback 으로 충분). 비-WASI 동작 불변.
 pub fn cwdRealpath(io: std.Io, allocator: std.mem.Allocator) ?[]const u8 {
-    if (comptime builtin.os.tag == .wasi) return null;
+    if (comptime builtin.target.os.tag == .wasi) return null;
     // 0.16: realPathFileAlloc 는 [:0]u8 (N 바이트). []const u8 로 coerce 후 free 하면
     // N-1 만 해제돼 size-mismatch → sentinel-aware free 후 정확 길이 dupe.
     const z = std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator) catch return null;
@@ -167,7 +167,7 @@ pub fn markBoundary(
         var matched = false;
         var i: usize = 0;
         while (i < count) : (i += 1) {
-            const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+            const idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
             // moduleAtMut 직접 호출: 이 패스는 graph build 完~link 前 단일
             // 스레드(파서 워커 race 무관) — bundler.zig store-transfer 와 동일
             // 관례(accessors.zig 금지 주석은 병렬 워커 한정).
@@ -191,7 +191,7 @@ pub fn markBoundary(
         defer seeds.deinit(allocator);
         var i: usize = 0;
         while (i < count) : (i += 1) {
-            const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+            const idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
             const m = graph.getModule(idx) orelse continue;
             if (pkgOf(m.path)) |pkg| {
                 for (mf.shared) |s| {
@@ -221,7 +221,7 @@ fn markClosure(
     defer stack.deinit(allocator);
     try stack.appendSlice(allocator, seeds);
     while (stack.pop()) |idx| {
-        const gop = try visited.getOrPut(allocator, @intFromEnum(idx));
+        const gop = try visited.getOrPut(allocator, @backingInt(idx));
         if (gop.found_existing) continue;
         const m = graph.moduleAtMut(idx) orelse continue;
         try setBoundary(allocator, m, root);
@@ -280,7 +280,7 @@ pub fn lintOwnershipBoundary(graph: anytype) void {
     const count = graph.moduleCount();
     var i: usize = 0;
     while (i < count) : (i += 1) {
-        const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+        const idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
         const m = graph.getModule(idx) orelse continue;
         if (!m.is_federation_boundary) continue;
         for (m.import_bindings) |ib| {
@@ -363,7 +363,7 @@ pub fn resolveAbs(io: std.Io, allocator: std.mem.Allocator, cwd: ?[]const u8, va
     const joined = try std.fs.path.resolve(allocator, &.{ base, value });
     defer allocator.free(joined);
     // WASI 는 realpath @compileError → comptime 분기(비-WASI 동작 불변).
-    if (comptime builtin.os.tag == .wasi) return allocator.dupe(u8, joined);
+    if (comptime builtin.target.os.tag == .wasi) return allocator.dupe(u8, joined);
     // 0.16: realPathFileAlloc 는 [:0]u8 → sentinel-aware free 후 정확 길이 dupe
     // (caller 가 []const u8 로 해제 시 size-mismatch 방지).
     const z = std.Io.Dir.cwd().realPathFileAlloc(io, joined, allocator) catch return allocator.dupe(u8, joined);
@@ -397,7 +397,7 @@ test "markBoundary: shared 시드 + 전방-의존 폐포 표시, 무관 모듈 �
         .{ .path = "/p/node_modules/react/index.js" },
         .{ .path = "/p/node_modules/react/jsx.js" },
     };
-    try mods[1].dependencies.append(a, @enumFromInt(2)); // react → jsx
+    try mods[1].dependencies.append(a, @fromBackingInt(@intCast(2))); // react → jsx
     defer for (&mods) |*m| {
         m.dependencies.deinit(a);
         if (m.federation_id) |id| a.free(id);
@@ -408,10 +408,10 @@ test "markBoundary: shared 시드 + 전방-의존 폐포 표시, 무관 모듈 �
             return self.ms.len;
         }
         fn getModule(self: @This(), idx: ModuleIndex) ?*const StubMod {
-            return &self.ms[@intFromEnum(idx)];
+            return &self.ms[@backingInt(idx)];
         }
         fn moduleAtMut(self: @This(), idx: ModuleIndex) ?*StubMod {
-            return &self.ms[@intFromEnum(idx)];
+            return &self.ms[@backingInt(idx)];
         }
     };
     var g = StubGraph{ .ms = &mods };

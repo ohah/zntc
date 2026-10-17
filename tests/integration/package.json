@@ -9,7 +9,7 @@
     "test:rn": "bun test tests/es5-rn.test.ts --timeout 10000",
     "test:compat": "node tests/compat-table-extract.cjs > tests/fixtures/compat-table-tests.json && bun test tests/compat-table.test.ts --timeout 600000",
     "test:swc": "bun test tests/swc-compare.test.ts --timeout 600000",
-    "build:zntc": "cd ../.. && zig build -Doptimize=ReleaseFast"
+    "build:zntc": "cd ../.. && zig build -Doptimize=fast"
   },
   "devDependencies": {
     "@babel/runtime": "^7.27.0",

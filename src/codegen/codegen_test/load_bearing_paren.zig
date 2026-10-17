@@ -12,6 +12,7 @@
 //!   - 7: es2019 optional-chain lowering 의 이중괄호 정리는 es_downlevel `?.` 테이블이 커버.
 
 const std = @import("std");
+const repeat = @import("../../repeat.zig");
 const helpers = @import("helpers.zig");
 const e2e = helpers.e2e;
 const e2eWithOptions = helpers.e2eWithOptions;
@@ -109,7 +110,7 @@ test "load-bearing: 깊은 optional chain 은 spurious 끊김 괄호 없음 — 
     // 100_000 으로 통일해 해소 — 깊이와 무관하게 끊김 없는 chain 은 괄호가 0 개여야 한다.
     // (잘못된 입력 주의: `(deep).d` 같은 명시 break 는 cap 과 무관하게 break 괄호 1개라
     //  회귀를 못 잡는다. break 없는 declarator-init chain 이어야 cap 버그가 드러난다.)
-    const src = "var x = a?.b" ++ ".c" ** 70 ++ ";"; // depth 72, break 없음 → 괄호 0
+    const src = "var x = a?.b" ++ repeat.bytes(".c", 70) ++ ";"; // depth 72, break 없음 → 괄호 0
     var r = try e2e(std.testing.allocator, src);
     defer r.deinit();
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, r.output, "("));

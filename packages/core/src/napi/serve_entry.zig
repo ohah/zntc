@@ -205,7 +205,7 @@ pub fn napiStartDevServer(env: c.napi_env, info: c.napi_callback_info) callconv(
         native_alloc.destroy(server);
         cleanupStrings(root_dir, host, entry, cert_path, key_path);
         var msg_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrintZ(&msg_buf, "startDevServer: DevServer.init failed: {}", .{err}) catch
+        const msg = std.mem.printSentinel(&msg_buf, "startDevServer: DevServer.init failed: {}", .{err}, 0) catch
             "startDevServer: DevServer.init failed";
         return throwError(env, msg.ptr);
     };

@@ -27,5 +27,5 @@ pub const ModulePhase = enum {
 };
 
 test "ModulePhase enum has 5 variants" {
-    try std.testing.expectEqual(@as(usize, 5), @typeInfo(ModulePhase).@"enum".fields.len);
+    try std.testing.expectEqual(@as(usize, 5), @typeInfo(ModulePhase).@"enum".field_names.len);
 }

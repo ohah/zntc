@@ -19,8 +19,8 @@ export const BENCHMARK_MAX_BUFFER = 64 * 1024 * 1024;
 
 export function buildBin(label: string): void {
   if (existsSync(ZNTC_BIN)) return;
-  console.log(`[${label}] zntc binary not found, building ReleaseFast...`);
-  const r = spawnSync('zig', ['build', '-Doptimize=ReleaseFast'], {
+  console.log(`[${label}] zntc binary not found, building fast...`);
+  const r = spawnSync('zig', ['build', '-Doptimize=fast'], {
     cwd: ROOT,
     stdio: 'inherit',
   });

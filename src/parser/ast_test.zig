@@ -10,7 +10,7 @@ test "Node is 24 bytes" {
 }
 
 test "Tag fits in u16" {
-    const fields = @typeInfo(Node.Tag).@"enum".fields;
+    const fields = @typeInfo(Node.Tag).@"enum".field_names;
     try std.testing.expect(fields.len <= 65536);
     // 현재 ~178개
     try std.testing.expect(fields.len >= 170);
@@ -19,7 +19,7 @@ test "Tag fits in u16" {
 test "NodeIndex.none" {
     const idx = NodeIndex.none;
     try std.testing.expect(idx.isNone());
-    const valid: NodeIndex = @enumFromInt(0);
+    const valid: NodeIndex = @fromBackingInt(@intCast(0));
     try std.testing.expect(!valid.isNone());
 }
 
@@ -66,7 +66,7 @@ test "nodeListSplitRest" {
     const with_rest = try ast.addNodeList(&.{ a, b, rest });
     const split_with = ast.nodeListSplitRest(with_rest);
     try std.testing.expect(split_with.rest_operand != null);
-    try std.testing.expectEqual(@intFromEnum(c), @intFromEnum(split_with.rest_operand.?));
+    try std.testing.expectEqual(@backingInt(c), @backingInt(split_with.rest_operand.?));
     try std.testing.expectEqual(@as(usize, 2), split_with.elements.len);
 
     // case: [a, b] — rest 없음
@@ -89,7 +89,7 @@ test "nodeListSplitRest" {
     const at_list = try ast.addNodeList(&.{ a, at_rest });
     const split_aat = ast.nodeListSplitRest(at_list);
     try std.testing.expect(split_aat.rest_operand != null);
-    try std.testing.expectEqual(@intFromEnum(c), @intFromEnum(split_aat.rest_operand.?));
+    try std.testing.expectEqual(@backingInt(c), @backingInt(split_aat.rest_operand.?));
     try std.testing.expectEqual(@as(usize, 1), split_aat.elements.len);
 }
 

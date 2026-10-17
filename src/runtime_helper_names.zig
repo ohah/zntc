@@ -130,14 +130,14 @@ pub fn esmInteropRuntimeHelperBaseName(helper: EsmInteropRuntimeHelper) []const 
 }
 
 pub const EsmInteropRuntimeNames = struct {
-    names: [@typeInfo(EsmInteropRuntimeHelper).@"enum".fields.len][]const u8 = undefined,
+    names: [@typeInfo(EsmInteropRuntimeHelper).@"enum".field_names.len][]const u8 = undefined,
 
     pub fn get(self: EsmInteropRuntimeNames, helper: EsmInteropRuntimeHelper) []const u8 {
-        return self.names[@intFromEnum(helper)];
+        return self.names[@backingInt(helper)];
     }
 
     pub fn set(self: *EsmInteropRuntimeNames, helper: EsmInteropRuntimeHelper, name: []const u8) void {
-        self.names[@intFromEnum(helper)] = name;
+        self.names[@backingInt(helper)] = name;
     }
 };
 

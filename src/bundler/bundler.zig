@@ -98,7 +98,7 @@ pub const MfBundleConfig = types.MfBundleConfig;
 /// 여러 워커로 동시 `openat` 하면 **커널 디렉토리 vnode 락에서 직렬화**된다(macOS `sample`
 /// 실증: 단일 dir 5000파일에서 jobs=15 의 `__openat` 누적 시간이 jobs=4 대비 17×, 50개
 /// dir 로 분산하면 7× 감소). 이전 기본 상한 8도 고코어 환경에서 경합을 남겼다. 2026-10-14
-/// macOS ReleaseFast 동일 10/100/200/1000/5000-module splitting fixture를 9쌍 교차 측정:
+/// macOS fast 동일 10/100/200/1000/5000-module splitting fixture를 9쌍 교차 측정:
 /// cap 8→4가 각각 1.01×/1.11×/1.15×/1.40×/1.52× 빨랐고 출력 해시는 모두 같았다. 별도
 /// jobs sweep 에서 jobs=2는 5000 modules에서 jobs=4와 비슷했지만, jobs=4가 100~1000 modules
 /// 에서 더 빨라 4를 기본 총 스레드 수로 선택한다. cpu ≤ 4이면 기존 기본(cpu 수) 그대로;

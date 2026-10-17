@@ -17,7 +17,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# 배포 모드 ReleaseFast 3 OS + Linux ReleaseSafe 는 ci.yml 에서 매번 검증한다.
+# 배포 모드 fast 3 OS + Linux safe 는 ci.yml 에서 매번 검증한다.
 # 비배포 최적화 조합은 주간/수동 검사로 유지해 main 매 머지의 중복을 줄인다.
 jobs:
   build:
@@ -27,17 +27,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest, optimize: ReleaseSafe }
-          - { os: windows-latest, optimize: ReleaseSafe }
-          - { os: ubuntu-latest, optimize: ReleaseSmall }
-          - { os: macos-latest, optimize: ReleaseSmall }
-          - { os: windows-latest, optimize: ReleaseSmall }
+          - { os: macos-latest, optimize: safe }
+          - { os: windows-latest, optimize: safe }
+          - { os: ubuntu-latest, optimize: small }
+          - { os: macos-latest, optimize: small }
+          - { os: windows-latest, optimize: small }
     steps:
       - uses: actions/checkout@v4
       # These jobs compile the CLI; only unit/conformance jobs need Test262.
       - uses: ./.github/actions/checkout-build-deps
       - uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: release-${{ matrix.optimize }}
       - run: zig build -Doptimize=${{ matrix.optimize }}

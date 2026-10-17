@@ -22,7 +22,7 @@ pub const Engine = enum(u8) {
     pub fn fromString(s: []const u8) ?Engine {
         const max_len = comptime blk: {
             var m: usize = 0;
-            for (std.meta.fields(Engine)) |f| m = @max(m, f.name.len);
+            for (@typeInfo(Engine).@"enum".field_names) |name| m = @max(m, name.len);
             break :blk m;
         };
         var buf: [max_len]u8 = undefined;
@@ -140,6 +140,10 @@ pub const Feature = enum(u6) {
     }
 };
 
+const feature_info = @typeInfo(Feature).@"enum";
+const feature_names = feature_info.field_names;
+const feature_values = feature_info.field_values;
+
 // ─── Unsupported Features bitmask ───
 // 각 비트가 true이면 해당 feature를 다운레벨링해야 함.
 
@@ -159,9 +163,9 @@ pub const WireBits = u53;
 comptime {
     // feature 가 늘어 폭을 넘기는 순간 컴파일을 멈춘다 — 조용히 상위 비트를 잃는
     // 쪽이 훨씬 나쁘다(비트가 잘린 마스크는 "그 feature 는 지원됨" 으로 읽힌다).
-    if (std.meta.fields(Feature).len > @bitSizeOf(Bits))
+    if (feature_names.len > @bitSizeOf(Bits))
         @compileError("feature 수가 Bits 폭을 넘었다 — Bits 를 넓힐 것");
-    if (std.meta.fields(Feature).len > @bitSizeOf(WireBits))
+    if (feature_names.len > @bitSizeOf(WireBits))
         @compileError("feature 수가 JS 안전정수 폭(WireBits)을 넘었다 — 마스크를 둘로 쪼개거나 bigint 로 옮겨야 한다");
 }
 
@@ -245,10 +249,9 @@ pub const UnsupportedFeatures = packed struct(Bits) {
     // Feature enum과 UnsupportedFeatures 필드 순서 1:1 대응 검증.
     // Feature 추가/재배치 시 여기서 컴파일 에러가 발생한다.
     comptime {
-        const feature_fields = std.meta.fields(Feature);
-        const struct_fields = std.meta.fields(UnsupportedFeatures);
-        for (feature_fields) |ff| {
-            std.debug.assert(std.mem.eql(u8, ff.name, struct_fields[ff.value].name));
+        const struct_names = @typeInfo(UnsupportedFeatures).@"struct".field_names;
+        for (feature_names, feature_values) |name, value| {
+            std.debug.assert(std.mem.eql(u8, name, struct_names[value]));
         }
     }
 
@@ -818,7 +821,7 @@ const RN_SAFETY_NET = UnsupportedFeatures{ .arrow = true, .block_scoping = true 
 /// padding 비트(`_`)를 제외한, 정의된 feature 비트만 남기는 마스크.
 /// feature 개수를 손으로 적으면 feature 를 추가할 때 반드시 어긋난다(그 순간
 /// RN 매트릭스가 새 feature 를 조용히 "지원"으로 계산한다) — enum 에서 센다.
-const ALL_FEATURES_MASK: Bits = (@as(Bits, 1) << std.meta.fields(Feature).len) - 1;
+const ALL_FEATURES_MASK: Bits = (@as(Bits, 1) << feature_names.len) - 1;
 
 /// RN 문서(reactnative.dev/docs/<ver>/javascript-environment)의 "Syntax Transformers"
 /// 목록에 있는 = "지원"(네이티브 유지, 다운레벨 안 함) 기능. set=지원.
@@ -930,13 +933,13 @@ pub fn fromReactNativeVersionSpec(spec: []const u8) ?UnsupportedFeatures {
 /// ESTarget → UnsupportedFeatures.
 /// 타겟 ES 버전보다 높은 버전에서 도입된 feature를 unsupported로 설정.
 pub fn fromESTarget(target: ESTarget) UnsupportedFeatures {
-    const t = @intFromEnum(target);
+    const t = @backingInt(target);
     var bits: Bits = 0;
-    inline for (std.meta.fields(Feature)) |f| {
-        const feature: Feature = @enumFromInt(f.value);
+    inline for (feature_values) |value| {
+        const feature: Feature = @fromBackingInt(@intCast(value));
         // feature의 도입 버전이 타겟보다 높으면 다운레벨링 필요
-        if (t < @intFromEnum(feature.esVersion())) {
-            bits |= (@as(Bits, 1) << f.value);
+        if (t < @backingInt(feature.esVersion())) {
+            bits |= (@as(Bits, 1) << value);
         }
     }
     return @bitCast(bits);
@@ -950,8 +953,8 @@ pub fn unsupportedFeatures(targets: []const EngineVersion) UnsupportedFeatures {
     for (targets) |target| {
         var engine_unsupported: Bits = 0;
 
-        inline for (std.meta.fields(Feature)) |f| {
-            const feature: Feature = @enumFromInt(f.value);
+        inline for (feature_values) |value| {
+            const feature: Feature = @fromBackingInt(@intCast(value));
             const min_ver = getMinVersion(target.engine, feature);
 
             const is_unsupported = if (min_ver) |mv|
@@ -960,7 +963,7 @@ pub fn unsupportedFeatures(targets: []const EngineVersion) UnsupportedFeatures {
                 true; // compat table에 없으면 해당 엔진에서 미지원
 
             if (is_unsupported) {
-                engine_unsupported |= (@as(Bits, 1) << f.value);
+                engine_unsupported |= (@as(Bits, 1) << value);
             }
         }
 

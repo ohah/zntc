@@ -61,16 +61,18 @@ pub fn napiTargetToUnsupported(env: c.napi_env, info: c.napi_callback_info) call
         // 빌드 스크립트에도 있었다. 그냥 "unknown target" 이라고만 하면 사용자가 무엇으로
         // 바꿔야 하는지 알 수 없으므로 정확히 짚어 준다.
         const msg = if (platformNameConfusion(spec))
-            std.fmt.bufPrintZ(
+            std.mem.printSentinel(
                 &buf,
                 "unknown target '{s}' — did you mean platform: '{s}'? `target` is an ES version (es2020) or an engine version (node16, safari14); the runtime is set with `platform`",
                 .{ shown, shown },
+                0,
             ) catch "unknown target"
         else
-            std.fmt.bufPrintZ(
+            std.mem.printSentinel(
                 &buf,
                 "unknown target '{s}' (expected an ES version like es2020, or an engine matrix like chrome80,safari14,node16)",
                 .{shown},
+                0,
             ) catch "unknown target";
         return throwError(env, msg);
     };

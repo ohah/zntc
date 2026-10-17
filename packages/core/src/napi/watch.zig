@@ -106,7 +106,7 @@ const WatchAsyncData = struct {
     /// async_data(=stop_complete Event 포함)를 해제했는데, main 의 `Event.waitTimeout` 은
     /// futex wake 후 `@atomicLoad(*event)` 로 **재read**(spurious-wakeup 판별)하므로 freed
     /// Event 재read = UAF. 다세션·동시부하(esbuild/rolldown)에서 freed slot 재사용 시
-    /// `enum(u32)` 가 0/1/2 아닌 값으로 읽혀 segfault(ReleaseSafe: `reached unreachable`).
+    /// `enum(u32)` 가 0/1/2 아닌 값으로 읽혀 segfault(safe: `reached unreachable`).
     /// refcount 로 "worker self-free + stop 의 free" 중 마지막에만 실제 free → 재read 안전.
     /// worker 가 먼저 종료(init 에러 등)해도 stop 의 ref 가 살아있어 stop 의 unwrap·wait 안전.
     refs: std.atomic.Value(usize) = .init(1),

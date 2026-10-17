@@ -7,6 +7,8 @@ zig-cache/
 .zig-cache-napi/
 # Windows napi build cache root (cross-build) — 빌드 산출 캐시, 추적 금지.
 .zig-cache-napi-win/
+# Zig 0.17 local package source cache (dependencies are pinned in build.zig.zon).
+zig-pkg/
 
 # Node/Bun
 # 끝에 / 를 붙이면 디렉터리만 걸러진다 — node_modules 라는 이름의 심볼릭 링크는

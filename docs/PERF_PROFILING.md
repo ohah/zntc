@@ -14,11 +14,11 @@ ZNTC 자체의 `--profile` 인프라는 phase·sub-phase 단위 wall 누적을 �
 
 ## 빌드
 
-`-Dkeep-debug=true` 를 주면 ReleaseFast 빌드에서도 DWARF 가 보존돼 samply 가
+`-Dkeep-debug=true` 를 주면 fast 빌드에서도 DWARF 가 보존돼 samply 가
 함수명을 해석할 수 있다. 기본값은 `false` 라 프로덕션 배포 결과물에는 영향이 없다.
 
 ```sh
-zig build -Doptimize=ReleaseFast -Dkeep-debug=true
+zig build -Doptimize=fast -Dkeep-debug=true
 # macOS 만:
 dsymutil zig-out/bin/zntc
 ```

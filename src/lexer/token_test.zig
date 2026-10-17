@@ -6,7 +6,7 @@ const Token = token_mod.Token;
 const keywords = token_mod.keywords;
 
 test "Kind fits in u8" {
-    const fields = @typeInfo(Kind).@"enum".fields;
+    const fields = @typeInfo(Kind).@"enum".field_names;
     try std.testing.expect(fields.len <= 256);
 }
 

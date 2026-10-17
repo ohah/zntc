@@ -74,8 +74,7 @@ jobs:
             runner: windows-latest
             zig_target: x86_64-windows-msvc
             cli_artifact: zntc-x86_64-windows
-          # arm64-windows Zig 0.16.0 컴파일러가 native runner 에서 segfault.
-          # x64 호스트에서 같은 aarch64-windows-msvc 타깃으로 cross-compile 한다.
+          # ARM64 Windows 는 Zig 0.17 native runner 를 검증할 때까지 x64 에서 cross-compile 한다.
           - platform: win32-arm64-msvc
             runner: windows-latest
             zig_target: aarch64-windows-msvc
@@ -91,7 +90,7 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: release-${{ matrix.zig_target }}
 
       # 명시적 macOS 타깃의 mimalloc 빌드에 시스템 CommonCrypto 헤더가 필요하다.
@@ -99,9 +98,9 @@ jobs:
         if: runner.os == 'macOS'
         run: echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
 
-      - name: Build NAPI (ReleaseFast)
+      - name: Build NAPI (fast)
         shell: bash
-        run: zig build napi -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
+        run: zig build napi -Dnapi-optimize=fast -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
 
       - name: Locate zntc.node
         id: locate
@@ -124,8 +123,8 @@ jobs:
           retention-days: 1
           path: ${{ steps.locate.outputs.path }}
 
-      - name: Build CLI (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
+      - name: Build CLI (fast)
+        run: zig build -Doptimize=fast -Dtarget=${{ matrix.zig_target }} -Dcpu=baseline
 
       # NOTICE = BoringSSL Apache-2.0 §4(d) attribution. 별도 디렉터리에 실행파일과
       # NOTICE 만 모아 zig-out/bin 에 배치될 수 있는 NAPI 바이너리 혼입을 막는다.
@@ -305,7 +304,7 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           # NAPI는 artifact를 사용하고 WASM은 기존 release 검사/hook에서 빌드한다.
           cache-key: release-publish
 

@@ -23,11 +23,9 @@ const SourcesJson = struct {
 pub fn build(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.builtin.Optimize,
 ) !*std.Build.Step.Compile {
-    // Zig 0.16: link_libc / addCSourceFile / addIncludePath / linkSystemLibrary 등이
-    // Step.Compile 에서 제거되고 *Module 메서드/필드로 이관됐다. 모듈을 변수로 잡아
-    // 사용한다.
+    // Keep C inputs and link settings on the root module shared by this library.
     const mod = b.createModule(.{
         .target = target,
         .optimize = optimize,

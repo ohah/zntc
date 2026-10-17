@@ -269,7 +269,7 @@ pub const Code = enum(u16) {
     pub fn format(self: Code) []const u8 {
         @setEvalBranchQuota(100_000);
         return switch (self) {
-            inline else => |v| comptime std.fmt.comptimePrint("ZNTC{d:0>4}", .{@intFromEnum(v)}),
+            inline else => |v| comptime std.fmt.comptimePrint("ZNTC{d:0>4}", .{@backingInt(v)}),
         };
     }
 
@@ -278,7 +278,7 @@ pub const Code = enum(u16) {
     pub fn docsUrl(self: Code) []const u8 {
         @setEvalBranchQuota(100_000);
         return switch (self) {
-            inline else => |v| comptime std.fmt.comptimePrint(docs_url_base ++ "zntc{d:0>4}/", .{@intFromEnum(v)}),
+            inline else => |v| comptime std.fmt.comptimePrint(docs_url_base ++ "zntc{d:0>4}/", .{@backingInt(v)}),
         };
     }
 
@@ -526,9 +526,9 @@ test "Code.format: ZNTC1000" {
 }
 
 test "Code.message: returns non-empty for all codes" {
-    const fields = @typeInfo(Code).@"enum".fields;
-    inline for (fields) |f| {
-        const code: Code = @enumFromInt(f.value);
+    const fields = @typeInfo(Code).@"enum".field_values;
+    inline for (fields) |value| {
+        const code: Code = @fromBackingInt(@intCast(value));
         try std.testing.expect(code.message().len > 0);
     }
 }

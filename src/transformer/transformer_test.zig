@@ -75,14 +75,14 @@ test "#4819 exact output reference identity overrides copied source identity" {
     try transformer.symbol_ids.append(transformer.allocator, 3);
     try transformer.exact_output_ref_symbol_ids.put(
         transformer.allocator,
-        @intFromEnum(output),
+        @backingInt(output),
         7,
     );
 
     try transformer.propagateSymbolId(source, output);
 
     try std.testing.expectEqual(@as(?u32, 7), transformer.getSymbolIdAt(output));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(source)), transformer.reference_origin_map.get(@intFromEnum(output)));
+    try std.testing.expectEqual(@as(?u32, @backingInt(source)), transformer.reference_origin_map.get(@backingInt(output)));
 }
 
 test "#4819 distinct synthetic bases do not reuse a reserved fallback name" {
@@ -163,7 +163,7 @@ test "#4819 numbered loop names avoid direct eval identifiers" {
     transformer.unresolved_references = &unresolved;
 
     var counter: u32 = 0;
-    const scope: ScopeId = @enumFromInt(0);
+    const scope: ScopeId = @fromBackingInt(@intCast(0));
     try std.testing.expectEqualStrings("_loop", try transformer.buildUniqueNameAvoidingDynamicEval("_loop", &counter, scope));
     try std.testing.expectEqualStrings("_loop3", try transformer.buildUniqueNameAvoidingDynamicEval("_loop", &counter, scope));
 }
@@ -204,7 +204,7 @@ test "#4819 for-of step names avoid escaped direct eval identifiers" {
     defer unresolved.deinit(std.testing.allocator);
     transformer.unresolved_references = &unresolved;
 
-    const scope: ScopeId = @enumFromInt(0);
+    const scope: ScopeId = @fromBackingInt(@intCast(0));
     const step = try ForOf.uniqueStepName(&transformer, scope, false);
     try std.testing.expectEqualStrings("_step2", transformer.ast.getText(step));
 }
@@ -360,7 +360,7 @@ test "Transformer: strip ts_as_expression" {
 
     // expression_statement의 operand가 직접 identifier_reference를 가리킴
     const stmt_indices = t.ast.extra_data.items[prog.data.list.start .. prog.data.list.start + prog.data.list.len];
-    const new_stmt = t.ast.getNode(@enumFromInt(stmt_indices[0]));
+    const new_stmt = t.ast.getNode(@fromBackingInt(@intCast(stmt_indices[0])));
     try std_lib.testing.expectEqual(Tag.expression_statement, new_stmt.tag);
 
     const inner = t.ast.getNode(new_stmt.data.unary.operand);
@@ -949,7 +949,7 @@ test "experimentalDecorators + es5: inheritance + all decorators" {
 // stage3(TC39) 데코레이터의 access 객체 getter 멤버 이름이 손상되지 않는다.
 // 회귀: buildAccessObject 가 멤버 이름을 string_table 슬라이스로 잡은 뒤 `obj`
 // 파라미터 등 후속 addString 이 string_table 을 realloc 시켜 슬라이스가 dangling
-// → `get: (obj) => obj.<0xaa…>` 로 출력 (Debug/ReleaseSafe 전용). 안정 owned
+// → `get: (obj) => obj.<0xaa…>` 로 출력 (debug/safe 전용). 안정 owned
 // 복사로 캡처해 수정. `"method" in obj`(Span 직접 재사용)는 원래 안전했고
 // `obj.method`(이름 재-addString)만 깨졌었다.
 test "stage3 decorator: access getter 멤버 이름이 손상되지 않는다 (string_table UAF)" {
@@ -3354,17 +3354,17 @@ fn assertSplitImport(
     const program = result.ast.getNode(result.root);
     const list = program.data.list;
     try std.testing.expect(stmt_idx < list.len);
-    const decl_idx: NodeIndex = @enumFromInt(result.ast.extra_data.items[list.start + stmt_idx]);
+    const decl_idx: NodeIndex = @fromBackingInt(@intCast(result.ast.extra_data.items[list.start + stmt_idx]));
     const decl = result.ast.getNode(decl_idx);
     try std.testing.expectEqual(Tag.import_declaration, decl.tag);
 
     const e = decl.data.extra;
     const specs_start = result.ast.extra_data.items[e];
     const specs_len = result.ast.extra_data.items[e + 1];
-    const source_idx: NodeIndex = @enumFromInt(result.ast.extra_data.items[e + 2]);
+    const source_idx: NodeIndex = @fromBackingInt(@intCast(result.ast.extra_data.items[e + 2]));
     try std.testing.expectEqual(@as(u32, 1), specs_len);
 
-    const spec_idx: NodeIndex = @enumFromInt(result.ast.extra_data.items[specs_start]);
+    const spec_idx: NodeIndex = @fromBackingInt(@intCast(result.ast.extra_data.items[specs_start]));
     const spec = result.ast.getNode(spec_idx);
     try std.testing.expectEqual(Tag.import_default_specifier, spec.tag);
     try std.testing.expectEqualStrings(expected_name, result.ast.getText(spec.data.string_ref));
@@ -3411,10 +3411,10 @@ test "module_specifier_map: unmapped source unchanged" {
     // 'react' 는 매핑 안 됨 — 원본 named 형태 유지 (1 statement, 1 named specifier)
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
     const program = r.ast.getNode(r.root);
-    const decl_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[program.data.list.start]);
+    const decl_idx: NodeIndex = @fromBackingInt(@intCast(r.ast.extra_data.items[program.data.list.start]));
     const decl = r.ast.getNode(decl_idx);
     const specs_start = r.ast.extra_data.items[decl.data.extra];
-    const spec_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[specs_start]);
+    const spec_idx: NodeIndex = @fromBackingInt(@intCast(r.ast.extra_data.items[specs_start]));
     try std.testing.expectEqual(Tag.import_specifier, r.ast.getNode(spec_idx).tag);
 }
 
@@ -3428,10 +3428,10 @@ test "module_specifier_map: aliased specifier left unchanged" {
     defer r.deinit();
     try std.testing.expectEqual(@as(u32, 1), r.statementCount());
     const program = r.ast.getNode(r.root);
-    const decl_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[program.data.list.start]);
+    const decl_idx: NodeIndex = @fromBackingInt(@intCast(r.ast.extra_data.items[program.data.list.start]));
     const decl = r.ast.getNode(decl_idx);
     const specs_start = r.ast.extra_data.items[decl.data.extra];
-    const spec_idx: NodeIndex = @enumFromInt(r.ast.extra_data.items[specs_start]);
+    const spec_idx: NodeIndex = @fromBackingInt(@intCast(r.ast.extra_data.items[specs_start]));
     try std.testing.expectEqual(Tag.import_specifier, r.ast.getNode(spec_idx).tag);
 }
 
@@ -3647,7 +3647,7 @@ test "initFromOwnedAst: deinit 이 caller 의 ast 를 건드리지 않는다" {
 
     // t.deinit 후 src_ast.nodes 접근 — testing.allocator 가 free 된 메모리 read 를 감지.
     try std.testing.expect(src_ast.nodes.items.len > 0);
-    const root_node = src_ast.getNode(@enumFromInt(src_ast.nodes.items.len - 1));
+    const root_node = src_ast.getNode(@fromBackingInt(@intCast(src_ast.nodes.items.len - 1)));
     try std.testing.expectEqual(Tag.program, root_node.tag);
 }
 
@@ -3809,7 +3809,7 @@ test "Transformer: prepended synthetic top-level stmts keep stmt-span ordering (
         var prev_start: u32 = 0;
         var saw_synthetic_anchor = false;
         for (0..list.len) |i| {
-            const stmt_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list.start + i]);
+            const stmt_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[list.start + i]));
             const span = t.ast.getNode(stmt_idx).span;
             // string_table 참조 span 은 소스 좌표가 아니므로 순서 비교 대상이 아니다.
             if ((span.start & Ast.STRING_TABLE_BIT) != 0) continue;

@@ -3,10 +3,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const c = @cImport({
-    @cDefine("NAPI_VERSION", "8");
-    @cInclude("node_api.h");
-});
+pub const c = @import("napi_c");
 
 pub const NullableStringPair = struct { []const u8, ?[]const u8 };
 
@@ -42,7 +39,7 @@ var debug_gpa: std.heap.DebugAllocator(.{
 };
 
 pub fn nativeAlloc() std.mem.Allocator {
-    if (comptime builtin.mode == .Debug) return debug_gpa.allocator();
+    if (comptime builtin.mode == .debug) return debug_gpa.allocator();
     return std.heap.c_allocator;
 }
 
@@ -85,7 +82,7 @@ var g_env_map: ?std.process.Environ.Map = null;
 pub fn captureEnvironFromLibc() void {
     if (g_env_map != null) return;
     // Block 은 OS 별 comptime 타입: Windows=GlobalBlock(use_global→PEB), POSIX=PosixBlock(slice).
-    const block: std.process.Environ.Block = if (builtin.os.tag == .windows)
+    const block: std.process.Environ.Block = if (builtin.target.os.tag == .windows)
         .{ .use_global = true }
     else blk: {
         const c_environ = std.c.environ;
@@ -114,7 +111,7 @@ pub fn captureEnvironFromLibc() void {
 /// desync 위험. `mutex.tryLock` 으로 best-effort serialize: worker 가
 /// mid-alloc 이면 skip (leak dump 일부 손실) → deadlock 보다 안전.
 fn dumpLeaksOnEnvCleanup(_: ?*anyopaque) callconv(.c) void {
-    if (comptime builtin.mode != .Debug) return;
+    if (comptime builtin.mode != .debug) return;
     if (debug_gpa.mutex.tryLock()) {
         defer debug_gpa.mutex.unlock();
         _ = debug_gpa.detectLeaks();
@@ -136,7 +133,7 @@ var leak_dump_registered: std.atomic.Value(bool) = .init(false);
 /// destroy 시 cleanup hook 이 `detectLeaks` 호출 → stack trace 포함 leak
 /// 리포트를 stderr 로 dump. process 정상 종료 시 env 도 destroy 되므로 동등.
 pub fn registerLeakDump(env: c.napi_env) void {
-    if (comptime builtin.mode != .Debug) return;
+    if (comptime builtin.mode != .debug) return;
     if (leak_dump_registered.swap(true, .acq_rel)) return;
     _ = c.napi_add_env_cleanup_hook(env, &dumpLeaksOnEnvCleanup, null);
 }

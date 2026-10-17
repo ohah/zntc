@@ -452,7 +452,7 @@ pub fn optionsFromJson(
     // WASM 타겟은 file 시스템 접근 불가 — file/자동 탐색 분기 모두 스킵 (raw 는 무관하게 동작).
     const TsConfig = @import("../config.zig").TsConfig;
     const tsconfig_merge = @import("../tsconfig_merge.zig");
-    const can_load_tsconfig_file = builtin.os.tag != .wasi and builtin.os.tag != .freestanding;
+    const can_load_tsconfig_file = builtin.target.os.tag != .wasi and builtin.target.os.tag != .freestanding;
     const ts: TsConfig = blk: {
         if (parsed.tsconfigRaw) |raw| {
             break :blk TsConfig.parseFromString(allocator, raw) catch return error.InvalidOptions;

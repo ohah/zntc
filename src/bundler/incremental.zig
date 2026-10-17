@@ -211,6 +211,9 @@ pub const IncrementalBundler = struct {
         if (self.resolve_cache != null and self.rebuild_reset_interval > 0 and
             self.rebuild_count >= self.rebuild_reset_interval)
         {
+            // The persistent graph borrows resolved path bytes from this cache. Drop its
+            // modules while the cache is still alive; the next build takes the cold path.
+            if (self.persistent_graph) |*graph| graph.prepareForPreservedRebuild();
             if (self.resolve_cache) |*rc| {
                 rc.deinit();
                 self.resolve_cache = null;

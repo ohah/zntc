@@ -1,4 +1,5 @@
 const std = @import("std");
+const repeat = @import("../../repeat.zig");
 const Bundler = @import("../bundler.zig").Bundler;
 const types = @import("../types.zig");
 const emitter = @import("../emitter.zig");
@@ -1789,7 +1790,7 @@ test "#4388 Bundler: refresh registration with 254-byte+ component name" {
     // refresh 변환(나아가 번들) 전체를 중단시켰다.
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const long_name = "C" ++ ("o" ** 300); // 301 byte PascalCase 식별자
+    const long_name = "C" ++ repeat.bytes("o", 300); // 301 byte PascalCase 식별자
     try writeFile(tmp.dir, "App.ts", "function " ++ long_name ++ "() { return null; }\n");
 
     const entry = try absPath(&tmp, "App.ts");

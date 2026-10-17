@@ -209,7 +209,7 @@ export default defineConfig({
 
 ## Contributing
 
-ZNTC 의 핵심은 Zig 로 작성되어 있습니다. 소스에서 빌드하려면 Zig 0.15.2 가 필요합니다 (mise 권장).
+ZNTC 의 핵심은 Zig 로 작성되어 있습니다. 소스에서 빌드하려면 Zig 0.17.0 가 필요합니다 (mise 권장).
 
 ```bash
 git clone https://github.com/ohah/zntc.git
@@ -218,7 +218,7 @@ mise install
 
 # 빌드
 zig build                          # zntc CLI + lib (Debug)
-zig build -Doptimize=ReleaseFast   # 성능 측정용
+zig build -Doptimize=fast   # 성능 측정용
 zig build run -- src/index.ts      # CLI 직접 실행
 
 # 테스트

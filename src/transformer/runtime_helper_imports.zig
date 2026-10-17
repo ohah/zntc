@@ -128,27 +128,27 @@ comptime {
     @setEvalBranchQuota(10_000);
     // HelperBit 의 모든 tag 가 RuntimeHelpers 의 실 필드와 매핑되는지 빌드 타임 검증.
     // enum rename 시 즉시 컴파일 에러로 노출.
-    for (@typeInfo(HelperBit).@"enum".fields) |field| {
-        if (!@hasField(RuntimeHelpers, field.name)) {
-            @compileError("HelperBit tag '" ++ field.name ++ "' not present on RuntimeHelpers");
+    for (@typeInfo(HelperBit).@"enum".field_names) |name| {
+        if (!@hasField(RuntimeHelpers, name)) {
+            @compileError("HelperBit tag '" ++ name ++ "' not present on RuntimeHelpers");
         }
     }
     // 반대 방향도 확인한다. 사용 비트가 import 목록에서 빠지면 live helper
     // Reference가 import binding 없이 남는다.
-    for (@typeInfo(RuntimeHelpers).@"struct".fields) |field| {
-        if (std.mem.eql(u8, field.name, "_padding")) continue;
-        if (!@hasField(HelperBit, field.name)) {
-            @compileError("RuntimeHelpers field '" ++ field.name ++ "' missing from HelperBit");
+    for (@typeInfo(RuntimeHelpers).@"struct".field_names) |name| {
+        if (std.mem.eql(u8, name, "_padding")) continue;
+        if (!@hasField(HelperBit, name)) {
+            @compileError("RuntimeHelpers field '" ++ name ++ "' missing from HelperBit");
         }
     }
     // Enum 선언만 있고 BIT_DEFS에 빠진 경우에도 import가 조용히 누락된다.
-    for (@typeInfo(HelperBit).@"enum".fields) |field| {
+    for (@typeInfo(HelperBit).@"enum".field_names) |name| {
         var count: usize = 0;
         for (BIT_DEFS) |def| {
-            if (std.mem.eql(u8, field.name, @tagName(def.bit))) count += 1;
+            if (std.mem.eql(u8, name, @tagName(def.bit))) count += 1;
         }
         if (count != 1) {
-            @compileError("HelperBit tag '" ++ field.name ++ "' must occur once in BIT_DEFS");
+            @compileError("HelperBit tag '" ++ name ++ "' must occur once in BIT_DEFS");
         }
     }
 }
@@ -203,7 +203,7 @@ fn emitOne(
         const callsite_symbol_id = self.runtime_helper_symbol_ids.get(base);
         const callsite_symbol_name_span = if (callsite_symbol_id) |symbol_id| blk: {
             const editor = self.semantic_editor orelse std.debug.panic("runtime helper import has a SymbolId without a semantic editor", .{});
-            const raw_id = @intFromEnum(symbol_id);
+            const raw_id = @backingInt(symbol_id);
             if (raw_id >= editor.symbols.items.len)
                 std.debug.panic("runtime helper import has an out-of-range callsite SymbolId", .{});
             const symbol = editor.symbols.items[raw_id];
@@ -284,8 +284,8 @@ fn emitOne(
     const extra_start = try self.ast.addExtras(&.{
         specs.start,
         specs.len,
-        @intFromEnum(source_node),
-        @intFromEnum(ImportPhase.none),
+        @backingInt(source_node),
+        @backingInt(ImportPhase.none),
         0, // attrs.start
         0, // attrs.len
     });

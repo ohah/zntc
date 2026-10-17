@@ -55,9 +55,9 @@ pub fn parseTsTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
     const ty = try parseType(self);
     _ = try self.eat(.semicolon);
 
-    const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(@intFromEnum(type_params));
-    _ = try self.ast.addExtra(@intFromEnum(ty));
+    const extra_start = try self.ast.addExtra(@backingInt(name));
+    _ = try self.ast.addExtra(@backingInt(type_params));
+    _ = try self.ast.addExtra(@backingInt(ty));
 
     return try self.ast.addNode(.{
         .tag = .ts_type_alias_declaration,
@@ -100,11 +100,11 @@ pub fn parseTsInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
     const body = try type_members.parseObjectType(self);
 
     const extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(name),
-        @intFromEnum(type_params),
+        @backingInt(name),
+        @backingInt(type_params),
         extends_list.start,
         extends_list.len,
-        @intFromEnum(body),
+        @backingInt(body),
     });
 
     return try self.ast.addNode(.{
@@ -154,7 +154,7 @@ fn parseTsEnumDeclarationWithFlags(self: *Parser, flags: u32) ParseError2!NodeIn
     self.restoreScratch(scratch_top);
 
     const extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(name),                                    members.start, members.len,
+        @backingInt(name),                                     members.start, members.len,
         flags | (if (self.ctx.in_ambient) @as(u32, 2) else 0),
     });
 
@@ -334,7 +334,7 @@ pub fn parseTsDeclareStatement(self: *Parser) ParseError2!NodeIndex {
 /// parseTsDeclareStatement 가 strip 직전 호출.
 fn registerDeclareBindingNames(self: *Parser, stmt_idx: NodeIndex) ParseError2!void {
     if (stmt_idx.isNone()) return;
-    if (@intFromEnum(stmt_idx) >= self.ast.nodes.items.len) return;
+    if (@backingInt(stmt_idx) >= self.ast.nodes.items.len) return;
     const stmt = self.ast.getNode(stmt_idx);
     switch (stmt.tag) {
         // extras[0] = name node idx
@@ -343,7 +343,7 @@ fn registerDeclareBindingNames(self: *Parser, stmt_idx: NodeIndex) ParseError2!v
         .ts_enum_declaration,
         .ts_interface_declaration,
         .ts_type_alias_declaration,
-        => try putAstDeclareName(self, @enumFromInt(self.ast.extra_data.items[stmt.data.extra])),
+        => try putAstDeclareName(self, @fromBackingInt(@intCast(self.ast.extra_data.items[stmt.data.extra]))),
 
         // binary.left = name node idx — ts_module_declaration 은 binary layout
         // (`declare namespace NS {}`, `declare module "name" {}` 모두 동일).
@@ -351,7 +351,7 @@ fn registerDeclareBindingNames(self: *Parser, stmt_idx: NodeIndex) ParseError2!v
         // `name_text.len == 0` 가드 외에 string_literal 태그 skip.
         .ts_module_declaration => {
             const name_idx = stmt.data.binary.left;
-            if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+            if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                 const name_node = self.ast.getNode(name_idx);
                 if (name_node.tag != .string_literal) {
                     try putAstDeclareName(self, name_idx);
@@ -368,13 +368,13 @@ fn registerDeclareBindingNames(self: *Parser, stmt_idx: NodeIndex) ParseError2!v
             const list_len = self.ast.extra_data.items[stmt.data.extra + 2];
             var i: u32 = 0;
             while (i < list_len) : (i += 1) {
-                const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start + i]));
                 if (decl_idx.isNone()) continue;
-                if (@intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                if (@backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
                 const decl = self.ast.getNode(decl_idx);
                 if (decl.tag != .variable_declarator) continue;
                 // variable_declarator extras[0] = binding pattern
-                try registerDeclareBindingPatternNames(self, @enumFromInt(self.ast.extra_data.items[decl.data.extra]));
+                try registerDeclareBindingPatternNames(self, @fromBackingInt(@intCast(self.ast.extra_data.items[decl.data.extra])));
             }
         },
 
@@ -384,7 +384,7 @@ fn registerDeclareBindingNames(self: *Parser, stmt_idx: NodeIndex) ParseError2!v
 
 fn registerDeclareBindingPatternNames(self: *Parser, idx: NodeIndex) ParseError2!void {
     if (idx.isNone()) return;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+    if (@backingInt(idx) >= self.ast.nodes.items.len) return;
     var it = try @import("ast_walk.zig").bindingIdentifiers(self.allocator, &self.ast, idx, .{ .cover_grammar_assignment = false });
     defer it.deinit();
     while (try it.next()) |leaf_idx| {
@@ -394,7 +394,7 @@ fn registerDeclareBindingPatternNames(self: *Parser, idx: NodeIndex) ParseError2
 
 fn putAstDeclareName(self: *Parser, name_idx: NodeIndex) ParseError2!void {
     if (name_idx.isNone()) return;
-    if (@intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+    if (@backingInt(name_idx) >= self.ast.nodes.items.len) return;
     const name_node = self.ast.getNode(name_idx);
     const name_text = self.ast.getText(name_node.span);
     if (name_text.len == 0) return;
@@ -559,9 +559,9 @@ fn parseTsTypeParameter(self: *Parser) ParseError2!NodeIndex {
     if (try self.eat(.eq)) default_type = try parseType(self);
 
     const extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(name),
-        @intFromEnum(constraint),
-        @intFromEnum(default_type),
+        @backingInt(name),
+        @backingInt(constraint),
+        @backingInt(default_type),
         modifiers.toU32(),
     });
 
@@ -689,7 +689,7 @@ fn parsePredicateSubject(self: *Parser) ParseError2!NodeIndex {
 /// 값 근거 (256) — 양쪽에서 실측해 잡은 값이다:
 /// - 안전 쪽(상한): 중첩 1단계가 쓰는 스택은 Debug 빌드 최악 경로(괄호/함수 타입 — 백트래킹
 ///   프레임 포함)에서 약 2.6KB 실측(8MB 스택에서 ~3,130 단계에 SIGSEGV). 256 × 2.6KB ≈ 0.67MB
-///   라 1MB 급의 작은 스레드 스택에서도 여유가 있고, ReleaseFast 는 프레임이 더 작아 더 여유롭다.
+///   라 1MB 급의 작은 스레드 스택에서도 여유가 있고, fast 는 프레임이 더 작아 더 여유롭다.
 /// - 실코드 쪽(하한): node_modules + 저장소 소스 **94,403개 실파일**을 상한 32 로 낮춰 전량
 ///   파싱했을 때도 초과 0건 — 실제 TS 의 구문 중첩은 32 단계에도 못 미친다. 256 은 그 8배 이상.
 ///   (`Recursive<T>` 류 타입 레벨 재귀는 **타입 체커**의 인스턴스화 깊이라 구문 중첩과 무관하다.)
@@ -825,10 +825,10 @@ fn parseTypeInner(self: *Parser) ParseError2!NodeIndex {
         try self.expect(.colon);
         const false_type = try parseType(self);
         const extra = try self.ast.addExtras(&.{
-            @intFromEnum(left),
-            @intFromEnum(extends_type),
-            @intFromEnum(true_type),
-            @intFromEnum(false_type),
+            @backingInt(left),
+            @backingInt(extends_type),
+            @backingInt(true_type),
+            @backingInt(false_type),
         });
         return try self.ast.addNode(.{
             .tag = .ts_conditional_type,
@@ -990,7 +990,7 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
                 // .extra (child_offsets = &.{} 라 ast_walk 미접근).
                 try self.advance(); // [
                 try self.advance(); // ]
-                const extra_idx = try self.ast.addExtras(&.{@intFromEnum(base)});
+                const extra_idx = try self.ast.addExtras(&.{@backingInt(base)});
                 base = try self.ast.addNode(.{
                     .tag = .ts_array_type,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -1041,7 +1041,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 }
                 const extra_start = try self.ast.addExtra(span.start);
                 _ = try self.ast.addExtra(name_end);
-                _ = try self.ast.addExtra(@intFromEnum(type_args));
+                _ = try self.ast.addExtra(@backingInt(type_args));
                 return try self.ast.addNode(.{
                     .tag = .ts_type_reference,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
@@ -1138,10 +1138,10 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
             try self.expect(.arrow);
             const return_type = try parseTypeOrTypePredicate(self);
             const extra = try self.ast.addExtras(&.{
-                @intFromEnum(type_params),
+                @backingInt(type_params),
                 params.start,
                 params.len,
-                @intFromEnum(return_type),
+                @backingInt(return_type),
             });
             return try self.ast.addNode(.{
                 .tag = .ts_function_type,
@@ -1220,7 +1220,7 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
 
     const extra_start = try self.ast.addExtra(name_span.start);
     _ = try self.ast.addExtra(name_end);
-    _ = try self.ast.addExtra(@intFromEnum(type_args));
+    _ = try self.ast.addExtra(@backingInt(type_args));
 
     return try self.ast.addNode(.{
         .tag = .ts_type_reference,
@@ -1294,10 +1294,10 @@ fn parseFunctionOrConstructorType(self: *Parser, is_abstract: bool) ParseError2!
     const return_type = try parseTypeOrTypePredicate(self);
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(type_params),
+        @backingInt(type_params),
         params.start,
         params.len,
-        @intFromEnum(return_type),
+        @backingInt(return_type),
     });
     return try self.ast.addNode(.{
         .tag = .ts_constructor_type,
@@ -1364,10 +1364,10 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
             try self.advance();
             const return_type = try parseTypeOrTypePredicate(self);
             const extra = try self.ast.addExtras(&.{
-                @intFromEnum(NodeIndex.none),
+                @backingInt(NodeIndex.none),
                 params.start,
                 params.len,
-                @intFromEnum(return_type),
+                @backingInt(return_type),
             });
             return try self.ast.addNode(.{
                 .tag = .ts_function_type,
@@ -1527,10 +1527,10 @@ fn parseFunctionTypeParams(self: *Parser, start: u32) ParseError2!NodeIndex {
     const return_type = try parseTypeOrTypePredicate(self);
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none), // no type params (제네릭은 parsePrimaryType에서 < 감지)
+        @backingInt(NodeIndex.none), // no type params (제네릭은 parsePrimaryType에서 < 감지)
         params.start,
         params.len,
-        @intFromEnum(return_type),
+        @backingInt(return_type),
     });
     return try self.ast.addNode(.{
         .tag = .ts_function_type,
@@ -1737,9 +1737,9 @@ fn parseMappedType(self: *Parser) ParseError2!NodeIndex {
 
     const type_param_node = try self.ast.addEmptyExtraNode(.ts_type_parameter, param_span);
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(type_param_node),
-        @intFromEnum(value_type),
-        @intFromEnum(name_type),
+        @backingInt(type_param_node),
+        @backingInt(value_type),
+        @backingInt(name_type),
     });
 
     return try self.ast.addNode(.{

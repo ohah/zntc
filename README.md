@@ -209,7 +209,7 @@ Open issues and backlog: [docs/ROADMAP.md](./docs/ROADMAP.md) · [docs/BACKLOG.m
 
 ## Contributing
 
-The core of ZNTC is written in Zig. You need Zig 0.15.2 to build from source (mise is recommended).
+The core of ZNTC is written in Zig. You need Zig 0.17.0 to build from source (mise is recommended).
 
 ```bash
 git clone https://github.com/ohah/zntc.git
@@ -218,7 +218,7 @@ mise install
 
 # Build
 zig build                          # zntc CLI + lib (Debug)
-zig build -Doptimize=ReleaseFast   # for performance measurement
+zig build -Doptimize=fast   # for performance measurement
 zig build run -- src/index.ts      # invoke the CLI directly
 
 # Test

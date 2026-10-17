@@ -46,7 +46,7 @@ const env_flag = @import("env_flag.zig");
 ///   계속 atomic 가능하다.
 inline fn useAtomicCounter(comptime T: type) bool {
     return !builtin.single_threaded and
-        !builtin.cpu.arch.isWasm() and
+        !builtin.target.cpu.arch.isWasm() and
         @bitSizeOf(T) <= @bitSizeOf(usize);
 }
 
@@ -365,9 +365,9 @@ pub const Category = enum {
         }
         const normalized = buf[0..trimmed.len];
 
-        inline for (@typeInfo(Category).@"enum".fields) |f| {
-            if (std.mem.eql(u8, normalized, f.name)) {
-                return @field(Category, f.name);
+        inline for (@typeInfo(Category).@"enum".field_names) |name| {
+            if (std.mem.eql(u8, normalized, name)) {
+                return @field(Category, name);
             }
         }
         return null;
@@ -389,6 +389,8 @@ pub const Category = enum {
         };
     }
 };
+
+const category_info = @typeInfo(Category).@"enum";
 
 /// 프로파일링 상세도.
 pub const Level = enum {
@@ -437,12 +439,12 @@ pub const Format = enum {
 // ============================================================================
 
 /// Category 수. `ProfileMask` 크기와 counters 배열의 comptime 길이로 사용한다.
-pub const num_categories = @typeInfo(Category).@"enum".fields.len;
+pub const num_categories = category_info.field_names.len;
 
 const all_categories: [num_categories]Category = blk: {
     var cats: [num_categories]Category = undefined;
-    for (@typeInfo(Category).@"enum".fields, 0..) |f, i| {
-        cats[i] = @field(Category, f.name);
+    for (category_info.field_names, 0..) |name, i| {
+        cats[i] = @field(Category, name);
     }
     break :blk cats;
 };
@@ -451,7 +453,7 @@ const ProfileMask = std.StaticBitSet(num_categories);
 
 /// 활성 카테고리 비트마스크. hot path 에서는 `enabled()` 의 bitset lookup 만 수행.
 /// 프로세스 전역 — 초기화 후 read-only 로 다뤄 thread-safe.
-var enabled_mask: ProfileMask = ProfileMask.initEmpty();
+var enabled_mask: ProfileMask = .empty;
 
 /// 현재 level. Reporter 가 어떤 수준까지 노출할지 결정.
 var current_level: Level = .summary;
@@ -460,15 +462,15 @@ var current_level: Level = .summary;
 /// Parent scope 전체 시간을 보존하는 inclusive total 이다.
 /// 번들러는 phase 를 thread pool 에서 돌리므로 increment 는 atomic 으로 한다 (`recordTiming`).
 /// 읽기(`totalNs` 등 / reporter)는 worker join 이후라 race 없지만 일관성 위해 atomic load.
-var totals_ns: [num_categories]u64 = [_]u64{0} ** num_categories;
+var totals_ns: [num_categories]u64 = @splat(0);
 
 /// 각 category 별 child scope 제외 시간 (ns) — 모든 스레드 합산.
 /// `total_ms` 는 기존 호환성을 위해 inclusive 로 유지하고, 전체 합계/JSON self_ms 는
 /// 이 값을 사용해 nested phase 중복 합산을 피한다.
-var self_totals_ns: [num_categories]u64 = [_]u64{0} ** num_categories;
+var self_totals_ns: [num_categories]u64 = @splat(0);
 
 /// 각 category 별 호출 횟수 — 모든 스레드 합산.
-var counts: [num_categories]u32 = [_]u32{0} ** num_categories;
+var counts: [num_categories]u32 = @splat(0);
 
 const max_scope_depth = 128;
 
@@ -479,7 +481,7 @@ const ActiveScope = struct {
 /// Scope nesting 스택은 **스레드별** 로 둔다. 예전엔 프로세스 전역이라 worker thread 들이
 /// 같은 스택을 동시에 push/pop → `stack_index` 계산이 깨지면서 parent scope 가 자기
 /// inclusive 시간을 전부 self 로 기록 → 합계가 wall time 의 수십 배로 부풀던 버그.
-threadlocal var active_scopes: [max_scope_depth]ActiveScope = [_]ActiveScope{.{}} ** max_scope_depth;
+threadlocal var active_scopes: [max_scope_depth]ActiveScope = @splat(.{});
 threadlocal var active_scope_len: u8 = 0;
 
 /// 프로파일 활성화 시점 — reporter 가 wall-clock 경과를 함께 보여주려고 보관.
@@ -503,7 +505,7 @@ const monotonic_clock: std.Io.Clock = .awake;
 
 /// 활성 여부 조회 (inline bitset lookup — hot path 용).
 pub inline fn enabled(cat: Category) bool {
-    return enabled_mask.isSet(@intFromEnum(cat));
+    return enabled_mask.isSet(@backingInt(cat));
 }
 
 /// 하나라도 활성화된 category 가 있는지. HMR rebuild 에서 counters reset 을 조건부로
@@ -538,11 +540,11 @@ pub fn addFromCsv(csv: []const u8) void {
         if (name.len == 0) continue;
 
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = ProfileMask.initFull();
+            enabled_mask = .full;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
-            enabled_mask = ProfileMask.initEmpty();
+            enabled_mask = .empty;
             continue;
         }
         if (Category.fromString(name)) |c| {
@@ -556,11 +558,11 @@ pub fn addFromCsv(csv: []const u8) void {
 pub fn addCategories(names: []const []const u8) void {
     for (names) |name| {
         if (std.ascii.eqlIgnoreCase(name, "all")) {
-            enabled_mask = ProfileMask.initFull();
+            enabled_mask = .full;
             continue;
         }
         if (std.ascii.eqlIgnoreCase(name, "none")) {
-            enabled_mask = ProfileMask.initEmpty();
+            enabled_mask = .empty;
             continue;
         }
         if (Category.fromString(name)) |c| {
@@ -584,13 +586,13 @@ pub fn initFromEnv(io: std.Io) void {
 
 /// totals_ns / counts 를 0 으로 초기화.
 ///
-/// Debug + Linux x86_64 에서 `@memset` 이 `mov m64 m64` 로 encode 되어 Zig 0.15.2
+/// debug + Linux x86_64 에서 `@memset` 이 `mov m64 m64` 로 encode 되어 Zig 0.15.2
 /// 컴파일러 버그(InvalidInstruction) 를 유발 — comptime array literal 대입으로 회피.
 /// Zig upgrade 로 버그 사라지면 이 함수 제거하고 `@memset` 두 줄 복원.
 fn zeroCounters() void {
-    totals_ns = [_]u64{0} ** num_categories;
-    self_totals_ns = [_]u64{0} ** num_categories;
-    counts = [_]u32{0} ** num_categories;
+    totals_ns = @splat(0);
+    self_totals_ns = @splat(0);
+    counts = @splat(0);
     // active_scope_len 은 threadlocal — 호출 스레드 것만 리셋된다. 호출처(test reset / HMR
     // rebuild 직전)는 모두 single-thread 라 안전; worker 들은 join 된 상태(depth 0)다.
     active_scope_len = 0;
@@ -599,7 +601,7 @@ fn zeroCounters() void {
 
 /// 테스트 / 재초기화용. 전체 상태 초기화 (mask + level + counters 모두).
 pub fn resetForTest() void {
-    enabled_mask = ProfileMask.initEmpty();
+    enabled_mask = .empty;
     current_level = .summary;
     zeroCounters();
 }
@@ -621,15 +623,14 @@ pub fn resetCounters() void {
 /// 예: `enableCategoryAndChildren(.parse)` → `.parse_ast_build` 도 같이 활성.
 fn enableCategoryAndChildren(parent: Category) void {
     const parent_name = @tagName(parent);
-    inline for (@typeInfo(Category).@"enum".fields) |f| {
-        const child_name = f.name;
+    inline for (category_info.field_names) |child_name| {
         const is_self = std.mem.eql(u8, child_name, parent_name);
         const is_child = child_name.len > parent_name.len and
             std.mem.startsWith(u8, child_name, parent_name) and
             child_name[parent_name.len] == '_';
         if (is_self or is_child) {
             const child = @field(Category, child_name);
-            enabled_mask.set(@intFromEnum(child));
+            enabled_mask.set(@backingInt(child));
         }
     }
 }
@@ -707,7 +708,7 @@ pub inline fn beginMaybe(cat: ?Category) Scope {
 }
 
 fn recordTiming(cat: Category, ns: u64, self_ns: u64) void {
-    const idx = @intFromEnum(cat);
+    const idx = @backingInt(cat);
     // 여러 worker thread 가 동시에 기록할 수 있으므로 atomic add (lost update 방지).
     // 측정 구간(`t.read()`) 밖이라 contention 시간이 sample 에 섞이지 않는다.
     atomicAdd(u64, &totals_ns[idx], ns);
@@ -717,15 +718,15 @@ fn recordTiming(cat: Category, ns: u64, self_ns: u64) void {
 
 /// 수집된 원시 데이터 조회 (테스트 + 외부 리포터용). 모든 스레드 합산값.
 pub fn totalNs(cat: Category) u64 {
-    return atomicGet(u64, &totals_ns[@intFromEnum(cat)]);
+    return atomicGet(u64, &totals_ns[@backingInt(cat)]);
 }
 
 pub fn selfNs(cat: Category) u64 {
-    return atomicGet(u64, &self_totals_ns[@intFromEnum(cat)]);
+    return atomicGet(u64, &self_totals_ns[@backingInt(cat)]);
 }
 
 pub fn count(cat: Category) u32 {
-    return atomicGet(u32, &counts[@intFromEnum(cat)]);
+    return atomicGet(u32, &counts[@backingInt(cat)]);
 }
 
 // ============================================================================
@@ -747,17 +748,17 @@ pub const ProfileSnapshot = struct {
 
     /// 특정 category 의 total_ns.
     pub fn total(snap: *const ProfileSnapshot, cat: Category) u64 {
-        return snap.totals_ns[@intFromEnum(cat)];
+        return snap.totals_ns[@backingInt(cat)];
     }
 
     /// 특정 category 의 self_ns (child 시간 제외).
     pub fn selfTime(snap: *const ProfileSnapshot, cat: Category) u64 {
-        return snap.self_totals_ns[@intFromEnum(cat)];
+        return snap.self_totals_ns[@backingInt(cat)];
     }
 
     /// 특정 category 의 호출 횟수.
     pub fn callCount(snap: *const ProfileSnapshot, cat: Category) u32 {
-        return snap.counts[@intFromEnum(cat)];
+        return snap.counts[@backingInt(cat)];
     }
 };
 
@@ -788,8 +789,8 @@ pub fn snapshotToJson(snap: ProfileSnapshot, writer: anytype, min_ms_threshold: 
     @setEvalBranchQuota(num_categories * 200);
     try writer.writeByte('{');
     var first = true;
-    inline for (@typeInfo(Category).@"enum".fields) |field| {
-        const cat_idx = field.value;
+    inline for (category_info.field_values, category_info.field_names) |value, name| {
+        const cat_idx: usize = @intCast(value);
         const ns = snap.totals_ns[cat_idx];
         const ms = @as(f64, @floatFromInt(ns)) / std.time.ns_per_ms;
         // 0ns category 는 skip — JSON 크기 줄이고 의미 있는 데이터만.
@@ -797,7 +798,7 @@ pub fn snapshotToJson(snap: ProfileSnapshot, writer: anytype, min_ms_threshold: 
             if (!first) try writer.writeByte(',');
             first = false;
             try writer.writeByte('"');
-            try writer.writeAll(field.name);
+            try writer.writeAll(name);
             try writer.writeAll("_ms\":");
             try writer.print("{d:.2}", .{ms});
         }
@@ -868,8 +869,8 @@ fn reportTable(writer: anytype) !void {
         return;
     }
 
-    inline for (@typeInfo(Category).@"enum".fields) |f| {
-        const cat = @field(Category, f.name);
+    inline for (category_info.field_names) |name| {
+        const cat = @field(Category, name);
         const cnt = count(cat);
         const is_sub = !isTopLevel(cat);
         const skip = cnt == 0 or (current_level == .summary and is_sub);
@@ -946,8 +947,8 @@ fn reportJson(writer: anytype) !void {
     try writer.writeAll("  \"phases\": {\n");
 
     var first = true;
-    inline for (@typeInfo(Category).@"enum".fields) |f| {
-        const cat = @field(Category, f.name);
+    inline for (category_info.field_names) |name| {
+        const cat = @field(Category, name);
         const cnt = count(cat);
         const is_sub = !isTopLevel(cat);
         const skip = cnt == 0 or (current_level == .summary and is_sub);
@@ -970,8 +971,8 @@ fn reportCsv(writer: anytype) !void {
     try writer.writeAll("phase,total_ms,self_ms,count,pct,self_pct\n");
     const total = totalAllNs();
 
-    inline for (@typeInfo(Category).@"enum".fields) |f| {
-        const cat = @field(Category, f.name);
+    inline for (category_info.field_names) |name| {
+        const cat = @field(Category, name);
         const cnt = count(cat);
         const is_sub = !isTopLevel(cat);
         const skip = cnt == 0 or (current_level == .summary and is_sub);
@@ -1452,12 +1453,12 @@ test "snapshotToJson: 활성 phase 만 JSON 출력" {
     addFromCsv("parse,emit");
 
     var snap: ProfileSnapshot = .{
-        .totals_ns = [_]u64{0} ** num_categories,
-        .self_totals_ns = [_]u64{0} ** num_categories,
-        .counts = [_]u32{0} ** num_categories,
+        .totals_ns = @splat(0),
+        .self_totals_ns = @splat(0),
+        .counts = @splat(0),
     };
-    snap.totals_ns[@intFromEnum(Category.parse)] = 2 * std.time.ns_per_ms;
-    snap.totals_ns[@intFromEnum(Category.emit)] = 1 * std.time.ns_per_ms;
+    snap.totals_ns[@backingInt(Category.parse)] = 2 * std.time.ns_per_ms;
+    snap.totals_ns[@backingInt(Category.emit)] = 1 * std.time.ns_per_ms;
     var buf: [512]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     try snapshotToJson(snap, &w, 0);
@@ -1477,12 +1478,12 @@ test "snapshotToJson: min_ms_threshold 이상만 포함" {
     addFromCsv("parse,emit");
 
     var snap: ProfileSnapshot = .{
-        .totals_ns = [_]u64{0} ** num_categories,
-        .self_totals_ns = [_]u64{0} ** num_categories,
-        .counts = [_]u32{0} ** num_categories,
+        .totals_ns = @splat(0),
+        .self_totals_ns = @splat(0),
+        .counts = @splat(0),
     };
-    snap.totals_ns[@intFromEnum(Category.parse)] = 5 * std.time.ns_per_ms;
-    snap.totals_ns[@intFromEnum(Category.emit)] = std.time.ns_per_ms / 10;
+    snap.totals_ns[@backingInt(Category.parse)] = 5 * std.time.ns_per_ms;
+    snap.totals_ns[@backingInt(Category.emit)] = std.time.ns_per_ms / 10;
     var buf: [512]u8 = undefined;
     var w = std.Io.Writer.fixed(&buf);
     try snapshotToJson(snap, &w, 1.0); // 1ms threshold

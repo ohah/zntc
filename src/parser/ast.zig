@@ -1339,7 +1339,7 @@ pub const Ast = struct {
                 .{ index, @tagName(node.tag), self.nodes.items.len, self.transform_boundary },
             );
         }
-        return @enumFromInt(index);
+        return @fromBackingInt(@intCast(index));
     }
 
     /// `binary` variant 를 쓰는 노드 (object_property, assignment_expression 등) 를
@@ -1417,7 +1417,7 @@ pub const Ast = struct {
     }
 
     inline fn assertDataKind(tag: Node.Tag, expected: Node.Tag.DataKind) void {
-        if (@import("builtin").mode != .Debug) return;
+        if (@import("builtin").mode != .debug) return;
         const actual = tag.dataKind();
         if (actual != expected) {
             std.debug.panic(
@@ -1432,7 +1432,7 @@ pub const Ast = struct {
     /// 이상의 노드는 transformer 가 append 한 것. 이 영역이 명확한지 확인한다.
     /// 프로덕션에서는 no-op — Debug 빌드에서만 실행.
     pub fn assertInvariants(self: *const Ast) void {
-        if (@import("builtin").mode != .Debug) return;
+        if (@import("builtin").mode != .debug) return;
         if (self.transform_boundary) |boundary| {
             // boundary 는 nodes.items.len 을 넘지 않아야 — transformer 가 노드를
             // 제거하지 않고 append 만 한다는 설계 규약.
@@ -1440,7 +1440,7 @@ pub const Ast = struct {
         }
         // transformed_root 가 있다면 valid index 여야.
         if (self.transformed_root) |root| {
-            const idx = @intFromEnum(root);
+            const idx = @backingInt(root);
             if (!root.isNone()) {
                 std.debug.assert(idx < self.nodes.items.len);
             }
@@ -1449,27 +1449,27 @@ pub const Ast = struct {
 
     /// 인덱스로 노드를 가져온다.
     pub fn getNode(self: *const Ast, index: NodeIndex) Node {
-        return self.nodes.items[@intFromEnum(index)];
+        return self.nodes.items[@backingInt(index)];
     }
 
     /// 노드의 태그를 변경한다 (cover grammar 변환용).
     /// 24바이트 고정 크기이므로 태그만 바꾸면 새 노드 할당 없이 변환 가능.
     pub fn setTag(self: *Ast, index: NodeIndex, new_tag: Node.Tag) void {
-        self.nodes.items[@intFromEnum(index)].tag = new_tag;
+        self.nodes.items[@backingInt(index)].tag = new_tag;
     }
 
     /// `binary` shape 노드 (예: `import_specifier` / `export_specifier`) 의 flags
     /// bitfield 만 갱신. semantic 단계에서 type-only 같은 후속 정보를 marker 로
     /// 박을 때 사용 (전체 node 교체 회피).
     pub fn setBinaryFlags(self: *Ast, index: NodeIndex, new_flags: u16) void {
-        self.nodes.items[@intFromEnum(index)].data.binary.flags = new_flags;
+        self.nodes.items[@backingInt(index)].data.binary.flags = new_flags;
     }
 
     /// 노드 in-place 교체. 주로 transformer 의 cover-grammar / await→yield rewrite 같이
     /// 하위 트리는 보존하면서 같은 인덱스의 tag/data 만 새 형태로 바꿀 때. span 은 caller 가
     /// 보존하든 변경하든 자유 — 일반적으로는 source 위치 유지를 위해 기존 span 유지.
     pub fn replaceNode(self: *Ast, index: NodeIndex, new_node: Node) void {
-        self.nodes.items[@intFromEnum(index)] = new_node;
+        self.nodes.items[@backingInt(index)] = new_node;
     }
 
     /// variable_declaration 노드의 kind를 typed enum으로 반환.
@@ -1479,7 +1479,7 @@ pub const Ast = struct {
     }
 
     pub inline fn setVariableDeclarationKind(self: *Ast, node: Node, kind: VariableDeclarationKind) void {
-        self.extra_data.items[node.data.extra] = @intFromEnum(kind);
+        self.extra_data.items[node.data.extra] = @backingInt(kind);
     }
 
     /// `formal_parameters` 노드를 생성한다. transformer가 function/method를 새로 만들 때
@@ -1504,8 +1504,8 @@ pub const Ast = struct {
             else => return .{ .start = 0, .len = 0 },
         };
         if (node.data.extra + params_slot >= self.extra_data.items.len) return .{ .start = 0, .len = 0 };
-        const params_idx: NodeIndex = @enumFromInt(self.extra_data.items[node.data.extra + params_slot]);
-        if (params_idx.isNone() or @intFromEnum(params_idx) >= self.nodes.items.len) return .{ .start = 0, .len = 0 };
+        const params_idx: NodeIndex = @fromBackingInt(@intCast(self.extra_data.items[node.data.extra + params_slot]));
+        if (params_idx.isNone() or @backingInt(params_idx) >= self.nodes.items.len) return .{ .start = 0, .len = 0 };
         const params_node = self.getNode(params_idx);
         if (params_node.tag != .formal_parameters) return .{ .start = 0, .len = 0 };
         return params_node.data.list;
@@ -1520,7 +1520,7 @@ pub const Ast = struct {
     /// becomes the function's or class's `.name`.
     pub fn isAnonymousFunctionDefinition(self: *const Ast, idx: NodeIndex) bool {
         var current = idx;
-        while (!current.isNone() and @intFromEnum(current) < self.nodes.items.len) {
+        while (!current.isNone() and @backingInt(current) < self.nodes.items.len) {
             const node = self.getNode(current);
             switch (node.tag) {
                 .parenthesized_expression => current = node.data.unary.operand,
@@ -1557,7 +1557,7 @@ pub const Ast = struct {
             .function_declaration, .function_expression, .function, .method_definition => 1,
             else => return &[_]u32{},
         };
-        const params_idx: NodeIndex = @enumFromInt(self.extra_data.items[node.data.extra + params_slot]);
+        const params_idx: NodeIndex = @fromBackingInt(@intCast(self.extra_data.items[node.data.extra + params_slot]));
         if (params_idx.isNone()) return &[_]u32{};
         const params_node = self.getNode(params_idx);
         if (params_node.tag != .formal_parameters) return &[_]u32{};
@@ -1586,8 +1586,8 @@ pub const Ast = struct {
         if (list.len == 0) return empty;
         if (list.start + list.len > self.extra_data.items.len) return empty;
         const all = self.extra_data.items[list.start .. list.start + list.len];
-        const last_idx: NodeIndex = @enumFromInt(all[all.len - 1]);
-        if (last_idx.isNone() or @intFromEnum(last_idx) >= self.nodes.items.len) {
+        const last_idx: NodeIndex = @fromBackingInt(@intCast(all[all.len - 1]));
+        if (last_idx.isNone() or @backingInt(last_idx) >= self.nodes.items.len) {
             return .{ .rest_operand = null, .elements = all };
         }
         const last_node = self.getNode(last_idx);
@@ -1614,7 +1614,7 @@ pub const Ast = struct {
         const len: u32 = @intCast(indices.len);
         try self.extra_data.ensureUnusedCapacity(self.allocator, len);
         for (indices) |idx| {
-            self.extra_data.appendAssumeCapacity(@intFromEnum(idx));
+            self.extra_data.appendAssumeCapacity(@backingInt(idx));
         }
         return .{ .start = start, .len = len };
     }
@@ -1639,14 +1639,14 @@ pub const Ast = struct {
 
     /// extra_data에서 NodeIndex를 읽는다. 범위 밖이면 NodeIndex.none.
     pub fn readExtraNode(self: *const Ast, base: u32, offset: u32) NodeIndex {
-        return @enumFromInt(self.readExtra(base, offset));
+        return @fromBackingInt(@intCast(self.readExtra(base, offset)));
     }
 
     /// `readExtraNode` 의 bounds-check 생략 버전. caller 가 `base + offset` 이 valid 함을
     /// 외부 invariant 로 보장할 때 사용 (예: list iteration 에서 \[start, start+len) 가
     /// 이미 검증된 경우). hot loop 에서 매 iteration 의 추가 branch 회피.
     pub fn readExtraNodeUnchecked(self: *const Ast, base: u32, offset: u32) NodeIndex {
-        return @enumFromInt(self.extra_data.items[base + offset]);
+        return @fromBackingInt(@intCast(self.extra_data.items[base + offset]));
     }
 
     /// extra_data가 base+max_offset까지 유효한지 확인.
@@ -1840,7 +1840,7 @@ pub const Ast = struct {
         alloc: std.mem.Allocator,
         key_idx: NodeIndex,
     ) std.mem.Allocator.Error!?[]u8 {
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.nodes.items.len) return null;
+        if (key_idx.isNone() or @backingInt(key_idx) >= self.nodes.items.len) return null;
         const n = self.getNode(key_idx);
         return switch (n.tag) {
             .identifier_reference, .binding_identifier, .private_identifier => try alloc.dupe(u8, self.getText(n.data.string_ref)),
@@ -1869,7 +1869,7 @@ pub const Ast = struct {
         alloc: std.mem.Allocator,
         key_idx: NodeIndex,
     ) std.mem.Allocator.Error!?[]u8 {
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.nodes.items.len) return null;
+        if (key_idx.isNone() or @backingInt(key_idx) >= self.nodes.items.len) return null;
         if (self.getNode(key_idx).tag == .computed_property_key) return null;
         return self.staticKeyName(alloc, key_idx);
     }
@@ -2060,7 +2060,7 @@ pub fn spineHasOptionalChain(ast: *const Ast, idx: NodeIndex) bool {
     var cur = idx;
     var guard: u32 = 0;
     while (guard < 100_000) : (guard += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= ast.nodes.items.len) return false;
+        if (cur.isNone() or @backingInt(cur) >= ast.nodes.items.len) return false;
         const n = ast.getNode(cur);
         if (n.tag == .chain_expression or Node.Tag.isTransparentTypeWrapper(n.tag)) {
             cur = n.data.unary.operand;
@@ -2071,13 +2071,13 @@ pub fn spineHasOptionalChain(ast: *const Ast, idx: NodeIndex) bool {
                 const e = n.data.extra;
                 if (e + 2 >= extras.len) return false; // 불완전 노드 — 체인 끊김(extras[e] 미보장 oob 방지)
                 if ((extras[e + 2] & MemberFlags.optional_chain) != 0) return true;
-                cur = @enumFromInt(extras[e]); // object
+                cur = @fromBackingInt(@intCast(extras[e])); // object
             },
             .call_expression => {
                 const e = n.data.extra;
                 if (e + 3 >= extras.len) return false;
                 if ((extras[e + 3] & CallFlags.optional_chain) != 0) return true;
-                cur = @enumFromInt(extras[e]); // callee
+                cur = @fromBackingInt(@intCast(extras[e])); // callee
             },
             else => return false, // identifier / paren(체인 끊김) / 기타 head
         }

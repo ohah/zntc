@@ -121,11 +121,12 @@ test "cache_key: hashSelective 가 모든 필드를 반영 (reflection 완전성
     const base = cache_key.SelectiveOptions{};
     const base_h = cache_key.hashSelective(&base);
     // 모든 필드를 하나씩 변형 → 해시가 바뀌어야(어떤 필드도 무시되지 않음).
-    inline for (@typeInfo(cache_key.SelectiveOptions).@"struct".fields) |f| {
+    const info = @typeInfo(cache_key.SelectiveOptions).@"struct";
+    inline for (info.field_names, info.field_types) |name, field_type| {
         var o = base;
-        switch (@typeInfo(f.type)) {
-            .bool => @field(o, f.name) = !@field(base, f.name),
-            .int => @field(o, f.name) = @field(base, f.name) +% 1,
+        switch (@typeInfo(field_type)) {
+            .bool => @field(o, name) = !@field(base, name),
+            .int => @field(o, name) = @field(base, name) +% 1,
             else => unreachable, // SelectiveOptions 는 단순 타입만(컴파일 가드)
         }
         try testing.expect(cache_key.hashSelective(&o) != base_h);

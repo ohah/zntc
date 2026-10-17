@@ -136,13 +136,13 @@ test "schema diff: Zig DTO fields are covered by TS TranspileOptions" {
     try std.testing.expect(ts_fields.items.len > 0);
 
     // 1. Zig DTO 필드가 TS에 모두 있는지 (internal 필드는 zig_only_allowlist에서 제외)
-    const zig_fields = @typeInfo(ConfigOptionsDto).@"struct".fields;
-    inline for (zig_fields) |f| {
-        const is_internal = comptime contains(&zig_only_allowlist, f.name);
-        if (!is_internal and !contains(ts_fields.items, f.name)) {
+    const zig_fields = @typeInfo(ConfigOptionsDto).@"struct".field_names;
+    inline for (zig_fields) |name| {
+        const is_internal = comptime contains(&zig_only_allowlist, name);
+        if (!is_internal and !contains(ts_fields.items, name)) {
             std.debug.print(
                 "\n[schema drift] Zig ConfigOptionsDto.{s} is missing from TS TranspileOptions in packages/shared/index.ts\n",
-                .{f.name},
+                .{name},
             );
             return error.ZigFieldMissingFromTs;
         }
@@ -152,8 +152,8 @@ test "schema diff: Zig DTO fields are covered by TS TranspileOptions" {
     for (ts_fields.items) |ts_name| {
         // Zig에 있으면 OK
         var found = false;
-        inline for (zig_fields) |f| {
-            if (std.mem.eql(u8, f.name, ts_name)) found = true;
+        inline for (zig_fields) |name| {
+            if (std.mem.eql(u8, name, ts_name)) found = true;
         }
         if (found) continue;
         if (contains(&ts_only_allowlist, ts_name)) continue;

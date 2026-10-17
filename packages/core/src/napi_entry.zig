@@ -40,7 +40,7 @@ const serve_entry = @import("napi/serve_entry.zig");
 export fn napi_register_module_v1(env: c.napi_env, exports: c.napi_value) c.napi_value {
     // Debug 빌드 한정: DebugAllocator leak 리포트(stack trace) 를 process 종료 시
     // stderr 로 dump 하는 atexit handler 1회 등록 (#dev-leak-investigation).
-    // ReleaseFast 에서는 no-op.
+    // fast 에서는 no-op.
     common.registerLeakDump(env);
 
     // 0.16: NAPI 전역 io(std.Io.Threaded) + env 스냅샷을 다른 어떤 호출보다 먼저

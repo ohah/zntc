@@ -7,7 +7,7 @@
  * 사이즈 회귀 추적용.
  *
  * 사용법:
- *   zig build wasm wasm-bundler -Doptimize=ReleaseSmall
+ *   zig build wasm wasm-bundler -Dwasm-optimize=small
  *   bun scripts/measure-wasm-size.ts
  */
 

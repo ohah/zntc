@@ -57,7 +57,7 @@ pub fn napiTlsSelfCheck(env: c.napi_env, info: c.napi_callback_info) callconv(.c
 
     var ctx = tls.TlsContext.init(cert_path, key_path) catch |err| {
         var msg_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrintZ(&msg_buf, "tlsSelfCheck: TlsContext.init failed: {}", .{err}) catch "tlsSelfCheck: TlsContext.init failed";
+        const msg = std.mem.printSentinel(&msg_buf, "tlsSelfCheck: TlsContext.init failed: {}", .{err}, 0) catch "tlsSelfCheck: TlsContext.init failed";
         return throwError(env, msg.ptr);
     };
     ctx.deinit();
