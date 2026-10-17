@@ -15,6 +15,18 @@ const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 
+const MissingExactAnonymousDefaultClassBinding = error{MissingExactAnonymousDefaultClassBinding};
+
+pub fn resolveLoweredAnonymousDefaultClassBinding(
+    self: *Transformer,
+    source_class: NodeIndex,
+) MissingExactAnonymousDefaultClassBinding!NodeIndex {
+    if (self.lowered_anonymous_class_export_bindings.get(@intFromEnum(source_class))) |raw|
+        return @enumFromInt(raw);
+    if (self.semantic_edit_enabled) return error.MissingExactAnonymousDefaultClassBinding;
+    return .none;
+}
+
 /// export default class/function → ES5 lowering 시 operand가 .none이 되는 케이스 처리.
 /// lowerClassDeclaration이 pending_nodes에 function 등을 넣고 .none을 반환하므로,
 /// 클래스/함수 이름(또는 익명의 합성 이름 _Class)의 identifier reference를 operand로 사용.
@@ -31,10 +43,14 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
             const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[operand_node.data.extra]);
             // named class/function → 원본 이름 사용
             // anonymous class → lowerClassDeclaration이 "_Class"로 합성 (addString)
-            const generated_export_binding: NodeIndex = if (operand_node.tag == .class_declaration and name_idx.isNone())
-                if (self.lowered_anonymous_class_export_bindings.get(@intFromEnum(operand_idx))) |raw| @enumFromInt(raw) else .none
-            else
-                .none;
+            const generated_export_binding: NodeIndex = if (operand_node.tag == .class_declaration and name_idx.isNone()) blk: {
+                break :blk resolveLoweredAnonymousDefaultClassBinding(self, operand_idx) catch |err| switch (err) {
+                    error.MissingExactAnonymousDefaultClassBinding => std.debug.panic(
+                        "anonymous default class export lost its exact generated binding",
+                        .{},
+                    ),
+                };
+            } else .none;
             const name_span = if (!name_idx.isNone())
                 self.ast.getNode(name_idx).data.string_ref
             else if (!generated_export_binding.isNone())
