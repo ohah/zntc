@@ -2085,96 +2085,128 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
-  for (const minifyIdentifiers of [false, true]) {
-    test(`Stage 3 decorator-only lowering retains its exact prepass graph${minifyIdentifiers ? ' with identifier minification' : ''}`, () => {
-      const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-graph-'));
-      const input = join(dir, 'entry.ts');
-      const output = join(dir, 'out.cjs');
-      writeFileSync(
-        input,
-        [
-          'const _metadata = 17, _classThis = 19;',
-          'function classTag(value, context) { value.tag = context.kind; return value; }',
+  for (const target of ['esnext', 'es2022'] as const) {
+    for (const minifyIdentifiers of [false, true]) {
+      test(`Stage 3 decorator-only lowering retains its exact ${target} prepass graph${minifyIdentifiers ? ' with identifier minification' : ''}`, () => {
+        const dir = mkdtempSync(join(tmpdir(), 'zntc-stage3-retained-graph-'));
+        const input = join(dir, 'entry.ts');
+        const output = join(dir, 'out.cjs');
+        writeFileSync(
+          input,
           [
-            'function tweak(value, context) {',
-            "  if (context.kind === 'field') return initial => initial + 1;",
-            "  if (context.kind === 'method') return function() { return value.call(this) + 1; };",
-            "  if (context.kind === 'accessor') return { get() { return value.get.call(this) + 1; }, set(v) { value.set.call(this, v); }, init(v) { return v + 1; } };",
-            '  return value;',
+            'const _metadata = 17, _classThis = 19, _same_decorators = 23, _same_decorators2 = 29, _get_value_decorators = 31, _set_value_decorators = 37;',
+            'let computedKeyRuns = 0;',
+            'function computedKey() { computedKeyRuns++; return "computed"; }',
+            'function classTag(value, context) { value.tag = context.kind; return value; }',
+            [
+              'function tweak(value, context) {',
+              "  if (context.kind === 'field') return initial => initial + 1;",
+              "  if (context.kind === 'method') return function() { return value.call(this) + 1; };",
+              "  if (context.kind === 'getter') return function() { return value.call(this) + 1; };",
+              "  if (context.kind === 'setter') return function(v) { value.call(this, v + 2); };",
+              "  if (context.kind === 'accessor') return { get() { return value.get.call(this) + 1; }, set(v) { value.set.call(this, v); }, init(v) { return v + 1; } };",
+              '  return value;',
+              '}',
+            ].join('\n'),
+            '@classTag class Example {',
+            '  @tweak same = 1;',
+            '  @tweak static same = 20;',
+            '  @tweak get value() { return this.stored ?? 0; }',
+            '  @tweak set value(v) { this.stored = v; }',
+            '  @tweak [computedKey()]() { return this.same; }',
+            '  @tweak accessor count = 1;',
+            '  @tweak static staticValue = 8;',
             '}',
+            '@classTag class Other {}',
+            'const instance = new Example();',
+            'instance.value = 10;',
+            'const countBefore = instance.count;',
+            'instance.count = 4;',
+            'const countAfter = instance.count;',
+            'console.log(Example.tag, Other.tag, instance.same, instance.computed(), instance.value, Example.same, computedKeyRuns, countBefore, countAfter, _metadata, _classThis, _same_decorators, _same_decorators2, _get_value_decorators, _set_value_decorators);',
           ].join('\n'),
-          '@classTag class Example {',
-          '  @tweak field = 40;',
-          '  @tweak method() { return this.field; }',
-          '  @tweak accessor count = 1;',
-          '  @tweak static staticValue = 8;',
-          '}',
-          '@classTag class Other {}',
-          'console.log(Example.tag, Other.tag, new Example().method(), new Example().count, Example.staticValue, _metadata, _classThis);',
-        ].join('\n'),
-      );
-
-      try {
-        const proc = spawnSync(
-          ZNTC_BIN,
-          [
-            '--bundle',
-            'entry.ts',
-            '--target=esnext',
-            '--platform=node',
-            '--format=cjs',
-            ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
-            '-o',
-            output,
-          ],
-          {
-            cwd: dir,
-            env: {
-              ...process.env,
-              ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
-            },
-            encoding: 'utf8',
-          },
         );
-        expect(proc.status, proc.stderr).toBe(0);
 
-        const stderr = proc.stderr ?? '';
-        const modes = stderr
-          .split(/\r?\n/)
-          .filter(
-            (line) =>
-              line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts:'),
+        try {
+          const proc = spawnSync(
+            ZNTC_BIN,
+            [
+              '--bundle',
+              'entry.ts',
+              `--target=${target}`,
+              '--platform=node',
+              '--format=cjs',
+              ...(minifyIdentifiers ? ['--minify-identifiers'] : []),
+              '-o',
+              output,
+            ],
+            {
+              cwd: dir,
+              env: {
+                ...process.env,
+                ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+              },
+              encoding: 'utf8',
+            },
           );
-        expect(modes, stderr).toHaveLength(1);
-        expect(modes[0]).toContain('semantic_graph=retained');
+          expect(proc.status, proc.stderr).toBe(0);
 
-        const reports = stderr
-          .split(/\r?\n/)
-          .filter(
-            (line) =>
-              line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts:'),
+          const stderr = proc.stderr ?? '';
+          const modes = stderr
+            .split(/\r?\n/)
+            .filter(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass-mode ') &&
+                line.includes('entry.ts:'),
+            );
+          expect(modes, stderr).toHaveLength(1);
+          expect(modes[0]).toContain('semantic_graph=retained');
+
+          const reports = stderr
+            .split(/\r?\n/)
+            .filter(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes('entry.ts:'),
+            );
+          expect(reports, stderr).toHaveLength(1);
+          expect(exactSchemaProblems(reports[0])).toEqual([]);
+          expect(Number(reports[0].match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
+          expect(Number(reports[0].match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(
+            0,
           );
-        expect(reports, stderr).toHaveLength(1);
-        expect(exactSchemaProblems(reports[0])).toEqual([]);
-        expect(Number(reports[0].match(/generated_bindings=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
-        expect(Number(reports[0].match(/generated_references=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(0);
 
-        const owners = stderr
-          .split(/\r?\n/)
-          .filter(
-            (line) =>
-              line.startsWith('zntc: symbol-source-scope-owner ') && line.includes('entry.ts:'),
-          );
-        expect(owners, stderr).toHaveLength(1);
-        expect(scopeOwnerAuditProblems(owners[0])).toEqual([]);
+          const owners = stderr
+            .split(/\r?\n/)
+            .filter(
+              (line) =>
+                line.startsWith('zntc: symbol-source-scope-owner ') && line.includes('entry.ts:'),
+            );
+          expect(owners, stderr).toHaveLength(1);
+          expect(scopeOwnerAuditProblems(owners[0])).toEqual([]);
 
-        const actual = spawnSync('node', [output], { encoding: 'utf8' });
-        expect(actual.status, actual.stderr).toBe(0);
-        expect(actual.stdout).toBe('class class 42 3 9 17 19\n');
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    });
+          const actual = spawnSync('node', [output], { encoding: 'utf8' });
+          expect(actual.status, actual.stderr).toBe(0);
+          expect(actual.stdout).toBe('class class 2 3 13 21 1 3 5 17 19 23 29 31 37\n');
+          if (!minifyIdentifiers) {
+            const emitted = readFileSync(output, 'utf8');
+            for (const generatedName of [
+              '_same_decorators',
+              '_same_decorators_1',
+              '_same_initializers',
+              '_same_initializers_1',
+              '_same_extraInitializers',
+              '_same_extraInitializers_1',
+              '_get_value_decorators',
+              '_set_value_decorators',
+            ]) {
+              expect(emitted, generatedName).toContain(generatedName);
+            }
+          }
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+    }
   }
 
   test('Stage 3 decorator graph retention keeps downlevel, direct-eval, and legacy cases on reanalysis', () => {

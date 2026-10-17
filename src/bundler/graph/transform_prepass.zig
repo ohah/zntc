@@ -5981,7 +5981,7 @@ fn canRetainStage3DecoratorGraph(
     options: TransformOptions,
 ) bool {
     return ast.has_decorator and
-        !options.unsupported.hasAny() and
+        !options.unsupportedGraphPrePassFeatureUsed(ast) and
         !options.experimental_decorators and
         !options.emit_decorator_metadata and
         !options.minify_syntax and
@@ -6185,7 +6185,7 @@ fn canKeepPrepassSemanticGraph(
     // Whitespace minification changes emission and helper spellings, but the
     // transformer records those helper identities in the edited graph. Unlike
     // syntax minification, this option does not remove or replace AST nodes.
-    if ((options.unsupported.hasAny() and !safe_graph_subset) or options.minify_syntax or
+    if ((options.unsupported.hasAny() and !safe_graph_subset and !retained_stage3_decorators) or options.minify_syntax or
         (options.drop_console and hasDroppedConsoleStatement(ast)) or
         hasDroppedLabeledStatement(ast, options.drop_labels) or define_mod.astUsesDefine(ast, options.define) or
         options.hasMappedImportToSplit(ast) or

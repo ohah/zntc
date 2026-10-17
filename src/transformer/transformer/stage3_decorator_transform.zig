@@ -49,7 +49,7 @@ fn markLateStage3OutputSymbol(
     symbol_id: SymbolId,
     kind: SyntheticKind,
     output_name_hint: []const u8,
-) void {
+) Error!void {
     if (!enabled) return;
     const editor = if (self.semantic_editor) |*semantic_editor|
         semantic_editor
@@ -59,7 +59,7 @@ fn markLateStage3OutputSymbol(
     if (raw >= editor.symbols.items.len) std.debug.panic("late-named Stage 3 output binding has an invalid SymbolId", .{});
     const symbol = &editor.symbols.items[raw];
     symbol.synthetic_kind = kind;
-    if (graph_output_name) symbol.output_name_hint = output_name_hint;
+    if (graph_output_name) symbol.output_name_hint = try editor.allocator.dupe(u8, output_name_hint);
 }
 
 fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex {
@@ -75,7 +75,7 @@ fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex
     return @fromBackingInt(@intCast(self.ast.extra_data.items[declarator.data.extra]));
 }
 
-fn uniqueMemberDecoratorName(self: *Transformer, member_infos: []const Stage3MemberInfo, base_name: []const u8) Error![]const u8 {
+fn uniqueMemberGeneratedName(self: *Transformer, member_infos: []const Stage3MemberInfo, base_name: []const u8) Error![]const u8 {
     var ordinal: usize = 0;
     while (true) : (ordinal += 1) {
         const candidate = if (ordinal == 0)
@@ -86,12 +86,12 @@ fn uniqueMemberDecoratorName(self: *Transformer, member_infos: []const Stage3Mem
 
         var already_used = false;
         for (member_infos) |info| {
-            if (info.deco_var_name) |name| {
-                if (std.mem.eql(u8, name, candidate)) {
-                    already_used = true;
-                    break;
+            inline for (.{ info.deco_var_name, info.initializers_name, info.extra_initializers_name, info.descriptor_name }) |maybe_name| {
+                if (maybe_name) |name| {
+                    if (std.mem.eql(u8, name, candidate)) already_used = true;
                 }
             }
+            if (already_used) break;
         }
         if (!already_used) return candidate;
         self.allocator.free(candidate);
@@ -279,7 +279,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const kind_prefix = if (is_getter) "get_" else if (is_setter) "set_" else "";
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}{s}_decorators", .{ kind_prefix, var_n });
                     defer self.allocator.free(deco_base_name);
-                    const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
+                    const deco_vname = try uniqueMemberGeneratedName(self, member_infos.items, deco_base_name);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, deco_vname);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
@@ -294,7 +294,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     var m_body: NodeIndex = .none;
                     var m_params: ast_mod.NodeList = .{ .start = 0, .len = 0 };
                     if (is_private_method) {
-                        desc_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
+                        const descriptor_base_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
+                        defer self.allocator.free(descriptor_base_name);
+                        desc_name = try uniqueMemberGeneratedName(self, member_infos.items, descriptor_base_name);
                         try reserveStandaloneLateStage3Name(self, late_standalone_output_names, desc_name.?);
                         m_body = try visitMethodBodyInSourceScope(self, member_idx, self.readNodeIdx(me, ast_mod.MethodExtra.body));
                         m_params = self.ast.functionParamsList(member);
@@ -366,7 +368,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const var_n = if (decorated_key.temp) |temp| self.ast.getText(temp) else extractCleanVarName(self, name_node_idx);
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
                     defer self.allocator.free(deco_base_name);
-                    const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
+                    const deco_vname = try uniqueMemberGeneratedName(self, member_infos.items, deco_base_name);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, deco_vname);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
@@ -376,7 +378,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         if (is_static) "_staticExtraInitializers" else "_instanceExtraInitializers",
                     );
 
-                    const names = try self.buildFieldInitNames(name_node_idx, decorated_key.temp);
+                    var names = try self.buildFieldInitNames(name_node_idx, decorated_key.temp);
+                    const unique_initializers_name = try uniqueMemberGeneratedName(self, member_infos.items, names.init_name);
+                    const unique_extra_initializers_name = try uniqueMemberGeneratedName(self, member_infos.items, names.extra_name);
+                    self.allocator.free(names.init_name);
+                    self.allocator.free(names.extra_name);
+                    names.init_name = unique_initializers_name;
+                    names.extra_name = unique_extra_initializers_name;
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.init_name);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.extra_name);
                     field_init_name = names.init_name;
@@ -492,7 +500,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         null;
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
                     defer self.allocator.free(deco_base_name);
-                    const deco_vname = try uniqueMemberDecoratorName(self, member_infos.items, deco_base_name);
+                    const deco_vname = try uniqueMemberGeneratedName(self, member_infos.items, deco_base_name);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, deco_vname);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
@@ -502,7 +510,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         if (is_static) "_staticExtraInitializers" else "_instanceExtraInitializers",
                     );
 
-                    const names = try self.buildFieldInitNames(name_node_idx, decorated_key.temp);
+                    var names = try self.buildFieldInitNames(name_node_idx, decorated_key.temp);
+                    const unique_initializers_name = try uniqueMemberGeneratedName(self, member_infos.items, names.init_name);
+                    const unique_extra_initializers_name = try uniqueMemberGeneratedName(self, member_infos.items, names.extra_name);
+                    self.allocator.free(names.init_name);
+                    self.allocator.free(names.extra_name);
+                    names.init_name = unique_initializers_name;
+                    names.extra_name = unique_extra_initializers_name;
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.init_name);
                     try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.extra_name);
 
@@ -951,7 +965,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_const,
             metadata_block_scope,
         )) orelse std.debug.panic("Stage 3 metadata binding has no SymbolId", .{});
-        markLateStage3OutputSymbol(
+        try markLateStage3OutputSymbol(
             self,
             metadata_late_output_name,
             late_graph_output_names,
@@ -1252,7 +1266,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class decorators binding has no SymbolId", .{});
-        markLateStage3OutputSymbol(
+        try markLateStage3OutputSymbol(
             self,
             late_standalone_output_names or late_graph_output_names,
             late_graph_output_names,
@@ -1272,7 +1286,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class descriptor binding has no SymbolId", .{});
-        markLateStage3OutputSymbol(
+        try markLateStage3OutputSymbol(
             self,
             late_standalone_output_names or late_graph_output_names,
             late_graph_output_names,
@@ -1295,7 +1309,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class extra initializers binding has no SymbolId", .{});
-        markLateStage3OutputSymbol(
+        try markLateStage3OutputSymbol(
             self,
             late_standalone_output_names or late_graph_output_names,
             late_graph_output_names,
@@ -1318,7 +1332,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class this binding has no SymbolId", .{});
-        markLateStage3OutputSymbol(
+        try markLateStage3OutputSymbol(
             self,
             class_this_late_output_name,
             late_graph_output_names,
@@ -1353,7 +1367,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 static extra initializers binding has no SymbolId", .{});
-        markLateStage3OutputSymbol(
+        try markLateStage3OutputSymbol(
             self,
             late_standalone_output_names or late_graph_output_names,
             late_graph_output_names,
@@ -1377,7 +1391,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 instance extra initializers binding has no SymbolId", .{});
-        markLateStage3OutputSymbol(
+        try markLateStage3OutputSymbol(
             self,
             late_standalone_output_names or late_graph_output_names,
             late_graph_output_names,
@@ -1412,7 +1426,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 member initializers binding has no SymbolId", .{});
-            markLateStage3OutputSymbol(
+            try markLateStage3OutputSymbol(
                 self,
                 late_standalone_output_names or late_graph_output_names,
                 late_graph_output_names,
@@ -1437,7 +1451,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 member extra initializers binding has no SymbolId", .{});
-            markLateStage3OutputSymbol(
+            try markLateStage3OutputSymbol(
                 self,
                 late_standalone_output_names or late_graph_output_names,
                 late_graph_output_names,
@@ -1476,7 +1490,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 member decorator binding has no SymbolId", .{});
-            markLateStage3OutputSymbol(
+            try markLateStage3OutputSymbol(
                 self,
                 late_standalone_output_names or late_graph_output_names,
                 late_graph_output_names,
@@ -1500,7 +1514,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 private descriptor binding has no SymbolId", .{});
-            markLateStage3OutputSymbol(
+            try markLateStage3OutputSymbol(
                 self,
                 late_standalone_output_names or late_graph_output_names,
                 late_graph_output_names,
