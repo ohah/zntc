@@ -55,7 +55,7 @@ fn isSyntheticDefault(ref: SymbolRef, mod: *const Module) bool {
         .semantic => |s| blk: {
             if (s.module != mod.index or s.symbol.isNone()) break :blk false;
             const sem = mod.semantic orelse break :blk false;
-            const idx: u32 = @intFromEnum(s.symbol);
+            const idx: u32 = @backingInt(s.symbol);
             if (idx >= sem.symbols.items.len) break :blk false;
             const sk = sem.symbols.items[idx].synthetic_kind orelse break :blk false;
             break :blk sk == .default_export;
@@ -121,7 +121,7 @@ inline fn resolveReExportTarget(
     const target_mod = l.graph.getModule(target_idx) orelse return null;
     return .{
         .mod = target_mod,
-        .index = @intFromEnum(target_idx),
+        .index = @backingInt(target_idx),
         .name = src_mod.exportBindingLocalName(src_eb),
     };
 }
@@ -258,7 +258,7 @@ pub fn emitEsmWrappedModule(
     }
 
     for (all_stmts) |raw_idx| {
-        const ni: NodeIndex = @enumFromInt(raw_idx);
+        const ni: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (ni.isNone()) continue;
         const stmt_node = esm_ast.nodes.items[raw_idx];
 
@@ -267,7 +267,7 @@ pub fn emitEsmWrappedModule(
             .export_named_declaration => blk: {
                 const ei = stmt_node.data.extra;
                 if (ei < esm_ast.extra_data.items.len) {
-                    const idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[ei]);
+                    const idx: NodeIndex = @fromBackingInt(@intCast(esm_ast.extra_data.items[ei]));
                     if (!idx.isNone()) break :blk idx;
                 }
                 break :blk null;
@@ -281,14 +281,14 @@ pub fn emitEsmWrappedModule(
         };
 
         const effective_tag = if (export_inner) |idx|
-            esm_ast.nodes.items[@intFromEnum(idx)].tag
+            esm_ast.nodes.items[@backingInt(idx)].tag
         else
             stmt_node.tag;
 
         const var_decl_extra: ?u32 = switch (stmt_node.tag) {
             .variable_declaration => stmt_node.data.extra,
             else => if (export_inner) |idx| blk: {
-                const inner = esm_ast.nodes.items[@intFromEnum(idx)];
+                const inner = esm_ast.nodes.items[@backingInt(idx)];
                 if (inner.tag == .variable_declaration) break :blk inner.data.extra;
                 break :blk null;
             } else null,
@@ -302,15 +302,15 @@ pub fn emitEsmWrappedModule(
                     // 함수명은 top-level var로 선언 (export getter 접근용).
                     // codegen이 `function foo(){}` → `foo = function(){}` 로 변환.
                     const func_node = if (export_inner) |idx|
-                        esm_ast.nodes.items[@intFromEnum(idx)]
+                        esm_ast.nodes.items[@backingInt(idx)]
                     else
                         stmt_node;
-                    const fn_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[func_node.data.extra]);
+                    const fn_name_idx: NodeIndex = @fromBackingInt(@intCast(esm_ast.extra_data.items[func_node.data.extra]));
                     if (!fn_name_idx.isNone()) {
-                        const fn_name_node = esm_ast.nodes.items[@intFromEnum(fn_name_idx)];
+                        const fn_name_node = esm_ast.nodes.items[@backingInt(fn_name_idx)];
                         if (fn_name_node.tag == .binding_identifier) {
                             const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(fn_name_node.data.string_ref));
-                            const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(fn_name_idx), raw_name));
+                            const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(fn_name_idx), raw_name));
                             try hoisted_var_names.append(allocator, resolved);
                         }
                     } else if (stmt_node.tag == .export_default_declaration) {
@@ -331,15 +331,15 @@ pub fn emitEsmWrappedModule(
                     // 의 else 분기가 `default_export_name` 을 무조건 var 로 추가한다. 이름을
                     // 모아 두고 emit 직전에 걸러낸다.
                     const fn_node_src = if (export_inner) |idx|
-                        esm_ast.nodes.items[@intFromEnum(idx)]
+                        esm_ast.nodes.items[@backingInt(idx)]
                     else
                         stmt_node;
-                    const hoisted_fn_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[fn_node_src.data.extra]);
+                    const hoisted_fn_name_idx: NodeIndex = @fromBackingInt(@intCast(esm_ast.extra_data.items[fn_node_src.data.extra]));
                     if (!hoisted_fn_name_idx.isNone()) {
-                        const hoisted_fn_name_node = esm_ast.nodes.items[@intFromEnum(hoisted_fn_name_idx)];
+                        const hoisted_fn_name_node = esm_ast.nodes.items[@backingInt(hoisted_fn_name_idx)];
                         if (hoisted_fn_name_node.tag == .binding_identifier) {
                             const raw_fn_name = try arena_alloc.dupe(u8, esm_ast.getText(hoisted_fn_name_node.data.string_ref));
-                            const resolved_fn_name = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(hoisted_fn_name_idx), raw_fn_name));
+                            const resolved_fn_name = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(hoisted_fn_name_idx), raw_fn_name));
                             try hoisted_fn_names.append(allocator, resolved_fn_name);
                         }
                     }
@@ -349,16 +349,16 @@ pub fn emitEsmWrappedModule(
             .class_declaration => {
                 // class는 block-scoped → var 호이스팅 + init 안에서 할당문으로 변환.
                 const class_node_src = if (export_inner) |idx|
-                    esm_ast.nodes.items[@intFromEnum(idx)]
+                    esm_ast.nodes.items[@backingInt(idx)]
                 else
                     stmt_node;
 
-                const class_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[class_node_src.data.extra]);
+                const class_name_idx: NodeIndex = @fromBackingInt(@intCast(esm_ast.extra_data.items[class_node_src.data.extra]));
                 if (!class_name_idx.isNone()) {
-                    const name_node = esm_ast.nodes.items[@intFromEnum(class_name_idx)];
+                    const name_node = esm_ast.nodes.items[@backingInt(class_name_idx)];
                     if (name_node.tag == .binding_identifier) {
                         const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(name_node.data.string_ref));
-                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(class_name_idx), raw_name));
+                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(class_name_idx), raw_name));
                         try hoisted_var_names.append(allocator, resolved);
                     }
                 } else if (stmt_node.tag == .export_default_declaration) {
@@ -393,11 +393,11 @@ pub fn emitEsmWrappedModule(
                 for (declarators) |decl_raw| {
                     const decl = esm_ast.nodes.items[decl_raw];
                     const de2 = decl.data.extra;
-                    const name_raw: NodeIndex = @enumFromInt(esm_ast.extra_data.items[de2]);
-                    const name_node = esm_ast.nodes.items[@intFromEnum(name_raw)];
+                    const name_raw: NodeIndex = @fromBackingInt(@intCast(esm_ast.extra_data.items[de2]));
+                    const name_node = esm_ast.nodes.items[@backingInt(name_raw)];
                     if (name_node.tag == .binding_identifier) {
                         const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(name_node.data.string_ref));
-                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(name_raw), raw_name));
+                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(name_raw), raw_name));
                         // #4598: TLA promise 임시변수의 **리네임된** 이름을 포착한다.
                         // ⚠️ AST 원본 이름(`_a`)을 쓰면 minify 시 실제 방출명(`c`)과 어긋나
                         //    `ReferenceError` 다(적대적 검증이 잡음).
@@ -405,7 +405,7 @@ pub fn emitEsmWrappedModule(
                         // statement: hoisted temps can be merged into the TLA
                         // declaration (`var _a, _b = (async () => …)()`), which
                         // replaces the statement (#5558).
-                        if (module.tla_iife_stmt != null and module.matchesTlaPromiseReference(@intFromEnum(name_raw))) {
+                        if (module.tla_iife_stmt != null and module.matchesTlaPromiseReference(@backingInt(name_raw))) {
                             tla_var_name = resolved;
                         }
                         try hoisted_var_names.append(allocator, resolved);
@@ -413,10 +413,10 @@ pub fn emitEsmWrappedModule(
                         var it = try ast_walk.bindingIdentifiers(allocator, esm_ast, name_raw, .{});
                         defer it.deinit();
                         while (try it.next()) |bind_idx| {
-                            const bind_node = esm_ast.nodes.items[@intFromEnum(bind_idx)];
+                            const bind_node = esm_ast.nodes.items[@backingInt(bind_idx)];
                             if (bind_node.tag != .binding_identifier) continue;
                             const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(bind_node.data.string_ref));
-                            const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(bind_idx), raw_name));
+                            const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(bind_idx), raw_name));
                             try hoisted_var_names.append(allocator, resolved);
                         }
                     }
@@ -428,14 +428,14 @@ pub fn emitEsmWrappedModule(
                 // TS namespace → IIFE. codegen 은 factory 안에서 `var N;` 를 생략하므로
                 // (#5663) factory 밖 top-level 에 선언한다 — `__export` 의 getter 가 읽는다.
                 const ns_node = if (export_inner) |idx|
-                    esm_ast.nodes.items[@intFromEnum(idx)]
+                    esm_ast.nodes.items[@backingInt(idx)]
                 else
                     stmt_node;
                 const ns_name_idx = ns_node.data.binary.left;
                 if (!ns_name_idx.isNone()) {
-                    const ns_name_node = esm_ast.nodes.items[@intFromEnum(ns_name_idx)];
+                    const ns_name_node = esm_ast.nodes.items[@backingInt(ns_name_idx)];
                     const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(ns_name_node.span));
-                    const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(ns_name_idx), raw_name));
+                    const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(ns_name_idx), raw_name));
                     try hoisted_var_names.append(allocator, resolved);
                 }
                 try body_stmts.append(allocator, raw_idx);
@@ -444,15 +444,15 @@ pub fn emitEsmWrappedModule(
                 // TS enum → IIFE. codegen이 `var Name = ((Name) => {...})(Name || {})` 출력.
                 // __esm factory 밖 top-level에 var Name; 선언 필요.
                 const enum_node_src = if (export_inner) |idx|
-                    esm_ast.nodes.items[@intFromEnum(idx)]
+                    esm_ast.nodes.items[@backingInt(idx)]
                 else
                     stmt_node;
-                const enum_name_idx: NodeIndex = @enumFromInt(esm_ast.extra_data.items[enum_node_src.data.extra]);
+                const enum_name_idx: NodeIndex = @fromBackingInt(@intCast(esm_ast.extra_data.items[enum_node_src.data.extra]));
                 if (!enum_name_idx.isNone()) {
-                    const ename_node = esm_ast.nodes.items[@intFromEnum(enum_name_idx)];
+                    const ename_node = esm_ast.nodes.items[@backingInt(enum_name_idx)];
                     if (ename_node.tag == .binding_identifier) {
                         const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(ename_node.data.string_ref));
-                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(enum_name_idx), raw_name));
+                        const resolved = try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(enum_name_idx), raw_name));
                         try hoisted_var_names.append(allocator, resolved);
                     }
                 }
@@ -465,7 +465,7 @@ pub fn emitEsmWrappedModule(
                     const def_name = defaultExportName(metadata);
                     try hoisted_var_names.append(allocator, def_name);
                 } else {
-                    try collectNestedVarDecls(allocator, arena_alloc, esm_ast, metadata, @enumFromInt(raw_idx), &nested_var_decls, &hoisted_var_names);
+                    try collectNestedVarDecls(allocator, arena_alloc, esm_ast, metadata, @fromBackingInt(@intCast(raw_idx)), &nested_var_decls, &hoisted_var_names);
                 }
                 try body_stmts.append(allocator, raw_idx);
             },
@@ -648,7 +648,7 @@ pub fn emitEsmWrappedModule(
                 if (rec_idx >= module.import_records.len) continue;
                 const source_mod_idx = module.import_records[rec_idx].resolved;
                 if (source_mod_idx.isNone()) continue;
-                const src_i = @intFromEnum(source_mod_idx);
+                const src_i = @backingInt(source_mod_idx);
                 const src_mod = l.graph.getModule(source_mod_idx) orelse continue;
 
                 if (std.mem.eql(u8, eb.exported_name, "*")) {
@@ -743,7 +743,7 @@ pub fn emitEsmWrappedModule(
                                 // self-cycle 폴백: graph가 진단으로 거부했지만 codegen이 호출되어도
                                 // 자기 참조 getter를 만들지 않도록.
                                 if (src_idx == module.index) break :re_export;
-                                const si = @intFromEnum(src_idx);
+                                const si = @backingInt(src_idx);
                                 const src_mod = l.graph.getModule(src_idx) orelse break :re_export;
 
                                 const local_name = module.exportBindingLocalName(eb);
@@ -796,7 +796,7 @@ pub fn emitEsmWrappedModule(
                                     if (ib.import_record_index >= module.import_records.len) break :imported_local;
                                     const src_idx = module.import_records[ib.import_record_index].resolved;
                                     if (src_idx.isNone() or src_idx == module.index) break :imported_local;
-                                    const src_i = @intFromEnum(src_idx);
+                                    const src_i = @backingInt(src_idx);
                                     const src_mod = l.graph.getModule(src_idx) orelse break :imported_local;
                                     if (src_mod.wrap_kind == .cjs) break :imported_local;
                                     const getter_val = (try makeStarGetterValue(allocator, l, src_mod, src_i, ib.imported_name, options)) orelse continue;
@@ -979,7 +979,7 @@ pub fn emitEsmWrappedModule(
         if (source_mod_idx == module.index) continue;
 
         const def_name = defaultExportName(metadata);
-        const source_mod_i = @intFromEnum(source_mod_idx);
+        const source_mod_i = @backingInt(source_mod_idx);
 
         if (linker) |l| {
             if (l.graph.getModule(source_mod_idx)) |source_mod| {
@@ -1092,7 +1092,7 @@ pub fn emitEsmWrappedModule(
             if (rec_idx >= module.import_records.len) continue;
             const source_mod_idx = module.import_records[rec_idx].resolved;
             if (source_mod_idx.isNone()) continue;
-            const src_i = @intFromEnum(source_mod_idx);
+            const src_i = @backingInt(source_mod_idx);
             const src_mod_ptr = l.graph.getModule(source_mod_idx) orelse continue;
             if (re_export_inited.contains(src_i)) continue;
             // tree-shake 로 제거된 source 의 init 호출은 dangling reference (#2398).
@@ -1114,7 +1114,7 @@ pub fn emitEsmWrappedModule(
         for (module.import_records) |rec| {
             if (rec.kind != .side_effect) continue;
             if (rec.resolved.isNone()) continue;
-            const src_i = @intFromEnum(rec.resolved);
+            const src_i = @backingInt(rec.resolved);
             const src_mod = l.graph.getModule(rec.resolved) orelse continue;
             if (re_export_inited.contains(src_i)) continue;
             if (src_mod.wrap_kind != .esm) continue;
@@ -1520,7 +1520,7 @@ fn collectStarExportNames(
         if (rec_idx >= m.import_records.len) continue;
         const source_mod_idx = m.import_records[rec_idx].resolved;
         if (source_mod_idx.isNone()) continue;
-        try collectStarExportNames(allocator, l, @intFromEnum(source_mod_idx), seen, visited);
+        try collectStarExportNames(allocator, l, @backingInt(source_mod_idx), seen, visited);
     }
 }
 
@@ -1650,7 +1650,7 @@ fn makeStarGetterValue(
             }
             // 직접 export에 없으면 소스의 re_export_all 체인을 따라간다.
             // resolveExportChain으로 canonical 이름을 찾는다.
-            if (l.resolveExportChain(@enumFromInt(src_i), name, 0)) |resolved| {
+            if (l.resolveExportChain(@fromBackingInt(@intCast(src_i)), name, 0)) |resolved| {
                 const canonical_mod_i = resolved.module_index.toU32();
                 const canonical_mod = l.graph.getModule(resolved.module_index) orelse return null;
                 if (l.tree_shaker_active and !canonical_mod.is_included) return null;
@@ -1703,8 +1703,8 @@ fn collectNestedVarDecls(
     defer stack.deinit(allocator);
     try stack.append(allocator, root);
     while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= esm_ast.nodes.items.len) continue;
-        const node = esm_ast.nodes.items[@intFromEnum(idx)];
+        if (idx.isNone() or @backingInt(idx) >= esm_ast.nodes.items.len) continue;
+        const node = esm_ast.nodes.items[@backingInt(idx)];
         switch (node.tag) {
             .function_declaration,
             .function_expression,
@@ -1714,21 +1714,21 @@ fn collectNestedVarDecls(
             .ts_module_declaration,
             => continue,
             .variable_declaration => if (!esm_ast.variableDeclarationKind(node).isLexical()) {
-                try decls.put(arena_alloc, @intFromEnum(idx), {});
+                try decls.put(arena_alloc, @backingInt(idx), {});
                 const de = node.data.extra;
                 const list_start = esm_ast.extra_data.items[de + 1];
                 const list_len = esm_ast.extra_data.items[de + 2];
                 var d: u32 = 0;
                 while (d < list_len) : (d += 1) {
                     const decl = esm_ast.nodes.items[esm_ast.extra_data.items[list_start + d]];
-                    const pattern: NodeIndex = @enumFromInt(esm_ast.extra_data.items[decl.data.extra]);
+                    const pattern: NodeIndex = @fromBackingInt(@intCast(esm_ast.extra_data.items[decl.data.extra]));
                     var it = try ast_walk.bindingIdentifiers(allocator, esm_ast, pattern, .{});
                     defer it.deinit();
                     while (try it.next()) |bind_idx| {
-                        const bind_node = esm_ast.nodes.items[@intFromEnum(bind_idx)];
+                        const bind_node = esm_ast.nodes.items[@backingInt(bind_idx)];
                         if (bind_node.tag != .binding_identifier) continue;
                         const raw_name = try arena_alloc.dupe(u8, esm_ast.getText(bind_node.data.string_ref));
-                        try names.append(allocator, try arena_alloc.dupe(u8, resolveNodeName(metadata, @intFromEnum(bind_idx), raw_name)));
+                        try names.append(allocator, try arena_alloc.dupe(u8, resolveNodeName(metadata, @backingInt(bind_idx), raw_name)));
                     }
                 }
                 // Initializers hold no further module-scope `var`.

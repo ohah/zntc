@@ -73,7 +73,7 @@ fn scanMethodSuper(self: *Transformer, method: Node, only_in_async_arrow: bool) 
         stack.append(self.allocator, .{ .node = root, .inside_async_arrow = false }) catch return true;
 
     while (stack.pop()) |work| {
-        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
         const node = self.ast.getNode(work.node);
         if (node.tag == .super_expression and (work.inside_async_arrow or !only_in_async_arrow)) return true;
         switch (node.tag) {
@@ -142,7 +142,7 @@ fn valuesUseFunctionContext(self: *Transformer, node: Node) bool {
     const list = node.data.list;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const m_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const m_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (m_idx.isNone()) continue;
         const m = self.ast.getNode(m_idx);
         const target = if (m.tag == .method_definition) self.readNodeIdx(m.data.extra, ast_mod.MethodExtra.key) else m_idx;
@@ -184,7 +184,7 @@ fn valuesYieldOrAwait(self: *Transformer, node: Node) bool {
     const list = node.data.list;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const m_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const m_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (m_idx.isNone()) continue;
         const m = self.ast.getNode(m_idx);
         const target = if (m.tag == .method_definition) self.readNodeIdx(m.data.extra, ast_mod.MethodExtra.key) else m_idx;
@@ -223,7 +223,7 @@ pub fn prepareHome(self: *Transformer, node: Node, allow_late_output_name: bool)
     var home: ?Home = null;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const m_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const m_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (m_idx.isNone()) continue;
         const m = self.ast.getNode(m_idx);
         if (m.tag != .method_definition) continue;
@@ -299,24 +299,24 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
     }
 
     const param_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span);
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const formal = try self.ast.addNode(.{
         .tag = .formal_parameter,
         .span = span,
         // extras = [pattern, type_ann, default, flags, deco_start, deco_len] — deco_len 은 0.
-        .data = .{ .extra = try self.ast.addExtras(&.{ @intFromEnum(param_binding), none, none, 0, 0, 0 }) },
+        .data = .{ .extra = try self.ast.addExtras(&.{ @backingInt(param_binding), none, none, 0, 0, 0 }) },
     });
     const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{formal}), span);
     const callee = switch (home.wrap) {
         .assign => unreachable,
         .arrow => try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = span, .data = .{
-            .extra = try self.ast.addExtras(&.{ @intFromEnum(params), @intFromEnum(assign), 0 }),
+            .extra = try self.ast.addExtras(&.{ @backingInt(params), @backingInt(assign), 0 }),
         } }),
         .function => blk: {
             const ret = try self.ast.addNode(.{ .tag = .return_statement, .span = span, .data = .{ .unary = .{ .operand = assign, .flags = 0 } } });
             const body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ret}) } });
             break :blk try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{
-                .extra = try self.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(body), 0, none }),
+                .extra = try self.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none }),
             } });
         },
     };
@@ -339,8 +339,8 @@ fn homeObjectParentScope(self: *Transformer, root: NodeIndex, fallback: ScopeId)
     var cursor: usize = 0;
     while (cursor < queue.items.len) : (cursor += 1) {
         const node_idx = queue.items[cursor];
-        if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node_idx);
+        if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node_idx);
         if (seen.contains(raw)) continue;
         seen.put(self.allocator, raw, {}) catch return fallback;
         if (self.outputOwnedScope(node_idx)) |scope| {
@@ -383,8 +383,8 @@ fn trackHoistedHomeReferences(
     var cursor: usize = 0;
     while (cursor < queue.items.len) : (cursor += 1) {
         const work = queue.items[cursor];
-        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(work.node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
@@ -445,8 +445,8 @@ fn bindWrappedHomeParameter(
     var cursor: usize = 0;
     while (cursor < worklist.items.len) : (cursor += 1) {
         const work = worklist.items[cursor];
-        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(work.node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);

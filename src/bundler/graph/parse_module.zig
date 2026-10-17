@@ -48,7 +48,7 @@ fn markSourceTypeOnlyImports(self: *ModuleGraph, module: *module_mod.Module, ast
     if (sem.scope_maps.len == 0 or module.import_bindings.len == 0) return;
     var value_used = std.DynamicBitSetUnmanaged.initEmpty(arena_alloc, sem.symbols.items.len) catch return;
     for (sem.references) |r| {
-        const raw = @intFromEnum(r.symbol_id);
+        const raw = @backingInt(r.symbol_id);
         if (raw < sem.symbols.items.len and r.isValueUse()) value_used.set(raw);
     }
     const classic_jsx = ast.has_jsx and options.shouldLowerJsx() and options.jsx_runtime == .classic;
@@ -116,7 +116,7 @@ fn markInlineTypeOnlyImports(module: *module_mod.Module, ast: *const @import("..
         if (x.is_type_only or x.specs_len == 0 or x.source.isNone()) continue;
         const specs = ast.extra_data.items[x.specs_start .. x.specs_start + x.specs_len];
         const all_types = for (specs) |raw| {
-            const spec = ast.getNode(@enumFromInt(raw));
+            const spec = ast.getNode(@fromBackingInt(@intCast(raw)));
             if (spec.tag != .import_specifier or (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) == 0) break false;
         } else true;
         if (!all_types) continue;
@@ -146,7 +146,7 @@ fn markTypeOnlyExports(module: *module_mod.Module, ast: *const @import("../../pa
     while (it.next()) |stmt_idx| {
         const node = ast.getNode(stmt_idx);
         if (node.tag != .ts_interface_declaration and node.tag != .ts_type_alias_declaration) continue;
-        const name_idx: @import("../../parser/ast.zig").NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+        const name_idx: @import("../../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
         if (name_idx.isNone()) continue;
         const name = ast.getText(ast.getNode(name_idx).span);
         if (module_scope.get(name) != null) continue; // a value shares the name
@@ -167,7 +167,7 @@ fn markTypeOnlyExports(module: *module_mod.Module, ast: *const @import("../../pa
 }
 
 pub fn parseModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) void {
-    const mod_idx = @intFromEnum(idx);
+    const mod_idx = @backingInt(idx);
     if (mod_idx >= self.modules.count()) return;
 
     var module = self.modules.at(mod_idx);

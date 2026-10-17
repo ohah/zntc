@@ -206,7 +206,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const for_body = try buildLoopBody(self, left, value, body, span);
 
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
-                @intFromEnum(for_init), @intFromEnum(for_test), @intFromEnum(for_update), @intFromEnum(for_body),
+                @backingInt(for_init), @backingInt(for_test), @backingInt(for_update), @backingInt(for_body),
             });
             // This iterator loop is the source for-of's lexical boundary. Its
             // synthetic try/block wrappers do not introduce source scopes.
@@ -262,7 +262,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const close_cond = try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
                 .left = try es_helpers.makeUnaryNot(self, try makeForOfRef(self, norm, norm_symbol, outer_scope, .{ .read = true }), span),
                 .right = try es_helpers.makeNeqNull(self, ret_member, span),
-                .flags = @intFromEnum(token_mod.Kind.amp2),
+                .flags = @backingInt(token_mod.Kind.amp2),
             } } });
             const close_call = try es_helpers.makeCallExpr(self, try es_helpers.makeStaticMember(self, try makeIteratorRef(self, iter, iter_symbol, outer_scope), try es_helpers.makePropertyName(self, "return"), span), &.{}, span);
             const close_if = try self.ast.addNode(.{ .tag = .if_statement, .span = span, .data = .{ .ternary = .{
@@ -318,7 +318,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
             const loop_scope: @import("../semantic/scope.zig").ScopeId = if (self.semantic_edit_enabled)
-                @enumFromInt(self.scope_owner_map.get(@intFromEnum(source_idx)) orelse @intFromEnum(self.current_scope))
+                @fromBackingInt(@intCast(self.scope_owner_map.get(@backingInt(source_idx)) orelse @backingInt(self.current_scope)))
             else
                 self.current_scope;
 
@@ -375,15 +375,15 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const test_expr = try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{
                 .left = try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true }),
                 .right = length,
-                .flags = @intFromEnum(token_mod.Kind.l_angle),
+                .flags = @backingInt(token_mod.Kind.l_angle),
             } } });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = try self.ast.addExtras(&.{
-                @intFromEnum(try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true, .write = true })),
-                @intFromEnum(token_mod.Kind.plus2) | ast_mod.UnaryFlags.postfix,
+                @backingInt(try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true, .write = true })),
+                @backingInt(token_mod.Kind.plus2) | ast_mod.UnaryFlags.postfix,
             }) } });
             const value = try es_helpers.makeComputedMember(self, try makeRefForSyntheticBinding(self, keys_binding, loop_scope, .{ .read = true }), try makeRefForSyntheticBinding(self, idx_binding, loop_scope, .{ .read = true }), span);
             const for_stmt = try self.addExtraNode(.for_statement, span, &.{
-                @intFromEnum(init), @intFromEnum(test_expr), @intFromEnum(update), @intFromEnum(try buildLoopBody(self, left, value, body, span)),
+                @backingInt(init), @backingInt(test_expr), @backingInt(update), @backingInt(try buildLoopBody(self, left, value, body, span)),
             });
             return makeBlock(self, &.{ decl, collect, for_stmt }, span);
         }
@@ -406,7 +406,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         pub fn buildLoopBody(self: *Transformer, left: NodeIndex, value: NodeIndex, body: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const left_node = self.ast.getNode(left);
             const head_stmt = if (left_node.tag == .variable_declaration) blk: {
-                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(left_node.data.extra, 1)]));
+                const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[self.readU32(left_node.data.extra, 1)])));
                 const binding = self.readNodeIdx(d.data.extra, 0);
                 break :blk try es_helpers.makeVarDeclaration(self, &.{
                     try es_helpers.makeDeclarator(self, binding, value, span),
@@ -421,7 +421,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try items.append(self.allocator, head_stmt);
                 var i: u32 = 0;
                 while (i < body_node.data.list.len) : (i += 1) {
-                    try items.append(self.allocator, @enumFromInt(self.ast.extra_data.items[body_node.data.list.start + i]));
+                    try items.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[body_node.data.list.start + i])));
                 }
                 return makeBlock(self, items.items, body_node.span);
             }
@@ -433,21 +433,21 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const BlockScoping = es2015_block_scoping.ES2015BlockScoping(Transformer);
             var head_names: std.ArrayList([]const u8) = .empty;
             defer head_names.deinit(self.allocator);
-            const hd = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(head.data.extra, 1)]));
+            const hd = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[self.readU32(head.data.extra, 1)])));
             try BlockScoping.collectBindingNames(self, self.readNodeIdx(hd.data.extra, 0), &head_names);
 
             var block_names: std.ArrayList([]const u8) = .empty;
             defer block_names.deinit(self.allocator);
             var i: u32 = 0;
             while (i < block.data.list.len) : (i += 1) {
-                const st = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[block.data.list.start + i]));
+                const st = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[block.data.list.start + i])));
                 switch (st.tag) {
                     .variable_declaration => {
                         const ds = self.readU32(st.data.extra, 1);
                         const dl = self.readU32(st.data.extra, 2);
                         var j: u32 = 0;
                         while (j < dl) : (j += 1) {
-                            const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                            const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[ds + j])));
                             if (d.tag == .variable_declarator) try BlockScoping.collectBindingNames(self, self.readNodeIdx(d.data.extra, 0), &block_names);
                         }
                     },
@@ -481,7 +481,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
         }
 
         fn makeAssign(self: *Transformer, target: NodeIndex, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            return self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = target, .right = value, .flags = @intFromEnum(token_mod.Kind.eq) } } });
+            return self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = target, .right = value, .flags = @backingInt(token_mod.Kind.eq) } } });
         }
 
         fn makeBlock(self: *Transformer, stmts: []const NodeIndex, span: Span) Transformer.Error!NodeIndex {
@@ -511,7 +511,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                     // output scopes are attached. Preserve the producer-chosen
                     // identity now; finishSemanticEdit will register its exact
                     // reference and access mode from the emitted AST ancestry.
-                    try self.trackExactOutputReference(ref, @intFromEnum(symbol_id));
+                    try self.trackExactOutputReference(ref, @backingInt(symbol_id));
                 } else {
                     try self.addSyntheticRefInScope(ref, symbol_id, scope, flags);
                 }

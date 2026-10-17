@@ -29,7 +29,7 @@ const es_helpers = @import("../es_helpers.zig");
 fn anchorSyntheticTopLevel(self: anytype, stmts: []const NodeIndex, anchor_start: u32) void {
     for (stmts) |stmt| {
         if (stmt == .none) continue;
-        const i: usize = @intFromEnum(stmt);
+        const i: usize = @backingInt(stmt);
         if (i >= self.ast.nodes.items.len) continue;
         self.ast.nodes.items[i].span = .{ .start = anchor_start, .end = anchor_start };
     }
@@ -61,7 +61,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
     try @import("../parameter_environment.zig").collectClassInferredNames(self);
 
     // 파서의 마지막 노드가 루트 (program). parser_node_count - 1.
-    const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
+    const root_idx: NodeIndex = @fromBackingInt(@intCast(self.parser_node_count - 1));
     const saved_temp_counter = self.temp_var_counter;
     // worklet anonymous naming counter — Transformer 인스턴스 재사용 시 매 transform당 0부터 시작.
     self.plugins.worklet.anonymous_counter = 0;
@@ -200,7 +200,7 @@ pub fn transform(self: anytype) Error!NodeIndex {
 /// method_definition 노드를 순회하며, default/rest/destructuring params가 있으면
 /// lowerParams를 적용하고 extra_data를 in-place 수정한다.
 fn isUninitializedVarDeclaration(self: anytype, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
     const node = self.ast.getNode(idx);
     if (node.tag != .variable_declaration or self.ast.variableDeclarationKind(node) != .@"var") return false;
     const extra = self.ast.extra_data.items;
@@ -214,7 +214,7 @@ fn isUninitializedVarDeclaration(self: anytype, idx: NodeIndex) bool {
         const declarator = self.ast.nodes.items[raw];
         if (declarator.tag != .variable_declarator) return false;
         const de = declarator.data.extra;
-        if (de >= extra.len or extra.len - de < 3 or @as(NodeIndex, @enumFromInt(extra[de + 2])) != .none) return false;
+        if (de >= extra.len or extra.len - de < 3 or @as(NodeIndex, @fromBackingInt(@intCast(extra[de + 2]))) != .none) return false;
     }
     return true;
 }
@@ -236,7 +236,7 @@ pub fn prependParameterInitializers(self: anytype, body_idx: NodeIndex, stmts: [
         if (self.parameter_capture_statements.contains(raw)) {
             saw_capture = true;
             insert_at = i + 1;
-        } else if (!isUninitializedVarDeclaration(self, @enumFromInt(raw))) {
+        } else if (!isUninitializedVarDeclaration(self, @fromBackingInt(@intCast(raw)))) {
             break;
         }
     }
@@ -244,15 +244,15 @@ pub fn prependParameterInitializers(self: anytype, body_idx: NodeIndex, stmts: [
 
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-    for (old[0..insert_at]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    for (old[0..insert_at]) |raw| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
     try self.scratch.appendSlice(self.allocator, stmts);
-    for (old[insert_at..]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    for (old[insert_at..]) |raw| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return self.ast.addNode(.{ .tag = body.tag, .span = body.span, .data = .{ .list = new_list } });
 }
 
 fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
-    const raw = @intFromEnum(idx);
+    const raw = @backingInt(idx);
     if (raw < self.parser_node_count or self.outputOwnedScope(idx) != null) return false;
     const node = self.ast.getNode(idx);
     if (node.tag != .function_expression and node.tag != .function and node.tag != .function_declaration and
@@ -273,8 +273,8 @@ fn hasScopedOutputReplacement(self: anytype, idx: NodeIndex) bool {
         if (replacement.span.start != node.span.start or replacement.span.end != node.span.end) continue;
         if (replacement.tag != .function_expression and replacement.tag != .function and replacement.tag != .function_declaration and
             replacement.tag != .arrow_function_expression) continue;
-        const replacement_scope = self.outputOwnedScope(@enumFromInt(replacement_raw)) orelse continue;
-        if (@intFromEnum(replacement_scope) == entry.value_ptr.*) return true;
+        const replacement_scope = self.outputOwnedScope(@fromBackingInt(@intCast(replacement_raw))) orelse continue;
+        if (@backingInt(replacement_scope) == entry.value_ptr.*) return true;
     }
     return false;
 }
@@ -296,15 +296,15 @@ fn moveLoweredPatternParameterBindings(
     const parameter_scope = editor.scopes.items[body_scope.toIndex()].parent;
     if (parameter_scope.isNone() or parameter_scope.toIndex() >= editor.scopes.items.len or
         editor.scopes.items[parameter_scope.toIndex()].kind != .function) return;
-    const parameter_scope_raw = @intFromEnum(parameter_scope);
+    const parameter_scope_raw = @backingInt(parameter_scope);
     for (self.ast.extra_data.items[params_list.start .. params_list.start + params_list.len]) |raw_param| {
-        const pattern = loweredParameterPattern(self, @enumFromInt(raw_param)) orelse continue;
+        const pattern = loweredParameterPattern(self, @fromBackingInt(@intCast(raw_param))) orelse continue;
         var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, pattern, .{});
         defer bindings.deinit();
         while (try bindings.next()) |binding| {
             const id = self.getSymbolIdAt(binding) orelse continue;
             if (id >= editor.symbols.items.len) continue;
-            if (@intFromEnum(editor.symbols.items[id].scope_id) != parameter_scope_raw) continue;
+            if (@backingInt(editor.symbols.items[id].scope_id) != parameter_scope_raw) continue;
             try self.moveSymbolToOutputScope(id, body_scope);
         }
     }
@@ -357,19 +357,19 @@ fn sloppyBodyReadsArguments(self: anytype, scope: @import("../../semantic/scope.
 
 /// The object/array pattern of a parameter, if it has one.
 fn loweredParameterPattern(self: anytype, param_idx: NodeIndex) ?NodeIndex {
-    if (param_idx.isNone() or @intFromEnum(param_idx) >= self.ast.nodes.items.len) return null;
+    if (param_idx.isNone() or @backingInt(param_idx) >= self.ast.nodes.items.len) return null;
     const param = self.ast.getNode(param_idx);
     var target: NodeIndex = switch (param.tag) {
         .formal_parameter => blk: {
             const slot = param.data.extra + ast_mod.FormalParameterExtra.pattern;
             if (slot >= self.ast.extra_data.items.len) return null;
-            break :blk @enumFromInt(self.ast.extra_data.items[slot]);
+            break :blk @fromBackingInt(@intCast(self.ast.extra_data.items[slot]));
         },
         else => param_idx,
     };
-    if (target.isNone() or @intFromEnum(target) >= self.ast.nodes.items.len) return null;
+    if (target.isNone() or @backingInt(target) >= self.ast.nodes.items.len) return null;
     if (self.ast.getNode(target).tag == .assignment_pattern) target = self.ast.getNode(target).data.binary.left;
-    if (target.isNone() or @intFromEnum(target) >= self.ast.nodes.items.len) return null;
+    if (target.isNone() or @backingInt(target) >= self.ast.nodes.items.len) return null;
     return switch (self.ast.getNode(target).tag) {
         .object_pattern, .array_pattern => target,
         else => null,
@@ -403,7 +403,7 @@ fn appendParameterBodyVarCopies(
         const value = try es_helpers.makeIdentifierRefFromSpan(self, parameter_name_span);
         try self.addSyntheticRefInScope(
             target,
-            @enumFromInt(copy.body_var_symbol_id),
+            @fromBackingInt(@intCast(copy.body_var_symbol_id)),
             reference_scope,
             .{ .write = true },
         );
@@ -473,7 +473,7 @@ fn wrapFunctionBodyForParameterInitializers(
     const inner_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(inner_top);
     try self.scratch.appendSlice(self.allocator, body_var_copies);
-    for (old[outer_prefix_len..]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    for (old[outer_prefix_len..]) |raw| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
     const inner_list = try self.ast.addNodeList(self.scratch.items[inner_top..]);
     const inner_body = try self.ast.addNode(.{
         .tag = .block_statement,
@@ -482,8 +482,8 @@ fn wrapFunctionBodyForParameterInitializers(
     });
     const arrow_flags: u32 = if (is_async) ast_mod.ArrowFlags.is_async else 0;
     const arrow_extra = try self.ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(inner_body),
+        @backingInt(NodeIndex.none),
+        @backingInt(inner_body),
         arrow_flags,
     });
     const arrow = try self.ast.addNode(.{
@@ -512,7 +512,7 @@ fn wrapFunctionBodyForParameterInitializers(
     });
     const outer_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(outer_top);
-    for (old[0..outer_prefix_len]) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    for (old[0..outer_prefix_len]) |raw| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
     try self.scratch.appendSlice(self.allocator, parameter_initializers);
     try self.scratch.append(self.allocator, return_stmt);
     const outer_list = try self.ast.addNodeList(self.scratch.items[outer_top..]);
@@ -532,19 +532,19 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
         if (raw >= node_count) continue;
         const i: usize = raw;
         const node = self.ast.nodes.items[i];
-        if (hasScopedOutputReplacement(self, @enumFromInt(raw))) continue;
+        if (hasScopedOutputReplacement(self, @fromBackingInt(@intCast(raw)))) continue;
         const saved_scope = self.current_scope;
         defer self.current_scope = saved_scope;
         if (self.transformed_scope_owner_map.get(@intCast(i)) orelse self.scope_owner_map.get(@intCast(i))) |scope_id| {
-            self.current_scope = @enumFromInt(scope_id);
+            self.current_scope = @fromBackingInt(@intCast(scope_id));
         }
         switch (node.tag) {
             .function_declaration, .function_expression, .function, .method_definition => {
                 // extra layout: [name_or_key(0), params(1), body(2), ...]
                 const e = node.data.extra;
                 if (e + 2 >= self.ast.extra_data.items.len) continue;
-                const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
-                if (params_idx.isNone() or @intFromEnum(params_idx) >= self.ast.nodes.items.len) continue;
+                const params_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
+                if (params_idx.isNone() or @backingInt(params_idx) >= self.ast.nodes.items.len) continue;
                 const params_node = self.ast.getNode(params_idx);
                 if (params_node.tag != .formal_parameters) continue;
                 const params_list = params_node.data.list;
@@ -614,10 +614,10 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 // (여러 function 노드가 동일 params_idx를 공유할 수 있으므로 in-place mutation 금지:
                 //  prependToFunctionBody 등은 params_idx를 복사하여 새 function 노드를 만든다.)
                 const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
-                self.ast.extra_data.items[e + 1] = @intFromEnum(new_params_node);
+                self.ast.extra_data.items[e + 1] = @backingInt(new_params_node);
 
                 if (lr.body_stmts.items.len > 0) {
-                    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                    const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
                     if (!body_idx.isNone()) {
                         const new_body = if (body_wrapper_scope) |wrapper_scope|
                             try wrapFunctionBodyForParameterInitializers(
@@ -632,7 +632,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                             )
                         else
                             try prependParameterInitializers(self, body_idx, lr.body_stmts.items);
-                        self.ast.extra_data.items[e + 2] = @intFromEnum(new_body);
+                        self.ast.extra_data.items[e + 2] = @backingInt(new_body);
                     }
                 }
             },
@@ -649,8 +649,8 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 if (self.options.unsupported.arrow) continue;
                 const e = node.data.extra;
                 if (e + 1 >= self.ast.extra_data.items.len) continue;
-                const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 0]);
-                if (params_idx.isNone() or @intFromEnum(params_idx) >= self.ast.nodes.items.len) continue;
+                const params_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 0]));
+                if (params_idx.isNone() or @backingInt(params_idx) >= self.ast.nodes.items.len) continue;
                 const params_node = self.ast.getNode(params_idx);
                 if (params_node.tag != .formal_parameters) continue;
                 const params_list = params_node.data.list;
@@ -663,10 +663,10 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                 defer lr.body_stmts.deinit(self.allocator);
 
                 const new_params_node = try self.ast.addFormalParameters(lr.new_params, params_node.span);
-                self.ast.extra_data.items[e + 0] = @intFromEnum(new_params_node);
+                self.ast.extra_data.items[e + 0] = @backingInt(new_params_node);
 
                 if (lr.body_stmts.items.len > 0) {
-                    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+                    const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
                     if (!body_idx.isNone()) {
                         // arrow expression body → `{ return expr; }` 먼저 (implicit
                         // return 보존), 그 후 rest 추출문 prepend. (es2015_arrow 동형.)
@@ -685,7 +685,7 @@ fn lowerAllFunctionParams(self: anytype, root: NodeIndex) Error!void {
                             });
                         } else body_idx;
                         const new_body = try self.prependStatementsToBody(block_body, lr.body_stmts.items);
-                        self.ast.extra_data.items[e + 1] = @intFromEnum(new_body);
+                        self.ast.extra_data.items[e + 1] = @backingInt(new_body);
                     }
                 }
             },

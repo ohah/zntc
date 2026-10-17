@@ -126,8 +126,8 @@ const DeadStoreRefIndex = struct {
         @memset(index.read_units, .{});
 
         for (references, 0..) |ref, ref_pos| {
-            const symbol_id: u32 = @intFromEnum(ref.symbol_id);
-            const scope_id: u32 = @intFromEnum(ref.scope_id);
+            const symbol_id: u32 = @backingInt(ref.symbol_id);
+            const scope_id: u32 = @backingInt(ref.scope_id);
 
             // read 실행 단위 집계는 `scope_stmt_idx` 유무와 무관하게 **모든 참조** 를 본다.
             // stmt 인덱스가 없는 read 도 클로저 read 일 수 있으므로 놓치면 안 된다 (#4503).
@@ -148,7 +148,7 @@ const DeadStoreRefIndex = struct {
 
             const event: RefEvent = .{
                 .ref_pos = @intCast(ref_pos),
-                .node_idx = @intFromEnum(ref.node_index),
+                .node_idx = @backingInt(ref.node_index),
                 .stmt_idx = ref.scope_stmt_idx,
                 .symbol_id = symbol_id,
                 .scope_id = scope_id,
@@ -271,18 +271,18 @@ const DeadStoreRefIndex = struct {
 /// 유닛 테스트용 스코프 트리: 0=module, 1=module 안의 function.
 const test_scopes = [_]Scope{
     .{ .parent = .none, .kind = .module, .is_strict = true },
-    .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true },
+    .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = true },
 };
 
 test "DeadStoreRefIndex matches transformed assignment by unique same-statement write" {
     const allocator = std.testing.allocator;
-    const old_lhs_node: NodeIndex = @enumFromInt(10);
+    const old_lhs_node: NodeIndex = @fromBackingInt(@intCast(10));
     const transformed_lhs_node: u32 = 200;
     const references = [_]Reference{
         .{
             .node_index = old_lhs_node,
-            .scope_id = @enumFromInt(1),
-            .symbol_id = @enumFromInt(2),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .symbol_id = @fromBackingInt(@intCast(2)),
             .stmt_idx = 0,
             .scope_stmt_idx = 3,
             .flags = .{ .write = true },
@@ -294,7 +294,7 @@ test "DeadStoreRefIndex matches transformed assignment by unique same-statement 
 
     try std.testing.expect(index.findWriteForNode(2, transformed_lhs_node) == null);
     const event = index.findWriteForAssignment(2, transformed_lhs_node, 3) orelse return error.MissingWriteEvent;
-    try std.testing.expectEqual(@as(u32, @intFromEnum(old_lhs_node)), event.node_idx);
+    try std.testing.expectEqual(@as(u32, @backingInt(old_lhs_node)), event.node_idx);
     try std.testing.expectEqual(@as(u32, 3), event.stmt_idx);
 }
 
@@ -302,17 +302,17 @@ test "DeadStoreRefIndex does not guess when same-statement writes are ambiguous"
     const allocator = std.testing.allocator;
     const references = [_]Reference{
         .{
-            .node_index = @enumFromInt(10),
-            .scope_id = @enumFromInt(1),
-            .symbol_id = @enumFromInt(2),
+            .node_index = @fromBackingInt(@intCast(10)),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .symbol_id = @fromBackingInt(@intCast(2)),
             .stmt_idx = 0,
             .scope_stmt_idx = 3,
             .flags = .{ .write = true },
         },
         .{
-            .node_index = @enumFromInt(11),
-            .scope_id = @enumFromInt(1),
-            .symbol_id = @enumFromInt(2),
+            .node_index = @fromBackingInt(@intCast(11)),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .symbol_id = @fromBackingInt(@intCast(2)),
             .stmt_idx = 0,
             .scope_stmt_idx = 3,
             .flags = .{ .write = true },
@@ -330,16 +330,16 @@ test "readEscapesExecUnit: 다른 함수(클로저)의 read 는 write 를 살린
     // 심볼 2 를 module scope(0) 에서 write, function scope(1) 안에서 read.
     const references = [_]Reference{
         .{
-            .node_index = @enumFromInt(10),
-            .scope_id = @enumFromInt(1), // 클로저 안
-            .symbol_id = @enumFromInt(2),
+            .node_index = @fromBackingInt(@intCast(10)),
+            .scope_id = @fromBackingInt(@intCast(1)), // 클로저 안
+            .symbol_id = @fromBackingInt(@intCast(2)),
             .scope_stmt_idx = 0,
             .flags = .{ .read = true },
         },
         .{
-            .node_index = @enumFromInt(11),
-            .scope_id = @enumFromInt(0), // module 최상위 write
-            .symbol_id = @enumFromInt(2),
+            .node_index = @fromBackingInt(@intCast(11)),
+            .scope_id = @fromBackingInt(@intCast(0)), // module 최상위 write
+            .symbol_id = @fromBackingInt(@intCast(2)),
             .scope_stmt_idx = 1,
             .flags = .{ .write = true },
         },
@@ -363,9 +363,9 @@ test "readEscapesExecUnit: scope_stmt_idx 없는 read 도 집계된다 (#4503)" 
     // NO_STMT read 는 event 인덱스에서 제외되지만 실행 단위 집계에는 반드시 포함돼야 한다.
     const references = [_]Reference{
         .{
-            .node_index = @enumFromInt(10),
-            .scope_id = @enumFromInt(1),
-            .symbol_id = @enumFromInt(2),
+            .node_index = @fromBackingInt(@intCast(10)),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .symbol_id = @fromBackingInt(@intCast(2)),
             .scope_stmt_idx = Reference.NO_STMT,
             .flags = .{ .read = true },
         },
@@ -381,9 +381,9 @@ test "readEscapesExecUnit: type-only read 는 실행 단위 집계에서 제외"
     const allocator = std.testing.allocator;
     const references = [_]Reference{
         .{
-            .node_index = @enumFromInt(10),
-            .scope_id = @enumFromInt(1),
-            .symbol_id = @enumFromInt(2),
+            .node_index = @fromBackingInt(@intCast(10)),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .symbol_id = @fromBackingInt(@intCast(2)),
             .scope_stmt_idx = 0,
             .flags = .{ .read = true, .type_context = true },
         },
@@ -399,17 +399,17 @@ test "readEscapesExecUnit: type-only read 는 실행 단위 집계에서 제외"
 test "enclosingExecUnit: block/catch 스코프는 부모 함수로 올라간다" {
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .module, .is_strict = true },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = true },
-        .{ .parent = @enumFromInt(2), .kind = .catch_clause, .is_strict = true },
-        .{ .parent = @enumFromInt(1), .kind = .class_body, .is_strict = true },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = true },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = true },
+        .{ .parent = @fromBackingInt(@intCast(2)), .kind = .catch_clause, .is_strict = true },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .class_body, .is_strict = true },
     };
-    try std.testing.expectEqual(@as(?u32, 0), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(0)));
-    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(1)));
-    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(2))); // block → function
-    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(3))); // catch → block → function
-    try std.testing.expectEqual(@as(?u32, 4), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(4))); // class body 는 자체 경계
-    try std.testing.expectEqual(@as(?u32, null), scope_mod.enclosingExecUnit(&scopes, @enumFromInt(99))); // 범위 밖
+    try std.testing.expectEqual(@as(?u32, 0), scope_mod.enclosingExecUnit(&scopes, @fromBackingInt(@intCast(0))));
+    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @fromBackingInt(@intCast(1))));
+    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @fromBackingInt(@intCast(2)))); // block → function
+    try std.testing.expectEqual(@as(?u32, 1), scope_mod.enclosingExecUnit(&scopes, @fromBackingInt(@intCast(3)))); // catch → block → function
+    try std.testing.expectEqual(@as(?u32, 4), scope_mod.enclosingExecUnit(&scopes, @fromBackingInt(@intCast(4)))); // class body 는 자체 경계
+    try std.testing.expectEqual(@as(?u32, null), scope_mod.enclosingExecUnit(&scopes, @fromBackingInt(@intCast(99)))); // 범위 밖
 }
 
 /// 한 모듈에 대한 dead-store 패스의 공용 컨텍스트. 인자 8개를 함수마다 실어나르지 않도록 묶었다.
@@ -442,7 +442,7 @@ const Pass = struct {
         if (sym_idx >= self.symbols.len) return true;
         const sym = self.symbols[sym_idx];
 
-        const write_unit = scope_mod.enclosingExecUnit(self.scopes, @enumFromInt(write_scope_id)) orelse return true;
+        const write_unit = scope_mod.enclosingExecUnit(self.scopes, @fromBackingInt(@intCast(write_scope_id))) orelse return true;
 
         // (1) #4503 — 클로저/다른 함수에서의 read. 그 read 는 두 store 사이의 임의 호출 시점에
         //     일어날 수 있어 소스 순서(ref_pos) 기반 "사이에 read 없음" 판정이 무효다.
@@ -467,7 +467,7 @@ const Pass = struct {
 
         // (4) direct eval / with 가 있는 스코프의 바인딩은 이름으로 동적 조회될 수 있다
         //     (참조 배열에 안 잡힘). mangler 와 같은 기준으로 차단.
-        const decl_scope = @intFromEnum(sym.scope_id);
+        const decl_scope = @backingInt(sym.scope_id);
         if (decl_scope >= self.scopes.len) return true;
         if (self.scopes[decl_scope].blocksMangling()) return true;
 
@@ -580,7 +580,7 @@ const Pass = struct {
             for (child_buf.items) |c| {
                 if (c.isNone()) continue;
                 stack.append(self.allocator, .{
-                    .idx = @intFromEnum(c),
+                    .idx = @backingInt(c),
                     .loop_depth = loop_depth,
                     .switch_depth = switch_depth,
                 }) catch return true;
@@ -716,23 +716,23 @@ fn markDeadOverwrittenNestedStatementLists(pass: *const Pass, node_idx: u32) voi
     switch (node.tag) {
         .if_statement => {
             if (!node.data.ternary.b.isNone()) {
-                bodies[nb] = @intFromEnum(node.data.ternary.b);
+                bodies[nb] = @backingInt(node.data.ternary.b);
                 nb += 1;
             }
             if (!node.data.ternary.c.isNone()) {
-                bodies[nb] = @intFromEnum(node.data.ternary.c);
+                bodies[nb] = @backingInt(node.data.ternary.c);
                 nb += 1;
             }
         },
         .while_statement, .do_while_statement, .labeled_statement => {
             if (!node.data.binary.right.isNone()) {
-                bodies[nb] = @intFromEnum(node.data.binary.right);
+                bodies[nb] = @backingInt(node.data.binary.right);
                 nb += 1;
             }
         },
         .for_in_statement, .for_of_statement, .for_await_of_statement => {
             if (!node.data.ternary.c.isNone()) {
-                bodies[nb] = @intFromEnum(node.data.ternary.c);
+                bodies[nb] = @backingInt(node.data.ternary.c);
                 nb += 1;
             }
         },
@@ -765,8 +765,8 @@ fn markDeadOverwrittenNestedStatementLists(pass: *const Pass, node_idx: u32) voi
 fn markDeadOverwrittenFunctionBody(pass: *const Pass, node: ast_mod.Node) void {
     const ast = pass.ast;
     if (ast.functionBodyBlock(node)) |body_idx| {
-        if (@intFromEnum(body_idx) < ast.nodes.items.len) {
-            const body = ast.nodes.items[@intFromEnum(body_idx)];
+        if (@backingInt(body_idx) < ast.nodes.items.len) {
+            const body = ast.nodes.items[@backingInt(body_idx)];
             if (body.tag == .block_statement) {
                 const list = body.data.list;
                 if (list.start + list.len <= ast.extra_data.items.len) {
@@ -805,10 +805,10 @@ fn markDeadOverwrittenDeclarationInitializers(
 
     const de = decl.data.extra;
     if (de + 2 >= ast.extra_data.items.len) return;
-    const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de]);
-    const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[de]));
+    const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[de + 2]));
     if (name_idx.isNone() or init_idx.isNone()) return;
-    const name_ni = @intFromEnum(name_idx);
+    const name_ni = @backingInt(name_idx);
     if (name_ni >= ast.nodes.items.len or name_ni >= pass.symbol_ids.len) return;
     const name = ast.nodes.items[name_ni];
     if (name.tag != .binding_identifier) return;
@@ -818,7 +818,7 @@ fn markDeadOverwrittenDeclarationInitializers(
     // ReferenceError)가 있으면 지우면 안 된다 (#4514).
     if (!purity.isRemovableAtStmtPos(ast, init_idx, pass.removalCtx())) return;
 
-    const decl_scope = @intFromEnum(pass.symbols[sym_idx].scope_id);
+    const decl_scope = @backingInt(pass.symbols[sym_idx].scope_id);
     // 초기화자도 store 다 — 뒤의 재대입 사이에서 클로저가 읽을 수 있으면 지우면 안 된다 (#4503).
     if (pass.storeIsProtected(sym_idx, decl_scope)) return;
     const declare_event = pass.ref_index.findDeclare(sym_idx, decl_scope, @intCast(stmt_pos)) orelse return;
@@ -831,7 +831,7 @@ fn markDeadOverwrittenDeclarationInitializers(
     const next_assign = assignmentInfoForStmt(ast, next_raw, pass.removalCtx(), false) orelse return;
     if (next_assign.sym_idx != sym_idx) return;
     if (pass.ref_index.findWriteForAssignment(next_assign.sym_idx, next_assign.lhs_idx, next_event.stmt_idx) == null) return;
-    ast.extra_data.items[de + 2] = @intFromEnum(NodeIndex.none);
+    ast.extra_data.items[de + 2] = @backingInt(NodeIndex.none);
 }
 
 fn isExportedSymbol(module: *const Module, sym_idx: u32) bool {
@@ -856,18 +856,18 @@ fn assignmentInfoForStmt(
     const stmt = ast.nodes.items[stmt_idx];
     if (stmt.tag != .expression_statement) return null;
     const expr_idx = stmt.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
 
-    const op: TokenKind = @enumFromInt(expr.data.binary.flags);
+    const op: TokenKind = @fromBackingInt(@intCast(expr.data.binary.flags));
     if (op != .eq) return null;
 
     const lhs_idx = expr.data.binary.left;
-    if (lhs_idx.isNone() or @intFromEnum(lhs_idx) >= ast.nodes.items.len) return null;
-    const lhs = ast.nodes.items[@intFromEnum(lhs_idx)];
+    if (lhs_idx.isNone() or @backingInt(lhs_idx) >= ast.nodes.items.len) return null;
+    const lhs = ast.nodes.items[@backingInt(lhs_idx)];
     if (lhs.tag != .assignment_target_identifier and lhs.tag != .identifier_reference) return null;
-    const lhs_ni = @intFromEnum(lhs_idx);
+    const lhs_ni = @backingInt(lhs_idx);
     if (lhs_ni >= removal_ctx.symbol_ids.len) return null;
     const sym_idx: u32 = @intCast(removal_ctx.symbol_ids[lhs_ni] orelse return null);
 

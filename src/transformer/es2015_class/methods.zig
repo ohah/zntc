@@ -82,7 +82,7 @@ pub fn Methods(comptime Transformer: type) type {
             if (!generated_scope.isNone()) {
                 if (generated_setter_parameter.isNone() or generated_setter_value_reference.isNone())
                     std.debug.panic("generated accessor setter lost its exact value handles", .{});
-                if (params_len != 1 or @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[params_start])) != generated_setter_parameter)
+                if (params_len != 1 or @as(NodeIndex, @fromBackingInt(@intCast(self.ast.extra_data.items[params_start]))) != generated_setter_parameter)
                     std.debug.panic("generated accessor setter parameter handle does not match its method", .{});
                 const parameter_node = self.ast.getNode(generated_setter_parameter);
                 const value_reference_node = self.ast.getNode(generated_setter_value_reference);
@@ -113,11 +113,11 @@ pub fn Methods(comptime Transformer: type) type {
             const visited_body = try visitMethodBodyWithParams(self, body_idx, span, nt_ctx, param_needs_this, param_needs_arguments, param_needs_new_target);
             const new_body = try self.hoistParameterTempsAndRestore(visited_body, parameter_temp_start, parameter_temp_end, span);
 
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const func_extra = try self.ast.addExtras(&.{
-                none,                   @intFromEnum(new_params_node),
-                @intFromEnum(new_body), 0,
+                none,                  @backingInt(new_params_node),
+                @backingInt(new_body), 0,
                 none,
             });
             const func_expr = try self.ast.addNode(.{
@@ -194,8 +194,8 @@ pub fn Methods(comptime Transformer: type) type {
             // 모든 읽기가 mutation(visitExtraList) 이전이므로 캐시 안전.
             const extras = self.ast.extra_data.items;
 
-            const key_idx: NodeIndex = @enumFromInt(extras[me]);
-            const body_idx: NodeIndex = @enumFromInt(extras[me + 2]);
+            const key_idx: NodeIndex = @fromBackingInt(@intCast(extras[me]));
+            const body_idx: NodeIndex = @fromBackingInt(@intCast(extras[me + 2]));
             const flags = extras[me + 3];
 
             // function expression 생성 — ES2015 params lowering은 Pass 2에서 일괄 처리
@@ -285,12 +285,12 @@ pub fn Methods(comptime Transformer: type) type {
                 break :blk f;
             };
 
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
-                @intFromEnum(new_params_node),
-                @intFromEnum(new_body),
+                @backingInt(new_params_node),
+                @backingInt(new_body),
                 func_flags,
                 none,
             });
@@ -344,12 +344,12 @@ pub fn Methods(comptime Transformer: type) type {
                 .data = .{ .list = body_list },
             });
             const final_body = try self.hoistParameterTempsAndRestore(wrapper_body, parameter_temp_start, parameter_temp_end, span);
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params, span);
             const func_extra = try self.ast.addExtras(&.{
                 none,
-                @intFromEnum(params_node),
-                @intFromEnum(final_body),
+                @backingInt(params_node),
+                @backingInt(final_body),
                 0,
                 none,
             });

@@ -62,7 +62,7 @@ pub fn emitNamedValue(self: anytype, value: NodeIndex, hint: ?[]const u8, level:
 }
 
 pub fn isFunctionDeclaration(self: anytype, raw: u32) ?NodeIndex {
-    var idx: NodeIndex = @enumFromInt(raw);
+    var idx: NodeIndex = @fromBackingInt(@intCast(raw));
     if (idx.isNone()) return null;
     var node = self.ast.getNode(idx);
     switch (node.tag) {
@@ -110,7 +110,7 @@ pub fn classHasStaticName(self: anytype, body: NodeIndex) bool {
     if (body.isNone()) return false;
     const list = self.ast.getNode(body).data.list;
     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-        const member = self.ast.getNode(@enumFromInt(raw));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(raw)));
         const key, const is_static = switch (member.tag) {
             .method_definition => .{
                 self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key),

@@ -272,18 +272,18 @@ test "ChunkGraph: addChunk returns sequential indices" {
     bits1.setBit(1);
     const idx1 = try cg.addChunk(Chunk.init(.none, .common, bits1));
 
-    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(idx0));
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(idx1));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(idx0));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(idx1));
 }
 
 test "ChunkGraph: assignModuleToChunk and getModuleChunk" {
     var cg = try ChunkGraph.init(std.testing.allocator, 4);
     defer cg.deinit();
 
-    const mod0: ModuleIndex = @enumFromInt(0);
-    const mod2: ModuleIndex = @enumFromInt(2);
-    const chunk0: ChunkIndex = @enumFromInt(0);
-    const chunk1: ChunkIndex = @enumFromInt(1);
+    const mod0: ModuleIndex = @fromBackingInt(@intCast(0));
+    const mod2: ModuleIndex = @fromBackingInt(@intCast(2));
+    const chunk0: ChunkIndex = @fromBackingInt(@intCast(0));
+    const chunk1: ChunkIndex = @fromBackingInt(@intCast(1));
 
     cg.assignModuleToChunk(mod0, chunk0);
     cg.assignModuleToChunk(mod2, chunk1);
@@ -296,11 +296,11 @@ test "ChunkGraph: unassigned module returns ChunkIndex.none" {
     var cg = try ChunkGraph.init(std.testing.allocator, 4);
     defer cg.deinit();
 
-    const mod0: ModuleIndex = @enumFromInt(0);
+    const mod0: ModuleIndex = @fromBackingInt(@intCast(0));
     try std.testing.expect(cg.getModuleChunk(mod0).isNone());
 
     // 범위 밖 모듈도 .none 반환
-    const mod_oob: ModuleIndex = @enumFromInt(100);
+    const mod_oob: ModuleIndex = @fromBackingInt(@intCast(100));
     try std.testing.expect(cg.getModuleChunk(mod_oob).isNone());
 }
 
@@ -325,7 +325,7 @@ test "ChunkGraph: getChunk retrieves correct chunk" {
     var cg = try ChunkGraph.init(std.testing.allocator, 4);
     defer cg.deinit();
 
-    const mod0: ModuleIndex = @enumFromInt(0);
+    const mod0: ModuleIndex = @fromBackingInt(@intCast(0));
     var bits0 = try BitSet.init(std.testing.allocator, 4);
     bits0.setBit(0);
     const idx0 = try cg.addChunk(Chunk.init(.none, .{ .entry_point = .{
@@ -363,8 +363,8 @@ test "Chunk: addModule" {
     var chunk = Chunk.init(.none, .common, bits);
     defer chunk.deinit(std.testing.allocator);
 
-    const mod0: ModuleIndex = @enumFromInt(0);
-    const mod5: ModuleIndex = @enumFromInt(5);
+    const mod0: ModuleIndex = @fromBackingInt(@intCast(0));
+    const mod5: ModuleIndex = @fromBackingInt(@intCast(5));
 
     try chunk.addModule(std.testing.allocator, mod0);
     try chunk.addModule(std.testing.allocator, mod5);
@@ -375,7 +375,7 @@ test "Chunk: addModule" {
 }
 
 test "Chunk: isEntryPoint" {
-    const mod0: ModuleIndex = @enumFromInt(0);
+    const mod0: ModuleIndex = @fromBackingInt(@intCast(0));
 
     const bits_entry = try BitSet.init(std.testing.allocator, 8);
     var entry = Chunk.init(.none, .{ .entry_point = .{
@@ -393,7 +393,7 @@ test "Chunk: isEntryPoint" {
 }
 
 test "ChunkKind: entry_point vs common" {
-    const mod0: ModuleIndex = @enumFromInt(0);
+    const mod0: ModuleIndex = @fromBackingInt(@intCast(0));
 
     const ep: ChunkKind = .{ .entry_point = .{
         .bit = 2,
@@ -420,7 +420,7 @@ test "ChunkKind: entry_point vs common" {
 
 /// 테스트용 Module을 생성한다. JS 타입, exec_index = index.
 fn makeTestModule(alloc: std.mem.Allocator, index: u32, path: []const u8) Module {
-    var m = Module.init(@enumFromInt(index), path);
+    var m = Module.init(@fromBackingInt(@intCast(index)), path);
     m.module_type = .js;
     m.exec_index = index;
     m.state = .ready;
@@ -440,7 +440,7 @@ fn makeTestModule(alloc: std.mem.Allocator, index: u32, path: []const u8) Module
 /// star 소스 / 청크 entry+non-minify / export kind)은 전부 **유지(false)** 쪽으로
 /// 보수 폴백해야 한다 — 잘못 빼면 소비자가 미바인딩(ReferenceError) 된다.
 fn shakenDecisionModule(dead: bool) Module {
-    var m = Module.init(@enumFromInt(0), "barrel.ts");
+    var m = Module.init(@fromBackingInt(@intCast(0)), "barrel.ts");
     m.module_type = .js;
     m.state = .ready;
     m.tree_shaker_active = true;
@@ -520,8 +520,8 @@ test "generateChunks: single entry, no dynamic imports" {
     };
 
     // a → b → c
-    try modules[0].dependencies.append(alloc, @enumFromInt(1));
-    try modules[1].dependencies.append(alloc, @enumFromInt(2));
+    try modules[0].dependencies.append(alloc, @fromBackingInt(@intCast(1)));
+    try modules[1].dependencies.append(alloc, @fromBackingInt(@intCast(2)));
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
@@ -532,10 +532,10 @@ test "generateChunks: single entry, no dynamic imports" {
     try std.testing.expectEqual(@as(usize, 1), cg.chunkCount());
 
     // 모든 모듈이 청크 0에 할당
-    const chunk0: ChunkIndex = @enumFromInt(0);
-    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(0)));
-    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(1)));
-    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(2)));
+    const chunk0: ChunkIndex = @fromBackingInt(@intCast(0));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@fromBackingInt(@intCast(0))));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@fromBackingInt(@intCast(1))));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@fromBackingInt(@intCast(2))));
 
     // 청크가 엔트리 타입
     try std.testing.expect(cg.getChunk(chunk0).isEntryPoint());
@@ -557,8 +557,8 @@ test "generateChunks: dynamic import creates separate chunk" {
     };
 
     // index → utils (static), index → lazy (dynamic)
-    try modules[0].dependencies.append(alloc, @enumFromInt(1));
-    try modules[0].dynamic_imports.append(alloc, @enumFromInt(2));
+    try modules[0].dependencies.append(alloc, @fromBackingInt(@intCast(1)));
+    try modules[0].dynamic_imports.append(alloc, @fromBackingInt(@intCast(2)));
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
@@ -569,13 +569,13 @@ test "generateChunks: dynamic import creates separate chunk" {
     try std.testing.expectEqual(@as(usize, 2), cg.chunkCount());
 
     // index, utils → 청크 0 (유저 엔트리)
-    const chunk0: ChunkIndex = @enumFromInt(0);
-    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(0)));
-    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(1)));
+    const chunk0: ChunkIndex = @fromBackingInt(@intCast(0));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@fromBackingInt(@intCast(0))));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@fromBackingInt(@intCast(1))));
 
     // lazy → 청크 1 (dynamic 엔트리)
-    const chunk1: ChunkIndex = @enumFromInt(1);
-    try std.testing.expectEqual(chunk1, cg.getModuleChunk(@enumFromInt(2)));
+    const chunk1: ChunkIndex = @fromBackingInt(@intCast(1));
+    try std.testing.expectEqual(chunk1, cg.getModuleChunk(@fromBackingInt(@intCast(2))));
 
     // 청크 1은 dynamic 엔트리
     const lazy_chunk = cg.getChunk(chunk1);
@@ -598,8 +598,8 @@ test "generateChunks: shared module creates common chunk" {
     };
 
     // a → shared, b → shared
-    try modules[0].dependencies.append(alloc, @enumFromInt(2));
-    try modules[1].dependencies.append(alloc, @enumFromInt(2));
+    try modules[0].dependencies.append(alloc, @fromBackingInt(@intCast(2)));
+    try modules[1].dependencies.append(alloc, @fromBackingInt(@intCast(2)));
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
@@ -610,13 +610,13 @@ test "generateChunks: shared module creates common chunk" {
     try std.testing.expectEqual(@as(usize, 3), cg.chunkCount());
 
     // a → 청크0, b → 청크1
-    const chunk0: ChunkIndex = @enumFromInt(0);
-    const chunk1: ChunkIndex = @enumFromInt(1);
-    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@enumFromInt(0)));
-    try std.testing.expectEqual(chunk1, cg.getModuleChunk(@enumFromInt(1)));
+    const chunk0: ChunkIndex = @fromBackingInt(@intCast(0));
+    const chunk1: ChunkIndex = @fromBackingInt(@intCast(1));
+    try std.testing.expectEqual(chunk0, cg.getModuleChunk(@fromBackingInt(@intCast(0))));
+    try std.testing.expectEqual(chunk1, cg.getModuleChunk(@fromBackingInt(@intCast(1))));
 
     // shared → 청크2 (공통 청크)
-    const shared_chunk_idx = cg.getModuleChunk(@enumFromInt(2));
+    const shared_chunk_idx = cg.getModuleChunk(@fromBackingInt(@intCast(2)));
     try std.testing.expect(!shared_chunk_idx.isNone());
     try std.testing.expect(!cg.getChunk(shared_chunk_idx).isEntryPoint());
 }
@@ -637,10 +637,10 @@ test "generateChunks: diamond dependency" {
     };
 
     // A → B, A → C, B → D, C → D
-    try modules[0].dependencies.append(alloc, @enumFromInt(1));
-    try modules[0].dependencies.append(alloc, @enumFromInt(2));
-    try modules[1].dependencies.append(alloc, @enumFromInt(3));
-    try modules[2].dependencies.append(alloc, @enumFromInt(3));
+    try modules[0].dependencies.append(alloc, @fromBackingInt(@intCast(1)));
+    try modules[0].dependencies.append(alloc, @fromBackingInt(@intCast(2)));
+    try modules[1].dependencies.append(alloc, @fromBackingInt(@intCast(3)));
+    try modules[2].dependencies.append(alloc, @fromBackingInt(@intCast(3)));
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
@@ -648,19 +648,19 @@ test "generateChunks: diamond dependency" {
     defer cg.deinit();
 
     // D가 양쪽 엔트리에서 도달 가능 → 공통 청크 생성
-    const d_chunk_idx = cg.getModuleChunk(@enumFromInt(3));
+    const d_chunk_idx = cg.getModuleChunk(@fromBackingInt(@intCast(3)));
     try std.testing.expect(!d_chunk_idx.isNone());
     try std.testing.expect(!cg.getChunk(d_chunk_idx).isEntryPoint());
 
     // C는 엔트리 청크1에 할당 (C가 두 번째 엔트리이므로 bit 1)
     // A 엔트리(bit 0)에서도 C에 도달하므로, C의 BitSet = {0,1}
     // 이는 D와 동일한 BitSet → 같은 공통 청크에 묶임
-    const c_chunk_idx = cg.getModuleChunk(@enumFromInt(2));
+    const c_chunk_idx = cg.getModuleChunk(@fromBackingInt(@intCast(2)));
     try std.testing.expect(!c_chunk_idx.isNone());
 
     // B는 A에서만 도달 → A 엔트리 청크에 묶임
-    const b_chunk_idx = cg.getModuleChunk(@enumFromInt(1));
-    const a_chunk_idx = cg.getModuleChunk(@enumFromInt(0));
+    const b_chunk_idx = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
+    const a_chunk_idx = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
     try std.testing.expectEqual(a_chunk_idx, b_chunk_idx);
 }
 
@@ -693,9 +693,9 @@ test "generateChunks: circular dependency stays in same chunk" {
     defer tg.deinit(alloc);
 
     // a → b, b → c, c → b (순환)
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(2));
-    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(1)), @fromBackingInt(@intCast(2)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(2)), @fromBackingInt(@intCast(1)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, .{});
     defer cg.deinit();
@@ -703,7 +703,7 @@ test "generateChunks: circular dependency stays in same chunk" {
     // 1 엔트리 청크, 모든 모듈 포함
     try std.testing.expectEqual(@as(usize, 1), cg.chunkCount());
     for (0..3) |i| {
-        try std.testing.expect(!cg.getModuleChunk(@enumFromInt(@as(u32, @intCast(i)))).isNone());
+        try std.testing.expect(!cg.getModuleChunk(@fromBackingInt(@intCast(@as(u32, @intCast(i))))).isNone());
     }
 }
 
@@ -720,14 +720,14 @@ test "generateChunks: static + dynamic import same module" {
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.modules.at(0).addDynamicImport(alloc, @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.modules.at(0).addDynamicImport(alloc, @fromBackingInt(@intCast(1)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, .{});
     defer cg.deinit();
 
     // b.ts는 엔트리 청크에 포함 (static이 우선)
-    const b_chunk = cg.getModuleChunk(@enumFromInt(1));
+    const b_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
     try std.testing.expect(!b_chunk.isNone());
 }
 
@@ -748,9 +748,9 @@ test "generateChunks: three entries sharing a module" {
 
     // 3개 엔트리가 모두 dynamic import로 생성됨
     // a→shared, b→shared, c→shared (static deps)
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(3));
-    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(3));
-    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(3));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(3)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(1)), @fromBackingInt(@intCast(3)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(2)), @fromBackingInt(@intCast(3)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts", "c.ts" }, .{});
     defer cg.deinit();
@@ -759,7 +759,7 @@ test "generateChunks: three entries sharing a module" {
     try std.testing.expectEqual(@as(usize, 4), cg.chunkCount());
 
     // shared.ts는 공통 청크에 할당
-    const shared_chunk_idx = cg.getModuleChunk(@enumFromInt(3));
+    const shared_chunk_idx = cg.getModuleChunk(@fromBackingInt(@intCast(3)));
     try std.testing.expect(!shared_chunk_idx.isNone());
     const shared_chunk = cg.getChunk(shared_chunk_idx);
     try std.testing.expect(shared_chunk.kind == .common);
@@ -780,7 +780,7 @@ test "generateChunks: entry imports another entry statically" {
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "b.ts" }, .{});
     defer cg.deinit();
@@ -788,8 +788,8 @@ test "generateChunks: entry imports another entry statically" {
     // 2개 엔트리 청크 생성
     try std.testing.expect(cg.chunkCount() >= 2);
     // 두 모듈 모두 할당됨
-    try std.testing.expect(!cg.getModuleChunk(@enumFromInt(0)).isNone());
-    try std.testing.expect(!cg.getModuleChunk(@enumFromInt(1)).isNone());
+    try std.testing.expect(!cg.getModuleChunk(@fromBackingInt(@intCast(0))).isNone());
+    try std.testing.expect(!cg.getModuleChunk(@fromBackingInt(@intCast(1))).isNone());
 }
 
 test "generateChunks: deep chain with dynamic import at middle" {
@@ -807,9 +807,9 @@ test "generateChunks: deep chain with dynamic import at middle" {
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.modules.at(1).addDynamicImport(alloc, @enumFromInt(2));
-    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(3));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.modules.at(1).addDynamicImport(alloc, @fromBackingInt(@intCast(2)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(2)), @fromBackingInt(@intCast(3)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"a.ts"}, .{});
     defer cg.deinit();
@@ -818,14 +818,14 @@ test "generateChunks: deep chain with dynamic import at middle" {
     try std.testing.expectEqual(@as(usize, 2), cg.chunkCount());
 
     // a,b는 같은 청크 (엔트리)
-    const a_chunk = cg.getModuleChunk(@enumFromInt(0));
-    const b_chunk = cg.getModuleChunk(@enumFromInt(1));
+    const a_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
+    const b_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
     try std.testing.expect(!a_chunk.isNone());
     try std.testing.expectEqual(a_chunk, b_chunk);
 
     // c,d는 같은 청크 (dynamic 엔트리)
-    const c_chunk = cg.getModuleChunk(@enumFromInt(2));
-    const d_chunk = cg.getModuleChunk(@enumFromInt(3));
+    const c_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(2)));
+    const d_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(3)));
     try std.testing.expect(!c_chunk.isNone());
     try std.testing.expectEqual(c_chunk, d_chunk);
 
@@ -850,7 +850,7 @@ test "computeCrossChunkLinks: no cross-chunk deps — 모든 모듈이 같은 �
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
     // 청크 하나에 모듈 0,1 할당
     var cg = try ChunkGraph.init(alloc, 2);
@@ -859,10 +859,10 @@ test "computeCrossChunkLinks: no cross-chunk deps — 모든 모듈이 같은 �
     var bits = try BitSet.init(alloc, 1);
     bits.setBit(0);
     const ci = try cg.addChunk(Chunk.init(.none, .common, bits));
-    cg.assignModuleToChunk(@enumFromInt(0), ci);
-    cg.assignModuleToChunk(@enumFromInt(1), ci);
-    try cg.getChunkMut(ci).addModule(alloc, @enumFromInt(0));
-    try cg.getChunkMut(ci).addModule(alloc, @enumFromInt(1));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(0)), ci);
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(1)), ci);
+    try cg.getChunkMut(ci).addModule(alloc, @fromBackingInt(@intCast(0)));
+    try cg.getChunkMut(ci).addModule(alloc, @fromBackingInt(@intCast(1)));
 
     try chunk_mod.computeCrossChunkLinks(&cg, &tg.graph, alloc, null);
 
@@ -955,7 +955,7 @@ test "computeCrossChunkLinks: static cross-chunk import" {
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
     var cg = try ChunkGraph.init(alloc, 2);
     defer cg.deinit();
@@ -964,15 +964,15 @@ test "computeCrossChunkLinks: static cross-chunk import" {
     var bits_a = try BitSet.init(alloc, 2);
     bits_a.setBit(0);
     const chunk_a = try cg.addChunk(Chunk.init(.none, .common, bits_a));
-    cg.assignModuleToChunk(@enumFromInt(0), chunk_a);
-    try cg.getChunkMut(chunk_a).addModule(alloc, @enumFromInt(0));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(0)), chunk_a);
+    try cg.getChunkMut(chunk_a).addModule(alloc, @fromBackingInt(@intCast(0)));
 
     // 청크 B: 모듈 1
     var bits_b = try BitSet.init(alloc, 2);
     bits_b.setBit(1);
     const chunk_b = try cg.addChunk(Chunk.init(.none, .common, bits_b));
-    cg.assignModuleToChunk(@enumFromInt(1), chunk_b);
-    try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(1));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(1)), chunk_b);
+    try cg.getChunkMut(chunk_b).addModule(alloc, @fromBackingInt(@intCast(1)));
 
     try chunk_mod.computeCrossChunkLinks(&cg, &tg.graph, alloc, null);
 
@@ -994,7 +994,7 @@ test "computeCrossChunkLinks: dynamic cross-chunk import" {
         makeTestModule(alloc, 0, "a.ts"),
         makeTestModule(alloc, 1, "b.ts"),
     };
-    try modules[0].addDynamicImport(alloc, @enumFromInt(1));
+    try modules[0].addDynamicImport(alloc, @fromBackingInt(@intCast(1)));
 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
@@ -1005,14 +1005,14 @@ test "computeCrossChunkLinks: dynamic cross-chunk import" {
     var bits_a = try BitSet.init(alloc, 2);
     bits_a.setBit(0);
     const chunk_a = try cg.addChunk(Chunk.init(.none, .common, bits_a));
-    cg.assignModuleToChunk(@enumFromInt(0), chunk_a);
-    try cg.getChunkMut(chunk_a).addModule(alloc, @enumFromInt(0));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(0)), chunk_a);
+    try cg.getChunkMut(chunk_a).addModule(alloc, @fromBackingInt(@intCast(0)));
 
     var bits_b = try BitSet.init(alloc, 2);
     bits_b.setBit(1);
     const chunk_b = try cg.addChunk(Chunk.init(.none, .common, bits_b));
-    cg.assignModuleToChunk(@enumFromInt(1), chunk_b);
-    try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(1));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(1)), chunk_b);
+    try cg.getChunkMut(chunk_b).addModule(alloc, @fromBackingInt(@intCast(1)));
 
     try chunk_mod.computeCrossChunkLinks(&cg, &tg.graph, alloc, null);
 
@@ -1040,8 +1040,8 @@ test "computeCrossChunkLinks: deduplication — 여러 모듈이 같은 청크�
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2));
-    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(2));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(2)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(1)), @fromBackingInt(@intCast(2)));
 
     var cg = try ChunkGraph.init(alloc, 3);
     defer cg.deinit();
@@ -1050,17 +1050,17 @@ test "computeCrossChunkLinks: deduplication — 여러 모듈이 같은 청크�
     var bits_a = try BitSet.init(alloc, 2);
     bits_a.setBit(0);
     const chunk_a = try cg.addChunk(Chunk.init(.none, .common, bits_a));
-    cg.assignModuleToChunk(@enumFromInt(0), chunk_a);
-    cg.assignModuleToChunk(@enumFromInt(1), chunk_a);
-    try cg.getChunkMut(chunk_a).addModule(alloc, @enumFromInt(0));
-    try cg.getChunkMut(chunk_a).addModule(alloc, @enumFromInt(1));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(0)), chunk_a);
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(1)), chunk_a);
+    try cg.getChunkMut(chunk_a).addModule(alloc, @fromBackingInt(@intCast(0)));
+    try cg.getChunkMut(chunk_a).addModule(alloc, @fromBackingInt(@intCast(1)));
 
     // 청크 B: 모듈 2
     var bits_b = try BitSet.init(alloc, 2);
     bits_b.setBit(1);
     const chunk_b = try cg.addChunk(Chunk.init(.none, .common, bits_b));
-    cg.assignModuleToChunk(@enumFromInt(2), chunk_b);
-    try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(2));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(2)), chunk_b);
+    try cg.getChunkMut(chunk_b).addModule(alloc, @fromBackingInt(@intCast(2)));
 
     try chunk_mod.computeCrossChunkLinks(&cg, &tg.graph, alloc, null);
 
@@ -1083,8 +1083,8 @@ test "computeCrossChunkLinks: bidirectional — A↔B 상호 의존" {
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(0));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(1)), @fromBackingInt(@intCast(0)));
 
     var cg = try ChunkGraph.init(alloc, 2);
     defer cg.deinit();
@@ -1092,14 +1092,14 @@ test "computeCrossChunkLinks: bidirectional — A↔B 상호 의존" {
     var bits_a = try BitSet.init(alloc, 2);
     bits_a.setBit(0);
     const chunk_a = try cg.addChunk(Chunk.init(.none, .common, bits_a));
-    cg.assignModuleToChunk(@enumFromInt(0), chunk_a);
-    try cg.getChunkMut(chunk_a).addModule(alloc, @enumFromInt(0));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(0)), chunk_a);
+    try cg.getChunkMut(chunk_a).addModule(alloc, @fromBackingInt(@intCast(0)));
 
     var bits_b = try BitSet.init(alloc, 2);
     bits_b.setBit(1);
     const chunk_b = try cg.addChunk(Chunk.init(.none, .common, bits_b));
-    cg.assignModuleToChunk(@enumFromInt(1), chunk_b);
-    try cg.getChunkMut(chunk_b).addModule(alloc, @enumFromInt(1));
+    cg.assignModuleToChunk(@fromBackingInt(@intCast(1)), chunk_b);
+    try cg.getChunkMut(chunk_b).addModule(alloc, @fromBackingInt(@intCast(1)));
 
     try chunk_mod.computeCrossChunkLinks(&cg, &tg.graph, alloc, null);
 
@@ -1130,22 +1130,22 @@ test "generateChunks: entry module reassignment removes from old chunk" {
     defer tg.deinit(alloc);
 
     // a → b (static), a → c (static), c → b (static)
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2));
-    try tg.graph.linkDependency(@enumFromInt(2), @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(2)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(2)), @fromBackingInt(@intCast(1)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{ "a.ts", "c.ts" }, .{});
     defer cg.deinit();
 
     // c.ts는 엔트리 청크에 있어야 함 (공통 청크 아님)
-    const c_chunk = cg.getModuleChunk(@enumFromInt(2));
+    const c_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(2)));
     try std.testing.expect(!c_chunk.isNone());
 
     // c.ts가 하나의 청크에만 존재하는지 확인 (중복 방지)
     var count: u32 = 0;
     for (cg.chunks.items) |chunk| {
         for (chunk.modules.items) |mod_idx| {
-            if (@intFromEnum(mod_idx) == 2) count += 1;
+            if (@backingInt(mod_idx) == 2) count += 1;
         }
     }
     try std.testing.expectEqual(@as(u32, 1), count);
@@ -1160,14 +1160,14 @@ test "generateChunks: inline_dynamic_imports=false — dynamic target 은 별도
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDynamicImport(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDynamicImport(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{});
     defer cg.deinit();
 
     // 기본 정책 — lazy 는 entry 와 다른 chunk 에 배정
-    const entry_chunk = cg.getModuleChunk(@enumFromInt(0));
-    const lazy_chunk = cg.getModuleChunk(@enumFromInt(1));
+    const entry_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
+    const lazy_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
     try std.testing.expect(!entry_chunk.isNone());
     try std.testing.expect(!lazy_chunk.isNone());
     try std.testing.expect(entry_chunk != lazy_chunk);
@@ -1182,15 +1182,15 @@ test "generateChunks: inline_dynamic_imports=true — dynamic target 이 entry c
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDynamicImport(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDynamicImport(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .inline_dynamic_imports = true });
     defer cg.deinit();
 
     // inline 정책 — lazy 가 entry chunk 로 흡수. 전체 청크 1개.
     try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);
-    const entry_chunk = cg.getModuleChunk(@enumFromInt(0));
-    const lazy_chunk = cg.getModuleChunk(@enumFromInt(1));
+    const entry_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
+    const lazy_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
     try std.testing.expect(entry_chunk == lazy_chunk);
 }
 
@@ -1206,8 +1206,8 @@ test "generateChunks: inline_dynamic_imports + manual_chunks — manual seed 의
     defer tg.deinit(alloc);
 
     // entry → vendor-root (static), vendor-root → vendor-lazy (dynamic)
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.linkDynamicImport(@enumFromInt(1), @enumFromInt(2));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.linkDynamicImport(@fromBackingInt(@intCast(1)), @fromBackingInt(@intCast(2)));
 
     const manual_entries = [_]types.ManualChunkEntry{.{ .name = "vendor", .patterns = &.{"vendor-"} }};
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{
@@ -1218,9 +1218,9 @@ test "generateChunks: inline_dynamic_imports + manual_chunks — manual seed 의
 
     // vendor-root 은 manual 매칭, vendor-lazy 는 vendor-root 의 dynamic dep.
     // inline + manual BFS 확장으로 vendor-lazy 도 vendor chunk 로.
-    const vendor_chunk = cg.getModuleChunk(@enumFromInt(1));
+    const vendor_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
     try std.testing.expect(!vendor_chunk.isNone());
-    try std.testing.expect(cg.getModuleChunk(@enumFromInt(2)) == vendor_chunk);
+    try std.testing.expect(cg.getModuleChunk(@fromBackingInt(@intCast(2))) == vendor_chunk);
 }
 
 test "generateChunks: inline_dynamic_imports — dynamic target 의 transitive static dep 도 흡수" {
@@ -1234,16 +1234,16 @@ test "generateChunks: inline_dynamic_imports — dynamic target 의 transitive s
     defer tg.deinit(alloc);
 
     // entry → lazy (dynamic) → util (static)
-    try tg.graph.linkDynamicImport(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.linkDependency(@enumFromInt(1), @enumFromInt(2));
+    try tg.graph.linkDynamicImport(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(1)), @fromBackingInt(@intCast(2)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .inline_dynamic_imports = true });
     defer cg.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);
-    const entry_chunk = cg.getModuleChunk(@enumFromInt(0));
-    try std.testing.expect(cg.getModuleChunk(@enumFromInt(1)) == entry_chunk);
-    try std.testing.expect(cg.getModuleChunk(@enumFromInt(2)) == entry_chunk);
+    const entry_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
+    try std.testing.expect(cg.getModuleChunk(@fromBackingInt(@intCast(1))) == entry_chunk);
+    try std.testing.expect(cg.getModuleChunk(@fromBackingInt(@intCast(2))) == entry_chunk);
 }
 
 test "generateChunks: external phantom 은 chunk 배정 받지 않음" {
@@ -1258,16 +1258,16 @@ test "generateChunks: external phantom 은 chunk 배정 받지 않음" {
 
     // module 1 을 external 로 표시 + entry → react static link
     tg.graph.modules.at(1).is_external = true;
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{});
     defer cg.deinit();
 
     // entry chunk 1개. external phantom 은 어느 chunk 에도 안 들어감.
     try std.testing.expectEqual(@as(usize, 1), cg.chunks.items.len);
-    const entry_chunk = cg.getModuleChunk(@enumFromInt(0));
+    const entry_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
     try std.testing.expect(!entry_chunk.isNone());
-    const react_chunk = cg.getModuleChunk(@enumFromInt(1));
+    const react_chunk = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
     try std.testing.expect(react_chunk.isNone());
 }
 
@@ -1284,7 +1284,7 @@ test "generateChunks: external 가 manual pattern 매칭돼도 manual chunk 안 
     defer tg.deinit(alloc);
 
     tg.graph.modules.at(1).is_external = true;
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
     const manual_entries = [_]types.ManualChunkEntry{.{ .name = "vendor", .patterns = &.{"vendor-"} }};
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .manual_chunks = &manual_entries });
@@ -1308,15 +1308,15 @@ test "generateChunks: (#4553) manualChunks 매칭돼도 user entry 는 자기 en
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1)); // entry → lib (static)
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1))); // entry → lib (static)
 
     // 패턴이 entry 와 lib 를 **모두** 매칭.
     const manual_entries = [_]types.ManualChunkEntry{.{ .name = "grp", .patterns = &.{ "entry", "lib" } }};
     var cg = try chunk_mod.generateChunks(alloc, &tg.graph, &.{"entry.ts"}, .{ .manual_chunks = &manual_entries });
     defer cg.deinit();
 
-    const entry_ci = cg.getModuleChunk(@enumFromInt(0));
-    const lib_ci = cg.getModuleChunk(@enumFromInt(1));
+    const entry_ci = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
+    const lib_ci = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
     try std.testing.expect(!entry_ci.isNone());
     try std.testing.expect(!lib_ci.isNone());
     try std.testing.expect(entry_ci != lib_ci); // 서로 다른 청크
@@ -1338,8 +1338,8 @@ test "generateChunks: (#4552) run_before_main 은 manualChunks 매칭돼도 entr
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1)); // entry → setup (RBM dep)
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2)); // entry → lib
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1))); // entry → setup (RBM dep)
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(2))); // entry → lib
 
     // 패턴이 setup(RBM)·lib 를 모두 매칭. run_before_main 이 setup 을 RBM 으로 지정.
     const manual_entries = [_]types.ManualChunkEntry{.{ .name = "grp", .patterns = &.{ "setup", "lib" } }};
@@ -1350,9 +1350,9 @@ test "generateChunks: (#4552) run_before_main 은 manualChunks 매칭돼도 entr
     });
     defer cg.deinit();
 
-    const entry_ci = cg.getModuleChunk(@enumFromInt(0));
-    const setup_ci = cg.getModuleChunk(@enumFromInt(1));
-    const lib_ci = cg.getModuleChunk(@enumFromInt(2));
+    const entry_ci = cg.getModuleChunk(@fromBackingInt(@intCast(0)));
+    const setup_ci = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
+    const lib_ci = cg.getModuleChunk(@fromBackingInt(@intCast(2)));
     // 핵심: setup(RBM)은 entry 와 같은 청크(co-locate), lib 만 manual.
     try std.testing.expect(setup_ci == entry_ci);
     try std.testing.expect(cg.getChunk(entry_ci).kind == .entry_point);
@@ -1374,8 +1374,8 @@ test "generateChunks: (#4553 code-review) 중복 이름 record 는 crash 없이 
     var tg = try TestGraph.init(alloc, &modules);
     defer tg.deinit(alloc);
 
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
-    try tg.graph.linkDependency(@enumFromInt(0), @enumFromInt(2));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
+    try tg.graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(2)));
 
     // 같은 이름 'vendor' 를 두 record 로 — dedupe 되어 slot 1개.
     const manual_entries = [_]types.ManualChunkEntry{
@@ -1386,8 +1386,8 @@ test "generateChunks: (#4553 code-review) 중복 이름 record 는 crash 없이 
     defer cg.deinit();
 
     // crash 없이: react·lodash 는 같은 'vendor' manual 청크로 병합.
-    const react_ci = cg.getModuleChunk(@enumFromInt(1));
-    const lodash_ci = cg.getModuleChunk(@enumFromInt(2));
+    const react_ci = cg.getModuleChunk(@fromBackingInt(@intCast(1)));
+    const lodash_ci = cg.getModuleChunk(@fromBackingInt(@intCast(2)));
     try std.testing.expect(!react_ci.isNone());
     try std.testing.expect(react_ci == lodash_ci); // 두 record 가 한 청크로
     try std.testing.expect(cg.getChunk(react_ci).kind == .manual);
@@ -1457,7 +1457,7 @@ test "computeCrossChunkLinks: 직접 CJS import 도 cross-chunk 심볼로 등록
     try std.testing.expect(a_chunk != cjs_chunk);
 
     // a 청크가 lib.cjs 청크에서 "default" 를 가져온다 (canonical = lib.cjs).
-    const syms = cg.getChunk(a_chunk).imports_from.get(@intFromEnum(cjs_chunk));
+    const syms = cg.getChunk(a_chunk).imports_from.get(@backingInt(cjs_chunk));
     try std.testing.expect(syms != null);
     var found = false;
     for (syms.?.items) |sym| {

@@ -175,7 +175,7 @@ pub const ExportBinding = struct {
             .alias => false,
             .semantic => |s| blk: {
                 if (s.symbol.isNone()) break :blk false;
-                const idx: u32 = @intFromEnum(s.symbol);
+                const idx: u32 = @backingInt(s.symbol);
                 if (idx >= symbols.len) break :blk false;
                 const sk = symbols[idx].synthetic_kind orelse break :blk false;
                 break :blk sk == .default_export;
@@ -238,7 +238,7 @@ pub fn extractImportBindings(
         const extras = ast.extra_data.items[e .. e + 3];
         const specs_start = extras[0];
         const specs_len = extras[1];
-        const source_idx: NodeIndex = @enumFromInt(extras[2]);
+        const source_idx: NodeIndex = @fromBackingInt(@intCast(extras[2]));
         if (source_idx.isNone()) continue;
 
         // source span으로 ImportRecord 인덱스 찾기
@@ -249,9 +249,9 @@ pub fn extractImportBindings(
 
         const spec_indices = ast.extra_data.items[specs_start .. specs_start + specs_len];
         for (spec_indices) |raw_idx| {
-            const spec: NodeIndex = @enumFromInt(raw_idx);
+            const spec: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (spec.isNone()) continue;
-            if (@intFromEnum(spec) >= ast.nodes.items.len) continue;
+            if (@backingInt(spec) >= ast.nodes.items.len) continue;
 
             const spec_node = ast.getNode(spec);
             switch (spec_node.tag) {
@@ -286,7 +286,7 @@ pub fn extractImportBindings(
                     const imported_node = ast.getNode(imported_idx);
                     const imported_name = try stableIdentifierText(allocator, ast, imported_node);
 
-                    const local_node_idx = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
+                    const local_node_idx = if (!local_idx.isNone() and @backingInt(local_idx) != @backingInt(imported_idx))
                         local_idx
                     else
                         imported_idx;
@@ -294,7 +294,7 @@ pub fn extractImportBindings(
                     const local_name = try stableIdentifierText(allocator, ast, local_node);
 
                     const is_helper = if (helper_ref_nodes) |refs|
-                        std.sort.binarySearch(u32, refs, @intFromEnum(local_node_idx), struct {
+                        std.sort.binarySearch(u32, refs, @backingInt(local_node_idx), struct {
                             fn cmp(needle: u32, item: u32) std.math.Order {
                                 return std.math.order(needle, item);
                             }
@@ -360,10 +360,10 @@ pub fn extractExportBindings(
                 if (e + 3 >= ast.extra_data.items.len) continue;
 
                 const extras = ast.extra_data.items[e .. e + 4];
-                const decl_idx: NodeIndex = @enumFromInt(extras[0]);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(extras[0]));
                 const specs_start = extras[1];
                 const specs_len = extras[2];
-                const source_idx: NodeIndex = @enumFromInt(extras[3]);
+                const source_idx: NodeIndex = @fromBackingInt(@intCast(extras[3]));
 
                 // export const x = 1; / export function f() {}
                 if (!decl_idx.isNone()) {
@@ -398,9 +398,9 @@ pub fn extractExportBindings(
                 if (specs_len > 0) {
                     const spec_indices = ast.extra_data.items[specs_start .. specs_start + specs_len];
                     for (spec_indices) |raw_idx| {
-                        const spec: NodeIndex = @enumFromInt(raw_idx);
+                        const spec: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                         if (spec.isNone()) continue;
-                        if (@intFromEnum(spec) >= ast.nodes.items.len) continue;
+                        if (@backingInt(spec) >= ast.nodes.items.len) continue;
                         const spec_node = ast.getNode(spec);
                         if (spec_node.tag != .export_specifier) continue;
                         if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
@@ -413,7 +413,7 @@ pub fn extractExportBindings(
                         const local_node = ast.getNode(local_idx);
                         const local_name = try stableIdentifierText(allocator, ast, local_node);
 
-                        const exported_node = if (!exported_idx.isNone() and @intFromEnum(exported_idx) != @intFromEnum(local_idx))
+                        const exported_node = if (!exported_idx.isNone() and @backingInt(exported_idx) != @backingInt(local_idx))
                             ast.getNode(exported_idx)
                         else
                             local_node;
@@ -462,7 +462,7 @@ pub fn extractExportBindings(
                     if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
                         const e = inner.data.extra;
                         if (e < ast.extra_data.items.len) {
-                            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+                            const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
                             if (!name_idx.isNone()) {
                                 const name_node = ast.getNode(name_idx);
                                 local_name = try stableIdentifierText(allocator, ast, name_node);
@@ -497,7 +497,7 @@ pub fn extractExportBindings(
                     .local_symbol_node = if (kind == .local) local_symbol_node else null,
                     .kind = kind,
                     .import_record_index = final_rec_idx,
-                    .default_export_node = @enumFromInt(ni),
+                    .default_export_node = @fromBackingInt(@intCast(ni)),
                     .has_default_export_facade = module_parser.defaultExportNeedsFacade(ast, inner_idx),
                 });
             },
@@ -576,25 +576,25 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
             while (i < list_len) : (i += 1) {
                 const idx = list_start + i;
                 if (idx >= ast.extra_data.items.len) break;
-                const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[idx]);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[idx]));
                 if (decl_idx.isNone()) continue;
-                if (@intFromEnum(decl_idx) >= ast.nodes.items.len) continue;
+                if (@backingInt(decl_idx) >= ast.nodes.items.len) continue;
                 const decl_node = ast.getNode(decl_idx);
                 if (decl_node.tag != .variable_declarator) continue;
                 // variable_declarator: extra [name, type_ann, init_expr]
                 const de = decl_node.data.extra;
                 if (de >= ast.extra_data.items.len) continue;
-                const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de]);
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[de]));
                 if (name_idx.isNone()) continue;
-                if (@intFromEnum(name_idx) >= ast.nodes.items.len) continue;
+                if (@backingInt(name_idx) >= ast.nodes.items.len) continue;
 
                 // (#4587) declarator shape 를 scan 시 기록: pattern 여부·init 이 fn/class 표현식인지.
                 const name_node = ast.getNode(name_idx);
                 const via_pattern = name_node.tag == .object_pattern or name_node.tag == .array_pattern;
                 var init_fn_class = false;
                 if (!via_pattern and de + 2 < ast.extra_data.items.len) {
-                    const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
-                    if (!init_idx.isNone() and @intFromEnum(init_idx) < ast.nodes.items.len) {
+                    const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[de + 2]));
+                    if (!init_idx.isNone() and @backingInt(init_idx) < ast.nodes.items.len) {
                         init_fn_class = initTagIsFnOrClass(ast.getNode(init_idx).tag);
                     }
                 }
@@ -607,7 +607,7 @@ fn extractDeclExportNames(allocator: std.mem.Allocator, ast: *const Ast, decl: N
         .function_declaration, .class_declaration, .ts_enum_declaration => {
             const e = decl.data.extra;
             if (e >= ast.extra_data.items.len) return names.toOwnedSlice(allocator);
-            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
             if (name_idx.isNone()) return names.toOwnedSlice(allocator);
             const name_node = ast.getNode(name_idx);
             try names.append(allocator, .{
@@ -785,7 +785,7 @@ pub fn populateSyntheticSymbols(
             if (has_analyzer_facade) {
                 if (symbol_ids) |ids| {
                     const node_idx = eb.default_export_node orelse return error.MissingDefaultExportFacadeNode;
-                    const node_id = @intFromEnum(node_idx);
+                    const node_id = @backingInt(node_idx);
                     if (node_id >= ids.len) return error.MissingDefaultExportFacadeSymbol;
                     const raw_symbol_id = ids[node_id] orelse return error.MissingDefaultExportFacadeSymbol;
                     if (raw_symbol_id >= sem_symbols.items.len) return error.InvalidDefaultExportFacadeSymbol;
@@ -798,7 +798,7 @@ pub fn populateSyntheticSymbols(
                     eb.symbol = .{
                         .semantic = .{
                             .module = module_index,
-                            .symbol = @enumFromInt(raw_symbol_id),
+                            .symbol = @fromBackingInt(@intCast(raw_symbol_id)),
                         },
                     };
                     continue;
@@ -816,7 +816,7 @@ pub fn populateSyntheticSymbols(
                     {
                         sem_symbols.items[existing_idx].synthetic_kind = .default_export;
                         sem_symbols.items[existing_idx].synthetic_name = "_default";
-                        const sym_id: semantic_symbol.SymbolId = @enumFromInt(@as(u32, @intCast(existing_idx)));
+                        const sym_id: semantic_symbol.SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(existing_idx))));
                         eb.symbol = .{ .semantic = .{ .module = module_index, .symbol = sym_id } };
                         continue;
                     }
@@ -842,7 +842,7 @@ pub fn populateSyntheticSymbols(
             // semantic ID map이 없는 저수준 호출에서만 호환 경로로 남긴다.
             if (symbol_ids) |ids| {
                 const node_idx = eb.local_symbol_node orelse return error.MissingLocalExportSymbolNode;
-                const raw_node_idx = @intFromEnum(node_idx);
+                const raw_node_idx = @backingInt(node_idx);
                 if (raw_node_idx >= ids.len) return error.MissingLocalExportSymbol;
                 const raw_symbol_id = ids[raw_node_idx] orelse {
                     // Unresolved global expressions such as `export default globalThis`
@@ -857,7 +857,7 @@ pub fn populateSyntheticSymbols(
                 eb.symbol = .{
                     .semantic = .{
                         .module = module_index,
-                        .symbol = @enumFromInt(raw_symbol_id),
+                        .symbol = @fromBackingInt(@intCast(raw_symbol_id)),
                     },
                 };
                 continue;

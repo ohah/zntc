@@ -43,13 +43,13 @@ pub const SPEC_FLAG_TYPE_ONLY: u16 = 1;
 /// Keep this decision shared by parsing, semantic analysis, and bundler export
 /// metadata so a real source binding named `_default` is never used as a proxy.
 pub fn defaultExportNeedsFacade(ast: *const ast_mod.Ast, inner_idx: NodeIndex) bool {
-    if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return true;
+    if (inner_idx.isNone() or @backingInt(inner_idx) >= ast.nodes.items.len) return true;
 
     const inner = ast.getNode(inner_idx);
     if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
         const e = inner.data.extra;
         if (e < ast.extra_data.items.len) {
-            const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
             if (!name_idx.isNone()) return false;
         }
     } else if (inner.tag == .identifier_reference) {
@@ -83,8 +83,8 @@ pub fn readImportDeclExtras(ast: anytype, e: u32) ImportDeclExtras {
     return .{
         .specs_start = slots[0],
         .specs_len = slots[1],
-        .source = @enumFromInt(slots[2]),
-        .phase = @enumFromInt(@as(u4, @truncate(packed_phase & PHASE_MASK))),
+        .source = @fromBackingInt(@intCast(slots[2])),
+        .phase = @fromBackingInt(@intCast(@as(u4, @truncate(packed_phase & PHASE_MASK)))),
         .is_type_only = (packed_phase & TYPE_ONLY_BIT) != 0,
         .attrs_start = slots[4],
         .attrs_len = slots[5],
@@ -108,12 +108,12 @@ fn finalizeImportDeclaration(
     attrs: NodeList,
     is_type_only: bool,
 ) ParseError2!NodeIndex {
-    const packed_phase: u32 = @as(u32, @intFromEnum(phase)) |
+    const packed_phase: u32 = @as(u32, @backingInt(phase)) |
         (if (is_type_only) TYPE_ONLY_BIT else 0);
     const extra_start = try self.ast.addExtras(&.{
         specs_start,
         specs_len,
-        @intFromEnum(source_node),
+        @backingInt(source_node),
         packed_phase,
         attrs.start,
         attrs.len,
@@ -138,8 +138,8 @@ pub const ExportAllExtras = struct {
 pub fn readExportAllExtras(ast: anytype, e: u32) ExportAllExtras {
     const slots = ast.extra_data.items[e .. e + 4];
     return .{
-        .exported_name = @enumFromInt(slots[0]),
-        .source = @enumFromInt(slots[1]),
+        .exported_name = @fromBackingInt(@intCast(slots[0])),
+        .source = @fromBackingInt(@intCast(slots[1])),
         .attrs_start = slots[2],
         .attrs_len = slots[3],
     };
@@ -159,10 +159,10 @@ pub const ExportNamedExtras = struct {
 pub fn readExportNamedExtras(ast: anytype, e: u32) ExportNamedExtras {
     const slots = ast.extra_data.items[e .. e + 6];
     return .{
-        .decl = @enumFromInt(slots[0]),
+        .decl = @fromBackingInt(@intCast(slots[0])),
         .specs_start = slots[1],
         .specs_len = slots[2],
-        .source = @enumFromInt(slots[3]),
+        .source = @fromBackingInt(@intCast(slots[3])),
         .attrs_start = slots[4],
         .attrs_len = slots[5],
     };
@@ -192,7 +192,7 @@ pub fn parseImportCallArgs(self: *Parser, start: u32) ParseError2!NodeIndex {
     try self.expect(.r_paren);
 
     // Inline scan: dynamic import — 인자가 string_literal이면 레코드 추가
-    if (self.enable_scan and !arg.isNone() and @intFromEnum(arg) < self.ast.nodes.items.len) {
+    if (self.enable_scan and !arg.isNone() and @backingInt(arg) < self.ast.nodes.items.len) {
         const arg_node = self.ast.getNode(arg);
         if (arg_node.tag == .string_literal) {
             const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
@@ -560,7 +560,7 @@ fn parseImportSpecifier(self: *Parser) ParseError2!NodeIndex {
     if (try self.eatContextual("as")) {
         // `as` 뒤는 반드시 BindingIdentifier (string literal 불가)
         local = try self.parseIdentifierName();
-    } else if (!imported.isNone() and @intFromEnum(imported) < self.ast.nodes.items.len and
+    } else if (!imported.isNone() and @backingInt(imported) < self.ast.nodes.items.len and
         self.ast.getNode(imported).tag == .string_literal)
     {
         // string literal without `as` — binding 이름이 없으므로 에러
@@ -634,7 +634,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             .at => blk: {
                 const scratch_top = self.saveScratch();
                 for (self.ast.extra_data.items[decorators.start .. decorators.start + decorators.len]) |dec|
-                    try self.scratch.append(self.allocator, @enumFromInt(dec));
+                    try self.scratch.append(self.allocator, @fromBackingInt(@intCast(dec)));
                 while (self.current() == .at) {
                     const dec = try self.parseDecorator();
                     try self.scratch.append(self.allocator, dec);
@@ -648,11 +648,11 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 // export default interface Foo {} — TS 전용, 런타임에 제거
                 if (self.current() == .kw_interface) {
                     const iface_idx = try self.parseTsInterfaceDeclaration();
-                    if (!iface_idx.isNone() and @intFromEnum(iface_idx) < self.ast.nodes.items.len) {
+                    if (!iface_idx.isNone() and @backingInt(iface_idx) < self.ast.nodes.items.len) {
                         const iface = self.ast.getNode(iface_idx);
                         if (iface.data.extra < self.ast.extra_data.items.len) {
-                            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[iface.data.extra]);
-                            if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[iface.data.extra]));
+                            if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                                 const name = self.ast.getText(self.ast.getNode(name_idx).span);
                                 if (name.len > 0) {
                                     try self.ast.type_only_binding_names.put(self.allocator, name, {});
@@ -707,13 +707,13 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 if (inner.tag == .function_declaration or inner.tag == .class_declaration) {
                     const e = inner.data.extra;
                     if (e < self.ast.extra_data.items.len) {
-                        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-                        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                        const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+                        if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                             const name_node = self.ast.getNode(name_idx);
                             const n = try stableModuleExportName(self, name_node);
                             if (n.len > 0) {
                                 local_name = n;
-                                local_symbol_node_index = @intFromEnum(name_idx);
+                                local_symbol_node_index = @backingInt(name_idx);
                             }
                         }
                     }
@@ -721,7 +721,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                     const n = try stableModuleExportName(self, inner);
                     if (n.len > 0) {
                         local_name = n;
-                        local_symbol_node_index = @intFromEnum(decl);
+                        local_symbol_node_index = @backingInt(decl);
                     }
                 }
             }
@@ -734,7 +734,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 .local_symbol_node_index = if (re.kind == .local) local_symbol_node_index else null,
                 .kind = re.kind,
                 .import_record_index = re.import_record_index,
-                .default_export_node_index = @intFromEnum(export_node),
+                .default_export_node_index = @backingInt(export_node),
                 .has_default_export_facade = defaultExportNeedsFacade(&self.ast, decl),
             }) catch {};
         }
@@ -777,7 +777,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
             const spec = extractImportSpecifier(self, raw);
             const rec_idx = appendImportRecord(self, spec, .re_export, src_node.span);
 
-            if (!exported_name.isNone() and @intFromEnum(exported_name) < self.ast.nodes.items.len) {
+            if (!exported_name.isNone() and @backingInt(exported_name) < self.ast.nodes.items.len) {
                 // export * as ns from "module"
                 const name_node = self.ast.getNode(exported_name);
                 const name_text = try stableModuleExportName(self, name_node);
@@ -802,8 +802,8 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
         if (!is_export_equals) self.has_module_syntax = true;
         const extra_start = try self.ast.addExtras(&.{
-            @intFromEnum(exported_name),
-            @intFromEnum(source_node),
+            @backingInt(exported_name),
+            @backingInt(source_node),
             attrs.start,
             attrs.len,
         });
@@ -844,11 +844,11 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
         if (source_node.isNone()) {
             for (self.scratch.items[scratch_top..]) |spec_idx| {
                 if (spec_idx.isNone()) continue;
-                if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+                if (@backingInt(spec_idx) >= self.ast.nodes.items.len) continue;
                 const spec_node = self.ast.getNode(spec_idx);
                 if (spec_node.tag == .export_specifier) {
                     const local_idx = spec_node.data.binary.left;
-                    if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
+                    if (!local_idx.isNone() and @backingInt(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
                         if (local_node.tag == .string_literal) {
                             try self.addErrorCode(local_node.span, "String literal cannot be used as local binding in export", .export_string_local_binding);
@@ -872,7 +872,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
             for (self.scratch.items[scratch_top..]) |spec_idx| {
                 if (spec_idx.isNone()) continue;
-                if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+                if (@backingInt(spec_idx) >= self.ast.nodes.items.len) continue;
                 const spec_node = self.ast.getNode(spec_idx);
                 if (spec_node.tag != .export_specifier) continue;
                 // skip type-only specifiers
@@ -885,7 +885,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                 const local_node = self.ast.getNode(local_idx);
                 const local_name = try stableModuleExportName(self, local_node);
 
-                const exported_node = if (!exported_idx.isNone() and @intFromEnum(exported_idx) != @intFromEnum(local_idx))
+                const exported_node = if (!exported_idx.isNone() and @backingInt(exported_idx) != @backingInt(local_idx))
                     self.ast.getNode(exported_idx)
                 else
                     local_node;
@@ -907,7 +907,7 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
                         .exported_name = exported_name,
                         .local_name = re.local_name,
                         .local_span = local_node.span,
-                        .local_symbol_node_index = if (re.kind == .local) @intFromEnum(local_idx) else null,
+                        .local_symbol_node_index = if (re.kind == .local) @backingInt(local_idx) else null,
                         .kind = re.kind,
                         .import_record_index = re.import_record_index,
                     }) catch {};
@@ -922,10 +922,10 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
         // extra_data layout: [declaration, specifiers_start, specifiers_len, source, attrs_start, attrs_len]
         const extra_start = try self.ast.addExtras(&.{
-            @intFromEnum(NodeIndex.none), // declaration 없음
+            @backingInt(NodeIndex.none), // declaration 없음
             specifiers.start,
             specifiers.len,
-            @intFromEnum(source_node),
+            @backingInt(source_node),
             attrs.start,
             attrs.len,
         });
@@ -992,10 +992,10 @@ pub fn parseExportDeclarationWithDecorators(self: *Parser, decorators: ast_mod.N
 
     // extra_data layout: [declaration, specifiers_start, specifiers_len, source, attrs_start, attrs_len]
     const extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(decl),
+        @backingInt(decl),
         0, // specifiers_start (사용 안 함)
         0, // specifiers_len = 0
-        @intFromEnum(NodeIndex.none), // source 없음
+        @backingInt(NodeIndex.none), // source 없음
         0, // attrs_start
         0, // attrs_len
     });
@@ -1324,7 +1324,7 @@ fn stableModuleImportBindingName(self: *Parser, span: Span) ParseError2![]const 
 fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseError2!void {
     for (self.scratch.items[scratch_top..]) |spec_idx| {
         if (spec_idx.isNone()) continue;
-        if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+        if (@backingInt(spec_idx) >= self.ast.nodes.items.len) continue;
         const spec_node = self.ast.getNode(spec_idx);
         switch (spec_node.tag) {
             .import_default_specifier => {
@@ -1355,7 +1355,7 @@ fn collectImportBindings(self: *Parser, scratch_top: usize, rec_idx: u32) ParseE
                 const imported_node = self.ast.getNode(imported_idx);
                 const imported_name = try stableModuleExportName(self, imported_node);
 
-                const local_node = if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(imported_idx))
+                const local_node = if (!local_idx.isNone() and @backingInt(local_idx) != @backingInt(imported_idx))
                     self.ast.getNode(local_idx)
                 else
                     imported_node;
@@ -1389,7 +1389,7 @@ fn appendImportRecord(self: *Parser, specifier: []const u8, kind: scan_results_m
 /// variable_declaration, function_declaration, class_declaration을 처리한다.
 fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) ParseError2!void {
     if (decl_idx.isNone()) return;
-    if (@intFromEnum(decl_idx) >= self.ast.nodes.items.len) return;
+    if (@backingInt(decl_idx) >= self.ast.nodes.items.len) return;
     const decl_node = self.ast.getNode(decl_idx);
 
     switch (decl_node.tag) {
@@ -1405,25 +1405,25 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) ParseError2!voi
             while (i < list_len) : (i += 1) {
                 const idx = list_start + i;
                 if (idx >= self.ast.extra_data.items.len) break;
-                const d_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[idx]);
+                const d_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[idx]));
                 if (d_idx.isNone()) continue;
-                if (@intFromEnum(d_idx) >= self.ast.nodes.items.len) continue;
+                if (@backingInt(d_idx) >= self.ast.nodes.items.len) continue;
                 const d_node = self.ast.getNode(d_idx);
                 if (d_node.tag != .variable_declarator) continue;
                 // variable_declarator: extra [name, type_ann, init_expr]
                 const de = d_node.data.extra;
                 if (de >= self.ast.extra_data.items.len) continue;
-                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[de]));
                 if (name_idx.isNone()) continue;
-                if (@intFromEnum(name_idx) >= self.ast.nodes.items.len) continue;
+                if (@backingInt(name_idx) >= self.ast.nodes.items.len) continue;
                 const name_node = self.ast.getNode(name_idx);
 
                 // (#4587) declarator shape 를 scan 시 기록: pattern 여부·init 이 fn/class 표현식인지.
                 const via_pattern = name_node.tag == .object_pattern or name_node.tag == .array_pattern;
                 var init_fn_class = false;
                 if (!via_pattern and de + 2 < self.ast.extra_data.items.len) {
-                    const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de + 2]);
-                    if (!init_idx.isNone() and @intFromEnum(init_idx) < self.ast.nodes.items.len) {
+                    const init_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[de + 2]));
+                    if (!init_idx.isNone() and @backingInt(init_idx) < self.ast.nodes.items.len) {
                         init_fn_class = switch (self.ast.getNode(init_idx).tag) {
                             .function_expression, .function, .arrow_function_expression, .class_expression => true,
                             else => false,
@@ -1436,7 +1436,7 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) ParseError2!voi
         .function_declaration, .class_declaration => {
             const e = decl_node.data.extra;
             if (e >= self.ast.extra_data.items.len) return;
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
             if (name_idx.isNone()) return;
             const name_node = self.ast.getNode(name_idx);
             const name = try stableModuleExportName(self, name_node);
@@ -1444,7 +1444,7 @@ fn collectDeclExportBindings(self: *Parser, decl_idx: NodeIndex) ParseError2!voi
                 .exported_name = name,
                 .local_name = name,
                 .local_span = name_node.span,
-                .local_symbol_node_index = @intFromEnum(name_idx),
+                .local_symbol_node_index = @backingInt(name_idx),
                 .kind = .local,
             }) catch {};
         },
@@ -1463,7 +1463,7 @@ fn collectPatternExportBindings(self: *Parser, pattern_idx: NodeIndex, via_patte
             .exported_name = name,
             .local_name = name,
             .local_span = name_node.span,
-            .local_symbol_node_index = @intFromEnum(name_idx),
+            .local_symbol_node_index = @backingInt(name_idx),
             .kind = .local,
             .declared_via_pattern = via_pattern,
             .init_is_fn_or_class = init_fn_class,

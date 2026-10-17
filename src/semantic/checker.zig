@@ -64,8 +64,8 @@ pub fn checkDuplicateConstructors(
     var first_constructor_span: ?Span = null;
 
     for (indices) |raw_idx| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
         const node = ast.getNode(idx);
 
         // method_definition만 검사 (property_definition, static_block 등은 스킵)
@@ -73,7 +73,7 @@ pub fn checkDuplicateConstructors(
 
         const extra_start = node.data.extra;
         if (extra_start + 3 >= ast.extra_data.items.len) continue;
-        const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
+        const key_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_start]));
         const flags = ast.extra_data.items[extra_start + 3];
 
         // static 메서드는 constructor가 아님
@@ -88,7 +88,7 @@ pub fn checkDuplicateConstructors(
 
         // TypeScript constructor overloads: body가 없는 시그니처는 허용.
         // body(extra[2])가 .none이면 overload 시그니처이므로 스킵.
-        const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start + 2]);
+        const body_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_start + 2]));
         if (body_idx.isNone()) continue;
 
         if (first_constructor_span) |first| {
@@ -158,15 +158,15 @@ pub fn checkPrivateNameStaticConflict(
     defer declared.deinit(allocator);
 
     for (indices) |raw_idx| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
         const node = ast.getNode(idx);
 
         switch (node.tag) {
             .method_definition => {
                 const extra_start = node.data.extra;
                 if (extra_start + 3 >= ast.extra_data.items.len) continue;
-                const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
+                const key_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_start]));
                 const flags = ast.extra_data.items[extra_start + 3];
                 const is_static = (flags & METHOD_FLAG_STATIC) != 0;
 
@@ -177,7 +177,7 @@ pub fn checkPrivateNameStaticConflict(
                 // static 비트는 parser.zig에서 flags 0x01로 인코딩 (확인 완료)
                 const extra_start = node.data.extra;
                 if (extra_start + 2 >= ast.extra_data.items.len) continue;
-                const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
+                const key_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_start]));
                 const is_static = (ast.extra_data.items[extra_start + 2] & METHOD_FLAG_STATIC) != 0;
 
                 try checkPrivateKeyStaticConflict(ast, key_idx, is_static, &declared, errors, allocator);
@@ -201,7 +201,7 @@ fn checkPrivateKeyStaticConflict(
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return;
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return;
     const key_node = ast.getNode(key_idx);
     if (key_node.tag != .private_identifier) return;
 
@@ -245,8 +245,8 @@ pub fn checkObjectDuplicateProto(
     var first_proto_span: ?Span = null;
 
     for (indices) |raw_idx| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
         const node = ast.getNode(idx);
 
         // object_property만 검사 (method_definition, spread_element 등은 스킵)
@@ -313,11 +313,11 @@ pub fn checkGetterSetterParams(
 
 /// 파라미터가 rest 인지 — TS 수식어·데코레이터가 붙으면 formal_parameter 래퍼 안의 pattern 을 본다.
 fn isRestParam(ast: *const Ast, raw: u32) bool {
-    var idx: NodeIndex = @enumFromInt(raw);
+    var idx: NodeIndex = @fromBackingInt(@intCast(raw));
     if (idx.isNone()) return false;
     var param = ast.getNode(idx);
     if (param.tag == .formal_parameter) {
-        idx = @enumFromInt(ast.extra_data.items[param.data.extra]);
+        idx = @fromBackingInt(@intCast(ast.extra_data.items[param.data.extra]));
         if (idx.isNone()) return false;
         param = ast.getNode(idx);
     }
@@ -354,7 +354,7 @@ pub fn checkDuplicateParams(
 
     const param_indices = ast.extra_data.items[params.start .. params.start + params.len];
     for (param_indices) |raw_idx| {
-        try collectBindingNames(ast, @enumFromInt(raw_idx), &seen, errors, allocator);
+        try collectBindingNames(ast, @fromBackingInt(@intCast(raw_idx)), &seen, errors, allocator);
     }
 }
 
@@ -404,7 +404,7 @@ pub fn checkDuplicateArrowParams(
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
-    if (param_idx.isNone() or @intFromEnum(param_idx) >= ast.nodes.items.len) return;
+    if (param_idx.isNone() or @backingInt(param_idx) >= ast.nodes.items.len) return;
 
     // fast path: 단일 파라미터는 중복 불가능
     const node = ast.getNode(param_idx);
@@ -425,7 +425,7 @@ fn collectArrowParamNames(
     errors: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) AllocError!void {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return;
     const node = ast.getNode(idx);
 
     switch (node.tag) {
@@ -438,7 +438,7 @@ fn collectArrowParamNames(
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
             const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (indices) |raw_idx| {
-                try collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+                try collectArrowParamNames(ast, @fromBackingInt(@intCast(raw_idx)), seen, errors, allocator);
             }
         },
         .identifier_reference, .assignment_target_identifier => {
@@ -456,7 +456,7 @@ fn collectArrowParamNames(
             if (node.data.list.start + node.data.list.len > ast.extra_data.items.len) return;
             const indices = ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (indices) |raw_idx| {
-                try collectArrowParamNames(ast, @enumFromInt(raw_idx), seen, errors, allocator);
+                try collectArrowParamNames(ast, @fromBackingInt(@intCast(raw_idx)), seen, errors, allocator);
             }
         },
         .assignment_expression, .assignment_pattern, .assignment_target_with_default => {

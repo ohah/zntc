@@ -17,8 +17,8 @@ const group_name = @import("group_name.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const UNNAMED = std.math.maxInt(u32);
-const UESC = @intFromEnum(ast.CharacterKind.unicode_escape);
-const SYM = @intFromEnum(ast.CharacterKind.symbol);
+const UESC = @backingInt(ast.CharacterKind.unicode_escape);
+const SYM = @backingInt(ast.CharacterKind.symbol);
 
 /// ECMAScript `\s` 집합 (WhiteSpace + LineTerminator). 전부 BMP.
 const WS_RANGES = [_][2]u32{
@@ -92,14 +92,14 @@ fn collectNamed(
             if (n.data[0] != UNNAMED) {
                 try out.append(a, .{ .name = in.source[n.data[0]..n.data[1]], .index = ctr.* });
             }
-            try collectNamed(in, @enumFromInt(n.data[2]), ctr, out, a);
+            try collectNamed(in, @fromBackingInt(@intCast(n.data[2])), ctr, out, a);
         },
-        .ignore_group => try collectNamed(in, @enumFromInt(n.data[2]), ctr, out, a),
-        .lookaround_assertion => try collectNamed(in, @enumFromInt(n.data[1]), ctr, out, a),
+        .ignore_group => try collectNamed(in, @fromBackingInt(@intCast(n.data[2])), ctr, out, a),
+        .lookaround_assertion => try collectNamed(in, @fromBackingInt(@intCast(n.data[1])), ctr, out, a),
         .quantifier => try collectNamed(in, n.getQuantifierBody(), ctr, out, a),
         .disjunction, .alternative => {
             for (in.getNodeList(n.getNodeList())) |c| {
-                try collectNamed(in, @enumFromInt(c), ctr, out, a);
+                try collectNamed(in, @fromBackingInt(@intCast(c)), ctr, out, a);
             }
         },
         // character class 내부엔 capturing group 이 올 수 없음.
@@ -114,7 +114,7 @@ const Builder = struct {
 
     fn add(self: *Builder, n: Node) TransformError!NodeIndex {
         try self.nodes.append(self.a, n);
-        return @enumFromInt(@as(u32, @intCast(self.nodes.items.len - 1)));
+        return @fromBackingInt(@intCast(@as(u32, @intCast(self.nodes.items.len - 1))));
     }
 
     fn addList(self: *Builder, ids: []const u32) TransformError!ast.NodeList {
@@ -164,16 +164,16 @@ const T = struct {
         const sp = cps.splitSurrogatePair(cp);
         const a = try self.b.add(.{ .tag = .character, .span = span, .data = .{ sp.hi, UESC, 0 } });
         const c = try self.b.add(.{ .tag = .character, .span = span, .data = .{ sp.lo, UESC, 0 } });
-        try out.append(self.b.a, @intFromEnum(a));
-        try out.append(self.b.a, @intFromEnum(c));
+        try out.append(self.b.a, @backingInt(a));
+        try out.append(self.b.a, @backingInt(c));
     }
 
     fn makeDotAllClass(self: *T, span: ast.Span) TransformError!NodeIndex {
-        const sk = @intFromEnum(ast.CharacterClassEscapeKind.s);
-        const nsk = @intFromEnum(ast.CharacterClassEscapeKind.negative_s);
+        const sk = @backingInt(ast.CharacterClassEscapeKind.s);
+        const nsk = @backingInt(ast.CharacterClassEscapeKind.negative_s);
         const e_s = try self.b.add(.{ .tag = .character_class_escape, .span = span, .data = .{ sk, 0, 0 } });
         const e_ns = try self.b.add(.{ .tag = .character_class_escape, .span = span, .data = .{ nsk, 0, 0 } });
-        const list = try self.b.addList(&.{ @intFromEnum(e_s), @intFromEnum(e_ns) });
+        const list = try self.b.addList(&.{ @backingInt(e_s), @backingInt(e_ns) });
         // character_class data: [flags, list_start, list_len], flags bit0=neg, bits1-2=kind(union=0)
         return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, list.start, list.len } });
     }
@@ -184,7 +184,7 @@ const T = struct {
     fn makeAsciiFoldClass(self: *T, c1: u32, c2: u32, span: ast.Span) TransformError!NodeIndex {
         const x = try self.b.add(.{ .tag = .character, .span = span, .data = .{ c1, SYM, 0 } });
         const y = try self.b.add(.{ .tag = .character, .span = span, .data = .{ c2, SYM, 0 } });
-        const l = try self.b.addList(&.{ @intFromEnum(x), @intFromEnum(y) });
+        const l = try self.b.addList(&.{ @backingInt(x), @backingInt(y) });
         return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
     }
 
@@ -217,7 +217,7 @@ const T = struct {
         var kids: std.ArrayList(u32) = .empty;
         defer kids.deinit(self.b.a);
         for (set.items()) |r| {
-            try kids.append(self.b.a, @intFromEnum(try self.rangeChild(r.min, r.max, span)));
+            try kids.append(self.b.a, @backingInt(try self.rangeChild(r.min, r.max, span)));
         }
         const l = try self.b.addList(kids.items);
         return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
@@ -243,7 +243,7 @@ const T = struct {
 
     /// `[\n\r  ]` (ECMAScript LineTerminator 집합) character_class.
     fn makeNewlineClass(self: *T, span: ast.Span) TransformError!NodeIndex {
-        const SE = @intFromEnum(ast.CharacterKind.single_escape);
+        const SE = @backingInt(ast.CharacterKind.single_escape);
         const nl = [_]struct { cp: u32, kind: u32 }{
             .{ .cp = 0x0A, .kind = SE }, // \n
             .{ .cp = 0x0D, .kind = SE }, // \r
@@ -252,7 +252,7 @@ const T = struct {
         };
         var kids: [4]u32 = undefined;
         for (nl, 0..) |e, k| {
-            kids[k] = @intFromEnum(try self.b.add(.{ .tag = .character, .span = span, .data = .{ e.cp, e.kind, 0 } }));
+            kids[k] = @backingInt(try self.b.add(.{ .tag = .character, .span = span, .data = .{ e.cp, e.kind, 0 } }));
         }
         const l = try self.b.addList(&kids);
         return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
@@ -260,14 +260,14 @@ const T = struct {
 
     /// `^`(multiline) → `(?:^|(?<=[\n\r  ]))` (입력시작 OR 줄종결자 뒤).
     fn makeMLineStart(self: *T, span: ast.Span) TransformError!NodeIndex {
-        const caret = try self.b.add(.{ .tag = .boundary_assertion, .span = span, .data = .{ @intFromEnum(ast.BoundaryAssertionKind.start), 0, 0 } });
+        const caret = try self.b.add(.{ .tag = .boundary_assertion, .span = span, .data = .{ @backingInt(ast.BoundaryAssertionKind.start), 0, 0 } });
         const lb = try self.makeLookaround(.lookbehind, span);
         return self.makeAltGroup(caret, lb, span);
     }
 
     /// `$`(multiline) → `(?:$|(?=[\n\r  ]))` (입력끝 OR 줄종결자 앞).
     fn makeMLineEnd(self: *T, span: ast.Span) TransformError!NodeIndex {
-        const dollar = try self.b.add(.{ .tag = .boundary_assertion, .span = span, .data = .{ @intFromEnum(ast.BoundaryAssertionKind.end), 0, 0 } });
+        const dollar = try self.b.add(.{ .tag = .boundary_assertion, .span = span, .data = .{ @backingInt(ast.BoundaryAssertionKind.end), 0, 0 } });
         const la = try self.makeLookaround(.lookahead, span);
         return self.makeAltGroup(dollar, la, span);
     }
@@ -275,32 +275,32 @@ const T = struct {
     /// `(?<=[\n\r…])` / `(?=[\n\r…])` — body 는 파서 관례대로 disjunction 으로 감싼다.
     fn makeLookaround(self: *T, kind: ast.LookAroundAssertionKind, span: ast.Span) TransformError!NodeIndex {
         const body = try self.singleDisjunction(try self.makeNewlineClass(span), span);
-        return self.b.add(.{ .tag = .lookaround_assertion, .span = span, .data = .{ @intFromEnum(kind), @intFromEnum(body), 0 } });
+        return self.b.add(.{ .tag = .lookaround_assertion, .span = span, .data = .{ @backingInt(kind), @backingInt(body), 0 } });
     }
 
     /// atom 하나를 `disjunction→alternative→atom` 으로 감싼다 (lookaround body 가
     /// 기대하는 파서 출력 구조). 단일 alt·단일 term 이라 인쇄는 atom 그대로.
     fn singleDisjunction(self: *T, atom: NodeIndex, span: ast.Span) TransformError!NodeIndex {
-        const al = try self.b.addList(&.{@intFromEnum(atom)});
+        const al = try self.b.addList(&.{@backingInt(atom)});
         const alt = try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } });
-        const dl = try self.b.addList(&.{@intFromEnum(alt)});
+        const dl = try self.b.addList(&.{@backingInt(alt)});
         return self.b.add(.{ .tag = .disjunction, .span = span, .data = .{ dl.start, dl.len, 0 } });
     }
 
     /// 두 atom 을 `(?:a|b)` 로 묶는다 (alternation in non-capturing group).
     fn makeAltGroup(self: *T, a: NodeIndex, b: NodeIndex, span: ast.Span) TransformError!NodeIndex {
-        const a1l = try self.b.addList(&.{@intFromEnum(a)});
+        const a1l = try self.b.addList(&.{@backingInt(a)});
         const alt1 = try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ a1l.start, a1l.len, 0 } });
-        const a2l = try self.b.addList(&.{@intFromEnum(b)});
+        const a2l = try self.b.addList(&.{@backingInt(b)});
         const alt2 = try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ a2l.start, a2l.len, 0 } });
-        const dl = try self.b.addList(&.{ @intFromEnum(alt1), @intFromEnum(alt2) });
+        const dl = try self.b.addList(&.{ @backingInt(alt1), @backingInt(alt2) });
         const disj = try self.b.add(.{ .tag = .disjunction, .span = span, .data = .{ dl.start, dl.len, 0 } });
-        return self.b.add(.{ .tag = .ignore_group, .span = span, .data = .{ 0, 0, @intFromEnum(disj) } });
+        return self.b.add(.{ .tag = .ignore_group, .span = span, .data = .{ 0, 0, @backingInt(disj) } });
     }
 
     fn isAstralUnicodeEscape(n: Node) bool {
         if (n.tag != .character) return false;
-        const kind: ast.CharacterKind = @enumFromInt(n.data[1]);
+        const kind: ast.CharacterKind = @fromBackingInt(@intCast(n.data[1]));
         // #4237: literal astral (.symbol) 도 cp 단위 노드 — 동일 분할 대상.
         return (kind == .unicode_escape or kind == .symbol) and n.data[0] > 0xFFFF;
     }
@@ -320,11 +320,11 @@ const T = struct {
     /// class body 에 astral(cp>0xFFFF) 멤버가 있는가 (빠른 사전 판정).
     fn classHasAstral(self: *T, n: Node) bool {
         for (self.in.getNodeList(n.getClassBody())) |cid| {
-            const m = self.in.getNode(@enumFromInt(cid));
+            const m = self.in.getNode(@fromBackingInt(@intCast(cid)));
             switch (m.tag) {
                 .character => if (m.data[0] > 0xFFFF) return true,
                 .character_class_range => {
-                    if (self.charCp(@enumFromInt(m.data[1]))) |mx| if (mx > 0xFFFF) return true;
+                    if (self.charCp(@fromBackingInt(@intCast(m.data[1])))) |mx| if (mx > 0xFFFF) return true;
                 },
                 else => {},
             }
@@ -341,16 +341,16 @@ const T = struct {
         if (n.classKind() != .@"union") return false;
         const a = self.b.a;
         for (self.in.getNodeList(n.getClassBody())) |cid| {
-            const m = self.in.getNode(@enumFromInt(cid));
+            const m = self.in.getNode(@fromBackingInt(@intCast(cid)));
             switch (m.tag) {
                 .character => try set.addOne(a, m.data[0]),
                 .character_class_range => {
-                    const lo = self.charCp(@enumFromInt(m.data[0])) orelse return false;
-                    const hi = self.charCp(@enumFromInt(m.data[1])) orelse return false;
+                    const lo = self.charCp(@fromBackingInt(@intCast(m.data[0]))) orelse return false;
+                    const hi = self.charCp(@fromBackingInt(@intCast(m.data[1]))) orelse return false;
                     try set.addRange(a, lo, hi);
                 },
                 .character_class_escape => {
-                    switch (@as(ast.CharacterClassEscapeKind, @enumFromInt(m.data[0]))) {
+                    switch (@as(ast.CharacterClassEscapeKind, @fromBackingInt(@intCast(m.data[0])))) {
                         .d => try set.addRange(a, 0x30, 0x39),
                         .w => {
                             try set.addRange(a, 0x30, 0x39);
@@ -394,14 +394,14 @@ const T = struct {
         if (mn == mx) return self.mkChar(mn, span);
         const a = try self.mkChar(mn, span);
         const b = try self.mkChar(mx, span);
-        return self.b.add(.{ .tag = .character_class_range, .span = span, .data = .{ @intFromEnum(a), @intFromEnum(b), 0 } });
+        return self.b.add(.{ .tag = .character_class_range, .span = span, .data = .{ @backingInt(a), @backingInt(b), 0 } });
     }
 
     /// surrogate 조각의 standalone atom: 단일 → `\uX`, 범위 → `[\uX-\uY]`.
     fn surAtom(self: *T, mn: u32, mx: u32, span: ast.Span) TransformError!NodeIndex {
         const rc = try self.rangeChild(mn, mx, span);
         if (mn == mx) return rc; // `\uX`
-        const l = try self.b.addList(&.{@intFromEnum(rc)});
+        const l = try self.b.addList(&.{@backingInt(rc)});
         return self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, l.start, l.len } });
     }
 
@@ -419,7 +419,7 @@ const T = struct {
 
         for (set.items()) |r| {
             if (r.min <= 0xFFFF) {
-                try bmp_kids.append(self.b.a, @intFromEnum(try self.rangeChild(r.min, @min(r.max, 0xFFFF), span)));
+                try bmp_kids.append(self.b.a, @backingInt(try self.rangeChild(r.min, @min(r.max, 0xFFFF), span)));
             }
             if (r.max >= 0x10000) {
                 try cps.encodeSurrogateRange(@max(r.min, 0x10000), r.max, &pieces, self.b.a);
@@ -428,14 +428,14 @@ const T = struct {
         if (bmp_kids.items.len != 0) {
             const cl = try self.b.addList(bmp_kids.items);
             const cls = try self.b.add(.{ .tag = .character_class, .span = span, .data = .{ 0, cl.start, cl.len } });
-            const al = try self.b.addList(&.{@intFromEnum(cls)});
-            try alts.append(self.b.a, @intFromEnum(try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } })));
+            const al = try self.b.addList(&.{@backingInt(cls)});
+            try alts.append(self.b.a, @backingInt(try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } })));
         }
         for (pieces.items) |p| {
             const hi = try self.surAtom(p.hi_min, p.hi_max, span);
             const lo = try self.surAtom(p.lo_min, p.lo_max, span);
-            const al = try self.b.addList(&.{ @intFromEnum(hi), @intFromEnum(lo) });
-            try alts.append(self.b.a, @intFromEnum(try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } })));
+            const al = try self.b.addList(&.{ @backingInt(hi), @backingInt(lo) });
+            try alts.append(self.b.a, @backingInt(try self.b.add(.{ .tag = .alternative, .span = span, .data = .{ al.start, al.len, 0 } })));
         }
 
         const dl = try self.b.addList(alts.items);
@@ -447,11 +447,11 @@ const T = struct {
             return self.b.add(.{
                 .tag = .lookaround_assertion,
                 .span = span,
-                .data = .{ @intFromEnum(ast.LookAroundAssertionKind.negative_lookahead), @intFromEnum(disj), 0 },
+                .data = .{ @backingInt(ast.LookAroundAssertionKind.negative_lookahead), @backingInt(disj), 0 },
             });
         }
         // ignore_group: enabling=0, disabling=0 → `(?:…)`
-        return self.b.add(.{ .tag = .ignore_group, .span = span, .data = .{ 0, 0, @intFromEnum(disj) } });
+        return self.b.add(.{ .tag = .ignore_group, .span = span, .data = .{ 0, 0, @backingInt(disj) } });
     }
 
     /// list 컨텍스트(alternative term / class atom / class_string char): 자식이
@@ -460,7 +460,7 @@ const T = struct {
         var ids: std.ArrayList(u32) = .empty;
         defer ids.deinit(self.b.a);
         for (self.in.getNodeList(list)) |cid| {
-            const child: NodeIndex = @enumFromInt(cid);
+            const child: NodeIndex = @fromBackingInt(@intCast(cid));
             const cn = self.in.getNode(child);
             if (self.opts.unicode_brace and isAstralUnicodeEscape(cn)) {
                 // #4225: astral fast-path 도 fold 게이트 적용 (Deseret/Adlam 등
@@ -469,12 +469,12 @@ const T = struct {
                     iu_fold.hasEntry(cn.data[0]))
                 {
                     self.astral_u_incomplete = true;
-                    try ids.append(self.b.a, @intFromEnum(try self.node(child)));
+                    try ids.append(self.b.a, @backingInt(try self.node(child)));
                     continue;
                 }
                 try self.pushSurrogate(cn.span, cn.data[0], &ids);
             } else {
-                try ids.append(self.b.a, @intFromEnum(try self.node(child)));
+                try ids.append(self.b.a, @backingInt(try self.node(child)));
             }
         }
         return self.b.addList(ids.items);
@@ -492,7 +492,7 @@ const T = struct {
                 var ids: std.ArrayList(u32) = .empty;
                 defer ids.deinit(self.b.a);
                 for (self.in.getNodeList(n.getNodeList())) |c| {
-                    try ids.append(self.b.a, @intFromEnum(try self.node(@enumFromInt(c))));
+                    try ids.append(self.b.a, @backingInt(try self.node(@fromBackingInt(@intCast(c)))));
                 }
                 const l = try self.b.addList(ids.items);
                 return self.b.add(.{ .tag = .disjunction, .span = n.span, .data = .{ l.start, l.len, 0 } });
@@ -505,7 +505,7 @@ const T = struct {
                 // #4210 PR3: (?m:) 영역의 `^`/`$` → multiline 앵커 재작성.
                 // `\b`/`\B` 는 m 무관 → 그대로.
                 if (self.inMRewriteRegion()) {
-                    switch (@as(ast.BoundaryAssertionKind, @enumFromInt(n.data[0]))) {
+                    switch (@as(ast.BoundaryAssertionKind, @fromBackingInt(@intCast(n.data[0])))) {
                         .start => return try self.makeMLineStart(n.span),
                         .end => return try self.makeMLineEnd(n.span),
                         else => {},
@@ -531,7 +531,7 @@ const T = struct {
                 if (self.opts.unicode_brace and
                     (self.opts.ignore_case or self.mod_i != null))
                 {
-                    const kind: ast.CharacterKind = @enumFromInt(n.data[1]);
+                    const kind: ast.CharacterKind = @fromBackingInt(@intCast(n.data[1]));
                     // literal(symbol) non-ASCII 는 파서가 UTF-8 byte 단위 노드라
                     // data[0] 이 코드포인트가 아님 — fold 판정 불가 → 보수 보존.
                     const fold_risk = if (kind == .symbol and n.data[0] >= 0x80)
@@ -585,19 +585,19 @@ const T = struct {
                         for (self.names) |g| {
                             if (group_name.eqlCanonical(g.name, name)) {
                                 const r = try self.b.add(.{ .tag = .indexed_reference, .span = n.span, .data = .{ g.index, 0, 0 } });
-                                try refs.append(self.b.a, @intFromEnum(r));
+                                try refs.append(self.b.a, @backingInt(r));
                             }
                         }
                         const l = try self.b.addList(refs.items);
                         const seq = try self.b.add(.{ .tag = .alternative, .span = n.span, .data = .{ l.start, l.len, 0 } });
-                        return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ 0, 0, @intFromEnum(seq) } });
+                        return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ 0, 0, @backingInt(seq) } });
                     }
                 }
                 return self.b.add(n); // 못 찾으면 보존 (ad-hoc 동일)
             },
             .lookaround_assertion => {
-                const body = try self.node(@enumFromInt(n.data[1]));
-                return self.b.add(.{ .tag = .lookaround_assertion, .span = n.span, .data = .{ n.data[0], @intFromEnum(body), 0 } });
+                const body = try self.node(@fromBackingInt(@intCast(n.data[1])));
+                return self.b.add(.{ .tag = .lookaround_assertion, .span = n.span, .data = .{ n.data[0], @backingInt(body), 0 } });
             },
             .character_class => {
                 // u-strip 시 class 를 code-point set 으로 정확 다운레벨:
@@ -650,15 +650,15 @@ const T = struct {
                 return self.b.add(.{ .tag = .character_class, .span = n.span, .data = .{ n.data[0], l.start, l.len } });
             },
             .character_class_range => {
-                const mn = try self.node(@enumFromInt(n.data[0]));
-                const mx = try self.node(@enumFromInt(n.data[1]));
-                return self.b.add(.{ .tag = .character_class_range, .span = n.span, .data = .{ @intFromEnum(mn), @intFromEnum(mx), 0 } });
+                const mn = try self.node(@fromBackingInt(@intCast(n.data[0])));
+                const mx = try self.node(@fromBackingInt(@intCast(n.data[1])));
+                return self.b.add(.{ .tag = .character_class_range, .span = n.span, .data = .{ @backingInt(mn), @backingInt(mx), 0 } });
             },
             .class_string_disjunction => {
                 var ids: std.ArrayList(u32) = .empty;
                 defer ids.deinit(self.b.a);
                 for (self.in.getNodeList(n.getNodeList())) |c| {
-                    try ids.append(self.b.a, @intFromEnum(try self.node(@enumFromInt(c))));
+                    try ids.append(self.b.a, @backingInt(try self.node(@fromBackingInt(@intCast(c)))));
                 }
                 const l = try self.b.addList(ids.items);
                 return self.b.add(.{ .tag = .class_string_disjunction, .span = n.span, .data = .{ l.start, l.len, 0 } });
@@ -668,10 +668,10 @@ const T = struct {
                 return self.b.add(.{ .tag = .class_string, .span = n.span, .data = .{ l.start, l.len, 0 } });
             },
             .capturing_group => {
-                const body = try self.node(@enumFromInt(n.data[2]));
+                const body = try self.node(@fromBackingInt(@intCast(n.data[2])));
                 const name0: u32 = if (self.opts.strip_named) UNNAMED else n.data[0];
                 const name1: u32 = if (self.opts.strip_named) 0 else n.data[1];
-                return self.b.add(.{ .tag = .capturing_group, .span = n.span, .data = .{ name0, name1, @intFromEnum(body) } });
+                return self.b.add(.{ .tag = .capturing_group, .span = n.span, .data = .{ name0, name1, @backingInt(body) } });
             },
             .ignore_group => {
                 // modifier 비트: bit0=i, bit1=m, bit2=s (ast.zig ignore_group).
@@ -696,9 +696,9 @@ const T = struct {
                     self.mod_m = saved_m;
                     self.i_fold_incomplete = saved_ifi; // 내부 bail 은 상위로 누설 안 함
                 }
-                const body = try self.node(@enumFromInt(n.data[2]));
+                const body = try self.node(@fromBackingInt(@intCast(n.data[2])));
                 if (!self.opts.lower_modifiers) {
-                    return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ en, dis, @intFromEnum(body) } });
+                    return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ en, dis, @backingInt(body) } });
                 }
                 // #4210 lowering: s-enabling 은 dot 이 body 에서 [\s\S] 로 baked-in →
                 // 항상 strip. i-enabling 은 이 영역의 모든 atom 이 fold 됐을 때만
@@ -713,12 +713,12 @@ const T = struct {
                 if (m_lowered) kept_en &= ~@as(u32, 0b010); // m-enabling 제거
                 // 보존된 modifier 비트가 남으면 진단 신호(transpile/prepass 가 경고).
                 if (kept_en != 0 or dis != 0) self.kept_modifier = true;
-                return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ kept_en, dis, @intFromEnum(body) } });
+                return self.b.add(.{ .tag = .ignore_group, .span = n.span, .data = .{ kept_en, dis, @backingInt(body) } });
             },
             .quantifier => {
                 const body = try self.node(n.getQuantifierBody());
                 const greedy: u32 = if (n.isGreedy()) 0x80000000 else 0;
-                const packed_body = (@intFromEnum(body) & 0x7FFFFFFF) | greedy;
+                const packed_body = (@backingInt(body) & 0x7FFFFFFF) | greedy;
                 return self.b.add(.{ .tag = .quantifier, .span = n.span, .data = .{ n.data[0], n.data[1], packed_body } });
             },
         }

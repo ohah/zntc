@@ -16,8 +16,8 @@ const import_specifier_unescape = @import("../import_specifier.zig");
 pub fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
     // callee가 identifier_reference "require"인지 확인
     if (callee.isNone()) return;
-    if (@intFromEnum(callee) >= self.ast.nodes.items.len) return;
-    const callee_node = self.ast.nodes.items[@intFromEnum(callee)];
+    if (@backingInt(callee) >= self.ast.nodes.items.len) return;
+    const callee_node = self.ast.nodes.items[@backingInt(callee)];
     if (callee_node.tag != .identifier_reference) return;
     const callee_text = self.ast.source[callee_node.span.start..callee_node.span.end];
     if (!std.mem.eql(u8, callee_text, "require")) return;
@@ -27,10 +27,10 @@ pub fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) voi
 
     // 인수가 string_literal인지 확인
     if (arg_list.start >= self.ast.extra_data.items.len) return;
-    const arg_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start]);
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[arg_list.start]));
     if (arg_idx.isNone()) return;
-    if (@intFromEnum(arg_idx) >= self.ast.nodes.items.len) return;
-    const arg_node = self.ast.nodes.items[@intFromEnum(arg_idx)];
+    if (@backingInt(arg_idx) >= self.ast.nodes.items.len) return;
+    const arg_node = self.ast.nodes.items[@backingInt(arg_idx)];
     if (arg_node.tag != .string_literal) return;
 
     const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
@@ -46,33 +46,33 @@ pub fn scanRequireCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) voi
 
 /// import.meta.glob("pattern") 호출을 감지하여 glob import 레코드를 생성한다.
 pub fn scanGlobCall(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
-    if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return;
-    const callee_node = self.ast.nodes.items[@intFromEnum(callee)];
+    if (callee.isNone() or @backingInt(callee) >= self.ast.nodes.items.len) return;
+    const callee_node = self.ast.nodes.items[@backingInt(callee)];
     if (callee_node.tag != .static_member_expression) return;
 
     const extras = self.ast.extra_data.items;
     if (callee_node.data.extra + 2 >= extras.len) return;
 
     // object: meta_property (import.meta)
-    const obj_idx: NodeIndex = @enumFromInt(extras[callee_node.data.extra]);
-    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= self.ast.nodes.items.len) return;
-    const obj_node = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(extras[callee_node.data.extra]));
+    if (obj_idx.isNone() or @backingInt(obj_idx) >= self.ast.nodes.items.len) return;
+    const obj_node = self.ast.nodes.items[@backingInt(obj_idx)];
     if (obj_node.tag != .meta_property) return;
     if (obj_node.data.none != 0) return;
 
     // property: "glob"
-    const prop_idx: NodeIndex = @enumFromInt(extras[callee_node.data.extra + 1]);
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return;
-    const prop_node = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(extras[callee_node.data.extra + 1]));
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= self.ast.nodes.items.len) return;
+    const prop_node = self.ast.nodes.items[@backingInt(prop_idx)];
     const prop_name = self.ast.source[prop_node.span.start..prop_node.span.end];
     if (!std.mem.eql(u8, prop_name, "glob")) return;
 
     // 첫 번째 인수가 string_literal인지
     if (arg_list.len == 0) return;
     if (arg_list.start >= extras.len) return;
-    const arg_idx: NodeIndex = @enumFromInt(extras[arg_list.start]);
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= self.ast.nodes.items.len) return;
-    const arg_node = self.ast.nodes.items[@intFromEnum(arg_idx)];
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(extras[arg_list.start]));
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= self.ast.nodes.items.len) return;
+    const arg_node = self.ast.nodes.items[@backingInt(arg_idx)];
     if (arg_node.tag != .string_literal) return;
 
     const raw = self.ast.source[arg_node.span.start..arg_node.span.end];
@@ -109,7 +109,7 @@ pub fn scanRequireContextCall(self: *Parser, callee: NodeIndex, arg_list: NodeLi
         self.scan_defines,
     ) orelse return;
 
-    const mode: scan_results_mod.RequireContextMode = @enumFromInt(@intFromEnum(ir.context_mode));
+    const mode: scan_results_mod.RequireContextMode = @fromBackingInt(@intCast(@backingInt(ir.context_mode)));
     self.scan_import_records.append(self.allocator, .{
         .specifier = ir.specifier,
         .kind = .require_context,
@@ -124,31 +124,31 @@ pub fn scanRequireContextCall(self: *Parser, callee: NodeIndex, arg_list: NodeLi
 }
 
 pub fn scanObjectDefinePropertyCjs(self: *Parser, callee: NodeIndex, arg_list: NodeList) void {
-    if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return;
-    const callee_node = self.ast.nodes.items[@intFromEnum(callee)];
+    if (callee.isNone() or @backingInt(callee) >= self.ast.nodes.items.len) return;
+    const callee_node = self.ast.nodes.items[@backingInt(callee)];
     if (callee_node.tag != .static_member_expression) return;
     const e = callee_node.data.extra;
     if (e + 1 >= self.ast.extra_data.items.len) return;
 
-    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-    const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
     if (obj_idx.isNone() or prop_idx.isNone()) return;
-    if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return;
-    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
-    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    if (@backingInt(obj_idx) >= self.ast.nodes.items.len or @backingInt(prop_idx) >= self.ast.nodes.items.len) return;
+    const obj = self.ast.nodes.items[@backingInt(obj_idx)];
+    const prop = self.ast.nodes.items[@backingInt(prop_idx)];
     if (obj.tag != .identifier_reference) return;
     if (!std.mem.eql(u8, self.ast.source[obj.span.start..obj.span.end], "Object")) return;
     if (!std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], "defineProperty")) return;
 
     if (arg_list.len < 1 or arg_list.start >= self.ast.extra_data.items.len) return;
-    const target_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start]);
+    const target_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[arg_list.start]));
     if (!isCjsExportTarget(self, target_idx)) return;
 
     self.scan_result.has_exports_dot = true;
     if (arg_list.len >= 2 and arg_list.start + 1 < self.ast.extra_data.items.len) {
-        const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start + 1]);
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
-        const key_node = self.ast.nodes.items[@intFromEnum(key_idx)];
+        const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[arg_list.start + 1]));
+        if (key_idx.isNone() or @backingInt(key_idx) >= self.ast.nodes.items.len) return;
+        const key_node = self.ast.nodes.items[@backingInt(key_idx)];
         if (key_node.tag != .string_literal) return;
         const raw = self.ast.source[key_node.span.start..key_node.span.end];
         const key = import_scanner.stripQuotes(raw) orelse raw;
@@ -171,9 +171,9 @@ pub fn scanWorkerNewExpression(self: *Parser, callee_raw: NodeIndex, arg_list: N
     if (!isIdentifierText(self, callee, "Worker") and !isIdentifierText(self, callee, "SharedWorker")) return;
     if (arg_list.len < 1 or arg_list.start >= self.ast.extra_data.items.len) return;
 
-    const url_new_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arg_list.start]);
-    if (url_new_idx.isNone() or @intFromEnum(url_new_idx) >= self.ast.nodes.items.len) return;
-    const url_new = self.ast.nodes.items[@intFromEnum(url_new_idx)];
+    const url_new_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[arg_list.start]));
+    if (url_new_idx.isNone() or @backingInt(url_new_idx) >= self.ast.nodes.items.len) return;
+    const url_new = self.ast.nodes.items[@backingInt(url_new_idx)];
     if (url_new.tag != .new_expression) return;
 
     const ue = url_new.data.extra;
@@ -187,11 +187,11 @@ pub fn scanWorkerNewExpression(self: *Parser, callee_raw: NodeIndex, arg_list: N
     const url_args_start = self.ast.readExtra(ue, 1);
     if (url_args_start + 1 >= self.ast.extra_data.items.len) return;
 
-    const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[url_args_start]);
+    const spec_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[url_args_start]));
     const specifier = getStringLiteralText(self, spec_idx) orelse return;
     const spec_node = self.ast.getNode(spec_idx);
 
-    const meta_url_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[url_args_start + 1]);
+    const meta_url_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[url_args_start + 1]));
     if (!isImportMetaUrlNode(self, meta_url_idx)) return;
 
     self.scan_import_records.append(self.allocator, .{
@@ -200,7 +200,7 @@ pub fn scanWorkerNewExpression(self: *Parser, callee_raw: NodeIndex, arg_list: N
         .span = spec_node.span,
         .url_span = url_new.span,
         .worker_module = arg_list.len >= 2 and arg_list.start + 1 < self.ast.extra_data.items.len and
-            import_scanner.isModuleWorkerOptions(&self.ast, @enumFromInt(self.ast.extra_data.items[arg_list.start + 1])),
+            import_scanner.isModuleWorkerOptions(&self.ast, @fromBackingInt(@intCast(self.ast.extra_data.items[arg_list.start + 1]))),
     }) catch {};
 }
 
@@ -210,8 +210,8 @@ fn stripParenFreeTypeWrappers(self: *const Parser, idx: NodeIndex) NodeIndex {
     var cur = idx;
     var guard: u32 = 0;
     while (guard < 100_000) : (guard += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return cur;
-        const node = self.ast.nodes.items[@intFromEnum(cur)];
+        if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) return cur;
+        const node = self.ast.nodes.items[@backingInt(cur)];
         if (!ast_mod.Node.Tag.isParenFreeTypeWrapper(node.tag)) return cur;
         cur = node.data.unary.operand;
     }
@@ -219,36 +219,36 @@ fn stripParenFreeTypeWrappers(self: *const Parser, idx: NodeIndex) NodeIndex {
 }
 
 fn isIdentifierText(self: *Parser, idx: NodeIndex, expected: []const u8) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
-    const node = self.ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
+    const node = self.ast.nodes.items[@backingInt(idx)];
     if (node.tag != .identifier_reference) return false;
     return std.mem.eql(u8, self.ast.source[node.span.start..node.span.end], expected);
 }
 
 fn getStringLiteralText(self: *Parser, idx: NodeIndex) ?[]const u8 {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return null;
-    const node = self.ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return null;
+    const node = self.ast.nodes.items[@backingInt(idx)];
     if (node.tag != .string_literal) return null;
     const raw = self.ast.source[node.span.start..node.span.end];
     return import_scanner.stripQuotes(raw) orelse raw;
 }
 
 fn isImportMetaUrlNode(self: *Parser, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
-    const node = self.ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
+    const node = self.ast.nodes.items[@backingInt(idx)];
     if (node.tag != .static_member_expression) return false;
 
     const me = node.data.extra;
     if (!self.ast.hasExtra(me, 1)) return false;
 
     const obj_idx = self.ast.readExtraNode(me, 0);
-    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= self.ast.nodes.items.len) return false;
-    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    if (obj_idx.isNone() or @backingInt(obj_idx) >= self.ast.nodes.items.len) return false;
+    const obj = self.ast.nodes.items[@backingInt(obj_idx)];
     if (obj.tag != .meta_property or obj.data.none != 0) return false;
 
     const prop_idx = self.ast.readExtraNode(me, 1);
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
-    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= self.ast.nodes.items.len) return false;
+    const prop = self.ast.nodes.items[@backingInt(prop_idx)];
     return std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], "url");
 }
 
@@ -257,27 +257,27 @@ fn isImportMetaUrlNode(self: *Parser, idx: NodeIndex) bool {
 /// 같은 신호를 set 한다 (parser/import_scanner 두 경로 모두 ScanResult 채움).
 pub fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
     if (left.isNone()) return;
-    if (@intFromEnum(left) >= self.ast.nodes.items.len) return;
-    const left_node = self.ast.nodes.items[@intFromEnum(left)];
+    if (@backingInt(left) >= self.ast.nodes.items.len) return;
+    const left_node = self.ast.nodes.items[@backingInt(left)];
     if (left_node.tag != .static_member_expression) return;
 
     const me = left_node.data.extra;
     if (me + 1 >= self.ast.extra_data.items.len) return;
 
     // object: extra[0], property: extra[1]
-    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
     if (obj_idx.isNone()) return;
-    if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len) return;
-    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
+    if (@backingInt(obj_idx) >= self.ast.nodes.items.len) return;
+    const obj = self.ast.nodes.items[@backingInt(obj_idx)];
 
     const obj_text = if (obj.tag == .identifier_reference) self.ast.source[obj.span.start..obj.span.end] else "";
 
     if (std.mem.eql(u8, obj_text, "module")) {
         // module.exports = ...
-        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + 1]));
         if (prop_idx.isNone()) return;
-        if (@intFromEnum(prop_idx) >= self.ast.nodes.items.len) return;
-        const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+        if (@backingInt(prop_idx) >= self.ast.nodes.items.len) return;
+        const prop = self.ast.nodes.items[@backingInt(prop_idx)];
         const prop_text = self.ast.source[prop.span.start..prop.span.end];
         if (std.mem.eql(u8, prop_text, "exports")) {
             self.scan_result.has_module_exports = true;
@@ -291,13 +291,13 @@ pub fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
     } else if (obj.tag == .static_member_expression) {
         const inner_me = obj.data.extra;
         if (inner_me + 1 >= self.ast.extra_data.items.len) return;
-        const inner_obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[inner_me]);
-        const inner_prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[inner_me + 1]);
+        const inner_obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[inner_me]));
+        const inner_prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[inner_me + 1]));
         if (inner_obj_idx.isNone() or inner_prop_idx.isNone()) return;
-        if (@intFromEnum(inner_obj_idx) >= self.ast.nodes.items.len or
-            @intFromEnum(inner_prop_idx) >= self.ast.nodes.items.len) return;
-        const inner_obj = self.ast.nodes.items[@intFromEnum(inner_obj_idx)];
-        const inner_prop = self.ast.nodes.items[@intFromEnum(inner_prop_idx)];
+        if (@backingInt(inner_obj_idx) >= self.ast.nodes.items.len or
+            @backingInt(inner_prop_idx) >= self.ast.nodes.items.len) return;
+        const inner_obj = self.ast.nodes.items[@backingInt(inner_obj_idx)];
+        const inner_prop = self.ast.nodes.items[@backingInt(inner_prop_idx)];
         if (inner_obj.tag != .identifier_reference) return;
         const inner_obj_text = self.ast.source[inner_obj.span.start..inner_obj.span.end];
         const inner_prop_text = self.ast.source[inner_prop.span.start..inner_prop.span.end];
@@ -315,27 +315,27 @@ pub fn scanAssignmentCjs(self: *Parser, left: NodeIndex) void {
 /// `__esModule` 인지. 호출자가 obj 식별을 끝낸 뒤 prop 부분만 확인할 때 사용.
 fn memberPropertyEqualsEsModule(self: *Parser, me: u32) bool {
     if (me + 1 >= self.ast.extra_data.items.len) return false;
-    const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
-    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + 1]));
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= self.ast.nodes.items.len) return false;
+    const prop = self.ast.nodes.items[@backingInt(prop_idx)];
     return std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], import_scanner.ES_MODULE_MARKER);
 }
 
 fn isCjsExportTarget(self: *Parser, target_idx: NodeIndex) bool {
-    if (target_idx.isNone() or @intFromEnum(target_idx) >= self.ast.nodes.items.len) return false;
-    const target = self.ast.nodes.items[@intFromEnum(target_idx)];
+    if (target_idx.isNone() or @backingInt(target_idx) >= self.ast.nodes.items.len) return false;
+    const target = self.ast.nodes.items[@backingInt(target_idx)];
     if (target.tag == .identifier_reference and std.mem.eql(u8, self.ast.source[target.span.start..target.span.end], "exports")) {
         return true;
     }
     if (target.tag != .static_member_expression) return false;
     const e = target.data.extra;
     if (e + 1 >= self.ast.extra_data.items.len) return false;
-    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-    const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
     if (obj_idx.isNone() or prop_idx.isNone()) return false;
-    if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
-    const obj = self.ast.nodes.items[@intFromEnum(obj_idx)];
-    const prop = self.ast.nodes.items[@intFromEnum(prop_idx)];
+    if (@backingInt(obj_idx) >= self.ast.nodes.items.len or @backingInt(prop_idx) >= self.ast.nodes.items.len) return false;
+    const obj = self.ast.nodes.items[@backingInt(obj_idx)];
+    const prop = self.ast.nodes.items[@backingInt(prop_idx)];
     return obj.tag == .identifier_reference and
         std.mem.eql(u8, self.ast.source[obj.span.start..obj.span.end], "module") and
         std.mem.eql(u8, self.ast.source[prop.span.start..prop.span.end], "exports");

@@ -86,11 +86,11 @@ test "VariableDeclarationKind: isLexical / isUsing helpers" {
 
 test "VariableDeclarationKind: wire-compat numeric values" {
     // 모든 consumer가 의존하는 wire 값. 변경 금지.
-    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(VariableDeclarationKind.@"var"));
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(VariableDeclarationKind.let));
-    try std.testing.expectEqual(@as(u32, 2), @intFromEnum(VariableDeclarationKind.@"const"));
-    try std.testing.expectEqual(@as(u32, 3), @intFromEnum(VariableDeclarationKind.using));
-    try std.testing.expectEqual(@as(u32, 4), @intFromEnum(VariableDeclarationKind.await_using));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(VariableDeclarationKind.@"var"));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(VariableDeclarationKind.let));
+    try std.testing.expectEqual(@as(u32, 2), @backingInt(VariableDeclarationKind.@"const"));
+    try std.testing.expectEqual(@as(u32, 3), @backingInt(VariableDeclarationKind.using));
+    try std.testing.expectEqual(@as(u32, 4), @backingInt(VariableDeclarationKind.await_using));
 }
 
 test "VariableDeclarationKind: fromU32 unknown values fall back to var" {
@@ -1330,7 +1330,7 @@ test "Parser: TS interface extends" {
     try std.testing.expectEqual(Tag.program, program.tag);
     // program body의 첫 번째 stmt = ts_interface_declaration
     const iface_raw = parser.ast.extra_data.items[program.data.list.start];
-    const iface = parser.ast.getNode(@enumFromInt(iface_raw));
+    const iface = parser.ast.getNode(@fromBackingInt(@intCast(iface_raw)));
     try std.testing.expectEqual(Tag.ts_interface_declaration, iface.tag);
     // extra = [name, type_params, extends_start, extends_len, body]
     // extends User → extends_len = 1
@@ -1350,7 +1350,7 @@ test "Parser: TS interface multiple extends" {
 
     const program = parser.ast.getNode(root);
     const iface_raw = parser.ast.extra_data.items[program.data.list.start];
-    const iface = parser.ast.getNode(@enumFromInt(iface_raw));
+    const iface = parser.ast.getNode(@fromBackingInt(@intCast(iface_raw)));
     try std.testing.expectEqual(Tag.ts_interface_declaration, iface.tag);
 
     // extra = [name, type_params, extends_start, extends_len, body]
@@ -1361,8 +1361,8 @@ test "Parser: TS interface multiple extends" {
     try std.testing.expectEqual(@as(u32, 2), extends_len);
 
     // 두 extends 노드가 유효한 타입 노드인지 확인
-    const bar = parser.ast.getNode(@enumFromInt(parser.ast.extra_data.items[extends_start]));
-    const baz = parser.ast.getNode(@enumFromInt(parser.ast.extra_data.items[extends_start + 1]));
+    const bar = parser.ast.getNode(@fromBackingInt(@intCast(parser.ast.extra_data.items[extends_start])));
+    const baz = parser.ast.getNode(@fromBackingInt(@intCast(parser.ast.extra_data.items[extends_start + 1])));
     try std.testing.expect(bar.tag != .invalid);
     try std.testing.expect(baz.tag != .invalid);
 }
@@ -1379,7 +1379,7 @@ test "Parser: TS interface no extends" {
 
     const program = parser.ast.getNode(root);
     const iface_raw = parser.ast.extra_data.items[program.data.list.start];
-    const iface = parser.ast.getNode(@enumFromInt(iface_raw));
+    const iface = parser.ast.getNode(@fromBackingInt(@intCast(iface_raw)));
     try std.testing.expectEqual(Tag.ts_interface_declaration, iface.tag);
 
     // extends 없으면 extends_len = 0
@@ -3613,7 +3613,7 @@ test "#4819 parser preserves const and ambient enum bits independently" {
     for (parser.ast.nodes.items) |node| {
         if (node.tag != .ts_enum_declaration) continue;
         const e = node.data.extra;
-        const name = parser.ast.getText(parser.ast.getNode(@enumFromInt(parser.ast.extra_data.items[e])).span);
+        const name = parser.ast.getText(parser.ast.getNode(@fromBackingInt(@intCast(parser.ast.extra_data.items[e]))).span);
         const flags = parser.ast.extra_data.items[e + 3];
         if (std.mem.eql(u8, name, "Ambient")) {
             try std.testing.expectEqual(@as(u32, 2), flags);
@@ -4796,8 +4796,8 @@ fn extractFirstPropSig(parser: *Parser, tag: Tag) PropSig {
         if (node.tag != tag) continue;
         const e = node.data.extra;
         return .{
-            .key = @enumFromInt(parser.ast.extra_data.items[e]),
-            .type_ann = @enumFromInt(parser.ast.extra_data.items[e + 1]),
+            .key = @fromBackingInt(@intCast(parser.ast.extra_data.items[e])),
+            .type_ann = @fromBackingInt(@intCast(parser.ast.extra_data.items[e + 1])),
             .flags = ts_mod.PropertySignatureFlags.fromU32(parser.ast.extra_data.items[e + 2]),
         };
     }
@@ -4873,7 +4873,7 @@ test "TS property signature: type alias body preserves all members" {
         if (node.tag != .ts_property_signature) continue;
         prop_count += 1;
         const e = node.data.extra;
-        const key_idx: ast_mod.NodeIndex = @enumFromInt(r.parser.ast.extra_data.items[e]);
+        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(r.parser.ast.extra_data.items[e]));
         const flags = ts_mod.PropertySignatureFlags.fromU32(r.parser.ast.extra_data.items[e + 2]);
 
         const key_node = r.parser.ast.getNode(key_idx);
@@ -5007,7 +5007,7 @@ test "Flow object type: multiple members all preserved with flags" {
         if (node.tag != .flow_property_signature) continue;
         prop_count += 1;
         const e = node.data.extra;
-        const key_idx: ast_mod.NodeIndex = @enumFromInt(r.parser.ast.extra_data.items[e]);
+        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(r.parser.ast.extra_data.items[e]));
         const flags = ts_mod.PropertySignatureFlags.fromU32(r.parser.ast.extra_data.items[e + 2]);
 
         const name = r.parser.ast.getText(r.parser.ast.getNode(key_idx).data.string_ref);

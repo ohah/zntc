@@ -53,7 +53,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                         try buildAssertThisInitialized(self, node.span)
                     else
                         try buildPossibleConstructorReturn(self, operand, node.span);
-                    self.ast.nodes.items[@intFromEnum(idx)].data.unary.operand = replacement;
+                    self.ast.nodes.items[@backingInt(idx)].data.unary.operand = replacement;
                     return;
                 },
                 else => {},
@@ -148,7 +148,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // until super() and reads use __assertThisInitialized(_this).
             var param_capture_iter = self.ast.iterateExtraList(.{ .start = stmts_start, .len = stmts_len });
             while (param_capture_iter.next()) |stmt_idx| {
-                if (self.parameter_capture_statements.contains(@intFromEnum(stmt_idx)))
+                if (self.parameter_capture_statements.contains(@backingInt(stmt_idx)))
                     try self.scratch.append(self.allocator, stmt_idx);
             }
 
@@ -163,7 +163,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // realloc-safe 순회 — 위 line 2527 의 "인덱스만 저장, 사용 시 재접근" 정책 적용 (#2422).
             var stmts_iter = self.ast.iterateExtraList(.{ .start = stmts_start, .len = stmts_len });
             while (stmts_iter.next()) |stmt_idx| {
-                if (self.parameter_capture_statements.contains(@intFromEnum(stmt_idx))) continue;
+                if (self.parameter_capture_statements.contains(@backingInt(stmt_idx))) continue;
                 if (containsSuperCallAssignment(self, stmt_idx)) {
                     try self.scratch.append(self.allocator, try insertInstanceFieldsAfterSuper(self, stmt_idx, instance_fields, span));
                 } else {
@@ -284,7 +284,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                         if (new_init == init) {
                             try self.scratch.append(self.allocator, declaration);
                         } else {
-                            declarator.data.extra = try self.ast.addExtras(&.{ binding, annotation, @intFromEnum(new_init) });
+                            declarator.data.extra = try self.ast.addExtras(&.{ binding, annotation, @backingInt(new_init) });
                             try self.scratch.append(self.allocator, try self.ast.addNode(declarator));
                         }
                     }
@@ -319,7 +319,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             if (!containsSuperCallAssignment(self, expr_idx)) return expr_idx;
             const node = self.ast.getNode(expr_idx);
 
-            if (self.generated_super_call_assignments.contains(@intFromEnum(expr_idx))) {
+            if (self.generated_super_call_assignments.contains(@backingInt(expr_idx))) {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -381,8 +381,8 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                     const new_prop = try injectInstanceFieldsAfterSuperExpr(self, self.ast.readExtraNode(e, 1), instance_fields, span);
                     const member_flags = self.ast.readExtra(e, 2);
                     const new_extra = try self.ast.addExtras(&.{
-                        @intFromEnum(new_obj),
-                        @intFromEnum(new_prop),
+                        @backingInt(new_obj),
+                        @backingInt(new_prop),
                         member_flags,
                     });
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
@@ -462,7 +462,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
         /// includes the exact assignment node recorded by `lowerSuperCall`.
         fn containsSuperCallAssignment(self: *Transformer, node_idx: NodeIndex) bool {
             if (node_idx.isNone()) return false;
-            if (self.generated_super_call_assignments.contains(@intFromEnum(node_idx))) return true;
+            if (self.generated_super_call_assignments.contains(@backingInt(node_idx))) return true;
             const node = self.ast.getNode(node_idx);
 
             switch (node.tag) {
@@ -480,7 +480,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 .sequence_expression, .array_expression => {
                     const list = node.data.list;
                     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                        if (containsSuperCallAssignment(self, @fromBackingInt(@intCast(raw_idx)))) return true;
                     }
                     return false;
                 },
@@ -488,34 +488,34 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                     const start = self.ast.extra_data.items[node.data.extra + 1];
                     const len = self.ast.extra_data.items[node.data.extra + 2];
                     for (self.ast.extra_data.items[start .. start + len]) |raw_idx| {
-                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                        if (containsSuperCallAssignment(self, @fromBackingInt(@intCast(raw_idx)))) return true;
                     }
                     return false;
                 },
                 .variable_declarator => {
-                    const init: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 2]);
+                    const init: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra + 2]));
                     return containsSuperCallAssignment(self, init);
                 },
                 .call_expression, .new_expression => {
                     const e = node.data.extra;
-                    const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    const callee: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                     if (containsSuperCallAssignment(self, callee)) return true;
                     const args_start = self.ast.extra_data.items[e + 1];
                     const args_len = self.ast.extra_data.items[e + 2];
                     for (self.ast.extra_data.items[args_start .. args_start + args_len]) |raw_idx| {
-                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                        if (containsSuperCallAssignment(self, @fromBackingInt(@intCast(raw_idx)))) return true;
                     }
                     return false;
                 },
                 .static_member_expression, .computed_member_expression => {
                     const e = node.data.extra;
-                    return containsSuperCallAssignment(self, @enumFromInt(self.ast.extra_data.items[e])) or
-                        containsSuperCallAssignment(self, @enumFromInt(self.ast.extra_data.items[e + 1]));
+                    return containsSuperCallAssignment(self, @fromBackingInt(@intCast(self.ast.extra_data.items[e]))) or
+                        containsSuperCallAssignment(self, @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1])));
                 },
                 .object_expression => {
                     const list = node.data.list;
                     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                        if (containsSuperCallAssignment(self, @fromBackingInt(@intCast(raw_idx)))) return true;
                     }
                     return false;
                 },
@@ -544,7 +544,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 .block_statement => {
                     const list = node.data.list;
                     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-                        if (containsSuperCallAssignment(self, @enumFromInt(raw_idx))) return true;
+                        if (containsSuperCallAssignment(self, @fromBackingInt(@intCast(raw_idx)))) return true;
                     }
                     return false;
                 },
@@ -646,11 +646,11 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
 
             const empty_params = try self.ast.addNodeList(&.{});
             const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const func_extra = try self.ast.addExtras(&.{
-                @intFromEnum(name),
-                @intFromEnum(empty_params_node),
-                @intFromEnum(body),
+                @backingInt(name),
+                @backingInt(empty_params_node),
+                @backingInt(body),
                 0,
                 none,
             });
@@ -678,7 +678,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 const right = expr.data.binary.right;
                 const new_left = try replaceThisInExpr(self, left);
                 const new_right = try replaceThisInExpr(self, right);
-                if (@intFromEnum(new_left) == @intFromEnum(left) and @intFromEnum(new_right) == @intFromEnum(right)) return stmt_idx;
+                if (@backingInt(new_left) == @backingInt(left) and @backingInt(new_right) == @backingInt(right)) return stmt_idx;
                 const new_assign = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = expr.span,
@@ -694,7 +694,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // call: __classPrivateMethodInit(this, ...) → __classPrivateMethodInit(_this, ...)
             if (expr.tag == .call_expression) {
                 const new_call = try replaceThisInExpr(self, expr_idx);
-                if (@intFromEnum(new_call) == @intFromEnum(expr_idx)) return stmt_idx;
+                if (@backingInt(new_call) == @backingInt(expr_idx)) return stmt_idx;
                 return self.ast.addNode(.{
                     .tag = .expression_statement,
                     .span = stmt.span,
@@ -719,7 +719,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             }
 
             if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
-                const raw = @intFromEnum(idx);
+                const raw = @backingInt(idx);
                 const origin = self.reference_origin_map.get(raw) orelse raw;
                 if (self.capture_ref_by_origin.contains(origin)) return es_helpers.cloneNode(self, idx);
             }
@@ -764,14 +764,14 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // member expression: extra = [object, property, flags]
             if (node.tag == .static_member_expression or node.tag == .computed_member_expression) {
                 const e = node.data.extra;
-                const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                 const new_obj = try replaceThisInExpr(self, obj_idx);
-                const prop: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+                const prop: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
                 const new_prop = if (node.tag == .computed_member_expression) try replaceThisInExpr(self, prop) else prop;
                 if (new_obj == obj_idx and new_prop == prop) return idx;
                 const flags = self.ast.extra_data.items[e + 2];
                 const new_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_obj), @intFromEnum(new_prop), flags,
+                    @backingInt(new_obj), @backingInt(new_prop), flags,
                 });
                 return self.ast.addNode(.{
                     .tag = node.tag,
@@ -784,7 +784,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
             // __classPrivateMethodInit(this, _bark) → __classPrivateMethodInit(_this, _bark)
             if (node.tag == .call_expression or node.tag == .new_expression) {
                 const e = node.data.extra;
-                const callee: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const callee: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                 const args_start = self.ast.extra_data.items[e + 1];
                 const args_len = self.ast.extra_data.items[e + 2];
                 const flags = self.ast.extra_data.items[e + 3];
@@ -793,18 +793,18 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 const new_callee = try replaceThisInExpr(self, callee);
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                var changed = @intFromEnum(new_callee) != @intFromEnum(callee);
+                var changed = @backingInt(new_callee) != @backingInt(callee);
                 for (0..args_len) |i| {
                     const raw_arg = self.ast.extra_data.items[args_start + i];
-                    const arg_idx: NodeIndex = @enumFromInt(raw_arg);
+                    const arg_idx: NodeIndex = @fromBackingInt(@intCast(raw_arg));
                     const new_arg = try replaceThisInExpr(self, arg_idx);
-                    if (@intFromEnum(new_arg) != @intFromEnum(arg_idx)) changed = true;
+                    if (@backingInt(new_arg) != @backingInt(arg_idx)) changed = true;
                     try self.scratch.append(self.allocator, new_arg);
                 }
                 if (!changed) return idx;
                 const new_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 const new_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_callee), new_args.start, new_args.len, flags,
+                    @backingInt(new_callee), new_args.start, new_args.len, flags,
                 });
                 return self.ast.addNode(.{
                     .tag = node.tag,
@@ -818,7 +818,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 const replacement = try replaceThisInExpr(self, operand);
                 if (replacement == operand) return idx;
                 const flags = self.ast.readExtra(node.data.extra, 1);
-                copy.data.extra = try self.ast.addExtras(&.{ @intFromEnum(replacement), flags });
+                copy.data.extra = try self.ast.addExtras(&.{ @backingInt(replacement), flags });
                 return self.ast.addNode(copy);
             }
 
@@ -829,7 +829,7 @@ pub fn DerivedConstructors(comptime Transformer: type) type {
                 const new_template = try replaceThisInExpr(self, template);
                 if (new_tag == tag and new_template == template) return idx;
                 const flags = self.ast.readExtra(node.data.extra, 2);
-                copy.data.extra = try self.ast.addExtras(&.{ @intFromEnum(new_tag), @intFromEnum(new_template), flags });
+                copy.data.extra = try self.ast.addExtras(&.{ @backingInt(new_tag), @backingInt(new_template), flags });
                 return self.ast.addNode(copy);
             }
 

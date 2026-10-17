@@ -34,7 +34,7 @@ pub fn markAutoTypeOnlyExportSpecifiers(
     var program_idx: ast_mod.NodeIndex = .none;
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag == .program) {
-            program_idx = @enumFromInt(raw_idx);
+            program_idx = @fromBackingInt(@intCast(raw_idx));
             break;
         }
     }
@@ -52,9 +52,9 @@ pub fn markAutoTypeOnlyExportSpecifiers(
     // pass 1
     var i: u32 = 0;
     while (i < stmt_len) : (i += 1) {
-        const stmt_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[stmt_start + i]);
+        const stmt_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[stmt_start + i]));
         if (stmt_idx.isNone()) continue;
-        if (@intFromEnum(stmt_idx) >= ast.nodes.items.len) continue;
+        if (@backingInt(stmt_idx) >= ast.nodes.items.len) continue;
         try collectAutoTypeOnlyDeclNames(allocator, ast, stmt_idx, &value_names, &type_only_names);
     }
 
@@ -66,8 +66,8 @@ pub fn markAutoTypeOnlyExportSpecifiers(
     // 같은 철자의 top-level type alias와 무관한 runtime namespace member일 수 있다.
     i = 0;
     while (i < stmt_len) : (i += 1) {
-        const stmt_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[stmt_start + i]);
-        if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) continue;
+        const stmt_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[stmt_start + i]));
+        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) continue;
         const node = ast.getNode(stmt_idx);
         if (node.tag != .export_named_declaration) continue;
         const extra_start = node.data.extra;
@@ -81,16 +81,16 @@ pub fn markAutoTypeOnlyExportSpecifiers(
 
         const spec_indices = extras[export_decl.specs_start .. export_decl.specs_start + export_decl.specs_len];
         for (spec_indices) |raw_idx| {
-            const spec_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
+            const spec_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (spec_idx.isNone()) continue;
-            if (@intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
+            if (@backingInt(spec_idx) >= ast.nodes.items.len) continue;
             const spec_node = ast.getNode(spec_idx);
             if (spec_node.tag != .export_specifier) continue;
             if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) continue;
 
             const local_idx = spec_node.data.binary.left;
             if (local_idx.isNone()) continue;
-            if (@intFromEnum(local_idx) >= ast.nodes.items.len) continue;
+            if (@backingInt(local_idx) >= ast.nodes.items.len) continue;
             const local_node = ast.getNode(local_idx);
             if (local_node.tag == .string_literal) continue;
 
@@ -125,7 +125,7 @@ fn pruneMarkedScanExportBindings(
     var program_idx: ast_mod.NodeIndex = .none;
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag == .program) {
-            program_idx = @enumFromInt(raw_idx);
+            program_idx = @fromBackingInt(@intCast(raw_idx));
             break;
         }
     }
@@ -140,7 +140,7 @@ fn pruneMarkedScanExportBindings(
 
     for (ast.extra_data.items[statements.start .. statements.start + statements.len]) |raw_stmt_idx| {
         if (raw_stmt_idx >= ast.nodes.items.len) continue;
-        const statement = ast.getNode(@enumFromInt(raw_stmt_idx));
+        const statement = ast.getNode(@fromBackingInt(@intCast(raw_stmt_idx)));
         if (statement.tag != .export_named_declaration) continue;
         const extra_start = statement.data.extra;
         if (extra_start > ast.extra_data.items.len or ast.extra_data.items.len - extra_start < 6) continue;
@@ -151,12 +151,12 @@ fn pruneMarkedScanExportBindings(
 
         for (ast.extra_data.items[export_decl.specs_start .. export_decl.specs_start + export_decl.specs_len]) |raw_spec_idx| {
             if (raw_spec_idx >= ast.nodes.items.len) continue;
-            const spec_idx: ast_mod.NodeIndex = @enumFromInt(raw_spec_idx);
+            const spec_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_spec_idx));
             const specifier = ast.getNode(spec_idx);
             if (specifier.tag != .export_specifier or
                 (specifier.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) == 0) continue;
             const local_idx = specifier.data.binary.left;
-            if (local_idx.isNone() or @intFromEnum(local_idx) >= ast.nodes.items.len) continue;
+            if (local_idx.isNone() or @backingInt(local_idx) >= ast.nodes.items.len) continue;
             const local = ast.getNode(local_idx);
             if (local.tag == .string_literal) continue;
             try marked_local_starts.put(allocator, local.span.start, {});
@@ -195,7 +195,7 @@ fn collectAutoTypeOnlyDeclNames(
         .ts_module_declaration => {
             const name_idx = stmt.data.binary.left;
             if (name_idx.isNone()) return;
-            if (@intFromEnum(name_idx) >= ast.nodes.items.len) return;
+            if (@backingInt(name_idx) >= ast.nodes.items.len) return;
             const name_node = ast.getNode(name_idx);
             if (name_node.tag == .string_literal) return;
             try putNodeIdName(allocator, ast, name_idx, value_names);
@@ -215,12 +215,12 @@ fn collectAutoTypeOnlyDeclNames(
             const list_len = ast.extra_data.items[stmt.data.extra + 2];
             var j: u32 = 0;
             while (j < list_len) : (j += 1) {
-                const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + j]);
+                const decl_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list_start + j]));
                 if (decl_idx.isNone()) continue;
                 const decl = ast.getNode(decl_idx);
                 if (decl.tag != .variable_declarator) continue;
                 // variable_declarator extras[0] = binding pattern (또는 simple identifier)
-                const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
+                const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[decl.data.extra]));
                 try collectBindingIdentifierNames(allocator, ast, binding_idx, value_names);
             }
         },
@@ -236,9 +236,9 @@ fn collectAutoTypeOnlyDeclNames(
             const decl = module_parser.readImportDeclExtras(ast, stmt.data.extra);
             var j: u32 = 0;
             while (j < decl.specs_len) : (j += 1) {
-                const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.specs_start + j]);
+                const spec_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[decl.specs_start + j]));
                 if (spec_idx.isNone()) continue;
-                if (@intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
+                if (@backingInt(spec_idx) >= ast.nodes.items.len) continue;
                 const spec = ast.getNode(spec_idx);
                 switch (spec.tag) {
                     // import_specifier: binary { left=imported, right=local }
@@ -270,9 +270,9 @@ fn collectAutoTypeOnlyDeclNames(
         .export_named_declaration => {
             const extra_start = stmt.data.extra;
             if (extra_start >= ast.extra_data.items.len) return;
-            const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
+            const decl_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_start]));
             if (decl_idx.isNone()) return;
-            if (@intFromEnum(decl_idx) >= ast.nodes.items.len) return;
+            if (@backingInt(decl_idx) >= ast.nodes.items.len) return;
             // 재귀 분기 — declaration 자체의 binding 만 등록 (specifier 는 pass 2 에서 처리)
             try collectAutoTypeOnlyDeclNames(allocator, ast, decl_idx, value_names, type_only_names);
         },
@@ -290,7 +290,7 @@ fn putNameAtExtraSlot(
 ) error{OutOfMemory}!void {
     const extra_start = node.data.extra;
     if (extra_start + slot >= ast.extra_data.items.len) return;
-    const name_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra_start + slot]);
+    const name_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_start + slot]));
     try putNodeIdName(allocator, ast, name_idx, bucket);
 }
 
@@ -301,7 +301,7 @@ fn putNodeIdName(
     bucket: *std.StringHashMapUnmanaged(void),
 ) error{OutOfMemory}!void {
     if (name_idx.isNone()) return;
-    if (@intFromEnum(name_idx) >= ast.nodes.items.len) return;
+    if (@backingInt(name_idx) >= ast.nodes.items.len) return;
     const name_node = ast.getNode(name_idx);
     const name_text = ast.getText(name_node.span);
     if (name_text.len == 0) return;
@@ -318,7 +318,7 @@ fn collectBindingIdentifierNames(
     bucket: *std.StringHashMapUnmanaged(void),
 ) error{OutOfMemory}!void {
     if (idx.isNone()) return;
-    if (@intFromEnum(idx) >= ast.nodes.items.len) return;
+    if (@backingInt(idx) >= ast.nodes.items.len) return;
     var it = try ast_walk.bindingIdentifiers(ast.allocator, ast, idx, .{ .cover_grammar_assignment = false });
     defer it.deinit();
     while (try it.next()) |leaf_idx| {

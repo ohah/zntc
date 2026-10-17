@@ -106,7 +106,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
 
             var i: u32 = 0;
             while (i < list_len) : (i += 1) {
-                const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start + i]));
                 const decl = self.ast.getNode(decl_idx);
                 if (decl.tag != .variable_declarator) continue;
                 try collectBindingNodes(self, self.readNodeIdx(decl.data.extra, 0), out);
@@ -176,7 +176,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             while (stack.items.len > 0) {
                 const entry = stack.pop() orelse break;
                 if (entry.idx.isNone()) continue;
-                if (@intFromEnum(entry.idx) >= max_node) continue;
+                if (@backingInt(entry.idx) >= max_node) continue;
                 const node = self.ast.getNode(entry.idx);
 
                 const in_closure = entry.in_closure or isFunctionBoundary(node.tag);
@@ -287,7 +287,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const dl = ctx.self.readU32(node.data.extra, 2);
                 var j: u32 = 0;
                 while (j < dl) : (j += 1) {
-                    const d = ctx.self.ast.getNode(@enumFromInt(ctx.self.ast.extra_data.items[ds + j]));
+                    const d = ctx.self.ast.getNode(@fromBackingInt(@intCast(ctx.self.ast.extra_data.items[ds + j])));
                     if (d.tag != .variable_declarator) continue;
                     const b = ctx.self.readNodeIdx(d.data.extra, 0);
                     if (!b.isNone()) ctx.push(b);
@@ -352,8 +352,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // when this subtree has already been copied by control-flow
             // lowering. The caller supplies the scope for synthetic wrappers.
             const scope: ScopeId = if (self.semantic_edit_enabled)
-                @enumFromInt(self.transformed_scope_owner_map.get(@intFromEnum(idx)) orelse
-                    self.scope_owner_map.get(@intFromEnum(idx)) orelse @intFromEnum(inherited_scope))
+                @fromBackingInt(@intCast(self.transformed_scope_owner_map.get(@backingInt(idx)) orelse
+                    self.scope_owner_map.get(@backingInt(idx)) orelse @backingInt(inherited_scope)))
             else
                 inherited_scope;
             const node = self.ast.getNode(idx);
@@ -364,7 +364,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     var changed = false;
                     var i: u32 = 0;
                     while (i < node.data.list.len) : (i += 1) {
-                        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.list.start + i]);
+                        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.list.start + i]));
                         const cn = self.ast.getNode(child);
                         if (cn.tag == .variable_declaration and isHoistableVar(self, cn, names)) {
                             try appendVarAsAssignments(self, cn, names, scope, &items);
@@ -407,7 +407,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     const body = try hoistVarsOutOfBody(self, self.readNodeIdx(e, 3), names, scope);
                     if (init == self.readNodeIdx(e, 0) and body == self.readNodeIdx(e, 3)) return idx;
                     return self.addExtraNode(.for_statement, node.span, &.{
-                        @intFromEnum(init), @intFromEnum(self.readNodeIdx(e, 1)), @intFromEnum(self.readNodeIdx(e, 2)), @intFromEnum(body),
+                        @backingInt(init), @backingInt(self.readNodeIdx(e, 1)), @backingInt(self.readNodeIdx(e, 2)), @backingInt(body),
                     });
                 },
                 .for_in_statement, .for_of_statement, .for_await_of_statement => {
@@ -416,7 +416,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     if (!left.isNone()) {
                         const ln = self.ast.getNode(left);
                         if (ln.tag == .variable_declaration and isHoistableVar(self, ln, names)) {
-                            const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)]));
+                            const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)])));
                             const b_idx = self.readNodeIdx(d.data.extra, 0);
                             const b = self.ast.getNode(b_idx);
                             if (b.tag == .binding_identifier) {
@@ -455,7 +455,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     var changed = false;
                     var i: u32 = 0;
                     while (i < cl) : (i += 1) {
-                        const case_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[cs + i]);
+                        const case_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[cs + i]));
                         const cn = self.ast.getNode(case_idx);
                         const ce = cn.data.extra;
                         const block = try self.ast.addNode(.{ .tag = .block_statement, .span = cn.span, .data = .{ .list = .{ .start = self.readU32(ce, 1), .len = self.readU32(ce, 2) } } });
@@ -466,11 +466,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         }
                         changed = true;
                         const bl = self.ast.getNode(nb).data.list;
-                        try cases.append(self.allocator, try self.addExtraNode(.switch_case, cn.span, &.{ @intFromEnum(self.readNodeIdx(ce, 0)), bl.start, bl.len }));
+                        try cases.append(self.allocator, try self.addExtraNode(.switch_case, cn.span, &.{ @backingInt(self.readNodeIdx(ce, 0)), bl.start, bl.len }));
                     }
                     if (!changed) return idx;
                     const list = try self.ast.addNodeList(cases.items);
-                    return self.addExtraNode(.switch_statement, node.span, &.{ @intFromEnum(self.readNodeIdx(e, 0)), list.start, list.len });
+                    return self.addExtraNode(.switch_statement, node.span, &.{ @backingInt(self.readNodeIdx(e, 0)), list.start, list.len });
                 },
                 else => return idx,
             }
@@ -484,7 +484,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             if (dl == 0) return false;
             var j: u32 = 0;
             while (j < dl) : (j += 1) {
-                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[ds + j])));
                 if (d.tag != .variable_declarator) return false;
                 const b = self.ast.getNode(self.readNodeIdx(d.data.extra, 0));
                 if (b.tag != .binding_identifier) return false;
@@ -507,7 +507,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const dl = self.readU32(node.data.extra, 2);
             var j: u32 = 0;
             while (j < dl) : (j += 1) {
-                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[ds + j])));
                 const init = self.readNodeIdx(d.data.extra, 2);
                 if (init.isNone()) continue;
                 const b_idx = self.readNodeIdx(d.data.extra, 0);
@@ -565,7 +565,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             while (stack.items.len > 0) {
                 const idx = stack.pop() orelse break;
                 if (idx.isNone()) continue;
-                if (@intFromEnum(idx) >= max_node) continue;
+                if (@backingInt(idx) >= max_node) continue;
                 const node = self.ast.getNode(idx);
 
                 switch (node.tag) {
@@ -602,7 +602,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             var it = ast_walk.children(self.ast, node);
             while (it.next()) |child| {
                 if (kind == .extra) {
-                    const raw = @intFromEnum(child);
+                    const raw = @backingInt(child);
                     if (raw == 0 or raw >= self.ast.nodes.items.len) continue;
                 }
                 try buf.append(self.allocator, child);
@@ -745,21 +745,21 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     // 이 노드를 visit 하는 순간 `visitExtraList` 가 40억 개를 순회하려다
                     // 죽는다 — 기존에는 이 파라미터가 다시 방문되지 않아 잠복해 있었다.
                     .data = .{ .extra = try self.ast.addExtras(&.{
-                        @intFromEnum(param), @intFromEnum(NodeIndex.none), @intFromEnum(NodeIndex.none),
-                        0,                   0,                            0,
+                        @backingInt(param), @backingInt(NodeIndex.none), @backingInt(NodeIndex.none),
+                        0,                  0,                           0,
                     }) },
                 });
                 try self.scratch.append(self.allocator, formal);
             }
             const params = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
 
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params, span);
             const func_flags: u32 = (if (is_async) ast_mod.FunctionFlags.is_async else 0) |
                 (if (is_generator) ast_mod.FunctionFlags.is_generator else 0);
             const func_extra = try self.ast.addExtras(&.{
-                none,                           @intFromEnum(params_node),
-                @intFromEnum(transformed_body), func_flags,
+                none,                          @backingInt(params_node),
+                @backingInt(transformed_body), func_flags,
                 none,
             });
             const func_expr = try self.ast.addNode(.{
@@ -787,7 +787,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     try header_symbol_ids.append(self.allocator, source_id);
                     try parameter_symbol_ids.append(self.allocator, parameter_id);
                 }
-                try self.deferred_generator_loop_migrations.put(self.allocator, @intFromEnum(function_scope), .{
+                try self.deferred_generator_loop_migrations.put(self.allocator, @backingInt(function_scope), .{
                     .loop_function = func_expr,
                     .body = visited_body,
                     .enclosing_function_scope = self.current_scope,
@@ -826,7 +826,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     existing
                 else
                     std.debug.panic("late-named extracted loop has no semantic editor", .{});
-                const generated = &editor.symbols.items[@intFromEnum(symbol)];
+                const generated = &editor.symbols.items[@backingInt(symbol)];
                 if (!std.mem.eql(u8, generated.synthetic_name, loop_name))
                     std.debug.panic("extracted loop binding lost its staging spelling", .{});
                 generated.synthetic_kind = .block_scoping_loop_binding;
@@ -850,7 +850,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             if (loop_symbol) |symbol| {
                 const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
-                const loop_symbol_scope = symbols[@intFromEnum(symbol)].scope_id;
+                const loop_symbol_scope = symbols[@backingInt(symbol)].scope_id;
                 var cursor = call_scope;
                 var visible_from_call_scope = false;
                 for (0..scopes.len) |_| {
@@ -950,7 +950,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             while (stack.items.len > 0) {
                 const entry = stack.pop() orelse break;
                 if (entry.idx.isNone()) continue;
-                if (@intFromEnum(entry.idx) >= self.ast.nodes.items.len) continue;
+                if (@backingInt(entry.idx) >= self.ast.nodes.items.len) continue;
                 const node = self.ast.getNode(entry.idx);
 
                 var loop_depth = entry.loop_depth;
@@ -1032,7 +1032,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             defer stack.deinit(self.allocator);
             stack.append(self.allocator, body_idx) catch return;
             while (stack.pop()) |idx| {
-                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
                 const node = self.ast.getNode(idx);
                 switch (node.tag) {
                     .function_expression, .function_declaration, .arrow_function_expression, .function, .method_definition => continue,
@@ -1308,7 +1308,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         self.ast.extra_data.items[e],
                         self.ast.extra_data.items[e + 1],
                         self.ast.extra_data.items[e + 2],
-                        @intFromEnum(new_body),
+                        @backingInt(new_body),
                     });
                 },
                 .while_statement, .do_while_statement => {
@@ -1335,11 +1335,11 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
                     for (0..cases_len) |ci| {
-                        const case_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[cases_start + ci]);
+                        const case_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[cases_start + ci]));
                         const case_node = self.ast.getNode(case_idx);
                         // switch_case: extra = [test(0), stmts_start(1), stmts_len(2)]
                         const ce = case_node.data.extra;
-                        const test_node: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
+                        const test_node: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[ce]));
                         const case_stmts_start = self.ast.extra_data.items[ce + 1];
                         const case_stmts_len = self.ast.extra_data.items[ce + 2];
                         // case body 의 각 문을 재귀 변환. inner_scratch 는 transform
@@ -1349,13 +1349,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                         // 방금 추가한 switch_case 까지 잘려나간다).
                         const inner_scratch = self.scratch.items.len;
                         for (0..case_stmts_len) |si| {
-                            const stmt_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[case_stmts_start + si]);
+                            const stmt_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[case_stmts_start + si]));
                             try self.scratch.append(self.allocator, try transformStmtFlow(self, stmt_idx, flow, loop_depth, switch_depth));
                         }
                         const new_stmts = try self.ast.addNodeList(self.scratch.items[inner_scratch..]);
                         self.scratch.shrinkRetainingCapacity(inner_scratch);
                         try self.scratch.append(self.allocator, try self.addExtraNode(.switch_case, case_node.span, &.{
-                            @intFromEnum(test_node), new_stmts.start, new_stmts.len,
+                            @backingInt(test_node), new_stmts.start, new_stmts.len,
                         }));
                     }
                     const new_cases = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -1462,15 +1462,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 // layout. (이전엔 `.unary` variant 로 잘못 써서 `if (<= === "object")`
                 // syntax error — #1797.)
                 const typeof_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(ret_ref),
-                    @intFromEnum(token_mod.Kind.kw_typeof),
+                    @backingInt(ret_ref),
+                    @backingInt(token_mod.Kind.kw_typeof),
                 });
                 const typeof_expr = try self.ast.addExtraNode(.unary_expression, span, typeof_extra);
                 const obj_str = try es_helpers.buildStringNode(self, "\"object\"", span);
                 const typeof_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = span,
-                    .data = .{ .binary = .{ .left = typeof_expr, .right = obj_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                    .data = .{ .binary = .{ .left = typeof_expr, .right = obj_str, .flags = @backingInt(token_mod.Kind.eq3) } },
                 });
                 // _ret.v
                 const ret_ref2 = try makeControlFlowRetRef(self, ret_binding, ret_name, ret_symbol, call_scope);
@@ -1496,7 +1496,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 const break_check = try self.ast.addNode(.{
                     .tag = .binary_expression,
                     .span = span,
-                    .data = .{ .binary = .{ .left = ret_ref, .right = break_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                    .data = .{ .binary = .{ .left = ret_ref, .right = break_str, .flags = @backingInt(token_mod.Kind.eq3) } },
                 });
                 const break_stmt = try self.ast.addNode(.{
                     .tag = .break_statement,
@@ -1523,7 +1523,7 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                     const check = try self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = span,
-                        .data = .{ .binary = .{ .left = ret_ref, .right = sentinel_str, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                        .data = .{ .binary = .{ .left = ret_ref, .right = sentinel_str, .flags = @backingInt(token_mod.Kind.eq3) } },
                     });
                     // 라벨이 **경계 없이 보이면** `break/continue <label>` 로 바로 점프하고, 클로저
                     // 경계 너머면 `return "<kw>|<label>"` 로 한 단계 위 클로저에 전달한다 (#4722).

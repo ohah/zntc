@@ -497,7 +497,7 @@ pub fn exprNeedsParens(self: anytype, node: ast_mod.Node, level: Level, flags: E
             break :blk level.gte(if (is_postfix) Level.postfix else Level.prefix);
         },
         .binary_expression, .logical_expression => blk: {
-            const op: Kind = @enumFromInt(node.data.binary.flags);
+            const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
             const entry = precedence.binaryOpLevel(op) orelse break :blk false;
             // logical 단락 폴드 시 right 가 logical 자리에 옴 → 자기(right) wrap 으로
             // 위임하고 여기선 wrap 안 함(emitBinary 가 right 를 부모 level 로 투과).
@@ -635,7 +635,7 @@ fn numericIsPlainInteger(text: []const u8) bool {
 /// statement-start 에서 `{` 가 block 으로 오파싱되는 것을 막는 wrap 판정용.
 /// 배열 패턴(`[a]=b`)은 `[` 가 statement-start 에서 모호하지 않아 제외 (esbuild 동일).
 fn assignTargetIsObject(self: anytype, left: NodeIndex) bool {
-    if (left.isNone() or @intFromEnum(left) >= self.ast.nodes.items.len) return false;
+    if (left.isNone() or @backingInt(left) >= self.ast.nodes.items.len) return false;
     return switch (self.ast.getNode(left).tag) {
         .object_expression, .object_pattern, .object_assignment_target => true,
         else => false,

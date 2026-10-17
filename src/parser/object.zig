@@ -252,9 +252,9 @@ pub fn parseObjectMethodBody(self: *Parser, start: u32, key: NodeIndex, flags: u
 
     // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     // 클래스 메서드와 동일한 6개 필드 (객체 메서드는 decorator 없으므로 0, 0)
-    const extra_start = try self.ast.addExtra(@intFromEnum(key));
-    _ = try self.ast.addExtra(@intFromEnum(params_node));
-    _ = try self.ast.addExtra(@intFromEnum(body));
+    const extra_start = try self.ast.addExtra(@backingInt(key));
+    _ = try self.ast.addExtra(@backingInt(params_node));
+    _ = try self.ast.addExtra(@backingInt(body));
     _ = try self.ast.addExtra(flags);
     _ = try self.ast.addExtra(0); // deco_start (no decorators)
     _ = try self.ast.addExtra(0); // deco_len  (no decorators)

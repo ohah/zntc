@@ -32,7 +32,7 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
             for (m.import_records) |rec| {
                 if (rec.kind != .require) continue;
                 if (rec.resolved.isNone()) continue;
-                const target_idx = @intFromEnum(rec.resolved);
+                const target_idx = @backingInt(rec.resolved);
                 if (target_idx >= self.modules.count()) continue;
 
                 var target = self.modules.at(target_idx);
@@ -65,7 +65,7 @@ pub fn promoteExportsKinds(self: *ModuleGraph) void {
             for (m.import_records) |rec| {
                 if (!rec.kind.isEagerEvalDependency()) continue;
                 if (rec.resolved.isNone()) continue;
-                const target_idx = @intFromEnum(rec.resolved);
+                const target_idx = @backingInt(rec.resolved);
                 if (target_idx >= self.modules.count()) continue;
 
                 var target = self.modules.at(target_idx);
@@ -187,7 +187,7 @@ fn shouldUseMetroCjsForMixedModule(self: *ModuleGraph, module: *const Module) bo
 pub fn promoteRunBeforeMainModules(self: *ModuleGraph) void {
     for (self.run_before_main_files) |rbm_path| {
         const idx = self.path_to_module.get(rbm_path) orelse continue;
-        const i = @intFromEnum(idx);
+        const i = @backingInt(idx);
         if (i >= self.modules.count()) continue;
         var m = self.modules.at(i);
         if (!m.module_type.isJavaScriptLike() or m.wrap_kind != .none) continue;
@@ -461,13 +461,13 @@ fn findWrapperSymbol(
         return null;
     };
     if (identity.*) |existing| {
-        const raw: usize = @intFromEnum(existing);
+        const raw: usize = @backingInt(existing);
         if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == expected_kind) return existing;
         identity.* = null;
     }
     for (sem.symbols.items, 0..) |symbol, index| {
         if (symbol.synthetic_kind != expected_kind) continue;
-        identity.* = @enumFromInt(index);
+        identity.* = @fromBackingInt(@intCast(index));
         return identity.*;
     }
     return null;
@@ -510,7 +510,7 @@ fn ensureEsmRuntimeInternalSymbol(
     kind: semantic_symbol.SymbolKind,
 ) !semantic_symbol.SymbolId {
     if (existing) |symbol_id| {
-        const raw: usize = @intFromEnum(symbol_id);
+        const raw: usize = @backingInt(symbol_id);
         if (raw < sem.symbols.items.len) {
             const symbol = sem.symbols.items[raw];
             if (symbol.synthetic_kind == .esm_runtime_internal_local and symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name)) return symbol_id;
@@ -518,7 +518,7 @@ fn ensureEsmRuntimeInternalSymbol(
     }
     for (sem.symbols.items, 0..) |symbol, index| {
         if (symbol.synthetic_kind != .esm_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-        return @enumFromInt(index);
+        return @fromBackingInt(@intCast(index));
     }
     return try semantic_symbol.extendSymbol(arena, &sem.symbols, kind, .esm_runtime_internal_local, name, Span.EMPTY);
 }
@@ -526,7 +526,7 @@ fn ensureEsmRuntimeInternalSymbol(
 fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.SymbolId, name: []const u8) ?semantic_symbol.SymbolId {
     const sem = if (m.semantic) |*value| value else return null;
     if (identity.*) |existing| {
-        const raw: usize = @intFromEnum(existing);
+        const raw: usize = @backingInt(existing);
         if (raw < sem.symbols.items.len) {
             const symbol = sem.symbols.items[raw];
             if (symbol.synthetic_kind == .bundler_runtime_helper and
@@ -537,7 +537,7 @@ fn findBundlerRuntimeHelperSymbol(m: *Module, identity: *?semantic_symbol.Symbol
     for (sem.symbols.items, 0..) |symbol, index| {
         if (symbol.synthetic_kind != .bundler_runtime_helper or
             !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-        identity.* = @enumFromInt(index);
+        identity.* = @fromBackingInt(@intCast(index));
         return identity.*;
     }
     return null;
@@ -607,7 +607,7 @@ fn ensureCjsRuntimeInternalSymbol(
     kind: semantic_symbol.SymbolKind,
 ) !semantic_symbol.SymbolId {
     if (existing) |symbol_id| {
-        const raw: usize = @intFromEnum(symbol_id);
+        const raw: usize = @backingInt(symbol_id);
         if (raw < sem.symbols.items.len) {
             const symbol = sem.symbols.items[raw];
             if (symbol.synthetic_kind == .cjs_runtime_internal_local and symbol.kind == kind and std.mem.eql(u8, symbol.synthetic_name, name)) {
@@ -617,7 +617,7 @@ fn ensureCjsRuntimeInternalSymbol(
     }
     for (sem.symbols.items, 0..) |symbol, index| {
         if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-        return @enumFromInt(index);
+        return @fromBackingInt(@intCast(index));
     }
     return try semantic_symbol.extendSymbol(
         arena,
@@ -632,13 +632,13 @@ fn ensureCjsRuntimeInternalSymbol(
 fn findCjsRuntimeFactorySymbol(m: *Module) ?semantic_symbol.SymbolId {
     const sem = if (m.semantic) |*value| value else return null;
     if (m.cjs_runtime_factory_symbol) |existing| {
-        const raw: usize = @intFromEnum(existing);
+        const raw: usize = @backingInt(existing);
         if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == .cjs_runtime_factory) return existing;
         m.cjs_runtime_factory_symbol = null;
     }
     for (sem.symbols.items, 0..) |symbol, index| {
         if (symbol.synthetic_kind != .cjs_runtime_factory) continue;
-        m.cjs_runtime_factory_symbol = @enumFromInt(index);
+        m.cjs_runtime_factory_symbol = @fromBackingInt(@intCast(index));
         return m.cjs_runtime_factory_symbol;
     }
     return null;
@@ -657,7 +657,7 @@ fn registerCjsWrapperParameters(m: *Module) !void {
     // in the body map that parsed CJS modules expose.
     const ast_ptr = if (m.ast) |*ast| ast else {
         const wrapper_scope = try ensureAstlessCjsWrapperParameterScopes(sem_ptr, arena);
-        const wrapper_scope_raw: usize = @intFromEnum(wrapper_scope);
+        const wrapper_scope_raw: usize = @backingInt(wrapper_scope);
         const root_scope_ptr = @constCast(&sem_ptr.scopes[0]);
         const wrapper_scope_ptr = @constCast(&sem_ptr.scopes[wrapper_scope_raw]);
         const root_map = @constCast(&sem_ptr.scope_maps[0]);
@@ -674,8 +674,8 @@ fn registerCjsWrapperParameters(m: *Module) !void {
             @as(usize, @intFromBool(!wrapper_map.contains("exports"))) +
             @as(usize, @intFromBool(!wrapper_map.contains("module")));
         const wrapper_owner_count: usize =
-            @as(usize, @intFromBool(existing_exports == null or sem_ptr.symbols.items[@intFromEnum(existing_exports.?)].scope_id != wrapper_scope)) +
-            @as(usize, @intFromBool(existing_module == null or sem_ptr.symbols.items[@intFromEnum(existing_module.?)].scope_id != wrapper_scope));
+            @as(usize, @intFromBool(existing_exports == null or sem_ptr.symbols.items[@backingInt(existing_exports.?)].scope_id != wrapper_scope)) +
+            @as(usize, @intFromBool(existing_module == null or sem_ptr.symbols.items[@backingInt(existing_module.?)].scope_id != wrapper_scope));
         if (@as(usize, wrapper_scope_ptr.symbol_count) > std.math.maxInt(u16) - wrapper_owner_count)
             return error.CjsWrapperParameterScopeOverflow;
         try sem_ptr.symbols.ensureUnusedCapacity(arena, new_symbol_count);
@@ -714,8 +714,8 @@ fn registerCjsWrapperParameters(m: *Module) !void {
             m.cjs_wrapper_module_parameter_symbol.?,
             "module",
         );
-        const exports_raw: usize = @intFromEnum(m.cjs_wrapper_exports_parameter_symbol.?);
-        const module_raw: usize = @intFromEnum(m.cjs_wrapper_module_parameter_symbol.?);
+        const exports_raw: usize = @backingInt(m.cjs_wrapper_exports_parameter_symbol.?);
+        const module_raw: usize = @backingInt(m.cjs_wrapper_module_parameter_symbol.?);
         if (root_map.get("exports")) |existing| {
             if (existing != exports_raw) return error.CjsWrapperParameterScopeMismatch;
         } else root_map.putAssumeCapacity("exports", exports_raw);
@@ -734,7 +734,7 @@ fn registerCjsWrapperParameters(m: *Module) !void {
     if (sem_ptr.scopes.len == 0 or sem_ptr.scope_maps.len != sem_ptr.scopes.len) return error.MissingSemantic;
 
     const wrapper_scope = try ensureCjsWrapperParameterScope(sem_ptr, arena);
-    const wrapper_scope_raw: usize = @intFromEnum(wrapper_scope);
+    const wrapper_scope_raw: usize = @backingInt(wrapper_scope);
     const root_scope_ptr = @constCast(&sem_ptr.scopes[0]);
     const wrapper_scope_ptr = @constCast(&sem_ptr.scopes[wrapper_scope_raw]);
     const root_map = @constCast(&sem_ptr.scope_maps[0]);
@@ -759,11 +759,11 @@ fn registerCjsWrapperParameters(m: *Module) !void {
     const new_wrapper_map_count: usize = @as(usize, @intFromBool(!wrapper_map.contains("exports"))) +
         @as(usize, @intFromBool(!wrapper_map.contains("module")));
     const wrapper_owner_count: usize =
-        @as(usize, @intFromBool(existing_exports == null or sem_ptr.symbols.items[@intFromEnum(existing_exports.?)].scope_id != wrapper_scope)) +
-        @as(usize, @intFromBool(existing_module == null or sem_ptr.symbols.items[@intFromEnum(existing_module.?)].scope_id != wrapper_scope));
+        @as(usize, @intFromBool(existing_exports == null or sem_ptr.symbols.items[@backingInt(existing_exports.?)].scope_id != wrapper_scope)) +
+        @as(usize, @intFromBool(existing_module == null or sem_ptr.symbols.items[@backingInt(existing_module.?)].scope_id != wrapper_scope));
     const root_move_count: usize =
-        @as(usize, @intFromBool(existing_exports != null and sem_ptr.symbols.items[@intFromEnum(existing_exports.?)].scope_id == @as(ScopeId, @enumFromInt(0)))) +
-        @as(usize, @intFromBool(existing_module != null and sem_ptr.symbols.items[@intFromEnum(existing_module.?)].scope_id == @as(ScopeId, @enumFromInt(0))));
+        @as(usize, @intFromBool(existing_exports != null and sem_ptr.symbols.items[@backingInt(existing_exports.?)].scope_id == @as(ScopeId, @fromBackingInt(@intCast(0))))) +
+        @as(usize, @intFromBool(existing_module != null and sem_ptr.symbols.items[@backingInt(existing_module.?)].scope_id == @as(ScopeId, @fromBackingInt(@intCast(0)))));
     if (wrapper_owner_count > 0 and @as(usize, wrapper_scope_ptr.symbol_count) > std.math.maxInt(u16) - wrapper_owner_count) {
         return error.CjsWrapperParameterScopeOverflow;
     }
@@ -796,13 +796,13 @@ fn registerCjsWrapperParameters(m: *Module) !void {
     // without a lexical source binding. Conflicting body locals remain mapped
     // only in the body scope and shadow their callback parameter normally.
     if (!exports_conflict) {
-        const raw: usize = @intFromEnum(exports_symbol);
+        const raw: usize = @backingInt(exports_symbol);
         if (root_map.get("exports")) |existing| {
             if (existing != raw) return error.CjsWrapperParameterScopeMismatch;
         } else root_map.putAssumeCapacity("exports", raw);
     }
     if (!module_conflict) {
-        const raw: usize = @intFromEnum(module_symbol);
+        const raw: usize = @backingInt(module_symbol);
         if (root_map.get("module")) |existing| {
             if (existing != raw) return error.CjsWrapperParameterScopeMismatch;
         } else root_map.putAssumeCapacity("module", raw);
@@ -862,7 +862,7 @@ fn ensureAstlessCjsWrapperParameterScopes(sem: *ModuleSemanticData, allocator: s
         const scopes = try allocator.alloc(Scope, 2);
         const scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), 2);
         scopes[0] = .{
-            .parent = @enumFromInt(1),
+            .parent = @fromBackingInt(@intCast(1)),
             .kind = .global,
             .is_strict = false,
         };
@@ -878,7 +878,7 @@ fn ensureAstlessCjsWrapperParameterScopes(sem: *ModuleSemanticData, allocator: s
     }
 
     if (sem.scopes.len != 2 or sem.scope_maps.len != 2) return error.CjsWrapperParameterScopeMismatch;
-    const wrapper_scope: ScopeId = @enumFromInt(1);
+    const wrapper_scope: ScopeId = @fromBackingInt(@intCast(1));
     const body_scope = sem.scopes[0];
     const callback_scope = sem.scopes[1];
     if (body_scope.parent != wrapper_scope or body_scope.kind != .global or body_scope.symbol_count != 0 or
@@ -895,14 +895,14 @@ fn validateAstlessCjsWrapperParameterScope(
     exports_id: semantic_symbol.SymbolId,
     module_id: semantic_symbol.SymbolId,
 ) !void {
-    if (sem.scopes.len != 2 or sem.scope_maps.len != 2 or wrapper_scope_id != @as(ScopeId, @enumFromInt(1)) or
+    if (sem.scopes.len != 2 or sem.scope_maps.len != 2 or wrapper_scope_id != @as(ScopeId, @fromBackingInt(@intCast(1))) or
         sem.scopes[0].parent != wrapper_scope_id or sem.scopes[0].kind != .global or sem.scopes[0].symbol_count != 0 or
         sem.scope_maps[0].count() != 2)
     {
         return error.CjsWrapperParameterScopeMismatch;
     }
-    const callback_scope = sem.scopes[@intFromEnum(wrapper_scope_id)];
-    const callback_map = sem.scope_maps[@intFromEnum(wrapper_scope_id)];
+    const callback_scope = sem.scopes[@backingInt(wrapper_scope_id)];
+    const callback_map = sem.scope_maps[@backingInt(wrapper_scope_id)];
     if (callback_scope.parent != .none or callback_scope.kind != .function or callback_scope.symbol_count != 2 or
         callback_map.count() != 2 or exports_id == module_id)
     {
@@ -914,7 +914,7 @@ fn validateAstlessCjsWrapperParameterScope(
         .{ .id = module_id, .name = "module", .kind = semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter },
     };
     inline for (params) |param| {
-        const raw: usize = @intFromEnum(param.id);
+        const raw: usize = @backingInt(param.id);
         if (raw >= sem.symbols.items.len or callback_map.get(param.name) != raw or sem.scope_maps[0].get(param.name) != raw)
             return error.CjsWrapperParameterScopeMismatch;
         const symbol = sem.symbols.items[raw];
@@ -931,7 +931,7 @@ fn ensureCjsWrapperParameterScope(sem: *ModuleSemanticData, allocator: std.mem.A
     if (sem.scopes.len == 0 or sem.scope_maps.len != sem.scopes.len) return error.MissingSemantic;
     const root_parent = sem.scopes[0].parent;
     if (!root_parent.isNone()) {
-        const parent_raw: usize = @intFromEnum(root_parent);
+        const parent_raw: usize = @backingInt(root_parent);
         if (parent_raw >= sem.scopes.len or sem.scopes[parent_raw].kind != .function or
             !sem.scopes[parent_raw].parent.isNone()) return error.InvalidCjsWrapperParameterScope;
         return root_parent;
@@ -940,7 +940,7 @@ fn ensureCjsWrapperParameterScope(sem: *ModuleSemanticData, allocator: std.mem.A
 
     const old_len = sem.scopes.len;
     const new_len = old_len + 1;
-    const wrapper_scope: ScopeId = @enumFromInt(@as(u32, @intCast(old_len)));
+    const wrapper_scope: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(old_len))));
     const source_root = sem.scopes[0];
     const scopes = try allocator.alloc(Scope, new_len);
     @memcpy(scopes[0..old_len], sem.scopes);
@@ -970,7 +970,7 @@ fn cjsRootBinding(
     while (bindings.next()) |raw_ptr| {
         const raw = raw_ptr.*;
         if (raw < sem.symbols.items.len and cjsWrapperIdentifierEquals(sem.symbols.items[raw].nameText(ast.source), name)) {
-            return @enumFromInt(@as(u32, @intCast(raw)));
+            return @fromBackingInt(@intCast(@as(u32, @intCast(raw))));
         }
     }
     return findCjsWrapperParameter(sem.symbols.items, kind, name);
@@ -1025,7 +1025,7 @@ fn attachCjsWrapperParameter(
     id: semantic_symbol.SymbolId,
     name: []const u8,
 ) !void {
-    const raw: usize = @intFromEnum(id);
+    const raw: usize = @backingInt(id);
     if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
     const symbol = &sem.symbols.items[raw];
     if (wrapper_map.get(name)) |existing| {
@@ -1035,7 +1035,7 @@ fn attachCjsWrapperParameter(
     }
 
     if (symbol.scope_id == wrapper_scope_id) return;
-    if (symbol.scope_id == @as(ScopeId, @enumFromInt(0))) {
+    if (symbol.scope_id == @as(ScopeId, @fromBackingInt(@intCast(0)))) {
         if (!scopeMapContainsIdentifier(root_map, name, raw)) {
             return error.CjsWrapperParameterScopeMismatch;
         }
@@ -1076,7 +1076,7 @@ fn validateCjsWrapperParameterScope(
 ) !void {
     if (sem.scopes.len == 0 or sem.scope_maps.len != sem.scopes.len or wrapper_scope_id.isNone())
         return error.CjsWrapperParameterScopeMismatch;
-    const wrapper_raw: usize = @intFromEnum(wrapper_scope_id);
+    const wrapper_raw: usize = @backingInt(wrapper_scope_id);
     if (wrapper_raw >= sem.scopes.len or sem.scopes[0].parent != wrapper_scope_id) return error.CjsWrapperParameterScopeMismatch;
     const wrapper_scope = sem.scopes[wrapper_raw];
     if (wrapper_scope.kind != .function or !wrapper_scope.parent.isNone() or wrapper_scope.symbol_count != 2)
@@ -1088,7 +1088,7 @@ fn validateCjsWrapperParameterScope(
         .{ .id = module_id, .name = "module", .kind = semantic_symbol.SyntheticKind.cjs_wrapper_module_parameter, .conflict = module_conflict },
     };
     inline for (params) |param| {
-        const raw: usize = @intFromEnum(param.id);
+        const raw: usize = @backingInt(param.id);
         if (raw >= sem.symbols.items.len or sem.scope_maps[wrapper_raw].get(param.name) != raw)
             return error.CjsWrapperParameterScopeMismatch;
         const symbol = sem.symbols.items[raw];
@@ -1102,8 +1102,8 @@ fn validateCjsWrapperParameterScope(
         if (param.conflict) {
             const source_id = cjsRootBinding(sem, ast, param.name, param.kind) orelse return error.CjsWrapperParameterScopeMismatch;
             if (source_id == param.id) return error.CjsWrapperParameterScopeMismatch;
-            const source_raw: usize = @intFromEnum(source_id);
-            if (source_raw >= sem.symbols.items.len or sem.symbols.items[source_raw].scope_id != @as(ScopeId, @enumFromInt(0)))
+            const source_raw: usize = @backingInt(source_id);
+            if (source_raw >= sem.symbols.items.len or sem.symbols.items[source_raw].scope_id != @as(ScopeId, @fromBackingInt(@intCast(0))))
                 return error.CjsWrapperParameterScopeMismatch;
         } else if (!scopeMapContainsIdentifier(&sem.scope_maps[0], param.name, raw)) {
             return error.CjsWrapperParameterScopeMismatch;
@@ -1118,7 +1118,7 @@ fn findCjsWrapperParameter(
 ) ?semantic_symbol.SymbolId {
     for (symbols, 0..) |symbol, raw| {
         if (symbol.synthetic_kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-        return @enumFromInt(@as(u32, @intCast(raw)));
+        return @fromBackingInt(@intCast(@as(u32, @intCast(raw))));
     }
     return null;
 }
@@ -1156,7 +1156,7 @@ fn bindCjsWrapperReferences(
                 }
                 const root = ast.getNode(root_idx);
                 if (root.tag != .jsx_identifier) continue;
-                reference_raw = @intFromEnum(root_idx);
+                reference_raw = @backingInt(root_idx);
                 name = ast.getSourceText(root.span);
             },
             else => continue,
@@ -1173,7 +1173,7 @@ fn bindCjsWrapperReferences(
             if (is_exports) result.has_unbound_exports = true else result.has_unbound_module = true;
             continue;
         }
-        const raw_id = @intFromEnum(id);
+        const raw_id = @backingInt(id);
         if (symbol_ids[reference_raw]) |existing_raw| {
             if (existing_raw == raw_id) continue;
             if (existing_raw >= symbols.items.len or raw_id >= symbols.items.len) continue;
@@ -1214,11 +1214,11 @@ fn bindCjsWrapperReferences(
     // final symbol frequency. Already-resolved source references were counted
     // by the analyzer and are skipped above.
     if (exports_symbol) |id| {
-        const raw: usize = @intFromEnum(id);
+        const raw: usize = @backingInt(id);
         if (raw < symbols.items.len) symbols.items[raw].reference_count +|= exports_bound_count;
     }
     if (module_symbol) |id| {
-        const raw: usize = @intFromEnum(id);
+        const raw: usize = @backingInt(id);
         if (raw < symbols.items.len) symbols.items[raw].reference_count +|= module_bound_count;
     }
     return result;
@@ -1276,7 +1276,7 @@ fn resolveImportTarget(self: *ModuleGraph, m: anytype, rec_idx: usize) ?*Module 
     if (rec_idx >= m.import_records.len) return null;
     const target_mod_idx = m.import_records[rec_idx].resolved;
     if (target_mod_idx.isNone()) return null;
-    const target_idx = @intFromEnum(target_mod_idx);
+    const target_idx = @backingInt(target_mod_idx);
     if (target_idx >= self.modules.count()) return null;
     return self.modules.at(target_idx);
 }
@@ -1367,7 +1367,7 @@ pub fn propagateTopLevelAwait(self: *ModuleGraph) void {
             for (m.import_records) |rec| {
                 if (rec.resolved.isNone()) continue;
                 if (!rec.kind.isEagerEvalDependency()) continue;
-                const target_idx = @intFromEnum(rec.resolved);
+                const target_idx = @backingInt(rec.resolved);
                 if (target_idx >= count) continue;
                 reverse_deps[target_idx].append(self.allocator, @intCast(src_idx)) catch return;
             }
@@ -1446,7 +1446,7 @@ pub fn computeAsyncCone(self: *ModuleGraph) void {
                 if (rec.resolved.isNone()) continue;
                 const eager = rec.kind.isEagerEvalDependency() or rec.kind == .require;
                 if (!eager) continue;
-                const t = @intFromEnum(rec.resolved);
+                const t = @backingInt(rec.resolved);
                 if (t >= count) continue;
                 rdeps[t].append(self.allocator, @intCast(src)) catch return;
             }
@@ -1595,7 +1595,7 @@ fn hasOnlyReExportImporters(self: *ModuleGraph, target: *const Module) bool {
     while (it.next()) |m| {
         for (m.import_records) |rec| {
             if (rec.resolved.isNone()) continue;
-            if (@intFromEnum(rec.resolved) != t_idx) continue;
+            if (@backingInt(rec.resolved) != t_idx) continue;
             saw_any = true;
             if (rec.kind != .re_export) return false;
             // A wrapped barrel's init runs its re-export sources' inits (#5662).
@@ -1610,7 +1610,7 @@ test "finalize: runtime synthetic symbol registration propagates OOM" {
     var arena = std.heap.ArenaAllocator.init(failing.allocator());
     defer arena.deinit();
 
-    var module = Module.init(@enumFromInt(0), "generated.cjs");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "generated.cjs");
     module.parse_arena = &arena;
     module.semantic = .{
         .symbols = .empty,
@@ -1645,7 +1645,7 @@ test "finalize: CJS wrapper parameter allocation propagates OOM" {
         .is_strict = true,
     }};
     var scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
-    var module = Module.init(@enumFromInt(0), "entry.cjs");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "entry.cjs");
     module.ast = ast;
     module.parse_arena = &arena;
     module.semantic = .{

@@ -191,7 +191,7 @@ pub const Codegen = struct {
                 // `import { v as undefined }` — local 은 오른쪽 자식(identifier_reference)
                 .import_specifier => blk: {
                     const local = n.data.binary.right;
-                    if (local.isNone() or @intFromEnum(local) >= self.ast.nodes.items.len) break :blk null;
+                    if (local.isNone() or @backingInt(local) >= self.ast.nodes.items.len) break :blk null;
                     break :blk self.ast.getNode(local);
                 },
                 else => continue,
@@ -261,14 +261,14 @@ pub const Codegen = struct {
     pub fn generateStatements(self: *Codegen, root: NodeIndex, stmt_indices: []const u32) ![]const u8 {
         if (self.options.assert_no_raw_private_syntax) {
             for (stmt_indices) |raw_idx| {
-                std.debug.assert(!hasRawPrivateSyntax(self.ast, @enumFromInt(raw_idx)));
+                std.debug.assert(!hasRawPrivateSyntax(self.ast, @fromBackingInt(@intCast(raw_idx))));
             }
         }
         try self.buf.ensureTotalCapacity(self.allocator, self.ast.source.len / 2);
         self.collectTopLevelDeclNames(root);
         var emitted = false;
         for (stmt_indices) |raw_idx| {
-            const node_idx: NodeIndex = @enumFromInt(raw_idx);
+            const node_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (node_idx.isNone()) continue;
             if (emitted) try self.writeNewline();
             try self.emitNode(node_idx);
@@ -328,17 +328,17 @@ pub const Codegen = struct {
         const list = root_node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+            const stmt = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             switch (stmt.tag) {
                 .function_declaration => {
-                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[stmt.data.extra]);
+                    const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[stmt.data.extra]));
                     if (!name_idx.isNone()) {
                         const n = self.ast.getText(self.ast.getNode(name_idx).span);
                         self.declared_names.put(self.allocator, n, {}) catch {};
                     }
                 },
                 .class_declaration => {
-                    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[stmt.data.extra]);
+                    const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[stmt.data.extra]));
                     if (!name_idx.isNone()) {
                         const n = self.ast.getText(self.ast.getNode(name_idx).span);
                         self.declared_names.put(self.allocator, n, {}) catch {};
@@ -350,8 +350,8 @@ pub const Codegen = struct {
                     const vlist_len = self.ast.extra_data.items[e + 2];
                     const decls = self.ast.extra_data.items[vlist_start .. vlist_start + vlist_len];
                     for (decls) |d_idx| {
-                        const decl = self.ast.getNode(@enumFromInt(d_idx));
-                        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+                        const decl = self.ast.getNode(@fromBackingInt(@intCast(d_idx)));
+                        const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[decl.data.extra]));
                         if (!name_idx.isNone()) {
                             const n = self.ast.getText(self.ast.getNode(name_idx).span);
                             self.declared_names.put(self.allocator, n, {}) catch {};
@@ -419,7 +419,7 @@ pub const Codegen = struct {
     /// identifier 노드의 symbol_id를 해결.
     /// symbol_ids[node_i]에서 직접 조회 (트랜스포머의 propagateSymbolId로 전파된 값).
     pub fn resolveSymbolId(_: *Codegen, idx: NodeIndex, meta: *const LinkingMetadata) ?u32 {
-        const node_i = @intFromEnum(idx);
+        const node_i = @backingInt(idx);
         if (node_i < meta.symbol_ids.len) {
             return meta.symbol_ids[node_i];
         }
@@ -428,7 +428,7 @@ pub const Codegen = struct {
 
     pub fn sourceSymbolId(self: *Codegen, idx: NodeIndex) ?u32 {
         if (self.options.linking_metadata) |meta| return self.resolveSymbolId(idx, meta);
-        const ni = @intFromEnum(idx);
+        const ni = @backingInt(idx);
         if (ni < self.options.semantic_symbol_ids.len) return self.options.semantic_symbol_ids[ni];
         return null;
     }
@@ -591,7 +591,7 @@ pub const Codegen = struct {
         const indices = self.ast.extra_data.items[start .. start + len];
         var first = true;
         for (indices) |raw_idx| {
-            const node_idx: NodeIndex = @enumFromInt(raw_idx);
+            const node_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (node_idx.isNone()) continue;
             if (self.isSkipped(node_idx)) continue;
             if (!first) try self.write(sep);

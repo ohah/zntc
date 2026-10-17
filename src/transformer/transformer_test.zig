@@ -23,8 +23,8 @@ test "#4819 anonymous default class binding lookup fails closed without semantic
     var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
     defer transformer.deinit();
 
-    const source_class: NodeIndex = @enumFromInt(17);
-    const generated_binding: NodeIndex = @enumFromInt(23);
+    const source_class: NodeIndex = @fromBackingInt(@intCast(17));
+    const generated_binding: NodeIndex = @fromBackingInt(@intCast(23));
     transformer.semantic_edit_enabled = true;
     try std.testing.expectError(
         error.MissingExactAnonymousDefaultClassBinding,
@@ -40,8 +40,8 @@ test "#4819 anonymous default class binding lookup fails closed without semantic
     transformer.semantic_edit_enabled = true;
     try transformer.lowered_anonymous_class_export_bindings.put(
         transformer.allocator,
-        @intFromEnum(source_class),
-        @intFromEnum(generated_binding),
+        @backingInt(source_class),
+        @backingInt(generated_binding),
     );
     try std.testing.expectEqual(
         generated_binding,
@@ -49,7 +49,7 @@ test "#4819 anonymous default class binding lookup fails closed without semantic
     );
     try std.testing.expectError(
         error.MissingExactAnonymousDefaultClassBinding,
-        import_export_mod.resolveLoweredAnonymousDefaultClassBinding(&transformer, @enumFromInt(18)),
+        import_export_mod.resolveLoweredAnonymousDefaultClassBinding(&transformer, @fromBackingInt(@intCast(18))),
     );
 }
 

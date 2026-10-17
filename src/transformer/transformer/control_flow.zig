@@ -89,7 +89,7 @@ fn findBindingWithSymbol(self: *Transformer, root: NodeIndex, raw_id: u32) Error
     try stack.append(self.allocator, root);
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (raw >= self.ast.nodes.items.len or seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(idx);
@@ -123,7 +123,7 @@ fn rebindLoopStorageReferences(self: *Transformer, root: NodeIndex, source_id: u
     try stack.append(self.allocator, root);
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (raw >= self.ast.nodes.items.len or seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(idx);
@@ -491,7 +491,7 @@ pub fn tryLowerForInOfPrivateTarget(self: *Transformer, node: Node) Error!?NodeI
         .data = .{ .binary = .{
             .left = left_idx,
             .right = tmp_ref,
-            .flags = @intFromEnum(token_mod.Kind.eq),
+            .flags = @backingInt(token_mod.Kind.eq),
         } },
     });
     const prefix_stmt = try self.ast.addNode(.{
@@ -533,7 +533,7 @@ fn buildForBodyWithPrefix(self: *Transformer, body_idx: NodeIndex, prefix_stmt: 
     var i: u32 = 0;
     while (i < len) : (i += 1) {
         const child_raw = self.ast.extra_data.items[start + i];
-        try self.scratch.append(self.allocator, @enumFromInt(child_raw));
+        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(child_raw)));
     }
     const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = list } });
@@ -624,8 +624,8 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
                 // var _loop = function(...) { ... };
                 // for (var i = 0; ...) { _loop(i); }
                 const for_node = try self.addExtraNode(.for_statement, node.span, &.{
-                    @intFromEnum(new_init),   @intFromEnum(new_test),
-                    @intFromEnum(new_update), @intFromEnum(result.call_and_check),
+                    @backingInt(new_init),   @backingInt(new_test),
+                    @backingInt(new_update), @backingInt(result.call_and_check),
                 });
 
                 // 두 문을 블록으로 반환 (호이스팅 불필요 — for 문 바로 앞에 삽입)
@@ -638,7 +638,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
             }
 
             return self.addExtraNode(.for_statement, node.span, &.{
-                @intFromEnum(new_init), @intFromEnum(new_test), @intFromEnum(new_update), @intFromEnum(new_body),
+                @backingInt(new_init), @backingInt(new_test), @backingInt(new_update), @backingInt(new_body),
             });
         }
     }
@@ -650,7 +650,7 @@ pub fn visitForStatement(self: *Transformer, node: Node) Error!NodeIndex {
     const raw_body = try self.visitNode(old_body);
     const new_body = try ensureStatementBody(self, old_body, raw_body, node.span);
     return self.addExtraNode(.for_statement, node.span, &.{
-        @intFromEnum(new_init), @intFromEnum(new_test), @intFromEnum(new_update), @intFromEnum(new_body),
+        @backingInt(new_init), @backingInt(new_test), @backingInt(new_update), @backingInt(new_body),
     });
 }
 
@@ -660,7 +660,7 @@ pub fn visitSwitchStatement(self: *Transformer, node: Node) Error!NodeIndex {
     const new_disc = try self.visitNode(self.readNodeIdx(e, 0));
     const new_cases = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
     return self.addExtraNode(.switch_statement, node.span, &.{
-        @intFromEnum(new_disc), new_cases.start, new_cases.len,
+        @backingInt(new_disc), new_cases.start, new_cases.len,
     });
 }
 
@@ -669,5 +669,5 @@ pub fn visitSwitchCase(self: *Transformer, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const new_test = try self.visitNode(self.readNodeIdx(e, 0));
     const new_stmts = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
-    return self.addExtraNode(.switch_case, node.span, &.{ @intFromEnum(new_test), new_stmts.start, new_stmts.len });
+    return self.addExtraNode(.switch_case, node.span, &.{ @backingInt(new_test), new_stmts.start, new_stmts.len });
 }

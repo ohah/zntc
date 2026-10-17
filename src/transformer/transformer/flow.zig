@@ -61,7 +61,7 @@ fn mkBool(self: *Transformer, val: bool) Error!NodeIndex {
 }
 
 fn mkBin(self: *Transformer, span: Span, left: NodeIndex, right: NodeIndex, kind: token_mod.Kind) Error!NodeIndex {
-    return self.ast.addBinaryNode(.binary_expression, span, left, right, @intFromEnum(kind));
+    return self.ast.addBinaryNode(.binary_expression, span, left, right, @backingInt(kind));
 }
 
 fn mkBlock(self: *Transformer, span: Span, stmts: []const NodeIndex) Error!NodeIndex {
@@ -112,8 +112,8 @@ fn mkStrLit(self: *Transformer, text: []const u8) Error!NodeIndex {
 /// `typeof <subject> === "object"` — `in`/속성 접근 전 object 가드.
 fn mkTypeofObject(self: *Transformer, subject: *MatchSubject, span: Span, context: FlowMatchContext) Error!NodeIndex {
     const tof_extra = try self.ast.addExtras(&.{
-        @intFromEnum(try makeMatchSubjectExpr(self, subject, context, context.function_scope, span)),
-        @intFromEnum(token_mod.Kind.kw_typeof),
+        @backingInt(try makeMatchSubjectExpr(self, subject, context, context.function_scope, span)),
+        @backingInt(token_mod.Kind.kw_typeof),
     });
     const tof = try self.ast.addNode(.{ .tag = .unary_expression, .span = span, .data = .{ .extra = tof_extra } });
     return mkBin(self, span, tof, try mkStrLit(self, "object"), .eq3);
@@ -138,7 +138,7 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: *MatchSubject, s
 
     var i: u32 = 0;
     while (i < lst.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[lst.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[lst.start + i]));
         const cn = self.ast.getNode(child);
         if (cn.tag == .flow_match_rest) {
             if (cn.data.none == 1) {
@@ -153,7 +153,7 @@ fn lowerObjectPattern(self: *Transformer, pnode: Node, subject: *MatchSubject, s
                     if (self.semantic_edit_enabled)
                         try self.trackUserReadFromBinding(rest_ref, child, sourceBindingScope(self, child));
                     const del_member = try es_helpers.makeComputedMember(self, rest_ref, kl, span);
-                    const del_extra = try self.ast.addExtras(&.{ @intFromEnum(del_member), @intFromEnum(token_mod.Kind.kw_delete) });
+                    const del_extra = try self.ast.addExtras(&.{ @backingInt(del_member), @backingInt(token_mod.Kind.kw_delete) });
                     const del = try self.ast.addNode(.{ .tag = .unary_expression, .span = span, .data = .{ .extra = del_extra } });
                     try binds.append(self.allocator, try es_helpers.makeExprStmt(self, del, span));
                 }
@@ -183,7 +183,7 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: *MatchSubject, sp
     var rest_node: NodeIndex = .none;
     var i: u32 = 0;
     while (i < lst.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[lst.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[lst.start + i]));
         if (self.ast.getNode(child).tag == .flow_match_rest) {
             rest_node = child;
         } else elem_count += 1;
@@ -205,7 +205,7 @@ fn lowerArrayPattern(self: *Transformer, pnode: Node, subject: *MatchSubject, sp
     var idx: usize = 0;
     i = 0;
     while (i < lst.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[lst.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[lst.start + i]));
         if (self.ast.getNode(child).tag == .flow_match_rest) continue;
         try subject.path.append(self.allocator, try mkNum(self, idx));
         const sub = try lowerMatchPattern(self, child, subject, span, context);
@@ -269,7 +269,7 @@ fn lowerMatchPattern(self: *Transformer, pattern: NodeIndex, subject: *MatchSubj
             var acc: NodeIndex = .none;
             var i: u32 = 0;
             while (i < lst.len) : (i += 1) {
-                const sub: NodeIndex = @enumFromInt(self.ast.extra_data.items[lst.start + i]);
+                const sub: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[lst.start + i]));
                 const lp = try lowerMatchPattern(self, sub, subject, span, context);
                 acc = if (acc.isNone()) lp.test_expr else try mkBin(self, span, acc, lp.test_expr, .pipe2);
             }
@@ -347,11 +347,11 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     const fn_params_list = try self.ast.addNodeList(&.{match_param});
     const fn_params_node = try self.ast.addFormalParameters(fn_params_list, span);
     const fn_extra = try self.ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none), // name (anonymous)
-        @intFromEnum(fn_params_node),
-        @intFromEnum(fn_body),
+        @backingInt(NodeIndex.none), // name (anonymous)
+        @backingInt(fn_params_node),
+        @backingInt(fn_body),
         0, // flags
-        @intFromEnum(NodeIndex.none), // return type
+        @backingInt(NodeIndex.none), // return type
     });
     const fn_expr = try self.ast.addNode(.{
         .tag = .function_expression,
@@ -370,7 +370,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     defer self.allocator.free(if_stmts);
 
     for (arm_indices, 0..) |ai, k| {
-        const arm = self.ast.getNode(@enumFromInt(ai));
+        const arm = self.ast.getNode(@fromBackingInt(@intCast(ai)));
         const pattern = arm.data.binary.left;
         const new_body_raw = try self.visitNode(arm.data.binary.right);
         const body_node = self.ast.getNode(new_body_raw);
@@ -383,7 +383,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
             const blist = body_node.data.list;
             var bi: u32 = 0;
             while (bi < blist.len) : (bi += 1) {
-                try body_stmts.append(self.allocator, @enumFromInt(self.ast.extra_data.items[blist.start + bi]));
+                try body_stmts.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[blist.start + bi])));
             }
             try body_stmts.append(self.allocator, try self.ast.addNode(.{
                 .tag = .return_statement,
@@ -426,7 +426,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
                 } },
             }));
         }
-        self.ast.nodes.items[@intFromEnum(then_block)].data.list = try self.ast.addNodeList(then_list.items);
+        self.ast.nodes.items[@backingInt(then_block)].data.list = try self.ast.addNodeList(then_list.items);
 
         if_stmts[k] = try self.ast.addNode(.{
             .tag = .if_statement,
@@ -436,14 +436,14 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
     }
 
     // function(_m) { if-list }
-    self.ast.nodes.items[@intFromEnum(fn_body)].data.list = try self.ast.addNodeList(if_stmts);
+    self.ast.nodes.items[@backingInt(fn_body)].data.list = try self.ast.addNodeList(if_stmts);
 
     // (function(_m){...})(discriminant)
     // function expression을 IIFE 형태로 호출 — emitCall이 callee를 자동으로 괄호 처리
     // call_expression extra: [callee, args_start, args_len, flags]
     const args_list = try self.ast.addNodeList(&.{new_discriminant});
     const call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(fn_expr),
+        @backingInt(fn_expr),
         args_list.start,
         args_list.len,
         0, // flags
@@ -464,7 +464,7 @@ pub fn visitFlowMatch(self: *Transformer, node: Node) Error!NodeIndex {
 /// extra = [func_decl, const_decl]
 /// func_decl은 pending_nodes에, const_decl은 반환.
 fn flowComponentForwardRefArgument(self: *Transformer, const_decl: NodeIndex) NodeIndex {
-    if (const_decl.isNone() or @intFromEnum(const_decl) >= self.ast.nodes.items.len) return .none;
+    if (const_decl.isNone() or @backingInt(const_decl) >= self.ast.nodes.items.len) return .none;
     const declaration = self.ast.getNode(const_decl);
     if (declaration.tag != .variable_declaration) return .none;
     const variable_extra = declaration.data.extra;
@@ -472,29 +472,29 @@ fn flowComponentForwardRefArgument(self: *Transformer, const_decl: NodeIndex) No
     if (variable_extra + 2 >= extras.len or extras[variable_extra + 2] != 1) return .none;
     const declarators_start = extras[variable_extra + 1];
     if (declarators_start >= extras.len) return .none;
-    const declarator_idx: NodeIndex = @enumFromInt(extras[declarators_start]);
-    if (declarator_idx.isNone() or @intFromEnum(declarator_idx) >= self.ast.nodes.items.len) return .none;
+    const declarator_idx: NodeIndex = @fromBackingInt(@intCast(extras[declarators_start]));
+    if (declarator_idx.isNone() or @backingInt(declarator_idx) >= self.ast.nodes.items.len) return .none;
     const declarator = self.ast.getNode(declarator_idx);
     if (declarator.tag != .variable_declarator) return .none;
     const declarator_extra = declarator.data.extra;
     if (declarator_extra + 2 >= extras.len) return .none;
-    const call_idx: NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= self.ast.nodes.items.len) return .none;
+    const call_idx: NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
+    if (call_idx.isNone() or @backingInt(call_idx) >= self.ast.nodes.items.len) return .none;
     const call = self.ast.getNode(call_idx);
     if (call.tag != .call_expression) return .none;
     const call_extra = call.data.extra;
     if (call_extra + 2 >= extras.len or extras[call_extra + 2] != 1) return .none;
     const args_start = extras[call_extra + 1];
     if (args_start >= extras.len) return .none;
-    const argument: NodeIndex = @enumFromInt(extras[args_start]);
-    if (argument.isNone() or @intFromEnum(argument) >= self.ast.nodes.items.len or
+    const argument: NodeIndex = @fromBackingInt(@intCast(extras[args_start]));
+    if (argument.isNone() or @backingInt(argument) >= self.ast.nodes.items.len or
         self.ast.getNode(argument).tag != .identifier_reference) return .none;
     return argument;
 }
 
 fn updateFlowComponentName(self: *Transformer, identifier: NodeIndex, name_span: Span) void {
-    if (identifier.isNone() or @intFromEnum(identifier) >= self.ast.nodes.items.len) return;
-    const raw = @intFromEnum(identifier);
+    if (identifier.isNone() or @backingInt(identifier) >= self.ast.nodes.items.len) return;
+    const raw = @backingInt(identifier);
     const node = &self.ast.nodes.items[raw];
     if (node.tag != .binding_identifier and node.tag != .identifier_reference) return;
     node.span = name_span;

@@ -164,14 +164,14 @@ pub fn refreshDefFormats(
     var skip = std.DynamicBitSetUnmanaged.initEmpty(self.allocator, count) catch return;
     defer skip.deinit(self.allocator);
     for (reparsed) |idx| {
-        const i = @intFromEnum(idx);
+        const i = @backingInt(idx);
         if (i < count) skip.set(i);
     }
 
     var i: u32 = 0;
     while (i < count) : (i += 1) {
         if (skip.isSet(i)) continue;
-        const m = self.moduleAtMut(@enumFromInt(i)) orelse continue;
+        const m = self.moduleAtMut(@fromBackingInt(@intCast(i))) orelse continue;
         m.def_format = deriveDefFormat(self, io, m);
     }
 }

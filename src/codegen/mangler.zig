@@ -613,15 +613,15 @@ test "mangle: string_table 기반 생성 심볼도 rename 결과에 포함" {
 
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = false, .symbol_count = 1 },
     };
 
     const string_table_bit: u32 = 0x80000000;
     const symbols = [_]Symbol{
         .{
             .name = .{ .start = string_table_bit, .end = string_table_bit + 5 },
-            .scope_id = @enumFromInt(1),
-            .origin_scope = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .origin_scope = @fromBackingInt(@intCast(1)),
             .kind = .variable_var,
             .decl_flags = SymbolKind.variable_var.declFlags(),
             .declaration_span = Span{ .start = string_table_bit, .end = string_table_bit + 5 },
@@ -639,9 +639,9 @@ test "mangle: string_table 기반 생성 심볼도 rename 결과에 포함" {
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ empty_scope, function_scope };
     const refs = [_]Reference{
         .{
-            .node_index = @enumFromInt(0),
-            .scope_id = @enumFromInt(1),
-            .symbol_id = @enumFromInt(0),
+            .node_index = @fromBackingInt(@intCast(0)),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .symbol_id = @fromBackingInt(@intCast(0)),
             .flags = .{ .read = true },
         },
     };
@@ -665,14 +665,14 @@ test "mangle: scope-nesting 형제 scope 가 같은 slot 재사용 (충돌 0)" {
     // scope tree: 0(root) → 1(func), 2(func) — 형제.
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = false, .symbol_count = 1 },
     };
     const symbols = [_]Symbol{
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(1),
-            .origin_scope = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .origin_scope = @fromBackingInt(@intCast(1)),
             .kind = .variable_var,
             .decl_flags = SymbolKind.variable_var.declFlags(),
             .declaration_span = Span{ .start = 0, .end = 0 },
@@ -681,8 +681,8 @@ test "mangle: scope-nesting 형제 scope 가 같은 slot 재사용 (충돌 0)" {
         },
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(2),
-            .origin_scope = @enumFromInt(2),
+            .scope_id = @fromBackingInt(@intCast(2)),
+            .origin_scope = @fromBackingInt(@intCast(2)),
             .kind = .variable_var,
             .decl_flags = SymbolKind.variable_var.declFlags(),
             .declaration_span = Span{ .start = 0, .end = 0 },
@@ -721,14 +721,14 @@ test "mangle: scope-nesting 자식 binding 은 부모 slot 을 안 받음 (shado
     // scope tree: 0(root) → 1(func) → 2(block). outer=scope1, inner=scope2(자식).
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false, .symbol_count = 1 },
     };
     const symbols = [_]Symbol{
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(1),
-            .origin_scope = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .origin_scope = @fromBackingInt(@intCast(1)),
             .kind = .variable_var,
             .decl_flags = SymbolKind.variable_var.declFlags(),
             .declaration_span = Span{ .start = 0, .end = 0 },
@@ -737,8 +737,8 @@ test "mangle: scope-nesting 자식 binding 은 부모 slot 을 안 받음 (shado
         },
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(2),
-            .origin_scope = @enumFromInt(2),
+            .scope_id = @fromBackingInt(@intCast(2)),
+            .origin_scope = @fromBackingInt(@intCast(2)),
             .kind = .variable_let,
             .decl_flags = SymbolKind.variable_let.declFlags(),
             .declaration_span = Span{ .start = 0, .end = 0 },
@@ -778,10 +778,10 @@ test "mangle: scope-nesting 깊이 3 — grandchild ≠ grandparent, cousin 은 
     //   gp@1, alpha@2, beta@3(=alpha 의 cousin), deepv@4(=gp 의 grandchild).
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false, .symbol_count = 0 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(2), .kind = .block, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(2)), .kind = .block, .is_strict = false, .symbol_count = 1 },
     };
     const names = [_][]const u8{ "gpvar", "alpha", "beta", "deepv" };
     const decl_scopes = [_]u32{ 1, 2, 3, 4 };
@@ -789,8 +789,8 @@ test "mangle: scope-nesting 깊이 3 — grandchild ≠ grandparent, cousin 은 
     for (&symbols, 0..) |*s, idx| {
         s.* = .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(decl_scopes[idx]),
-            .origin_scope = @enumFromInt(decl_scopes[idx]),
+            .scope_id = @fromBackingInt(@intCast(decl_scopes[idx])),
+            .origin_scope = @fromBackingInt(@intCast(decl_scopes[idx])),
             .kind = .variable_var,
             .decl_flags = SymbolKind.variable_var.declFlags(),
             .declaration_span = Span{ .start = 0, .end = 0 },

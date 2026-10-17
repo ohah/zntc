@@ -79,11 +79,11 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
             const params = try parseTypeMemberParamList(self);
             const return_type = try self.tryParseReturnType();
             const extra = try self.ast.addExtras(&.{
-                @intFromEnum(key),
-                @intFromEnum(type_params),
+                @backingInt(key),
+                @backingInt(type_params),
                 params.start,
                 params.len,
-                @intFromEnum(return_type),
+                @backingInt(return_type),
             });
             return try self.ast.addNode(.{
                 .tag = .ts_method_signature,
@@ -175,11 +175,11 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
         const return_type = try self.tryParseReturnType();
 
         const extra = try self.ast.addExtras(&.{
-            @intFromEnum(key),
-            @intFromEnum(type_params),
+            @backingInt(key),
+            @backingInt(type_params),
             params.start,
             params.len,
-            @intFromEnum(return_type),
+            @backingInt(return_type),
         });
         return try self.ast.addNode(.{
             .tag = .ts_method_signature,
@@ -209,8 +209,8 @@ fn parseTypeMember(self: *Parser) ParseError2!NodeIndex {
     };
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(key),
-        @intFromEnum(type_ann),
+        @backingInt(key),
+        @backingInt(type_ann),
         flags.toU32(),
     });
     return try self.ast.addNode(.{
@@ -252,10 +252,10 @@ fn parseSignatureMember(self: *Parser, start: u32, is_constructor: bool) ParseEr
     const return_type = try self.tryParseReturnType();
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(type_params),
+        @backingInt(type_params),
         params.start,
         params.len,
-        @intFromEnum(return_type),
+        @backingInt(return_type),
     });
     return try self.ast.addNode(.{
         .tag = if (is_constructor) .ts_construct_signature else .ts_call_signature,
@@ -339,8 +339,8 @@ pub fn parseTypeMemberParam(self: *Parser) ParseError2!NodeIndex {
         .readonly = false,
     };
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(key),
-        @intFromEnum(type_ann),
+        @backingInt(key),
+        @backingInt(type_ann),
         flags.toU32(),
     });
     return try self.ast.addNode(.{
@@ -437,8 +437,8 @@ pub fn parseIndexSignature(self: *Parser, start: u32, is_readonly: bool) ParseEr
         .{ .start = param_start, .end = self.currentSpan().start },
     );
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(prop_sig),
-        @intFromEnum(value_type),
+        @backingInt(prop_sig),
+        @backingInt(value_type),
         @as(u32, if (is_readonly) 1 else 0),
     });
 

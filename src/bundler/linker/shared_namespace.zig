@@ -77,8 +77,8 @@ fn crossChunkNsMemberName(
     // 2. canonical(정의 모듈) 해석 후 그 키로 — 배럴 재-export / renamed re-export(`as`) 커버.
     // **Uncached**: 병렬 emit 스레드서 cold key 로 캐싱 resolveExportChain 을 부르면 chain_cache
     // 데이터 레이스(위 wrapper 락 없음). resolveExportChainUncached 로 우회.
-    const canon = self.resolveExportChainUncached(@enumFromInt(source_mod), exported) orelse return null;
-    const canon_mod = @intFromEnum(canon.module_index);
+    const canon = self.resolveExportChainUncached(@fromBackingInt(@intCast(source_mod)), exported) orelse return null;
+    const canon_mod = @backingInt(canon.module_index);
     if (!self.isCrossChunkConsumer(consumer_mod, canon_mod)) return null;
     const g = self.getCrossChunkGlobalName(canon_mod, canon.export_name) orelse return null;
     if (canon.synthetic_member) |member| {
@@ -135,7 +135,7 @@ pub fn registerNamespaceRewrites(
         defer seen.deinit(self.allocator);
         var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer visited.deinit(self.allocator);
-        try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+        try self.collectExportsRecursive(&exports, &seen, &visited, @fromBackingInt(@intCast(target_mod_idx)), 0);
         // Module namespace keys are sorted by code unit (ModuleNamespaceCreate);
         // the getter object's key order is what `Object.keys(ns)` returns (#5633).
         std.mem.sort(NsExportPair, exports.items, {}, struct {
@@ -238,7 +238,7 @@ pub fn registerNamespaceRewrites(
     }
 
     // (#3982) 2+ `export *` 소스가 있는 barrel 만 ambiguity 검사(흔한 0~1 star 는 비용 0).
-    const ambiguity_possible = self.starReExportCount(@enumFromInt(target_mod_idx)) >= 2;
+    const ambiguity_possible = self.starReExportCount(@fromBackingInt(@intCast(target_mod_idx))) >= 2;
 
     for (cached_exports) |exp| {
         const is_shadow = blk: {
@@ -253,7 +253,7 @@ pub fn registerNamespaceRewrites(
         // (#3982) 같은 이름이 2+ distinct star 소스에서 도달하면 ESM spec 상 ambiguous —
         // namespace 멤버는 undefined. `void 0` 으로 매핑하면 emitStaticMember 가 access
         // 를 `void 0` 으로 재작성(materialize 안 된 inline ns 의 dangling 참조 방지).
-        if (ambiguity_possible and self.isAmbiguousStarExport(@enumFromInt(target_mod_idx), exp.exported)) {
+        if (ambiguity_possible and self.isAmbiguousStarExport(@fromBackingInt(@intCast(target_mod_idx)), exp.exported)) {
             try inner_map.put(self.allocator, exp.exported, "void 0");
             continue;
         }
@@ -655,7 +655,7 @@ pub fn restoreSharedNamespaceDecls(self: *const Linker, decls: []const CompiledM
     const mutable_self = @constCast(self);
     for (decls) |decl| {
         const target_idx = self.graph.path_to_module.get(decl.target_path) orelse continue;
-        const target_mod_idx = @intFromEnum(target_idx);
+        const target_mod_idx = @backingInt(target_idx);
 
         mutable_self.ns_cache_mutex.lock();
         if (self.ns_shared_inline_cache.get(target_mod_idx) != null) {
@@ -816,7 +816,7 @@ fn ensureNsTargetSet(self: *Linker) std.mem.Allocator.Error!void {
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
-            try self.ns_target_set.put(self.allocator, @intFromEnum(rec.resolved), {});
+            try self.ns_target_set.put(self.allocator, @backingInt(rec.resolved), {});
         }
     }
     self.ns_target_set_built = true;
@@ -933,7 +933,7 @@ fn makeUniqueNsVarName(self: *const Linker, base: []const u8, exports: *const st
 /// 먼저 만든 청크의 문자열이 다른 청크로 새어 나간다. 청크 컨텍스트 부재(단일 번들 /
 /// preserve_modules / emit 前)면 `.none`(=maxInt(u32)) 이 sentinel 슬롯이 된다.
 fn nsInlineCacheKey(self: *const Linker, emitter_mod_idx: u32, target_mod_idx: u32) u64 {
-    const chunk_bits: u64 = @intFromEnum(self.chunkOfModule(emitter_mod_idx));
+    const chunk_bits: u64 = @backingInt(self.chunkOfModule(emitter_mod_idx));
     return (chunk_bits << 32) | @as(u64, target_mod_idx);
 }
 
@@ -977,7 +977,7 @@ pub fn buildInlineObjectStr(
     defer seen.deinit(self.allocator);
     var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer visited.deinit(self.allocator);
-    try self.collectExportsRecursive(&exports, &seen, &visited, @enumFromInt(target_mod_idx), 0);
+    try self.collectExportsRecursive(&exports, &seen, &visited, @fromBackingInt(@intCast(target_mod_idx)), 0);
     // Module namespace keys are sorted by code unit (ModuleNamespaceCreate);
     // the getter object's key order is what `Object.keys(ns)` returns (#5633).
     std.mem.sort(NsExportPair, exports.items, {}, struct {
@@ -996,7 +996,7 @@ pub fn buildInlineObjectStr(
                 if (rec_idx < target.import_records.len) {
                     const src = target.import_records[rec_idx].resolved;
                     if (!src.isNone()) {
-                        try ns_re_exports.put(self.allocator, eb.exported_name, @intFromEnum(src));
+                        try ns_re_exports.put(self.allocator, eb.exported_name, @backingInt(src));
                     }
                 }
             }
@@ -1024,18 +1024,18 @@ pub fn buildInlineObjectStr(
     const get_open: []const u8 = if (min_ws) "(){return " else "() { return ";
     const get_close: []const u8 = if (min_ws) "}" else "; }";
     // (#3982) 2+ `export *` 소스 barrel 만 ambiguity 검사.
-    const ambiguity_possible = self.starReExportCount(@enumFromInt(target_mod_idx)) >= 2;
+    const ambiguity_possible = self.starReExportCount(@fromBackingInt(@intCast(target_mod_idx))) >= 2;
     try buf.appendSlice(self.allocator, "{");
     var first = true;
     for (exports.items) |exp| {
         // (#3982) 같은 이름이 2+ distinct star 소스에서 도달하면 ESM spec 상 ambiguous —
         // namespace 객체에서 제외 → `ns.x`===undefined, `"x" in ns`===false (Node 동형).
-        if (ambiguity_possible and self.isAmbiguousStarExport(@enumFromInt(target_mod_idx), exp.exported)) continue;
+        if (ambiguity_possible and self.isAmbiguousStarExport(@fromBackingInt(@intCast(target_mod_idx)), exp.exported)) continue;
         // declaration 이 tree-shaken 되어 emit 안 되면 namespace getter 도 skip —
         // dangling reference 방지. declaration 모듈은 init_mod (lazy init) 있으면
         // 그쪽, 없으면 target (정적 export).
         const decl_mod_idx = exp.init_mod orelse target_mod_idx;
-        if (self.graph.getModule(@enumFromInt(decl_mod_idx))) |decl_mod| {
+        if (self.graph.getModule(@fromBackingInt(@intCast(decl_mod_idx)))) |decl_mod| {
             if (!decl_mod.isLocalBindingAlive(exp.local)) continue;
         }
         if (!first) try buf.appendSlice(self.allocator, list_sep);
@@ -1112,7 +1112,7 @@ pub fn buildInlineObjectStr(
 
 fn allocNamespaceGetterValue(self: *const Linker, exp: NsExportPair, member_name: []const u8) WrapperNameError!?[]const u8 {
     const init_mod_idx = exp.init_mod orelse return null;
-    const init_mod = self.graph.getModule(@enumFromInt(init_mod_idx)) orelse return null;
+    const init_mod = self.graph.getModule(@fromBackingInt(@intCast(init_mod_idx))) orelse return null;
     if (init_mod.wrap_kind != .esm) return null;
 
     const init_expr = try allocEsmInitExpr(self, init_mod);
@@ -1164,7 +1164,7 @@ fn allocNamespaceMemberRewriteValue(
 }
 
 fn allocEsmInitExprForModuleIndex(self: *const Linker, mod_idx: u32) WrapperNameError!?[]const u8 {
-    const mod = self.graph.getModule(@enumFromInt(mod_idx)) orelse return null;
+    const mod = self.graph.getModule(@fromBackingInt(@intCast(mod_idx))) orelse return null;
     if (mod.wrap_kind != .esm) return null;
     return try allocEsmInitExpr(self, mod);
 }

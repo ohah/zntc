@@ -190,14 +190,14 @@ test "graph: external module — phantom 으로 graph 에 등록 (Rollup parity)
     const react_mod = graph.getModule(react_idx) orelse return error.TestUnexpectedResult;
     try std.testing.expect(react_mod.is_external);
     // record 의 is_external 도 그대로 set (emit/linker 호환)
-    const a_mod = graph.getModule(@enumFromInt(0)) orelse return error.TestUnexpectedResult;
+    const a_mod = graph.getModule(@fromBackingInt(@intCast(0))) orelse return error.TestUnexpectedResult;
     try std.testing.expect(a_mod.import_records[0].is_external);
 
     // 양방향 link 도 등록되어야 — a 의 dependencies 에 react, react 의 importers 에 a
     try std.testing.expect(a_mod.dependencies.items.len == 1);
     try std.testing.expect(a_mod.dependencies.items[0] == react_idx);
     try std.testing.expect(react_mod.importers.items.len == 1);
-    try std.testing.expect(@intFromEnum(react_mod.importers.items[0]) == 0);
+    try std.testing.expect(@backingInt(react_mod.importers.items[0]) == 0);
 }
 
 test "graph: 같은 external 을 여러 모듈이 import → phantom 1개 공유" {
@@ -1381,17 +1381,17 @@ test "linkDependency: bidirectional" {
     var graph = ModuleGraph.init(alloc, &cache);
     defer graph.deinit();
 
-    try graph.modules.append(alloc, Module.init(@enumFromInt(0), "a.ts"));
-    try graph.modules.append(alloc, Module.init(@enumFromInt(1), "b.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(0)), "a.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(1)), "b.ts"));
 
-    try graph.linkDependency(@enumFromInt(0), @enumFromInt(1));
+    try graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)));
 
-    const a = graph.getModule(@enumFromInt(0)).?;
-    const b = graph.getModule(@enumFromInt(1)).?;
+    const a = graph.getModule(@fromBackingInt(@intCast(0))).?;
+    const b = graph.getModule(@fromBackingInt(@intCast(1))).?;
     try std.testing.expectEqual(@as(usize, 1), a.dependencies.items.len);
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(a.dependencies.items[0]));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(a.dependencies.items[0]));
     try std.testing.expectEqual(@as(usize, 1), b.importers.items.len);
-    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(b.importers.items[0]));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(b.importers.items[0]));
 }
 
 test "linkDependency: none dep is no-op" {
@@ -1401,9 +1401,9 @@ test "linkDependency: none dep is no-op" {
     var graph = ModuleGraph.init(alloc, &cache);
     defer graph.deinit();
 
-    try graph.modules.append(alloc, Module.init(@enumFromInt(0), "a.ts"));
-    try graph.linkDependency(@enumFromInt(0), .none);
-    try std.testing.expectEqual(@as(usize, 0), graph.getModule(@enumFromInt(0)).?.dependencies.items.len);
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(0)), "a.ts"));
+    try graph.linkDependency(@fromBackingInt(@intCast(0)), .none);
+    try std.testing.expectEqual(@as(usize, 0), graph.getModule(@fromBackingInt(@intCast(0))).?.dependencies.items.len);
 }
 
 test "linkDependency: out-of-bounds dep is no-op" {
@@ -1413,9 +1413,9 @@ test "linkDependency: out-of-bounds dep is no-op" {
     var graph = ModuleGraph.init(alloc, &cache);
     defer graph.deinit();
 
-    try graph.modules.append(alloc, Module.init(@enumFromInt(0), "a.ts"));
-    try graph.linkDependency(@enumFromInt(0), @enumFromInt(99));
-    try std.testing.expectEqual(@as(usize, 0), graph.getModule(@enumFromInt(0)).?.dependencies.items.len);
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(0)), "a.ts"));
+    try graph.linkDependency(@fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(99)));
+    try std.testing.expectEqual(@as(usize, 0), graph.getModule(@fromBackingInt(@intCast(0))).?.dependencies.items.len);
 }
 
 test "renumber: empty graph is no-op" {
@@ -1437,14 +1437,14 @@ test "renumber: orphan modules sorted by path regardless of add order" {
     defer graph.deinit();
 
     // 의도적 역순 add: c.ts → idx 0, b.ts → 1, a.ts → 2
-    try graph.modules.append(alloc, Module.init(@enumFromInt(0), "c.ts"));
-    try graph.modules.append(alloc, Module.init(@enumFromInt(1), "b.ts"));
-    try graph.modules.append(alloc, Module.init(@enumFromInt(2), "a.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(0)), "c.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(1)), "b.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(2)), "a.ts"));
     // PR-Z4: path_to_module key 는 path_arena 가 owned (graph deinit 시 일괄 해제).
     const arena_alloc = graph.path_arena.allocator();
-    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "c.ts"), @enumFromInt(0));
-    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "b.ts"), @enumFromInt(1));
-    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "a.ts"), @enumFromInt(2));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "c.ts"), @fromBackingInt(@intCast(0)));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "b.ts"), @fromBackingInt(@intCast(1)));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "a.ts"), @fromBackingInt(@intCast(2)));
 
     try renumber_mod.renumberModulesDeterministically(&graph, &.{});
 
@@ -1469,13 +1469,13 @@ test "renumber identity: 위상 불변이면 재renumber 가 멱등 (orphan path
     var graph = ModuleGraph.init(alloc, &cache);
     defer graph.deinit();
 
-    try graph.modules.append(alloc, Module.init(@enumFromInt(0), "c.ts"));
-    try graph.modules.append(alloc, Module.init(@enumFromInt(1), "b.ts"));
-    try graph.modules.append(alloc, Module.init(@enumFromInt(2), "a.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(0)), "c.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(1)), "b.ts"));
+    try graph.modules.append(alloc, Module.init(@fromBackingInt(@intCast(2)), "a.ts"));
     const arena_alloc = graph.path_arena.allocator();
-    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "c.ts"), @enumFromInt(0));
-    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "b.ts"), @enumFromInt(1));
-    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "a.ts"), @enumFromInt(2));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "c.ts"), @fromBackingInt(@intCast(0)));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "b.ts"), @fromBackingInt(@intCast(1)));
+    try graph.path_to_module.put(alloc, try arena_alloc.dupe(u8, "a.ts"), @fromBackingInt(@intCast(2)));
 
     // 1회: a/b/c = 0/1/2 (path 정렬). 2·3회: 이미 정렬 → 멱등(불변).
     try renumber_mod.renumberModulesDeterministically(&graph, &.{});

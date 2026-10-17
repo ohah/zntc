@@ -73,10 +73,10 @@ pub fn replayCachedResolvedDeps(self: *ModuleGraph, io: std.Io, mod_idx: usize) 
                 const dep_idx = try self.addModuleWithResolveDir(io, dep.path.bytes(), if (dep.resolve_dir) |rd| rd.bytes() else null);
                 s_am.end();
                 if (dep.target_is_module_field or mod_ptr.is_module_field) {
-                    self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
+                    self.modules.at(@backingInt(dep_idx)).is_module_field = true;
                 }
                 if (dep.is_context_dep) {
-                    self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
+                    self.modules.at(@backingInt(dep_idx)).is_context_dep = true;
                 }
                 try replayLinkResolvedDep(self, io, mod_index, mod_idx, dep, dep_idx);
             },
@@ -218,7 +218,7 @@ pub fn applyContextDepResults(self: *ModuleGraph, io: std.Io, mod_idx: usize) !v
                 const dep_idx = try self.addModuleWithResolveDir(io, f.path, f.resolve_dir);
                 _ = try graph_requested_exports.requestAll(self, dep_idx);
                 // tree-shaker 가 static import 없이도 이 모듈을 보존하도록 마킹.
-                self.modules.at(@intFromEnum(dep_idx)).is_context_dep = true;
+                self.modules.at(@backingInt(dep_idx)).is_context_dep = true;
                 try appendResolvedDep(self, mod_idx, .{
                     .kind = dep.kind,
                     .target = .file,
@@ -287,7 +287,7 @@ fn recordResolvedDep(
 /// 파일명을 되찾는다.
 fn prepareCssUrlAsset(self: *ModuleGraph, mod_idx: usize, rec_i: usize, dep_idx: ModuleIndex) void {
     const record = self.modules.at(mod_idx).import_records[rec_i];
-    const dep = self.modules.at(@intFromEnum(dep_idx));
+    const dep = self.modules.at(@backingInt(dep_idx));
 
     // CSS `url()` 대상은 확장자와 무관하게 파일 자산이다 (Vite 동작).
     // 기본 확장자 테이블에 없는 것(`.cur`, `.apng`, `.svgz` …)은 loader 가 `.none`
@@ -452,7 +452,7 @@ pub fn applyResolveResult(
                     const path_dupe = try self.allocator.dupe(u8, f.path);
                     try self.worker_entries.append(self.allocator, .{
                         .resolved_path = path_dupe,
-                        .source_module = @enumFromInt(mod_idx),
+                        .source_module = @fromBackingInt(@intCast(mod_idx)),
                         .record_index = @intCast(rec_i),
                     });
                     try appendResolvedDep(self, mod_idx, .{
@@ -497,7 +497,7 @@ pub fn applyResolveResult(
 
                 const dep_idx = try self.addModuleWithResolveDir(io, f.path, f.resolve_dir);
                 if (f.is_module_field or self.modules.at(mod_idx).is_module_field) {
-                    self.modules.at(@intFromEnum(dep_idx)).is_module_field = true;
+                    self.modules.at(@backingInt(dep_idx)).is_module_field = true;
                 }
                 const request_changed = try graph_requested_exports.requestDependencyExports(self, mod_idx, rec_i, record, dep_idx);
                 try appendResolvedDep(self, mod_idx, .{
@@ -651,7 +651,7 @@ fn propagateRequestedExportsFromResolvedReExports(self: *ModuleGraph, io: std.Io
 /// Phase 1: 모듈의 import들을 resolve하고 의존성 모듈을 등록한다.
 /// modules 배열이 커질 수 있으므로, 포인터가 아닌 인덱스로만 접근.
 pub fn resolveModuleImports(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) !void {
-    const mod_idx = @intFromEnum(idx);
+    const mod_idx = @backingInt(idx);
     if (mod_idx >= self.modules.count()) return;
 
     const mod_ptr = self.modules.at(mod_idx);

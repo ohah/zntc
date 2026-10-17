@@ -20,7 +20,7 @@ pub fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
         if (try self.tryRewriteReplaceNamedRefs(callee_idx, args_start)) |rewritten_args| {
             const new_callee = try self.visitNode(callee_idx);
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_callee), rewritten_args.start, rewritten_args.len, flags,
+                @backingInt(new_callee), rewritten_args.start, rewritten_args.len, flags,
             });
             return self.ast.addNode(.{
                 .tag = .call_expression,
@@ -38,7 +38,7 @@ pub fn visitCallExpression(self: *Transformer, node: Node) Error!NodeIndex {
         try self.visitExtraList(.{ .start = args_start, .len = args_len });
 
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_callee), new_args.start, new_args.len, flags,
+        @backingInt(new_callee), new_args.start, new_args.len, flags,
     });
     return self.ast.addNode(.{
         .tag = .call_expression,
@@ -58,7 +58,7 @@ pub fn visitNewExpression(self: *Transformer, node: Node) Error!NodeIndex {
     const new_callee = try self.visitNode(callee_idx);
     const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_callee), new_args.start, new_args.len, flags,
+        @backingInt(new_callee), new_args.start, new_args.len, flags,
     });
     return self.ast.addNode(.{
         .tag = .new_expression,

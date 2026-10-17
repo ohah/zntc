@@ -226,7 +226,7 @@ pub fn reservePrivateMethodWeakSetSymbols(self: anytype, mappings: anytype, scop
         const symbol_id = try self.declareSyntheticInScope(binding, span, .variable_var, scope) orelse
             std.debug.panic("private method helper has no direct SymbolId", .{});
         mapping.weakset_binding_node = binding;
-        mapping.weakset_symbol_id = @intFromEnum(symbol_id);
+        mapping.weakset_symbol_id = @backingInt(symbol_id);
     }
 }
 
@@ -250,7 +250,7 @@ pub fn reservePrivateMethodFunctionSymbols(self: anytype, mappings: anytype, fie
         const symbol_id = try self.declareSyntheticInScope(binding, span, .function_decl, function_scope) orelse
             std.debug.panic("private method function has no direct SymbolId", .{});
         mapping.func_binding_node = binding;
-        mapping.func_symbol_id = @intFromEnum(symbol_id);
+        mapping.func_symbol_id = @backingInt(symbol_id);
         if (captures_class_self) {
             mapping.func_factory_scope = function_scope;
             if (mapping.class_name == null) {
@@ -258,7 +258,7 @@ pub fn reservePrivateMethodFunctionSymbols(self: anytype, mappings: anytype, fie
                 const outer_symbol_id = try self.declareSyntheticInScope(outer_binding, span, .variable_var, scope) orelse
                     std.debug.panic("captured private method function has no outer SymbolId", .{});
                 mapping.func_outer_binding_node = outer_binding;
-                mapping.func_outer_symbol_id = @intFromEnum(outer_symbol_id);
+                mapping.func_outer_symbol_id = @backingInt(outer_symbol_id);
             }
         }
     }
@@ -289,8 +289,8 @@ fn privateMethodNeedsClassSelfCapture(self: anytype, pm: anytype, method_mapping
         try stack.append(self.allocator, source_owner);
     }
     while (stack.pop()) |current| {
-        if (current.isNone() or @intFromEnum(current) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(current);
+        if (current.isNone() or @backingInt(current) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(current);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(current);
@@ -359,7 +359,7 @@ fn isParameterEnvironmentScope(self: anytype, scope: ScopeId) bool {
     const owners = if (self.semantic_editor) |*editor| &editor.scope_owner_map else &self.scope_owner_map;
     var iter = owners.iterator();
     while (iter.next()) |entry| {
-        if (entry.value_ptr.* != @intFromEnum(scope) or entry.key_ptr.* >= self.ast.nodes.items.len) continue;
+        if (entry.value_ptr.* != @backingInt(scope) or entry.key_ptr.* >= self.ast.nodes.items.len) continue;
         if (isParameterScopeOwnerTag(self.ast.nodes.items[entry.key_ptr.*].tag)) return true;
     }
     return false;
@@ -385,8 +385,8 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
     var has_direct_eval = false;
     try stack.append(self.allocator, function_node);
     while (stack.pop()) |current| {
-        if (current.isNone() or @intFromEnum(current) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(current);
+        if (current.isNone() or @backingInt(current) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(current);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(current);
@@ -454,10 +454,10 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         .@"const",
         span,
     );
-    try self.ast.preserve_const_declaration_indices.append(self.allocator, @intFromEnum(class_alias_decl));
+    try self.ast.preserve_const_declaration_indices.append(self.allocator, @backingInt(class_alias_decl));
 
     try self.reparentGeneratedScope(if (parameter_scope.isNone()) function_scope else parameter_scope, factory_scope);
-    for (references.items) |reference| try self.rebindOutputReference(reference, @intFromEnum(class_alias_symbol));
+    for (references.items) |reference| try self.rebindOutputReference(reference, @backingInt(class_alias_symbol));
 
     const function_ref = try makeDeferredExactSyntheticRef(self, pm.func_name, pm.func_symbol_id);
     const return_stmt = try self.ast.addNode(.{
@@ -472,8 +472,8 @@ pub fn capturePrivateClassSelf(self: anytype, pm: anytype, function_node: NodeIn
         .data = .{ .list = factory_body_list },
     });
     const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{capture_binding}), span);
-    const none = @intFromEnum(NodeIndex.none);
-    const factory_extra = try self.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(factory_body), 0, none });
+    const none = @backingInt(NodeIndex.none);
+    const factory_extra = try self.ast.addExtras(&.{ none, @backingInt(params), @backingInt(factory_body), 0, none });
     const factory = try self.ast.addNode(.{
         .tag = .function_expression,
         .span = span,
@@ -689,7 +689,7 @@ pub fn nameAppearsInDynamicEvalString(self: anytype, scope_id: ScopeId, name: []
 
         switch (node.tag) {
             .template_literal, .binary_expression, .parenthesized_expression => {
-                const idx: NodeIndex = @enumFromInt(raw);
+                const idx: NodeIndex = @fromBackingInt(@intCast(raw));
                 const static_source = try staticStringExpressionValue(self, idx, 0) orelse continue;
                 defer self.allocator.free(static_source);
                 if (try jsSourceContainsIdentifier(self.allocator, static_source, name)) return true;
@@ -723,7 +723,7 @@ fn staticStringExpressionValue(self: anytype, idx: NodeIndex, depth: u8) !?[]u8 
             var output: std.ArrayList(u8) = .empty;
             defer output.deinit(self.allocator);
             for (0..list.len) |part_idx| {
-                const part_node_idx: NodeIndex = @enumFromInt(extras[list.start + part_idx]);
+                const part_node_idx: NodeIndex = @fromBackingInt(@intCast(extras[list.start + part_idx]));
                 const part_node = self.ast.getNode(part_node_idx);
                 const part = if (part_idx % 2 == 0)
                     try decodeTemplateElementText(self, part_node, part_idx == 0, part_idx + 1 == list.len)
@@ -736,7 +736,7 @@ fn staticStringExpressionValue(self: anytype, idx: NodeIndex, depth: u8) !?[]u8 
             return try output.toOwnedSlice(self.allocator);
         },
         .binary_expression => {
-            if (node.data.binary.flags != @as(u16, @intFromEnum(token_mod.Kind.plus))) return null;
+            if (node.data.binary.flags != @as(u16, @backingInt(token_mod.Kind.plus))) return null;
             const left = try staticStringExpressionValue(self, node.data.binary.left, depth + 1) orelse return null;
             defer self.allocator.free(left);
             const right = try staticStringExpressionValue(self, node.data.binary.right, depth + 1) orelse return null;
@@ -871,7 +871,7 @@ pub fn makeTempVarRef(self: anytype, span: Span, node_span: Span) !NodeIndex {
 /// it does not create a name or choose a symbol.
 pub fn retagAssignmentTargetAsReference(self: anytype, idx: NodeIndex) void {
     if (idx.isNone()) return;
-    const node = &self.ast.nodes.items[@intFromEnum(idx)];
+    const node = &self.ast.nodes.items[@backingInt(idx)];
     if (node.tag == .assignment_target_identifier) node.tag = .identifier_reference;
 }
 
@@ -1079,7 +1079,7 @@ pub fn replaceMethodDefinitionKey(self: anytype, method_idx: NodeIndex, new_key:
     const method = self.ast.getNode(method_idx);
     const me = method.data.extra;
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_key),
+        @backingInt(new_key),
         self.ast.extra_data.items[me + ast_mod.MethodExtra.params],
         self.ast.extra_data.items[me + ast_mod.MethodExtra.body],
         self.ast.extra_data.items[me + ast_mod.MethodExtra.flags],
@@ -1102,8 +1102,8 @@ pub fn makeVoidZero(self: anytype, span: Span) !NodeIndex {
         .data = .{ .none = 0 },
     });
     const void_extra = try self.ast.addExtras(&.{
-        @intFromEnum(zero_node),
-        @intFromEnum(token_mod.Kind.kw_void),
+        @backingInt(zero_node),
+        @backingInt(token_mod.Kind.kw_void),
     });
     return self.ast.addNode(.{
         .tag = .unary_expression,
@@ -1265,7 +1265,7 @@ pub fn resolveRuntimeHelperName(self: anytype, name: []const u8) ![]const u8 {
 
 /// 합성 식별자 노드로 기록한다(심볼 누락 검사기가 켜졌을 때만) — 그대로 돌려준다.
 pub fn markSynthetic(self: anytype, node: NodeIndex) NodeIndex {
-    if (self.synthetic_idents) |*set| set.put(self.allocator, @intFromEnum(node), {}) catch {};
+    if (self.synthetic_idents) |*set| set.put(self.allocator, @backingInt(node), {}) catch {};
     return node;
 }
 
@@ -1413,7 +1413,7 @@ pub fn resolveScopedGeneratedOutputName(self: anytype, name: []const u8, scope_i
 /// Mark an exact generated binding for the standalone final-name pass.
 pub fn markStandaloneLateSyntheticSymbol(self: anytype, symbol_id: symbol_mod.SymbolId, kind: symbol_mod.SyntheticKind) void {
     const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late synthetic output name has no semantic editor", .{});
-    const raw = @intFromEnum(symbol_id);
+    const raw = @backingInt(symbol_id);
     if (raw >= editor.symbols.items.len) std.debug.panic("late synthetic output name has an invalid SymbolId", .{});
     editor.symbols.items[raw].synthetic_kind = kind;
 }
@@ -1424,7 +1424,7 @@ pub fn markStandaloneLateSyntheticTemp(self: anytype, symbol_id: ?symbol_mod.Sym
     if (!canUseLateStandaloneOutputName(self, scope_id)) return;
     const id = symbol_id orelse std.debug.panic("late standalone temp has no exact SymbolId", .{});
     const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late standalone temp has no semantic editor", .{});
-    const raw = @intFromEnum(id);
+    const raw = @backingInt(id);
     if (raw >= editor.symbols.items.len) std.debug.panic("late standalone temp has an invalid SymbolId", .{});
     if (editor.symbols.items[raw].synthetic_kind == null)
         editor.symbols.items[raw].synthetic_kind = .standalone_temp_binding;
@@ -1440,7 +1440,7 @@ pub fn markStandaloneLateSyntheticOutputName(
     output_name_hint: []const u8,
 ) void {
     const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late synthetic output name has no semantic editor", .{});
-    const raw = @intFromEnum(symbol_id);
+    const raw = @backingInt(symbol_id);
     if (raw >= editor.symbols.items.len) std.debug.panic("late synthetic output name has an invalid SymbolId", .{});
     const generated = &editor.symbols.items[raw];
     if (!std.mem.eql(u8, generated.synthetic_name, expected_staging_name))
@@ -1583,7 +1583,7 @@ pub fn makeRuntimeHelperRef(self: anytype, base_name: []const u8) !NodeIndex {
     if (self.semantic_edit_enabled) {
         if (self.runtime_helper_symbol_ids.get(base_name)) |symbol_id| {
             const editor = self.semantic_editor orelse std.debug.panic("runtime helper SymbolId has no semantic editor", .{});
-            const raw_id = @intFromEnum(symbol_id);
+            const raw_id = @backingInt(symbol_id);
             if (raw_id >= editor.symbols.items.len)
                 std.debug.panic("runtime helper SymbolId is out of range", .{});
             // Once the first callsite has selected the helper identity, later
@@ -1627,7 +1627,7 @@ pub fn rewriteTDZReferences(self: anytype, root: NodeIndex, tdz_names: []const S
 
 fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const Span) !void {
     if (idx.isNone()) return;
-    const raw_i = @intFromEnum(idx);
+    const raw_i = @backingInt(idx);
     if (raw_i >= self.ast.nodes.items.len) return;
 
     const node = self.ast.nodes.items[raw_i];
@@ -1666,7 +1666,7 @@ fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const S
                 }
             }
             if (!right.isNone()) {
-                if (@intFromEnum(right) == @intFromEnum(left)) {
+                if (@backingInt(right) == @backingInt(left)) {
                     const right_node = self.ast.getNode(right);
                     if (right_node.tag == .identifier_reference) {
                         if (tdzNameMatch(self, right_node.data.string_ref, tdz_names)) |name_span| {
@@ -1682,7 +1682,7 @@ fn rewriteTDZReferencesInner(self: anytype, idx: NodeIndex, tdz_names: []const S
             return;
         },
         .static_member_expression, .private_field_expression => {
-            try rewriteTDZReferencesInner(self, @enumFromInt(self.ast.extra_data.items[node.data.extra]), tdz_names);
+            try rewriteTDZReferencesInner(self, @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra])), tdz_names);
             return;
         },
         else => {},
@@ -1758,7 +1758,7 @@ pub fn makeIdentifierRefFromSpan(self: anytype, name_span: Span) !NodeIndex {
 /// obj.prop static member expression 생성.
 /// extra = [object, property, flags=0]
 pub fn makeStaticMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Span) !NodeIndex {
-    const me = try self.ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
+    const me = try self.ast.addExtras(&.{ @backingInt(obj), @backingInt(prop), 0 });
     return self.ast.addNode(.{
         .tag = .static_member_expression,
         .span = span,
@@ -1770,7 +1770,7 @@ pub fn makeStaticMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Sp
 /// 문자열 키("aria-busy")나 숫자 키처럼 dot notation이 불가능한 경우 사용.
 /// extra = [object, property, flags=0]
 pub fn makeComputedMember(self: anytype, obj: NodeIndex, prop: NodeIndex, span: Span) !NodeIndex {
-    const me = try self.ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), 0 });
+    const me = try self.ast.addExtras(&.{ @backingInt(obj), @backingInt(prop), 0 });
     return self.ast.addNode(.{
         .tag = .computed_member_expression,
         .span = span,
@@ -1822,7 +1822,7 @@ pub fn makeMemberFromKeyIdx(self: anytype, obj: NodeIndex, key_idx: NodeIndex, s
 pub fn makeCallExpr(self: anytype, callee: NodeIndex, args: []const NodeIndex, span: Span) !NodeIndex {
     const args_list = try self.ast.addNodeList(args);
     const call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(callee), args_list.start, args_list.len, 0,
+        @backingInt(callee), args_list.start, args_list.len, 0,
     });
     return self.ast.addNode(.{
         .tag = .call_expression,
@@ -1963,7 +1963,7 @@ fn makeSingleEvalExpr(
         .data = .{ .binary = .{
             .left = temp_lhs,
             .right = visited,
-            .flags = @intFromEnum(token_mod.Kind.eq),
+            .flags = @backingInt(token_mod.Kind.eq),
         } },
     });
     const value_ref = try makeTempVarRef(self, temp_span, span);
@@ -2012,7 +2012,7 @@ pub const TempCapture = struct {
 pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
     const temp_span = try makeTempVarSpan(self);
     const temp_lhs = try makeTempVarRef(self, temp_span, span);
-    const assign = try makeAssignExpr(self, temp_lhs, value, span, @intFromEnum(token_mod.Kind.eq));
+    const assign = try makeAssignExpr(self, temp_lhs, value, span, @backingInt(token_mod.Kind.eq));
     return .{
         .span = temp_span,
         // 합성 paren 제거(#4042 PR8): bare assign — 첫 사용 자리의 precedence 가 괄호 재유도.
@@ -2061,7 +2061,7 @@ pub const OnceReceiver = struct {
 pub fn makeTrackedTempRef(self: anytype, name_span: Span, node_span: Span, flags: @import("../semantic/mod.zig").ReferenceFlags) !NodeIndex {
     const ref = try makeTempVarRef(self, name_span, node_span);
     if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
-        try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, flags);
+        try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(raw_id)), self.current_scope, flags);
     } else {
         try self.trackSyntheticTempReference(name_span, node_span, ref, flags);
     }
@@ -2081,12 +2081,12 @@ pub fn makeCallExprPrepend(
     const new_len: u32 = args.len + 1;
     const start: u32 = @intCast(self.ast.extra_data.items.len);
     try self.ast.extra_data.ensureUnusedCapacity(self.allocator, new_len);
-    self.ast.extra_data.appendAssumeCapacity(@intFromEnum(receiver));
+    self.ast.extra_data.appendAssumeCapacity(@backingInt(receiver));
     var i: u32 = 0;
     while (i < args.len) : (i += 1) {
         self.ast.extra_data.appendAssumeCapacity(self.ast.extra_data.items[args.start + i]);
     }
-    const call_extra = try self.ast.addExtras(&.{ @intFromEnum(callee), start, new_len, 0 });
+    const call_extra = try self.ast.addExtras(&.{ @backingInt(callee), start, new_len, 0 });
     return self.ast.addNode(.{
         .tag = .call_expression,
         .span = span,
@@ -2102,7 +2102,7 @@ fn makeMemberWithFlags(
     flags: u32,
     span: Span,
 ) !NodeIndex {
-    const extra = try self.ast.addExtras(&.{ @intFromEnum(obj), @intFromEnum(prop), flags });
+    const extra = try self.ast.addExtras(&.{ @backingInt(obj), @backingInt(prop), flags });
     return self.ast.addNode(.{ .tag = tag, .span = span, .data = .{ .extra = extra } });
 }
 
@@ -2225,7 +2225,7 @@ fn makeNullCompare(self: anytype, base: NodeIndex, span: Span, op: token_mod.Kin
         .data = .{ .binary = .{
             .left = base,
             .right = null_node,
-            .flags = @intFromEnum(op),
+            .flags = @backingInt(op),
         } },
     });
 }
@@ -2245,7 +2245,7 @@ pub fn makeMathPowCall(self: anytype, left: NodeIndex, right: NodeIndex, span: S
             .data = .{ .binary = .{
                 .left = left,
                 .right = right,
-                .flags = @intFromEnum(token_mod.Kind.star2),
+                .flags = @backingInt(token_mod.Kind.star2),
             } },
         });
     }
@@ -2254,7 +2254,7 @@ pub fn makeMathPowCall(self: anytype, left: NodeIndex, right: NodeIndex, span: S
     const callee = try makeStaticMember(self, math_ref, pow_ref, span);
     const args = try self.ast.addNodeList(&.{ left, right });
     const call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
     return self.ast.addNode(.{
         .tag = .call_expression,
@@ -2352,7 +2352,7 @@ pub fn makeBindingIdentifier(self: anytype, name_span: Span) !NodeIndex {
 /// extra = [binding, type_annotation(none), init]
 pub fn makeDeclarator(self: anytype, binding: NodeIndex, init: NodeIndex, span: Span) !NodeIndex {
     const de = try self.ast.addExtras(&.{
-        @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
+        @backingInt(binding), @backingInt(NodeIndex.none), @backingInt(init),
     });
     return self.ast.addNode(.{
         .tag = .variable_declarator,
@@ -2364,7 +2364,7 @@ pub fn makeDeclarator(self: anytype, binding: NodeIndex, init: NodeIndex, span: 
 /// variable_declaration 노드 생성 (var/let/const/using/await_using 키워드, declarators 배열).
 pub fn makeVarDeclaration(self: anytype, declarators: []const NodeIndex, kind: VariableDeclarationKind, span: Span) !NodeIndex {
     const decl_list = try self.ast.addNodeList(declarators);
-    const var_extra = try self.ast.addExtras(&.{ @intFromEnum(kind), decl_list.start, decl_list.len });
+    const var_extra = try self.ast.addExtras(&.{ @backingInt(kind), decl_list.start, decl_list.len });
     return self.ast.addNode(.{
         .tag = .variable_declaration,
         .span = span,
@@ -2419,8 +2419,8 @@ pub fn makeAssignStmt(self: anytype, left: NodeIndex, right: NodeIndex, span: Sp
 /// `!operand` unary expression 노드 생성.
 pub fn makeUnaryNot(self: anytype, operand: NodeIndex, span: Span) !NodeIndex {
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(operand),
-        @intFromEnum(token_mod.Kind.bang),
+        @backingInt(operand),
+        @backingInt(token_mod.Kind.bang),
     });
     return self.ast.addNode(.{
         .tag = .unary_expression,
@@ -2470,7 +2470,7 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
         const list_len = self.readU32(le, 2);
         if (list_len == 0) return makeExprStmt(self, elem, span);
 
-        const first_decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
+        const first_decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start]));
         const first_decl = self.ast.getNode(first_decl_idx);
         if (first_decl.tag != .variable_declarator) return makeExprStmt(self, elem, span);
 
@@ -2810,7 +2810,7 @@ pub const PrivateMethodKind = enum(u8) {
 pub fn privateMethodKindFromFlags(method_flags: u32) PrivateMethodKind {
     const bits = (method_flags >> 1) & 0x03;
     std.debug.assert(bits <= 2);
-    return @enumFromInt(@as(u8, @intCast(bits)));
+    return @fromBackingInt(@intCast(@as(u8, @intCast(bits))));
 }
 
 /// var _name = new Constructor(); 선언 생성. (WeakMap, WeakSet 등)
@@ -2818,7 +2818,7 @@ pub fn buildWeakCollectionDecl(self: anytype, constructor_name: []const u8, var_
     const ctor_ref = try makeGlobalRef(self, constructor_name);
     const empty_args = try self.ast.addNodeList(&.{});
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(ctor_ref), empty_args.start, empty_args.len, 0,
+        @backingInt(ctor_ref), empty_args.start, empty_args.len, 0,
     });
     const new_expr = try self.ast.addNode(.{
         .tag = .new_expression,
@@ -3046,7 +3046,7 @@ pub fn recordParameterCapturesWithPresence(self: anytype, captures: []NodeIndex,
         const capture = captures[index];
         index += 1;
         if (needed) {
-            try self.parameter_capture_statements.put(self.allocator, @intFromEnum(capture), {});
+            try self.parameter_capture_statements.put(self.allocator, @backingInt(capture), {});
             parameter[parameter_len] = capture;
             parameter_len += 1;
         } else {
@@ -3107,7 +3107,7 @@ pub fn buildStandaloneFunc(
     const params_list_old = self.ast.functionParamsList(method_node);
     const params_start = params_list_old.start;
     const params_len = params_list_old.len;
-    const body_idx: NodeIndex = @enumFromInt(self.readU32(method_node.data.extra, ast_mod.MethodExtra.body));
+    const body_idx: NodeIndex = @fromBackingInt(@intCast(self.readU32(method_node.data.extra, ast_mod.MethodExtra.body)));
     const method_flags = self.readU32(method_node.data.extra, ast_mod.MethodExtra.flags);
 
     const saved_scope = self.current_scope;
@@ -3152,9 +3152,9 @@ pub fn buildStandaloneFunc(
         const name_span = try self.ast.addString(name);
         const name_node = if (binding_node.isNone()) try makeSyntheticBinding(self, name_span) else binding_node;
         const params_node = self.readNodeIdx(method_node.data.extra, ast_mod.MethodExtra.params);
-        const none = @intFromEnum(NodeIndex.none);
+        const none = @backingInt(NodeIndex.none);
         const synth_extra = try self.ast.addExtras(&.{
-            @intFromEnum(name_node), @intFromEnum(params_node), @intFromEnum(body_idx), fn_flags, none,
+            @backingInt(name_node), @backingInt(params_node), @backingInt(body_idx), fn_flags, none,
         });
         const synth = try self.ast.addNode(.{
             .tag = .function_declaration,
@@ -3199,12 +3199,12 @@ pub fn buildStandaloneFunc(
     const name_span = try self.ast.addString(name);
     const name_node = if (binding_node.isNone()) try makeSyntheticBinding(self, name_span) else binding_node;
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(new_params, span);
     const func_extra = try self.ast.addExtras(&.{
-        @intFromEnum(name_node),
-        @intFromEnum(new_params_node),
-        @intFromEnum(new_body),
+        @backingInt(name_node),
+        @backingInt(new_params_node),
+        @backingInt(new_body),
         fn_flags,
         none,
     });
@@ -3252,11 +3252,11 @@ pub fn wrapInFunction(self: anytype, expr: NodeIndex, span: Span) !NodeIndex {
     const empty_params = try self.ast.addNodeList(&.{});
     const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
     const func_extra = try self.ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(empty_params_node),
-        @intFromEnum(body_block),
+        @backingInt(NodeIndex.none),
+        @backingInt(empty_params_node),
+        @backingInt(body_block),
         0,
-        @intFromEnum(NodeIndex.none),
+        @backingInt(NodeIndex.none),
     });
     return self.ast.addNode(.{
         .tag = .function_expression,
@@ -3270,11 +3270,11 @@ pub fn buildGeneratorWrapper(self: anytype, body: NodeIndex, span: Span) !NodeIn
     const empty_params = try self.ast.addNodeList(&.{});
     const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
     const gen_extra = try self.ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(empty_params_node),
-        @intFromEnum(body),
+        @backingInt(NodeIndex.none),
+        @backingInt(empty_params_node),
+        @backingInt(body),
         ast_mod.FunctionFlags.is_generator,
-        @intFromEnum(NodeIndex.none),
+        @backingInt(NodeIndex.none),
     });
     return self.ast.addNode(.{
         .tag = .function_expression,

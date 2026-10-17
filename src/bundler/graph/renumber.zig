@@ -124,7 +124,7 @@ pub fn renumberModulesDeterministically(
         remapList(&m.implicitly_loaded_before, old_to_new);
         for (m.import_records) |*rec| {
             if (rec.resolved.isNone()) continue;
-            rec.resolved = @enumFromInt(old_to_new[rec.resolved.toU32()]);
+            rec.resolved = @fromBackingInt(@intCast(old_to_new[rec.resolved.toU32()]));
         }
         // binding_scanner 가 scan 시점 (renumber 전) module_index 를 SymbolRef 에 박음.
         // ImportBinding.symbol/local_symbol + ExportBinding.symbol 의 .semantic.module / .alias.module
@@ -140,7 +140,7 @@ pub fn renumberModulesDeterministically(
 
     var p_it = self.path_to_module.iterator();
     while (p_it.next()) |entry| {
-        entry.value_ptr.* = @enumFromInt(old_to_new[entry.value_ptr.toU32()]);
+        entry.value_ptr.* = @fromBackingInt(@intCast(old_to_new[entry.value_ptr.toU32()]));
     }
 
     var new_req: std.AutoHashMapUnmanaged(u32, RequestedExports) = .empty;
@@ -154,7 +154,7 @@ pub fn renumberModulesDeterministically(
     self.requested_exports = new_req;
 
     for (self.worker_entries.items) |*we| {
-        we.source_module = @enumFromInt(old_to_new[we.source_module.toU32()]);
+        we.source_module = @fromBackingInt(@intCast(old_to_new[we.source_module.toU32()]));
     }
 
     // StableSegmentedList.deinit 은 Module.deinit 을 호출하지 않으므로 새 list 의 얕은 복사
@@ -195,18 +195,18 @@ fn visitDep(
 
 inline fn remapList(list: *std.ArrayList(ModuleIndex), old_to_new: []const u32) void {
     for (list.items) |*idx| {
-        idx.* = @enumFromInt(old_to_new[idx.toU32()]);
+        idx.* = @fromBackingInt(@intCast(old_to_new[idx.toU32()]));
     }
 }
 
 fn remapSymbolRef(ref: bundler_symbol.SymbolRef, old_to_new: []const u32) bundler_symbol.SymbolRef {
     return switch (ref) {
         .semantic => |s| if (s.module.isNone()) ref else .{ .semantic = .{
-            .module = @enumFromInt(old_to_new[s.module.toU32()]),
+            .module = @fromBackingInt(@intCast(old_to_new[s.module.toU32()])),
             .symbol = s.symbol,
         } },
         .alias => |a| if (a.module.isNone()) ref else .{ .alias = .{
-            .module = @enumFromInt(old_to_new[a.module.toU32()]),
+            .module = @fromBackingInt(@intCast(old_to_new[a.module.toU32()])),
             .symbol = a.symbol,
         } },
     };

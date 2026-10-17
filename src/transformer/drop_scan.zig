@@ -26,7 +26,7 @@ pub fn hasDroppedTransformStatement(
 pub fn isDroppedLabel(ast: *const ast_mod.Ast, node: Node, labels: []const []const u8) bool {
     if (node.tag != .labeled_statement) return false;
     const label_index = node.data.binary.left;
-    if (label_index.isNone() or @as(usize, @intFromEnum(label_index)) >= ast.nodes.items.len) return false;
+    if (label_index.isNone() or @as(usize, @backingInt(label_index)) >= ast.nodes.items.len) return false;
     const label_node = ast.getNode(label_index);
     const label_name = ast.getText(label_node.span);
     for (labels) |label| {
@@ -49,7 +49,7 @@ pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {
     // call_expression: extra = [callee, args_start, args_len, flags]
     const ce = expr.data.extra;
     if (ce >= ast.extra_data.items.len) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[ce]);
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[ce]));
     if (callee_idx.isNone()) return false;
     const callee = ast.getNode(callee_idx);
 
@@ -59,7 +59,7 @@ pub fn isConsoleCallInAst(ast: *const ast_mod.Ast, node: Node) bool {
     // left가 identifier "console"
     const me = callee.data.extra;
     if (me >= ast.extra_data.items.len) return false;
-    const obj_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[me]);
+    const obj_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[me]));
     if (obj_idx.isNone()) return false;
     const obj = ast.getNode(obj_idx);
     if (obj.tag != .identifier_reference) return false;

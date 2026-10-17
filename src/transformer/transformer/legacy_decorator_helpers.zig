@@ -22,7 +22,7 @@ fn makeClassNameReference(self: anytype, name_span: Span, source: NodeIndex, fla
     if (self.semantic_edit_enabled and !source.isNone() and self.ast.getNode(source).tag == .binding_identifier) {
         if (self.getSymbolIdAt(source)) |raw_id| {
             const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
-            try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, flags);
+            try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(raw_id)), self.current_scope, flags);
             return ref;
         }
     }
@@ -48,7 +48,7 @@ pub fn transformExperimentalDecorators(
     ctor_param_decos: []const NodeIndex,
     ctor_params: NodeList,
 ) Error!NodeIndex {
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     // 헬퍼 정의가 transpile-only 모드에서도 inline 되도록 표식 (#2194).
     self.runtime_helpers.legacy_decorator = true;
 
@@ -66,7 +66,7 @@ pub fn transformExperimentalDecorators(
     if (self.semantic_edit_enabled and node.tag == .class_declaration and class_name_text != null and
         (old_deco_len > 0 or ctor_param_decos.len > 0 or !anonymous_default_export_binding.isNone()))
     {
-        if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |class_self_id| {
+        if (self.class_self_symbol_map.get(@backingInt(source_idx))) |class_self_id| {
             const name_span = self.ast.getNode(new_name).data.string_ref;
             class_expr_name = try self.makeUserBinding(name_span, name_old_idx);
             try self.rebindOutputBinding(class_expr_name, class_self_id);
@@ -76,8 +76,8 @@ pub fn transformExperimentalDecorators(
     // class node 생성 (decorator 없이)
     const empty_list = try self.ast.addNodeList(&.{});
     const class_node = try self.addExtraNode(.class_expression, node.span, &.{
-        @intFromEnum(class_expr_name), @intFromEnum(new_super), @intFromEnum(new_body),
-        none,                          0,                       0,
+        @backingInt(class_expr_name), @backingInt(new_super), @backingInt(new_body),
+        none,                         0,                      0,
         empty_list.start, empty_list.len, // decorator 제거
     });
     if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_node);
@@ -96,9 +96,9 @@ pub fn transformExperimentalDecorators(
             name_old_idx;
         // variable_declarator: extra = [name, type_ann, init_val]
         const declarator = try self.addExtraNode(.variable_declarator, node.span, &.{
-            @intFromEnum(var_name),
-            @intFromEnum(NodeIndex.none), // type_ann
-            @intFromEnum(class_node), // init_val
+            @backingInt(var_name),
+            @backingInt(NodeIndex.none), // type_ann
+            @backingInt(class_node), // init_val
         });
         const decl_list = try self.ast.addNodeList(&.{declarator});
         const var_decl = try self.addExtraNode(.variable_declaration, node.span, &.{
@@ -140,9 +140,9 @@ pub fn transformExperimentalDecorators(
         // `let C = class C {}`를 내보내고 바깥 binding으로 멤버 decorator를 호출한다.
         if (!anonymous_default_export_binding.isNone()) {
             const declarator = try self.addExtraNode(.variable_declarator, node.span, &.{
-                @intFromEnum(anonymous_default_export_binding),
-                @intFromEnum(NodeIndex.none),
-                @intFromEnum(class_node),
+                @backingInt(anonymous_default_export_binding),
+                @backingInt(NodeIndex.none),
+                @backingInt(class_node),
             });
             const decl_list = try self.ast.addNodeList(&.{declarator});
             const var_decl = try self.addExtraNode(.variable_declaration, node.span, &.{
@@ -164,8 +164,8 @@ pub fn transformExperimentalDecorators(
 
         // class 노드를 pending에 추가
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-            none,                   0,                       0,
+            @backingInt(new_name), @backingInt(new_super), @backingInt(new_body),
+            none,                  0,                      0,
             empty_list.start, empty_list.len, // decorator 제거
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
@@ -184,9 +184,9 @@ pub fn transformExperimentalDecorators(
     // static 문장이 있으면 class를 pending에 넣고 그 뒤에 추가
     if (static_statements.len > 0) {
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-            none,                   0,                       0,
-            empty_list.start,       empty_list.len,
+            @backingInt(new_name), @backingInt(new_super), @backingInt(new_body),
+            none,                  0,                      0,
+            empty_list.start,      empty_list.len,
         });
         try self.pending_nodes.append(self.allocator, class_result);
         try self.pending_nodes.appendSlice(self.allocator, static_statements);
@@ -194,9 +194,9 @@ pub fn transformExperimentalDecorators(
     }
 
     return self.addExtraNode(node.tag, node.span, &.{
-        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-        none,                   0,                       0,
-        empty_list.start,       empty_list.len,
+        @backingInt(new_name), @backingInt(new_super), @backingInt(new_body),
+        none,                  0,                      0,
+        empty_list.start,      empty_list.len,
     });
 }
 
@@ -232,7 +232,7 @@ pub fn buildDecorateClassMemberCall(
     const class_ref = try makeClassNameReference(self, class_name_span, class_name_old_idx, .{ .read = true });
     const target = if (!md.is_static) blk: {
         const proto_id = try es_helpers.makePropertyName(self, "prototype");
-        const me = try self.ast.addExtras(&.{ @intFromEnum(class_ref), @intFromEnum(proto_id), 0 });
+        const me = try self.ast.addExtras(&.{ @backingInt(class_ref), @backingInt(proto_id), 0 });
         break :blk try self.ast.addNode(.{
             .tag = .static_member_expression,
             .span = zero_span,
@@ -272,7 +272,7 @@ pub fn buildDecorateClassMemberCall(
 
     const args = try self.ast.addNodeList(&.{ deco_array, target, key_string, kind_node });
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
     return self.ast.addNode(.{
         .tag = .expression_statement,
@@ -337,7 +337,7 @@ pub fn buildDecorateClassCall(
 
     const args = try self.ast.addNodeList(&.{ deco_array, class_ref });
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
 
     // Foo = __decorateClass([dec], Foo)

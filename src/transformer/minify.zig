@@ -66,7 +66,7 @@ fn resolveMergeableVarDecl(ast: *const Ast, ni: u32) ?MergeableDecl {
     if (@as(usize, node.data.extra) + 6 > ast.extra_data.items.len) return null;
     const x = module_parser.readExportNamedExtras(ast, node.data.extra);
     if (x.decl.isNone() or x.specs_len != 0 or !x.source.isNone() or x.attrs_len != 0) return null;
-    const decl_ni: u32 = @intFromEnum(x.decl);
+    const decl_ni: u32 = @backingInt(x.decl);
     if (decl_ni >= ast.nodes.items.len) return null;
     if (ast.nodes.items[decl_ni].tag != .variable_declaration) return null;
     return .{ .vardecl_ni = decl_ni, .is_export = true };
@@ -177,7 +177,7 @@ fn makeQuotedString(ast: *Ast, text: []const u8) ?Span {
 fn unwrapParens(ast: *const Ast, node: Node) Node {
     var cur = node;
     while (cur.tag == .parenthesized_expression) {
-        const inner_ni: u32 = @intFromEnum(cur.data.unary.operand);
+        const inner_ni: u32 = @backingInt(cur.data.unary.operand);
         if (inner_ni >= ast.nodes.items.len) break;
         cur = ast.nodes.items[inner_ni];
     }
@@ -199,14 +199,14 @@ fn isGuaranteedBoolean(ast: *const Ast, node: Node) bool {
         .unary_expression => blk: {
             const e = inner.data.extra;
             if (e + 1 >= ast.extra_data.items.len) break :blk false;
-            const op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[e + 1])));
+            const op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(ast.extra_data.items[e + 1]))));
             break :blk switch (op) {
                 .bang, .kw_delete => true,
                 else => false,
             };
         },
         .binary_expression => blk: {
-            const op: Kind = @enumFromInt(inner.data.binary.flags);
+            const op: Kind = @fromBackingInt(@intCast(inner.data.binary.flags));
             break :blk switch (op) {
                 .eq3, .neq2, .eq2, .neq, .l_angle, .r_angle, .lt_eq, .gt_eq, .kw_in, .kw_instanceof => true,
                 else => false,
@@ -415,13 +415,13 @@ fn markCallCalleeSequences(ast: *const Ast, protected_sequences: *std.DynamicBit
         // new 의 callee 로도 들어오면서(`` new (0, o.tag)`x`() ``) 같은 경로가 새로 열렸다.
         if (node.tag != .call_expression and node.tag != .new_expression and
             node.tag != .tagged_template_expression) continue;
-        markSequenceInCallee(ast, @enumFromInt(ast.readExtra(node.data.extra, 0)), protected_sequences);
+        markSequenceInCallee(ast, @fromBackingInt(@intCast(ast.readExtra(node.data.extra, 0))), protected_sequences);
     }
 }
 
 fn markSequenceInCallee(ast: *const Ast, idx: NodeIndex, protected_sequences: *std.DynamicBitSet) void {
     if (idx.isNone()) return;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len or ni >= protected_sequences.capacity()) return;
     const node = ast.nodes.items[ni];
     switch (node.tag) {
@@ -440,7 +440,7 @@ fn markReachableNodes(ast: *const Ast, root: NodeIndex, live: *std.DynamicBitSet
 
     while (queue.items.len > 0) {
         const current = queue.pop() orelse break;
-        const ni = @intFromEnum(current);
+        const ni = @backingInt(current);
         if (ni >= live.capacity()) continue;
         if (live.isSet(ni)) continue;
         live.set(ni);
@@ -501,7 +501,7 @@ fn removeDeadStores(ast: *Ast, ctx: MinifyCtx, skip_for_binding: ?*const std.Dyn
     for (ast.nodes.items) |node| {
         if (node.tag != .object_property) continue;
         if (!node.data.binary.right.isNone()) continue; // shorthand 만
-        const key_ni = @intFromEnum(node.data.binary.left);
+        const key_ni = @backingInt(node.data.binary.left);
         if (key_ni >= ast.nodes.items.len) continue;
         if (ast.nodes.items[key_ni].tag != .identifier_reference) continue;
         if (!isLiveMinifyNode(live_nodes, @intCast(key_ni))) continue;
@@ -537,7 +537,7 @@ fn markForLoopBindings(ast: *const Ast, skip: *std.DynamicBitSet) void {
             },
             .for_in_statement, .for_of_statement, .for_await_of_statement => {
                 // ternary: a = LHS (variable_declaration 또는 assignment target)
-                const raw = @intFromEnum(node.data.ternary.a);
+                const raw = @backingInt(node.data.ternary.a);
                 if (raw < ast.nodes.items.len and
                     ast.nodes.items[raw].tag == .variable_declaration)
                 {
@@ -578,7 +578,7 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     // 단일 binding_identifier 만 — destructuring/array/object pattern 제외
     if (name_node.tag != .binding_identifier) return;
 
-    const init_idx: NodeIndex = @enumFromInt(init_raw);
+    const init_idx: NodeIndex = @fromBackingInt(@intCast(init_raw));
     // Transformer-generated temp declarations (`var _a;`) use interned string-table
     // spans and are paired with assignment reads that may be introduced after the
     // original semantic pass. Dropping the declaration can turn valid downlevel
@@ -598,7 +598,7 @@ fn tryRemoveDeadDecl(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, chang
     //   때 세팅): tree-shaker 가 cross-module ref 보존을 이미 보장한다. 같은 binding 이
     //   외부에서 쓰이면 `is_exported=true` 가드로 보호되고, 아니면 진짜 dead → elide 안전.
     //   N RFC (#3267) 의 mobx 4KB cascade-dead 회수 경로.
-    const scope_idx = @intFromEnum(sym.scope_id);
+    const scope_idx = @backingInt(sym.scope_id);
     if (scope_idx == 0 and !ctx.allow_top_level_dead) {
         // audit: 다른 가드 (eval/with/exported/ref/purity) 통과한 candidate 의 size 추적.
         // bundle 모드 (allow_top_level_dead) 에선 진짜 elide 로 가니 여기 안 옴.
@@ -713,7 +713,7 @@ const DecrementRefsCtx = struct { mc: MinifyCtx, skip_fn_body: bool };
 
 fn decrementRefsVisit(ctx: *DecrementRefsCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     if (node.tag == .identifier_reference) {
-        const ni = @intFromEnum(idx);
+        const ni = @backingInt(idx);
         if (ni < ctx.mc.symbol_ids.len) {
             if (ctx.mc.symbol_ids[ni]) |sid| {
                 if (sid < ctx.mc.ref_deltas.len and ctx.mc.effectiveRefCount(sid) > 0) {
@@ -775,7 +775,7 @@ pub fn markForbiddenInlineSites(ast: *const Ast, forbidden: *std.DynamicBitSet) 
     for (ast.nodes.items) |node| {
         if (node.tag != .object_property) continue;
         if (!node.data.binary.right.isNone()) continue;
-        const key_ni = @intFromEnum(node.data.binary.left);
+        const key_ni = @backingInt(node.data.binary.left);
         if (key_ni < forbidden.capacity()) forbidden.set(key_ni);
     }
 }
@@ -788,7 +788,7 @@ pub fn markStatementRootExpressions(ast: *const Ast, roots: *std.DynamicBitSet) 
     const cap = roots.capacity();
     for (ast.nodes.items) |node| switch (node.tag) {
         .return_statement, .expression_statement => {
-            const operand_ni = @intFromEnum(node.data.unary.operand);
+            const operand_ni = @backingInt(node.data.unary.operand);
             if (operand_ni < cap) roots.set(operand_ni);
         },
         .variable_declarator => {
@@ -850,7 +850,7 @@ const InlineSites = struct {
             while (i > 0) {
                 i -= 1;
                 if (ast.nodes.items[i].tag == .program) {
-                    root = @enumFromInt(i);
+                    root = @fromBackingInt(@intCast(i));
                     break;
                 }
             }
@@ -879,7 +879,7 @@ const InlineSites = struct {
             return false;
         };
         while (stack.pop()) |work| {
-            const ni = @intFromEnum(work.node);
+            const ni = @backingInt(work.node);
             if (ni >= len or visited.isSet(ni)) continue;
             visited.set(ni);
             owner[ni] = work.owner;
@@ -892,7 +892,7 @@ const InlineSites = struct {
             var it = ast_walk.children(ast, node);
             while (it.next()) |child| {
                 if (child.isNone()) continue;
-                const ci = @intFromEnum(child);
+                const ci = @backingInt(child);
                 if (is_list and ci < len) stmt_parent[ci] = ni;
                 stack.append(scratch, .{ .node = child, .owner = child_owner }) catch {
                     scratch.free(owner);
@@ -946,7 +946,7 @@ const InlineSites = struct {
             if (decl.tag != .variable_declarator) return false;
             const de = decl.data.extra;
             if (de + 2 >= ast.extra_data.items.len) return false;
-            if (!isPrimitiveConstantExpr(ast, @enumFromInt(ast.extra_data.items[de + 2]))) return false;
+            if (!isPrimitiveConstantExpr(ast, @fromBackingInt(@intCast(ast.extra_data.items[de + 2])))) return false;
         }
         return true;
     }
@@ -954,7 +954,7 @@ const InlineSites = struct {
 
 fn isPrimitiveConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return false;
     return switch (ast.nodes.items[ni].tag) {
         .numeric_literal, .string_literal, .boolean_literal, .null_literal => true,
@@ -996,14 +996,14 @@ fn inlineTopLevelPrimitiveConstants(ast: *Ast, ctx: MinifyCtx, live_nodes: ?*con
             const sym_id = ctx.symbol_ids[name_raw] orelse continue;
             if (sym_id >= ctx.symbols.len) continue;
             const sym = ctx.symbols[sym_id];
-            if (@intFromEnum(sym.scope_id) != 0) continue;
+            if (@backingInt(sym.scope_id) != 0) continue;
             if (ctx.scopes.len > 0 and ctx.scopes[0].blocksMangling()) continue;
             if (sym.isExported()) continue;
             if (sym.write_count != 0) continue;
 
-            const init_idx: NodeIndex = @enumFromInt(init_raw);
+            const init_idx: NodeIndex = @fromBackingInt(@intCast(init_raw));
             if (!isPrimitiveConstantExpr(ast, init_idx)) continue;
-            const init_ni = @intFromEnum(init_idx);
+            const init_ni = @backingInt(init_idx);
             if (init_ni >= ast.nodes.items.len) continue;
             const init_node = ast.nodes.items[init_ni];
             const decl_start = sourceSpanStart(node);
@@ -1114,16 +1114,16 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     if (sym_id >= ctx.symbols.len) return;
     const sym = ctx.symbols[sym_id];
 
-    const scope_idx = @intFromEnum(sym.scope_id);
+    const scope_idx = @backingInt(sym.scope_id);
     if (scope_idx < ctx.scopes.len and ctx.scopes[scope_idx].blocksMangling()) return;
     if (scope_idx == 0 and !ctx.allow_top_level_inline) return;
     if (sym.isExported()) return;
 
     if (ctx.effectiveRefCount(sym_id) != 1 or sym.write_count != 0) return;
 
-    const init_idx: NodeIndex = @enumFromInt(init_raw);
+    const init_idx: NodeIndex = @fromBackingInt(@intCast(init_raw));
     if (init_idx.isNone()) return;
-    const init_ni = @intFromEnum(init_idx);
+    const init_ni = @backingInt(init_idx);
     if (init_ni >= ast.nodes.items.len) return;
     const init_node = ast.nodes.items[init_ni];
     if (ctx.preserve_inferred_names and ast.isAnonymousFunctionDefinition(init_idx)) return;
@@ -1167,9 +1167,9 @@ fn tryInlineDecl(ast: *Ast, ctx: MinifyCtx, counts: []const u32, first_loc: []co
     if (needs_scope_check) {
         var read_scope_ok = false;
         for (ctx.references) |r| {
-            if (@intFromEnum(r.node_index) != read_ni) continue;
-            if (@intFromEnum(r.symbol_id) != sym_id) continue;
-            read_scope_ok = @intFromEnum(r.scope_id) == @intFromEnum(sym.scope_id);
+            if (@backingInt(r.node_index) != read_ni) continue;
+            if (@backingInt(r.symbol_id) != sym_id) continue;
+            read_scope_ok = @backingInt(r.scope_id) == @backingInt(sym.scope_id);
             break;
         }
         if (!read_scope_ok) return;
@@ -1246,7 +1246,7 @@ const ImmutableRefsCtx = struct { mc: MinifyCtx, decl_sym_id: u32, all_immutable
 
 fn immutableRefsVisit(ctx: *ImmutableRefsCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     if (node.tag == .identifier_reference) {
-        const ni = @intFromEnum(idx);
+        const ni = @backingInt(idx);
         // 원본과 동일: ni 범위 밖 / symbol_id 없음 / decl 자기참조 / mutable 심볼 → 즉시 false.
         const immutable = ni < ctx.mc.symbol_ids.len and blk: {
             const sid = ctx.mc.symbol_ids[ni] orelse break :blk false;
@@ -1288,7 +1288,7 @@ fn allInnerReferencesImmutable(
 /// 범위 밖. 이 pass 는 mutable state 의존이 전혀 없는 constant-only subset 에 한정.
 fn isConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[ni];
     return switch (node.tag) {
@@ -1309,9 +1309,9 @@ fn isConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
             while (j < list.len) : (j += 1) {
                 if (list.start + j >= ast.extra_data.items.len) break :blk false;
                 const child_raw = ast.extra_data.items[list.start + j];
-                const child_idx: NodeIndex = @enumFromInt(child_raw);
+                const child_idx: NodeIndex = @fromBackingInt(@intCast(child_raw));
                 if (child_idx.isNone()) continue; // elision NodeIndex.none
-                const child_ni = @intFromEnum(child_idx);
+                const child_ni = @backingInt(child_idx);
                 if (child_ni < ast.nodes.items.len and ast.nodes.items[child_ni].tag == .elision) continue;
                 if (!isConstantExpr(ast, child_idx)) break :blk false;
             }
@@ -1329,7 +1329,7 @@ fn isConstantExpr(ast: *const Ast, idx: NodeIndex) bool {
                 // object_property: binary = { left: key, right: value }.
                 const key_idx = prop.data.binary.left;
                 const value_idx = prop.data.binary.right;
-                const key_ni = @intFromEnum(key_idx);
+                const key_ni = @backingInt(key_idx);
                 if (key_ni >= ast.nodes.items.len) break :blk false;
                 const key_tag = ast.nodes.items[key_ni].tag;
                 // 정적 key 만: identifier_reference (속성명 자체), string/numeric literal.
@@ -1417,7 +1417,7 @@ pub fn convertConstToLetPreserving(ast: *Ast, preserved_declarations: []const u3
         if (stmt.tag != .variable_declaration) continue;
         const e = stmt.data.extra;
         if (e >= ast.extra_data.items.len) continue;
-        if (ast.extra_data.items[e] == @intFromEnum(VariableDeclarationKind.@"const")) {
+        if (ast.extra_data.items[e] == @backingInt(VariableDeclarationKind.@"const")) {
             var preserve = false;
             for (preserved_declarations) |preserved| {
                 if (preserved == raw) {
@@ -1453,7 +1453,7 @@ pub fn mergeDecls(ast: *Ast, root: NodeIndex, skip_nodes: ?*const std.DynamicBit
     stack.append(scratch, root) catch return;
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (raw >= ast.nodes.items.len) continue;
         if (visited.isSet(raw)) {
             shared.set(raw);
@@ -1484,7 +1484,7 @@ pub fn mergeDecls(ast: *Ast, root: NodeIndex, skip_nodes: ?*const std.DynamicBit
 /// arrow function 의 concise body (expression) 는 functionBodyBlock 가 block 만 반환해 자동 skip.
 fn elideTrailingEmptyReturn(ast: *Ast, node: Node, changed: *bool) void {
     const body_idx = ast.functionBodyBlock(node) orelse return;
-    const body_ni = @intFromEnum(body_idx);
+    const body_ni = @backingInt(body_idx);
     if (body_ni >= ast.nodes.items.len) return;
     const body = ast.nodes.items[body_ni];
     if (body.tag != .block_statement) return;
@@ -1525,9 +1525,9 @@ fn elideUnusedFnExprName(ast: *Ast, ctx: MinifyCtx, node: Node, changed: *bool) 
     const e = node.data.extra;
     if (e + 4 > ast.extra_data.items.len) return;
     const name_raw = ast.extra_data.items[e];
-    const name_idx: NodeIndex = @enumFromInt(name_raw);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(name_raw));
     if (name_idx.isNone()) return;
-    const name_ni = @intFromEnum(name_idx);
+    const name_ni = @backingInt(name_idx);
     if (name_ni >= ctx.symbol_ids.len) return;
     const sym_id = ctx.symbol_ids[name_ni] orelse return;
     if (sym_id >= ctx.symbols.len) return;
@@ -1535,18 +1535,18 @@ fn elideUnusedFnExprName(ast: *Ast, ctx: MinifyCtx, node: Node, changed: *bool) 
     // even when no runtime read refers to its inner binding.
     if (ctx.symbols[sym_id].decl_flags.preserve_class_name) return;
     if (ctx.symbols[sym_id].reference_count != 0) return;
-    ast.extra_data.items[e] = @intFromEnum(NodeIndex.none);
+    ast.extra_data.items[e] = @backingInt(NodeIndex.none);
     changed.* = true;
 }
 
 fn foldBinary(ast: *Ast, allocator: std.mem.Allocator, node_idx: u32, node: Node, changed: *bool) void {
-    const left_ni = @intFromEnum(node.data.binary.left);
-    const right_ni = @intFromEnum(node.data.binary.right);
+    const left_ni = @backingInt(node.data.binary.left);
+    const right_ni = @backingInt(node.data.binary.right);
     if (left_ni >= ast.nodes.items.len or right_ni >= ast.nodes.items.len) return;
 
     const left = ast.nodes.items[left_ni];
     const right = ast.nodes.items[right_ni];
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
 
     // 비교 연산 (산술보다 먼저 — 숫자 === 숫자도 여기서 처리)
     if (op == .eq3 or op == .neq2) {
@@ -1635,7 +1635,7 @@ fn foldTypeofUndefinedComparison(
     if (left.tag != .unary_expression) return false;
     const left_e = left.data.extra;
     if (left_e + 1 >= ast.extra_data.items.len) return false;
-    const left_op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[left_e + 1])));
+    const left_op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(ast.extra_data.items[left_e + 1]))));
     if (left_op != .kw_typeof) return false;
 
     if (right.tag != .string_literal) return false;
@@ -1645,7 +1645,7 @@ fn foldTypeofUndefinedComparison(
     if (!is_undef and !is_short) return false;
 
     const new_op: Kind = if (op == .neq2) .l_angle else .r_angle;
-    ast.nodes.items[node_idx].data.binary.flags = @intFromEnum(new_op);
+    ast.nodes.items[node_idx].data.binary.flags = @backingInt(new_op);
     if (is_undef) {
         const new_text: []const u8 = if (rt[0] == '"') "\"u\"" else "'u'";
         const new_span = ast.addString(new_text) catch return true;
@@ -1668,11 +1668,11 @@ fn foldTypeofStringComparison(
     if (left.tag != .unary_expression) return false;
     const left_e = left.data.extra;
     if (left_e + 1 >= ast.extra_data.items.len) return false;
-    const left_op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[left_e + 1])));
+    const left_op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(ast.extra_data.items[left_e + 1]))));
     if (left_op != .kw_typeof) return false;
     if (right.tag != .string_literal) return false;
     const new_op: Kind = if (op == .neq2) .neq else .eq2;
-    ast.nodes.items[node_idx].data.binary.flags = @intFromEnum(new_op);
+    ast.nodes.items[node_idx].data.binary.flags = @backingInt(new_op);
     return true;
 }
 
@@ -1741,8 +1741,8 @@ fn staticMemberName(ast: *const Ast, node: Node) ?[]const u8 {
     if (!ast.hasExtra(e, 2)) return null;
     const flags = ast.readExtra(e, 2);
     if ((flags & ast_mod.MemberFlags.optional_chain) != 0) return null;
-    const prop_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 1));
-    const prop_ni = @intFromEnum(prop_idx);
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 1)));
+    const prop_ni = @backingInt(prop_idx);
     if (prop_ni >= ast.nodes.items.len) return null;
     const prop = ast.nodes.items[prop_ni];
     return switch (prop.tag) {
@@ -1755,8 +1755,8 @@ fn staticMemberObject(ast: *const Ast, node: Node) ?Node {
     if (node.tag != .static_member_expression) return null;
     const e = node.data.extra;
     if (!ast.hasExtra(e, 2)) return null;
-    const obj_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 0));
-    const obj_ni = @intFromEnum(obj_idx);
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 0)));
+    const obj_ni = @backingInt(obj_idx);
     if (obj_ni >= ast.nodes.items.len) return null;
     return ast.nodes.items[obj_ni];
 }
@@ -1773,8 +1773,8 @@ fn singleStringArg(ast: *const Ast, node: Node) ?[]const u8 {
     const args_start = ast.readExtra(e, 1);
     const args_len = ast.readExtra(e, 2);
     if (args_len != 1 or args_start >= ast.extra_data.items.len) return null;
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    const arg_ni = @intFromEnum(arg_idx);
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    const arg_ni = @backingInt(arg_idx);
     if (arg_ni >= ast.nodes.items.len) return null;
     return simpleStringLiteralValue(ast, ast.nodes.items[arg_ni]);
 }
@@ -1799,8 +1799,8 @@ fn foldCall(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     // oxc `substitute_iife_call` (substitute_alternate_syntax.rs) 의 최소 스펙.
     if (tryFoldIife(ast, node_idx, e, changed)) return;
 
-    const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 0));
-    const callee_ni = @intFromEnum(callee_idx);
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 0)));
+    const callee_ni = @backingInt(callee_idx);
     if (callee_ni >= ast.nodes.items.len) return;
     const callee = ast.nodes.items[callee_ni];
     const method = staticMemberName(ast, callee) orelse return;
@@ -1856,7 +1856,7 @@ fn tryFoldIife(ast: *Ast, node_idx: u32, e: u32, changed: *bool) bool {
     if (ast.functionParams(callee).len != 0) return false;
 
     const body_idx = ast.functionBodyBlock(callee) orelse return false;
-    const body_ni = @intFromEnum(body_idx);
+    const body_ni = @backingInt(body_idx);
     if (body_ni >= ast.nodes.items.len) return false;
     const body = ast.nodes.items[body_ni];
 
@@ -1871,7 +1871,7 @@ fn tryFoldIife(ast: *Ast, node_idx: u32, e: u32, changed: *bool) bool {
         if (stmt.tag != .return_statement) return false;
         const arg = stmt.data.unary.operand;
         if (arg.isNone()) return false;
-        return_ni = @intFromEnum(arg);
+        return_ni = @backingInt(arg);
     } else {
         return_ni = body_ni;
     }
@@ -1892,7 +1892,7 @@ fn tryFoldIife(ast: *Ast, node_idx: u32, e: u32, changed: *bool) bool {
     ast.nodes.items[node_idx] = .{
         .tag = .parenthesized_expression,
         .span = return_node.span,
-        .data = .{ .unary = .{ .operand = @enumFromInt(return_ni), .flags = 0 } },
+        .data = .{ .unary = .{ .operand = @fromBackingInt(@intCast(return_ni)), .flags = 0 } },
     };
     changed.* = true;
     return true;
@@ -1937,7 +1937,7 @@ fn simplifyBooleanComparison(
         // !x — unary_expression을 새로 만들어야 하는데, in-place 수정으로는
         // extra_data에 추가가 필요. addExtra가 실패할 수 있으므로 try 없이 catch 처리.
         const operand_extra = ast.addExtra(other_ni) catch return false;
-        _ = ast.addExtra(@intFromEnum(Kind.bang)) catch return false;
+        _ = ast.addExtra(@backingInt(Kind.bang)) catch return false;
         ast.nodes.items[node_idx] = .{
             .tag = .unary_expression,
             .span = ast.nodes.items[node_idx].span,
@@ -1990,9 +1990,9 @@ fn stringLiteralValuesEqual(allocator: std.mem.Allocator, left_raw: []const u8, 
 fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
     const e = node.data.extra;
     if (e + 1 >= ast.extra_data.items.len) return;
-    const operand_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-    const op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[e + 1])));
-    const operand_ni = @intFromEnum(operand_idx);
+    const operand_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
+    const op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(ast.extra_data.items[e + 1]))));
+    const operand_ni = @backingInt(operand_idx);
     if (operand_ni >= ast.nodes.items.len) return;
     const operand = ast.nodes.items[operand_ni];
 
@@ -2004,7 +2004,7 @@ fn foldUnary(ast: *Ast, node_idx: u32, node: Node, changed: *bool) void {
             if (operand.tag == .unary_expression) {
                 const inner_e = operand.data.extra;
                 if (inner_e + 1 < ast.extra_data.items.len) {
-                    const inner_op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[inner_e + 1])));
+                    const inner_op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(ast.extra_data.items[inner_e + 1]))));
                     if (inner_op == .bang) {
                         const inner_operand_ni = ast.extra_data.items[inner_e];
                         if (inner_operand_ni < ast.nodes.items.len) {
@@ -2103,7 +2103,7 @@ fn evalTruthiness(ast: *const Ast, node: Node) ?bool {
             break :blk null;
         },
         .parenthesized_expression => blk: {
-            const inner_ni = @intFromEnum(node.data.unary.operand);
+            const inner_ni = @backingInt(node.data.unary.operand);
             if (inner_ni >= ast.nodes.items.len) break :blk null;
             break :blk evalTruthiness(ast, ast.nodes.items[inner_ni]);
         },
@@ -2144,14 +2144,14 @@ fn foldTypeof(ast: *const Ast, operand: Node) ?[]const u8 {
 /// dead 분기 안 ref 는 `decrementRefsShallow` 로 감산 — function/class body 는 호출 시점
 /// 평가라 skip (over-decrement 회피, #3267 N-step4).
 fn foldConditional(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
-    const cond_ni = @intFromEnum(node.data.ternary.a);
+    const cond_ni = @backingInt(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
 
     const truthy = evalTruthiness(ast, cond) orelse return;
     const kept = if (truthy) node.data.ternary.b else node.data.ternary.c;
     const dropped = if (truthy) node.data.ternary.c else node.data.ternary.b;
-    const kept_ni = @intFromEnum(kept);
+    const kept_ni = @backingInt(kept);
     if (kept_ni >= ast.nodes.items.len) return;
     if (ctx.hasSemantic() and !dropped.isNone()) decrementRefsShallow(ast, ctx, dropped);
     replaceNodeFromChild(ast, ctx, node_idx, kept_ni, ast.nodes.items[kept_ni], changed);
@@ -2160,7 +2160,7 @@ fn foldConditional(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed
 /// if_statement: if (false) { A } else { B } → B, if (true) { A } → A.
 /// dead 분기의 cascade decrement (#3267 N-step4).
 fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
-    const cond_ni = @intFromEnum(node.data.ternary.a);
+    const cond_ni = @backingInt(node.data.ternary.a);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
 
@@ -2168,7 +2168,7 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
     const semantic = ctx.hasSemantic();
     if (truthy) {
         // if (true) { A } else { B } → A. else (B) 분기 cascade.
-        const then_ni = @intFromEnum(node.data.ternary.b);
+        const then_ni = @backingInt(node.data.ternary.b);
         if (then_ni >= ast.nodes.items.len) return;
         if (ast.nodes.items[then_ni].tag == .function_declaration) return;
         if (semantic and !node.data.ternary.c.isNone()) decrementRefsShallow(ast, ctx, node.data.ternary.c);
@@ -2176,7 +2176,7 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
     } else {
         if (!node.data.ternary.c.isNone()) {
             // if (false) { A } else { B } → B. then (A) 분기 cascade.
-            const else_ni = @intFromEnum(node.data.ternary.c);
+            const else_ni = @backingInt(node.data.ternary.c);
             if (else_ni >= ast.nodes.items.len) return;
             if (ast.nodes.items[else_ni].tag == .function_declaration) return;
             if (semantic) decrementRefsShallow(ast, ctx, node.data.ternary.b);
@@ -2195,7 +2195,7 @@ fn foldIf(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) 
 
 /// while (false) { ... } → empty_statement. body cascade (#3267 N-step4).
 fn foldWhile(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
-    const cond_ni = @intFromEnum(node.data.binary.left);
+    const cond_ni = @backingInt(node.data.binary.left);
     if (cond_ni >= ast.nodes.items.len) return;
     const cond = ast.nodes.items[cond_ni];
 
@@ -2214,7 +2214,7 @@ fn foldWhile(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *boo
 /// member (`a.b`) 는 의도적으로 제외 — getter side-effect 시 2회→1회 평가가
 /// observable behavior 변경 (folding 으로 getter 호출 횟수 감소). identifier 만 안전.
 fn simpleIdentText(ast: *const Ast, idx: ast_mod.NodeIndex) ?[]const u8 {
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return null;
     const n = ast.nodes.items[ni];
     if (n.tag != .identifier_reference) return null;
@@ -2225,7 +2225,7 @@ fn simpleIdentText(ast: *const Ast, idx: ast_mod.NodeIndex) ?[]const u8 {
 
 /// `null` literal 또는 `undefined`(식별자)/`void <expr>` 인지.
 fn isNullOrUndefinedLit(ast: *const Ast, idx: ast_mod.NodeIndex) enum { null_lit, undef, no } {
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return .no;
     const n = ast.nodes.items[ni];
     switch (n.tag) {
@@ -2239,7 +2239,7 @@ fn isNullOrUndefinedLit(ast: *const Ast, idx: ast_mod.NodeIndex) enum { null_lit
             // (dropped 시 decrementRefsShallow 가 operand subtree ref 정확 처리.)
             const e = n.data.extra;
             if (e + 1 >= ast.extra_data.items.len) return .no;
-            const op: Kind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[e + 1])));
+            const op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(ast.extra_data.items[e + 1]))));
             return if (op == .kw_void) .undef else .no;
         },
         else => return .no,
@@ -2251,7 +2251,7 @@ fn isNullOrUndefinedLit(ast: *const Ast, idx: ast_mod.NodeIndex) enum { null_lit
 /// 안전). ECMAScript: `X==null` ⟺ X is null 또는 undefined. 매칭 시 true 반환
 /// (이 경우 foldLogical skip), 아니면 false.
 fn foldNullishCheck(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) bool {
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
     // || → 양쪽 `===`, 결과 `==` / && → 양쪽 `!==`, 결과 `!=`
     const want_cmp: Kind = switch (op) {
         .pipe2 => .eq3,
@@ -2260,14 +2260,14 @@ fn foldNullishCheck(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, change
     };
     const result_op: Kind = if (op == .pipe2) .eq2 else .neq;
 
-    const lni = @intFromEnum(node.data.binary.left);
-    const rni = @intFromEnum(node.data.binary.right);
+    const lni = @backingInt(node.data.binary.left);
+    const rni = @backingInt(node.data.binary.right);
     if (lni >= ast.nodes.items.len or rni >= ast.nodes.items.len) return false;
     const L = ast.nodes.items[lni];
     const R = ast.nodes.items[rni];
     if (L.tag != .binary_expression or R.tag != .binary_expression) return false;
-    if (@as(Kind, @enumFromInt(L.data.binary.flags)) != want_cmp) return false;
-    if (@as(Kind, @enumFromInt(R.data.binary.flags)) != want_cmp) return false;
+    if (@as(Kind, @fromBackingInt(@intCast(L.data.binary.flags))) != want_cmp) return false;
+    if (@as(Kind, @fromBackingInt(@intCast(R.data.binary.flags))) != want_cmp) return false;
 
     const lx = simpleIdentText(ast, L.data.binary.left) orelse return false;
     const rx = simpleIdentText(ast, R.data.binary.left) orelse return false;
@@ -2296,7 +2296,7 @@ fn foldNullishCheck(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, change
         .data = .{ .binary = .{
             .left = keep_x,
             .right = keep_null,
-            .flags = @intFromEnum(result_op),
+            .flags = @backingInt(result_op),
         } },
     };
     changed.* = true;
@@ -2306,10 +2306,10 @@ fn foldNullishCheck(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, change
 /// logical_expression: true && x → x, false && x → false, true || x → true, false || x → x.
 /// dropped side 의 cascade decrement (#3267 N-step4).
 fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *bool) void {
-    const left_ni = @intFromEnum(node.data.binary.left);
+    const left_ni = @backingInt(node.data.binary.left);
     if (left_ni >= ast.nodes.items.len) return;
     const left = ast.nodes.items[left_ni];
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
 
     const truthy = evalTruthiness(ast, left) orelse return;
     const semantic = ctx.hasSemantic();
@@ -2318,7 +2318,7 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
         .amp2 => { // &&
             if (truthy) {
                 // true && x → x (left literal — 영향 0)
-                const right_ni = @intFromEnum(node.data.binary.right);
+                const right_ni = @backingInt(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
                 replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
             } else {
@@ -2334,7 +2334,7 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
                 replaceNodeFromChild(ast, ctx, node_idx, left_ni, left, changed);
             } else {
                 // false || x → x (left literal — 영향 0)
-                const right_ni = @intFromEnum(node.data.binary.right);
+                const right_ni = @backingInt(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
                 replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
             }
@@ -2342,13 +2342,13 @@ fn foldLogical(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, changed: *b
         .question2 => { // ??
             // null ?? x → x, undefined ?? x → x
             if (left.tag == .null_literal) {
-                const right_ni = @intFromEnum(node.data.binary.right);
+                const right_ni = @backingInt(node.data.binary.right);
                 if (right_ni >= ast.nodes.items.len) return;
                 replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
             } else if (left.tag == .identifier_reference) {
                 const text = ast.getText(left.span);
                 if (std.mem.eql(u8, text, "undefined")) {
-                    const right_ni = @intFromEnum(node.data.binary.right);
+                    const right_ni = @backingInt(node.data.binary.right);
                     if (right_ni >= ast.nodes.items.len) return;
                     replaceNodeFromChild(ast, ctx, node_idx, right_ni, ast.nodes.items[right_ni], changed);
                 }

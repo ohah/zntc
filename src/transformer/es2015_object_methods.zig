@@ -48,7 +48,7 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
         pub fn needsObjectMethodLowering(self: *const Transformer, node: Node) bool {
             const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (members) |raw_idx| {
-                const m = self.ast.getNode(@enumFromInt(raw_idx));
+                const m = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (m.tag != .method_definition) continue;
                 const flags = self.ast.extra_data.items[m.data.extra + ast_mod.MethodExtra.flags];
                 if (methodNeedsFunctionLowering(self, flags)) return true;
@@ -69,9 +69,9 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             }
 
             const me = m.data.extra;
-            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
-            const params_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.params]);
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.body]);
+            const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]));
+            const params_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + ast_mod.MethodExtra.params]));
+            const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + ast_mod.MethodExtra.body]));
             const flags: u32 = self.ast.extra_data.items[me + ast_mod.MethodExtra.flags];
 
             // getter/setter 또는 현재 타겟에서 보존 가능한 일반 method는 원본 그대로 방문.
@@ -82,13 +82,13 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             // method → function 플래그 재매핑 (비트 위치가 다름).
             const fn_flags = ast_mod.methodFlagsToFunctionFlags(flags);
 
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
 
             // function_expression: [name, params, body, flags, return_type]
             const fn_extra = try self.ast.addExtras(&.{
                 none,
-                @intFromEnum(params_idx),
-                @intFromEnum(body_idx),
+                @backingInt(params_idx),
+                @backingInt(body_idx),
                 fn_flags,
                 none,
             });
@@ -144,7 +144,7 @@ pub fn ES2015ObjectMethods(comptime Transformer: type) type {
             var i: u32 = 0;
             while (i < members_len) : (i += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + i];
-                const new_m = try lowerObjectMember(self, @enumFromInt(raw_idx));
+                const new_m = try lowerObjectMember(self, @fromBackingInt(@intCast(raw_idx)));
                 if (!new_m.isNone()) try self.scratch.append(self.allocator, new_m);
             }
 

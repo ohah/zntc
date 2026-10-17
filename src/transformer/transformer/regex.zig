@@ -28,8 +28,8 @@ pub fn tryRewriteReplaceNamedRefs(self: *Transformer, callee_idx: NodeIndex, arg
     const prop_name = self.ast.getText(prop.span);
     if (!std.mem.eql(u8, prop_name, "replace") and !std.mem.eql(u8, prop_name, "replaceAll")) return null;
 
-    const arg0_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
-    const arg1_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start + 1]);
+    const arg0_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[args_start]));
+    const arg1_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[args_start + 1]));
 
     const pattern = (resolveRegexPatternForCall(self, arg0_idx)) orelse return null;
     const mapping = try regex_lower.extractNamedGroupMap(self.allocator, pattern);
@@ -70,7 +70,7 @@ pub fn tryRewriteReplaceNamedRefs(self: *Transformer, callee_idx: NodeIndex, arg
 pub fn collectConstRegexDeclarators(self: *Transformer, list_start: u32, list_len: u32) Error!void {
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
-        const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+        const decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start + i]));
         const decl = self.ast.getNode(decl_idx);
         if (decl.tag != .variable_declarator) continue;
         const de = decl.data.extra;

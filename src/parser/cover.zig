@@ -52,7 +52,7 @@ fn memberChainHasOptional(self: *const Parser, start: NodeIndex) bool {
     var cur = start;
     var guard: u32 = 0;
     while (guard < 100_000) : (guard += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) return false;
         const n = self.ast.getNode(cur);
         switch (n.tag) {
             .static_member_expression, .computed_member_expression, .private_field_expression => {
@@ -193,7 +193,7 @@ pub fn coverArrayExpressionToTarget(self: *Parser, node: Node) ParseError2!void 
     const list = node.data.list;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (elem_idx.isNone()) continue; // elision (none)
         const elem = self.ast.getNode(elem_idx);
         if (elem.tag == .elision) continue; // elision node — destructuring에서는 무시
@@ -229,7 +229,7 @@ pub fn coverObjectExpressionToTarget(self: *Parser, node: Node) ParseError2!void
     const list = node.data.list;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (elem_idx.isNone()) continue;
         const elem = self.ast.getNode(elem_idx);
         if (elem.tag == .object_property) {
@@ -311,7 +311,7 @@ pub fn collectCoverParamNames(self: *Parser, idx: NodeIndex) ParseError2!void {
             const list = node.data.list;
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
                 try self.collectCoverParamNames(elem_idx);
             }
         },
@@ -319,7 +319,7 @@ pub fn collectCoverParamNames(self: *Parser, idx: NodeIndex) ParseError2!void {
             const list = node.data.list;
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
                 try self.collectCoverParamNames(elem_idx);
             }
         },
@@ -384,7 +384,7 @@ pub fn isValidArrowParamForm(self: *const Parser, idx: NodeIndex) bool {
 /// 이 함수는 cover grammar 변환 후 호출하여 identifier 이름이 "await"인 경우를 검출한다.
 pub fn checkAsyncArrowParamsForAwait(self: *Parser, idx: NodeIndex) ParseError2!void {
     if (idx.isNone()) return;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+    if (@backingInt(idx) >= self.ast.nodes.items.len) return;
     const node = self.ast.getNode(idx);
     switch (node.tag) {
         .identifier_reference, .binding_identifier, .assignment_target_identifier => {
@@ -411,7 +411,7 @@ pub fn checkAsyncArrowParamsForAwait(self: *Parser, idx: NodeIndex) ParseError2!
             const list = node.data.list;
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
                 try self.checkAsyncArrowParamsForAwait(elem_idx);
             }
         },
@@ -439,7 +439,7 @@ pub fn checkAsyncArrowParamsForAwait(self: *Parser, idx: NodeIndex) ParseError2!
 /// 이름 수집은 하지 않고 yield/await expression만 검출한다.
 pub fn checkCoverParamDefaultForYieldAwait(self: *Parser, idx: NodeIndex) ParseError2!void {
     if (idx.isNone()) return;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+    if (@backingInt(idx) >= self.ast.nodes.items.len) return;
     const node = self.ast.getNode(idx);
     switch (node.tag) {
         .yield_expression => {
@@ -458,7 +458,7 @@ pub fn checkCoverParamDefaultForYieldAwait(self: *Parser, idx: NodeIndex) ParseE
         => {
             const e = node.data.extra;
             if (e < self.ast.extra_data.items.len) {
-                try self.checkCoverParamDefaultForYieldAwait(@enumFromInt(self.ast.extra_data.items[e]));
+                try self.checkCoverParamDefaultForYieldAwait(@fromBackingInt(@intCast(self.ast.extra_data.items[e])));
             }
         },
         // list node — 각 요소 검사
@@ -469,7 +469,7 @@ pub fn checkCoverParamDefaultForYieldAwait(self: *Parser, idx: NodeIndex) ParseE
             const list = node.data.list;
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
-                const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
                 try self.checkCoverParamDefaultForYieldAwait(elem_idx);
             }
         },
@@ -546,7 +546,7 @@ pub fn coverExpressionToArrowParams(self: *Parser, idx: NodeIndex) ParseError2!N
         const list = node.data.list;
         var i: u32 = 0;
         while (i < list.len) : (i += 1) {
-            const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+            const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
             const elem = self.ast.getNode(elem_idx);
             if (elem.tag == .spread_element) {
                 if (i + 1 < list.len) {

@@ -49,7 +49,7 @@ fn checkParameterTempScopeImplWithOutputScope(
         else
             1;
         const params = parser.ast.readExtraNode(node.data.extra, params_slot);
-        parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(params));
+        parameter_scope = analyzer.scope_owner_map.get(@backingInt(params));
     }
     // A retained default value is evaluated in its parameter environment, so
     // its temp references belong to the parameter scope (#5652). A lowered
@@ -86,7 +86,7 @@ fn checkParameterTempScopeImplWithOutputScope(
             if (raw_id.* >= editor.symbols.items.len) continue;
             const symbol = editor.symbols.items[raw_id.*];
             if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "_a") and
-                @intFromEnum(symbol.scope_id) == reference_scope)
+                @backingInt(symbol.scope_id) == reference_scope)
             {
                 reserved = true;
                 break;
@@ -105,10 +105,10 @@ fn checkParameterTempScopeImplWithOutputScope(
         if (symbol.kind != .variable_var or !std.mem.eql(u8, symbol.synthetic_name, "_a")) continue;
         temp_count += 1;
         if (verify_output_scope) {
-            try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+            try std.testing.expectEqual(expected_scope, @backingInt(symbol.scope_id));
             try std.testing.expectEqual(@as(u32, @intCast(symbol_index)), edited.scope_maps[expected_scope].get("_a").?);
         } else {
-            try std.testing.expect(@intFromEnum(symbol.scope_id) < edited.scope_maps.len);
+            try std.testing.expect(@backingInt(symbol.scope_id) < edited.scope_maps.len);
         }
 
         var bindings: usize = 0;
@@ -120,9 +120,9 @@ fn checkParameterTempScopeImplWithOutputScope(
 
         var refs: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
-            try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
-            try std.testing.expectEqual(reference_scope, @intFromEnum(ref.scope_id));
+            if (@backingInt(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
+            try std.testing.expect(live.contains(@backingInt(ref.node_index)));
+            try std.testing.expectEqual(reference_scope, @backingInt(ref.scope_id));
             try std.testing.expect(ref.flags.read or ref.flags.write);
             refs += 1;
         }
@@ -178,7 +178,7 @@ fn expectArrowParameterTempDirectReservation(source: []const u8, target: ESTarge
         if (raw_id.* >= editor.symbols.items.len) continue;
         const symbol = editor.symbols.items[raw_id.*];
         if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "_a") and
-            @intFromEnum(symbol.scope_id) == expected_scope)
+            @backingInt(symbol.scope_id) == expected_scope)
         {
             reserved = true;
             break;
@@ -392,13 +392,13 @@ test "#4819 arrow temp defers when its parameter owner does not match its scope"
     var unrelated_params: ?NodeIndex = null;
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         const node = parser.ast.getNode(owner);
         if (node.tag == .arrow_function_expression and parser.ast.functionParamsList(node).len > 0) {
             arrow_owner = owner;
             arrow_scope = entry.value_ptr.*;
             arrow_params = parser.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").ArrowExtra.params);
-            parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(arrow_params.?));
+            parameter_scope = analyzer.scope_owner_map.get(@backingInt(arrow_params.?));
         } else if (node.tag == .function_declaration and parser.ast.functionParamsList(node).len > 0) {
             unrelated_params = parser.ast.readExtraNode(node.data.extra, 1);
         }
@@ -423,21 +423,21 @@ test "#4819 arrow temp defers when its parameter owner does not match its scope"
     transformer.state_machine_depth = 1;
     transformer.lowered_parameter_temp_output_owner = owner;
 
-    transformer.ast.extra_data.items[parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").ArrowExtra.params] = @intFromEnum(other_params);
+    transformer.ast.extra_data.items[parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").ArrowExtra.params] = @backingInt(other_params);
     const name = try transformer.ast.addString("_a");
     const reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name);
     try transformer.trackSyntheticTempReferenceInScope(
         name,
         parser.ast.getNode(params).span,
         reference,
-        @enumFromInt(body_scope),
+        @fromBackingInt(@intCast(body_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
-    try std.testing.expectEqual(param_scope, @intFromEnum(analyzer.scopes.items[body_scope].parent));
+    try std.testing.expectEqual(param_scope, @backingInt(analyzer.scopes.items[body_scope].parent));
 
-    transformer.ast.extra_data.items[parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").ArrowExtra.params] = @intFromEnum(params);
+    transformer.ast.extra_data.items[parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").ArrowExtra.params] = @backingInt(params);
     analyzer.scopes.items[body_scope].parent = .none;
     const bad_parent_name = try transformer.ast.addString("_b");
     const bad_parent_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, bad_parent_name);
@@ -445,7 +445,7 @@ test "#4819 arrow temp defers when its parameter owner does not match its scope"
         bad_parent_name,
         parser.ast.getNode(other_params).span,
         bad_parent_ref,
-        @enumFromInt(body_scope),
+        @fromBackingInt(@intCast(body_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_ref_chains.count());
@@ -471,7 +471,7 @@ test "#4819 async function temp defers when its parameter owner or wrapper paren
     var other_params: ?NodeIndex = null;
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         const node = parser.ast.getNode(owner);
         if (node.tag != .function_declaration or parser.ast.functionParamsList(node).len == 0) continue;
         const flags = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").FunctionExtra.flags];
@@ -479,7 +479,7 @@ test "#4819 async function temp defers when its parameter owner or wrapper paren
             async_owner = owner;
             async_scope = entry.value_ptr.*;
             async_params = parser.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").FunctionExtra.params);
-            async_parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(async_params.?));
+            async_parameter_scope = analyzer.scope_owner_map.get(@backingInt(async_params.?));
         } else {
             other_params = parser.ast.readExtraNode(node.data.extra, @import("../parser/ast.zig").FunctionExtra.params);
         }
@@ -505,21 +505,21 @@ test "#4819 async function temp defers when its parameter owner or wrapper paren
     transformer.lowered_parameter_temp_output_owner = owner;
 
     const params_extra = parser.ast.getNode(owner).data.extra + @import("../parser/ast.zig").FunctionExtra.params;
-    try std.testing.expectEqual(parameter_scope, @intFromEnum(analyzer.scopes.items[wrapper_scope].parent));
-    transformer.ast.extra_data.items[params_extra] = @intFromEnum(unrelated_params);
+    try std.testing.expectEqual(parameter_scope, @backingInt(analyzer.scopes.items[wrapper_scope].parent));
+    transformer.ast.extra_data.items[params_extra] = @backingInt(unrelated_params);
     const wrong_owner_name = try transformer.ast.addString("_a");
     const wrong_owner_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, wrong_owner_name);
     try transformer.trackSyntheticTempReferenceInScope(
         wrong_owner_name,
         parser.ast.getNode(params).span,
         wrong_owner_ref,
-        @enumFromInt(wrapper_scope),
+        @fromBackingInt(@intCast(wrapper_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
 
-    transformer.ast.extra_data.items[params_extra] = @intFromEnum(params);
+    transformer.ast.extra_data.items[params_extra] = @backingInt(params);
     analyzer.scopes.items[wrapper_scope].parent = .none;
     if (transformer.semantic_editor) |*editor| editor.scopes.items[wrapper_scope].parent = .none;
     const wrong_parent_name = try transformer.ast.addString("_b");
@@ -528,17 +528,17 @@ test "#4819 async function temp defers when its parameter owner or wrapper paren
         wrong_parent_name,
         parser.ast.getNode(params).span,
         wrong_parent_ref,
-        @enumFromInt(wrapper_scope),
+        @fromBackingInt(@intCast(wrapper_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
     try std.testing.expectEqual(ScopeId.none, analyzer.scopes.items[wrapper_scope].parent);
 
-    analyzer.scopes.items[wrapper_scope].parent = @enumFromInt(parameter_scope);
+    analyzer.scopes.items[wrapper_scope].parent = @fromBackingInt(@intCast(parameter_scope));
     analyzer.scopes.items[wrapper_scope].kind = .block;
     if (transformer.semantic_editor) |*editor| {
-        editor.scopes.items[wrapper_scope].parent = @enumFromInt(parameter_scope);
+        editor.scopes.items[wrapper_scope].parent = @fromBackingInt(@intCast(parameter_scope));
         editor.scopes.items[wrapper_scope].kind = .block;
     }
     const wrong_kind_name = try transformer.ast.addString("_c");
@@ -547,7 +547,7 @@ test "#4819 async function temp defers when its parameter owner or wrapper paren
         wrong_kind_name,
         parser.ast.getNode(params).span,
         wrong_kind_ref,
-        @enumFromInt(wrapper_scope),
+        @fromBackingInt(@intCast(wrapper_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_ref_chains.count());
@@ -574,7 +574,7 @@ test "#4819 async method temp defers for a mismatched parameter owner, parent, o
     var unrelated_params: ?NodeIndex = null;
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         const node = parser.ast.getNode(owner);
         if (node.tag == .method_definition) {
             const flags = parser.ast.extra_data.items[node.data.extra + ast_mod.MethodExtra.flags];
@@ -582,7 +582,7 @@ test "#4819 async method temp defers for a mismatched parameter owner, parent, o
                 async_owner = owner;
                 async_scope = entry.value_ptr.*;
                 async_params = parser.ast.readExtraNode(node.data.extra, ast_mod.MethodExtra.params);
-                async_parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(async_params.?));
+                async_parameter_scope = analyzer.scope_owner_map.get(@backingInt(async_params.?));
             }
         } else if (node.tag == .function_declaration and parser.ast.functionParamsList(node).len > 0) {
             unrelated_params = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.params);
@@ -609,21 +609,21 @@ test "#4819 async method temp defers for a mismatched parameter owner, parent, o
     transformer.lowered_parameter_temp_output_owner = owner;
 
     const params_extra = parser.ast.getNode(owner).data.extra + ast_mod.MethodExtra.params;
-    try std.testing.expectEqual(parameter_scope, @intFromEnum(analyzer.scopes.items[wrapper_scope].parent));
-    transformer.ast.extra_data.items[params_extra] = @intFromEnum(other_params);
+    try std.testing.expectEqual(parameter_scope, @backingInt(analyzer.scopes.items[wrapper_scope].parent));
+    transformer.ast.extra_data.items[params_extra] = @backingInt(other_params);
     const wrong_owner_name = try transformer.ast.addString("_a");
     const wrong_owner_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, wrong_owner_name);
     try transformer.trackSyntheticTempReferenceInScope(
         wrong_owner_name,
         parser.ast.getNode(params).span,
         wrong_owner_ref,
-        @enumFromInt(parameter_scope),
+        @fromBackingInt(@intCast(parameter_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
 
-    transformer.ast.extra_data.items[params_extra] = @intFromEnum(params);
+    transformer.ast.extra_data.items[params_extra] = @backingInt(params);
     analyzer.scopes.items[wrapper_scope].parent = .none;
     if (transformer.semantic_editor) |*editor| editor.scopes.items[wrapper_scope].parent = .none;
     const wrong_parent_name = try transformer.ast.addString("_b");
@@ -632,16 +632,16 @@ test "#4819 async method temp defers for a mismatched parameter owner, parent, o
         wrong_parent_name,
         parser.ast.getNode(params).span,
         wrong_parent_ref,
-        @enumFromInt(parameter_scope),
+        @fromBackingInt(@intCast(parameter_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
 
-    analyzer.scopes.items[wrapper_scope].parent = @enumFromInt(parameter_scope);
+    analyzer.scopes.items[wrapper_scope].parent = @fromBackingInt(@intCast(parameter_scope));
     analyzer.scopes.items[wrapper_scope].kind = .block;
     if (transformer.semantic_editor) |*editor| {
-        editor.scopes.items[wrapper_scope].parent = @enumFromInt(parameter_scope);
+        editor.scopes.items[wrapper_scope].parent = @fromBackingInt(@intCast(parameter_scope));
         editor.scopes.items[wrapper_scope].kind = .block;
     }
     const wrong_kind_name = try transformer.ast.addString("_c");
@@ -650,7 +650,7 @@ test "#4819 async method temp defers for a mismatched parameter owner, parent, o
         wrong_kind_name,
         parser.ast.getNode(params).span,
         wrong_kind_ref,
-        @enumFromInt(parameter_scope),
+        @fromBackingInt(@intCast(parameter_scope)),
         .{ .read = true },
     );
     try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_ref_chains.count());
@@ -673,12 +673,12 @@ test "#4819 parameter temp defers when its output owner is misparented or ambigu
     var unrelated_function: ?NodeIndex = null;
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         const node = parser.ast.getNode(owner);
         if (node.tag == .function_declaration and parser.ast.functionParamsList(node).len > 0) {
             function_scope = entry.value_ptr.*;
             parameter_node = parser.ast.readExtraNode(node.data.extra, 1);
-            parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(parameter_node.?));
+            parameter_scope = analyzer.scope_owner_map.get(@backingInt(parameter_node.?));
         } else if (node.tag == .function_declaration) {
             unrelated_function = owner;
         }
@@ -708,25 +708,25 @@ test "#4819 parameter temp defers when its output owner is misparented or ambigu
     analyzer.scopes.items[body_scope].parent = .none;
     const first_name = try transformer.ast.addString("_a");
     const first_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, first_name);
-    try transformer.trackSyntheticTempReferenceInScope(first_name, parser.ast.getNode(params).span, first_ref, @enumFromInt(param_scope), .{ .read = true });
+    try transformer.trackSyntheticTempReferenceInScope(first_name, parser.ast.getNode(params).span, first_ref, @fromBackingInt(@intCast(param_scope)), .{ .read = true });
     try std.testing.expectEqual(@as(usize, 1), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
 
     analyzer.scopes.items[body_scope].parent = original_parent;
     if (transformer.semantic_editor) |*editor| editor.scopes.items[body_scope].parent = original_parent;
-    transformer.ast.extra_data.items[other_extra + 1] = @intFromEnum(params);
+    transformer.ast.extra_data.items[other_extra + 1] = @backingInt(params);
     const second_name = try transformer.ast.addString("_b");
     const second_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, second_name);
-    try transformer.trackSyntheticTempReferenceInScope(second_name, parser.ast.getNode(params).span, second_ref, @enumFromInt(param_scope), .{ .read = true });
+    try transformer.trackSyntheticTempReferenceInScope(second_name, parser.ast.getNode(params).span, second_ref, @fromBackingInt(@intCast(param_scope)), .{ .read = true });
     try std.testing.expectEqual(@as(usize, 2), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
 
-    transformer.ast.extra_data.items[other_extra + 1] = @intFromEnum(original_other_params);
+    transformer.ast.extra_data.items[other_extra + 1] = @backingInt(original_other_params);
     analyzer.scopes.items[body_scope].kind = .block;
     if (transformer.semantic_editor) |*editor| editor.scopes.items[body_scope].kind = .block;
     const third_name = try transformer.ast.addString("_c");
     const third_ref = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, third_name);
-    try transformer.trackSyntheticTempReferenceInScope(third_name, parser.ast.getNode(params).span, third_ref, @enumFromInt(param_scope), .{ .read = true });
+    try transformer.trackSyntheticTempReferenceInScope(third_name, parser.ast.getNode(params).span, third_ref, @fromBackingInt(@intCast(param_scope)), .{ .read = true });
     try std.testing.expectEqual(@as(usize, 3), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
     analyzer.scopes.items[body_scope].kind = original_body_kind;
@@ -787,11 +787,11 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
         if (symbol.synthetic_name.len < 2 or symbol.synthetic_name[0] != '_' or symbol.synthetic_name[1] == '_') continue;
         if (symbol.kind == .parameter) {
             parameter_temps += 1;
-            try std.testing.expectEqual(expected_function_scope, @intFromEnum(symbol.scope_id));
-        } else if (symbol.kind == .variable_var and @intFromEnum(symbol.scope_id) == expected_function_scope) {
+            try std.testing.expectEqual(expected_function_scope, @backingInt(symbol.scope_id));
+        } else if (symbol.kind == .variable_var and @backingInt(symbol.scope_id) == expected_function_scope) {
             function_var_temps += 1;
         } else if (symbol.kind == .variable_var) {
-            try std.testing.expectEqual(expected_function_scope, @intFromEnum(symbol.scope_id));
+            try std.testing.expectEqual(expected_function_scope, @backingInt(symbol.scope_id));
         }
 
         var live_bindings: usize = 0;
@@ -804,10 +804,10 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
 
         var live_references: u32 = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != symbol_index or reference.flags.declare) continue;
-            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) != null);
-            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
-            try std.testing.expectEqual(expected_function_scope, @intFromEnum(reference.scope_id));
+            if (@backingInt(reference.symbol_id) != symbol_index or reference.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(reference.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@backingInt(reference.node_index)]);
+            try std.testing.expectEqual(expected_function_scope, @backingInt(reference.scope_id));
             try std.testing.expect(reference.flags.read or reference.flags.write);
             live_references += 1;
         }
@@ -822,7 +822,7 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
         try std.testing.expect(symbol_index >= original_symbol_count and symbol_index < edited.symbols.items.len);
         const symbol = edited.symbols.items[symbol_index];
         try std.testing.expect(symbol.kind == .parameter or symbol.kind == .variable_var);
-        try std.testing.expectEqual(expected_function_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expected_function_scope, @backingInt(symbol.scope_id));
 
         var binding_count: usize = 0;
         for (reachable) |raw| {
@@ -857,7 +857,7 @@ fn expectRegisteredParameterTemp(
 
     var live_uses: u32 = 0;
     for (editor.references.items) |reference| {
-        if (@intFromEnum(reference.symbol_id) != raw_id or reference.flags.declare) continue;
+        if (@backingInt(reference.symbol_id) != raw_id or reference.flags.declare) continue;
         try std.testing.expect(!reference.node_index.isNone());
         try std.testing.expectEqual(expected_scope, reference.scope_id);
         try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(reference.node_index));
@@ -892,8 +892,8 @@ fn lowerParameterPatternAndCheckCreation(
     while (owners.next()) |owner| {
         const node = parser.ast.nodes.items[owner.key_ptr.*];
         if (parser.ast.functionParamsList(node).len == 0) continue;
-        function_node = @enumFromInt(owner.key_ptr.*);
-        function_scope = @enumFromInt(owner.value_ptr.*);
+        function_node = @fromBackingInt(@intCast(owner.key_ptr.*));
+        function_scope = @fromBackingInt(@intCast(owner.value_ptr.*));
         break;
     }
     const target_node = function_node orelse return error.MissingFunctionOwner;
@@ -922,7 +922,7 @@ fn lowerParameterPatternAndCheckCreation(
         var output_has_owner = false;
         var scope_owners = editor.scope_owner_map.iterator();
         while (scope_owners.next()) |owner| {
-            if (owner.value_ptr.* == @intFromEnum(reserved)) output_has_owner = true;
+            if (owner.value_ptr.* == @backingInt(reserved)) output_has_owner = true;
         }
         try std.testing.expect(!output_has_owner);
         break :blk reserved;
@@ -938,7 +938,7 @@ fn lowerParameterPatternAndCheckCreation(
     defer lowered.body_stmts.deinit(allocator);
 
     try std.testing.expectEqual(@as(u32, 1), lowered.new_params.len);
-    const parameter_binding: @import("../parser/ast.zig").NodeIndex = @enumFromInt(transformer.ast.extra_data.items[lowered.new_params.start]);
+    const parameter_binding: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[lowered.new_params.start]));
     const parameter_id = try expectRegisteredParameterTemp(&transformer, parameter_binding, output_scope, .parameter);
 
     var read_binding: ?@import("../parser/ast.zig").NodeIndex = null;
@@ -949,7 +949,7 @@ fn lowerParameterPatternAndCheckCreation(
             const list_start = transformer.ast.extra_data.items[statement.data.extra + 1];
             const list_len = transformer.ast.extra_data.items[statement.data.extra + 2];
             if (list_len == 0) continue;
-            const first_declarator: @import("../parser/ast.zig").NodeIndex = @enumFromInt(transformer.ast.extra_data.items[list_start]);
+            const first_declarator: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[list_start]));
             read_binding = transformer.ast.readExtraNode(transformer.ast.getNode(first_declarator).data.extra, 0);
             break;
         }
@@ -1052,9 +1052,9 @@ fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bo
                     bindings += 1;
                 }
                 for (edited.references) |reference| {
-                    if (@intFromEnum(reference.symbol_id) != raw_id or reference.flags.declare) continue;
+                    if (@backingInt(reference.symbol_id) != raw_id or reference.flags.declare) continue;
                     try std.testing.expect(!reference.node_index.isNone());
-                    try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+                    try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[@backingInt(reference.node_index)]);
                     try std.testing.expectEqual(symbol.scope_id, reference.scope_id);
                     references += 1;
                 }
@@ -1067,7 +1067,7 @@ fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bo
         if (symbol.synthetic_kind != .standalone_temp_binding) continue;
         late_generated_temps += 1;
         const raw_id: u32 = @intCast(symbol_index);
-        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@backingInt(symbol.scope_id)].get(symbol.synthetic_name));
         var bindings: usize = 0;
         var references: usize = 0;
         for (transformer.ast.nodes.items, 0..) |node, raw_node| {
@@ -1075,9 +1075,9 @@ fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bo
             bindings += 1;
         }
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != raw_id or reference.flags.declare) continue;
+            if (@backingInt(reference.symbol_id) != raw_id or reference.flags.declare) continue;
             try std.testing.expect(!reference.node_index.isNone());
-            try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[@backingInt(reference.node_index)]);
             references += 1;
         }
         try std.testing.expectEqual(@as(usize, 1), bindings);
@@ -1112,7 +1112,7 @@ fn lowerDestructuringParametersWithoutSemanticEditing(source: []const u8) !void 
     var target_node: ?@import("../parser/ast.zig").NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (parser.ast.functionParamsList(node).len == 0) continue;
-        target_node = @enumFromInt(raw);
+        target_node = @fromBackingInt(@intCast(raw));
         break;
     }
     const function_node = target_node orelse return error.MissingFunctionOwner;

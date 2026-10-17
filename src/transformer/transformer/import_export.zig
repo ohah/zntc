@@ -21,8 +21,8 @@ pub fn resolveLoweredAnonymousDefaultClassBinding(
     self: *Transformer,
     source_class: NodeIndex,
 ) MissingExactAnonymousDefaultClassBinding!NodeIndex {
-    if (self.lowered_anonymous_class_export_bindings.get(@intFromEnum(source_class))) |raw|
-        return @enumFromInt(raw);
+    if (self.lowered_anonymous_class_export_bindings.get(@backingInt(source_class))) |raw|
+        return @fromBackingInt(@intCast(raw));
     if (self.semantic_edit_enabled) return error.MissingExactAnonymousDefaultClassBinding;
     return .none;
 }
@@ -40,7 +40,7 @@ pub fn visitExportDefaultDeclaration(self: *Transformer, node: Node) Error!NodeI
     if (new_operand.isNone()) {
         const operand_node = self.ast.getNode(operand_idx);
         if (operand_node.tag == .class_declaration or operand_node.tag == .function_declaration) {
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[operand_node.data.extra]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[operand_node.data.extra]));
             // named class/function → 원본 이름 사용
             // anonymous class → lowerClassDeclaration이 "_Class"로 합성 (addString)
             const generated_export_binding: NodeIndex = if (operand_node.tag == .class_declaration and name_idx.isNone()) blk: {
@@ -121,9 +121,9 @@ pub fn visitImportDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const new_source = try self.visitNode(x.source);
     // phase / attributes는 metadata — transform 대상 아님, 그대로 통과.
     // is_type_only 는 이미 위에서 elide 처리 — 여기 도달하면 항상 false.
-    const packed_phase: u32 = @intFromEnum(x.phase);
+    const packed_phase: u32 = @backingInt(x.phase);
     return self.addExtraNode(.import_declaration, node.span, &.{
-        new_specs.start, new_specs.len, @intFromEnum(new_source),
+        new_specs.start, new_specs.len, @backingInt(new_source),
         packed_phase,    x.attrs_start, x.attrs_len,
     });
 }
@@ -144,8 +144,8 @@ pub fn visitExportAllDeclaration(self: *Transformer, node: Node) Error!NodeIndex
     const new_name = try self.visitNode(x.exported_name);
     const new_source = try self.visitNode(x.source);
     return self.addExtraNode(.export_all_declaration, node.span, &.{
-        @intFromEnum(new_name),
-        @intFromEnum(new_source),
+        @backingInt(new_name),
+        @backingInt(new_source),
         x.attrs_start,
         x.attrs_len,
     });
@@ -168,7 +168,7 @@ pub fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeInd
         if (!orig_decl_idx.isNone()) {
             const orig_decl = self.ast.getNode(orig_decl_idx);
             if (orig_decl.tag == .class_declaration) {
-                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[orig_decl.data.extra]);
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[orig_decl.data.extra]));
                 if (!name_idx.isNone()) {
                     const name_span = self.ast.getNode(name_idx).data.string_ref;
                     const local_ref = try self.makeIdentifierRefWithSymbol(name_span, name_idx);
@@ -182,7 +182,7 @@ pub fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeInd
                     });
                     const specs = try self.ast.addNodeList(&.{specifier});
                     return self.addExtraNode(.export_named_declaration, node.span, &.{
-                        @intFromEnum(NodeIndex.none), specs.start, specs.len, @intFromEnum(NodeIndex.none),
+                        @backingInt(NodeIndex.none), specs.start, specs.len, @backingInt(NodeIndex.none),
                         0, 0, // attrs empty
                     });
                 }
@@ -191,8 +191,8 @@ pub fn visitExportNamedDeclaration(self: *Transformer, node: Node) Error!NodeInd
         return NodeIndex.none;
     }
     return self.addExtraNode(.export_named_declaration, node.span, &.{
-        @intFromEnum(new_decl), new_specs.start, new_specs.len, @intFromEnum(new_source),
-        x.attrs_start,          x.attrs_len,
+        @backingInt(new_decl), new_specs.start, new_specs.len, @backingInt(new_source),
+        x.attrs_start,         x.attrs_len,
     });
 }
 
@@ -223,7 +223,7 @@ fn rewriteImportToPathSplits(
     // 모든 specifier 검증 — named, no alias, no type-only
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {
-        const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);
+        const spec_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[x.specs_start + i]));
         const spec_node = self.ast.getNode(spec_idx);
         if (spec_node.tag != .import_specifier) return null;
         // type-only specifier — 분해 X (path 에 type 만 export 안 함)
@@ -235,7 +235,7 @@ fn rewriteImportToPathSplits(
     var first_result: ?NodeIndex = null;
     i = 0;
     while (i < x.specs_len) : (i += 1) {
-        const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);
+        const spec_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[x.specs_start + i]));
         const spec_node = self.ast.getNode(spec_idx);
         const name_node = self.ast.getNode(spec_node.data.binary.left);
         const name_span = name_node.span;
@@ -284,11 +284,11 @@ fn buildDefaultImportFromTemplate(
         .data = .{ .string_ref = path_span },
     });
 
-    const specs_start = try self.ast.addExtras(&.{@intFromEnum(default_spec)});
+    const specs_start = try self.ast.addExtras(&.{@backingInt(default_spec)});
     return self.addExtraNode(.import_declaration, decl_span, &.{
-        specs_start,               1,
-        @intFromEnum(source_node), @intFromEnum(module_parser.ImportPhase.none),
-        0,                         0,
+        specs_start,              1,
+        @backingInt(source_node), @backingInt(module_parser.ImportPhase.none),
+        0,                        0,
     });
 }
 
@@ -314,7 +314,7 @@ fn areAllSpecifiersUnused(self: *Transformer, specs_start: u32, specs_len: u32) 
     var i: u32 = 0;
     while (i < specs_len) : (i += 1) {
         const spec_idx_raw = self.ast.extra_data.items[specs_start + i];
-        const spec_idx: NodeIndex = @enumFromInt(spec_idx_raw);
+        const spec_idx: NodeIndex = @fromBackingInt(@intCast(spec_idx_raw));
         if (spec_idx.isNone()) continue;
         const spec_node = self.ast.getNode(spec_idx);
 
@@ -368,7 +368,7 @@ fn collectDecoratorMetadataTypeNames(self: *Transformer, names: *std.StringHashM
         if (body.isNone()) continue;
         const members = ast.getNode(body).data.list;
         for (ast.extra_data.items[members.start .. members.start + members.len]) |raw| {
-            const member = ast.getNode(@enumFromInt(raw));
+            const member = ast.getNode(@fromBackingInt(@intCast(raw)));
             switch (member.tag) {
                 .property_definition, .accessor_property => {
                     if (ast.extra_data.items[member.data.extra + ast_mod.PropertyExtra.deco_len] == 0) continue;
@@ -385,12 +385,12 @@ fn collectDecoratorMetadataTypeNames(self: *Transformer, names: *std.StringHashM
                     const param_items = ast.extra_data.items[params.start .. params.start + params.len];
                     var serialized = if (is_ctor) class_decorated else ast.extra_data.items[me + ast_mod.MethodExtra.deco_len] > 0;
                     if (is_ctor and !serialized) for (param_items) |p_raw| {
-                        const p = ast.getNode(@enumFromInt(p_raw));
+                        const p = ast.getNode(@fromBackingInt(@intCast(p_raw)));
                         if (p.tag == .formal_parameter and ast.extra_data.items[p.data.extra + 5] > 0) serialized = true;
                     };
                     if (!serialized) continue;
                     for (param_items) |p_raw| {
-                        if (metadata.metadataTypeRoot(ast, @enumFromInt(p_raw))) |root| try names.put(self.allocator, root, {});
+                        if (metadata.metadataTypeRoot(ast, @fromBackingInt(@intCast(p_raw)))) |root| try names.put(self.allocator, root, {});
                     }
                     if (!is_ctor) if (metadata.afterMethodParams(ast, member)) |pos| if (metadata.annotationRootAt(ast, pos)) |root|
                         try names.put(self.allocator, root, {});
@@ -413,7 +413,7 @@ fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: N
         .import_default_specifier, .import_namespace_specifier => .none,
         else => return false,
     };
-    const sym_node_idx: u32 = if (!local_idx.isNone()) @intFromEnum(local_idx) else @intFromEnum(spec_idx);
+    const sym_node_idx: u32 = if (!local_idx.isNone()) @backingInt(local_idx) else @backingInt(spec_idx);
     const local_node = if (!local_idx.isNone()) self.ast.getNode(local_idx) else spec_node;
     const local_name = self.ast.getText(local_node.span);
 
@@ -462,7 +462,7 @@ fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: N
             self.value_used_symbols.clearRetainingCapacity();
             self.value_used_symbols.ensureTotalCapacity(self.allocator, @intCast(self.references.len)) catch break :build;
             for (self.references) |r| {
-                if (r.isValueUse()) self.value_used_symbols.putAssumeCapacity(@intFromEnum(r.symbol_id), {});
+                if (r.isValueUse()) self.value_used_symbols.putAssumeCapacity(@backingInt(r.symbol_id), {});
             }
             self.value_used_symbols_built_for = self.references;
         }
@@ -473,7 +473,7 @@ fn isImportSpecifierUnused(self: *Transformer, spec_idx: NodeIndex, spec_node: N
     // 작은 references: 선형 스캔(맵 구축 비용 회피). value-use 하나라도 있으면 keep.
     // 판정은 `Reference.isValueUse` 가 공통 수행 — linker 의 `isImportBindingTypeOnly` 와 동일.
     for (self.references) |r| {
-        if (@intFromEnum(r.symbol_id) != sym_id) continue;
+        if (@backingInt(r.symbol_id) != sym_id) continue;
         if (r.isValueUse()) return false;
     }
     return true;

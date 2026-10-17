@@ -145,11 +145,11 @@ fn parseFunctionDeclarationWithFlags(self: *Parser, extra_flags: u32) ParseError
     const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
     const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
-    const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(@intFromEnum(params_node));
-    _ = try self.ast.addExtra(@intFromEnum(body));
+    const extra_start = try self.ast.addExtra(@backingInt(name));
+    _ = try self.ast.addExtra(@backingInt(params_node));
+    _ = try self.ast.addExtra(@backingInt(body));
     _ = try self.ast.addExtra(flags);
-    _ = try self.ast.addExtra(@intFromEnum(return_type));
+    _ = try self.ast.addExtra(@backingInt(return_type));
 
     return try self.ast.addNode(.{
         .tag = .function_declaration,
@@ -254,11 +254,11 @@ fn parseFunctionDeclarationWithFlagsOptionalName(self: *Parser, extra_flags: u32
     const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
     const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
-    const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(@intFromEnum(params_node));
-    _ = try self.ast.addExtra(@intFromEnum(body));
+    const extra_start = try self.ast.addExtra(@backingInt(name));
+    _ = try self.ast.addExtra(@backingInt(params_node));
+    _ = try self.ast.addExtra(@backingInt(body));
     _ = try self.ast.addExtra(flags);
-    _ = try self.ast.addExtra(@intFromEnum(return_type));
+    _ = try self.ast.addExtra(@backingInt(return_type));
 
     return try self.ast.addNode(.{
         .tag = .function_declaration,
@@ -336,9 +336,9 @@ pub fn parseFunctionExpressionWithFlags(self: *Parser, extra_flags: u32) ParseEr
     const param_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
     const params_node = try self.wrapAsFormalParametersFromList(param_list, .{ .start = 0, .end = 0 });
-    const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(@intFromEnum(params_node));
-    _ = try self.ast.addExtra(@intFromEnum(body));
+    const extra_start = try self.ast.addExtra(@backingInt(name));
+    _ = try self.ast.addExtra(@backingInt(params_node));
+    _ = try self.ast.addExtra(@backingInt(body));
     _ = try self.ast.addExtra(flags);
 
     return try self.ast.addNode(.{
@@ -423,12 +423,12 @@ pub fn parseClassWithDecorators(self: *Parser, tag: Tag, decorators: NodeList) P
     // strict mode 복원 — 클래스 외부의 strict 상태로 되돌림
     self.is_strict_mode = saved_strict_mode;
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(name),
-        @intFromEnum(super_class),
-        @intFromEnum(body),
-        @intFromEnum(type_params),
+        @backingInt(name),
+        @backingInt(super_class),
+        @backingInt(body),
+        @backingInt(type_params),
         0,                0, // implements (스트리핑 대상이므로 빈 리스트)
         decorators.start, decorators.len,
     });
@@ -846,9 +846,9 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
 
         // method_definition: extra = [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
         const extra_start = try self.ast.addExtras(&.{
-            @intFromEnum(key),
-            @intFromEnum(params_node),
-            @intFromEnum(body),
+            @backingInt(key),
+            @backingInt(params_node),
+            @backingInt(body),
             flags,
             decorators.start,
             decorators.len,
@@ -916,8 +916,8 @@ fn parseClassMember(self: *Parser) ParseError2!NodeIndex {
     // property_definition / accessor_property:
     // extra = [key, init_val, flags, deco_start, deco_len]
     const prop_extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(key),
-        @intFromEnum(init_val),
+        @backingInt(key),
+        @backingInt(init_val),
         flags,
         decorators.start,
         decorators.len,

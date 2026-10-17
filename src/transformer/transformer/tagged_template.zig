@@ -27,7 +27,7 @@ pub fn visitTaggedTemplate(self: *Transformer, node: Node) Error!NodeIndex {
 
     const new_tag = try self.visitNode(tag_idx);
     const new_tmpl = try self.visitNode(tmpl_idx);
-    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_tag), @intFromEnum(new_tmpl), flags });
+    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_tag), @backingInt(new_tmpl), flags });
     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
 }
 
@@ -78,7 +78,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
         var i: u32 = 0;
         while (i < tl_len) : (i += 1) {
             const raw_idx = self.ast.extra_data.items[tl_start + i];
-            const member = self.ast.getNode(@enumFromInt(raw_idx));
+            const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (member.tag == .template_element) {
                 const text = es2015_template.getTemplateElementText(source, member.span);
                 try self.scratch.append(self.allocator, try es2015_template.buildCookedElement(self, text, member.span));
@@ -100,7 +100,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
         var j: u32 = 0;
         while (j < tl_len2) : (j += 1) {
             const raw_idx2 = self.ast.extra_data.items[tl_start2 + j];
-            const member2 = self.ast.getNode(@enumFromInt(raw_idx2));
+            const member2 = self.ast.getNode(@fromBackingInt(@intCast(raw_idx2)));
             if (member2.tag == .template_element) {
                 const raw_text = es2015_template.getTemplateElementText(source, member2.span);
                 try self.scratch.append(self.allocator, try es2015_template.buildRawStringLiteral(self, raw_text));
@@ -118,9 +118,9 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
         var k: u32 = 0;
         while (k < tl_len3) : (k += 1) {
             const raw_idx3 = self.ast.extra_data.items[tl_start3 + k];
-            const member3 = self.ast.getNode(@enumFromInt(raw_idx3));
+            const member3 = self.ast.getNode(@fromBackingInt(@intCast(raw_idx3)));
             if (member3.tag != .template_element) {
-                try self.scratch.append(self.allocator, try self.visitNode(@enumFromInt(raw_idx3)));
+                try self.scratch.append(self.allocator, try self.visitNode(@fromBackingInt(@intCast(raw_idx3))));
             }
         }
     }
@@ -168,7 +168,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
 
     const helper_args = try self.ast.addNodeList(call_args[0..call_arg_count]);
     const helper_call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(helper_ref), helper_args.start, helper_args.len, 0,
+        @backingInt(helper_ref), helper_args.start, helper_args.len, 0,
     });
     const helper_call = try self.ast.addNode(.{
         .tag = .call_expression,
@@ -193,11 +193,11 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
         .span = span,
         .data = .{ .list = inner_body_list },
     });
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const inner_empty_params = try self.ast.addNodeList(&.{});
     const inner_params_node = try self.ast.addFormalParameters(inner_empty_params, span);
     const inner_func_extra = try self.ast.addExtras(&.{
-        none, @intFromEnum(inner_params_node), @intFromEnum(inner_body), 0, none,
+        none, @backingInt(inner_params_node), @backingInt(inner_body), 0, none,
     });
     const inner_func = try self.ast.addNode(.{
         .tag = .function_expression,
@@ -236,7 +236,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     const outer_empty_params = try self.ast.addNodeList(&.{});
     const outer_params_node = try self.ast.addFormalParameters(outer_empty_params, span);
     const outer_func_extra = try self.ast.addExtras(&.{
-        @intFromEnum(fn_name_binding), @intFromEnum(outer_params_node), @intFromEnum(outer_body), 0, none,
+        @backingInt(fn_name_binding), @backingInt(outer_params_node), @backingInt(outer_body), 0, none,
     });
     const fn_decl = try self.ast.addNode(.{
         .tag = .function_declaration,
@@ -260,8 +260,8 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
             es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, fn_name, .tagged_template_function_binding, "_templateObject");
         }
         const data_declarator_start = self.ast.extra_data.items[self.ast.getNode(data_decl).data.extra + 1];
-        const data_declarator: NodeIndex = @enumFromInt(self.ast.extra_data.items[data_declarator_start]);
-        const data_binding: NodeIndex = @enumFromInt(self.ast.extra_data.items[self.ast.getNode(data_declarator).data.extra]);
+        const data_declarator: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[data_declarator_start]));
+        const data_binding: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[self.ast.getNode(data_declarator).data.extra]));
         const data_id = try self.declareSyntheticInScope(data_binding, span, .variable_var, outer_scope);
         try self.addSyntheticRefInScope(fn_name_ref, fn_id, outer_scope, .{ .write = true });
         try self.addSyntheticRefInScope(data_ref, data_id, inner_scope, .{ .read = true });
@@ -270,7 +270,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     }
     const empty_args = try self.ast.addNodeList(&.{});
     const tmpl_call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(fn_call_ref), empty_args.start, empty_args.len, 0,
+        @backingInt(fn_call_ref), empty_args.start, empty_args.len, 0,
     });
     const tmpl_call = try self.ast.addNode(.{
         .tag = .call_expression,
@@ -287,7 +287,7 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     }
     const final_args = try self.ast.addNodeList(self.scratch.items[final_start..]);
     const final_call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_tag), final_args.start, final_args.len, 0,
+        @backingInt(new_tag), final_args.start, final_args.len, 0,
     });
     return self.ast.addNode(.{
         .tag = .call_expression,

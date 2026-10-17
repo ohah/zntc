@@ -211,13 +211,13 @@ pub const Node = struct {
     /// character_class의 결합 종류(union/intersection/subtraction).
     /// data[0]: bit 0 = negative, bits 1-2 = CharacterClassContentsKind (parser.zig).
     pub fn classKind(self: Node) CharacterClassContentsKind {
-        return @enumFromInt((self.data[0] >> 1) & 0b11);
+        return @fromBackingInt(@intCast((self.data[0] >> 1) & 0b11));
     }
 
     /// quantifier의 body NodeIndex를 가져온다.
     /// data[2]의 bits 0-30.
     pub fn getQuantifierBody(self: Node) NodeIndex {
-        return @enumFromInt(self.data[2] & 0x7FFFFFFF);
+        return @fromBackingInt(@intCast(self.data[2] & 0x7FFFFFFF));
     }
 
     /// quantifier의 greedy 여부를 가져온다.
@@ -251,7 +251,7 @@ pub const RegExpAst = struct {
 
     /// 노드 인덱스로 노드를 가져온다.
     pub fn getNode(self: RegExpAst, index: NodeIndex) Node {
-        return self.nodes[@intFromEnum(index)];
+        return self.nodes[@backingInt(index)];
     }
 
     /// NodeList의 자식 NodeIndex 배열을 가져온다.

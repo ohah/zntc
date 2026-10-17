@@ -63,7 +63,7 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
 
     var i: u32 = 0;
     while (i < node.data.list.len) : (i += 1) {
-        const prop_idx: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.list.start + i]);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.list.start + i]));
         const prop = ast.getNode(prop_idx);
         if (prop.tag != .object_property) continue;
 
@@ -94,9 +94,9 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
             .data = .{ .string_ref = inner_span },
         });
         const declarator_extra = try ast.addExtras(&.{
-            @intFromEnum(binding_ident),
-            @intFromEnum(NodeIndex.none),
-            @intFromEnum(value_copy),
+            @backingInt(binding_ident),
+            @backingInt(NodeIndex.none),
+            @backingInt(value_copy),
         });
         const declarator = try ast.addNode(.{
             .tag = .variable_declarator,
@@ -113,9 +113,9 @@ fn buildNamedExportsFromObject(ast: *Ast, value_node: NodeIndex, out_stmts: *std
         });
 
         // extras: [declaration, specifiers_start, specifiers_len, source, attrs_start, attrs_len]
-        const none_node: u32 = @intFromEnum(NodeIndex.none);
+        const none_node: u32 = @backingInt(NodeIndex.none);
         const export_extra = try ast.addExtras(&.{
-            @intFromEnum(var_decl),
+            @backingInt(var_decl),
             0,         0, // specifiers empty
             none_node,
             0, 0, // attrs empty
@@ -387,7 +387,7 @@ test "convert simple object" {
     try std.testing.expectEqual(@as(u32, 3), program.data.list.len);
 
     // program의 첫 번째 statement가 export_default_declaration
-    const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+    const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
     const stmt = ast.getNode(stmt_idx);
     try std.testing.expectEqual(Node.Tag.export_default_declaration, stmt.tag);
 
@@ -397,7 +397,7 @@ test "convert simple object" {
     try std.testing.expectEqual(@as(u32, 2), obj.data.list.len); // 2 properties
 
     // 2번째, 3번째 statement가 export_named_declaration (export var)
-    const stmt2_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start + 1]);
+    const stmt2_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start + 1]));
     try std.testing.expectEqual(Node.Tag.export_named_declaration, ast.getNode(stmt2_idx).tag);
 }
 
@@ -408,17 +408,17 @@ test "convert array" {
     defer ast.deinit();
 
     const program = ast.nodes.items[ast.nodes.items.len - 1];
-    const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+    const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
     const stmt = ast.getNode(stmt_idx);
     const arr = ast.getNode(stmt.data.unary.operand);
     try std.testing.expectEqual(Node.Tag.array_expression, arr.tag);
     try std.testing.expectEqual(@as(u32, 4), arr.data.list.len);
 
     // 개별 요소 태그 확인
-    const elem0: NodeIndex = @enumFromInt(ast.extra_data.items[arr.data.list.start]);
-    const elem1: NodeIndex = @enumFromInt(ast.extra_data.items[arr.data.list.start + 1]);
-    const elem2: NodeIndex = @enumFromInt(ast.extra_data.items[arr.data.list.start + 2]);
-    const elem3: NodeIndex = @enumFromInt(ast.extra_data.items[arr.data.list.start + 3]);
+    const elem0: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[arr.data.list.start]));
+    const elem1: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[arr.data.list.start + 1]));
+    const elem2: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[arr.data.list.start + 2]));
+    const elem3: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[arr.data.list.start + 3]));
     try std.testing.expectEqual(Node.Tag.numeric_literal, ast.getNode(elem0).tag);
     try std.testing.expectEqual(Node.Tag.string_literal, ast.getNode(elem1).tag);
     try std.testing.expectEqual(Node.Tag.boolean_literal, ast.getNode(elem2).tag);
@@ -432,20 +432,20 @@ test "convert nested object" {
     defer ast.deinit();
 
     const program = ast.nodes.items[ast.nodes.items.len - 1];
-    const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+    const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
     const stmt = ast.getNode(stmt_idx);
     const obj = ast.getNode(stmt.data.unary.operand);
     try std.testing.expectEqual(Node.Tag.object_expression, obj.tag);
 
     // 첫 번째 프로퍼티의 value가 object_expression
-    const prop_idx: NodeIndex = @enumFromInt(ast.extra_data.items[obj.data.list.start]);
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[obj.data.list.start]));
     const prop = ast.getNode(prop_idx);
     try std.testing.expectEqual(Node.Tag.object_property, prop.tag);
     const nested_obj = ast.getNode(prop.data.binary.right);
     try std.testing.expectEqual(Node.Tag.object_expression, nested_obj.tag);
 
     // 중첩 오브젝트의 value가 array_expression
-    const nested_prop_idx: NodeIndex = @enumFromInt(ast.extra_data.items[nested_obj.data.list.start]);
+    const nested_prop_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[nested_obj.data.list.start]));
     const nested_prop = ast.getNode(nested_prop_idx);
     const arr = ast.getNode(nested_prop.data.binary.right);
     try std.testing.expectEqual(Node.Tag.array_expression, arr.tag);
@@ -460,7 +460,7 @@ test "convert scalar values" {
         var ast = try convert(allocator, "42");
         defer ast.deinit();
         const program = ast.nodes.items[ast.nodes.items.len - 1];
-        const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
         const val = ast.getNode(ast.getNode(stmt_idx).data.unary.operand);
         try std.testing.expectEqual(Node.Tag.numeric_literal, val.tag);
         try std.testing.expectEqualStrings("42", ast.getText(val.span));
@@ -471,7 +471,7 @@ test "convert scalar values" {
         var ast = try convert(allocator, "-3.14e+2");
         defer ast.deinit();
         const program = ast.nodes.items[ast.nodes.items.len - 1];
-        const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
         const val = ast.getNode(ast.getNode(stmt_idx).data.unary.operand);
         try std.testing.expectEqual(Node.Tag.numeric_literal, val.tag);
         try std.testing.expectEqualStrings("-3.14e+2", ast.getText(val.span));
@@ -482,7 +482,7 @@ test "convert scalar values" {
         var ast = try convert(allocator, "\"hello\"");
         defer ast.deinit();
         const program = ast.nodes.items[ast.nodes.items.len - 1];
-        const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
         const val = ast.getNode(ast.getNode(stmt_idx).data.unary.operand);
         try std.testing.expectEqual(Node.Tag.string_literal, val.tag);
         try std.testing.expectEqualStrings("\"hello\"", ast.getText(val.span));
@@ -493,7 +493,7 @@ test "convert scalar values" {
         var ast = try convert(allocator, "true");
         defer ast.deinit();
         const program = ast.nodes.items[ast.nodes.items.len - 1];
-        const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
         const val = ast.getNode(ast.getNode(stmt_idx).data.unary.operand);
         try std.testing.expectEqual(Node.Tag.boolean_literal, val.tag);
     }
@@ -503,7 +503,7 @@ test "convert scalar values" {
         var ast = try convert(allocator, "null");
         defer ast.deinit();
         const program = ast.nodes.items[ast.nodes.items.len - 1];
-        const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
         const val = ast.getNode(ast.getNode(stmt_idx).data.unary.operand);
         try std.testing.expectEqual(Node.Tag.null_literal, val.tag);
     }
@@ -516,7 +516,7 @@ test "convert empty object and array" {
         var ast = try convert(allocator, "{}");
         defer ast.deinit();
         const program = ast.nodes.items[ast.nodes.items.len - 1];
-        const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
         const obj = ast.getNode(ast.getNode(stmt_idx).data.unary.operand);
         try std.testing.expectEqual(Node.Tag.object_expression, obj.tag);
         try std.testing.expectEqual(@as(u32, 0), obj.data.list.len);
@@ -526,7 +526,7 @@ test "convert empty object and array" {
         var ast = try convert(allocator, "[]");
         defer ast.deinit();
         const program = ast.nodes.items[ast.nodes.items.len - 1];
-        const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[program.data.list.start]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start]));
         const arr = ast.getNode(ast.getNode(stmt_idx).data.unary.operand);
         try std.testing.expectEqual(Node.Tag.array_expression, arr.tag);
         try std.testing.expectEqual(@as(u32, 0), arr.data.list.len);

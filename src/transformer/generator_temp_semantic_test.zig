@@ -59,7 +59,7 @@ fn checkGeneratedTempsWithBlockAndLateNames(source: []const u8, target: Transfor
             if (!std.mem.eql(u8, symbol.nameText(parser.ast.source), name)) continue;
             matched += 1;
             try std.testing.expect(symbol.synthetic_kind == null);
-            try std.testing.expectEqual(@as(?usize, source_id), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.nameText(parser.ast.source)));
+            try std.testing.expectEqual(@as(?usize, source_id), edited.scope_maps[@backingInt(symbol.scope_id)].get(symbol.nameText(parser.ast.source)));
         }
         try std.testing.expectEqual(@as(usize, 1), matched);
     }
@@ -76,14 +76,14 @@ fn checkGeneratedTempsWithBlockAndLateNames(source: []const u8, target: Transfor
         found += 1;
         if (late_name_mode) {
             try std.testing.expectEqual(expect_late_names, symbol.synthetic_kind == .standalone_temp_binding);
-            try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+            try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@backingInt(symbol.scope_id)].get(symbol.synthetic_name));
         }
         try std.testing.expect(symbol.scope_id.toIndex() >= analyzer.scopes.items.len);
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
         var owner_count: usize = 0;
         var owners = edited.scope_owner_map.iterator();
         while (owners.next()) |entry| {
-            if (entry.value_ptr.* != @intFromEnum(symbol.scope_id)) continue;
+            if (entry.value_ptr.* != @backingInt(symbol.scope_id)) continue;
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, entry.key_ptr.*) != null);
             try std.testing.expectEqual(ast_mod.Node.Tag.function_expression, transformer.ast.nodes.items[entry.key_ptr.*].tag);
             owner_count += 1;
@@ -97,14 +97,14 @@ fn checkGeneratedTempsWithBlockAndLateNames(source: []const u8, target: Transfor
         try std.testing.expectEqual(@as(usize, 1), binding_count);
         var ref_count: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
-            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
+            if (@backingInt(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(ref.node_index)) != null);
             const expected_scope = output_scope.expectedScope(
                 transformer.ast,
                 root,
                 &output_parents,
                 &edited.scope_owner_map,
-                @intFromEnum(ref.node_index),
+                @backingInt(ref.node_index),
             ) orelse return error.TestUnexpectedResult;
             try std.testing.expectEqual(expected_scope, ref.scope_id);
             if (expect_block_refs) {
@@ -113,7 +113,7 @@ fn checkGeneratedTempsWithBlockAndLateNames(source: []const u8, target: Transfor
             }
             try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
             try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
-            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@backingInt(ref.node_index)]);
             ref_count += 1;
         }
         try std.testing.expectEqual(@as(usize, 3), ref_count);
@@ -180,7 +180,7 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
         if (node.tag != .function_declaration) continue;
         const name = transformer.readNodeIdx(node.data.extra, 0);
         if (name.isNone() or !std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(name).data.string_ref), "owner")) continue;
-        source_scope = @enumFromInt(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingOwnerScope);
+        source_scope = @fromBackingInt(@intCast(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingOwnerScope));
         found_owner_scope = true;
         break;
     }
@@ -190,7 +190,7 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
     var preserved_id: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_preserved")) continue;
-        preserved_binding_source = @enumFromInt(raw);
+        preserved_binding_source = @fromBackingInt(@intCast(raw));
         preserved_id = analyzer.symbol_ids.items[raw];
     }
     const original_preserved_binding = preserved_binding_source orelse return error.MissingPreservedSourceBinding;
@@ -218,8 +218,8 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
     const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
     const callback_params_list = try transformer.ast.addNodeList(&.{state_parameter});
     const callback_params = try transformer.ast.addFormalParameters(callback_params_list, .EMPTY);
-    const none = @intFromEnum(ast_mod.NodeIndex.none);
-    const callback_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(callback_params), @intFromEnum(body), 0, none });
+    const none = @backingInt(ast_mod.NodeIndex.none);
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @backingInt(callback_params), @backingInt(body), 0, none });
     const callback = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -241,9 +241,9 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
     try transformer.bindGeneratedState(source_scope, source_scope, callback, state_parameter, 0, &.{}, &.{}, .EMPTY);
 
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
-    const callback_scope: @import("../semantic/scope.zig").ScopeId = @enumFromInt(
-        editor.scope_owner_map.get(@intFromEnum(callback)) orelse return error.MissingCallbackScope,
-    );
+    const callback_scope: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(@intCast(
+        editor.scope_owner_map.get(@backingInt(callback)) orelse return error.MissingCallbackScope,
+    ));
     const preserved_symbol = editor.symbols.items[preserved_symbol_id];
     try std.testing.expect(preserved_symbol.synthetic_kind == null);
     try std.testing.expectEqual(@as(?u32, preserved_symbol_id), transformer.getSymbolIdAt(preserved_binding));
@@ -253,7 +253,7 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
         editor.scope_maps.items[source_scope.toIndex()].get(preserved_symbol.nameText(parser.ast.source)),
     );
     const preserved_reference_record = (try editor.referenceForNode(preserved_reference)) orelse return error.MissingPreservedSourceReference;
-    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @enumFromInt(preserved_symbol_id)), preserved_reference_record.symbol_id);
+    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(@intCast(preserved_symbol_id))), preserved_reference_record.symbol_id);
     try std.testing.expectEqual(callback_scope, preserved_reference_record.scope_id);
     const raw_id = transformer.getSymbolIdAt(binding) orelse return error.MissingTrackedCallbackSymbol;
     const id: usize = raw_id;
@@ -265,7 +265,7 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
     );
     try std.testing.expectEqual(@as(?usize, id), editor.scope_maps.items[callback_scope.toIndex()].get(symbol.synthetic_name));
     const reference_record = (try editor.referenceForNode(reference)) orelse return error.MissingTrackedCallbackReference;
-    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @enumFromInt(raw_id)), reference_record.symbol_id);
+    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(@intCast(raw_id))), reference_record.symbol_id);
     try std.testing.expectEqual(callback_scope, reference_record.scope_id);
 }
 
@@ -341,8 +341,8 @@ test "#4819 generator for-in temps retain their exact wrapper symbols" {
 
         var reference_count: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
-            const raw = @intFromEnum(ref.node_index);
+            if (@backingInt(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
+            const raw = @backingInt(ref.node_index);
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
             try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[raw]);
             const expected_scope = output_scope.expectedScope(
@@ -419,7 +419,7 @@ test "#4819 deferred generated temp owner follows exact allocation SymbolId" {
         return error.TestUnexpectedResult;
     try transformer.bindHoistedTemp(source_binding, name_span, .EMPTY, source_scope);
 
-    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const none = @backingInt(ast_mod.NodeIndex.none);
     const hoisted_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
     const declarator = try es_helpers.makeDeclarator(&transformer, hoisted_binding, .none, .EMPTY);
     const declaration = try es_helpers.makeVarDeclaration(&transformer, &.{declarator}, .@"var", .EMPTY);
@@ -431,7 +431,7 @@ test "#4819 deferred generated temp owner follows exact allocation SymbolId" {
     });
     const params_list = try transformer.ast.addNodeList(&.{});
     const params = try transformer.ast.addFormalParameters(params_list, .EMPTY);
-    const function_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(body), 0, none });
+    const function_extra = try transformer.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
     const owner = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -440,7 +440,7 @@ test "#4819 deferred generated temp owner follows exact allocation SymbolId" {
     const function_scope = try transformer.addGeneratedFunctionScope(source_scope, owner);
 
     const decoy_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
-    const decoy_owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(body), 0, none });
+    const decoy_owner_extra = try transformer.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
     const decoy_owner = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -457,13 +457,13 @@ test "#4819 deferred generated temp owner follows exact allocation SymbolId" {
     };
     try transformer.bindGeneratedFunctionTemps(source_scope, function_scope, body, &.{temp}, .EMPTY);
 
-    try std.testing.expectEqual(function_scope, editor.symbols.items[@intFromEnum(source_id)].scope_id);
-    try std.testing.expectEqual(decoy_scope, editor.symbols.items[@intFromEnum(decoy_id)].scope_id);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(source_id)), transformer.symbol_ids.items[@intFromEnum(hoisted_binding)]);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(decoy_id)), transformer.symbol_ids.items[@intFromEnum(decoy_binding)]);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(source_id)), editor.scope_maps.items[function_scope.toIndex()].get(transformer.ast.getText(name_span)));
+    try std.testing.expectEqual(function_scope, editor.symbols.items[@backingInt(source_id)].scope_id);
+    try std.testing.expectEqual(decoy_scope, editor.symbols.items[@backingInt(decoy_id)].scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(source_id)), transformer.symbol_ids.items[@backingInt(hoisted_binding)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(decoy_id)), transformer.symbol_ids.items[@backingInt(decoy_binding)]);
+    try std.testing.expectEqual(@as(?usize, @backingInt(source_id)), editor.scope_maps.items[function_scope.toIndex()].get(transformer.ast.getText(name_span)));
     try std.testing.expect(editor.scope_maps.items[source_scope.toIndex()].get(transformer.ast.getText(name_span)) == null);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(decoy_id)), editor.scope_maps.items[decoy_scope.toIndex()].get(transformer.ast.getText(name_span)));
+    try std.testing.expectEqual(@as(?usize, @backingInt(decoy_id)), editor.scope_maps.items[decoy_scope.toIndex()].get(transformer.ast.getText(name_span)));
 }
 
 test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
@@ -487,7 +487,7 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
 
-    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const none = @backingInt(ast_mod.NodeIndex.none);
     const empty_list = try transformer.ast.addNodeList(&.{});
     const params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
     const owner_body = try transformer.ast.addNode(.{
@@ -495,7 +495,7 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
         .span = .EMPTY,
         .data = .{ .list = empty_list },
     });
-    const owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(owner_body), 0, none });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @backingInt(params), @backingInt(owner_body), 0, none });
     const owner = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -510,8 +510,8 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
     const binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
     const id = (try transformer.registerGeneratedWrapperTemp(binding, name_span, .EMPTY, owner_scope)) orelse
         return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(binding));
-    try std.testing.expectEqual(owner_scope, transformer.semantic_editor.?.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(binding));
+    try std.testing.expectEqual(owner_scope, transformer.semantic_editor.?.symbols.items[@backingInt(id)].scope_id);
     try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_bindings.items.len);
     try std.testing.expectEqual(owner_scope, transformer.generator_state_bindings.items[0].owner_scope);
 
@@ -532,7 +532,7 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
     const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
     const callback_params_list = try transformer.ast.addNodeList(&.{state_parameter});
     const callback_params = try transformer.ast.addFormalParameters(callback_params_list, .EMPTY);
-    const callback_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(callback_params), @intFromEnum(callback_body), 0, none });
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @backingInt(callback_params), @backingInt(callback_body), 0, none });
     const callback = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -540,17 +540,17 @@ test "#4819 using wrapper temp gets its exact owner SymbolId at production" {
     });
     try transformer.bindGeneratedState(owner_scope, owner_scope, callback, state_parameter, 0, &.{}, &.{}, .EMPTY);
 
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(reference));
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(reference));
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
     const reference_record = (try editor.referenceForNode(reference)) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(id, reference_record.symbol_id);
-    try std.testing.expectEqual(owner_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(owner_scope, editor.symbols.items[@backingInt(id)].scope_id);
     try std.testing.expect(reference_record.scope_id != owner_scope);
     var callback_scope_found = false;
     var owners = editor.scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        if (entry.key_ptr.* == @intFromEnum(callback) and entry.value_ptr.* == @intFromEnum(reference_record.scope_id))
+        if (entry.key_ptr.* == @backingInt(callback) and entry.value_ptr.* == @backingInt(reference_record.scope_id))
             callback_scope_found = true;
     }
     try std.testing.expect(callback_scope_found);
@@ -578,7 +578,7 @@ test "#4819 callback temp reference binds through its exact producer node" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
 
-    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const none = @backingInt(ast_mod.NodeIndex.none);
     const empty_list = try transformer.ast.addNodeList(&.{});
     const owner_params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
     const owner_body = try transformer.ast.addNode(.{
@@ -586,7 +586,7 @@ test "#4819 callback temp reference binds through its exact producer node" {
         .span = .EMPTY,
         .data = .{ .list = empty_list },
     });
-    const owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(owner_params), @intFromEnum(owner_body), 0, none });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @backingInt(owner_params), @backingInt(owner_body), 0, none });
     const owner = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -641,7 +641,7 @@ test "#4819 callback temp reference binds through its exact producer node" {
     const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
     const callback_params_list = try transformer.ast.addNodeList(&.{state_parameter});
     const callback_params = try transformer.ast.addFormalParameters(callback_params_list, .EMPTY);
-    const callback_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(callback_params), @intFromEnum(callback_body), 0, none });
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @backingInt(callback_params), @backingInt(callback_body), 0, none });
     const callback = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -653,13 +653,13 @@ test "#4819 callback temp reference binds through its exact producer node" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
-    const id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(id_raw);
-    const callback_scope_raw = editor.scope_owner_map.get(@intFromEnum(callback)).?;
+    const id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(@intCast(id_raw));
+    const callback_scope_raw = editor.scope_owner_map.get(@backingInt(callback)).?;
     for (transformer.generator_state_temp_refs.items) |pending| {
         try std.testing.expectEqual(@as(?u32, id_raw), transformer.getSymbolIdAt(pending.reference));
         const reference_record = (try editor.referenceForNode(pending.reference)) orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(id, reference_record.symbol_id);
-        try std.testing.expectEqual(callback_scope_raw, @intFromEnum(reference_record.scope_id));
+        try std.testing.expectEqual(callback_scope_raw, @backingInt(reference_record.scope_id));
     }
     try std.testing.expectEqual(@as(usize, source_symbol_count + 3), editor.symbols.items.len);
 }
@@ -910,7 +910,7 @@ test "#4819 for-await extracted loop temps preserve live scopes" {
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
     var owners = edited.scope_owner_map.iterator();
     while (owners.next()) |owner| {
-        if (owner.value_ptr.* != @intFromEnum(wrapper_function)) continue;
+        if (owner.value_ptr.* != @backingInt(wrapper_function)) continue;
         try std.testing.expect(std.mem.indexOfScalar(u32, reachable, owner.key_ptr.*) != null);
         const function = transformer.ast.nodes.items[owner.key_ptr.*];
         try std.testing.expectEqual(ast_mod.Node.Tag.function_expression, function.tag);

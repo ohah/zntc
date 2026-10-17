@@ -90,7 +90,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             // `**=` + target<es2016: 내부 `**` 도 Math.pow로 lowering해야 함. 일반 binary
             // 경로를 거치지 않고 여기서 직접 생성 — 그렇지 않으면 `**` 가 그대로 남아
             // es2015 타겟에서 syntax error (#1486).
-            const computed = if (bin_op == @intFromEnum(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
+            const computed = if (bin_op == @backingInt(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
                 try es_helpers.makeMathPowCall(self, old_value, new_rhs, span)
             else
                 try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = new_rhs, .flags = bin_op } } });
@@ -105,9 +105,9 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const new_rhs = try self.visitNode(rhs_old);
             const set_value = try targetSet(self, target, receiver, new_rhs, span);
             const result = if (op_kind == .pipe2_eq or op_kind == .amp2_eq)
-                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_value, .flags = @intFromEnum(if (op_kind == .pipe2_eq) token_mod.Kind.pipe2 else token_mod.Kind.amp2) } } })
+                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_value, .flags = @backingInt(if (op_kind == .pipe2_eq) token_mod.Kind.pipe2 else token_mod.Kind.amp2) } } })
             else if (!self.options.unsupported.nullish_coalescing)
-                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_value, .flags = @intFromEnum(token_mod.Kind.question2) } } })
+                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_value, .flags = @backingInt(token_mod.Kind.question2) } } })
             else blk: {
                 const value_temp = try es_helpers.captureToTrackedTemp(self, old_value, span);
                 const cond = try es_helpers.makeNeqNull(self, value_temp.paren_assign, span);
@@ -124,7 +124,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), span);
             const value_temp = try es_helpers.captureToTrackedTemp(self, try targetGet(self, target, receiver, span), span);
             const update_operand = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true, .write = true });
-            const update_extra = try self.ast.addExtras(&.{ @intFromEnum(update_operand), op_flags });
+            const update_extra = try self.ast.addExtras(&.{ @backingInt(update_operand), op_flags });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = update_extra } });
             if ((op_flags & ast_mod.UnaryFlags.postfix) != 0) {
                 const old_temp = try es_helpers.captureToTrackedTemp(self, update, span);
@@ -206,7 +206,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const set_receiver = try es_helpers.makeTrackedTempRef(self, recv_temp.span, span, .{ .read = true });
 
             if (assign_ops.compoundAssignBaseOp(flags)) |base_op| {
-                const computed = if (base_op == @intFromEnum(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
+                const computed = if (base_op == @backingInt(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
                     try es_helpers.makeMathPowCall(self, old_value, rhs, span)
                 else
                     try self.ast.addNode(.{ .tag = .binary_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = rhs, .flags = base_op } } });
@@ -216,7 +216,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
             const set_call = try buildStaticMethodSet(self, mapping, set_receiver, rhs, span);
             const result = if (op == .pipe2_eq or op == .amp2_eq)
-                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_call, .flags = @intFromEnum(if (op == .pipe2_eq) token_mod.Kind.pipe2 else token_mod.Kind.amp2) } } })
+                try self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{ .left = old_value, .right = set_call, .flags = @backingInt(if (op == .pipe2_eq) token_mod.Kind.pipe2 else token_mod.Kind.amp2) } } })
             else blk: {
                 // The read must occur once: a getter may have side effects.
                 const value_temp = try es_helpers.captureToTrackedTemp(self, old_value, span);
@@ -332,7 +332,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             var finalized_exact_refs: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer finalized_exact_refs.deinit(self.allocator);
             for (self.pending_exact_symbol_refs.items) |pending| {
-                const gop = try pending_exact_refs.getOrPut(self.allocator, @intFromEnum(pending.node));
+                const gop = try pending_exact_refs.getOrPut(self.allocator, @backingInt(pending.node));
                 if (gop.found_existing)
                     std.debug.panic("generated reference node is pending more than once", .{});
                 gop.value_ptr.* = pending.symbol_id;
@@ -345,8 +345,8 @@ pub fn PrivateFields(comptime Transformer: type) type {
             var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer seen.deinit(self.allocator);
             while (stack.pop()) |work| {
-                if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
-                const raw = @intFromEnum(work.node);
+                if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+                const raw = @backingInt(work.node);
                 if (seen.contains(raw)) continue;
                 try seen.put(self.allocator, raw, {});
                 const node = self.ast.getNode(work.node);
@@ -359,7 +359,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         .{ .read = true }
                     else
                         std.debug.panic("pending private helper identity points at a non-reference", .{});
-                    try self.addSyntheticRefInScope(work.node, @enumFromInt(raw_id), scope, flags);
+                    try self.addSyntheticRefInScope(work.node, @fromBackingInt(@intCast(raw_id)), scope, flags);
                     try finalized_exact_refs.put(self.allocator, raw, {});
                 }
 
@@ -370,7 +370,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (finalized_exact_refs.count() > 0) {
                 var kept: usize = 0;
                 for (self.pending_exact_symbol_refs.items) |pending| {
-                    if (finalized_exact_refs.contains(@intFromEnum(pending.node))) continue;
+                    if (finalized_exact_refs.contains(@backingInt(pending.node))) continue;
                     self.pending_exact_symbol_refs.items[kept] = pending;
                     kept += 1;
                 }
@@ -420,7 +420,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                     var i: u32 = 0;
                     while (i < len) : (i += 1) {
                         const child_raw = self.ast.extra_data.items[start + i];
-                        const child_idx: NodeIndex = @enumFromInt(child_raw);
+                        const child_idx: NodeIndex = @fromBackingInt(@intCast(child_raw));
                         if (destructuringTargetHasPrivateField(self, child_idx)) break :blk true;
                     }
                     break :blk false;
@@ -487,7 +487,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             // obj 는 2회 visit 되므로 side-effect 있는 복잡 obj 는 정의역 밖 (this / simple ident 는 안전).
             // Logical assignment (??=/||=/&&=) 는 현재 미지원 — getter 결과의 short-circuit 별도 복잡도.
             // A synthesized plain assignment carries flags 0 rather than `=`.
-            const op_kind_pre: token_mod.Kind = if (node.data.binary.flags == 0) .eq else @enumFromInt(node.data.binary.flags);
+            const op_kind_pre: token_mod.Kind = if (node.data.binary.flags == 0) .eq else @fromBackingInt(@intCast(node.data.binary.flags));
             if (!prop_idx.isNone()) {
                 const prop_node_pre = self.ast.getNode(prop_idx);
                 if (prop_node_pre.tag == .private_identifier) {
@@ -516,7 +516,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
 
             const mapping = findPrivateFieldMapping(self, prop_idx) orelse return null;
 
-            const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+            const op_kind: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
             if (op_kind == .question2_eq or op_kind == .pipe2_eq or op_kind == .amp2_eq) {
                 return lowerTargetLogical(self, .{ .field = mapping }, obj_idx, op_kind, node.data.binary.right, node.span);
             }
@@ -562,7 +562,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             const postfix = (op_flags & ast_mod.UnaryFlags.postfix) != 0;
             const set_receiver = try es_helpers.makeTrackedTempRef(self, recv_temp.span, span, .{ .read = true });
             const update_operand = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true, .write = true });
-            const update_extra = try self.ast.addExtras(&.{ @intFromEnum(update_operand), op_flags });
+            const update_extra = try self.ast.addExtras(&.{ @backingInt(update_operand), op_flags });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = update_extra } });
 
             if (postfix) {
@@ -657,7 +657,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         .data = .{ .binary = .{
                             .left = new_obj,
                             .right = class_ref,
-                            .flags = @intFromEnum(token_mod.Kind.eq3),
+                            .flags = @backingInt(token_mod.Kind.eq3),
                         } },
                     });
                 }
@@ -677,7 +677,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                         .data = .{ .binary = .{
                             .left = new_obj,
                             .right = class_ref,
-                            .flags = @intFromEnum(token_mod.Kind.eq3),
+                            .flags = @backingInt(token_mod.Kind.eq3),
                         } },
                     });
                 }

@@ -34,8 +34,8 @@ pub fn materialize(
             return false;
         };
         for (scan_records, 0..) |sr, i| {
-            const ik: ImportKind = @enumFromInt(@intFromEnum(sr.kind));
-            const ctx_mode: types.RequireContextMode = @enumFromInt(@intFromEnum(sr.context_mode));
+            const ik: ImportKind = @fromBackingInt(@intCast(@backingInt(sr.kind)));
+            const ctx_mode: types.RequireContextMode = @fromBackingInt(@intCast(@backingInt(sr.context_mode)));
             records[i] = .{
                 .specifier = sr.specifier,
                 .kind = ik,
@@ -58,7 +58,7 @@ pub fn materialize(
         const scan_ibindings = parser.scan_import_bindings.items;
         if (arena_alloc.alloc(binding_scanner.ImportBinding, scan_ibindings.len)) |ibindings| {
             for (scan_ibindings, 0..) |sb, i| {
-                const ib_kind: binding_scanner.ImportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
+                const ib_kind: binding_scanner.ImportBinding.Kind = @fromBackingInt(@intCast(@backingInt(sb.kind)));
                 ibindings[i] = .{
                     .kind = ib_kind,
                     .local_name = sb.local_name,
@@ -74,17 +74,17 @@ pub fn materialize(
         const scan_ebindings = parser.scan_export_bindings.items;
         if (arena_alloc.alloc(binding_scanner.ExportBinding, scan_ebindings.len)) |ebindings| {
             for (scan_ebindings, 0..) |sb, i| {
-                const eb_kind: binding_scanner.ExportBinding.Kind = @enumFromInt(@intFromEnum(sb.kind));
+                const eb_kind: binding_scanner.ExportBinding.Kind = @fromBackingInt(@intCast(@backingInt(sb.kind)));
                 ebindings[i] = .{
                     .exported_name = sb.exported_name,
                     .local_name = sb.local_name,
                     .local_span = sb.local_span,
-                    .local_symbol_node = if (sb.local_symbol_node_index) |index| @enumFromInt(index) else null,
+                    .local_symbol_node = if (sb.local_symbol_node_index) |index| @fromBackingInt(@intCast(index)) else null,
                     .kind = eb_kind,
                     .import_record_index = sb.import_record_index,
                     .declared_via_pattern = sb.declared_via_pattern,
                     .init_is_fn_or_class = sb.init_is_fn_or_class,
-                    .default_export_node = if (sb.default_export_node_index) |index| @enumFromInt(index) else null,
+                    .default_export_node = if (sb.default_export_node_index) |index| @fromBackingInt(@intCast(index)) else null,
                     .has_default_export_facade = sb.has_default_export_facade,
                 };
             }

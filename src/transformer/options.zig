@@ -460,17 +460,17 @@ pub const TransformOptions = struct {
                 // import, so the linker can reserve the generated global.
                 .binary_expression => {
                     if (u.exponentiation and
-                        node.data.binary.flags == @intFromEnum(token_mod.Kind.star2)) return true;
+                        node.data.binary.flags == @backingInt(token_mod.Kind.star2)) return true;
                 },
                 .logical_expression => {
                     if (u.nullish_coalescing and
-                        node.data.binary.flags == @intFromEnum(token_mod.Kind.question2)) return true;
+                        node.data.binary.flags == @backingInt(token_mod.Kind.question2)) return true;
                 },
                 .assignment_expression => {
                     if (u.exponentiation and
-                        node.data.binary.flags == @intFromEnum(token_mod.Kind.star2_eq)) return true;
+                        node.data.binary.flags == @backingInt(token_mod.Kind.star2_eq)) return true;
                     if (u.logical_assignment) {
-                        const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                        const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                         if (op == .amp2_eq or op == .pipe2_eq or op == .question2_eq) return true;
                     }
                     if (ast.isAnonymousFunctionDefinition(node.data.binary.right)) saw_named_assignment = true;
@@ -510,11 +510,11 @@ pub const TransformOptions = struct {
     /// reach codegen without exact SymbolIds.
     fn hasLoweredArrowCapture(ast: *const Ast) bool {
         if (ast.nodes.items.len == 0) return true;
-        const root: ast_mod.NodeIndex = ast.transformed_root orelse @enumFromInt(
+        const root: ast_mod.NodeIndex = ast.transformed_root orelse @fromBackingInt(@intCast(
             @as(u32, @intCast(ast.nodes.items.len - 1)),
-        );
-        if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len or
-            ast.nodes.items[@intFromEnum(root)].tag != .program) return true;
+        ));
+        if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+            ast.nodes.items[@backingInt(root)].tag != .program) return true;
 
         var stack: std.ArrayList(ArrowCaptureScanItem) = .empty;
         defer stack.deinit(ast.allocator);
@@ -524,8 +524,8 @@ pub const TransformOptions = struct {
 
         while (stack.pop()) |item| {
             const idx = item.node;
-            if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-            const raw = @intFromEnum(idx);
+            if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
+            const raw = @backingInt(idx);
             const visit_key = (@as(u64, raw) << 1) | @intFromBool(item.inside_arrow);
             if (seen.contains(visit_key)) continue;
             seen.put(ast.allocator, visit_key, {}) catch return true;
@@ -642,7 +642,7 @@ pub const TransformOptions = struct {
         defer bodies.deinit(ast.allocator);
         for (ast.nodes.items) |node| {
             const body = ast.functionBodyBlock(node) orelse continue;
-            bodies.put(ast.allocator, @intFromEnum(body), {}) catch return true;
+            bodies.put(ast.allocator, @backingInt(body), {}) catch return true;
         }
         const extras = ast.extra_data.items;
         for (ast.nodes.items, 0..) |node, raw| {
@@ -790,7 +790,7 @@ fn astHasMappedImportToSplit(ast: *const Ast, entries: []const ModuleSpecifierMa
         const import = module_parser.readImportDeclExtras(ast, extra);
         if (import.is_type_only or import.attrs_len != 0 or import.phase != .none or import.specs_len == 0) continue;
         const source_idx = import.source;
-        if (source_idx.isNone() or @intFromEnum(source_idx) >= ast.nodes.items.len) return true;
+        if (source_idx.isNone() or @backingInt(source_idx) >= ast.nodes.items.len) return true;
         const source = ast.getNode(source_idx);
         if (source.tag != .string_literal) continue;
         const module_name = Ast.stripStringQuotes(ast.getText(source.data.string_ref));
@@ -809,7 +809,7 @@ fn astHasMappedImportToSplit(ast: *const Ast, entries: []const ModuleSpecifierMa
         var can_split = true;
         for (ast.extra_data.items[import.specs_start .. import.specs_start + import.specs_len]) |raw_spec| {
             if (raw_spec >= ast.nodes.items.len) return true;
-            const spec = ast.getNode(@enumFromInt(raw_spec));
+            const spec = ast.getNode(@fromBackingInt(@intCast(raw_spec)));
             if (spec.tag != .import_specifier or
                 (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0 or
                 spec.data.binary.left != spec.data.binary.right)

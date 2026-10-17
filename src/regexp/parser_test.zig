@@ -116,13 +116,13 @@ test "#4376 legacy octal escape 는 최대 3 digit (Annex B, 값 ≤ 255)" {
 
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
     // octal atom + 리터럴 '7' = 2 terms (수정 전: 1 term, value 511).
     try std.testing.expectEqual(@as(u32, 2), terms.len);
-    const ch0 = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const ch0 = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(@as(u32, 0o77), ch0.data[0]); // 63
-    const ch1 = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 1]));
+    const ch1 = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start + 1])));
     try std.testing.expectEqual(@as(u32, '7'), ch1.data[0]); // literal '7'
 }
 
@@ -148,21 +148,21 @@ test "AST: basic literal pattern" {
     try std.testing.expectEqual(@as(u32, 1), alts.len);
 
     // alternative 안에 3개 character
-    const alt_idx: ast.NodeIndex = @enumFromInt(tree.extra_data[alts.start]);
+    const alt_idx: ast.NodeIndex = @fromBackingInt(@intCast(tree.extra_data[alts.start]));
     const alt = tree.getNode(alt_idx);
     try std.testing.expectEqual(ast.Tag.alternative, alt.tag);
     const terms = alt.getNodeList();
     try std.testing.expectEqual(@as(u32, 3), terms.len);
 
     // 각 character 검증
-    const ch0 = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const ch0 = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character, ch0.tag);
     try std.testing.expectEqual(@as(u32, 'a'), ch0.data[0]);
 
-    const ch1 = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 1]));
+    const ch1 = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start + 1])));
     try std.testing.expectEqual(@as(u32, 'b'), ch1.data[0]);
 
-    const ch2 = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 2]));
+    const ch2 = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start + 2])));
     try std.testing.expectEqual(@as(u32, 'c'), ch2.data[0]);
 }
 
@@ -197,13 +197,13 @@ test "AST: capturing group" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt_idx: ast.NodeIndex = @enumFromInt(tree.extra_data[alts.start]);
+    const alt_idx: ast.NodeIndex = @fromBackingInt(@intCast(tree.extra_data[alts.start]));
     const alt = tree.getNode(alt_idx);
     const terms = alt.getNodeList();
     try std.testing.expectEqual(@as(u32, 1), terms.len);
 
     // capturing group
-    const group = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const group = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.capturing_group, group.tag);
     // unnamed: name_start == 0xFFFFFFFF
     try std.testing.expectEqual(std.math.maxInt(u32), group.data[0]);
@@ -222,9 +222,9 @@ test "AST: named group" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const group = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const group = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.capturing_group, group.tag);
     // name_start != 0xFFFFFFFF (has name)
     try std.testing.expect(group.data[0] != std.math.maxInt(u32));
@@ -246,11 +246,11 @@ test "AST: quantifier" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
     try std.testing.expectEqual(@as(u32, 1), terms.len);
 
-    const quant = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const quant = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.quantifier, quant.tag);
     try std.testing.expectEqual(@as(u32, 0), quant.data[0]); // min = 0
     try std.testing.expectEqual(std.math.maxInt(u32), quant.data[1]); // max = unbounded
@@ -274,9 +274,9 @@ test "AST: lazy quantifier" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const quant = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const quant = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
 
     try std.testing.expectEqual(ast.Tag.quantifier, quant.tag);
     try std.testing.expectEqual(@as(u32, 1), quant.data[0]); // min = 1
@@ -296,9 +296,9 @@ test "AST: dot" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const dot = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const dot = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.dot, dot.tag);
 }
 
@@ -315,11 +315,11 @@ test "AST: character class escape" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const node = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const node = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character_class_escape, node.tag);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterClassEscapeKind.d)), node.data[0]);
+    try std.testing.expectEqual(@as(u32, @backingInt(ast.CharacterClassEscapeKind.d)), node.data[0]);
 }
 
 test "AST: character class" {
@@ -335,9 +335,9 @@ test "AST: character class" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const cc = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
     // not negated
     try std.testing.expectEqual(@as(u32, 0), cc.data[0] & 1);
@@ -359,17 +359,17 @@ test "AST: character class range" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const cc = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     const body = cc.getClassBody();
     try std.testing.expectEqual(@as(u32, 1), body.len);
 
-    const range = tree.getNode(@enumFromInt(tree.extra_data[body.start]));
+    const range = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[body.start])));
     try std.testing.expectEqual(ast.Tag.character_class_range, range.tag);
     // min = 'a', max = 'z'
-    const min_ch = tree.getNode(@enumFromInt(range.data[0]));
-    const max_ch = tree.getNode(@enumFromInt(range.data[1]));
+    const min_ch = tree.getNode(@fromBackingInt(@intCast(range.data[0])));
+    const max_ch = tree.getNode(@fromBackingInt(@intCast(range.data[1])));
     try std.testing.expectEqual(@as(u32, 'a'), min_ch.data[0]);
     try std.testing.expectEqual(@as(u32, 'z'), max_ch.data[0]);
 }
@@ -387,9 +387,9 @@ test "AST: negated character class" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const cc = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
     // negated
     try std.testing.expectEqual(@as(u32, 1), cc.data[0] & 1);
@@ -408,17 +408,17 @@ test "AST: boundary assertion" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
     try std.testing.expectEqual(@as(u32, 3), terms.len);
 
-    const caret = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const caret = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.boundary_assertion, caret.tag);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.BoundaryAssertionKind.start)), caret.data[0]);
+    try std.testing.expectEqual(@as(u32, @backingInt(ast.BoundaryAssertionKind.start)), caret.data[0]);
 
-    const dollar = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 2]));
+    const dollar = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start + 2])));
     try std.testing.expectEqual(ast.Tag.boundary_assertion, dollar.tag);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.BoundaryAssertionKind.end)), dollar.data[0]);
+    try std.testing.expectEqual(@as(u32, @backingInt(ast.BoundaryAssertionKind.end)), dollar.data[0]);
 }
 
 test "AST: non-capturing group" {
@@ -434,9 +434,9 @@ test "AST: non-capturing group" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const group = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const group = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.ignore_group, group.tag);
 }
 
@@ -453,11 +453,11 @@ test "AST: indexed reference" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
     try std.testing.expectEqual(@as(u32, 2), terms.len);
 
-    const ref = tree.getNode(@enumFromInt(tree.extra_data[terms.start + 1]));
+    const ref = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start + 1])));
     try std.testing.expectEqual(ast.Tag.indexed_reference, ref.tag);
     try std.testing.expectEqual(@as(u32, 1), ref.data[0]);
 }
@@ -475,11 +475,11 @@ test "AST: lookahead assertion" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const la = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const la = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.lookaround_assertion, la.tag);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.LookAroundAssertionKind.lookahead)), la.data[0]);
+    try std.testing.expectEqual(@as(u32, @backingInt(ast.LookAroundAssertionKind.lookahead)), la.data[0]);
 }
 
 test "AST: escape characters" {
@@ -495,12 +495,12 @@ test "AST: escape characters" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const ch = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const ch = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character, ch.tag);
     try std.testing.expectEqual(@as(u32, 0x0A), ch.data[0]);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterKind.single_escape)), ch.data[1]);
+    try std.testing.expectEqual(@as(u32, @backingInt(ast.CharacterKind.single_escape)), ch.data[1]);
 }
 
 test "AST: hex escape" {
@@ -516,9 +516,9 @@ test "AST: hex escape" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const ch = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const ch = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character, ch.tag);
     try std.testing.expectEqual(@as(u32, 0x41), ch.data[0]);
 }
@@ -536,9 +536,9 @@ test "AST: braced quantifier" {
     defer tree.deinit();
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const quant = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const quant = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.quantifier, quant.tag);
     try std.testing.expectEqual(@as(u32, 2), quant.data[0]); // min
     try std.testing.expectEqual(@as(u32, 5), quant.data[1]); // max
@@ -748,12 +748,12 @@ test "v-flag AST: intersection creates correct kind" {
     // root > alt > character_class
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const cc = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
     // kind bits at data[0] >> 1 = intersection(1)
-    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterClassContentsKind.intersection)), (cc.data[0] >> 1) & 3);
+    try std.testing.expectEqual(@as(u32, @backingInt(ast.CharacterClassContentsKind.intersection)), (cc.data[0] >> 1) & 3);
 }
 
 test "v-flag AST: subtraction creates correct kind" {
@@ -768,11 +768,11 @@ test "v-flag AST: subtraction creates correct kind" {
 
     const root = tree.getNode(tree.root);
     const alts = root.getNodeList();
-    const alt = tree.getNode(@enumFromInt(tree.extra_data[alts.start]));
+    const alt = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[alts.start])));
     const terms = alt.getNodeList();
-    const cc = tree.getNode(@enumFromInt(tree.extra_data[terms.start]));
+    const cc = tree.getNode(@fromBackingInt(@intCast(tree.extra_data[terms.start])));
     try std.testing.expectEqual(ast.Tag.character_class, cc.tag);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(ast.CharacterClassContentsKind.subtraction)), (cc.data[0] >> 1) & 3);
+    try std.testing.expectEqual(@as(u32, @backingInt(ast.CharacterClassContentsKind.subtraction)), (cc.data[0] >> 1) & 3);
 }
 
 // ============================================================

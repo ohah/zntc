@@ -34,7 +34,7 @@ pub fn ES2016(comptime Transformer: type) type {
             }
             const new_right = try self.visitNode(node.data.binary.right);
             const pow_call = try es_helpers.makeMathPowCall(self, target.value, new_right, node.span);
-            return es_helpers.makeAssignExpr(self, target.read, pow_call, node.span, @intFromEnum(token_mod.Kind.eq));
+            return es_helpers.makeAssignExpr(self, target.read, pow_call, node.span, @backingInt(token_mod.Kind.eq));
         }
     };
 }

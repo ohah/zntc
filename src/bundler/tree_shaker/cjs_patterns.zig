@@ -35,7 +35,7 @@ pub fn foldNodeBufferCapabilityIfs(allocator: std.mem.Allocator, ast: *Ast) bool
         if (!caps.hasAll()) continue;
         collectDeadAlternateCjsExportIdentifiers(allocator, ast, node.data.ternary.c, &dead_fallback_names) catch {};
         const kept = singleBlockStatement(ast, node.data.ternary.b) orelse node.data.ternary.b;
-        const kept_ni = @intFromEnum(kept);
+        const kept_ni = @backingInt(kept);
         if (kept_ni >= ast.nodes.items.len) continue;
         ast.nodes.items[i] = ast.nodes.items[kept_ni];
         changed = true;
@@ -79,16 +79,16 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
         if (!caps.hasAll()) continue;
 
         const kept = node.data.ternary.b;
-        if (kept.isNone() or @intFromEnum(kept) >= ast.nodes.items.len) return false;
-        if (ast.nodes.items[@intFromEnum(kept)].tag != .expression_statement) return false;
+        if (kept.isNone() or @backingInt(kept) >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[@backingInt(kept)].tag != .expression_statement) return false;
         const alternate = node.data.ternary.c;
         if (!alternate.isNone()) {
-            if (@intFromEnum(alternate) >= ast.nodes.items.len) return false;
-            if (ast.nodes.items[@intFromEnum(alternate)].tag != .expression_statement) return false;
+            if (@backingInt(alternate) >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[@backingInt(alternate)].tag != .expression_statement) return false;
             try collectDeadAlternateCjsExportIdentifiers(allocator, ast, alternate, &dead_fallback_names);
         }
         try branches.append(allocator, .{
-            .if_index = @enumFromInt(i),
+            .if_index = @fromBackingInt(@intCast(i)),
             .condition = node.data.ternary.a,
             .kept = kept,
             .alternate = alternate,
@@ -111,9 +111,9 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
         const list = root.data.list;
         if (list.start + list.len > ast.extra_data.items.len) return false;
         for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
-            const stmt_idx: NodeIndex = @enumFromInt(raw_stmt);
-            if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) continue;
-            const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+            const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
+            if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) continue;
+            const stmt = ast.nodes.items[@backingInt(stmt_idx)];
             if (!isDeadFallbackSetupStatement(ast, stmt, &dead_fallback_names, &buffer_ctor_names)) continue;
             try setup_statements.append(allocator, stmt_idx);
             try appendSubtreeNodes(allocator, ast, stmt_idx, &seen, removed_nodes);
@@ -123,12 +123,12 @@ pub fn foldNodeBufferCapabilityIfsRetainingGraph(
     // No AST write happens until all candidate node indexes are captured. This
     // keeps allocation or shape failures on the existing full-analysis path.
     for (branches.items) |branch| {
-        const kept_raw = @intFromEnum(branch.kept);
-        ast.nodes.items[@intFromEnum(branch.if_index)] = ast.nodes.items[kept_raw];
+        const kept_raw = @backingInt(branch.kept);
+        ast.nodes.items[@backingInt(branch.if_index)] = ast.nodes.items[kept_raw];
     }
     for (setup_statements.items) |stmt_idx| {
-        const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
-        ast.nodes.items[@intFromEnum(stmt_idx)] = .{
+        const stmt = ast.nodes.items[@backingInt(stmt_idx)];
+        ast.nodes.items[@backingInt(stmt_idx)] = .{
             .tag = .empty_statement,
             .span = stmt.span,
             .data = .{ .none = 0 },
@@ -152,7 +152,7 @@ fn appendSingleNode(
     node_count: usize,
 ) !void {
     if (node_index.isNone()) return error.InvalidRemovedNode;
-    const raw = @intFromEnum(node_index);
+    const raw = @backingInt(node_index);
     if (raw >= node_count) return error.InvalidRemovedNode;
     if (seen.isSet(raw)) return;
     seen.set(raw);
@@ -172,7 +172,7 @@ fn appendSubtreeNodes(
     try stack.append(allocator, root);
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (raw >= ast.nodes.items.len) return error.InvalidRemovedNode;
         if (seen.isSet(raw)) continue;
         seen.set(raw);
@@ -219,21 +219,21 @@ fn collectNodeBufferCapabilityCondition(
     ctor_names: *const std.StringHashMapUnmanaged(void),
     caps: *BufferCapabilitySet,
 ) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(idx)];
     switch (node.tag) {
         .parenthesized_expression => return collectNodeBufferCapabilityCondition(ast, node.data.unary.operand, ctor_names, caps),
         .logical_expression => {
-            if (@as(Kind, @enumFromInt(node.data.binary.flags)) != .amp2) return false;
+            if (@as(Kind, @fromBackingInt(@intCast(node.data.binary.flags))) != .amp2) return false;
             return collectNodeBufferCapabilityCondition(ast, node.data.binary.left, ctor_names, caps) and
                 collectNodeBufferCapabilityCondition(ast, node.data.binary.right, ctor_names, caps);
         },
         .static_member_expression => {
             const parts = staticMemberParts(ast, idx) orelse return false;
-            const obj = ast.nodes.items[@intFromEnum(parts.object)];
+            const obj = ast.nodes.items[@backingInt(parts.object)];
             if (obj.tag != .identifier_reference) return false;
             if (!ctor_names.contains(ast.getText(obj.span))) return false;
-            const prop = ast.nodes.items[@intFromEnum(parts.property)];
+            const prop = ast.nodes.items[@backingInt(parts.property)];
             if (prop.tag != .identifier_reference and prop.tag != .private_identifier) return false;
             return caps.add(ast.getText(prop.span));
         },
@@ -242,13 +242,13 @@ fn collectNodeBufferCapabilityCondition(
 }
 
 fn singleBlockStatement(ast: *const Ast, idx: NodeIndex) ?NodeIndex {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[@backingInt(idx)];
     if (node.tag != .block_statement) return null;
     const list = node.data.list;
     if (list.len != 1) return null;
     if (list.start >= ast.extra_data.items.len) return null;
-    return @enumFromInt(ast.extra_data.items[list.start]);
+    return @fromBackingInt(@intCast(ast.extra_data.items[list.start]));
 }
 
 fn collectDeadAlternateCjsExportIdentifiers(
@@ -257,25 +257,25 @@ fn collectDeadAlternateCjsExportIdentifiers(
     idx: NodeIndex,
     out: *std.StringHashMapUnmanaged(void),
 ) std.mem.Allocator.Error!void {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return;
+    const node = ast.nodes.items[@backingInt(idx)];
     if (node.tag == .block_statement) {
         const list = node.data.list;
         if (list.start + list.len > ast.extra_data.items.len) return;
         for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-            try collectDeadAlternateCjsExportIdentifiers(allocator, ast, @enumFromInt(raw), out);
+            try collectDeadAlternateCjsExportIdentifiers(allocator, ast, @fromBackingInt(@intCast(raw)), out);
         }
         return;
     }
     if (node.tag != .expression_statement) return;
     const expr_idx = node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return;
     if (!isCjsNamedExportLhs(ast, expr.data.binary.left)) return;
     const rhs_idx = expr.data.binary.right;
-    if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return;
-    const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+    if (rhs_idx.isNone() or @backingInt(rhs_idx) >= ast.nodes.items.len) return;
+    const rhs = ast.nodes.items[@backingInt(rhs_idx)];
     if (rhs.tag != .identifier_reference) return;
     try out.put(allocator, ast.getText(rhs.span), {});
 }
@@ -289,11 +289,11 @@ fn removeDeadFallbackSetupStatements(
     const list = root.data.list;
     if (list.start + list.len > ast.extra_data.items.len) return;
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw_stmt);
-        if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) continue;
-        const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
+        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) continue;
+        const stmt = ast.nodes.items[@backingInt(stmt_idx)];
         if (!isDeadFallbackSetupStatement(ast, stmt, dead_names, buffer_ctor_names)) continue;
-        ast.nodes.items[@intFromEnum(stmt_idx)] = .{
+        ast.nodes.items[@backingInt(stmt_idx)] = .{
             .tag = .empty_statement,
             .span = stmt.span,
             .data = .{ .none = 0 },
@@ -309,8 +309,8 @@ fn isDeadFallbackSetupStatement(
 ) bool {
     if (stmt.tag != .expression_statement) return false;
     const expr_idx = stmt.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return false;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return false;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag == .assignment_expression) {
         const root = staticMemberRootIdentifier(ast, expr.data.binary.left) orelse return false;
         return dead_names.contains(root);
@@ -332,12 +332,12 @@ fn isDeadFallbackCopyCall(
     const args_start = ast.readExtra(e, 1);
     const args_len = ast.readExtra(e, 2);
     if (args_len != 2 or args_start + args_len > ast.extra_data.items.len) return false;
-    const first_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    const second_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
+    const first_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    const second_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start + 1]));
     if (first_idx.isNone() or second_idx.isNone()) return false;
-    if (@intFromEnum(first_idx) >= ast.nodes.items.len or @intFromEnum(second_idx) >= ast.nodes.items.len) return false;
-    const first = ast.nodes.items[@intFromEnum(first_idx)];
-    const second = ast.nodes.items[@intFromEnum(second_idx)];
+    if (@backingInt(first_idx) >= ast.nodes.items.len or @backingInt(second_idx) >= ast.nodes.items.len) return false;
+    const first = ast.nodes.items[@backingInt(first_idx)];
+    const second = ast.nodes.items[@backingInt(second_idx)];
     if (first.tag != .identifier_reference or second.tag != .identifier_reference) return false;
     return buffer_ctor_names.contains(ast.getText(first.span)) and dead_names.contains(ast.getText(second.span));
 }
@@ -346,7 +346,7 @@ fn staticMemberRootIdentifier(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     var current = idx;
     while (true) {
         const parts = staticMemberParts(ast, current) orelse return null;
-        const obj = ast.nodes.items[@intFromEnum(parts.object)];
+        const obj = ast.nodes.items[@backingInt(parts.object)];
         if (obj.tag == .identifier_reference) return ast.getText(obj.span);
         current = parts.object;
     }
@@ -361,7 +361,7 @@ pub fn collectNodeBufferModuleObjectNames(
     const list = root.data.list;
     if (list.start + list.len > ast.extra_data.items.len) return;
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw_stmt);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
         try collectVarNamesMatchingInit(allocator, ast, stmt_idx, out, isRequireBufferCall);
     }
 }
@@ -376,9 +376,9 @@ fn collectNodeBufferCtorNames(
     const list = root.data.list;
     if (list.start + list.len > ast.extra_data.items.len) return;
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw_stmt);
-        if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) continue;
-        const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
+        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) continue;
+        const stmt = ast.nodes.items[@backingInt(stmt_idx)];
         if (stmt.tag != .variable_declaration) continue;
         const e = stmt.data.extra;
         if (!ast.hasExtra(e, 2)) continue;
@@ -386,17 +386,17 @@ fn collectNodeBufferCtorNames(
         const len = ast.readExtra(e, 2);
         if (start + len > ast.extra_data.items.len) continue;
         for (ast.extra_data.items[start .. start + len]) |raw_decl| {
-            const decl_idx: NodeIndex = @enumFromInt(raw_decl);
-            if (decl_idx.isNone() or @intFromEnum(decl_idx) >= ast.nodes.items.len) continue;
-            const decl = ast.nodes.items[@intFromEnum(decl_idx)];
+            const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw_decl));
+            if (decl_idx.isNone() or @backingInt(decl_idx) >= ast.nodes.items.len) continue;
+            const decl = ast.nodes.items[@backingInt(decl_idx)];
             if (decl.tag != .variable_declarator) continue;
             const de = decl.data.extra;
             if (!ast.hasExtra(de, 2)) continue;
-            const name_idx: NodeIndex = @enumFromInt(ast.readExtra(de, 0));
-            const init_idx: NodeIndex = @enumFromInt(ast.readExtra(de, 2));
-            if (name_idx.isNone() or @intFromEnum(name_idx) >= ast.nodes.items.len) continue;
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(de, 0)));
+            const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(de, 2)));
+            if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) continue;
             if (!isNodeBufferCtorRead(ast, init_idx, buffer_names)) continue;
-            const name = ast.nodes.items[@intFromEnum(name_idx)];
+            const name = ast.nodes.items[@backingInt(name_idx)];
             if (name.tag == .identifier_reference or name.tag == .binding_identifier or name.tag == .assignment_target_identifier) {
                 try out.put(allocator, ast.getText(name.span), {});
             }
@@ -411,8 +411,8 @@ fn collectVarNamesMatchingInit(
     out: *std.StringHashMapUnmanaged(void),
     comptime predicate: fn (*const Ast, NodeIndex) bool,
 ) std.mem.Allocator.Error!void {
-    if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) return;
-    const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+    if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) return;
+    const stmt = ast.nodes.items[@backingInt(stmt_idx)];
     if (stmt.tag != .variable_declaration) return;
     const e = stmt.data.extra;
     if (!ast.hasExtra(e, 2)) return;
@@ -420,17 +420,17 @@ fn collectVarNamesMatchingInit(
     const len = ast.readExtra(e, 2);
     if (start + len > ast.extra_data.items.len) return;
     for (ast.extra_data.items[start .. start + len]) |raw_decl| {
-        const decl_idx: NodeIndex = @enumFromInt(raw_decl);
-        if (decl_idx.isNone() or @intFromEnum(decl_idx) >= ast.nodes.items.len) continue;
-        const decl = ast.nodes.items[@intFromEnum(decl_idx)];
+        const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw_decl));
+        if (decl_idx.isNone() or @backingInt(decl_idx) >= ast.nodes.items.len) continue;
+        const decl = ast.nodes.items[@backingInt(decl_idx)];
         if (decl.tag != .variable_declarator) continue;
         const de = decl.data.extra;
         if (!ast.hasExtra(de, 2)) continue;
-        const name_idx: NodeIndex = @enumFromInt(ast.readExtra(de, 0));
-        const init_idx: NodeIndex = @enumFromInt(ast.readExtra(de, 2));
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(de, 0)));
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(de, 2)));
         if (!predicate(ast, init_idx)) continue;
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= ast.nodes.items.len) continue;
-        const name = ast.nodes.items[@intFromEnum(name_idx)];
+        if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len) continue;
+        const name = ast.nodes.items[@backingInt(name_idx)];
         if (name.tag == .identifier_reference or name.tag == .binding_identifier or name.tag == .assignment_target_identifier) {
             try out.put(allocator, ast.getText(name.span), {});
         }
@@ -445,21 +445,21 @@ fn programNode(ast: *const Ast) ?Node {
 }
 
 fn isRequireBufferCall(ast: *const Ast, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(idx)];
     if (node.tag != .call_expression) return false;
     const e = node.data.extra;
     if (!ast.hasExtra(e, 2)) return false;
-    const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 0));
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
-    const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 0)));
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.nodes.items[@backingInt(callee_idx)];
     if (callee.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(callee.span), "require")) return false;
     const args_start = ast.readExtra(e, 1);
     const args_len = ast.readExtra(e, 2);
     if (args_len != 1 or args_start >= ast.extra_data.items.len) return false;
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@backingInt(arg_idx)];
     if (arg.tag != .string_literal) return false;
     const spec = ast_mod.Ast.stripStringQuotes(ast.getText(arg.span));
     return std.mem.eql(u8, spec, "buffer") or std.mem.eql(u8, spec, "node:buffer");
@@ -471,8 +471,8 @@ fn isNodeBufferCtorRead(
     buffer_names: *const std.StringHashMapUnmanaged(void),
 ) bool {
     const parts = staticMemberParts(ast, idx) orelse return false;
-    const obj = ast.nodes.items[@intFromEnum(parts.object)];
-    const prop = ast.nodes.items[@intFromEnum(parts.property)];
+    const obj = ast.nodes.items[@backingInt(parts.object)];
+    const prop = ast.nodes.items[@backingInt(parts.property)];
     if (obj.tag != .identifier_reference) return false;
     if (prop.tag != .identifier_reference and prop.tag != .private_identifier) return false;
     return buffer_names.contains(ast.getText(obj.span)) and std.mem.eql(u8, ast.getText(prop.span), "Buffer");
@@ -485,20 +485,20 @@ pub fn isModuleExportsAssignedNodeBufferObject(
 ) bool {
     if (stmt.tag != .expression_statement) return false;
     const expr_idx = stmt.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return false;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return false;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return false;
     if (!isModuleExportsLhs(ast, expr.data.binary.left)) return false;
     const rhs_idx = expr.data.binary.right;
-    if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return false;
-    const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+    if (rhs_idx.isNone() or @backingInt(rhs_idx) >= ast.nodes.items.len) return false;
+    const rhs = ast.nodes.items[@backingInt(rhs_idx)];
     return rhs.tag == .identifier_reference and buffer_names.contains(ast.getText(rhs.span));
 }
 
 fn isModuleExportsLhs(ast: *const Ast, idx: NodeIndex) bool {
     const parts = staticMemberParts(ast, idx) orelse return false;
-    const obj = ast.nodes.items[@intFromEnum(parts.object)];
-    const prop = ast.nodes.items[@intFromEnum(parts.property)];
+    const obj = ast.nodes.items[@backingInt(parts.object)];
+    const prop = ast.nodes.items[@backingInt(parts.property)];
     return obj.tag == .identifier_reference and
         prop.tag == .identifier_reference and
         std.mem.eql(u8, ast.getText(obj.span), "module") and
@@ -507,16 +507,16 @@ fn isModuleExportsLhs(ast: *const Ast, idx: NodeIndex) bool {
 
 fn isCjsNamedExportLhs(ast: *const Ast, idx: NodeIndex) bool {
     const outer = staticMemberParts(ast, idx) orelse return false;
-    const prop = ast.nodes.items[@intFromEnum(outer.property)];
+    const prop = ast.nodes.items[@backingInt(outer.property)];
     if (prop.tag != .identifier_reference and prop.tag != .private_identifier) return false;
-    const obj = ast.nodes.items[@intFromEnum(outer.object)];
+    const obj = ast.nodes.items[@backingInt(outer.object)];
     if (obj.tag == .identifier_reference and std.mem.eql(u8, ast.getText(obj.span), "exports")) {
         return true;
     }
     if (obj.tag != .static_member_expression) return false;
     const inner = staticMemberParts(ast, outer.object) orelse return false;
-    const inner_obj = ast.nodes.items[@intFromEnum(inner.object)];
-    const inner_prop = ast.nodes.items[@intFromEnum(inner.property)];
+    const inner_obj = ast.nodes.items[@backingInt(inner.object)];
+    const inner_prop = ast.nodes.items[@backingInt(inner.property)];
     return inner_obj.tag == .identifier_reference and
         inner_prop.tag == .identifier_reference and
         std.mem.eql(u8, ast.getText(inner_obj.span), "module") and
@@ -524,8 +524,8 @@ fn isCjsNamedExportLhs(ast: *const Ast, idx: NodeIndex) bool {
 }
 
 fn moduleExportsRequireSpanAt(ast: *const Ast, idx: NodeIndex) ?Span {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-    const stmt = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const stmt = ast.nodes.items[@backingInt(idx)];
     if (stmt.tag == .block_statement) {
         const inner = singleBlockStatement(ast, idx) orelse return null;
         return moduleExportsRequireSpanAt(ast, inner);
@@ -538,31 +538,31 @@ fn moduleExportsRequireSpanAt(ast: *const Ast, idx: NodeIndex) ?Span {
     }
     if (stmt.tag != .expression_statement) return null;
     const expr_idx = stmt.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
-    const op: Kind = @enumFromInt(expr.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(expr.data.binary.flags));
     if (op != .eq) return null;
     if (!isModuleExportsLhs(ast, expr.data.binary.left)) return null;
 
     const rhs_idx = expr.data.binary.right;
-    if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return null;
-    const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+    if (rhs_idx.isNone() or @backingInt(rhs_idx) >= ast.nodes.items.len) return null;
+    const rhs = ast.nodes.items[@backingInt(rhs_idx)];
     if (rhs.tag != .call_expression) return null;
     const e = rhs.data.extra;
     if (!ast.hasExtra(e, 2)) return null;
 
     const callee_idx = ast.readExtraNode(e, 0);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
-    const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return null;
+    const callee = ast.nodes.items[@backingInt(callee_idx)];
     if (callee.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(callee.span), "require")) return null;
 
     const args_start = ast.readExtra(e, 1);
     const args_len = ast.readExtra(e, 2);
     if (args_len != 1 or args_start >= ast.extra_data.items.len) return null;
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return null;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) return null;
+    const arg = ast.nodes.items[@backingInt(arg_idx)];
     if (arg.tag != .string_literal) return null;
     return arg.span;
 }
@@ -587,19 +587,19 @@ pub fn moduleExportsRequireProxyMatches(
     const ast = &(m.ast orelse return false);
     const stmt_ni = infos.stmts[stmt_idx].node_idx;
     if (stmt_ni >= ast.nodes.items.len) return false;
-    const proxy_target = moduleExportsRequireTargetAt(m, ast, @enumFromInt(stmt_ni)) orelse return false;
-    return @intFromEnum(proxy_target) == @intFromEnum(target);
+    const proxy_target = moduleExportsRequireTargetAt(m, ast, @fromBackingInt(@intCast(stmt_ni))) orelse return false;
+    return @backingInt(proxy_target) == @backingInt(target);
 }
 
 fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeIndex, property: NodeIndex } {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[@backingInt(idx)];
     if (node.tag != .static_member_expression) return null;
     const e = node.data.extra;
     if (!ast.hasExtra(e, 1)) return null;
-    const obj_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 0));
-    const prop_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 1));
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 0)));
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 1)));
     if (obj_idx.isNone() or prop_idx.isNone()) return null;
-    if (@intFromEnum(obj_idx) >= ast.nodes.items.len or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+    if (@backingInt(obj_idx) >= ast.nodes.items.len or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
     return .{ .object = obj_idx, .property = prop_idx };
 }

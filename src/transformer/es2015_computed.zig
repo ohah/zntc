@@ -39,7 +39,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         pub fn hasComputedProperty(self: *const Transformer, node: Node) bool {
             const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (members) |raw_idx| {
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const key_idx = memberKeyIdx(self, member);
                 if (key_idx.isNone()) continue;
                 const key = self.ast.getNode(key_idx);
@@ -68,7 +68,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             {
                 const members = self.ast.extra_data.items[members_start .. members_start + members_len];
                 for (members, 0..) |raw_idx, idx| {
-                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                     const key_idx = memberKeyIdx(self, member);
                     if (key_idx.isNone()) continue;
                     const key = self.ast.getNode(key_idx);
@@ -86,7 +86,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 var i_pre: u32 = 0;
                 while (i_pre < @as(u32, @intCast(first_computed))) : (i_pre += 1) {
                     const raw_idx = self.ast.extra_data.items[members_start + i_pre];
-                    const new_member = try self.visitNode(@enumFromInt(raw_idx));
+                    const new_member = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!new_member.isNone()) {
                         try self.scratch.append(self.allocator, new_member);
                     }
@@ -118,7 +118,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             var i_post: u32 = @intCast(first_computed);
             while (i_post < members_len) : (i_post += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + i_post];
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
 
                 if (member.tag == .spread_element) {
                     // spread는 es2018 변환이 먼저 처리하므로 여기 도달하지 않음.
@@ -133,7 +133,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // 일반/async/generator 메서드는 es2015_object_methods가 먼저 object_property로 변환한다.
                     // getter/setter 외의 메서드가 여기 도달하면 pass 순서가 깨진 것.
                     std.debug.assert(is_getter or is_setter);
-                    const define_call = try emitDefineAccessor(self, @enumFromInt(raw_idx), is_getter, temp_span, span);
+                    const define_call = try emitDefineAccessor(self, @fromBackingInt(@intCast(raw_idx)), is_getter, temp_span, span);
                     try self.scratch.append(self.allocator, define_call);
                     continue;
                 }
@@ -214,7 +214,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         fn memberKeyIdx(self: *const Transformer, member: Node) NodeIndex {
             return switch (member.tag) {
                 .object_property => member.data.binary.left,
-                .method_definition => @enumFromInt(self.ast.extra_data.items[member.data.extra]),
+                .method_definition => @fromBackingInt(@intCast(self.ast.extra_data.items[member.data.extra])),
                 else => NodeIndex.none,
             };
         }
@@ -231,7 +231,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
-            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]);
+            const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + ast_mod.MethodExtra.key]));
 
             const pe = @import("parameter_environment.zig");
             var func_expr = try pe.nameLoweredMember(
@@ -282,7 +282,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
         fn buildAccessorFunction(self: *Transformer, member_idx: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const fn_expr = try self.ast.addNode(.{
                 .tag = .function_expression,
                 .span = span,

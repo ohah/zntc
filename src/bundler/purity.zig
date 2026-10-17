@@ -64,7 +64,7 @@ pub fn clearPureCallFlags(ast: *Ast) void {
 }
 
 fn calleeMatchesUserPure(ast: *const Ast, callee_idx: NodeIndex, pure_patterns: []const []const u8) bool {
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
 
     var buf: [256]u8 = undefined;
     const callee_name = calleePath(ast, callee_idx, &buf) orelse return false;
@@ -81,8 +81,8 @@ fn calleeMatchesUserPure(ast: *const Ast, callee_idx: NodeIndex, pure_patterns: 
 }
 
 fn calleePath(ast: *const Ast, idx: NodeIndex, buf: []u8) ?[]const u8 {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[@backingInt(idx)];
     return switch (node.tag) {
         .identifier_reference => ast.getText(node.span),
         .static_member_expression => staticMemberPath(ast, node, buf),
@@ -99,8 +99,8 @@ fn staticMemberPath(ast: *const Ast, node: Node, buf: []u8) ?[]const u8 {
 
     const object_idx = ast.readExtraNode(e, 0);
     const property_idx = ast.readExtraNode(e, 1);
-    if (property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return null;
-    const property = ast.nodes.items[@intFromEnum(property_idx)];
+    if (property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return null;
+    const property = ast.nodes.items[@backingInt(property_idx)];
     if (property.tag != .identifier_reference) return null;
 
     const object_name = calleePath(ast, object_idx, buf) orelse return null;
@@ -125,8 +125,8 @@ pub fn isExprPure(ast: *const Ast, idx: NodeIndex, unresolved_globals: ?*const G
 
 fn isExprPureDepth(ast: *const Ast, idx: NodeIndex, unresolved_globals: ?*const GlobalRefSet, depth: u32) bool {
     if (depth >= max_depth) return false;
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return true;
-    return isNodePureDepth(ast, ast.nodes.items[@intFromEnum(idx)], unresolved_globals, depth);
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return true;
+    return isNodePureDepth(ast, ast.nodes.items[@backingInt(idx)], unresolved_globals, depth);
 }
 
 /// Node를 받아 순수성을 판정한다.
@@ -178,8 +178,8 @@ fn isNodePureDepth(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
             const e = node.data.extra;
             if (!ast.hasExtra(e, 1)) return false;
             const op_kind: u8 = @truncate(ast.readExtra(e, 1) & 0xFF);
-            if (op_kind == @intFromEnum(Token.Kind.kw_delete)) return false;
-            return isExprPureDepth(ast, @enumFromInt(ast.readExtra(e, 0)), unresolved_globals, d);
+            if (op_kind == @backingInt(Token.Kind.kw_delete)) return false;
+            return isExprPureDepth(ast, @fromBackingInt(@intCast(ast.readExtra(e, 0))), unresolved_globals, d);
         },
 
         // 멤버 접근은 순수로 본다 — 단, getter 가 있는 객체 리터럴(또는 그것으로 초기화한
@@ -228,7 +228,7 @@ fn topLevelBindingHasGetter(ast: *const Ast, name: []const u8) bool {
     while (it.next()) |stmt_idx| {
         var stmt = ast.getNode(stmt_idx);
         if (stmt.tag == .export_named_declaration) {
-            const decl: NodeIndex = @enumFromInt(ast.extra_data.items[stmt.data.extra]);
+            const decl: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[stmt.data.extra]));
             if (decl.isNone()) continue;
             stmt = ast.getNode(decl);
         }
@@ -237,12 +237,12 @@ fn topLevelBindingHasGetter(ast: *const Ast, name: []const u8) bool {
         var j: u32 = 0;
         const len = ast.extra_data.items[e + 2];
         while (j < len) : (j += 1) {
-            const declarator = ast.getNode(@enumFromInt(ast.extra_data.items[ast.extra_data.items[e + 1] + j]));
-            const binding: NodeIndex = @enumFromInt(ast.extra_data.items[declarator.data.extra]);
+            const declarator = ast.getNode(@fromBackingInt(@intCast(ast.extra_data.items[ast.extra_data.items[e + 1] + j])));
+            const binding: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[declarator.data.extra]));
             if (binding.isNone()) continue;
             const binding_node = ast.getNode(binding);
             if (binding_node.tag != .binding_identifier or !std.mem.eql(u8, ast.getText(binding_node.span), name)) continue;
-            var init: NodeIndex = @enumFromInt(ast.extra_data.items[declarator.data.extra + 2]);
+            var init: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[declarator.data.extra + 2]));
             while (!init.isNone() and ast.getNode(init).tag == .parenthesized_expression) init = ast.getNode(init).data.unary.operand;
             if (!init.isNone() and ast.getNode(init).tag == .object_expression and objectLiteralHasGetter(ast, ast.getNode(init))) return true;
         }
@@ -272,9 +272,9 @@ fn isCallOrNewPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Glob
     const globals = unresolved_globals orelse return false;
     if (!ast.hasExtra(node.data.extra, 2)) return false;
 
-    const callee_idx: NodeIndex = @enumFromInt(ast.readExtra(node.data.extra, 0));
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
-    const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(node.data.extra, 0)));
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.nodes.items[@backingInt(callee_idx)];
     if (isKnownPureStaticCall(ast, node, callee, unresolved_globals, depth)) return true;
     if (callee.tag != .identifier_reference) return false;
 
@@ -322,10 +322,10 @@ fn isKnownPureStaticCall(
     const object_idx = ast.readExtraNode(member_extra, 0);
     const property_idx = ast.readExtraNode(member_extra, 1);
     if (object_idx.isNone() or property_idx.isNone()) return false;
-    if (@intFromEnum(object_idx) >= ast.nodes.items.len or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+    if (@backingInt(object_idx) >= ast.nodes.items.len or @backingInt(property_idx) >= ast.nodes.items.len) return false;
 
-    const object = ast.nodes.items[@intFromEnum(object_idx)];
-    const property = ast.nodes.items[@intFromEnum(property_idx)];
+    const object = ast.nodes.items[@backingInt(object_idx)];
+    const property = ast.nodes.items[@backingInt(property_idx)];
     if (object.tag != .identifier_reference or property.tag != .identifier_reference) return false;
     if (!std.mem.eql(u8, ast.getText(object.span), "Object")) return false;
     const globals = unresolved_globals orelse return false;
@@ -338,14 +338,14 @@ fn isKnownPureStaticCall(
 
     if (std.mem.eql(u8, property_name, "freeze")) {
         if (args_len != 1 or args_start >= ast.extra_data.items.len) return false;
-        const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+        const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
         return isKnownPureFreezeArg(ast, arg_idx, unresolved_globals, depth);
     }
 
     if (std.mem.eql(u8, property_name, "assign")) {
         if (args_len < 2 or args_start + args_len > ast.extra_data.items.len) return false;
         for (ast.extra_data.items[args_start .. args_start + args_len]) |raw_arg| {
-            const arg_idx: NodeIndex = @enumFromInt(raw_arg);
+            const arg_idx: NodeIndex = @fromBackingInt(@intCast(raw_arg));
             if (!isKnownPureAssignObjectArg(ast, arg_idx, unresolved_globals, depth)) return false;
         }
         return true;
@@ -360,8 +360,8 @@ fn isKnownPureFreezeArg(
     unresolved_globals: ?*const GlobalRefSet,
     depth: u32,
 ) bool {
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@backingInt(arg_idx)];
     const fresh_arg = switch (arg.tag) {
         .object_expression,
         .array_expression,
@@ -381,8 +381,8 @@ fn isKnownPureAssignObjectArg(
     unresolved_globals: ?*const GlobalRefSet,
     depth: u32,
 ) bool {
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@backingInt(arg_idx)];
     return switch (arg.tag) {
         .object_expression => isPlainObjectLiteralPure(ast, arg, unresolved_globals, depth),
         .parenthesized_expression => isKnownPureAssignObjectArg(ast, arg.data.unary.operand, unresolved_globals, depth),
@@ -400,14 +400,14 @@ fn isPlainObjectLiteralPure(
     if (list.start + list.len > ast.extra_data.items.len) return false;
 
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_prop| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return false;
-        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_prop));
+        if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return false;
+        const prop = ast.nodes.items[@backingInt(prop_idx)];
         if (prop.tag != .object_property) return false;
 
         const key_idx = prop.data.binary.left;
-        if (!key_idx.isNone() and @intFromEnum(key_idx) < ast.nodes.items.len) {
-            if (ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key) return false;
+        if (!key_idx.isNone() and @backingInt(key_idx) < ast.nodes.items.len) {
+            if (ast.nodes.items[@backingInt(key_idx)].tag == .computed_property_key) return false;
         }
         if (!isExprPureDepth(ast, prop.data.binary.right, unresolved_globals, depth)) return false;
     }
@@ -474,9 +474,9 @@ fn isPureCollectionArgs(
     if (args_len > 1) return false; // spec: 단일 인자. 초과면 보수적
     if (args_start >= ast.extra_data.items.len) return false;
 
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@backingInt(arg_idx)];
 
     return switch (arg.tag) {
         .null_literal => true,
@@ -491,10 +491,10 @@ fn isPureCollectionArgs(
             const list = arg.data.list;
             if (list.start + list.len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_el| {
-                const el_idx: NodeIndex = @enumFromInt(raw_el);
+                const el_idx: NodeIndex = @fromBackingInt(@intCast(raw_el));
                 if (el_idx.isNone()) continue; // elision NodeIndex.none
-                if (@intFromEnum(el_idx) >= ast.nodes.items.len) break :blk false;
-                const el = ast.nodes.items[@intFromEnum(el_idx)];
+                if (@backingInt(el_idx) >= ast.nodes.items.len) break :blk false;
+                const el = ast.nodes.items[@backingInt(el_idx)];
                 if (el.tag == .elision) continue;
                 if (el.tag == .spread_element) break :blk false;
                 // Map/WeakMap: 각 원소가 [k,v] ArrayExpression 이어야
@@ -528,9 +528,9 @@ fn isPureErrorArgs(
     if (args_len > 1) return false;
     if (args_start >= ast.extra_data.items.len) return false;
 
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@backingInt(arg_idx)];
     if (arg.tag == .spread_element) return false;
 
     // Symbol 가능성 배제: canBeSymbol + 전역 undefined 특수 허용.
@@ -556,9 +556,9 @@ fn allArgsPure(
     if (args_len == 0) return true;
     if (args_start + args_len > ast.extra_data.items.len) return false;
     for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
-        const arg_idx: NodeIndex = @enumFromInt(raw);
-        if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) continue;
-        const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+        const arg_idx: NodeIndex = @fromBackingInt(@intCast(raw));
+        if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) continue;
+        const arg = ast.nodes.items[@backingInt(arg_idx)];
         if (arg.tag == .spread_element) return false;
         if (!isNodePureDepth(ast, arg, unresolved_globals, depth)) return false;
     }
@@ -571,9 +571,9 @@ fn isObjectPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalR
     if (list.start + list.len > ast.extra_data.items.len) return false;
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
     for (indices) |raw_idx| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) continue;
-        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) continue;
+        const prop = ast.nodes.items[@backingInt(prop_idx)];
         switch (prop.tag) {
             .object_property => {
                 const key_idx = prop.data.binary.left;
@@ -605,8 +605,8 @@ fn computedKeyNodeHasSideEffects(
     unresolved_globals: ?*const GlobalRefSet,
     depth: u32,
 ) bool {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
-    const key_node = ast.nodes.items[@intFromEnum(key_idx)];
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
+    const key_node = ast.nodes.items[@backingInt(key_idx)];
     if (key_node.tag != .computed_property_key) return false;
     return !isExprPureDepth(ast, key_node.data.unary.operand, unresolved_globals, depth);
 }
@@ -617,9 +617,9 @@ fn isArrayPure(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRe
     if (list.start + list.len > ast.extra_data.items.len) return false;
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
     for (indices) |raw_idx| {
-        const elem_idx: NodeIndex = @enumFromInt(raw_idx);
-        if (elem_idx.isNone() or @intFromEnum(elem_idx) >= ast.nodes.items.len) continue;
-        const elem = ast.nodes.items[@intFromEnum(elem_idx)];
+        const elem_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (elem_idx.isNone() or @backingInt(elem_idx) >= ast.nodes.items.len) continue;
+        const elem = ast.nodes.items[@backingInt(elem_idx)];
         if (elem.tag == .spread_element) return false;
         if (!isNodePureDepth(ast, elem, unresolved_globals, depth)) return false;
     }
@@ -637,13 +637,13 @@ pub fn isVarDeclPure(ast: *const Ast, node: Node, unresolved_globals: ?*const Gl
     if (list_start + list_len > ast.extra_data.items.len) return false;
     const decls = ast.extra_data.items[list_start .. list_start + list_len];
     for (decls) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-        const decl = ast.nodes.items[@intFromEnum(idx)];
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
+        const decl = ast.nodes.items[@backingInt(idx)];
         if (decl.tag != .variable_declarator) return false;
         const de = decl.data.extra;
         if (de + 2 >= ast.extra_data.items.len) return false;
-        const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de + 2]);
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[de + 2]));
         if (init_idx.isNone()) continue;
         if (!isExprPureDepth(ast, init_idx, unresolved_globals, 0)) return false;
     }
@@ -662,9 +662,9 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*con
         .export_named_declaration => {
             const e = node.data.extra;
             if (e + 3 < ast.extra_data.items.len) {
-                const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-                if (!decl_idx.isNone() and @intFromEnum(decl_idx) < ast.nodes.items.len) {
-                    return stmtHasSideEffects(ast, ast.nodes.items[@intFromEnum(decl_idx)], unresolved_globals);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
+                if (!decl_idx.isNone() and @backingInt(decl_idx) < ast.nodes.items.len) {
+                    return stmtHasSideEffects(ast, ast.nodes.items[@backingInt(decl_idx)], unresolved_globals);
                 }
                 return false;
             }
@@ -672,8 +672,8 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*con
         },
         .export_default_declaration => {
             const inner_idx = node.data.unary.operand;
-            if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return true;
-            const inner = ast.nodes.items[@intFromEnum(inner_idx)];
+            if (inner_idx.isNone() or @backingInt(inner_idx) >= ast.nodes.items.len) return true;
+            const inner = ast.nodes.items[@backingInt(inner_idx)];
             return switch (inner.tag) {
                 .function_declaration => false,
                 .class_declaration => classHasSideEffects(ast, inner, unresolved_globals),
@@ -698,8 +698,8 @@ pub fn stmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*con
 }
 
 fn exprStmtHasSideEffects(ast: *const Ast, expr_idx: NodeIndex, unresolved_globals: ?*const GlobalRefSet) bool {
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return false;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return false;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag == .assignment_expression) {
         return assignmentHasSideEffects(ast, expr, unresolved_globals);
     }
@@ -709,8 +709,8 @@ fn exprStmtHasSideEffects(ast: *const Ast, expr_idx: NodeIndex, unresolved_globa
 fn assignmentHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const GlobalRefSet) bool {
     const left_idx = node.data.binary.left;
     const right_idx = node.data.binary.right;
-    if (left_idx.isNone() or @intFromEnum(left_idx) >= ast.nodes.items.len) return true;
-    const left = ast.nodes.items[@intFromEnum(left_idx)];
+    if (left_idx.isNone() or @backingInt(left_idx) >= ast.nodes.items.len) return true;
+    const left = ast.nodes.items[@backingInt(left_idx)];
 
     // A top-level assignment to an unresolved global can mutate global state. A bare
     // identifier (read or assignment-target form) that is not unresolved is a module-local
@@ -731,13 +731,13 @@ fn ifStmtHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*const
 
 fn childStmtHasSideEffects(ast: *const Ast, idx: NodeIndex, unresolved_globals: ?*const GlobalRefSet) bool {
     if (idx.isNone()) return false;
-    if (@intFromEnum(idx) >= ast.nodes.items.len) return true;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (@backingInt(idx) >= ast.nodes.items.len) return true;
+    const node = ast.nodes.items[@backingInt(idx)];
     if (node.tag == .block_statement) {
         const list = node.data.list;
         if (list.start + list.len > ast.extra_data.items.len) return true;
         for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-            if (childStmtHasSideEffects(ast, @enumFromInt(raw), unresolved_globals)) return true;
+            if (childStmtHasSideEffects(ast, @fromBackingInt(@intCast(raw)), unresolved_globals)) return true;
         }
         return false;
     }
@@ -752,7 +752,7 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*co
     if (e + 7 >= ast.extra_data.items.len) return true;
 
     // extends 절이 불순이면 side-effect
-    const super_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 1]);
+    const super_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 1]));
     if (!isExprPureDepth(ast, super_idx, unresolved_globals, 0)) return true;
 
     // decorator가 있으면 side-effect
@@ -760,20 +760,20 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*co
     if (deco_len > 0) return true;
 
     // class body 멤버 순회
-    const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
+    const body_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 2]));
     if (body_idx.isNone()) return false;
-    if (@intFromEnum(body_idx) >= ast.nodes.items.len) return true;
+    if (@backingInt(body_idx) >= ast.nodes.items.len) return true;
 
-    const body_node = ast.nodes.items[@intFromEnum(body_idx)];
+    const body_node = ast.nodes.items[@backingInt(body_idx)];
     if (body_node.tag != .class_body) return true;
 
     const members = body_node.data.list;
     if (members.start + members.len > ast.extra_data.items.len) return true;
 
     for (ast.extra_data.items[members.start .. members.start + members.len]) |raw_idx| {
-        const mi: NodeIndex = @enumFromInt(raw_idx);
-        if (mi.isNone() or @intFromEnum(mi) >= ast.nodes.items.len) continue;
-        const member = ast.nodes.items[@intFromEnum(mi)];
+        const mi: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (mi.isNone() or @backingInt(mi) >= ast.nodes.items.len) continue;
+        const member = ast.nodes.items[@backingInt(mi)];
 
         switch (member.tag) {
             .static_block => return true,
@@ -783,7 +783,7 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*co
                 if (computedKeyHasSideEffects(ast, me, unresolved_globals)) return true;
                 // static field의 불순 초기화: static flag (bit 0)
                 if ((ast.extra_data.items[me + 2] & 1) != 0) {
-                    const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[me + 1]);
+                    const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[me + 1]));
                     if (!isExprPureDepth(ast, init_idx, unresolved_globals, 0)) return true;
                 }
                 if (ast.extra_data.items[me + 4] > 0) return true; // decorator
@@ -804,7 +804,7 @@ pub fn classHasSideEffects(ast: *const Ast, node: Node, unresolved_globals: ?*co
 /// class member의 computed key가 불순인지 검사. extra_data[extra_offset]에서 key NodeIndex를 읽는다.
 fn computedKeyHasSideEffects(ast: *const Ast, extra_offset: u32, unresolved_globals: ?*const GlobalRefSet) bool {
     if (extra_offset >= ast.extra_data.items.len) return true;
-    const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_offset]);
+    const key_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_offset]));
     return computedKeyNodeHasSideEffects(ast, key_idx, unresolved_globals, 0);
 }
 
@@ -829,7 +829,7 @@ pub fn canBeSymbol(ast: *const Ast, idx: NodeIndex) bool {
 fn canBeSymbolDepth(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
     if (depth >= max_depth) return true;
     if (idx.isNone()) return false;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return true;
     const node = ast.nodes.items[ni];
     const d = depth + 1;
@@ -857,7 +857,7 @@ fn canBeSymbolDepth(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
             const list = node.data.list;
             if (list.len == 0 or list.start + list.len > ast.extra_data.items.len) break :blk true;
             const last_raw = ast.extra_data.items[list.start + list.len - 1];
-            break :blk canBeSymbolDepth(ast, @enumFromInt(last_raw), d);
+            break :blk canBeSymbolDepth(ast, @fromBackingInt(@intCast(last_raw)), d);
         },
 
         .conditional_expression => blk: {
@@ -924,7 +924,7 @@ pub fn isRemovableAtStmtPos(ast: *const Ast, idx: NodeIndex, ctx: StmtRemovalCtx
 pub fn isRemovableAtStmtPosDepth(ast: *const Ast, idx: NodeIndex, ctx: StmtRemovalCtx, depth: u32) bool {
     if (depth >= max_stmt_removable_depth) return false;
     if (idx.isNone()) return true;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[ni];
     const d = depth + 1;
@@ -952,19 +952,19 @@ pub fn isRemovableAtStmtPosDepth(ast: *const Ast, idx: NodeIndex, ctx: StmtRemov
             // `!` / `void` / `typeof` 만 사용자 코드를 절대 안 부른다.
             // `-x` / `+x` / `~x` 는 ToNumeric → valueOf/Symbol.toPrimitive 호출 + Symbol
             // 피연산자면 TypeError. `delete` 는 mutation.
-            const op: Token.Kind = @enumFromInt(op_kind);
+            const op: Token.Kind = @fromBackingInt(@intCast(op_kind));
             switch (op) {
                 .bang, .kw_void, .kw_typeof => {},
                 else => break :blk false,
             }
-            break :blk isRemovableAtStmtPosDepth(ast, @enumFromInt(ast.readExtra(e, 0)), ctx, d);
+            break :blk isRemovableAtStmtPosDepth(ast, @fromBackingInt(@intCast(ast.readExtra(e, 0))), ctx, d);
         },
 
         .binary_expression => blk: {
             // ToPrimitive 가 전혀 안 도는 연산만 허용 — `===` / `!==`.
             // 나머지(`+`, `-`, `<`, `==`, `in`, `instanceof` …)는 valueOf/toString 호출
             // 또는 TypeError 가 가능하다.
-            const op: Token.Kind = @enumFromInt(node.data.binary.flags);
+            const op: Token.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
             switch (op) {
                 .eq3, .neq2 => {},
                 else => break :blk false,
@@ -988,7 +988,7 @@ pub fn isRemovableAtStmtPosDepth(ast: *const Ast, idx: NodeIndex, ctx: StmtRemov
             const list = node.data.list;
             if (list.start + list.len > ast.extra_data.items.len) break :blk false;
             for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                if (!isRemovableAtStmtPosDepth(ast, @enumFromInt(raw), ctx, d)) break :blk false;
+                if (!isRemovableAtStmtPosDepth(ast, @fromBackingInt(@intCast(raw)), ctx, d)) break :blk false;
             }
             break :blk true;
         },
@@ -1032,7 +1032,7 @@ fn isIdentRemovableAtStmtPos(ni: u32, ctx: StmtRemovalCtx) bool {
 
     // top-level(scope 0) 바인딩과 import 는 live binding — `import * as ns` 등의 초기화
     // 순서를 건드릴 수 있고 module TDZ 도 가능하다. 보수적으로 유지.
-    if (@intFromEnum(sym.scope_id) == 0) return false;
+    if (@backingInt(sym.scope_id) == 0) return false;
     if (sym.decl_flags.is_import) return false;
 
     // **TDZ** — `let` / `const` / `class` 는 선언이 *실행되기 전* 읽으면 ReferenceError 다.
@@ -1067,7 +1067,7 @@ fn isObjectRemovableAtStmtPos(ast: *const Ast, node: Node, ctx: StmtRemovalCtx, 
             .method_definition => {
                 const e = prop.data.extra;
                 if (e + ast_mod.MethodExtra.deco_len >= ast.extra_data.items.len) return false;
-                if (isComputedKey(ast, @enumFromInt(ast.extra_data.items[e + ast_mod.MethodExtra.key]))) return false;
+                if (isComputedKey(ast, @fromBackingInt(@intCast(ast.extra_data.items[e + ast_mod.MethodExtra.key])))) return false;
                 if (ast.extra_data.items[e + ast_mod.MethodExtra.deco_len] > 0) return false; // decorator
             },
             // spread (`{...x}`) 는 iterator/Proxy trap → 거부. 그 외 미지 tag 도 보수적 거부.
@@ -1078,8 +1078,8 @@ fn isObjectRemovableAtStmtPos(ast: *const Ast, node: Node, ctx: StmtRemovalCtx, 
 }
 
 fn isComputedKey(ast: *const Ast, key_idx: NodeIndex) bool {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
-    return ast.nodes.items[@intFromEnum(key_idx)].tag == .computed_property_key;
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
+    return ast.nodes.items[@backingInt(key_idx)].tag == .computed_property_key;
 }
 
 /// 배열 리터럴 생성이 삭제 가능한지. hole(elision)은 평가가 없고, spread 는 iterator protocol
@@ -1090,10 +1090,10 @@ fn isArrayRemovableAtStmtPos(ast: *const Ast, node: Node, ctx: StmtRemovalCtx, d
     if (list.start + list.len > ast.extra_data.items.len) return false;
 
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-        const elem_idx: NodeIndex = @enumFromInt(raw);
+        const elem_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (elem_idx.isNone()) continue; // hole
-        if (@intFromEnum(elem_idx) >= ast.nodes.items.len) return false;
-        const elem = ast.nodes.items[@intFromEnum(elem_idx)];
+        if (@backingInt(elem_idx) >= ast.nodes.items.len) return false;
+        const elem = ast.nodes.items[@backingInt(elem_idx)];
         if (elem.tag == .elision) continue;
         if (elem.tag == .spread_element) return false;
         if (!isRemovableAtStmtPosDepth(ast, elem_idx, ctx, depth)) return false;
@@ -1112,10 +1112,10 @@ fn argsRemovableAtStmtPos(ast: *const Ast, node: Node, ctx: StmtRemovalCtx, dept
     if (args_start + args_len > ast.extra_data.items.len) return false;
 
     for (ast.extra_data.items[args_start .. args_start + args_len]) |raw| {
-        const arg_idx: NodeIndex = @enumFromInt(raw);
+        const arg_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (arg_idx.isNone()) continue;
-        if (@intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-        if (ast.nodes.items[@intFromEnum(arg_idx)].tag == .spread_element) return false;
+        if (@backingInt(arg_idx) >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[@backingInt(arg_idx)].tag == .spread_element) return false;
         if (!isRemovableAtStmtPosDepth(ast, arg_idx, ctx, depth)) return false;
     }
     return true;

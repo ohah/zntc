@@ -71,7 +71,7 @@ const Printer = struct {
         const ids = self.tree.getNodeList(list);
         for (ids, 0..) |child, i| {
             if (i != 0 and sep.len != 0) try self.w(sep);
-            try self.node(@enumFromInt(child));
+            try self.node(@fromBackingInt(@intCast(child)));
         }
     }
 
@@ -82,7 +82,7 @@ const Printer = struct {
             .disjunction => try self.childList(n.getNodeList(), "|"),
             .alternative => try self.childList(n.getNodeList(), ""),
 
-            .boundary_assertion => switch (@as(ast.BoundaryAssertionKind, @enumFromInt(n.data[0]))) {
+            .boundary_assertion => switch (@as(ast.BoundaryAssertionKind, @fromBackingInt(@intCast(n.data[0])))) {
                 .start => try self.wb('^'),
                 .end => try self.wb('$'),
                 .boundary => try self.w("\\b"),
@@ -90,13 +90,13 @@ const Printer = struct {
             },
 
             .lookaround_assertion => {
-                try self.w(switch (@as(ast.LookAroundAssertionKind, @enumFromInt(n.data[0]))) {
+                try self.w(switch (@as(ast.LookAroundAssertionKind, @fromBackingInt(@intCast(n.data[0])))) {
                     .lookahead => "(?=",
                     .negative_lookahead => "(?!",
                     .lookbehind => "(?<=",
                     .negative_lookbehind => "(?<!",
                 });
-                try self.node(@enumFromInt(n.data[1]));
+                try self.node(@fromBackingInt(@intCast(n.data[1])));
                 try self.wb(')');
             },
 
@@ -105,7 +105,7 @@ const Printer = struct {
 
             .character_class_escape => {
                 try self.wb('\\');
-                try self.wb(switch (@as(ast.CharacterClassEscapeKind, @enumFromInt(n.data[0]))) {
+                try self.wb(switch (@as(ast.CharacterClassEscapeKind, @fromBackingInt(@intCast(n.data[0])))) {
                     .d => 'd',
                     .negative_d => 'D',
                     .s => 's',
@@ -123,7 +123,7 @@ const Printer = struct {
 
             .character_class => {
                 const negative = (n.data[0] & 1) != 0;
-                const kind: ast.CharacterClassContentsKind = @enumFromInt((n.data[0] >> 1) & 0x3);
+                const kind: ast.CharacterClassContentsKind = @fromBackingInt(@intCast((n.data[0] >> 1) & 0x3));
                 try self.wb('[');
                 if (negative) try self.wb('^');
                 try self.childList(n.getClassBody(), switch (kind) {
@@ -135,9 +135,9 @@ const Printer = struct {
             },
 
             .character_class_range => {
-                try self.node(@enumFromInt(n.data[0]));
+                try self.node(@fromBackingInt(@intCast(n.data[0])));
                 try self.wb('-');
-                try self.node(@enumFromInt(n.data[1]));
+                try self.node(@fromBackingInt(@intCast(n.data[1])));
             },
 
             .class_string_disjunction => {
@@ -155,7 +155,7 @@ const Printer = struct {
                     try self.w(self.tree.source[n.data[0]..n.data[1]]);
                     try self.wb('>');
                 }
-                try self.node(@enumFromInt(n.data[2]));
+                try self.node(@fromBackingInt(@intCast(n.data[2])));
                 try self.wb(')');
             },
 
@@ -173,7 +173,7 @@ const Printer = struct {
                     }
                     try self.wb(':');
                 }
-                try self.node(@enumFromInt(n.data[2]));
+                try self.node(@fromBackingInt(@intCast(n.data[2])));
                 try self.wb(')');
             },
 
@@ -215,7 +215,7 @@ const Printer = struct {
 
     fn character(self: *Printer, n: ast.Node) PrintError!void {
         const cp = n.data[0];
-        switch (@as(ast.CharacterKind, @enumFromInt(n.data[1]))) {
+        switch (@as(ast.CharacterKind, @fromBackingInt(@intCast(n.data[1])))) {
             .symbol => try self.wCp(cp),
             .single_escape => {
                 try self.wb('\\');

@@ -114,7 +114,7 @@ pub fn declarationKeyword(self: anytype, kind: ast_mod.VariableDeclarationKind, 
     if (demote_to_var) return "var ";
     if (kind == .@"const" and self.options.minify_syntax) {
         for (self.ast.preserve_const_declaration_indices.items) |preserved| {
-            if (preserved == @intFromEnum(declaration_idx)) return "const ";
+            if (preserved == @backingInt(declaration_idx)) return "const ";
         }
     }
     return switch (kind) {
@@ -151,7 +151,7 @@ pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void 
     // A `var` nested in the factory's top-level blocks is hoisted out as well
     // (#4749). In a loop head it is `i = 0, j = 1` / `x` (for-in/of left).
     const nested_hoisted = if (self.options.esm_nested_var_decls) |set|
-        set.contains(@intFromEnum(declaration_idx))
+        set.contains(@backingInt(declaration_idx))
     else
         false;
     if (nested_hoisted and self.in_for_init) {
@@ -159,8 +159,8 @@ pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void 
         for (declarators, 0..) |raw_decl_idx, i| {
             const decl_node = self.ast.nodes.items[raw_decl_idx];
             const dextras2 = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
-            const n_idx: NodeIndex = @enumFromInt(dextras2[0]);
-            const init_idx: NodeIndex = @enumFromInt(dextras2[2]);
+            const n_idx: NodeIndex = @fromBackingInt(@intCast(dextras2[0]));
+            const init_idx: NodeIndex = @fromBackingInt(@intCast(dextras2[2]));
             if (i > 0) try self.writeByte(',');
             try self.emitNode(n_idx);
             if (!init_idx.isNone() and !self.skip_var_init) {
@@ -182,13 +182,13 @@ pub fn emitVariableDeclaration(self: anytype, declaration_idx: NodeIndex) !void 
         for (declarators) |raw_decl_idx| {
             const decl_node = self.ast.nodes.items[raw_decl_idx];
             const dextras2 = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
-            const n_idx: NodeIndex = @enumFromInt(dextras2[0]);
-            const init_idx: NodeIndex = @enumFromInt(dextras2[2]);
+            const n_idx: NodeIndex = @fromBackingInt(@intCast(dextras2[0]));
+            const init_idx: NodeIndex = @fromBackingInt(@intCast(dextras2[2]));
             if (init_idx.isNone()) continue;
 
             if (n_idx.isNone()) continue;
             if (has_output) try writeNewline(self);
-            const name_node = self.ast.nodes.items[@intFromEnum(n_idx)];
+            const name_node = self.ast.nodes.items[@backingInt(n_idx)];
             const needs_paren = name_node.tag == .object_pattern;
             if (needs_paren) try self.writeByte('(');
             try self.emitNode(n_idx);
@@ -228,7 +228,7 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
     const isStorage = struct {
         fn f(cg: anytype, meta: anytype, n_idx: NodeIndex) bool {
             if (n_idx.isNone()) return false;
-            const name_node = cg.ast.nodes.items[@intFromEnum(n_idx)];
+            const name_node = cg.ast.nodes.items[@backingInt(n_idx)];
             if (name_node.tag == .object_pattern or name_node.tag == .array_pattern) return false;
             const sid = cg.resolveSymbolId(n_idx, meta) orelse return false;
             const r = meta.renames.get(sid) orelse return false;
@@ -246,7 +246,7 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
     for (declarators, 0..) |raw, i| {
         const decl_node = self.ast.nodes.items[raw];
         const de = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
-        const n_idx: NodeIndex = @enumFromInt(de[0]);
+        const n_idx: NodeIndex = @fromBackingInt(@intCast(de[0]));
         storage_flags[i] = isStorage(self, md, n_idx);
         if (storage_flags[i]) has_storage = true;
     }
@@ -261,8 +261,8 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
     for (declarators, 0..) |raw, i| {
         const decl_node = self.ast.nodes.items[raw];
         const de = self.ast.extra_data.items[decl_node.data.extra .. decl_node.data.extra + 3];
-        const n_idx: NodeIndex = @enumFromInt(de[0]);
-        const init_idx: NodeIndex = @enumFromInt(de[2]);
+        const n_idx: NodeIndex = @fromBackingInt(@intCast(de[0]));
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(de[2]));
         if (n_idx.isNone()) continue;
 
         if (storage_flags[i]) {
@@ -284,7 +284,7 @@ fn emitPmCjsStorageDeclaration(self: anytype, list_start: u32, list_len: u32, ki
             // `name = init` (또는 name-only)를 낸다.
             if (has_output) try writeNewline(self);
             try self.write(keyword);
-            try self.emitNode(@enumFromInt(raw));
+            try self.emitNode(@fromBackingInt(@intCast(raw)));
             try self.writeByte(';');
             has_output = true;
         }
@@ -296,9 +296,9 @@ pub fn emitVariableDeclarator(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
-    const name: NodeIndex = @enumFromInt(extras[0]);
+    const name: NodeIndex = @fromBackingInt(@intCast(extras[0]));
     // extras[1] = type_ann (스킵)
-    const init_val: NodeIndex = @enumFromInt(extras[2]);
+    const init_val: NodeIndex = @fromBackingInt(@intCast(extras[2]));
 
     try self.emitNode(name);
     // skip_var_init: for-in hoisting으로 init가 별도 문장에 출력된 경우 스킵
@@ -332,9 +332,9 @@ pub fn emitFormalParam(self: anytype, node: Node) !void {
     const e = node.data.extra;
     // extra = [pattern, type_ann, default, flags, deco_start, deco_len]
     const extras = self.ast.extra_data.items[e .. e + 6];
-    const pattern: NodeIndex = @enumFromInt(extras[0]);
+    const pattern: NodeIndex = @fromBackingInt(@intCast(extras[0]));
     // extras[1] = type_ann (스킵), extras[3] = flags (스킵), extras[4..5] = decorators (스킵)
-    const default_val: NodeIndex = @enumFromInt(extras[2]);
+    const default_val: NodeIndex = @fromBackingInt(@intCast(extras[2]));
 
     try self.emitNode(pattern);
     if (!default_val.isNone()) {

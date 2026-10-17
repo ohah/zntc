@@ -235,21 +235,21 @@ fn deinitCjsExportFactsBuf(
 fn rhsSymbolFor(symbol_ids: ?[]const ?u32, rhs_node: NodeIndex) ?u32 {
     const sids = symbol_ids orelse return null;
     if (rhs_node.isNone()) return null;
-    const idx = @intFromEnum(rhs_node);
+    const idx = @backingInt(rhs_node);
     if (idx >= sids.len) return null;
     return sids[idx];
 }
 
 fn staticMemberParts(ast: *const Ast, idx: NodeIndex) ?struct { object: NodeIndex, property: NodeIndex } {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const node = ast.nodes.items[@backingInt(idx)];
     if (node.tag != .static_member_expression) return null;
     const e = node.data.extra;
     if (!ast.hasExtra(e, 1)) return null;
     const obj_idx = ast.readExtraNode(e, 0);
     const prop_idx = ast.readExtraNode(e, 1);
     if (obj_idx.isNone() or prop_idx.isNone()) return null;
-    if (@intFromEnum(obj_idx) >= ast.nodes.items.len or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+    if (@backingInt(obj_idx) >= ast.nodes.items.len or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
     return .{ .object = obj_idx, .property = prop_idx };
 }
 
@@ -263,15 +263,15 @@ fn memberAssignTargetParts(
 ) ?struct { base: NodeIndex, property: NodeIndex, rhs: NodeIndex } {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
     // `=` (단순 대입) 만. `+=` 등 compound 는 read+write 라 dead 여도 단순
     // drop 이 안전하지 않아 제외 (operator 는 binary.flags 에 토큰 Kind).
-    const op: TokenKind = @enumFromInt(expr.data.binary.flags);
+    const op: TokenKind = @fromBackingInt(@intCast(expr.data.binary.flags));
     if (op != .eq) return null;
     const parts = staticMemberParts(ast, expr.data.binary.left) orelse return null;
-    const obj = ast.nodes.items[@intFromEnum(parts.object)];
+    const obj = ast.nodes.items[@backingInt(parts.object)];
     if (obj.tag != .identifier_reference) return null;
     return .{ .base = parts.object, .property = parts.property, .rhs = expr.data.binary.right };
 }
@@ -297,13 +297,13 @@ fn workletMetadataObjectNode(
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) ?NodeIndex {
     const m = memberAssignTargetParts(ast, stmt_node) orelse return null;
-    const obj = ast.nodes.items[@intFromEnum(m.base)];
+    const obj = ast.nodes.items[@backingInt(m.base)];
 
     if (unresolved_globals) |globals| {
         if (globals.contains(ast.getText(obj.span))) return null;
     }
 
-    const prop = ast.nodes.items[@intFromEnum(m.property)];
+    const prop = ast.nodes.items[@backingInt(m.property)];
     if (prop.tag != .identifier_reference) return null;
     if (!isWorkletMetadataProperty(ast.getText(prop.span))) return null;
     return m.base;
@@ -311,8 +311,8 @@ fn workletMetadataObjectNode(
 
 fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
     const parts = staticMemberParts(ast, lhs) orelse return false;
-    const obj = ast.nodes.items[@intFromEnum(parts.object)];
-    const prop = ast.nodes.items[@intFromEnum(parts.property)];
+    const obj = ast.nodes.items[@backingInt(parts.object)];
+    const prop = ast.nodes.items[@backingInt(parts.property)];
     if (obj.tag != .identifier_reference) return false;
     return std.mem.eql(u8, ast.getText(obj.span), "module") and
         std.mem.eql(u8, ast.getText(prop.span), "exports");
@@ -322,10 +322,10 @@ fn isModuleExportsLhs(ast: *const Ast, lhs: NodeIndex) bool {
 /// `ast.staticKeyName` 으로 owned 이름을 만들도록 한다.
 fn cjsExportNamePropFromLhs(ast: *const Ast, lhs: NodeIndex) ?NodeIndex {
     const outer = staticMemberParts(ast, lhs) orelse return null;
-    const prop = ast.nodes.items[@intFromEnum(outer.property)];
+    const prop = ast.nodes.items[@backingInt(outer.property)];
     if (prop.tag != .identifier_reference and prop.tag != .private_identifier) return null;
 
-    const obj = ast.nodes.items[@intFromEnum(outer.object)];
+    const obj = ast.nodes.items[@backingInt(outer.object)];
     if (obj.tag == .identifier_reference and std.mem.eql(u8, ast.getText(obj.span), "exports")) {
         return outer.property;
     }
@@ -340,7 +340,7 @@ fn cjsExportNamePropFromLhs(ast: *const Ast, lhs: NodeIndex) ?NodeIndex {
 /// tree_shaker 가 `rhs_symbol → declaring stmt` 로 dependency 를 살릴 수 없는
 /// 리터럴/동적 멤버/optional chain 등은 보수적으로 거부한다.
 fn cjsObjectPropertyValueSeedNode(ast: *const Ast, value: NodeIndex, unresolved_globals: ?*const purity.GlobalRefSet) ?NodeIndex {
-    if (value.isNone() or @intFromEnum(value) >= ast.nodes.items.len) return null;
+    if (value.isNone() or @backingInt(value) >= ast.nodes.items.len) return null;
     if (!purity.isExprPure(ast, value, unresolved_globals)) return null;
     return definePropertyDescriptorValueSeedNode(ast, value);
 }
@@ -348,21 +348,21 @@ fn cjsObjectPropertyValueSeedNode(ast: *const Ast, value: NodeIndex, unresolved_
 fn cjsExportCandidateForStmt(alloc: std.mem.Allocator, ast: *const Ast, stmt_node: Node) !?CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
 
     if (isModuleExportsLhs(ast, expr.data.binary.left)) {
         const rhs_idx = expr.data.binary.right;
-        if (!rhs_idx.isNone() and @intFromEnum(rhs_idx) < ast.nodes.items.len) {
-            const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+        if (!rhs_idx.isNone() and @backingInt(rhs_idx) < ast.nodes.items.len) {
+            const rhs = ast.nodes.items[@backingInt(rhs_idx)];
             // `module.exports = { ... }` has its own object-shape extractor so named
             // imports can prune individual properties. Treating the whole object as
             // default here would hide that more precise path.
             if (rhs.tag != .object_expression) {
                 return .{
                     .export_name = try alloc.dupe(u8, "default"),
-                    .export_assignment_node = @intFromEnum(expr_idx),
+                    .export_assignment_node = @backingInt(expr_idx),
                     .rhs_node = rhs_idx,
                 };
             }
@@ -373,15 +373,15 @@ fn cjsExportCandidateForStmt(alloc: std.mem.Allocator, ast: *const Ast, stmt_nod
     const export_name = (try ast.staticKeyName(alloc, prop_idx)) orelse return null;
     return .{
         .export_name = export_name,
-        .export_assignment_node = @intFromEnum(expr_idx),
+        .export_assignment_node = @backingInt(expr_idx),
         .rhs_node = expr.data.binary.right,
     };
 }
 
 fn isObjectDefinePropertyCallee(ast: *const Ast, callee_idx: NodeIndex) bool {
     const outer = staticMemberParts(ast, callee_idx) orelse return false;
-    const object = ast.nodes.items[@intFromEnum(outer.object)];
-    const property = ast.nodes.items[@intFromEnum(outer.property)];
+    const object = ast.nodes.items[@backingInt(outer.object)];
+    const property = ast.nodes.items[@backingInt(outer.property)];
     if (object.tag != .identifier_reference) return false;
     return std.mem.eql(u8, ast.getText(object.span), "Object") and
         std.mem.eql(u8, ast.getText(property.span), "defineProperty");
@@ -398,8 +398,8 @@ fn isGlobalObjectDefinePropertyCallee(
 }
 
 fn isCjsExportObjectExpr(ast: *const Ast, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(idx)];
     if (node.tag == .identifier_reference) {
         return std.mem.eql(u8, ast.getText(node.span), "exports");
     }
@@ -409,8 +409,8 @@ fn isCjsExportObjectExpr(ast: *const Ast, idx: NodeIndex) bool {
 /// string_literal 의 escape 가 풀린 형태로 비교 안 하므로 raw 와 source-after-decode
 /// 가 다른 경우는 reject — 잘못된 export 매칭을 막는 보수적 가드.
 pub fn plainStringLiteralValue(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-    const n = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+    const n = ast.nodes.items[@backingInt(idx)];
     if (n.tag != .string_literal) return null;
     const raw = ast.getText(n.span);
     if (std.mem.indexOfScalar(u8, raw, '\\') != null) return null;
@@ -421,8 +421,8 @@ pub fn plainStringLiteralValue(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
 /// 인식: `identifier_reference` (`{ x: ... }`), `string_literal` (`{ "x": ... }`).
 /// 미인식: `computed_property_key`, `numeric_literal`, escape 포함 문자열.
 pub fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return null;
-    const key = ast.nodes.items[@intFromEnum(key_idx)];
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return null;
+    const key = ast.nodes.items[@backingInt(key_idx)];
     return switch (key.tag) {
         .identifier_reference => ast.getText(key.data.string_ref),
         .string_literal => plainStringLiteralValue(ast, key_idx),
@@ -431,19 +431,19 @@ pub fn plainObjectKeyName(ast: *const Ast, key_idx: NodeIndex) ?[]const u8 {
 }
 
 fn isBooleanLiteral(ast: *const Ast, idx: NodeIndex, expected: []const u8) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
-    const node = ast.nodes.items[@intFromEnum(idx)];
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return false;
+    const node = ast.nodes.items[@backingInt(idx)];
     return node.tag == .boolean_literal and std.mem.eql(u8, ast.getText(node.span), expected);
 }
 
 fn isIdentifierReference(ast: *const Ast, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
-    return ast.nodes.items[@intFromEnum(idx)].tag == .identifier_reference;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return false;
+    return ast.nodes.items[@backingInt(idx)].tag == .identifier_reference;
 }
 
 fn identifierReferenceText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     if (!isIdentifierReference(ast, idx)) return null;
-    return ast.getText(ast.nodes.items[@intFromEnum(idx)].span);
+    return ast.getText(ast.nodes.items[@backingInt(idx)].span);
 }
 
 /// defineProperty descriptor 의 `value` 위치에서 의존성 시드로 쓸 노드를 반환.
@@ -454,27 +454,27 @@ fn definePropertyDescriptorValueSeedNode(ast: *const Ast, value_idx: NodeIndex) 
     if (isIdentifierReference(ast, value_idx)) return value_idx;
 
     const parts = staticMemberParts(ast, value_idx) orelse return null;
-    const value = ast.nodes.items[@intFromEnum(value_idx)];
+    const value = ast.nodes.items[@backingInt(value_idx)];
     if (!ast.hasExtra(value.data.extra, 2)) return null;
     if ((ast.readExtra(value.data.extra, 2) & ast_mod.MemberFlags.optional_chain) != 0) return null;
     if (!isIdentifierReference(ast, parts.object)) return null;
-    const property = ast.nodes.items[@intFromEnum(parts.property)];
+    const property = ast.nodes.items[@backingInt(parts.property)];
     if (property.tag != .identifier_reference and property.tag != .private_identifier) return null;
     return parts.object;
 }
 
 fn singleReturnIdentifierFromFunctionBody(ast: *const Ast, body_idx: NodeIndex) ?NodeIndex {
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return null;
-    const body = ast.nodes.items[@intFromEnum(body_idx)];
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return null;
+    const body = ast.nodes.items[@backingInt(body_idx)];
     if (body.tag != .block_statement) return null;
 
     const list = body.data.list;
     if (list.start + list.len > ast.extra_data.items.len) return null;
     if (list.len != 1) return null;
 
-    const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[list.start]);
-    if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) return null;
-    const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+    const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start]));
+    if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) return null;
+    const stmt = ast.nodes.items[@backingInt(stmt_idx)];
     if (stmt.tag != .return_statement) return null;
 
     const ret = stmt.data.unary.operand;
@@ -482,8 +482,8 @@ fn singleReturnIdentifierFromFunctionBody(ast: *const Ast, body_idx: NodeIndex) 
 }
 
 fn zeroParamFunctionReturnIdentifier(ast: *const Ast, fn_idx: NodeIndex) ?NodeIndex {
-    if (fn_idx.isNone() or @intFromEnum(fn_idx) >= ast.nodes.items.len) return null;
-    const fn_node = ast.nodes.items[@intFromEnum(fn_idx)];
+    if (fn_idx.isNone() or @backingInt(fn_idx) >= ast.nodes.items.len) return null;
+    const fn_node = ast.nodes.items[@backingInt(fn_idx)];
 
     const flags_slot: u32 = switch (fn_node.tag) {
         .function_expression => 3,
@@ -508,8 +508,8 @@ fn zeroParamFunctionReturnIdentifier(ast: *const Ast, fn_idx: NodeIndex) ?NodeIn
 }
 
 fn methodReturnIdentifier(ast: *const Ast, method_idx: NodeIndex) ?NodeIndex {
-    if (method_idx.isNone() or @intFromEnum(method_idx) >= ast.nodes.items.len) return null;
-    const method = ast.nodes.items[@intFromEnum(method_idx)];
+    if (method_idx.isNone() or @backingInt(method_idx) >= ast.nodes.items.len) return null;
+    const method = ast.nodes.items[@backingInt(method_idx)];
     if (method.tag != .method_definition) return null;
     if (!ast.hasExtra(method.data.extra, ast_mod.MethodExtra.flags)) return null;
 
@@ -531,8 +531,8 @@ fn definePropertyDescriptorExportNode(
     descriptor_idx: NodeIndex,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) ?DefinePropertyDescriptorExport {
-    if (descriptor_idx.isNone() or @intFromEnum(descriptor_idx) >= ast.nodes.items.len) return null;
-    const descriptor = ast.nodes.items[@intFromEnum(descriptor_idx)];
+    if (descriptor_idx.isNone() or @backingInt(descriptor_idx) >= ast.nodes.items.len) return null;
+    const descriptor = ast.nodes.items[@backingInt(descriptor_idx)];
     if (descriptor.tag != .object_expression) return null;
 
     const list = descriptor.data.list;
@@ -547,9 +547,9 @@ fn definePropertyDescriptorExportNode(
     var result: ?DefinePropertyDescriptorExport = null;
 
     for (indices) |raw_prop| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
-        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_prop));
+        if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
+        const prop = ast.nodes.items[@backingInt(prop_idx)];
 
         const key_idx = switch (prop.tag) {
             .object_property => prop.data.binary.left,
@@ -575,7 +575,7 @@ fn definePropertyDescriptorExportNode(
         }
 
         const prop_value = Ast.objectPropertyValue(prop);
-        if (prop_value.isNone() or @intFromEnum(prop_value) >= ast.nodes.items.len) return null;
+        if (prop_value.isNone() or @backingInt(prop_value) >= ast.nodes.items.len) return null;
 
         if (std.mem.eql(u8, name, "value")) {
             if (result != null) return null;
@@ -602,8 +602,8 @@ fn cjsDefinePropertyExportCandidateForStmt(
 ) !?CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .call_expression) return null;
 
     const e = expr.data.extra;
@@ -615,9 +615,9 @@ fn cjsDefinePropertyExportCandidateForStmt(
     if (args_start + args_len > ast.extra_data.items.len) return null;
     if (!isObjectDefinePropertyCallee(ast, callee_idx)) return null;
 
-    const target_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    const export_name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
-    const descriptor_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 2]);
+    const target_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    const export_name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start + 1]));
+    const descriptor_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start + 2]));
     if (!isCjsExportObjectExpr(ast, target_idx)) return null;
 
     const export_name = (try ast.staticKeyName(alloc, export_name_idx)) orelse return null;
@@ -631,7 +631,7 @@ fn cjsDefinePropertyExportCandidateForStmt(
     name_transferred = true;
     return .{
         .export_name = export_name,
-        .export_assignment_node = @intFromEnum(expr_idx),
+        .export_assignment_node = @backingInt(expr_idx),
         .rhs_node = descriptor_export.rhs_node,
         .kind = descriptor_export.kind,
     };
@@ -640,15 +640,15 @@ fn cjsDefinePropertyExportCandidateForStmt(
 fn cjsModuleExportsAssignedObjectName(ast: *const Ast, stmt_node: Node) ?[]const u8 {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
     if (!isModuleExportsLhs(ast, expr.data.binary.left)) return null;
 
     const rhs_idx = expr.data.binary.right;
     if (identifierReferenceText(ast, rhs_idx)) |name| return name;
-    if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return null;
-    const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+    if (rhs_idx.isNone() or @backingInt(rhs_idx) >= ast.nodes.items.len) return null;
+    const rhs = ast.nodes.items[@backingInt(rhs_idx)];
     if (rhs.tag != .call_expression) return null;
     if (!ast.hasExtra(rhs.data.extra, 2)) return null;
     const callee_idx = ast.readExtraNode(rhs.data.extra, 0);
@@ -656,7 +656,7 @@ fn cjsModuleExportsAssignedObjectName(ast: *const Ast, stmt_node: Node) ?[]const
     const args_start = ast.readExtra(rhs.data.extra, 1);
     const args_len = ast.readExtra(rhs.data.extra, 2);
     if (args_len != 1 or args_start + args_len > ast.extra_data.items.len) return null;
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
     return identifierReferenceText(ast, arg_idx);
 }
 
@@ -669,9 +669,9 @@ fn collectCjsExportObjectNames(
     errdefer names.deinit(allocator);
 
     for (stmt_raw_indices) |raw_idx| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-        const stmt_node = ast.nodes.items[@intFromEnum(idx)];
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
+        const stmt_node = ast.nodes.items[@backingInt(idx)];
         const name = cjsModuleExportsAssignedObjectName(ast, stmt_node) orelse continue;
         try names.put(allocator, name, {});
     }
@@ -698,8 +698,8 @@ fn collectCjsExportHelperCandidates(
 ) !?[]CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .call_expression) return null;
 
     const e = expr.data.extra;
@@ -711,11 +711,11 @@ fn collectCjsExportHelperCandidates(
     const args_len = ast.readExtra(e, 2);
     if (args_len != 2 or args_start + args_len > ast.extra_data.items.len) return null;
 
-    const target_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    const defs_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
+    const target_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    const defs_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start + 1]));
     if (!isCjsExportHelperTarget(ast, target_idx, export_object_names)) return null;
-    if (defs_idx.isNone() or @intFromEnum(defs_idx) >= ast.nodes.items.len) return null;
-    const defs = ast.nodes.items[@intFromEnum(defs_idx)];
+    if (defs_idx.isNone() or @backingInt(defs_idx) >= ast.nodes.items.len) return null;
+    const defs = ast.nodes.items[@backingInt(defs_idx)];
     if (defs.tag != .object_expression) return null;
 
     const list = defs.data.list;
@@ -733,9 +733,9 @@ fn collectCjsExportHelperCandidates(
     defer seen.deinit(allocator);
 
     for (indices) |raw_prop| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
-        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_prop));
+        if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
+        const prop = ast.nodes.items[@backingInt(prop_idx)];
         if (prop.tag != .object_property) return null;
 
         const name = (try ast.staticKeyName(allocator, prop.data.binary.left)) orelse return null;
@@ -749,8 +749,8 @@ fn collectCjsExportHelperCandidates(
         const returned = zeroParamFunctionReturnIdentifier(ast, Ast.objectPropertyValue(prop)) orelse return null;
         try out.append(allocator, .{
             .export_name = name,
-            .export_assignment_node = @intFromEnum(expr_idx),
-            .property_node = @intFromEnum(prop_idx),
+            .export_assignment_node = @backingInt(expr_idx),
+            .property_node = @backingInt(prop_idx),
             .rhs_node = returned,
             .helper_node = callee_idx,
             .target_node = target_idx,
@@ -765,8 +765,8 @@ fn collectCjsExportHelperCandidates(
 }
 
 fn isSafeEsModuleDefinePropertyDescriptor(ast: *const Ast, descriptor_idx: NodeIndex) bool {
-    if (descriptor_idx.isNone() or @intFromEnum(descriptor_idx) >= ast.nodes.items.len) return false;
-    const descriptor = ast.nodes.items[@intFromEnum(descriptor_idx)];
+    if (descriptor_idx.isNone() or @backingInt(descriptor_idx) >= ast.nodes.items.len) return false;
+    const descriptor = ast.nodes.items[@backingInt(descriptor_idx)];
     if (descriptor.tag != .object_expression) return false;
 
     const list = descriptor.data.list;
@@ -777,9 +777,9 @@ fn isSafeEsModuleDefinePropertyDescriptor(ast: *const Ast, descriptor_idx: NodeI
     var has_value_true = false;
 
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_prop| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return false;
-        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_prop));
+        if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return false;
+        const prop = ast.nodes.items[@backingInt(prop_idx)];
         if (prop.tag != .object_property) return false;
 
         const name = plainObjectKeyName(ast, prop.data.binary.left) orelse return false;
@@ -815,8 +815,8 @@ fn isSafeCjsEsModuleMarkerStmt(
 ) !bool {
     if (stmt_node.tag != .expression_statement) return false;
     const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return false;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return false;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .call_expression) return false;
 
     const e = expr.data.extra;
@@ -828,9 +828,9 @@ fn isSafeCjsEsModuleMarkerStmt(
     if (args_start + args_len > ast.extra_data.items.len) return false;
     if (!isGlobalObjectDefinePropertyCallee(ast, callee_idx, unresolved_globals)) return false;
 
-    const target_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    const export_name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
-    const descriptor_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 2]);
+    const target_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    const export_name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start + 1]));
+    const descriptor_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start + 2]));
     if (!isCjsExportObjectExpr(ast, target_idx)) return false;
 
     const export_name = (try ast.staticKeyName(alloc, export_name_idx)) orelse return false;
@@ -846,36 +846,36 @@ fn isSafeCjsEsModuleMarkerStmt(
 /// `module.exports = {...}` stmt 가 cjs_shape_extracted=true 로 마킹되면서
 /// 외부 declaration stmt 가 BFS 에서 도달 못 해 strip 회귀하는 영역.
 fn isLazyGetterBodyRequireOnly(ast: *const Ast, body_idx: NodeIndex) bool {
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
-    const body = ast.nodes.items[@intFromEnum(body_idx)];
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return false;
+    const body = ast.nodes.items[@backingInt(body_idx)];
     if (body.tag != .block_statement) return false;
     const list = body.data.list;
     if (list.len != 1) return false;
     if (list.start + 1 > ast.extra_data.items.len) return false;
-    const stmt_idx: NodeIndex = @enumFromInt(ast.extra_data.items[list.start]);
-    if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) return false;
-    const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+    const stmt_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start]));
+    if (stmt_idx.isNone() or @backingInt(stmt_idx) >= ast.nodes.items.len) return false;
+    const stmt = ast.nodes.items[@backingInt(stmt_idx)];
     if (stmt.tag != .return_statement) return false;
     const arg_idx = stmt.data.unary.operand;
-    if (arg_idx.isNone() or @intFromEnum(arg_idx) >= ast.nodes.items.len) return false;
-    const arg = ast.nodes.items[@intFromEnum(arg_idx)];
+    if (arg_idx.isNone() or @backingInt(arg_idx) >= ast.nodes.items.len) return false;
+    const arg = ast.nodes.items[@backingInt(arg_idx)];
     // `require('./x')` 또는 `require('./x').default` (member access of require call) 만 허용.
     // static_member_expression layout: `extra: [object, property, flags]`.
     const call_idx: NodeIndex = switch (arg.tag) {
         .call_expression => arg_idx,
         .static_member_expression => blk: {
             const obj_idx = ast.readExtraNode(arg.data.extra, 0);
-            if (obj_idx.isNone() or @intFromEnum(obj_idx) >= ast.nodes.items.len) return false;
-            if (ast.nodes.items[@intFromEnum(obj_idx)].tag != .call_expression) return false;
+            if (obj_idx.isNone() or @backingInt(obj_idx) >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[@backingInt(obj_idx)].tag != .call_expression) return false;
             break :blk obj_idx;
         },
         else => return false,
     };
-    const call = ast.nodes.items[@intFromEnum(call_idx)];
+    const call = ast.nodes.items[@backingInt(call_idx)];
     // call_expression layout: `extra: [callee, args_start, args_len]`.
-    const callee_idx: NodeIndex = @enumFromInt(ast.extra_data.items[call.data.extra]);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
-    const callee = ast.nodes.items[@intFromEnum(callee_idx)];
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[call.data.extra]));
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
+    const callee = ast.nodes.items[@backingInt(callee_idx)];
     if (callee.tag != .identifier_reference) return false;
     return std.mem.eql(u8, ast.getText(callee.span), "require");
 }
@@ -888,14 +888,14 @@ fn collectCjsObjectExportCandidates(
 ) !?[]CjsExportCandidate {
     if (stmt_node.tag != .expression_statement) return null;
     const expr_idx = stmt_node.data.unary.operand;
-    if (expr_idx.isNone() or @intFromEnum(expr_idx) >= ast.nodes.items.len) return null;
-    const expr = ast.nodes.items[@intFromEnum(expr_idx)];
+    if (expr_idx.isNone() or @backingInt(expr_idx) >= ast.nodes.items.len) return null;
+    const expr = ast.nodes.items[@backingInt(expr_idx)];
     if (expr.tag != .assignment_expression) return null;
     if (!isModuleExportsLhs(ast, expr.data.binary.left)) return null;
 
     const rhs_idx = expr.data.binary.right;
-    if (rhs_idx.isNone() or @intFromEnum(rhs_idx) >= ast.nodes.items.len) return null;
-    const rhs = ast.nodes.items[@intFromEnum(rhs_idx)];
+    if (rhs_idx.isNone() or @backingInt(rhs_idx) >= ast.nodes.items.len) return null;
+    const rhs = ast.nodes.items[@backingInt(rhs_idx)];
     if (rhs.tag != .object_expression) return null;
 
     const list = rhs.data.list;
@@ -915,9 +915,9 @@ fn collectCjsObjectExportCandidates(
     defer seen.deinit(allocator);
 
     for (indices) |raw_prop| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_prop);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
-        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_prop));
+        if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
+        const prop = ast.nodes.items[@backingInt(prop_idx)];
 
         // RN core `index.js` 의 lazy getter (`get DevSettings() { return require(...).default }`)
         // 인식 (#2683 PR β-1). plain getter + body 가 정확히 `{ return require(...).X? }`
@@ -952,8 +952,8 @@ fn collectCjsObjectExportCandidates(
 
         try out.append(allocator, .{
             .export_name = name,
-            .export_assignment_node = @intFromEnum(expr_idx),
-            .property_node = @intFromEnum(prop_idx),
+            .export_assignment_node = @backingInt(expr_idx),
+            .property_node = @backingInt(prop_idx),
             .rhs_node = seed_node,
             .kind = .object_property,
         });
@@ -1213,10 +1213,10 @@ fn mapReachableNodesToStmts(
     var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
     defer stack.deinit(allocator);
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
-        try stack.append(allocator, @enumFromInt(raw_idx));
+        try stack.append(allocator, @fromBackingInt(@intCast(raw_idx)));
         while (stack.pop()) |idx| {
             if (idx.isNone()) continue;
-            const ni: u32 = @intFromEnum(idx);
+            const ni: u32 = @backingInt(idx);
             if (ni >= node_stmt.len or node_stmt[ni] != no_stmt) continue;
             node_stmt[ni] = @intCast(stmt_i);
             var it = ast_walk.children(ast, ast.nodes.items[ni]);
@@ -1398,14 +1398,14 @@ fn gatedMemberAugmentObjectNode(
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) ?NodeIndex {
     const m = memberAssignTargetParts(ast, stmt_node) orelse return null;
-    const obj = ast.nodes.items[@intFromEnum(m.base)];
+    const obj = ast.nodes.items[@backingInt(m.base)];
 
     // base 가 unresolved global (`window.x = ...`) 이면 글로벌 변이 — 제외.
     if (unresolved_globals) |globals| {
         if (globals.contains(ast.getText(obj.span))) return null;
     }
 
-    const prop = ast.nodes.items[@intFromEnum(m.property)];
+    const prop = ast.nodes.items[@backingInt(m.property)];
     if (prop.tag == .identifier_reference and isWorkletMetadataProperty(ast.getText(prop.span))) {
         return m.base;
     }
@@ -1423,7 +1423,7 @@ fn gatedMemberAugmentObjectNode(
 /// X 가 별칭이면(`const prototype = Ctor.prototype; prototype.append = …`) X 를 안 읽어도 쓰기가
 /// `Ctor.prototype` 으로 보인다 — 지우면 axios 의 `AxiosURLSearchParams` 가 `append` 를 잃는다 (#4747).
 fn isProgramTopLevelScope(scopes: []const Scope, scope_id: ScopeId) bool {
-    if (scope_id == @as(ScopeId, @enumFromInt(0))) return true;
+    if (scope_id == @as(ScopeId, @fromBackingInt(@intCast(0)))) return true;
     if (scopes.len == 0) return false;
 
     // Parsed source references use Program scope 0. A parsed CommonJS module
@@ -1432,7 +1432,7 @@ fn isProgramTopLevelScope(scopes: []const Scope, scope_id: ScopeId) bool {
     // declarations remain in Program scope.
     const wrapper_scope_id = scopes[0].parent;
     if (wrapper_scope_id.isNone() or scope_id != wrapper_scope_id) return false;
-    const wrapper_scope_idx: usize = @intFromEnum(wrapper_scope_id);
+    const wrapper_scope_idx: usize = @backingInt(wrapper_scope_id);
     if (wrapper_scope_idx >= scopes.len) return false;
     const wrapper_scope = scopes[wrapper_scope_idx];
     return wrapper_scope.kind == .function and wrapper_scope.parent.isNone();
@@ -1458,8 +1458,8 @@ fn memberAugmentBaseIsFresh(ast: *const Ast, sym: *const Symbol) bool {
         else => return false,
     }
     const init = topLevelDeclaratorInit(ast, sym.name) orelse return false;
-    var node = ast.nodes.items[@intFromEnum(init)];
-    while (node.tag == .parenthesized_expression) node = ast.nodes.items[@intFromEnum(node.data.unary.operand)];
+    var node = ast.nodes.items[@backingInt(init)];
+    while (node.tag == .parenthesized_expression) node = ast.nodes.items[@backingInt(node.data.unary.operand)];
     return switch (node.tag) {
         .object_expression, .array_expression, .function_expression, .arrow_function_expression, .class_expression => true,
         else => false,
@@ -1492,7 +1492,7 @@ fn topLevelDeclaratorInit(ast: *const Ast, name: Span) ?NodeIndex {
             const binding = ast.nodes.items[binding_raw];
             if (binding.tag != .binding_identifier) continue;
             if (binding.span.start != name.start or binding.span.end != name.end) continue;
-            const init: NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
+            const init: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[decl.data.extra + 2]));
             return if (init.isNone()) null else init;
         }
     }
@@ -1518,7 +1518,7 @@ fn memberAugmentSymbolFromObjectNode(
     scopes: []const Scope,
     symbols: []const Symbol,
 ) ?u32 {
-    const obj_node_i = @intFromEnum(obj_node);
+    const obj_node_i = @backingInt(obj_node);
     if (obj_node_i < symbol_ids.len) {
         if (symbol_ids[obj_node_i]) |x_sym| {
             return validateMemberAugmentBaseSymbol(ast, scopes, symbols, x_sym);
@@ -1685,8 +1685,8 @@ pub fn buildFromSemantic(
 
     // Pass 1: span + side-effect 결정. declared/referenced 는 빈 상태로 초기화.
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
-        const ni = @intFromEnum(idx);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        const ni = @backingInt(idx);
         stmts[stmt_i] = try buildStmtInfoSlot(
             allocator,
             ast,
@@ -1711,7 +1711,7 @@ pub fn buildFromSemantic(
             if (augment_obj_node) |obj_node| {
                 // has_side_effects 해제는 base 가 top-level 로컬임을 references
                 // 패스에서 확정한 뒤에 한다 (조건부). 우선 후보로만 등록.
-                try member_augment_obj_to_stmt.put(allocator, @intFromEnum(obj_node), @intCast(stmt_i));
+                try member_augment_obj_to_stmt.put(allocator, @backingInt(obj_node), @intCast(stmt_i));
             }
         }
     }
@@ -1744,13 +1744,13 @@ pub fn buildFromSemantic(
     for (references) |r| {
         if (r.stmt_idx == Reference.NO_STMT) continue;
         if (r.stmt_idx >= stmt_count) continue;
-        const sym_u32: u32 = @intFromEnum(r.symbol_id);
+        const sym_u32: u32 = @backingInt(r.symbol_id);
         if (sym_u32 >= symbols.len) continue;
 
         // member-augment 귀속: 이 ref 가 게이트 통과 stmt 의 base object
         // identifier 면 X = sym_u32 가 top-level 로컬인지 확정. 맞으면
         // stmt 의 has_side_effects 를 해제하고 X 의 writer bucket 에 등록한다.
-        if (member_augment_obj_to_stmt.fetchRemove(@intFromEnum(r.node_index))) |kv| {
+        if (member_augment_obj_to_stmt.fetchRemove(@backingInt(r.node_index))) |kv| {
             const aug_stmt = kv.value;
             if (validateMemberAugmentBaseSymbol(ast, scopes, symbols, sym_u32)) |x_sym| {
                 stmts[aug_stmt].has_side_effects = false;
@@ -1783,9 +1783,9 @@ pub fn buildFromSemantic(
     // but only when the name maps to one unique top-level local binding.
     var remaining_augment_it = member_augment_obj_to_stmt.iterator();
     while (remaining_augment_it.next()) |entry| {
-        const obj_idx: NodeIndex = @enumFromInt(entry.key_ptr.*);
-        if (@intFromEnum(obj_idx) >= ast.nodes.items.len) continue;
-        const obj = ast.nodes.items[@intFromEnum(obj_idx)];
+        const obj_idx: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
+        if (@backingInt(obj_idx) >= ast.nodes.items.len) continue;
+        const obj = ast.nodes.items[@backingInt(obj_idx)];
         if (obj.tag != .identifier_reference) continue;
         const x_sym = findUniqueTopLevelLocalSymbolByName(ast, scopes, symbols, ast.getText(obj.span)) orelse continue;
         const aug_stmt = entry.value_ptr.*;
@@ -1932,8 +1932,8 @@ pub fn build(
     defer member_augment_pairs.deinit(allocator);
 
     for (stmt_raw_indices, 0..) |raw_idx, stmt_i| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
-        const ni = @intFromEnum(idx);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        const ni = @backingInt(idx);
         stmts[stmt_i] = try buildStmtInfoSlot(
             allocator,
             ast,
@@ -2087,16 +2087,16 @@ pub fn build(
 
 test "CJS callback bindings count as Program top-level without admitting nested scopes" {
     const scopes = [_]Scope{
-        .{ .parent = @enumFromInt(2), .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(2)), .kind = .global, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = false },
         .{ .parent = .none, .kind = .function, .is_strict = false },
     };
 
-    try std.testing.expect(isProgramTopLevelScope(&scopes, @enumFromInt(0)));
-    try std.testing.expect(!isProgramTopLevelScope(&scopes, @enumFromInt(1)));
-    try std.testing.expect(isProgramTopLevelScope(&scopes, @enumFromInt(2)));
+    try std.testing.expect(isProgramTopLevelScope(&scopes, @fromBackingInt(@intCast(0))));
+    try std.testing.expect(!isProgramTopLevelScope(&scopes, @fromBackingInt(@intCast(1))));
+    try std.testing.expect(isProgramTopLevelScope(&scopes, @fromBackingInt(@intCast(2))));
     try std.testing.expect(!isProgramTopLevelScope(&scopes, .none));
-    try std.testing.expect(!isProgramTopLevelScope(&scopes, @enumFromInt(3)));
+    try std.testing.expect(!isProgramTopLevelScope(&scopes, @fromBackingInt(@intCast(3))));
 }
 
 test "findStmtIndexFromInfos maps pos to containing top-level statement" {

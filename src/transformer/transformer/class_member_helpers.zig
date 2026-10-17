@@ -31,8 +31,8 @@ pub fn buildStaticFieldAssignment(self: anytype, class_name: NodeIndex, field: F
         const key_node = self.ast.getNode(field.key);
         const actual_key = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else field.key;
         const me_extra = try self.ast.addExtras(&.{
-            @intFromEnum(cls_ref),
-            @intFromEnum(actual_key),
+            @backingInt(cls_ref),
+            @backingInt(actual_key),
             0,
         });
         break :blk try self.ast.addNode(.{
@@ -116,7 +116,7 @@ fn buildStaticFieldBlock(self: anytype, key_idx: NodeIndex, init_idx: NodeIndex,
         .span = span,
         .name_by_key = try pe.needsRuntimeKeyName(self, key_idx, init_idx),
     });
-    self.ast.nodes.items[@intFromEnum(body)].data = .{ .list = try self.ast.addNodeList(&.{stmt}) };
+    self.ast.nodes.items[@backingInt(body)].data = .{ .list = try self.ast.addNodeList(&.{stmt}) };
     return self.ast.addNode(.{ .tag = .static_block, .span = span, .data = .{ .unary = .{ .operand = body, .flags = 0 } } });
 }
 
@@ -159,7 +159,7 @@ pub fn classifyClassMember(
     raw_idx: u32,
     ctx: *ClassMemberContext,
 ) Error!void {
-    const member_idx: NodeIndex = @enumFromInt(raw_idx);
+    const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
     if (member_idx.isNone()) return;
     const member = self.ast.getNode(member_idx);
 
@@ -188,7 +188,7 @@ pub fn classifyClassMember(
     }
 
     // 기타 멤버 (static_block, accessor_property 등): 그대로 방문
-    const new_member = try self.visitNode(@enumFromInt(raw_idx));
+    const new_member = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
     if (!new_member.isNone()) {
         try ctx.class_members.append(self.allocator, new_member);
     }
@@ -229,7 +229,7 @@ pub fn classifyPropertyDefinition(
             const new_key = (try es_helpers.makeLegacyDecoratorComputedKeyRef(self, key_idx)) orelse
                 try self.visitNode(key_idx);
             const empty: ast_mod.NodeList = .{ .start = 0, .len = 0 };
-            try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty, @enumFromInt(raw_idx));
+            try self.collectMemberDecorators(member_decorators, deco_start, deco_len, empty, new_key, is_static, 2, empty, @fromBackingInt(@intCast(raw_idx)));
         }
     }
 
@@ -280,8 +280,8 @@ pub fn classifyPropertyDefinition(
                 // declaration takes its own copy so no node has two parents (#5677).
                 const decl_key = try self.ast.addNode(self.ast.getNode(new_key));
                 const new_prop_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(decl_key),
-                    @intFromEnum(empty_init),
+                    @backingInt(decl_key),
+                    @backingInt(empty_init),
                     flags,
                     self.readU32(me, ast_mod.PropertyExtra.deco_start),
                     self.readU32(me, ast_mod.PropertyExtra.deco_len),
@@ -310,7 +310,7 @@ pub fn classifyPropertyDefinition(
             return;
         }
         if (is_private) {
-            const new_member = try self.visitNode(@enumFromInt(raw_idx));
+            const new_member = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
             if (!new_member.isNone()) {
                 try ctx.class_members.append(self.allocator, new_member);
             }
@@ -367,7 +367,7 @@ pub fn classifyPropertyDefinition(
     }
 
     // 그 외: 그대로 방문
-    const new_member = try self.visitNode(@enumFromInt(raw_idx));
+    const new_member = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
     if (!new_member.isNone()) {
         try class_members.append(self.allocator, new_member);
     }
@@ -505,13 +505,13 @@ pub const MemberDecoratorInfo = struct {
 /// decorator 노드에서 expression 부분을 visit하여 반환.
 /// decorator 태그이면 operand(expression)를, 아니면 노드 자체를 visit.
 pub fn visitDecoratorExpression(self: anytype, raw_idx: u32) Error!NodeIndex {
-    const deco_idx: NodeIndex = @enumFromInt(raw_idx);
+    const deco_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
     if (deco_idx.isNone()) return .none;
     const deco_node = self.ast.getNode(deco_idx);
     return if (deco_node.tag == .decorator)
         self.visitNode(deco_node.data.unary.operand)
     else
-        self.visitNode(@enumFromInt(raw_idx));
+        self.visitNode(@fromBackingInt(@intCast(raw_idx)));
 }
 
 /// experimentalDecorators: member/parameter decorator를 수집하여 MemberDecoratorInfo에 저장.
@@ -584,7 +584,7 @@ pub fn appendParamDecorators(
     var param_i: u32 = 0;
     while (param_i < params.len) : (param_i += 1) {
         const raw_idx = self.ast.extra_data.items[params.start + param_i];
-        const p_idx: NodeIndex = @enumFromInt(raw_idx);
+        const p_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (p_idx.isNone()) continue;
         const param = self.ast.getNode(p_idx);
         if (param.tag != .formal_parameter) continue;
@@ -625,7 +625,7 @@ pub fn buildDecorateParamCall(
     // arg2: decorator expression
     const args = try self.ast.addNodeList(&.{ index_node, dec_expr });
     return self.addExtraNode(.call_expression, span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
 }
 
@@ -647,7 +647,7 @@ pub fn insertFieldAssignmentsIntoConstructor(
     const ctor_e3 = self.ast.extra_data.items[ce + 3];
     const ctor_e4 = self.ast.extra_data.items[ce + 4];
     const ctor_e5 = self.ast.extra_data.items[ce + 5];
-    const body_idx: NodeIndex = @enumFromInt(ctor_e2);
+    const body_idx: NodeIndex = @fromBackingInt(@intCast(ctor_e2));
 
     if (body_idx.isNone()) return ctor_idx;
     if (self.ast.getNode(body_idx).tag != .block_statement) return ctor_idx;
@@ -664,9 +664,9 @@ pub fn insertFieldAssignmentsIntoConstructor(
     // constructor method_definition을 새 body로 재생성
     // extra: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
     const updated = try self.addExtraNode(.method_definition, ctor_node.span, &.{
-        ctor_e0,                ctor_e1,
-        @intFromEnum(new_body), ctor_e3,
-        ctor_e4,                ctor_e5,
+        ctor_e0,               ctor_e1,
+        @backingInt(new_body), ctor_e3,
+        ctor_e4,               ctor_e5,
     });
     // The rebuilt constructor keeps its function scope. A retained non-simple
     // parameter list keeps its own parameter scope (#5652); without the
@@ -692,7 +692,7 @@ pub fn makeThisPrivateField(self: anytype, storage_span: Span) Error!NodeIndex {
         .data = .{ .string_ref = storage_span },
     });
     return self.addExtraNode(.private_field_expression, zero_span, &.{
-        @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
+        @backingInt(this_node), @backingInt(storage_ref), 0,
     });
 }
 
@@ -719,7 +719,7 @@ pub fn isSuperCallStatement(self: anytype, idx: NodeIndex) bool {
     // call_expression: extra = [callee, args_start, args_len, flags]
     const ce = expr.data.extra;
     if (ce >= self.ast.extra_data.items.len) return false;
-    const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[ce]));
     if (callee_idx.isNone()) return false;
     const callee = self.ast.getNode(callee_idx);
     return callee.tag == .super_expression;
@@ -734,7 +734,7 @@ fn findSuperCallInsertPos(self: anytype, body_idx: NodeIndex) ?u32 {
     const list = body.data.list;
     const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
     for (stmts, 0..) |raw, idx| {
-        if (isSuperCallStatement(self, @enumFromInt(raw))) return @intCast(idx + 1);
+        if (isSuperCallStatement(self, @fromBackingInt(@intCast(raw)))) return @intCast(idx + 1);
     }
     return null;
 }
@@ -776,7 +776,7 @@ pub fn buildSuperSpreadArgsShell(self: anytype) Error!SuperSpreadArgsShell {
     });
     const call_args = try self.ast.addNodeList(&.{spread_args});
     const super_call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(super_expr), call_args.start, call_args.len, 0,
+        @backingInt(super_expr), call_args.start, call_args.len, 0,
     });
     const super_stmt = try self.ast.addNode(.{
         .tag = .expression_statement,
@@ -836,12 +836,12 @@ fn spliceBlockStmtsAt(
     var i: u32 = 0;
     while (i < clamped) : (i += 1) {
         const raw = self.ast.extra_data.items[old_start + i];
-        try self.scratch.append(self.allocator, @enumFromInt(raw));
+        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
     }
     for (new_stmts) |s| try self.scratch.append(self.allocator, s);
     while (i < old_len) : (i += 1) {
         const raw = self.ast.extra_data.items[old_start + i];
-        try self.scratch.append(self.allocator, @enumFromInt(raw));
+        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
     }
 
     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -895,9 +895,9 @@ pub fn buildConstructorWithFieldAssignments(
 
     const empty_decos = try self.ast.addNodeList(&.{});
     const constructor = try self.addExtraNode(.method_definition, zero_span, &.{
-        @intFromEnum(ctor_key), @intFromEnum(params_node),
-        @intFromEnum(body), 0, // flags=0 (non-static, normal method)
-        empty_decos.start,  empty_decos.len,
+        @backingInt(ctor_key), @backingInt(params_node),
+        @backingInt(body), 0, // flags=0 (non-static, normal method)
+        empty_decos.start, empty_decos.len,
     });
     if (super_shell) |shell| try bindSuperSpreadArgs(self, constructor, class_scope, shell.args_binding, shell.args_ref);
     return constructor;
@@ -923,14 +923,14 @@ pub fn buildThisAssignment(self: anytype, field: FieldAssignment) Error!NodeInde
     const member = if (needs_bracket) blk: {
         // computed_property_key의 내부 expression을 꺼냄
         const actual_key = if (key_node.tag == .computed_property_key) key_node.data.unary.operand else field.key;
-        const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(actual_key), 0 });
+        const member_extra = try self.ast.addExtras(&.{ @backingInt(this_node), @backingInt(actual_key), 0 });
         break :blk try self.ast.addNode(.{
             .tag = .computed_member_expression,
             .span = field.span,
             .data = .{ .extra = member_extra },
         });
     } else blk: {
-        const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(field.key), 0 });
+        const member_extra = try self.ast.addExtras(&.{ @backingInt(this_node), @backingInt(field.key), 0 });
         break :blk try self.ast.addNode(.{
             .tag = .static_member_expression,
             .span = field.span,

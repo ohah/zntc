@@ -39,21 +39,21 @@ test "#4819 namespace IIFE parameters receive final names by SymbolId" {
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, namespace_map };
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = true, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = true, .symbol_count = 1 },
     };
     var symbols = [_]Symbol{
         .{
             .name = .{ .start = 0, .end = 5 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .variable_const,
             .declaration_span = Span{ .start = 0, .end = 5 },
             .reference_count = 10,
         },
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(1),
-            .origin_scope = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .origin_scope = @fromBackingInt(@intCast(1)),
             .kind = .parameter,
             .declaration_span = Span{ .start = 0, .end = 0 },
             .synthetic_kind = .namespace_iife_parameter,
@@ -89,20 +89,20 @@ test "#4819 enum IIFE parameters receive final names by SymbolId" {
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, enum_map };
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = true, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = true, .symbol_count = 1 },
     };
     const symbols = [_]Symbol{
         .{
             .name = .{ .start = 0, .end = 5 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .variable_const,
             .declaration_span = Span{ .start = 0, .end = 5 },
         },
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(1),
-            .origin_scope = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .origin_scope = @fromBackingInt(@intCast(1)),
             .kind = .parameter,
             .declaration_span = Span{ .start = 0, .end = 0 },
             .synthetic_kind = .enum_iife_parameter,
@@ -138,16 +138,16 @@ test "#4819 standalone runtime helper preamble receives final name by SymbolId" 
     const symbols = [_]Symbol{
         .{
             .name = .{ .start = 0, .end = 9 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .variable_const,
             .declaration_span = Span{ .start = 0, .end = 9 },
             .reference_count = 1,
         },
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .import_binding,
             .decl_flags = SymbolKind.import_binding.declFlags(),
             .declaration_span = Span{ .start = 0, .end = 0 },
@@ -187,21 +187,21 @@ test "mangle reserves preserved short module names before skipping Phase A symbo
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ root_map, function_map };
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = true, .symbol_count = 1 },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true, .symbol_count = 1 },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = true, .symbol_count = 1 },
     };
     const symbols = [_]Symbol{
         .{
             .name = .{ .start = 0, .end = 1 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .variable_const,
             .declaration_span = Span{ .start = 0, .end = 1 },
             .reference_count = 1,
         },
         .{
             .name = .{ .start = 1, .end = 6 },
-            .scope_id = @enumFromInt(1),
-            .origin_scope = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
+            .origin_scope = @fromBackingInt(@intCast(1)),
             .kind = .parameter,
             .declaration_span = Span{ .start = 1, .end = 6 },
             .reference_count = 1,

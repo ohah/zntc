@@ -41,8 +41,8 @@ pub fn emitTemplateLiteral(self: anytype, node: Node) !void {
     }
     const items = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
     for (items) |item_idx| {
-        const child: NodeIndex = @enumFromInt(item_idx);
-        const child_node = self.ast.nodes.items[@intFromEnum(child)];
+        const child: NodeIndex = @fromBackingInt(@intCast(item_idx));
+        const child_node = self.ast.nodes.items[@backingInt(child)];
         if (child_node.tag == .template_element) {
             try self.writeNodeSpan(child_node);
         } else {
@@ -69,7 +69,7 @@ pub fn emitTaggedTemplate(self: anytype, node: Node, flags: ExprFlags) !void {
     // tag 는 .postfix (esbuild ETemplate tag = LPostfix). 단 tag 가 optional chain 이면
     // ECMAScript 상 tagged template tag 로 불가(`a?.b`x`` = SyntaxError) → 괄호로 감싼다
     // (esbuild `IsOptionalChain(tag)` 분기). 투명 paren 이 사라져도 체인이 끊긴 채 보존된다.
-    const tag: NodeIndex = @enumFromInt(extras[e]);
+    const tag: NodeIndex = @fromBackingInt(@intCast(extras[e]));
     if (call_emit.isOptionalChainExpr(self, tag)) {
         try self.writeByte('(');
         try self.emitExpr(tag, .lowest, .{});
@@ -81,7 +81,7 @@ pub fn emitTaggedTemplate(self: anytype, node: Node, flags: ExprFlags) !void {
         // *호출*되는 다른 프로그램이 된다(#4500).
         try self.emitExpr(tag, .postfix, .{ .forbid_call = flags.forbid_call });
     }
-    try self.emitNode(@enumFromInt(extras[e + 1]));
+    try self.emitNode(@fromBackingInt(@intCast(extras[e + 1])));
 }
 
 pub fn emitFunction(self: anytype, node: Node) !void {
@@ -90,11 +90,11 @@ pub fn emitFunction(self: anytype, node: Node) !void {
     // function_expression은 ret_type 없이 4 slots, function_declaration/function은 5 slots.
     // 공통 [name(0), params(1), body(2), flags(3)]만 읽는다.
     const extras = self.ast.extra_data.items[e .. e + 4];
-    const name: NodeIndex = @enumFromInt(extras[0]);
+    const name: NodeIndex = @fromBackingInt(@intCast(extras[0]));
     const params_list = self.ast.functionParamsList(node);
     const params_start = params_list.start;
     const params_len = params_list.len;
-    const body: NodeIndex = @enumFromInt(extras[2]);
+    const body: NodeIndex = @fromBackingInt(@intCast(extras[2]));
     const flags = extras[3];
 
     // function map: contextual name 소비 후 진입. saved_pending 은 owned 를 보관하다가
@@ -170,8 +170,8 @@ pub fn emitArrow(self: anytype, node: Node) !void {
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 2 >= extras.len) return;
-    const params: NodeIndex = @enumFromInt(extras[e]);
-    const body: NodeIndex = @enumFromInt(extras[e + 1]);
+    const params: NodeIndex = @fromBackingInt(@intCast(extras[e]));
+    const body: NodeIndex = @fromBackingInt(@intCast(extras[e + 1]));
     const flags = extras[e + 2];
 
     // function map: 화살표 함수는 항상 익명 — contextual name 사용
@@ -241,7 +241,7 @@ fn arrowParamsOmittable(self: anytype, params_idx: NodeIndex) bool {
     if (pnode.tag != .formal_parameters) return false;
     const list = pnode.data.list;
     if (list.len != 1 or list.start >= self.ast.extra_data.items.len) return false;
-    const elem = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[list.start]));
+    const elem = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[list.start])));
     if (isPlainIdentifierParam(elem.tag)) return true;
     if (elem.tag != .formal_parameter) return false;
     const FP = ast_mod.FormalParameterExtra;
@@ -257,9 +257,9 @@ fn arrowParamsOmittable(self: anytype, params_idx: NodeIndex) bool {
 pub fn emitClass(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
-    const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-    const super_class: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
-    const body: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+    const name: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+    const super_class: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
+    const body: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
     const deco_start = self.ast.extra_data.items[e + 6];
     const deco_len = self.ast.extra_data.items[e + 7];
 
@@ -317,7 +317,7 @@ pub fn emitClass(self: anytype, node: Node) !void {
     if (deco_len > 0) {
         const deco_indices = self.ast.extra_data.items[deco_start .. deco_start + deco_len];
         for (deco_indices) |raw_idx| {
-            try self.emitNode(@enumFromInt(raw_idx));
+            try self.emitNode(@fromBackingInt(@intCast(raw_idx)));
             try self.writeByte(' ');
         }
     }
@@ -385,11 +385,11 @@ pub fn emitMethodDef(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 6];
-    const key: NodeIndex = @enumFromInt(extras[ast_mod.MethodExtra.key]);
+    const key: NodeIndex = @fromBackingInt(@intCast(extras[ast_mod.MethodExtra.key]));
     const params_list = self.ast.functionParamsList(node);
     const params_start = params_list.start;
     const params_len = params_list.len;
-    const body: NodeIndex = @enumFromInt(extras[ast_mod.MethodExtra.body]);
+    const body: NodeIndex = @fromBackingInt(@intCast(extras[ast_mod.MethodExtra.body]));
     const flags = extras[ast_mod.MethodExtra.flags];
     const deco_start = extras[ast_mod.MethodExtra.deco_start];
     const deco_len = extras[ast_mod.MethodExtra.deco_len];
@@ -426,8 +426,8 @@ pub fn emitPropertyDef(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 5];
-    const key: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.key]);
-    const value: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.init]);
+    const key: NodeIndex = @fromBackingInt(@intCast(extras[ast_mod.PropertyExtra.key]));
+    const value: NodeIndex = @fromBackingInt(@intCast(extras[ast_mod.PropertyExtra.init]));
     const flags = extras[ast_mod.PropertyExtra.flags];
     const deco_start = extras[ast_mod.PropertyExtra.deco_start];
     const deco_len = extras[ast_mod.PropertyExtra.deco_len];
@@ -471,7 +471,7 @@ fn emitMemberDecorators(self: anytype, deco_start: u32, deco_len: u32) !void {
     if (deco_len == 0) return;
     const deco_indices = self.ast.extra_data.items[deco_start .. deco_start + deco_len];
     for (deco_indices) |raw_idx| {
-        try self.emitNode(@enumFromInt(raw_idx));
+        try self.emitNode(@fromBackingInt(@intCast(raw_idx)));
         try self.writeByte('\n');
         try self.writeIndent();
     }
@@ -481,8 +481,8 @@ pub fn emitAccessorProp(self: anytype, node: Node) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 5];
-    const key: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.key]);
-    const value: NodeIndex = @enumFromInt(extras[ast_mod.PropertyExtra.init]);
+    const key: NodeIndex = @fromBackingInt(@intCast(extras[ast_mod.PropertyExtra.key]));
+    const value: NodeIndex = @fromBackingInt(@intCast(extras[ast_mod.PropertyExtra.init]));
     const flags = extras[ast_mod.PropertyExtra.flags];
     const deco_start = extras[ast_mod.PropertyExtra.deco_start];
     const deco_len = extras[ast_mod.PropertyExtra.deco_len];

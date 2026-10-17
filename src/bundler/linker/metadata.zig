@@ -150,7 +150,7 @@ pub fn isImportBindingTypeOnly(sem: *const @import("../module.zig").ModuleSemant
     // `isImportSpecifierUnused` 와 동일 기준. TODO #1791: `references` 를 매번 linear
     // scan 하는 대신 모듈별 `symbol_id → Reference indices` 맵 사전 구축 고려 (실측 후).
     for (sem.references) |r| {
-        if (@intFromEnum(r.symbol_id) != sym_idx) continue;
+        if (@backingInt(r.symbol_id) != sym_idx) continue;
         if (r.isValueUse()) return false;
     }
     return true;
@@ -192,7 +192,7 @@ pub fn pureCjsStarTarget(self: *const Linker, mod_idx: u32) ?u32 {
             const sm = self.graph.getModule(src) orelse return null;
             if (sm.wrap_kind != .cjs) return null; // ESM star 는 정적 ns-object 로 처리 가능
             if (cjs_src != null) return null; // 다중 star → 순수 단일 아님
-            cjs_src = @intFromEnum(src);
+            cjs_src = @backingInt(src);
         } else {
             return null; // 자체 named/default export 또는 `export * as ns` 존재 → 순수 아님
         }
@@ -266,7 +266,7 @@ pub fn buildSkipNodes(allocator: std.mem.Allocator, ast: *const Ast, skip_import
             .export_named_declaration => {
                 const e = node.data.extra;
                 if (e + 3 < ast.extra_data.items.len) {
-                    const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+                    const decl_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
                     if (decl_idx.isNone()) {
                         skip_nodes.set(node_idx); // export { } 또는 re-export
                     }
@@ -321,7 +321,7 @@ fn markReactNativeWrappedBindingImports(
         if (specs_len == 0) continue;
         if (importDeclarationHasNamespaceSpecifier(ast, &inode)) continue;
 
-        const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[ie + 2]);
+        const source_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[ie + 2]));
         if (source_idx.isNone()) continue;
         const src_node = ast.getNode(source_idx);
         if (src_node.tag != .string_literal) continue;
@@ -360,7 +360,7 @@ fn putOwnedRename(
 /// 없다" 는 전제가 틀렸다).
 fn importBindingName(self: *const Linker, module_index: u32, ib: anytype, fallback: []const u8) []const u8 {
     if (self.getResolvedBinding(module_index, ib.local_span)) |rb| {
-        const canon_mi = @intFromEnum(rb.canonical.module_index);
+        const canon_mi = @backingInt(rb.canonical.module_index);
         if (self.isCrossChunkConsumer(module_index, canon_mi)) {
             if (self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name)) |g| return g;
         }
@@ -658,7 +658,7 @@ pub fn buildMetadataForAst(
                     continue;
                 }
 
-                const target_idx: u32 = @intCast(@intFromEnum(rec.resolved));
+                const target_idx: u32 = @intCast(@backingInt(rec.resolved));
                 switch (target_mod.wrap_kind) {
                     .none => {},
                     .cjs => {
@@ -813,7 +813,7 @@ pub fn buildMetadataForAst(
                 continue;
             }
 
-            var canonical_mod = @intFromEnum(rec.resolved);
+            var canonical_mod = @backingInt(rec.resolved);
 
             // (#3975) namespace import 가 pure-CJS-star ESM(단일 `export * from <CJS>`,
             // 자체 export 없음)을 가리키면 underlying CJS 로 redirect → 아래 CJS-interop
@@ -859,7 +859,7 @@ pub fn buildMetadataForAst(
                 else
                     self.cjsCanonicalForBinding(module_index, &m, ib);
                 if (canon_opt) |canon| {
-                    const canon_mi = @intFromEnum(canon.module_index);
+                    const canon_mi = @backingInt(canon.module_index);
                     if (self.isCrossChunkConsumer(module_index, canon_mi)) {
                         if (self.getCrossChunkGlobalName(canon_mi, canon.export_name)) |g| {
                             if (ib.local_symbol.semanticIndex()) |sym_idx| {
@@ -971,7 +971,7 @@ pub fn buildMetadataForAst(
                 var value_init_mod_idx = canonical_mod;
                 var import_is_namespace_export = false;
                 if (resolved) |rb| {
-                    const rb_idx = @intFromEnum(rb.canonical.module_index);
+                    const rb_idx = @backingInt(rb.canonical.module_index);
                     if (self.graph.getModule(rb.canonical.module_index)) |rb_mod| {
                         if (rb_idx != canonical_mod and rb_mod.wrap_kind == .esm) {
                             value_init_mod = rb_mod;
@@ -1038,7 +1038,7 @@ pub fn buildMetadataForAst(
                 !(canonical_m_opt != null and canonical_m_opt.?.wrap_kind == .esm))
             {
                 if (resolved) |rb| {
-                    const rb_idx: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
+                    const rb_idx: u32 = @intCast(@backingInt(rb.canonical.module_index));
                     if (rb_idx != canonical_mod) {
                         if (self.graph.getModule(rb.canonical.module_index)) |rw| {
                             if (rw.wrap_kind == .esm and !(self.tree_shaker_active and !rw.is_included) and
@@ -1144,7 +1144,7 @@ pub fn buildMetadataForAst(
             // import fn from './reexport' (default) → reexport: import { x } from 'cjs'; export default x
             // → canonical = { cjs, "x" } → req_cjs().x (not .default)
             if (resolved) |rb| {
-                const cjs_mod: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
+                const cjs_mod: u32 = @intCast(@backingInt(rb.canonical.module_index));
                 const cjs_mod_opt = self.graph.getModule(rb.canonical.module_index);
                 if (cjs_mod_opt != null and cjs_mod_opt.?.wrap_kind == .cjs) {
                     const preamble_name = importBindingName(self, module_index, ib, m.importBindingLocalName(ib));
@@ -1162,7 +1162,7 @@ pub fn buildMetadataForAst(
                         cjs_mod_opt.?,
                         cjs_mod,
                         &m,
-                        chain_start orelse @as(ModuleIndex, @enumFromInt(module_index)),
+                        chain_start orelse @as(ModuleIndex, @fromBackingInt(@intCast(module_index))),
                         ib.imported_name,
                     )) .node else .babel;
                     const effective_name = rb.canonical.export_name;
@@ -1203,7 +1203,7 @@ pub fn buildMetadataForAst(
                                                 false,
                                                 module_index,
                                                 @intCast(import_sym_id),
-                                                @intFromEnum(src),
+                                                @backingInt(src),
                                                 ib.local_name,
                                             );
                                             ns_inline_target_name = inline_name;
@@ -1215,7 +1215,7 @@ pub fn buildMetadataForAst(
                         }
                     }
                     // canonical의 export local_name이 namespace import인 경우 → 인라인 객체
-                    const cmod2: u32 = @intCast(@intFromEnum(rb.canonical.module_index));
+                    const cmod2: u32 = @intCast(@backingInt(rb.canonical.module_index));
                     const export_local = self.getExportLocalName(cmod2, rb.canonical.export_name) orelse rb.canonical.export_name;
                     if (self.graph.getModule(rb.canonical.module_index)) |cmod2_ptr| {
                         for (cmod2_ptr.import_bindings) |cib| {
@@ -1223,7 +1223,7 @@ pub fn buildMetadataForAst(
                                 // namespace import → 인라인 객체로 처리
                                 const imp_sym = module_scope.get(ib.local_name) orelse break;
                                 const ns_target_mod = if (cib.import_record_index < cmod2_ptr.import_records.len)
-                                    @intFromEnum(cmod2_ptr.import_records[cib.import_record_index].resolved)
+                                    @backingInt(cmod2_ptr.import_records[cib.import_record_index].resolved)
                                 else
                                     break;
                                 const inline_name = try self.registerNamespaceRewrites(
@@ -1267,7 +1267,7 @@ pub fn buildMetadataForAst(
             // 런타임 `ReferenceError` (빌드·파싱은 통과). 형제 호출부(cjs_interop / entry
             // exports)는 이미 `isCrossChunkConsumer` 로 게이트한다 — 여기만 빠져 있었다.
             const effective_target = if (ns_inline_target_name) |inline_name| inline_name else if (resolved) |rb| blk_eff: {
-                const canon_mi = @intFromEnum(rb.canonical.module_index);
+                const canon_mi = @backingInt(rb.canonical.module_index);
                 if (!self.isCrossChunkConsumer(module_index, canon_mi)) break :blk_eff target_name;
                 if (self.getCrossChunkGlobalName(canon_mi, rb.canonical.export_name)) |g| break :blk_eff g;
                 // (#4572) non-wrap ESM 동명 provider: 전역명이 없어(#4559 owner 한정) crossChunkBindingName
@@ -1358,7 +1358,7 @@ pub fn buildMetadataForAst(
                     }
                     continue;
                 }
-                const tidx = @intFromEnum(rec.resolved);
+                const tidx = @backingInt(rec.resolved);
                 const tmod = self.graph.getModule(rec.resolved) orelse continue;
                 if (tmod.wrap_kind == .none) {
                     try hoisted_specifiers.put(self.allocator, rec.specifier, {});
@@ -1392,7 +1392,7 @@ pub fn buildMetadataForAst(
                     const ie = inode.data.extra;
                     if (ie + 3 > ast.extra_data.items.len) continue;
                     const specs_len = ast.extra_data.items[ie + 1];
-                    const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[ie + 2]);
+                    const source_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[ie + 2]));
                     if (source_idx.isNone()) continue;
                     const src_node = ast.getNode(source_idx);
                     if (src_node.tag != .string_literal) continue;
@@ -1497,7 +1497,7 @@ pub fn buildMetadataForAst(
             return error.InvalidRuntimeHelperImportOutputBinding;
 
         const symbol_id = bundler_symbol.SymbolID.make(
-            @enumFromInt(module_index),
+            @fromBackingInt(@intCast(module_index)),
             @as(u32, @intCast(raw_symbol_id)),
         );
         const selected = self.rename_table.get(symbol_id) orelse continue;
@@ -1526,15 +1526,15 @@ pub fn buildMetadataForAst(
             switch (target_mod.wrap_kind) {
                 .none => {},
                 .cjs => {
-                    const target = @intFromEnum(rec.resolved);
+                    const target = @backingInt(rec.resolved);
                     if (cjs_static_init_set.contains(@intCast(target))) continue;
                     try cjs_static_init_set.put(self.allocator, @intCast(target), {});
-                    const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(@intFromEnum(rec.resolved)));
+                    const req_var = try getOrCreateCjsRequireRef(self, &cjs_var_cache, @intCast(@backingInt(rec.resolved)));
                     try preamble.write(req_var);
                     try preamble.write("();\n");
                 },
                 .esm => {
-                    const target = @intFromEnum(rec.resolved);
+                    const target = @backingInt(rec.resolved);
                     if (esm_init_set.contains(@intCast(target))) continue;
                     try esm_init_set.put(self.allocator, @intCast(target), {});
                     const is_tla = target_mod.uses_top_level_await;
@@ -1679,7 +1679,7 @@ pub fn buildRequireRewrites(self: *const Linker, m: *const Module, format: types
             }
             continue;
         }
-        const target = @intFromEnum(rec.resolved);
+        const target = @backingInt(rec.resolved);
         const target_mod = self.graph.getModule(rec.resolved) orelse continue;
 
         // 자기 자신을 require하는 경우: init 재귀 호출 없이 자신의 exports만 참조.
@@ -1786,7 +1786,7 @@ pub fn buildFinalExports(
         &pairs,
         &seen,
         &visited,
-        @enumFromInt(module_index),
+        @fromBackingInt(@intCast(module_index)),
         0,
     );
 
@@ -1807,7 +1807,7 @@ pub fn buildFinalExports(
         // entries 는 borrow, owned_strings 불필요 (#3321 후속).
         if (self.use_shared_ns_preamble) {
             if (p.ns_target_mod) |nt| {
-                const ns_var = try self.ensureSharedNsVar(@enumFromInt(nt));
+                const ns_var = try self.ensureSharedNsVar(@fromBackingInt(@intCast(nt)));
                 entries.appendAssumeCapacity(.{ .local = ns_var, .exported = p.exported });
                 continue;
             }
@@ -1823,7 +1823,7 @@ pub fn buildFinalExports(
         //     RHS/값 자리에 표현식이 유효 → materialize 없이 interop 식을 local 로 직접 사용.
         if (p.cjs_interop) |canon| {
             if (self.graph.getModule(canon.module_index)) |cjs_mod| {
-                const canon_mi = @intFromEnum(canon.module_index);
+                const canon_mi = @backingInt(canon.module_index);
                 if (self.isCrossChunkConsumer(module_index, canon_mi)) {
                     if (self.getCrossChunkGlobalName(canon_mi, canon.export_name)) |g| {
                         entries.appendAssumeCapacity(.{ .local = g, .exported = p.exported });
@@ -1862,7 +1862,7 @@ pub fn buildFinalExports(
         // 도 쓴다). 위 CJS interop 분기와 똑같이 `var <syn> = <global>;` 를 깔고 그 식별자를
         // 내보낸다 — ESM export specifier 에 표현식을 못 쓰는 제약이 같기 때문이다.
         if (self.format == .esm) {
-            if (self.graph.getModule(@enumFromInt(module_index))) |em| {
+            if (self.graph.getModule(@fromBackingInt(@intCast(module_index)))) |em| {
                 if (em.semantic) |em_sem| {
                     if (em_sem.unresolved_references.contains(p.local)) {
                         const syn = try std.fmt.allocPrint(self.allocator, "_default_{s}", .{p.exported});
@@ -2016,8 +2016,8 @@ fn collectConstProviderChain(
     while (depth <= 100) : (depth += 1) { // linker max_chain_depth 와 동형 상한
         const cm = self.graph.getModule(cur) orelse return false;
         try out.put(self.allocator, cm.diskPath(), {});
-        if (@intFromEnum(cur) == @intFromEnum(canon_mi)) return true; // origin 도달 → 완전
-        const entry = self.export_map.get(.{ .module_index = @intCast(@intFromEnum(cur)), .name = cur_name }) orelse return false;
+        if (@backingInt(cur) == @backingInt(canon_mi)) return true; // origin 도달 → 완전
+        const entry = self.export_map.get(.{ .module_index = @intCast(@backingInt(cur)), .name = cur_name }) orelse return false;
         if (entry.binding.kind != .re_export) return false; // .local(위장 re-export 포함)/star/ns → 추적 불가
         const rec_idx = entry.binding.import_record_index orelse return false;
         if (std.mem.eql(u8, entry.binding.local_name, "*")) return false; // namespace re-export
@@ -2380,8 +2380,8 @@ pub fn buildMetadata(self: *const Linker, module_index: u32, is_entry: bool) !Li
                 const e = node.data.extra;
                 if (e + 3 >= ast.extra_data.items.len) continue;
                 const decl_idx_raw = ast.extra_data.items[e];
-                const decl_idx: NodeIndex = @enumFromInt(decl_idx_raw);
-                const source_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 3]);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(decl_idx_raw));
+                const source_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 3]));
 
                 if (!decl_idx.isNone()) {
                     // export const x = 1; → export 노드 스킵, declaration은 유지

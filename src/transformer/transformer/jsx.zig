@@ -22,7 +22,7 @@ pub fn visitJSXElement(self: *Transformer, node: Node) Error!NodeIndex {
     else
         NodeList{ .start = 0, .len = 0 };
     return self.addExtraNode(.jsx_element, working_node.span, &.{
-        @intFromEnum(new_tag),
+        @backingInt(new_tag),
         new_attrs.start,
         new_attrs.len,
         new_children.start,
@@ -40,7 +40,7 @@ fn visitJSXExtraNode(self: *Transformer, tag: Tag, node: Node) Error!NodeIndex {
     const new_tag = try self.visitNode(self.readNodeIdx(e, 0));
     const new_attrs = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
     return self.addExtraNode(tag, node.span, &.{
-        @intFromEnum(new_tag),
+        @backingInt(new_tag),
         new_attrs.start,
         new_attrs.len,
     });

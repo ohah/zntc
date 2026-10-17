@@ -88,7 +88,7 @@ pub fn build(
     const list = program.data.list;
     const items = ast.extra_data.items[list.start .. list.start + list.len];
     for (items) |raw| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (stmt_idx == .none) continue;
 
         const decl = ast.getNode(stmt_idx);
@@ -115,7 +115,7 @@ fn nameOfDecl(ast: *const Ast, node: Node) ?[]const u8 {
 
     const extra_start = node.data.extra;
     if (extra_start >= ast.extra_data.items.len) return null;
-    const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra_start]);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra_start]));
     if (name_idx == .none) return null;
 
     const name_node = ast.getNode(name_idx);

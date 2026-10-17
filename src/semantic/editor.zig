@@ -142,7 +142,7 @@ pub const SemanticEditor = struct {
     }
 
     fn validSymbol(self: *const SemanticEditor, id: SymbolId) bool {
-        return !id.isNone() and @intFromEnum(id) < self.symbols.items.len;
+        return !id.isNone() and @backingInt(id) < self.symbols.items.len;
     }
 
     fn validTextSpan(self: *const SemanticEditor, span: Span) bool {
@@ -157,7 +157,7 @@ pub const SemanticEditor = struct {
 
     fn visibleFrom(self: *const SemanticEditor, symbol: SymbolId, scope: ScopeId) bool {
         if (!self.validSymbol(symbol) or !self.validScope(scope)) return false;
-        const target = self.symbols.items[@intFromEnum(symbol)].scope_id;
+        const target = self.symbols.items[@backingInt(symbol)].scope_id;
         var current = scope;
         var hops: usize = 0;
         while (hops < self.scopes.items.len) : (hops += 1) {
@@ -173,7 +173,7 @@ pub const SemanticEditor = struct {
     /// scopes whose live references now execute beneath the new storage scope.
     pub fn relocateSymbol(self: *SemanticEditor, id: SymbolId, target: ScopeId) Error!void {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
-        const symbol = &self.symbols.items[@intFromEnum(id)];
+        const symbol = &self.symbols.items[@backingInt(id)];
         const name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
         try self.relocateSymbolWithName(id, target, name, null);
     }
@@ -185,7 +185,7 @@ pub const SemanticEditor = struct {
     pub fn relocateSymbolAs(self: *SemanticEditor, id: SymbolId, target: ScopeId, output_binding: NodeIndex) Error!void {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
         if (!self.validScope(target)) return error.InvalidScope;
-        if (output_binding.isNone() or @intFromEnum(output_binding) >= self.ast.nodes.items.len) return error.InvalidNode;
+        if (output_binding.isNone() or @backingInt(output_binding) >= self.ast.nodes.items.len) return error.InvalidNode;
         const node = self.ast.getNode(output_binding);
         if (node.tag != .binding_identifier) return error.InvalidNode;
         const output_name_span = node.data.string_ref;
@@ -193,7 +193,7 @@ pub const SemanticEditor = struct {
         if (self.ast.getText(output_name_span).len == 0) return error.InvalidNode;
         const slot = try self.ensureNodeSlot(output_binding);
         if (self.symbol_ids.items[slot]) |existing| {
-            if (existing != @intFromEnum(id)) return error.AlreadyBound;
+            if (existing != @backingInt(id)) return error.AlreadyBound;
         }
         const output_name = self.ast.getText(output_name_span);
         const stable_output_name = try self.ast.getTextStable(self.allocator, output_name_span);
@@ -206,22 +206,22 @@ pub const SemanticEditor = struct {
             has_declaration = true;
         }
         if (!has_declaration) try self.ensureDeclarationAtNode(id, target, output_binding);
-        self.symbol_ids.items[slot] = @intFromEnum(id);
+        self.symbol_ids.items[slot] = @backingInt(id);
     }
 
     fn relocateSymbolWithName(self: *SemanticEditor, id: SymbolId, target: ScopeId, target_name: []const u8, stable_output_name: ?[]const u8) Error!void {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
         if (!self.validScope(target)) return error.InvalidScope;
-        const symbol = &self.symbols.items[@intFromEnum(id)];
+        const symbol = &self.symbols.items[@backingInt(id)];
         const source = symbol.scope_id;
         if (!self.validScope(source)) return error.InvalidScope;
         const name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
         if (source == target and std.mem.eql(u8, name, target_name)) return;
         const source_map = &self.scope_maps.items[source.toIndex()];
-        if (source_map.get(name) != @as(?usize, @intFromEnum(id))) return error.InvalidSymbol;
+        if (source_map.get(name) != @as(?usize, @backingInt(id))) return error.InvalidSymbol;
         const target_map = &self.scope_maps.items[target.toIndex()];
         if (target_map.get(target_name)) |existing| {
-            if (existing != @intFromEnum(id)) return error.DuplicateBinding;
+            if (existing != @backingInt(id)) return error.DuplicateBinding;
             if (source != target) return error.DuplicateBinding;
         }
         if (source != target and (self.scopes.items[target.toIndex()].symbol_count == std.math.maxInt(u16) or
@@ -229,12 +229,12 @@ pub const SemanticEditor = struct {
         // A generated output name can point into Ast.string_table, which may
         // reallocate during later transforms. Store the owned copy when the
         // emitted binding was string-table backed.
-        try target_map.put(self.allocator, stable_output_name orelse target_name, @intFromEnum(id));
+        try target_map.put(self.allocator, stable_output_name orelse target_name, @backingInt(id));
         _ = source_map.remove(name);
-        if (self.takeDecodedAlias(source, name, @intFromEnum(id))) |alias| {
+        if (self.takeDecodedAlias(source, name, @backingInt(id))) |alias| {
             // 같은 표기로 옮길 때만 디코딩 별칭도 따라간다. 새 이름으로 바뀌면 별칭은 더 이상 맞지 않는다.
             if (std.mem.eql(u8, target_name, name) and target_map.get(alias) == null) {
-                try target_map.put(self.allocator, alias, @intFromEnum(id));
+                try target_map.put(self.allocator, alias, @backingInt(id));
             }
         }
         if (source != target) {
@@ -282,7 +282,7 @@ pub const SemanticEditor = struct {
         allow_dynamic_body_var_shadow: bool,
     ) Error!void {
         if (!self.validSymbol(id)) return error.InvalidSymbol;
-        const symbol = &self.symbols.items[@intFromEnum(id)];
+        const symbol = &self.symbols.items[@backingInt(id)];
         if (!self.validScope(symbol.scope_id)) return error.InvalidScope;
         const scope = self.scopes.items[symbol.scope_id.toIndex()];
         if (scope.kind != .function or
@@ -295,7 +295,7 @@ pub const SemanticEditor = struct {
         const map = &self.scope_maps.items[symbol.scope_id.toIndex()];
         const old_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
         const old_id = map.get(old_name) orelse return error.InvalidSymbol;
-        if (old_id != @intFromEnum(id)) {
+        if (old_id != @backingInt(id)) {
             if ((symbol.kind != .parameter and !symbol.kind.isFunctionLike()) or old_id >= self.symbols.items.len) return error.InvalidSymbol;
             const body_symbol = self.symbols.items[old_id];
             if (!body_symbol.kind.isFunctionLike() or body_symbol.scope_id != symbol.scope_id) return error.InvalidSymbol;
@@ -308,7 +308,7 @@ pub const SemanticEditor = struct {
             // function declaration alias that used to share the map entry.
             if (self.parameterBodyFunctionScope(symbol.scope_id)) |body_scope| {
                 if (self.scope_maps.items[body_scope.toIndex()].get(old_name)) |body_id| {
-                    if (body_id != @intFromEnum(id)) {
+                    if (body_id != @backingInt(id)) {
                         if (body_id >= self.symbols.items.len) return error.InvalidSymbol;
                         const body_symbol = self.symbols.items[body_id];
                         // A body `var` with the parameter's spelling is a distinct
@@ -326,9 +326,9 @@ pub const SemanticEditor = struct {
         }
         if (map.contains(output_name)) return error.DuplicateBinding;
         const stable_name = try self.allocator.dupe(u8, output_name);
-        try map.put(self.allocator, stable_name, @intFromEnum(id));
-        if (old_id == @intFromEnum(id)) _ = map.remove(old_name);
-        _ = self.takeDecodedAlias(symbol.scope_id, old_name, @intFromEnum(id));
+        try map.put(self.allocator, stable_name, @backingInt(id));
+        if (old_id == @backingInt(id)) _ = map.remove(old_name);
+        _ = self.takeDecodedAlias(symbol.scope_id, old_name, @backingInt(id));
         symbol.synthetic_name = stable_name;
         const declaration_node = self.bindingNodeForSymbol(id) orelse .none;
         try self.ensureDeclarationAtNode(id, symbol.scope_id, declaration_node);
@@ -336,13 +336,13 @@ pub const SemanticEditor = struct {
 
     fn hasDynamicBodyVarShadow(self: *const SemanticEditor, id: SymbolId) bool {
         if (!self.validSymbol(id)) return false;
-        const parameter = self.symbols.items[@intFromEnum(id)];
+        const parameter = self.symbols.items[@backingInt(id)];
         if (parameter.kind != .parameter) return false;
         const body_scope = self.parameterBodyFunctionScope(parameter.scope_id) orelse return false;
         if (!self.scopes.items[body_scope.toIndex()].blocksMangling()) return false;
         const name = if (parameter.synthetic_name.len > 0) parameter.synthetic_name else self.ast.getText(parameter.name);
         const body_raw = self.scope_maps.items[body_scope.toIndex()].get(name) orelse return false;
-        if (body_raw >= self.symbols.items.len or body_raw == @intFromEnum(id)) return false;
+        if (body_raw >= self.symbols.items.len or body_raw == @backingInt(id)) return false;
         const body_var = self.symbols.items[body_raw];
         return body_var.kind == .variable_var and body_var.scope_id == body_scope;
     }
@@ -357,11 +357,11 @@ pub const SemanticEditor = struct {
             };
             if (!self.ast.hasExtra(function.data.extra, slot)) continue;
             const params_raw = self.ast.extra_data.items[function.data.extra + slot];
-            if (params_raw == @intFromEnum(NodeIndex.none) or
-                self.scope_owner_map.get(params_raw) != @as(?u32, @intFromEnum(parameter_scope))) continue;
+            if (params_raw == @backingInt(NodeIndex.none) or
+                self.scope_owner_map.get(params_raw) != @as(?u32, @backingInt(parameter_scope))) continue;
             const body_raw = self.scope_owner_map.get(@intCast(raw)) orelse continue;
             if (body_raw >= self.scopes.items.len) continue;
-            const body_scope: ScopeId = @enumFromInt(body_raw);
+            const body_scope: ScopeId = @fromBackingInt(@intCast(body_raw));
             if (self.scopes.items[body_raw].kind == .function and self.scopes.items[body_raw].parent == parameter_scope)
                 return body_scope;
         }
@@ -373,9 +373,9 @@ pub const SemanticEditor = struct {
         const slot = try self.ensureNodeSlot(node);
         if (self.ast.getNode(node).tag != .binding_identifier) return error.InvalidNode;
         if (self.symbol_ids.items[slot]) |existing| {
-            if (existing != @intFromEnum(id)) return error.AlreadyBound;
+            if (existing != @backingInt(id)) return error.AlreadyBound;
         } else {
-            self.symbol_ids.items[slot] = @intFromEnum(id);
+            self.symbol_ids.items[slot] = @backingInt(id);
         }
         self.reanchorDeclaration(id, node);
     }
@@ -387,10 +387,10 @@ pub const SemanticEditor = struct {
         const slot = try self.ensureNodeSlot(node);
         const binding = self.ast.getNode(node);
         if (binding.tag != .binding_identifier) return error.InvalidNode;
-        const symbol = self.symbols.items[@intFromEnum(id)];
+        const symbol = self.symbols.items[@backingInt(id)];
         const expected_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
         if (!std.mem.eql(u8, self.ast.getText(binding.data.string_ref), expected_name)) return error.InvalidSymbol;
-        self.symbol_ids.items[slot] = @intFromEnum(id);
+        self.symbol_ids.items[slot] = @backingInt(id);
         self.reanchorDeclaration(id, node);
     }
 
@@ -407,7 +407,7 @@ pub const SemanticEditor = struct {
         for (self.references.items) |*reference| {
             if (reference.symbol_id != id or !reference.flags.declare) continue;
             if (rows > 1 and !reference.declaration_node_index.isNone() and
-                @intFromEnum(reference.declaration_node_index) < self.ast.nodes.items.len and
+                @backingInt(reference.declaration_node_index) < self.ast.nodes.items.len and
                 !std.meta.eql(self.ast.getNode(reference.declaration_node_index).span, binding_span)) continue;
             reference.declaration_node_index = binding;
         }
@@ -430,9 +430,9 @@ pub const SemanticEditor = struct {
         // Transformer's side table while this editor's lazy copy still has an
         // empty slot. Attach that caller-verified identity before splitting.
         if (self.symbol_ids.items[slot]) |existing| {
-            if (existing != @intFromEnum(expected)) return error.InvalidSymbol;
+            if (existing != @backingInt(expected)) return error.InvalidSymbol;
         } else {
-            self.symbol_ids.items[slot] = @intFromEnum(expected);
+            self.symbol_ids.items[slot] = @backingInt(expected);
         }
         const old_span = binding.data.string_ref;
         // 출력 바인딩은 디코딩한 이름으로 선언한다 — `\u0078` 원문 키만 두면 `x` 로 쓴 참조가
@@ -451,26 +451,26 @@ pub const SemanticEditor = struct {
             if (kind == .variable_var and existing.kind == .variable_var and
                 existing.scope_id == target and Scanner.identifierNamesEqual(existing_name, name))
             {
-                const existing_id: SymbolId = @enumFromInt(@as(u32, @intCast(existing_raw)));
-                self.symbol_ids.items[slot] = @intFromEnum(existing_id);
+                const existing_id: SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(existing_raw))));
+                self.symbol_ids.items[slot] = @backingInt(existing_id);
                 return existing_id;
             }
             // Block function declarations can share one analyzer SymbolId
             // through aliases in sibling lexical scopes. If output emission
             // splits those declarations into distinct block bindings, replace
             // only this alias before declaring the output identity.
-            if (existing_raw == @intFromEnum(expected) and existing.scope_id != target) {
+            if (existing_raw == @backingInt(expected) and existing.scope_id != target) {
                 _ = self.scope_maps.items[target.toIndex()].remove(name);
             } else {
                 return error.DuplicateBinding;
             }
         }
         const name_span = try self.ast.addString(name);
-        self.ast.nodes.items[@intFromEnum(node)].data.string_ref = name_span;
+        self.ast.nodes.items[@backingInt(node)].data.string_ref = name_span;
         self.symbol_ids.items[slot] = null;
         return self.declare(node, name_span, declaration_span, lexical_scope, kind, Reference.NO_STMT, Reference.NO_STMT) catch |err| {
-            self.ast.nodes.items[@intFromEnum(node)].data.string_ref = old_span;
-            self.symbol_ids.items[slot] = @intFromEnum(expected);
+            self.ast.nodes.items[@backingInt(node)].data.string_ref = old_span;
+            self.symbol_ids.items[slot] = @backingInt(expected);
             return err;
         };
     }
@@ -480,7 +480,7 @@ pub const SemanticEditor = struct {
     }
 
     fn requireIdentifier(self: *const SemanticEditor, idx: NodeIndex) Error!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return error.InvalidNode;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return error.InvalidNode;
         switch (self.ast.getNode(idx).tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier, .jsx_identifier => {},
             else => return error.InvalidNode,
@@ -489,7 +489,7 @@ pub const SemanticEditor = struct {
 
     fn ensureNodeSlot(self: *SemanticEditor, idx: NodeIndex) Error!usize {
         try self.requireIdentifier(idx);
-        const i = @intFromEnum(idx);
+        const i = @backingInt(idx);
         if (self.symbol_ids.items.len <= i) {
             try self.symbol_ids.appendNTimes(self.allocator, null, i + 1 - self.symbol_ids.items.len);
         }
@@ -497,8 +497,8 @@ pub const SemanticEditor = struct {
     }
 
     fn ensureHelperImportSlot(self: *SemanticEditor, idx: NodeIndex) Error!usize {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return error.InvalidNode;
-        const i: usize = @intCast(@intFromEnum(idx));
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const i: usize = @intCast(@backingInt(idx));
         if (self.symbol_ids.items.len <= i) {
             try self.symbol_ids.appendNTimes(self.allocator, null, i + 1 - self.symbol_ids.items.len);
         }
@@ -507,7 +507,7 @@ pub const SemanticEditor = struct {
 
     fn appendReference(self: *SemanticEditor, ref: Reference) Error!void {
         if (self.reference_index_built and !ref.node_index.isNone()) {
-            const key = @intFromEnum(ref.node_index);
+            const key = @backingInt(ref.node_index);
             if (self.reference_index.contains(key)) return error.AlreadyBound;
             try self.reference_index.put(self.allocator, key, self.references.items.len);
             errdefer _ = self.reference_index.remove(key);
@@ -518,8 +518,8 @@ pub const SemanticEditor = struct {
     fn ensureReferenceIndex(self: *SemanticEditor) Error!void {
         if (self.reference_index_built) return;
         for (self.references.items, 0..) |ref, i| {
-            if (!ref.node_index.isNone() and !self.reference_index.contains(@intFromEnum(ref.node_index))) {
-                try self.reference_index.put(self.allocator, @intFromEnum(ref.node_index), i);
+            if (!ref.node_index.isNone() and !self.reference_index.contains(@backingInt(ref.node_index))) {
+                try self.reference_index.put(self.allocator, @backingInt(ref.node_index), i);
             }
         }
         self.reference_index_built = true;
@@ -530,7 +530,7 @@ pub const SemanticEditor = struct {
     pub fn referenceForNode(self: *SemanticEditor, node: NodeIndex) Error!?Reference {
         if (node.isNone()) return null;
         try self.ensureReferenceIndex();
-        const index = self.reference_index.get(@intFromEnum(node)) orelse return null;
+        const index = self.reference_index.get(@backingInt(node)) orelse return null;
         return self.references.items[index];
     }
 
@@ -538,13 +538,13 @@ pub const SemanticEditor = struct {
     pub fn addScope(self: *SemanticEditor, parent: ScopeId, owner: NodeIndex, kind: ScopeKind, is_strict: bool) Error!ScopeId {
         if (!parent.isNone() and !self.validScope(parent)) return error.InvalidScope;
         if (parent.isNone() and self.scopes.items.len != 0) return error.InvalidScope;
-        if (!owner.isNone() and @intFromEnum(owner) >= self.ast.nodes.items.len) return error.InvalidNode;
+        if (!owner.isNone() and @backingInt(owner) >= self.ast.nodes.items.len) return error.InvalidNode;
         const strict = is_strict or (if (parent.isNone()) false else self.scopes.items[parent.toIndex()].is_strict);
-        const id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
+        const id: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(self.scopes.items.len))));
         try self.scopes.append(self.allocator, .{ .parent = parent, .kind = kind, .is_strict = strict });
         errdefer _ = self.scopes.pop();
         try self.scope_maps.append(self.allocator, .empty);
-        if (!owner.isNone()) try self.scope_owner_map.put(self.allocator, @intFromEnum(owner), @intFromEnum(id));
+        if (!owner.isNone()) try self.scope_owner_map.put(self.allocator, @backingInt(owner), @backingInt(id));
         return id;
     }
 
@@ -552,10 +552,10 @@ pub const SemanticEditor = struct {
     /// 기존 노드를 재방문해도 scope_id를 새로 만들지 않는다.
     pub fn remapScopeOwner(self: *SemanticEditor, old_owner: NodeIndex, new_owner: NodeIndex) Error!void {
         if (old_owner.isNone() or new_owner.isNone() or
-            @intFromEnum(old_owner) >= self.ast.nodes.items.len or
-            @intFromEnum(new_owner) >= self.ast.nodes.items.len) return error.InvalidNode;
-        const old_key = @intFromEnum(old_owner);
-        const new_key = @intFromEnum(new_owner);
+            @backingInt(old_owner) >= self.ast.nodes.items.len or
+            @backingInt(new_owner) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const old_key = @backingInt(old_owner);
+        const new_key = @backingInt(new_owner);
         const old_tag = self.ast.getNode(old_owner).tag;
         const new_tag = self.ast.getNode(new_owner).tag;
         if (old_tag != new_tag and
@@ -584,10 +584,10 @@ pub const SemanticEditor = struct {
     /// still apply here.
     pub fn remapScopeOwnerAfterInPlaceRewrite(self: *SemanticEditor, old_owner: NodeIndex, new_owner: NodeIndex) Error!void {
         if (old_owner.isNone() or new_owner.isNone() or
-            @intFromEnum(old_owner) >= self.ast.nodes.items.len or
-            @intFromEnum(new_owner) >= self.ast.nodes.items.len) return error.InvalidNode;
-        const old_key = @intFromEnum(old_owner);
-        const new_key = @intFromEnum(new_owner);
+            @backingInt(old_owner) >= self.ast.nodes.items.len or
+            @backingInt(new_owner) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const old_key = @backingInt(old_owner);
+        const new_key = @backingInt(new_owner);
         const scope_id = self.scope_owner_map.get(old_key) orelse return error.InvalidScope;
         if (old_key == new_key) return;
         if (self.scope_owner_map.get(new_key)) |existing| {
@@ -603,11 +603,11 @@ pub const SemanticEditor = struct {
     /// are reparented to the removed scope's parent; a scope with bindings or
     /// references cannot be elided.
     pub fn elideEmptyGeneratedScopeOwner(self: *SemanticEditor, owner: NodeIndex) Error!bool {
-        if (owner.isNone() or @intFromEnum(owner) >= self.ast.nodes.items.len) return error.InvalidNode;
-        const owner_raw = @intFromEnum(owner);
+        if (owner.isNone() or @backingInt(owner) >= self.ast.nodes.items.len) return error.InvalidNode;
+        const owner_raw = @backingInt(owner);
         const scope_raw = self.scope_owner_map.get(owner_raw) orelse return false;
         if (scope_raw >= self.scopes.items.len) return error.InvalidScope;
-        const scope_id: ScopeId = @enumFromInt(scope_raw);
+        const scope_id: ScopeId = @fromBackingInt(@intCast(scope_raw));
         const scope = self.scopes.items[scope_raw];
         if (scope.kind != .block and scope.kind != .switch_block) return false;
         if (scope.parent.isNone() or !self.validScope(scope.parent)) return error.InvalidScope;
@@ -629,7 +629,7 @@ pub const SemanticEditor = struct {
         self.scopes.items[parent.toIndex()].subtree_has_with =
             self.scopes.items[parent.toIndex()].subtree_has_with or scope.subtree_has_with;
         for (self.scopes.items, 0..) |child, child_index| {
-            if (child.parent == scope_id) try self.reparentScope(@enumFromInt(@as(u32, @intCast(child_index))), parent);
+            if (child.parent == scope_id) try self.reparentScope(@fromBackingInt(@intCast(@as(u32, @intCast(child_index)))), parent);
         }
         _ = self.scope_owner_map.remove(owner_raw);
         return true;
@@ -654,7 +654,7 @@ pub const SemanticEditor = struct {
         const new_strict = self.scopes.items[new_parent.toIndex()].is_strict;
         if (new_strict and !was_strict) {
             for (self.scopes.items, 0..) |*candidate, i| {
-                var ancestor: ScopeId = @enumFromInt(@as(u32, @intCast(i)));
+                var ancestor: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
                 var depth: usize = 0;
                 while (!ancestor.isNone() and depth < self.scopes.items.len) : (depth += 1) {
                     if (!self.validScope(ancestor)) return error.InvalidScope;
@@ -693,7 +693,7 @@ pub const SemanticEditor = struct {
     /// a generated boundary that encloses all surviving references.
     pub fn moveSymbolToScope(self: *SemanticEditor, symbol: SymbolId, new_scope: ScopeId) Error!void {
         if (!self.validSymbol(symbol) or !self.validScope(new_scope)) return error.InvalidScope;
-        const symbol_index = @intFromEnum(symbol);
+        const symbol_index = @backingInt(symbol);
         const old_scope = self.symbols.items[symbol_index].scope_id;
         if (old_scope == new_scope) return;
         if (!self.validScope(old_scope)) return error.InvalidScope;
@@ -729,13 +729,13 @@ pub const SemanticEditor = struct {
         if (!self.validSymbol(symbol)) return error.InvalidSymbol;
         try self.ensureReferenceIndex();
         const slot = try self.ensureNodeSlot(node);
-        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const i = self.reference_index.get(@backingInt(node)) orelse return error.ReferenceNotFound;
         const ref = &self.references.items[i];
         if (ref.flags.declare) return error.InvalidNode;
         if (!self.visibleFrom(symbol, ref.scope_id)) return error.InvalidScope;
         self.removeCounts(ref.symbol_id, ref.flags);
         ref.symbol_id = symbol;
-        self.symbol_ids.items[slot] = @intFromEnum(symbol);
+        self.symbol_ids.items[slot] = @backingInt(symbol);
         self.addCounts(symbol, ref.flags);
     }
 
@@ -755,19 +755,19 @@ pub const SemanticEditor = struct {
         try self.requireIdentifier(node);
         if (self.ast.getNode(node).tag == .binding_identifier) return error.InvalidNode;
         try self.ensureReferenceIndex();
-        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const i = self.reference_index.get(@backingInt(node)) orelse return error.ReferenceNotFound;
         const current = self.references.items[i];
         if (current.flags.declare or (!current.flags.read and !current.flags.write)) return error.InvalidNode;
         if (!self.validScope(current.scope_id)) return error.InvalidScope;
         if (!self.validSymbol(current.symbol_id)) return error.InvalidSymbol;
-        const slot = @intFromEnum(node);
-        if (slot >= self.symbol_ids.items.len or self.symbol_ids.items[slot] != @as(?u32, @intFromEnum(current.symbol_id)))
+        const slot = @backingInt(node);
+        if (slot >= self.symbol_ids.items.len or self.symbol_ids.items[slot] != @as(?u32, @backingInt(current.symbol_id)))
             return error.InvalidSymbol;
         if (!self.visibleFrom(symbol, scope)) return error.InvalidScope;
 
         if (current.symbol_id != symbol and countsAsValue(current.flags)) {
-            const source_counts = self.symbols.items[@intFromEnum(current.symbol_id)];
-            const target_counts = self.symbols.items[@intFromEnum(symbol)];
+            const source_counts = self.symbols.items[@backingInt(current.symbol_id)];
+            const target_counts = self.symbols.items[@backingInt(symbol)];
             if (source_counts.reference_count == 0 or target_counts.reference_count == std.math.maxInt(u32))
                 return error.InvalidSymbol;
             if (current.flags.write and
@@ -783,14 +783,14 @@ pub const SemanticEditor = struct {
         self.references.items[i].symbol_id = symbol;
         self.references.items[i].stmt_idx = stmt_idx;
         self.references.items[i].scope_stmt_idx = scope_stmt_idx;
-        self.symbol_ids.items[slot] = @intFromEnum(symbol);
+        self.symbol_ids.items[slot] = @backingInt(symbol);
     }
 
     /// AST 복사가 만든 새 식별자에 원본 참조의 대상과 read/write 플래그를 복제한다.
     /// 원본 노드가 최종 AST에서 사라졌다면 caller가 removeReference로 정리한다.
     pub fn cloneReference(self: *SemanticEditor, source: NodeIndex, clone: NodeIndex, scope: ScopeId, stmt_idx: u32, scope_stmt_idx: u32) Error!void {
         try self.ensureReferenceIndex();
-        const source_i = self.reference_index.get(@intFromEnum(source)) orelse return error.ReferenceNotFound;
+        const source_i = self.reference_index.get(@backingInt(source)) orelse return error.ReferenceNotFound;
         const ref = self.references.items[source_i];
         if (ref.flags.declare) return error.InvalidNode;
         return self.addCopiedReference(clone, ref.symbol_id, scope, ref.flags, stmt_idx, scope_stmt_idx);
@@ -798,7 +798,7 @@ pub const SemanticEditor = struct {
 
     pub fn cloneReferenceAtSameLocation(self: *SemanticEditor, source: NodeIndex, clone: NodeIndex) Error!void {
         try self.ensureReferenceIndex();
-        const i = self.reference_index.get(@intFromEnum(source)) orelse return error.ReferenceNotFound;
+        const i = self.reference_index.get(@backingInt(source)) orelse return error.ReferenceNotFound;
         const ref = self.references.items[i];
         return self.cloneReference(source, clone, ref.scope_id, ref.stmt_idx, ref.scope_stmt_idx);
     }
@@ -829,7 +829,7 @@ pub const SemanticEditor = struct {
         const name = try self.ast.getTextStable(self.allocator, name_span);
         if (self.scope_maps.items[target.toIndex()].contains(name)) return error.DuplicateBinding;
 
-        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
+        const id: SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(self.symbols.items.len))));
         try self.symbols.append(self.allocator, .{
             .name = name_span,
             .scope_id = target,
@@ -840,7 +840,7 @@ pub const SemanticEditor = struct {
             .synthetic_name = name,
         });
         errdefer _ = self.symbols.pop();
-        try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @intFromEnum(id));
+        try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @backingInt(id));
         errdefer _ = self.scope_maps.items[target.toIndex()].remove(name);
         try self.references.append(self.allocator, .{
             .node_index = .none,
@@ -877,7 +877,7 @@ pub const SemanticEditor = struct {
         if (self.scope_maps.items[target.toIndex()].get(name)) |_| {
             return error.DuplicateBinding;
         }
-        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
+        const id: SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(self.symbols.items.len))));
         try self.symbols.append(self.allocator, .{
             .name = name_span,
             .scope_id = target,
@@ -887,7 +887,7 @@ pub const SemanticEditor = struct {
             .declaration_span = declaration_span,
             .synthetic_name = name,
         });
-        try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @intFromEnum(id));
+        try self.scope_maps.items[target.toIndex()].put(self.allocator, name, @backingInt(id));
         try self.references.append(self.allocator, .{
             .node_index = .none,
             .declaration_node_index = binding,
@@ -897,7 +897,7 @@ pub const SemanticEditor = struct {
             .scope_stmt_idx = scope_stmt_idx,
             .flags = .{ .declare = true },
         });
-        self.symbol_ids.items[node_slot] = @intFromEnum(id);
+        self.symbol_ids.items[node_slot] = @backingInt(id);
         self.scopes.items[target.toIndex()].symbol_count +|= 1;
         return id;
     }
@@ -946,10 +946,10 @@ pub const SemanticEditor = struct {
                 !std.mem.eql(u8, existing.synthetic_name, name) or
                 existing.synthetic_kind != expected_kind)
                 return error.DuplicateBinding;
-            return @enumFromInt(raw_id);
+            return @fromBackingInt(@intCast(raw_id));
         }
 
-        const id: SymbolId = @enumFromInt(@as(u32, @intCast(self.symbols.items.len)));
+        const id: SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(self.symbols.items.len))));
         try self.symbols.append(self.allocator, .{
             .name = name_span,
             .scope_id = scope,
@@ -962,11 +962,11 @@ pub const SemanticEditor = struct {
             .output_name_hint = if (defer_import_name and !is_preamble) name else "",
         });
         errdefer _ = self.symbols.pop();
-        try self.helper_scope_map.put(self.allocator, name, @intFromEnum(id));
+        try self.helper_scope_map.put(self.allocator, name, @backingInt(id));
         errdefer _ = self.helper_scope_map.remove(name);
         var added_scope_binding = false;
         if (!self.scope_maps.items[scope.toIndex()].contains(name)) {
-            try self.scope_maps.items[scope.toIndex()].put(self.allocator, name, @intFromEnum(id));
+            try self.scope_maps.items[scope.toIndex()].put(self.allocator, name, @backingInt(id));
             self.scopes.items[scope.toIndex()].symbol_count +|= 1;
             added_scope_binding = true;
         }
@@ -995,12 +995,12 @@ pub const SemanticEditor = struct {
             else => return error.InvalidNode,
         }
         if (self.symbol_ids.items[slot] != null) return error.AlreadyBound;
-        const symbol = &self.symbols.items[@intFromEnum(id)];
+        const symbol = &self.symbols.items[@backingInt(id)];
         if (symbol.kind != .import_binding or symbol.synthetic_kind == .runtime_helper_preamble)
             return error.InvalidSymbol;
         const local_name = try self.ast.getTextStable(self.allocator, self.ast.getNode(local).data.string_ref);
         if (!std.mem.eql(u8, symbol.synthetic_name, local_name) or
-            self.helper_scope_map.get(local_name) != @as(?usize, @intFromEnum(id)))
+            self.helper_scope_map.get(local_name) != @as(?usize, @backingInt(id)))
             return error.InvalidSymbol;
         var declaration_reference: ?*Reference = null;
         for (self.references.items) |*reference| {
@@ -1011,7 +1011,7 @@ pub const SemanticEditor = struct {
             break;
         }
         const declaration = declaration_reference orelse return error.ReferenceNotFound;
-        self.symbol_ids.items[slot] = @intFromEnum(id);
+        self.symbol_ids.items[slot] = @backingInt(id);
         symbol.name = self.ast.getNode(local).data.string_ref;
         symbol.declaration_span = declaration_span;
         declaration.declaration_node_index = local;
@@ -1033,14 +1033,14 @@ pub const SemanticEditor = struct {
 
     fn addCounts(self: *SemanticEditor, id: SymbolId, flags: ReferenceFlags) void {
         if (!countsAsValue(flags)) return;
-        const sym = &self.symbols.items[@intFromEnum(id)];
+        const sym = &self.symbols.items[@backingInt(id)];
         sym.reference_count += 1;
         if (flags.write) sym.write_count += 1;
     }
 
     fn removeCounts(self: *SemanticEditor, id: SymbolId, flags: ReferenceFlags) void {
         if (!countsAsValue(flags)) return;
-        const sym = &self.symbols.items[@intFromEnum(id)];
+        const sym = &self.symbols.items[@backingInt(id)];
         std.debug.assert(sym.reference_count > 0);
         sym.reference_count -= 1;
         if (flags.write) {
@@ -1073,7 +1073,7 @@ pub const SemanticEditor = struct {
             .scope_stmt_idx = scope_stmt_idx,
             .flags = flags,
         });
-        self.symbol_ids.items[slot] = @intFromEnum(symbol);
+        self.symbol_ids.items[slot] = @backingInt(symbol);
         self.addCounts(symbol, flags);
     }
 
@@ -1093,7 +1093,7 @@ pub const SemanticEditor = struct {
         const slot = try self.ensureNodeSlot(node);
         if (self.ast.getNode(node).tag == .binding_identifier or flags.declare) return error.InvalidNode;
         if (self.symbol_ids.items[slot]) |existing| {
-            if (existing != @intFromEnum(symbol)) return error.AlreadyBound;
+            if (existing != @backingInt(symbol)) return error.AlreadyBound;
         }
         try self.ensureReferenceIndex();
         try self.appendReference(.{
@@ -1104,7 +1104,7 @@ pub const SemanticEditor = struct {
             .scope_stmt_idx = scope_stmt_idx,
             .flags = flags,
         });
-        self.symbol_ids.items[slot] = @intFromEnum(symbol);
+        self.symbol_ids.items[slot] = @backingInt(symbol);
         self.addCounts(symbol, flags);
     }
 
@@ -1114,7 +1114,7 @@ pub const SemanticEditor = struct {
     pub fn updateReferenceFlags(self: *SemanticEditor, node: NodeIndex, flags: ReferenceFlags) Error!void {
         if (flags.declare) return error.InvalidNode;
         try self.ensureReferenceIndex();
-        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const i = self.reference_index.get(@backingInt(node)) orelse return error.ReferenceNotFound;
         const current = self.references.items[i];
         if (current.flags.declare) return error.InvalidNode;
         if (!self.validSymbol(current.symbol_id) or !self.validScope(current.scope_id)) return error.InvalidSymbol;
@@ -1133,8 +1133,8 @@ pub const SemanticEditor = struct {
 
     fn bindingNodeForSymbol(self: *const SemanticEditor, symbol: SymbolId) ?NodeIndex {
         for (self.symbol_ids.items, 0..) |maybe_id, raw| {
-            if (maybe_id != @intFromEnum(symbol) or raw >= self.ast.nodes.items.len) continue;
-            if (self.ast.nodes.items[raw].tag == .binding_identifier) return @enumFromInt(raw);
+            if (maybe_id != @backingInt(symbol) or raw >= self.ast.nodes.items.len) continue;
+            if (self.ast.nodes.items[raw].tag == .binding_identifier) return @fromBackingInt(@intCast(raw));
         }
         return null;
     }
@@ -1146,7 +1146,7 @@ pub const SemanticEditor = struct {
         declaration_node_index: NodeIndex,
     ) Error!void {
         if (!self.validSymbol(symbol) or !self.validScope(scope)) return error.InvalidScope;
-        if (self.symbols.items[@intFromEnum(symbol)].scope_id != scope) return error.InvalidScope;
+        if (self.symbols.items[@backingInt(symbol)].scope_id != scope) return error.InvalidScope;
         for (self.references.items) |*reference| {
             if (reference.symbol_id == symbol and reference.flags.declare) {
                 if (reference.declaration_node_index.isNone() and !declaration_node_index.isNone())
@@ -1169,7 +1169,7 @@ pub const SemanticEditor = struct {
     pub fn moveReference(self: *SemanticEditor, node: NodeIndex, scope: ScopeId, stmt_idx: u32, scope_stmt_idx: u32) Error!void {
         if (!self.validScope(scope)) return error.InvalidScope;
         try self.ensureReferenceIndex();
-        const i = self.reference_index.get(@intFromEnum(node)) orelse return error.ReferenceNotFound;
+        const i = self.reference_index.get(@backingInt(node)) orelse return error.ReferenceNotFound;
         const ref = &self.references.items[i];
         if (!self.visibleFrom(ref.symbol_id, scope)) return error.InvalidScope;
         ref.scope_id = scope;
@@ -1180,7 +1180,7 @@ pub const SemanticEditor = struct {
     /// 제거된 참조의 사용 횟수도 되돌린다. 다른 참조의 순서는 유지한다.
     pub fn removeReference(self: *SemanticEditor, node: NodeIndex) Error!void {
         try self.ensureReferenceIndex();
-        const key = @intFromEnum(node);
+        const key = @backingInt(node);
         const i = self.reference_index.get(key) orelse return error.ReferenceNotFound;
         const ref = self.references.items[i];
         if (!self.validSymbol(ref.symbol_id)) return error.InvalidSymbol;
@@ -1189,7 +1189,7 @@ pub const SemanticEditor = struct {
         _ = self.reference_index.remove(key);
         for (self.references.items[i..], i..) |moved, new_i| {
             if (!moved.node_index.isNone()) {
-                if (self.reference_index.getPtr(@intFromEnum(moved.node_index))) |indexed| indexed.* = new_i;
+                if (self.reference_index.getPtr(@backingInt(moved.node_index))) |indexed| indexed.* = new_i;
             }
         }
         if (key < self.symbol_ids.items.len) self.symbol_ids.items[key] = null;
@@ -1205,7 +1205,7 @@ pub const SemanticEditor = struct {
 
         var removed = try std.DynamicBitSet.initEmpty(self.allocator, self.references.items.len);
         for (nodes) |node| {
-            const key = @intFromEnum(node);
+            const key = @backingInt(node);
             const i = self.reference_index.get(key) orelse return error.ReferenceNotFound;
             if (i >= self.references.items.len or removed.isSet(i)) return error.ReferenceNotFound;
             const ref = self.references.items[i];
@@ -1218,7 +1218,7 @@ pub const SemanticEditor = struct {
             if (removed.isSet(read)) {
                 self.removeCounts(ref.symbol_id, ref.flags);
                 if (!ref.node_index.isNone()) {
-                    const key = @intFromEnum(ref.node_index);
+                    const key = @backingInt(ref.node_index);
                     _ = self.reference_index.remove(key);
                     if (key < self.symbol_ids.items.len) self.symbol_ids.items[key] = null;
                 }
@@ -1228,7 +1228,7 @@ pub const SemanticEditor = struct {
             if (write != read) {
                 self.references.items[write] = ref;
                 if (!ref.node_index.isNone()) {
-                    if (self.reference_index.getPtr(@intFromEnum(ref.node_index))) |indexed| {
+                    if (self.reference_index.getPtr(@backingInt(ref.node_index))) |indexed| {
                         indexed.* = write;
                     }
                 }
@@ -1257,32 +1257,32 @@ test "parameter rename preserves the body function binding and rejects inconsist
     var function_id: SymbolId = .none;
     for (editor.symbols.items, 0..) |symbol, i| {
         if (!std.mem.eql(u8, parser.ast.getText(symbol.name), "x")) continue;
-        if (symbol.kind == .parameter) parameter_id = @enumFromInt(i);
-        if (symbol.kind == .function_decl) function_id = @enumFromInt(i);
+        if (symbol.kind == .parameter) parameter_id = @fromBackingInt(@intCast(i));
+        if (symbol.kind == .function_decl) function_id = @fromBackingInt(@intCast(i));
     }
     try std.testing.expect(!parameter_id.isNone() and !function_id.isNone());
-    const scope = editor.symbols.items[@intFromEnum(parameter_id)].scope_id;
+    const scope = editor.symbols.items[@backingInt(parameter_id)].scope_id;
     const body_scope = editor.parameterBodyFunctionScope(scope) orelse return error.TestUnexpectedResult;
     const count = editor.scopes.items[scope.toIndex()].symbol_count;
     const references = try allocator.dupe(Reference, editor.references.items);
     const node_ids = try allocator.dupe(?u32, editor.symbol_ids.items);
     try std.testing.expectError(error.DuplicateBinding, editor.renameParameterEnvironmentBinding(parameter_id, "read"));
-    const invalid_id: SymbolId = @enumFromInt(@as(u32, @intCast(editor.symbols.items.len)));
+    const invalid_id: SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(editor.symbols.items.len))));
     try std.testing.expectError(error.InvalidSymbol, editor.renameParameterEnvironmentBinding(invalid_id, "x$1"));
     // A same-spelled lexical body binding is not evidence of the parameter/body
     // redeclaration represented by this operation. (A body `var` is: lowering
     // copies the parameter value into it, #5452.)
-    editor.symbols.items[@intFromEnum(function_id)].kind = .variable_let;
+    editor.symbols.items[@backingInt(function_id)].kind = .variable_let;
     try std.testing.expectError(error.InvalidSymbol, editor.renameParameterEnvironmentBinding(parameter_id, "x$1"));
-    editor.symbols.items[@intFromEnum(function_id)].kind = .function_decl;
+    editor.symbols.items[@backingInt(function_id)].kind = .function_decl;
     editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = true;
     try std.testing.expectError(error.InvalidScope, editor.renameParameterEnvironmentBinding(parameter_id, "x$1"));
     editor.scopes.items[scope.toIndex()].subtree_has_direct_eval = false;
     try editor.renameParameterEnvironmentBinding(parameter_id, "x$1");
     try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[scope.toIndex()].get("x"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(function_id)), editor.scope_maps.items[body_scope.toIndex()].get("x"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(parameter_id)), editor.scope_maps.items[scope.toIndex()].get("x$1"));
-    try std.testing.expectEqualStrings("x$1", editor.symbols.items[@intFromEnum(parameter_id)].synthetic_name);
+    try std.testing.expectEqual(@as(?usize, @backingInt(function_id)), editor.scope_maps.items[body_scope.toIndex()].get("x"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(parameter_id)), editor.scope_maps.items[scope.toIndex()].get("x$1"));
+    try std.testing.expectEqualStrings("x$1", editor.symbols.items[@backingInt(parameter_id)].synthetic_name);
     try std.testing.expectEqual(count, editor.scopes.items[scope.toIndex()].symbol_count);
     try std.testing.expectEqualDeep(references, editor.references.items[0..references.len]);
     var declaration_count: usize = 0;
@@ -1309,24 +1309,24 @@ test "synthetic declaration, explicit references, move and removal keep stable I
         .data = .{ .list = try ast.addNodeList(&.{}) },
     });
     const block = try editor.addScope(root, block_owner, .block, false);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(block)), editor.scope_owner_map.get(@intFromEnum(block_owner)));
+    try std.testing.expectEqual(@as(?u32, @backingInt(block)), editor.scope_owner_map.get(@backingInt(block_owner)));
     try std.testing.expect(editor.scopes.items[block.toIndex()].is_strict);
     const name = try ast.addString("_this");
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const ref_node = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
     const id = try editor.declare(binding, name, Span.EMPTY, block, .variable_var, 2, 1);
-    try std.testing.expectEqual(root, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(root, editor.symbols.items[@backingInt(id)].scope_id);
     try editor.addReference(ref_node, id, block, .{ .read = true }, 2, 1);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(id)].reference_count);
     try editor.moveReference(ref_node, root, 3, 0);
     try std.testing.expectEqual(@as(u32, 3), editor.references.items[1].stmt_idx);
     try editor.removeReference(ref_node);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(id)].reference_count);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(binding)]);
-    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(ref_node)]);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(id)].reference_count);
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(binding)]);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(ref_node)]);
     const result = try editor.finish();
     try std.testing.expectEqual(@as(usize, 2), result.scopes.len);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(block)), result.scope_owner_map.get(@intFromEnum(block_owner)));
+    try std.testing.expectEqual(@as(?u32, @backingInt(block)), result.scope_owner_map.get(@backingInt(block_owner)));
     try std.testing.expectEqual(@as(usize, 1), result.symbols.items.len);
     try std.testing.expectEqual(@as(usize, 1), result.references.len);
 }
@@ -1354,7 +1354,7 @@ test "empty flattened block scope elision reparents children and preserves dynam
     try editor.addReference(reference, id, child, .{ .read = true }, 0, 0);
 
     try std.testing.expect(try editor.elideEmptyGeneratedScopeOwner(wrapper_owner));
-    try std.testing.expectEqual(@as(?u32, null), editor.scope_owner_map.get(@intFromEnum(wrapper_owner)));
+    try std.testing.expectEqual(@as(?u32, null), editor.scope_owner_map.get(@backingInt(wrapper_owner)));
     try std.testing.expectEqual(root, editor.scopes.items[child.toIndex()].parent);
     try std.testing.expect(editor.scopes.items[root.toIndex()].subtree_has_direct_eval);
     try std.testing.expect(editor.scopes.items[root.toIndex()].subtree_has_with);
@@ -1377,7 +1377,7 @@ test "empty flattened block scope elision refuses a scope with a local binding" 
     _ = try editor.declare(binding, name, Span.EMPTY, scope, .variable_let, 0, 0);
 
     try std.testing.expect(!(try editor.elideEmptyGeneratedScopeOwner(owner)));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(scope)), editor.scope_owner_map.get(@intFromEnum(owner)));
+    try std.testing.expectEqual(@as(?u32, @backingInt(scope)), editor.scope_owner_map.get(@backingInt(owner)));
 }
 
 test "class self storage relocation preserves identity and rejects occupied target atomically" {
@@ -1399,16 +1399,16 @@ test "class self storage relocation preserves identity and rejects occupied targ
     const id = try editor.declare(source_binding, name, Span.EMPTY, source, .class_decl, 0, 0);
     _ = try editor.declare(duplicate_binding, name, Span.EMPTY, occupied, .function_decl, 0, 0);
     try std.testing.expectError(error.DuplicateBinding, editor.relocateSymbol(id, occupied));
-    try std.testing.expectEqual(source, editor.symbols.items[@intFromEnum(id)].scope_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[source.toIndex()].get("C"));
+    try std.testing.expectEqual(source, editor.symbols.items[@backingInt(id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @backingInt(id)), editor.scope_maps.items[source.toIndex()].get("C"));
     try editor.reparentScope(source, destination);
     try editor.relocateSymbol(id, destination);
     try editor.attachExistingBinding(generated_binding, id);
     try editor.attachExistingBinding(generated_binding, id);
-    try std.testing.expectEqual(destination, editor.symbols.items[@intFromEnum(id)].scope_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[destination.toIndex()].get("C"));
+    try std.testing.expectEqual(destination, editor.symbols.items[@backingInt(id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @backingInt(id)), editor.scope_maps.items[destination.toIndex()].get("C"));
     try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[source.toIndex()].get("C"));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(generated_binding)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(generated_binding)]);
     _ = try editor.finish();
 }
 
@@ -1447,13 +1447,13 @@ test "same-text bindings relocate under their exact emitted names" {
     // remain valid even though the output binding spans still use table offsets.
     for (0..1024) |_| _ = try ast.addString("_relocation_growth");
 
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(left_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(right_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$6"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(left_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(right_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$6"));
     try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[left_scope.toIndex()].get("_err3"));
-    try std.testing.expectEqualStrings("_err3$4", editor.symbols.items[@intFromEnum(left_id)].nameText(ast.source));
-    try std.testing.expectEqualStrings("_err3$6", editor.symbols.items[@intFromEnum(right_id)].nameText(ast.source));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(left_id)), editor.symbol_ids.items[@intFromEnum(left_output)]);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(right_output)]);
+    try std.testing.expectEqualStrings("_err3$4", editor.symbols.items[@backingInt(left_id)].nameText(ast.source));
+    try std.testing.expectEqualStrings("_err3$6", editor.symbols.items[@backingInt(right_id)].nameText(ast.source));
+    try std.testing.expectEqual(@as(?u32, @backingInt(left_id)), editor.symbol_ids.items[@backingInt(left_output)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(right_id)), editor.symbol_ids.items[@backingInt(right_output)]);
     try std.testing.expectEqual(@as(usize, 2), editor.references.items.len);
     for (editor.references.items) |reference| {
         try std.testing.expect(reference.flags.declare and reference.node_index.isNone());
@@ -1462,9 +1462,9 @@ test "same-text bindings relocate under their exact emitted names" {
 
     const conflict_output = try ast.addNode(.{ .tag = .binding_identifier, .span = left_name, .data = .{ .string_ref = left_name } });
     try std.testing.expectError(error.DuplicateBinding, editor.relocateSymbolAs(conflict_id, storage_scope, conflict_output));
-    try std.testing.expectEqual(conflict_scope, editor.symbols.items[@intFromEnum(conflict_id)].scope_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(conflict_id)), editor.scope_maps.items[conflict_scope.toIndex()].get("_err3"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(left_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
+    try std.testing.expectEqual(conflict_scope, editor.symbols.items[@backingInt(conflict_id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @backingInt(conflict_id)), editor.scope_maps.items[conflict_scope.toIndex()].get("_err3"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(left_id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
     try std.testing.expectEqual(@as(u16, 2), editor.scopes.items[storage_scope.toIndex()].symbol_count);
     _ = try editor.finish();
 }
@@ -1489,11 +1489,11 @@ test "relocateSymbolAs moves declaration reference with emitted binding" {
 
     try editor.relocateSymbolAs(id, target_scope, output_binding);
 
-    try std.testing.expectEqual(target_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
+    try std.testing.expectEqual(target_scope, editor.symbols.items[@backingInt(id)].scope_id);
     try std.testing.expectEqual(target_scope, editor.references.items[0].scope_id);
-    try std.testing.expectEqualStrings("x", editor.symbols.items[@intFromEnum(id)].synthetic_name);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[target_scope.toIndex()].get("x"));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(output_binding)]);
+    try std.testing.expectEqualStrings("x", editor.symbols.items[@backingInt(id)].synthetic_name);
+    try std.testing.expectEqual(@as(?usize, @backingInt(id)), editor.scope_maps.items[target_scope.toIndex()].get("x"));
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(output_binding)]);
     _ = try editor.finish();
 }
 
@@ -1525,8 +1525,8 @@ test "relocateSymbolAs rejects invalid emitted name spans without changing bindi
         try std.testing.expectEqual(prior_symbol_id_len, editor.symbol_ids.items.len);
     }
 
-    try std.testing.expectEqual(source_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[source_scope.toIndex()].get("original"));
+    try std.testing.expectEqual(source_scope, editor.symbols.items[@backingInt(id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @backingInt(id)), editor.scope_maps.items[source_scope.toIndex()].get("original"));
     try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[target_scope.toIndex()].get("x"));
     _ = try editor.finish();
 }
@@ -1552,9 +1552,9 @@ test "splitBindingIdentity reuses a same-scope var declaration" {
     const split_id = try editor.splitBindingIdentity(output_binding, source_id, block_scope, .variable_var, Span.EMPTY);
 
     try std.testing.expectEqual(existing_id, split_id);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(existing_id)), editor.symbol_ids.items[@intFromEnum(output_binding)]);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(existing_id)), editor.scope_maps.items[function_scope.toIndex()].get("_d"));
-    try std.testing.expectEqual(function_scope, editor.symbols.items[@intFromEnum(existing_id)].scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(existing_id)), editor.symbol_ids.items[@backingInt(output_binding)]);
+    try std.testing.expectEqual(@as(?usize, @backingInt(existing_id)), editor.scope_maps.items[function_scope.toIndex()].get("_d"));
+    try std.testing.expectEqual(function_scope, editor.symbols.items[@backingInt(existing_id)].scope_id);
     _ = try editor.finish();
 }
 
@@ -1585,11 +1585,11 @@ test "relocateSymbolAs accepts a source-backed emitted binding name" {
 
     try editor.relocateSymbolAs(id, storage_scope, output_binding);
 
-    try std.testing.expectEqual(storage_scope, editor.symbols.items[@intFromEnum(id)].scope_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
+    try std.testing.expectEqual(storage_scope, editor.symbols.items[@backingInt(id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @backingInt(id)), editor.scope_maps.items[storage_scope.toIndex()].get("_err3$4"));
     try std.testing.expectEqual(@as(?usize, null), editor.scope_maps.items[source_scope.toIndex()].get("_err3"));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), editor.symbol_ids.items[@intFromEnum(output_binding)]);
-    try std.testing.expectEqualStrings("_err3$4", editor.symbols.items[@intFromEnum(id)].nameText(ast.source));
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), editor.symbol_ids.items[@backingInt(output_binding)]);
+    try std.testing.expectEqualStrings("_err3$4", editor.symbols.items[@backingInt(id)].nameText(ast.source));
     _ = try editor.finish();
 }
 
@@ -1614,7 +1614,7 @@ test "existing facade symbols receive one declaration row when lowered to bindin
     try std.testing.expect(editor.references.items[0].node_index.isNone());
     try std.testing.expectEqual(id, editor.references.items[0].symbol_id);
     try std.testing.expect(editor.references.items[0].flags.declare);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(id)].reference_count);
 }
 
 test "same provisional name in separate scopes never shares a symbol" {
@@ -1641,8 +1641,8 @@ test "same provisional name in separate scopes never shares a symbol" {
     const wrong_ref = try ast.addNode(.{ .tag = .identifier_reference, .span = name, .data = .{ .string_ref = name } });
     try std.testing.expectError(error.InvalidScope, editor.addReference(wrong_ref, left_id, right, .{ .read = true }, 1, 0));
     try std.testing.expectError(error.InvalidScope, editor.moveReference(left_ref, right, 1, 0));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(left_id)), editor.symbol_ids.items[@intFromEnum(left_ref)]);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(right_ref)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(left_id)), editor.symbol_ids.items[@backingInt(left_ref)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(right_id)), editor.symbol_ids.items[@backingInt(right_ref)]);
     try std.testing.expectError(error.DuplicateBinding, editor.declare(
         try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } }),
         name,
@@ -1674,32 +1674,32 @@ test "relocate reference crosses sibling scopes with one final visibility check"
 
     try std.testing.expectError(error.InvalidScope, editor.moveReference(ref, generated_fn, 4, 5));
     try std.testing.expectError(error.InvalidScope, editor.rebindReference(ref, param_id));
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(header_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(header_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(header_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(header_id)].write_count);
     try editor.relocateReference(ref, generated_fn, param_id, 4, 5);
 
-    const ref_i = editor.reference_index.get(@intFromEnum(ref)).?;
+    const ref_i = editor.reference_index.get(@backingInt(ref)).?;
     const relocated = editor.references.items[ref_i];
     try std.testing.expectEqual(generated_fn, relocated.scope_id);
     try std.testing.expectEqual(param_id, relocated.symbol_id);
     try std.testing.expectEqual(@as(u32, 4), relocated.stmt_idx);
     try std.testing.expectEqual(@as(u32, 5), relocated.scope_stmt_idx);
     try std.testing.expect(relocated.flags.read and relocated.flags.write);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(param_id)), editor.symbol_ids.items[@intFromEnum(ref)]);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(header_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(header_id)].write_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].write_count);
+    try std.testing.expectEqual(@as(?u32, @backingInt(param_id)), editor.symbol_ids.items[@backingInt(ref)]);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(header_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(header_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(param_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(param_id)].write_count);
 
     try editor.relocateReference(ref, generated_fn, param_id, 4, 5);
     try std.testing.expectEqualDeep(relocated, editor.references.items[ref_i]);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(param_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(param_id)].write_count);
     try editor.removeReference(ref);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(param_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(param_id)].write_count);
-    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(ref)]);
-    try std.testing.expect(editor.reference_index.get(@intFromEnum(ref)) == null);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(param_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(param_id)].write_count);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(ref)]);
+    try std.testing.expect(editor.reference_index.get(@backingInt(ref)) == null);
 }
 
 test "relocate reference after reparenting restores final visibility" {
@@ -1725,9 +1725,9 @@ test "relocate reference after reparenting restores final visibility" {
     try std.testing.expectError(error.InvalidScope, editor.finish());
     try editor.relocateReference(ref, body, param_id, Reference.NO_STMT, Reference.NO_STMT);
     const result = try editor.finish();
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(param_id)), result.symbol_ids[@intFromEnum(ref)]);
-    try std.testing.expectEqual(@as(u32, 0), result.symbols.items[@intFromEnum(header_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), result.symbols.items[@intFromEnum(param_id)].reference_count);
+    try std.testing.expectEqual(@as(?u32, @backingInt(param_id)), result.symbol_ids[@backingInt(ref)]);
+    try std.testing.expectEqual(@as(u32, 0), result.symbols.items[@backingInt(header_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), result.symbols.items[@backingInt(param_id)].reference_count);
 }
 
 test "failed relocation leaves references symbols counts and index intact" {
@@ -1755,7 +1755,7 @@ test "failed relocation leaves references symbols counts and index intact" {
     try editor.addReference(ref, left_id, left, .{ .read = true, .write = true }, 1, 2);
     try editor.addReference(later, left_id, left, .{ .read = true }, 3, 4);
     try editor.ensureReferenceIndex();
-    const old_index = editor.reference_index.get(@intFromEnum(ref)).?;
+    const old_index = editor.reference_index.get(@backingInt(ref)).?;
     const before = editor.references.items[old_index];
 
     try std.testing.expectError(error.InvalidScope, editor.relocateReference(ref, .none, right_id, 8, 9));
@@ -1765,12 +1765,12 @@ test "failed relocation leaves references symbols counts and index intact" {
     try std.testing.expectError(error.InvalidNode, editor.relocateReference(invalid_node, right, right_id, 8, 9));
     try std.testing.expectError(error.ReferenceNotFound, editor.relocateReference(missing, right, right_id, 8, 9));
     try std.testing.expectEqualDeep(before, editor.references.items[old_index]);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(left_id)), editor.symbol_ids.items[@intFromEnum(ref)]);
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(left_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(left_id)].write_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(right_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(other_id)].reference_count);
-    try std.testing.expectEqual(old_index, editor.reference_index.get(@intFromEnum(ref)).?);
+    try std.testing.expectEqual(@as(?u32, @backingInt(left_id)), editor.symbol_ids.items[@backingInt(ref)]);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(left_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(right_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(other_id)].reference_count);
+    try std.testing.expectEqual(old_index, editor.reference_index.get(@backingInt(ref)).?);
 
     editor.references.items[old_index].flags = .{ .declare = true };
     try std.testing.expectError(error.InvalidNode, editor.relocateReference(ref, right, right_id, 8, 9));
@@ -1780,22 +1780,22 @@ test "failed relocation leaves references symbols counts and index intact" {
     editor.references.items[old_index].scope_id = .none;
     try std.testing.expectError(error.InvalidScope, editor.relocateReference(ref, right, right_id, 8, 9));
     editor.references.items[old_index].scope_id = before.scope_id;
-    editor.symbol_ids.items[@intFromEnum(ref)] = @intFromEnum(other_id);
+    editor.symbol_ids.items[@backingInt(ref)] = @backingInt(other_id);
     try std.testing.expectError(error.InvalidSymbol, editor.relocateReference(ref, right, right_id, 8, 9));
-    editor.symbol_ids.items[@intFromEnum(ref)] = @intFromEnum(left_id);
-    editor.symbols.items[@intFromEnum(right_id)].write_count = std.math.maxInt(u32);
+    editor.symbol_ids.items[@backingInt(ref)] = @backingInt(left_id);
+    editor.symbols.items[@backingInt(right_id)].write_count = std.math.maxInt(u32);
     try std.testing.expectError(error.InvalidSymbol, editor.relocateReference(ref, right, right_id, 8, 9));
-    editor.symbols.items[@intFromEnum(right_id)].write_count = 0;
+    editor.symbols.items[@backingInt(right_id)].write_count = 0;
     try std.testing.expectEqualDeep(before, editor.references.items[old_index]);
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(left_id)].reference_count);
 
     try editor.removeReference(ref);
-    const later_i = editor.reference_index.get(@intFromEnum(later)).?;
+    const later_i = editor.reference_index.get(@backingInt(later)).?;
     try std.testing.expectEqual(later, editor.references.items[later_i].node_index);
     try editor.relocateReference(later, right, right_id, 10, 11);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(later)]);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(right_id)].reference_count);
+    try std.testing.expectEqual(@as(?u32, @backingInt(right_id)), editor.symbol_ids.items[@backingInt(later)]);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(right_id)].reference_count);
 }
 
 test "relocate type references without adding value counts" {
@@ -1820,13 +1820,13 @@ test "relocate type references without adding value counts" {
     try editor.addReference(type_ref, left_id, left, type_flags, 1, 2);
     try editor.addReference(query_ref, left_id, left, query_flags, 3, 4);
 
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(left_id)].write_count);
     try editor.relocateReference(type_ref, right, right_id, 5, 6);
     try editor.relocateReference(query_ref, right, right_id, 7, 8);
 
-    const relocated_type = editor.references.items[editor.reference_index.get(@intFromEnum(type_ref)).?];
-    const relocated_query = editor.references.items[editor.reference_index.get(@intFromEnum(query_ref)).?];
+    const relocated_type = editor.references.items[editor.reference_index.get(@backingInt(type_ref)).?];
+    const relocated_query = editor.references.items[editor.reference_index.get(@backingInt(query_ref)).?];
     try std.testing.expectEqual(right, relocated_type.scope_id);
     try std.testing.expectEqual(right_id, relocated_type.symbol_id);
     try std.testing.expectEqual(@as(u32, 5), relocated_type.stmt_idx);
@@ -1839,12 +1839,12 @@ test "relocate type references without adding value counts" {
     try std.testing.expectEqual(@as(u32, 8), relocated_query.scope_stmt_idx);
     try std.testing.expectEqualDeep(query_flags, relocated_query.flags);
     try std.testing.expect(!relocated_query.isValueUse());
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(type_ref)]);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(right_id)), editor.symbol_ids.items[@intFromEnum(query_ref)]);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(left_id)].write_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(right_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(right_id)].write_count);
+    try std.testing.expectEqual(@as(?u32, @backingInt(right_id)), editor.symbol_ids.items[@backingInt(type_ref)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(right_id)), editor.symbol_ids.items[@backingInt(query_ref)]);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(left_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(left_id)].write_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(right_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(right_id)].write_count);
 }
 
 test "helper import remains isolated from a user binding with the same name" {
@@ -1863,13 +1863,13 @@ test "helper import remains isolated from a user binding with the same name" {
     const user_id = try editor.declare(user_binding, name, Span.EMPTY, root, .variable_const, 0, 0);
     const helper_id = try editor.declareHelperImport(helper_local, name, Span.EMPTY, root);
     try std.testing.expect(user_id != helper_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(user_id)), editor.scope_maps.items[root.toIndex()].get("__extends"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(helper_id)), editor.helper_scope_map.get("__extends"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(user_id)), editor.scope_maps.items[root.toIndex()].get("__extends"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(helper_id)), editor.helper_scope_map.get("__extends"));
     try editor.addReference(helper_call, helper_id, root, .{ .read = true }, 0, 0);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(user_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(helper_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(user_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(helper_id)].reference_count);
     const result = try editor.finish();
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(helper_id)), result.helper_scope_map.get("__extends"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(helper_id)), result.helper_scope_map.get("__extends"));
 }
 
 test "reparenting a scope requires captured references to be rebound" {
@@ -1906,10 +1906,10 @@ test "reparenting a scope requires captured references to be rebound" {
     try std.testing.expectError(error.InvalidScope, editor.reparentScope(root, generated_fn));
     try std.testing.expectError(error.InvalidScope, editor.finish());
     try editor.rebindReference(ref, param_id);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(outer_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(param_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(outer_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(param_id)].reference_count);
     const result = try editor.finish();
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(param_id)), result.symbol_ids[@intFromEnum(ref)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(param_id)), result.symbol_ids[@backingInt(ref)]);
 }
 
 test "JSX identifier references can be rebound and relocated" {
@@ -1938,8 +1938,8 @@ test "JSX identifier references can be rebound and relocated" {
     const reference = (try editor.referenceForNode(jsx_ref)).?;
     try std.testing.expectEqual(child, reference.scope_id);
     try std.testing.expectEqual(second_id, reference.symbol_id);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(first_id)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(second_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(first_id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(second_id)].reference_count);
     _ = try editor.finish();
 }
 
@@ -1961,26 +1961,26 @@ test "cloned reference keeps target and write flags without stealing the source"
     const wrong_clone = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
     const symbol = try editor.declare(binding, name, Span.EMPTY, sibling, .variable_let, 0, 0);
     try editor.addReference(source, symbol, inner, .{ .read = true, .write = true }, 2, 3);
-    editor.symbol_ids.items[try editor.ensureNodeSlot(clone)] = @intFromEnum(symbol);
+    editor.symbol_ids.items[try editor.ensureNodeSlot(clone)] = @backingInt(symbol);
     editor.symbol_ids.items[try editor.ensureNodeSlot(wrong_clone)] = 999;
     try editor.cloneReference(source, clone, inner, 4, 5);
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(symbol)].write_count);
     try std.testing.expectError(error.AlreadyBound, editor.cloneReference(source, clone, inner, 4, 5));
     try std.testing.expectError(error.AlreadyBound, editor.cloneReferenceAtSameLocation(source, wrong_clone));
     try std.testing.expectError(error.ReferenceNotFound, editor.cloneReference(binding, clone, inner, 4, 5));
     try std.testing.expectError(error.InvalidScope, editor.cloneReference(source, binding, root, 4, 5));
     try editor.removeReference(source);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(symbol)].write_count);
     const later = try ast.addNode(.{ .tag = .assignment_target_identifier, .span = name, .data = .{ .string_ref = name } });
     try editor.cloneReferenceAtSameLocation(clone, later);
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(symbol)].reference_count);
     try editor.removeReference(later);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(symbol)].reference_count);
     const result = try editor.finish();
-    try std.testing.expectEqual(@as(?u32, null), result.symbol_ids[@intFromEnum(source)]);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(symbol)), result.symbol_ids[@intFromEnum(clone)]);
+    try std.testing.expectEqual(@as(?u32, null), result.symbol_ids[@backingInt(source)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(symbol)), result.symbol_ids[@backingInt(clone)]);
     try std.testing.expectEqual(@as(u32, 4), result.references[result.references.len - 1].stmt_idx);
     try std.testing.expectEqual(@as(u32, 5), result.references[result.references.len - 1].scope_stmt_idx);
 }
@@ -2008,11 +2008,11 @@ test "compound assignment split keeps one write and adds one exact read" {
     const value_ref = (try editor.referenceForNode(value_read)).?;
     try std.testing.expect(!target_ref.flags.read and target_ref.flags.write);
     try std.testing.expect(value_ref.flags.read and !value_ref.flags.write);
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(symbol)].write_count);
     try std.testing.expectError(error.InvalidNode, editor.updateReferenceFlags(target, .{ .declare = true }));
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(symbol)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(symbol)].write_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(symbol)].write_count);
 }
 
 test "batched reference removal preserves survivor order and updates indices" {
@@ -2043,9 +2043,9 @@ test "batched reference removal preserves survivor order and updates indices" {
 
     try editor.removeReferences(&.{ a_first, a_second });
     try std.testing.expectEqual(@as(usize, 4), editor.references.items.len);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(a_symbol)].reference_count);
-    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@intFromEnum(b_symbol)].reference_count);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(b_symbol)].write_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(a_symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 2), editor.symbols.items[@backingInt(b_symbol)].reference_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(b_symbol)].write_count);
     try std.testing.expectError(error.ReferenceNotFound, editor.removeReferences(&.{a_first}));
     try std.testing.expectError(error.ReferenceNotFound, editor.removeReferences(&.{ b_write, b_write }));
 
@@ -2053,8 +2053,8 @@ test "batched reference removal preserves survivor order and updates indices" {
     const second_survivor = (try editor.referenceForNode(b_read)).?;
     try std.testing.expectEqual(@as(u32, 2), first_survivor.stmt_idx);
     try std.testing.expectEqual(@as(u32, 4), second_survivor.stmt_idx);
-    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(a_first)]);
-    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(a_second)]);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(a_first)]);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(a_second)]);
 
     const result = try editor.finish();
     try std.testing.expectEqual(@as(usize, 4), result.references.len);
@@ -2079,11 +2079,11 @@ test "invalid identities and type-only references cannot corrupt liveness" {
     try std.testing.expectError(error.InvalidSymbol, editor.addReference(type_ref, .none, root, .{ .read = true }, 0, 0));
     try std.testing.expectError(error.InvalidScope, editor.addReference(type_ref, id, .none, .{ .read = true }, 0, 0));
     try editor.addReference(type_ref, id, root, .{ .read = true, .type_context = true }, 0, 0);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(id)].reference_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(id)].reference_count);
     try std.testing.expectError(error.AlreadyBound, editor.addReference(type_ref, id, root, .{ .read = true }, 0, 0));
     try editor.addReference(write_ref, id, root, .{ .write = true }, 0, 0);
-    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@intFromEnum(id)].write_count);
+    try std.testing.expectEqual(@as(u32, 1), editor.symbols.items[@backingInt(id)].write_count);
     try editor.removeReference(write_ref);
-    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@intFromEnum(id)].write_count);
+    try std.testing.expectEqual(@as(u32, 0), editor.symbols.items[@backingInt(id)].write_count);
     try std.testing.expectError(error.ReferenceNotFound, editor.removeReference(write_ref));
 }

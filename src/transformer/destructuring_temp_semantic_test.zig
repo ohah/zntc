@@ -33,7 +33,7 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .assignment_expression) continue;
         if (parser.ast.getNode(node.data.binary.left).tag != .object_assignment_target) continue;
-        assignment = @enumFromInt(raw);
+        assignment = @fromBackingInt(@intCast(raw));
         break;
     }
     const assignment_idx = assignment orelse return error.MissingDestructuringAssignment;
@@ -49,7 +49,7 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.unresolved_references = &analyzer.unresolved_references;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(owner);
+    transformer.current_scope = @fromBackingInt(@intCast(owner));
 
     const lowerer = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
     _ = try lowerer.lowerDestructuringAssignment(&transformer, parser.ast.getNode(assignment_idx), false);
@@ -69,10 +69,10 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     for (transformer.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
         if (node.data.string_ref.start != temp_span.start or node.data.string_ref.end != temp_span.end) continue;
-        try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(@enumFromInt(raw)));
-        const reference = (try editor.referenceForNode(@enumFromInt(raw))) orelse return error.MissingDestructuringTempReference;
+        try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))));
+        const reference = (try editor.referenceForNode(@fromBackingInt(@intCast(raw)))) orelse return error.MissingDestructuringTempReference;
         try std.testing.expectEqual(id, reference.symbol_id);
-        try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @enumFromInt(owner)), reference.scope_id);
+        try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(@intCast(owner))), reference.scope_id);
         if (reference.flags.read) reads += 1;
         if (reference.flags.write) writes += 1;
     }
@@ -80,8 +80,8 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     try std.testing.expectEqual(@as(usize, 1), writes);
 
     const binding = try es_helpers.makeSyntheticBinding(&transformer, temp_span);
-    try transformer.bindHoistedTemp(binding, temp_span, parser.ast.getNode(assignment_idx).span, @enumFromInt(owner));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(binding));
+    try transformer.bindHoistedTemp(binding, temp_span, parser.ast.getNode(assignment_idx).span, @fromBackingInt(@intCast(owner)));
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(binding));
     try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
@@ -128,7 +128,7 @@ fn checkStandaloneDestructuringTempNameMarking(source: []const u8, expected_late
         try std.testing.expectEqual(expected_late, is_late);
         if (!is_late) continue;
         late_temp_count += 1;
-        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[@backingInt(symbol.scope_id)].get(symbol.synthetic_name));
 
         var bindings: usize = 0;
         var references: usize = 0;
@@ -137,9 +137,9 @@ fn checkStandaloneDestructuringTempNameMarking(source: []const u8, expected_late
             if (raw_node < edited.symbol_ids.len and edited.symbol_ids[raw_node] == @as(u32, @intCast(id))) bindings += 1;
         }
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != id or reference.flags.declare) continue;
-            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) != null);
-            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            if (@backingInt(reference.symbol_id) != id or reference.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(reference.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@backingInt(reference.node_index)]);
             references += 1;
         }
         try std.testing.expect(bindings > 0);
@@ -195,7 +195,7 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
         var user_x_id: ?u32 = null;
         for (analyzer.symbols.items, 0..) |symbol, si| {
             const name = symbol.nameText(case.source);
-            if (std.mem.eql(u8, name, "y") or std.mem.eql(u8, name, "rest")) nested_scope = @intFromEnum(symbol.scope_id);
+            if (std.mem.eql(u8, name, "y") or std.mem.eql(u8, name, "rest")) nested_scope = @backingInt(symbol.scope_id);
             if (std.mem.eql(u8, name, "x")) user_x_id = @intCast(si);
         }
         const expected_ref_scope = nested_scope orelse return error.MissingNestedScope;
@@ -221,7 +221,7 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
 
         var temp_count: usize = 0;
         for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, si| {
-            if (symbol.kind != .variable_var or @intFromEnum(symbol.scope_id) != expected_function_scope) continue;
+            if (symbol.kind != .variable_var or @backingInt(symbol.scope_id) != expected_function_scope) continue;
             if (symbol.synthetic_name.len == 0 or symbol.synthetic_name[0] != '_') continue;
             try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_a"));
             try std.testing.expectEqual(@as(?usize, si), edited.scope_maps[expected_function_scope].get(symbol.synthetic_name));
@@ -232,10 +232,10 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
                 if (transformer.ast.nodes.items[raw].tag == .binding_identifier and raw < edited.symbol_ids.len and edited.symbol_ids[raw] == @as(u32, @intCast(si))) binding_count += 1;
             }
             for (edited.references) |ref| {
-                if (@intFromEnum(ref.symbol_id) != si or ref.flags.declare) continue;
-                try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
-                try std.testing.expectEqual(expected_ref_scope, @intFromEnum(ref.scope_id));
-                try std.testing.expectEqual(@as(?u32, @intCast(si)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+                if (@backingInt(ref.symbol_id) != si or ref.flags.declare) continue;
+                try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(ref.node_index)) != null);
+                try std.testing.expectEqual(expected_ref_scope, @backingInt(ref.scope_id));
+                try std.testing.expectEqual(@as(?u32, @intCast(si)), edited.symbol_ids[@backingInt(ref.node_index)]);
                 if (ref.flags.read) reads += 1;
                 if (ref.flags.write) writes += 1;
             }
@@ -303,7 +303,7 @@ test "#4819 for-of destructuring temps get exact IDs before emitted reads" {
         try std.testing.expect(id >= original_symbol_count and id < edited.symbols.items.len);
         const symbol = edited.symbols.items[id];
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
-        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expected_scope, @backingInt(symbol.scope_id));
         try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[expected_scope].get(symbol.synthetic_name));
 
         var binding_count: usize = 0;
@@ -315,9 +315,9 @@ test "#4819 for-of destructuring temps get exact IDs before emitted reads" {
 
         var reference_count: u32 = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
-            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
-            try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            if (@backingInt(ref.symbol_id) != id or ref.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(ref.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(ref.node_index)]);
             try std.testing.expect(ref.flags.read);
             reference_count += 1;
         }
@@ -349,7 +349,7 @@ test "#4819 destructuring shorthand moves the exact assignment reference" {
         source_target = key;
     }
     const target = source_target orelse return error.MissingAssignmentTarget;
-    const source_raw = @intFromEnum(target);
+    const source_raw = @backingInt(target);
     const target_symbol = analyzer.symbol_ids.items[source_raw] orelse return error.MissingTargetSymbol;
     const source_reference = for (analyzer.references.items) |reference| {
         if (reference.node_index == target) break reference;
@@ -386,12 +386,12 @@ test "#4819 destructuring shorthand moves the exact assignment reference" {
     for (reachable) |raw| {
         if (raw < transformer.parser_node_count or raw >= edited.symbol_ids.len) continue;
         if (edited.symbol_ids[raw] != @as(?u32, target_symbol)) continue;
-        const node: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw);
+        const node: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw));
         if (transformer.ast.getNode(node).tag != .identifier_reference) continue;
         const reference = for (edited.references) |candidate| {
             if (candidate.node_index == node) break candidate;
         } else return error.MissingGeneratedTargetReference;
-        try std.testing.expectEqual(target_symbol, @intFromEnum(reference.symbol_id));
+        try std.testing.expectEqual(target_symbol, @backingInt(reference.symbol_id));
         try std.testing.expectEqual(source_reference.scope_id, reference.scope_id);
         try std.testing.expect(reference.flags.write);
         generated_target_count += 1;
@@ -401,7 +401,7 @@ test "#4819 destructuring shorthand moves the exact assignment reference" {
     var references: usize = 0;
     var writes: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != target_symbol) continue;
+        if (@backingInt(reference.symbol_id) != target_symbol) continue;
         references += 1;
         if (reference.flags.write) writes += 1;
     }
@@ -457,7 +457,7 @@ test "#4819 ES5 destructuring temps keep exact IDs in hoisted function scope" {
         const id = entry.value_ptr.*;
         try std.testing.expect(id >= original_symbol_count and id < edited.symbols.items.len);
         const symbol = edited.symbols.items[id];
-        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expected_scope, @backingInt(symbol.scope_id));
         try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, "_a"));
         try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[expected_scope].get(symbol.synthetic_name));
         var binding_count: usize = 0;
@@ -470,9 +470,9 @@ test "#4819 ES5 destructuring temps keep exact IDs in hoisted function scope" {
         try std.testing.expect(binding_count > 0);
         var ref_count: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
-            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
-            try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            if (@backingInt(ref.symbol_id) != id or ref.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(ref.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(ref.node_index)]);
             try std.testing.expect(ref.flags.read or ref.flags.write);
             ref_count += 1;
         }
@@ -501,7 +501,7 @@ test "#4819 ES2015 object-rest temps keep const and let block scopes" {
 
     var block_scope: ?u32 = null;
     for (analyzer.symbols.items) |symbol| {
-        if (std.mem.eql(u8, parser.ast.getText(symbol.name), "x")) block_scope = @intFromEnum(symbol.scope_id);
+        if (std.mem.eql(u8, parser.ast.getText(symbol.name), "x")) block_scope = @backingInt(symbol.scope_id);
     }
     const expected_scope = block_scope orelse return error.MissingBlockScope;
     const original_symbol_count = analyzer.symbols.items.len;
@@ -529,7 +529,7 @@ test "#4819 ES2015 object-rest temps keep const and let block scopes" {
         const id = entry.value_ptr.*;
         try std.testing.expect(id >= original_symbol_count and id < edited.symbols.items.len);
         const symbol = edited.symbols.items[id];
-        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expected_scope, @backingInt(symbol.scope_id));
         try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[expected_scope].get(symbol.synthetic_name));
         var binding_count: usize = 0;
         for (reachable) |raw| {

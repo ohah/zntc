@@ -422,9 +422,9 @@ fn collectAstUsage(
     for (reachable) |ni| {
         const node = ast.nodes.items[ni];
         switch (node.tag) {
-            .static_member_expression => try recordStaticMemberUsage(allocator, ast, semantic, @enumFromInt(ni), node, &out),
+            .static_member_expression => try recordStaticMemberUsage(allocator, ast, semantic, @fromBackingInt(@intCast(ni)), node, &out),
             .identifier_reference => {
-                if (!skip_identifiers.isSet(ni)) try recordIdentifierUsage(allocator, ast, semantic, @enumFromInt(ni), &out);
+                if (!skip_identifiers.isSet(ni)) try recordIdentifierUsage(allocator, ast, semantic, @fromBackingInt(@intCast(ni)), &out);
             },
             else => {},
         }
@@ -464,7 +464,7 @@ fn markSkippedIdentifiers(ast: *const Ast, reachable: []const u32, skip: *std.Dy
 
 fn setSkip(skip: *std.DynamicBitSet, idx: NodeIndex) void {
     if (idx.isNone()) return;
-    const raw = @intFromEnum(idx);
+    const raw = @backingInt(idx);
     if (raw < skip.capacity()) skip.set(raw);
 }
 
@@ -478,7 +478,7 @@ fn recordStaticMemberUsage(
 ) !void {
     const obj_idx = ast.readExtraNode(node.data.extra, 0);
     const prop_idx = ast.readExtraNode(node.data.extra, 1);
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return;
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return;
 
     const prop_node = ast.getNode(prop_idx);
     if (prop_node.tag != .identifier_reference) return;
@@ -500,7 +500,7 @@ fn recordIdentifierUsage(
     idx: NodeIndex,
     out: *FeatureSet,
 ) !void {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return;
     const node = ast.getNode(idx);
     if (node.tag != .identifier_reference) return;
     const name = ast.getText(node.data.string_ref);
@@ -516,7 +516,7 @@ fn recordGlobalReferenceUsage(
     idx: NodeIndex,
     out: *FeatureSet,
 ) !void {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return;
     const node = ast.getNode(idx);
     if (node.tag == .identifier_reference) {
         try recordIdentifierUsage(allocator, ast, semantic, idx, out);
@@ -527,7 +527,7 @@ fn recordGlobalReferenceUsage(
     const obj_idx = ast.readExtraNode(node.data.extra, 0);
     const prop_idx = ast.readExtraNode(node.data.extra, 1);
     if (!isGlobalIdentifierNamed(ast, semantic, obj_idx, "globalThis")) return;
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return;
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return;
 
     const prop_node = ast.getNode(prop_idx);
     if (prop_node.tag != .identifier_reference) return;
@@ -587,7 +587,7 @@ fn globalReferenceName(
     semantic: *const ModuleSemanticData,
     idx: NodeIndex,
 ) ?[]const u8 {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
     const node = ast.getNode(idx);
     if (node.tag == .identifier_reference) {
         const name = ast.getText(node.data.string_ref);
@@ -598,7 +598,7 @@ fn globalReferenceName(
     const obj_idx = ast.readExtraNode(node.data.extra, 0);
     const prop_idx = ast.readExtraNode(node.data.extra, 1);
     if (!isGlobalIdentifierNamed(ast, semantic, obj_idx, "globalThis")) return null;
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
 
     const prop_node = ast.getNode(prop_idx);
     if (prop_node.tag != .identifier_reference) return null;
@@ -624,7 +624,7 @@ fn isGlobalIdentifierNamed(
     expected: []const u8,
 ) bool {
     if (idx.isNone()) return false;
-    const raw = @intFromEnum(idx);
+    const raw = @backingInt(idx);
     if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
     const node = ast.nodes.items[raw];
     if (node.tag != .identifier_reference) return false;

@@ -58,10 +58,10 @@ test "#4819 generated temp binding rejects same-spelled different allocation" {
             Span.EMPTY,
             callback_scope,
             callback_scope,
-            @intFromEnum(decoy_id),
+            @backingInt(decoy_id),
         ),
     );
-    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(different_binding)]);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(different_binding)]);
 
     // A later alias can share the symbol only when its exact allocation span
     // and the explicitly supplied SymbolId agree.
@@ -79,8 +79,8 @@ test "#4819 generated temp binding rejects same-spelled different allocation" {
             Span.EMPTY,
             callback_scope,
             callback_scope,
-            @intFromEnum(decoy_id),
+            @backingInt(decoy_id),
         ),
     );
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(decoy_id)), editor.symbol_ids.items[@intFromEnum(exact_alias)]);
+    try std.testing.expectEqual(@as(?u32, @backingInt(decoy_id)), editor.symbol_ids.items[@backingInt(exact_alias)]);
 }

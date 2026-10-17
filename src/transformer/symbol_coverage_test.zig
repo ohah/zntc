@@ -100,8 +100,8 @@ test "exact scope audit permits only the verified CommonJS callback boundary" {
     const span = try ast.addString("cjs");
     const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{}));
 
-    const program_scope: ScopeId = @enumFromInt(0);
-    const wrapper_scope: ScopeId = @enumFromInt(1);
+    const program_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const wrapper_scope: ScopeId = @fromBackingInt(@intCast(1));
     var scopes = [_]Scope{
         .{ .parent = wrapper_scope, .kind = .global, .is_strict = false },
         .{ .parent = .none, .kind = .function, .is_strict = false, .symbol_count = 2 },
@@ -137,7 +137,7 @@ test "exact scope audit permits only the verified CommonJS callback boundary" {
     };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(program_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(program_scope));
 
     const valid = try checkExactFixture(allocator, &ast, root, &.{}, &symbols, &scopes, &scope_maps, &owners, &.{});
     try std.testing.expect(valid.isClean());
@@ -188,7 +188,7 @@ test "exact scope audit allows only detached graph-output symbol identities" {
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), 0);
+    try owners.put(allocator, @backingInt(root), 0);
 
     const detached_cases = [_]struct {
         kind: SymbolKind,
@@ -299,8 +299,8 @@ test "exact scope audit allows only detached graph-output symbol identities" {
 
     const require_shim_output_reference = [_]Reference{.{
         .node_index = .none,
-        .scope_id = @enumFromInt(0),
-        .symbol_id = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
+        .symbol_id = @fromBackingInt(@intCast(0)),
         .flags = .{ .declare = true },
     }};
     const require_shim_output_symbol = Symbol{
@@ -328,8 +328,8 @@ test "exact scope audit allows only detached graph-output symbol identities" {
 
     const interop_output_reference = [_]Reference{.{
         .node_index = .none,
-        .scope_id = @enumFromInt(0),
-        .symbol_id = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
+        .symbol_id = @fromBackingInt(@intCast(0)),
         .flags = .{ .declare = true },
     }};
     const interop_output_symbol = Symbol{
@@ -376,8 +376,8 @@ test "exact scope audit allows only detached graph-output symbol identities" {
 
     const output_reference = [_]Reference{.{
         .node_index = .none,
-        .scope_id = @enumFromInt(0),
-        .symbol_id = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
+        .symbol_id = @fromBackingInt(@intCast(0)),
         .flags = .{ .declare = true },
     }};
     const referenced_output = try checkExactFixture(allocator, &ast, root, &.{}, &.{output_symbol}, &scopes, &scope_maps, &owners, &output_reference);
@@ -408,7 +408,7 @@ test "exact coverage rejects invalid root, child indices, and truncated child la
     defer edge_ast.deinit();
     const span = try edge_ast.addString("x");
     const invalid_child_index: u32 = 37;
-    const bad_child = try edge_ast.addNodeList(&.{@enumFromInt(invalid_child_index)});
+    const bad_child = try edge_ast.addNodeList(&.{@fromBackingInt(@intCast(invalid_child_index))});
     const edge_root = try edge_ast.addListNode(.program, span, bad_child);
     const invalid_edge = try checkEmptyExactGraph(allocator, &edge_ast, edge_root);
     try std.testing.expectEqual(@as(usize, 1), invalid_edge.invalid_ast_edge);
@@ -431,7 +431,7 @@ test "exact coverage rejects invalid root, child indices, and truncated child la
     var extra_ast = Ast.init(allocator, "");
     defer extra_ast.deinit();
     const extra_span = try extra_ast.addString("x");
-    const extra_base = try extra_ast.addExtras(&.{ @intFromEnum(NodeIndex.none), 99, 1 });
+    const extra_base = try extra_ast.addExtras(&.{ @backingInt(NodeIndex.none), 99, 1 });
     const call = try extra_ast.addExtraNode(.call_expression, extra_span, extra_base);
     const extra_root = try extra_ast.addNode(.{
         .tag = .program,
@@ -453,7 +453,7 @@ test "exact coverage rejects invalid root, child indices, and truncated child la
         missing_slot_span,
         @intCast(missing_slot_ast.extra_data.items.len),
     );
-    missing_slot_ast.extra_data.items[root_children.start] = @intFromEnum(call_without_extra);
+    missing_slot_ast.extra_data.items[root_children.start] = @backingInt(call_without_extra);
     const invalid_extra_slot = try checkEmptyExactGraph(allocator, &missing_slot_ast, missing_slot_root);
     try std.testing.expectEqual(@as(usize, 1), invalid_extra_slot.invalid_ast_layout);
     try std.testing.expectEqual(coverage.AstLayoutIssue.extra_child_slot, invalid_extra_slot.first_invalid_ast_layout.?.issue);
@@ -470,9 +470,9 @@ test "exact scope audit rejects distinct live owners sharing one ScopeId" {
     const second_block = try ast.addListNode(.block_statement, span, try ast.addNodeList(&.{}));
     const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{ first_block, second_block }));
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const first_scope: ScopeId = @enumFromInt(1);
-    const second_scope: ScopeId = @enumFromInt(2);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const first_scope: ScopeId = @fromBackingInt(@intCast(1));
+    const second_scope: ScopeId = @fromBackingInt(@intCast(2));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -481,9 +481,9 @@ test "exact scope audit rejects distinct live owners sharing one ScopeId" {
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty, .empty };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(first_block), @intFromEnum(first_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(second_block), @intFromEnum(second_scope));
+    try scope_owner_map.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try scope_owner_map.put(allocator, @backingInt(first_block), @backingInt(first_scope));
+    try scope_owner_map.put(allocator, @backingInt(second_block), @backingInt(second_scope));
     const helpers: std.StringHashMapUnmanaged(usize) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -511,7 +511,7 @@ test "exact scope audit rejects distinct live owners sharing one ScopeId" {
     // Stale owner entries are expected after lowering. A duplicate scope is
     // rejected only when both owners are reachable from the emitted root.
     const stale_block = try ast.addListNode(.block_statement, span, try ast.addNodeList(&.{}));
-    try scope_owner_map.put(allocator, @intFromEnum(stale_block), @intFromEnum(first_scope));
+    try scope_owner_map.put(allocator, @backingInt(stale_block), @backingInt(first_scope));
     const stale_owner = try coverage.checkExact(
         allocator,
         &ast,
@@ -534,7 +534,7 @@ test "exact scope audit rejects distinct live owners sharing one ScopeId" {
     // Reusing the first block's valid ScopeId leaves all IDs, parents, owner
     // kinds, and empty scope maps individually valid. The exact gate must still
     // reject two distinct reachable lexical boundaries with one identity.
-    try scope_owner_map.put(allocator, @intFromEnum(second_block), @intFromEnum(first_scope));
+    try scope_owner_map.put(allocator, @backingInt(second_block), @backingInt(first_scope));
     const shared_owner = try coverage.checkExact(
         allocator,
         &ast,
@@ -572,9 +572,9 @@ test "exact identity audit rejects declaration rows assigned to a visible descen
     const block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{binding}));
     const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{block}));
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const binding_scope: ScopeId = @enumFromInt(1);
-    const descendant_scope: ScopeId = @enumFromInt(2);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const binding_scope: ScopeId = @fromBackingInt(@intCast(1));
+    const descendant_scope: ScopeId = @fromBackingInt(@intCast(2));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -598,14 +598,14 @@ test "exact identity audit rejects declaration rows assigned to a visible descen
         .{
             .node_index = .none,
             .scope_id = binding_scope,
-            .symbol_id = @enumFromInt(0),
+            .symbol_id = @fromBackingInt(@intCast(0)),
             .flags = .{ .declare = true },
         },
     };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(block), @intFromEnum(binding_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(block), @backingInt(binding_scope));
     const helpers: std.StringHashMapUnmanaged(usize) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -671,8 +671,8 @@ test "exact scope audit does not treat a synthetic name as relocation evidence" 
     const block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{}));
     const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{ binding, block }));
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const block_scope: ScopeId = @enumFromInt(1);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const block_scope: ScopeId = @fromBackingInt(@intCast(1));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -684,8 +684,8 @@ test "exact scope audit does not treat a synthetic name as relocation evidence" 
     try scope_maps[0].put(allocator, ast.getText(name), 0);
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(block), @backingInt(block_scope));
     const symbols = [_]Symbol{.{
         .name = name,
         .scope_id = global_scope,
@@ -698,7 +698,7 @@ test "exact scope audit does not treat a synthetic name as relocation evidence" 
     const declarations = [_]Reference{.{
         .node_index = .none,
         .scope_id = global_scope,
-        .symbol_id = @enumFromInt(0),
+        .symbol_id = @fromBackingInt(@intCast(0)),
         .flags = .{ .declare = true },
     }};
     const helpers: std.StringHashMapUnmanaged(usize) = .empty;
@@ -803,7 +803,7 @@ test "exact identity audit rejects declaration rows swapped within one statement
     var declaration_rows: [2]?usize = .{ null, null };
     for (analyzer.references.items, 0..) |reference, index| {
         if (!reference.flags.declare) continue;
-        const id = @intFromEnum(reference.symbol_id);
+        const id = @backingInt(reference.symbol_id);
         if (id == binding_ids[0]) declaration_rows[0] = index;
         if (id == binding_ids[1]) declaration_rows[1] = index;
     }
@@ -909,7 +909,7 @@ test "exact declaration coverage rejects missing and duplicate declaration ancho
     const binding = alpha_binding orelse return error.TestUnexpectedResult;
     var omitted_row: ?usize = null;
     for (analyzer.references.items, 0..) |reference, index| {
-        if (reference.flags.declare and @intFromEnum(reference.declaration_node_index) == binding) {
+        if (reference.flags.declare and @backingInt(reference.declaration_node_index) == binding) {
             omitted_row = index;
             break;
         }
@@ -1089,37 +1089,37 @@ test "exact source scope audit separates parameter expressions from body var bin
     var outer_symbol: ?u32 = null;
     var body_var_symbol: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
-        if (node.tag == .function_declaration) function_node = @enumFromInt(@as(u32, @intCast(raw)));
+        if (node.tag == .function_declaration) function_node = @fromBackingInt(@intCast(@as(u32, @intCast(raw))));
     }
     for (analyzer.symbols.items, 0..) |symbol, raw| {
         if (!std.mem.eql(u8, symbol.nameText(parser.ast.source), "outside")) continue;
         if (symbol.scope_id.toIndex() == 0 and symbol.kind == .variable_let) outer_symbol = @intCast(raw);
     }
     const function_idx = function_node orelse return error.TestUnexpectedResult;
-    const function_raw = @intFromEnum(function_idx);
+    const function_raw = @backingInt(function_idx);
     const function_node_value = parser.ast.getNode(function_idx);
-    const params_idx: AstNodeIndex = @enumFromInt(parser.ast.extra_data.items[function_node_value.data.extra + 1]);
-    const parameter_scope_raw = analyzer.scope_owner_map.get(@intFromEnum(params_idx)) orelse return error.TestUnexpectedResult;
+    const params_idx: AstNodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[function_node_value.data.extra + 1]));
+    const parameter_scope_raw = analyzer.scope_owner_map.get(@backingInt(params_idx)) orelse return error.TestUnexpectedResult;
     const body_scope_raw = analyzer.scope_owner_map.get(function_raw) orelse return error.TestUnexpectedResult;
     try std.testing.expect(parameter_scope_raw < analyzer.scopes.items.len);
     try std.testing.expect(body_scope_raw < analyzer.scopes.items.len);
-    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(analyzer.scopes.items[parameter_scope_raw].parent));
-    try std.testing.expectEqual(@as(u32, @intCast(parameter_scope_raw)), @intFromEnum(analyzer.scopes.items[body_scope_raw].parent));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(analyzer.scopes.items[parameter_scope_raw].parent));
+    try std.testing.expectEqual(@as(u32, @intCast(parameter_scope_raw)), @backingInt(analyzer.scopes.items[body_scope_raw].parent));
 
     const expected_outer_symbol = outer_symbol orelse return error.TestUnexpectedResult;
     var parameter_default_reference: ?Reference = null;
     for (analyzer.references.items) |reference| {
         if (reference.flags.declare or !reference.flags.read or reference.node_index.isNone()) continue;
-        const raw = @intFromEnum(reference.node_index);
+        const raw = @backingInt(reference.node_index);
         if (raw >= parser.ast.nodes.items.len) continue;
         const node = parser.ast.getNode(reference.node_index);
         if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "outside")) continue;
-        if (@intFromEnum(reference.symbol_id) == expected_outer_symbol and @intFromEnum(reference.scope_id) == parameter_scope_raw)
+        if (@backingInt(reference.symbol_id) == expected_outer_symbol and @backingInt(reference.scope_id) == parameter_scope_raw)
             parameter_default_reference = reference;
     }
     const default_reference = parameter_default_reference orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(expected_outer_symbol, @intFromEnum(default_reference.symbol_id));
-    try std.testing.expectEqual(parameter_scope_raw, @intFromEnum(default_reference.scope_id));
+    try std.testing.expectEqual(expected_outer_symbol, @backingInt(default_reference.symbol_id));
+    try std.testing.expectEqual(parameter_scope_raw, @backingInt(default_reference.scope_id));
 
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .binding_identifier or raw >= analyzer.symbol_ids.items.len) continue;
@@ -1183,12 +1183,12 @@ test "exact scope audit follows copied non-simple parameter lists and rejects re
     const body_symbol = body_a orelse return error.TestUnexpectedResult;
     const function_node = parser.ast.nodes.items[function];
     const params_raw = parser.ast.extra_data.items[function_node.data.extra + 1];
-    const params_node: AstNodeIndex = @enumFromInt(params_raw);
+    const params_node: AstNodeIndex = @fromBackingInt(@intCast(params_raw));
     const parameter_scope = analyzer.scope_owner_map.get(params_raw) orelse return error.TestUnexpectedResult;
     const body_scope = analyzer.scope_owner_map.get(function) orelse return error.TestUnexpectedResult;
     try std.testing.expect(parameter_scope != body_scope);
-    try std.testing.expectEqual(parameter_scope, @intFromEnum(analyzer.symbols.items[parameter_symbol].scope_id));
-    try std.testing.expectEqual(body_scope, @intFromEnum(analyzer.symbols.items[body_symbol].scope_id));
+    try std.testing.expectEqual(parameter_scope, @backingInt(analyzer.symbols.items[parameter_symbol].scope_id));
+    try std.testing.expectEqual(body_scope, @backingInt(analyzer.symbols.items[body_symbol].scope_id));
 
     // Model the transform's copied formal_parameters container: the output
     // list has a new owner node but retains the exact original parameter nodes.
@@ -1198,8 +1198,8 @@ test "exact scope audit follows copied non-simple parameter lists and rejects re
         .span = original_params.span,
         .data = .{ .list = original_params.data.list },
     });
-    parser.ast.extra_data.items[function_node.data.extra + 1] = @intFromEnum(copied_params);
-    try analyzer.scope_owner_map.put(allocator, @intFromEnum(copied_params), parameter_scope);
+    parser.ast.extra_data.items[function_node.data.extra + 1] = @backingInt(copied_params);
+    try analyzer.scope_owner_map.put(allocator, @backingInt(copied_params), parameter_scope);
 
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const correct = try coverage.checkExactWithDeclarationAnchors(
@@ -1224,7 +1224,7 @@ test "exact scope audit follows copied non-simple parameter lists and rejects re
     // If the exact parameter SymbolId is relocated into the body scope, the
     // stale same-name body var must not make the copied-list exception pass.
     const corrupted_symbols = try allocator.dupe(Symbol, analyzer.symbols.items);
-    corrupted_symbols[parameter_symbol].scope_id = @enumFromInt(body_scope);
+    corrupted_symbols[parameter_symbol].scope_id = @fromBackingInt(@intCast(body_scope));
     const corrupted = try coverage.checkExactWithDeclarationAnchors(
         allocator,
         &parser.ast,
@@ -1273,19 +1273,19 @@ test "parameter default import reference keeps its exact parameter-environment s
             import_symbol = @intCast(raw);
     }
     const arrow = arrow_raw orelse return error.TestUnexpectedResult;
-    const params = parser.ast.readExtraNode(parser.ast.getNode(@enumFromInt(arrow)).data.extra, 0);
-    const parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(params)) orelse return error.TestUnexpectedResult;
+    const params = parser.ast.readExtraNode(parser.ast.getNode(@fromBackingInt(@intCast(arrow))).data.extra, 0);
+    const parameter_scope = analyzer.scope_owner_map.get(@backingInt(params)) orelse return error.TestUnexpectedResult;
     const function = function_raw orelse return error.TestUnexpectedResult;
-    const function_params = parser.ast.readExtraNode(parser.ast.getNode(@enumFromInt(function)).data.extra, 1);
-    const function_parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(function_params)) orelse return error.TestUnexpectedResult;
+    const function_params = parser.ast.readExtraNode(parser.ast.getNode(@fromBackingInt(@intCast(function))).data.extra, 1);
+    const function_parameter_scope = analyzer.scope_owner_map.get(@backingInt(function_params)) orelse return error.TestUnexpectedResult;
     const expected_import = import_symbol orelse return error.TestUnexpectedResult;
     var found_references: usize = 0;
     for (analyzer.references.items) |reference| {
         if (reference.flags.declare or reference.node_index.isNone()) continue;
         const node = parser.ast.getNode(reference.node_index);
         if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "DEFAULT_VALUE")) continue;
-        try std.testing.expectEqual(expected_import, @intFromEnum(reference.symbol_id));
-        const actual_scope = @intFromEnum(reference.scope_id);
+        try std.testing.expectEqual(expected_import, @backingInt(reference.symbol_id));
+        const actual_scope = @backingInt(reference.scope_id);
         try std.testing.expect(actual_scope == parameter_scope or actual_scope == function_parameter_scope);
         found_references += 1;
     }
@@ -1422,8 +1422,8 @@ test "exact identity audit rejects a `$N` source name routed to its unsuffixed s
     const wrong_references = try allocator.dupe(Reference, analyzer.references.items);
     var corrupted_reference_rows: usize = 0;
     for (wrong_references) |*reference| {
-        if (@intFromEnum(reference.node_index) != reference_raw) continue;
-        reference.symbol_id = @enumFromInt(unsuffixed_id);
+        if (@backingInt(reference.node_index) != reference_raw) continue;
+        reference.symbol_id = @fromBackingInt(@intCast(unsuffixed_id));
         corrupted_reference_rows += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), corrupted_reference_rows);
@@ -1457,9 +1457,9 @@ test "exact scope audit rejects owner scopes detached from their AST parent scop
     const block = try ast.addListNode(.block_statement, span, try ast.addNodeList(&.{}));
     const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{block}));
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const block_scope: ScopeId = @enumFromInt(1);
-    const detached_scope: ScopeId = @enumFromInt(2);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const block_scope: ScopeId = @fromBackingInt(@intCast(1));
+    const detached_scope: ScopeId = @fromBackingInt(@intCast(2));
     var scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -1468,8 +1468,8 @@ test "exact scope audit rejects owner scopes detached from their AST parent scop
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty, .empty };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(block), @backingInt(block_scope));
     const helpers: std.StringHashMapUnmanaged(usize) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1497,7 +1497,7 @@ test "exact scope audit rejects owner scopes detached from their AST parent scop
     // Every ScopeId remains individually valid and acyclic, but this block's
     // owner now points through a detached sibling scope. No identifier
     // reference exists to expose the broken lexical ancestry indirectly.
-    scopes[@intFromEnum(block_scope)].parent = detached_scope;
+    scopes[@backingInt(block_scope)].parent = detached_scope;
     const corrupted = try coverage.checkExact(
         allocator,
         &ast,
@@ -1518,8 +1518,8 @@ test "exact scope audit rejects owner scopes detached from their AST parent scop
     try std.testing.expectEqual(@as(usize, 1), corrupted.scope_owner_mismatch);
     try std.testing.expectEqual(@as(usize, 1), corrupted.scope_owner_parent_mismatch);
     try std.testing.expectEqualStrings("owner-parent-scope", corrupted.first_scope_owner_mismatch.?.issue);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(global_scope)), corrupted.first_scope_owner_mismatch.?.expected_parent_scope_id);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(detached_scope)), corrupted.first_scope_owner_mismatch.?.actual_parent_scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(global_scope)), corrupted.first_scope_owner_mismatch.?.expected_parent_scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(detached_scope)), corrupted.first_scope_owner_mismatch.?.actual_parent_scope_id);
     try std.testing.expect(!corrupted.isClean());
 }
 
@@ -1530,8 +1530,8 @@ test "source scope-owner audit finds a wrong owner kind with a valid parent" {
 
     const span = try ast.addString("class");
     const body = try ast.addListNode(.class_body, span, try ast.addNodeList(&.{}));
-    const none = @intFromEnum(AstNodeIndex.none);
-    const class_extra = try ast.addExtras(&.{ none, none, @intFromEnum(body), none, 0, 0, 0, 0 });
+    const none = @backingInt(AstNodeIndex.none);
+    const class_extra = try ast.addExtras(&.{ none, none, @backingInt(body), none, 0, 0, 0, 0 });
     const class_expr = try ast.addNode(.{
         .tag = .class_expression,
         .span = span,
@@ -1539,8 +1539,8 @@ test "source scope-owner audit finds a wrong owner kind with a valid parent" {
     });
     const root = try ast.addListNode(.program, span, try ast.addNodeList(&.{class_expr}));
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const wrong_kind_scope: ScopeId = @enumFromInt(1);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const wrong_kind_scope: ScopeId = @fromBackingInt(@intCast(1));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -1548,8 +1548,8 @@ test "source scope-owner audit finds a wrong owner kind with a valid parent" {
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(class_expr), @intFromEnum(wrong_kind_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(class_expr), @backingInt(wrong_kind_scope));
     const helpers: std.StringHashMapUnmanaged(usize) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1593,11 +1593,11 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{parent_block}));
     const detached_source_block = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{}));
     const source_class_body = try ast.addListNode(.class_body, name, try ast.addNodeList(&.{}));
-    const class_none = @intFromEnum(AstNodeIndex.none);
+    const class_none = @backingInt(AstNodeIndex.none);
     const source_class_extra = try ast.addExtras(&.{
         class_none,
         class_none,
-        @intFromEnum(source_class_body),
+        @backingInt(source_class_body),
         class_none,
         0,
         0,
@@ -1606,12 +1606,12 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     });
     const source_class = try ast.addNode(.{ .tag = .class_expression, .span = name, .data = .{ .extra = source_class_extra } });
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const emitted_parent_scope: ScopeId = @enumFromInt(1);
-    const retained_source_class_scope: ScopeId = @enumFromInt(2);
-    const detached_source_scope: ScopeId = @enumFromInt(3);
-    const sibling_generated_scope: ScopeId = @enumFromInt(4);
-    const generated_scope: ScopeId = @enumFromInt(5);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const emitted_parent_scope: ScopeId = @fromBackingInt(@intCast(1));
+    const retained_source_class_scope: ScopeId = @fromBackingInt(@intCast(2));
+    const detached_source_scope: ScopeId = @fromBackingInt(@intCast(3));
+    const sibling_generated_scope: ScopeId = @fromBackingInt(@intCast(4));
+    const generated_scope: ScopeId = @fromBackingInt(@intCast(5));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -1636,17 +1636,17 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     const references = [_]Reference{.{
         .node_index = .none,
         .scope_id = generated_scope,
-        .symbol_id = @enumFromInt(0),
+        .symbol_id = @fromBackingInt(@intCast(0)),
         .flags = .{ .declare = true },
     }};
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(parent_block), @intFromEnum(emitted_parent_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(sibling_generated_block), @intFromEnum(sibling_generated_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(generated_block), @intFromEnum(generated_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(detached_source_block), @intFromEnum(detached_source_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(source_class), @intFromEnum(retained_source_class_scope));
+    try scope_owner_map.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try scope_owner_map.put(allocator, @backingInt(parent_block), @backingInt(emitted_parent_scope));
+    try scope_owner_map.put(allocator, @backingInt(sibling_generated_block), @backingInt(sibling_generated_scope));
+    try scope_owner_map.put(allocator, @backingInt(generated_block), @backingInt(generated_scope));
+    try scope_owner_map.put(allocator, @backingInt(detached_source_block), @backingInt(detached_source_scope));
+    try scope_owner_map.put(allocator, @backingInt(source_class), @backingInt(retained_source_class_scope));
     const helpers: std.StringHashMapUnmanaged(usize) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1675,7 +1675,7 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     // Source-owned scopes may bridge the generated owner to its emitted AST
     // parent, but the full chain must reach that exact parent.
     var corrupted_scopes = scopes;
-    corrupted_scopes[@intFromEnum(retained_source_class_scope)].parent = detached_source_scope;
+    corrupted_scopes[@backingInt(retained_source_class_scope)].parent = detached_source_scope;
     const detached_class_scope = try coverage.checkExactWithScopeBoundary(
         allocator,
         &ast,
@@ -1700,7 +1700,7 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
     // A generated sibling scope cannot bridge even when it eventually reaches
     // the emitted AST parent.
     corrupted_scopes = scopes;
-    corrupted_scopes[@intFromEnum(generated_scope)].parent = sibling_generated_scope;
+    corrupted_scopes[@backingInt(generated_scope)].parent = sibling_generated_scope;
     const generated_scope_bridge = try coverage.checkExactWithScopeBoundary(
         allocator,
         &ast,
@@ -1725,10 +1725,10 @@ test "exact scope audit allows only source-owned scope bridges to generated owne
 
 fn firstHoistedTempSpan(ast: *const @import("../parser/ast.zig").Ast, program_idx: @import("../parser/ast.zig").NodeIndex) @import("../lexer/token.zig").Span {
     const program = ast.getNode(program_idx);
-    const declaration = ast.getNode(@enumFromInt(ast.extra_data.items[program.data.list.start]));
+    const declaration = ast.getNode(@fromBackingInt(@intCast(ast.extra_data.items[program.data.list.start])));
     const declarator_start = ast.extra_data.items[declaration.data.extra + 1];
-    const declarator = ast.getNode(@enumFromInt(ast.extra_data.items[declarator_start]));
-    const binding = ast.getNode(@enumFromInt(ast.extra_data.items[declarator.data.extra]));
+    const declarator = ast.getNode(@fromBackingInt(@intCast(ast.extra_data.items[declarator_start])));
+    const binding = ast.getNode(@fromBackingInt(@intCast(ast.extra_data.items[declarator.data.extra])));
     return binding.data.string_ref;
 }
 
@@ -1772,11 +1772,11 @@ fn checkDuplicatedIdentifierReferences(source: []const u8, options: TransformOpt
     var original_ref: ?@import("../semantic/symbol.zig").Reference = null;
     for (analyzer.references.items) |ref| {
         if (ref.flags.declare) continue;
-        const sym = analyzer.symbols.items[@intFromEnum(ref.symbol_id)];
+        const sym = analyzer.symbols.items[@backingInt(ref.symbol_id)];
         if (std.mem.eql(u8, sym.nameText(parser.ast.source), "value")) original_ref = ref;
     }
     const source_ref = original_ref orelse return error.TestUnexpectedResult;
-    const id = @intFromEnum(source_ref.symbol_id);
+    const id = @backingInt(source_ref.symbol_id);
 
     var transformer = try Transformer.init(allocator, &parser.ast, options);
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -1794,7 +1794,7 @@ fn checkDuplicatedIdentifierReferences(source: []const u8, options: TransformOpt
     var original_is_live = false;
     var distinct: ?@import("../parser/ast.zig").NodeIndex = null;
     for (edited.references) |ref| {
-        if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
+        if (@backingInt(ref.symbol_id) != id or ref.flags.declare) continue;
         try std.testing.expect(ref.flags.read);
         try std.testing.expect(!ref.flags.write);
         try std.testing.expectEqual(source_ref.scope_id, ref.scope_id);
@@ -1802,8 +1802,8 @@ fn checkDuplicatedIdentifierReferences(source: []const u8, options: TransformOpt
         try std.testing.expectEqual(source_ref.scope_stmt_idx, ref.scope_stmt_idx);
         if (distinct) |first| try std.testing.expect(first != ref.node_index);
         if (ref.node_index == source_ref.node_index) original_is_live = true;
-        if (@intFromEnum(ref.node_index) >= transformer.parser_node_count) {
-            try std.testing.expectEqual(@as(?u32, @intFromEnum(source_ref.node_index)), transformer.reference_origin_map.get(@intFromEnum(ref.node_index)));
+        if (@backingInt(ref.node_index) >= transformer.parser_node_count) {
+            try std.testing.expectEqual(@as(?u32, @backingInt(source_ref.node_index)), transformer.reference_origin_map.get(@backingInt(ref.node_index)));
         }
         distinct = ref.node_index;
         reads += 1;
@@ -1876,7 +1876,7 @@ test "optional chain captures unresolved globals once and tracks exact temp prov
             const root = try transformer.transform();
             const edited = (try transformer.finishSemanticEdit()).?;
             for (edited.references) |reference| {
-                const symbol = edited.symbols.items[@intFromEnum(reference.symbol_id)];
+                const symbol = edited.symbols.items[@backingInt(reference.symbol_id)];
                 try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
                 try std.testing.expect(symbol.synthetic_name.len > 0);
             }
@@ -2233,7 +2233,7 @@ test "#4819 tracked temp references reserve exact symbols in known scopes" {
     var temp_names: [2][]const u8 = undefined;
     for (edited.symbols.items[original_symbols..], original_symbols..) |generated, symbol_index| {
         try std.testing.expect(generated.synthetic_kind == .standalone_temp_binding);
-        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@intFromEnum(generated.scope_id)].get(generated.synthetic_name));
+        try std.testing.expectEqual(@as(?usize, symbol_index), edited.scope_maps[@backingInt(generated.scope_id)].get(generated.synthetic_name));
         try std.testing.expectEqual(@as(u32, 3), generated.reference_count);
         try std.testing.expectEqual(@as(u32, 1), generated.write_count);
         var bindings: usize = 0;
@@ -2292,12 +2292,12 @@ fn checkTrackedTempsStayFixedWhenDynamicLookupCanObserveThem(source: []const u8,
         try std.testing.expect(id >= original_symbols and id < edited.symbols.items.len);
         const symbol = edited.symbols.items[id];
         try std.testing.expect(symbol.synthetic_kind != .standalone_temp_binding);
-        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[@intFromEnum(symbol.scope_id)].get(symbol.synthetic_name));
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[@backingInt(symbol.scope_id)].get(symbol.synthetic_name));
         var references: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != id or reference.flags.declare) continue;
-            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) != null);
-            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            if (@backingInt(reference.symbol_id) != id or reference.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(reference.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@backingInt(reference.node_index)]);
             references += 1;
         }
         try std.testing.expect(references > 0);
@@ -2331,7 +2331,7 @@ fn checkTlaResultTempLateName(source: []const u8, expected_late_name: bool) !voi
     analyzer.is_module = true;
     try analyzer.analyze();
     const original_symbol_count = analyzer.symbols.items.len;
-    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
         return error.MissingProgramScope;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
@@ -2358,14 +2358,14 @@ fn checkTlaResultTempLateName(source: []const u8, expected_late_name: bool) !voi
     const list_len = transformer.ast.extra_data.items[extra + 2];
     if (list_len != 1 or list_start >= transformer.ast.extra_data.items.len)
         return error.InvalidTlaPromiseDeclaration;
-    const decl_idx: AstNodeIndex = @enumFromInt(transformer.ast.extra_data.items[list_start]);
+    const decl_idx: AstNodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[list_start]));
     const decl = transformer.ast.getNode(decl_idx);
     if (decl.tag != .variable_declarator or decl.data.extra >= transformer.ast.extra_data.items.len)
         return error.InvalidTlaPromiseBinding;
-    const binding_idx: AstNodeIndex = @enumFromInt(transformer.ast.extra_data.items[decl.data.extra]);
+    const binding_idx: AstNodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[decl.data.extra]));
     const binding = transformer.ast.getNode(binding_idx);
     if (binding.tag != .binding_identifier) return error.InvalidTlaPromiseBinding;
-    const raw_binding = @intFromEnum(binding_idx);
+    const raw_binding = @backingInt(binding_idx);
     if (raw_binding >= edited.symbol_ids.len) return error.MissingTlaPromiseSymbolId;
     const symbol_id = edited.symbol_ids[raw_binding] orelse return error.MissingTlaPromiseSymbolId;
     if (symbol_id >= edited.symbols.items.len) return error.InvalidTlaPromiseSymbolId;
@@ -2374,7 +2374,7 @@ fn checkTlaResultTempLateName(source: []const u8, expected_late_name: bool) !voi
         try std.testing.expect(source_symbol.synthetic_kind != .standalone_temp_binding);
     }
     const symbol = edited.symbols.items[symbol_id];
-    try std.testing.expectEqual(@as(u32, program_scope), @intFromEnum(symbol.scope_id));
+    try std.testing.expectEqual(@as(u32, program_scope), @backingInt(symbol.scope_id));
     try std.testing.expectEqual(expected_late_name, symbol.synthetic_kind == .standalone_temp_binding);
     try std.testing.expectEqual(
         @as(?usize, symbol_id),
@@ -2398,7 +2398,7 @@ test "#4819 lexical synthetic temps finalize only through their exact binding ID
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     try analyzer.analyze();
-    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse return error.MissingProgramScope;
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse return error.MissingProgramScope;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .defer_runtime_helper_name_resolution = true,
@@ -2413,15 +2413,15 @@ test "#4819 lexical synthetic temps finalize only through their exact binding ID
 
     const name_span = try transformer.ast.addUniqueString("_lexicalTemp");
     const binding = try @import("es_helpers.zig").makeSyntheticBinding(&transformer, name_span);
-    try transformer.bindSyntheticTempInScope(binding, name_span, .EMPTY, .variable_const, @enumFromInt(program_scope));
+    try transformer.bindSyntheticTempInScope(binding, name_span, .EMPTY, .variable_const, @fromBackingInt(@intCast(program_scope)));
     const id = transformer.getSymbolIdAt(binding) orelse return error.MissingSyntheticTempSymbol;
     const edited = (try transformer.finishSemanticEdit()).?;
     const symbol = edited.symbols.items[id];
     try std.testing.expectEqual(SymbolKind.variable_const, symbol.kind);
     try std.testing.expect(symbol.synthetic_kind == .standalone_temp_binding);
-    try std.testing.expectEqual(@as(u32, program_scope), @intFromEnum(symbol.scope_id));
+    try std.testing.expectEqual(@as(u32, program_scope), @backingInt(symbol.scope_id));
     try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[program_scope].get(symbol.synthetic_name));
-    try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@intFromEnum(binding)]);
+    try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(binding)]);
 }
 
 test "#4819 tracked captures attach the write SymbolId before reads" {
@@ -2436,11 +2436,11 @@ test "#4819 tracked captures attach the write SymbolId before reads" {
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     try analyzer.analyze();
-    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
         return error.MissingProgramScope;
     var value: ?AstNodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
-        if (node.tag == .string_literal) value = @enumFromInt(index);
+        if (node.tag == .string_literal) value = @fromBackingInt(@intCast(index));
     }
     const value_idx = value orelse return error.MissingCapturedValue;
     const value_node = parser.ast.getNode(value_idx);
@@ -2454,7 +2454,7 @@ test "#4819 tracked captures attach the write SymbolId before reads" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(program_scope);
+    transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
     const captured = try helpers.captureToTrackedTemp(&transformer, value_idx, value_node.span);
     const assignment = transformer.ast.getNode(captured.paren_assign);
@@ -2482,11 +2482,11 @@ test "#4819 constructor spread capture refs reserve one immediate SymbolId" {
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     try analyzer.analyze();
-    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
         return error.MissingProgramScope;
     var source_new: ?AstNodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
-        if (node.tag == .new_expression) source_new = @enumFromInt(index);
+        if (node.tag == .new_expression) source_new = @fromBackingInt(@intCast(index));
     }
     const new_idx = source_new orelse return error.MissingSpreadConstructor;
 
@@ -2499,7 +2499,7 @@ test "#4819 constructor spread capture refs reserve one immediate SymbolId" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(program_scope);
+    transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
     _ = try spread.lowerSpreadNew(&transformer, parser.ast.getNode(new_idx));
     try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
@@ -2509,7 +2509,7 @@ test "#4819 constructor spread capture refs reserve one immediate SymbolId" {
     var exact_refs: usize = 0;
     for (transformer.ast.nodes.items, 0..) |node, index| {
         if (node.tag != .identifier_reference) continue;
-        const id = transformer.getSymbolIdAt(@enumFromInt(index)) orelse continue;
+        const id = transformer.getSymbolIdAt(@fromBackingInt(@intCast(index))) orelse continue;
         if (id == temp_id.*) exact_refs += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), exact_refs);
@@ -2526,11 +2526,11 @@ test "#4819 prehoisted class key write reserves one immediate SymbolId" {
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     try analyzer.analyze();
-    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
         return error.MissingProgramScope;
     var source_class: ?AstNodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
-        if (node.tag == .class_declaration) source_class = @enumFromInt(index);
+        if (node.tag == .class_declaration) source_class = @fromBackingInt(@intCast(index));
     }
     const class_idx = source_class orelse return error.MissingPrehoistedClass;
 
@@ -2543,7 +2543,7 @@ test "#4819 prehoisted class key write reserves one immediate SymbolId" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(program_scope);
+    transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
     _ = try transformer.lowerClassWithPrehoistedKeys(
         class_idx,
@@ -2557,7 +2557,7 @@ test "#4819 prehoisted class key write reserves one immediate SymbolId" {
     var exact_refs: usize = 0;
     for (transformer.ast.nodes.items, 0..) |node, index| {
         if (node.tag != .identifier_reference) continue;
-        const id = transformer.getSymbolIdAt(@enumFromInt(index)) orelse continue;
+        const id = transformer.getSymbolIdAt(@fromBackingInt(@intCast(index))) orelse continue;
         if (id == temp_id.*) exact_refs += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), exact_refs);
@@ -2575,7 +2575,7 @@ test "#4819 known hoisted temp refs attach to an existing exact SymbolId" {
     var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
     analyzer.is_module = true;
     try analyzer.analyze();
-    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
         return error.MissingProgramScope;
     var nested_function_scope: ?u32 = null;
     for (analyzer.scopes.items, 0..) |scope, index| {
@@ -2595,25 +2595,25 @@ test "#4819 known hoisted temp refs attach to an existing exact SymbolId" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(program_scope);
+    transformer.current_scope = @fromBackingInt(@intCast(program_scope));
 
     const name_span = try helpers.makeTempVarSpan(&transformer);
     const binding = try helpers.makeSyntheticBinding(&transformer, name_span);
     const expected_id = (try transformer.declareSyntheticTempInScope(
         binding,
         parser.ast.getNode(root).span,
-        @enumFromInt(program_scope),
+        @fromBackingInt(@intCast(program_scope)),
     )) orelse return error.MissingReservedTempSymbol;
     const reference = try helpers.makeSyntheticRefFromSpan(&transformer, name_span);
     try std.testing.expect(try helpers.trackKnownHoistedTempRef(
         &transformer,
         reference,
-        @enumFromInt(reference_scope),
+        @fromBackingInt(@intCast(reference_scope)),
         .{ .read = true },
     ));
 
     const actual_id = transformer.getSymbolIdAt(reference) orelse return error.MissingKnownTempReferenceSymbol;
-    try std.testing.expectEqual(@intFromEnum(expected_id), actual_id);
+    try std.testing.expectEqual(@backingInt(expected_id), actual_id);
     try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
@@ -2670,7 +2670,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
             const args_start = transformer.readU32(call_extra, 1);
             const args_len = transformer.readU32(call_extra, 2);
             if (args_len == 0) continue;
-            const base: AstNodeIndex = @enumFromInt(transformer.ast.extra_data.items[args_start]);
+            const base: AstNodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[args_start]));
             const base_node = transformer.ast.getNode(base);
             if (base_node.tag != .identifier_reference) continue;
             alias_name_opt = transformer.ast.getText(base_node.data.string_ref);
@@ -2704,7 +2704,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
         if (index < transformer.parser_node_count or node.tag != .binding_identifier) continue;
         if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), alias_text)) continue;
         if (alias_binding != null) return error.DuplicateSuperProtoAliasBinding;
-        alias_binding = @enumFromInt(index);
+        alias_binding = @fromBackingInt(@intCast(index));
     }
     const alias_binding_node = alias_binding orelse return error.MissingSuperProtoAliasBinding;
     const binding_node = transformer.ast.getNode(alias_binding_node);
@@ -2727,7 +2727,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
         const args_start = transformer.readU32(node.data.extra, 1);
         const args_len = transformer.readU32(node.data.extra, 2);
         if (args_len == 0) continue;
-        const prototype = @as(AstNodeIndex, @enumFromInt(transformer.ast.extra_data.items[args_start]));
+        const prototype = @as(AstNodeIndex, @fromBackingInt(@intCast(transformer.ast.extra_data.items[args_start])));
         const prototype_node = transformer.ast.getNode(prototype);
         if (prototype_node.tag != .static_member_expression) continue;
         const class_read = transformer.readNodeIdx(prototype_node.data.extra, 0);
@@ -2746,14 +2746,14 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
         const node = transformer.ast.nodes.items[index];
         if (index < transformer.parser_node_count or node.tag != .binding_identifier) continue;
         if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), alias_name)) continue;
-        const binding_id = transformer.getSymbolIdAt(@enumFromInt(index)) orelse
+        const binding_id = transformer.getSymbolIdAt(@fromBackingInt(@intCast(index))) orelse
             std.debug.panic("super alias binding has no live SymbolId at node {d}: {s}", .{ index, alias_name });
         try std.testing.expectEqual(alias_id, binding_id);
         binding_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), binding_count);
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(alias_id, edited.symbol_ids[@intFromEnum(alias_binding_node)] orelse return error.MissingSuperProtoAliasBindingSymbolAfterEdit);
+    try std.testing.expectEqual(alias_id, edited.symbol_ids[@backingInt(alias_binding_node)] orelse return error.MissingSuperProtoAliasBindingSymbolAfterEdit);
     var edited_binding_count: usize = 0;
     for (reachable) |raw| {
         const index: usize = raw;
@@ -2765,11 +2765,11 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
     }
     try std.testing.expectEqual(binding_count, edited_binding_count);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, edited.symbols.items[alias_id].kind);
-    try std.testing.expectEqual(class_read_id, edited.symbol_ids[@intFromEnum(class_read_node)] orelse return error.MissingSuperProtoAliasClassReadSymbolAfterEdit);
+    try std.testing.expectEqual(class_read_id, edited.symbol_ids[@backingInt(class_read_node)] orelse return error.MissingSuperProtoAliasClassReadSymbolAfterEdit);
     var alias_class_reference_found = false;
     for (edited.references) |reference| {
         if (reference.node_index != class_read_node) continue;
-        try std.testing.expectEqual(class_read_id, @intFromEnum(reference.symbol_id));
+        try std.testing.expectEqual(class_read_id, @backingInt(reference.symbol_id));
         try std.testing.expect(reference.flags.read);
         alias_class_reference_found = true;
         break;
@@ -2852,8 +2852,8 @@ test "#4819 transformed scope owners retain their original ScopeId" {
         if (transformer.ast.nodes.items[owner.key_ptr.*].tag != .function_declaration) continue;
         if (first_key == null) first_key = owner.key_ptr.* else second_key = owner.key_ptr.*;
     }
-    const first_owner: @import("../parser/ast.zig").NodeIndex = @enumFromInt(first_key.?);
-    const second_owner: @import("../parser/ast.zig").NodeIndex = @enumFromInt(second_key.?);
+    const first_owner: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(first_key.?));
+    const second_owner: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(second_key.?));
     const first_scope = analyzer.scope_owner_map.get(first_key.?).?;
     const second_scope = analyzer.scope_owner_map.get(second_key.?).?;
     try std.testing.expectError(error.ScopeOwnerConflict, editor.remapScopeOwner(first_owner, second_owner));
@@ -2868,8 +2868,8 @@ test "#4819 transformed scope owners retain their original ScopeId" {
     try std.testing.expectEqual(first_scope, editor.scope_owner_map.get(first_key.?).?);
     var remaps = transformer.scope_owner_remaps.iterator();
     while (remaps.next()) |entry| {
-        const old: @import("../parser/ast.zig").NodeIndex = @enumFromInt(entry.key_ptr.*);
-        const new: @import("../parser/ast.zig").NodeIndex = @enumFromInt(entry.value_ptr.*);
+        const old: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
+        const new: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(entry.value_ptr.*));
         const original_scope = analyzer.scope_owner_map.get(entry.key_ptr.*).?;
         try editor.remapScopeOwner(old, new);
         try std.testing.expectEqual(@as(?u32, original_scope), editor.scope_owner_map.get(entry.value_ptr.*));
@@ -3034,21 +3034,21 @@ test "#4819 generated loop binding and call share one appended SymbolId" {
         if (node.tag != .call_expression) continue;
         const extra = transformer.ast.extra_data.items;
         const e = node.data.extra;
-        const callee: @import("../parser/ast.zig").NodeIndex = @enumFromInt(extra[e]);
+        const callee: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(extra[e]));
         if (transformer.ast.getNode(callee).tag != .identifier_reference) continue;
         if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(callee).data.string_ref), "_loop2")) continue;
         if (extra[e + 2] != 1) continue;
-        loop_arg = @enumFromInt(extra[extra[e + 1]]);
+        loop_arg = @fromBackingInt(@intCast(extra[extra[e + 1]]));
     }
     const argument = loop_arg orelse return error.TestUnexpectedResult;
     const emitted_header_id = loop_storage_id;
     try std.testing.expect(emitted_header_id != header_id);
-    try std.testing.expectEqual(@as(?u32, emitted_header_id), edited.symbol_ids[@intFromEnum(argument)]);
-    try std.testing.expectEqual(@as(?u32, null), transformer.reference_origin_map.get(@intFromEnum(argument)));
+    try std.testing.expectEqual(@as(?u32, emitted_header_id), edited.symbol_ids[@backingInt(argument)]);
+    try std.testing.expectEqual(@as(?u32, null), transformer.reference_origin_map.get(@backingInt(argument)));
     var argument_refs: usize = 0;
     for (edited.references) |ref| {
         if (ref.node_index != argument) continue;
-        try std.testing.expectEqual(emitted_header_id, @intFromEnum(ref.symbol_id));
+        try std.testing.expectEqual(emitted_header_id, @backingInt(ref.symbol_id));
         try std.testing.expect(ref.flags.read);
         try std.testing.expect(!ref.flags.write and !ref.flags.declare);
         argument_refs += 1;
@@ -3154,14 +3154,14 @@ fn expectGeneratedLoopExactIdentity(source: []const u8) !void {
     var call_scope: ?ScopeId = null;
     var outer_reads: usize = 0;
     for (edited.references) |reference| {
-        const id = @intFromEnum(reference.symbol_id);
+        const id = @backingInt(reference.symbol_id);
         if (id == loop_id) {
             if (reference.flags.declare) {
                 continue;
             }
             try std.testing.expect(!reference.node_index.isNone());
             try std.testing.expectEqual(.identifier_reference, transformer.ast.getNode(reference.node_index).tag);
-            try std.testing.expectEqual(loop_id, edited.symbol_ids[@intFromEnum(reference.node_index)].?);
+            try std.testing.expectEqual(loop_id, edited.symbol_ids[@backingInt(reference.node_index)].?);
             if (reference.flags.read) {
                 try std.testing.expect(!reference.flags.write);
                 call_scope = reference.scope_id;
@@ -3284,7 +3284,7 @@ test "#4819 tagged template helpers keep distinct function and data scopes" {
         try std.testing.expectEqual(@as(u32, 2), data_symbol.reference_count);
         var nested_data_refs: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != data_id or !ref.flags.read) continue;
+            if (@backingInt(ref.symbol_id) != data_id or !ref.flags.read) continue;
             if (ref.scope_id != data_symbol.scope_id) {
                 try std.testing.expectEqual(data_symbol.scope_id, edited.scopes[ref.scope_id.toIndex()].parent);
                 nested_data_refs += 1;
@@ -3394,8 +3394,8 @@ test "#4819 runtime helper calls bind isolated import symbols before resync" {
         try std.testing.expect(edited.symbols.items[helper_id].reference_count >= 1);
         var bound_refs: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != helper_id or !ref.flags.read) continue;
-            try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            if (@backingInt(ref.symbol_id) != helper_id or !ref.flags.read) continue;
+            try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@backingInt(ref.node_index)]);
             if (case.inside_function) try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[ref.scope_id.toIndex()].kind);
             bound_refs += 1;
         }
@@ -3443,7 +3443,7 @@ test "#4819 runtime helper reference owns its SymbolId before its import exists"
     const editor = &transformer.semantic_editor.?;
     try std.testing.expectEqual(@as(?usize, @intCast(helper_id)), editor.helper_scope_map.get("__extends"));
     const helper_reference = (try editor.referenceForNode(helper_ref)) orelse return error.MissingRuntimeHelperReference;
-    try std.testing.expectEqual(helper_id, @intFromEnum(helper_reference.symbol_id));
+    try std.testing.expectEqual(helper_id, @backingInt(helper_reference.symbol_id));
 
     // A local node with another spelling cannot steal the reserved helper ID.
     const wrong_name = try transformer.ast.addString("__rest");
@@ -3454,9 +3454,9 @@ test "#4819 runtime helper reference owns its SymbolId before its import exists"
     });
     try std.testing.expectError(
         error.InvalidSymbol,
-        editor.attachRuntimeHelperImport(wrong_local, @enumFromInt(helper_id), .{ .start = 0, .end = 0 }),
+        editor.attachRuntimeHelperImport(wrong_local, @fromBackingInt(@intCast(helper_id)), .{ .start = 0, .end = 0 }),
     );
-    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@intFromEnum(wrong_local)]);
+    try std.testing.expectEqual(@as(?u32, null), editor.symbol_ids.items[@backingInt(wrong_local)]);
 
     const local = try transformer.ast.addNode(.{
         .tag = .identifier_reference,
@@ -3466,7 +3466,7 @@ test "#4819 runtime helper reference owns its SymbolId before its import exists"
     try transformer.bindRuntimeHelperImport(local, "__extends", .{ .start = 0, .end = 0 });
     try std.testing.expectEqual(@as(?u32, helper_id), transformer.getSymbolIdAt(local));
     try std.testing.expectEqual(@as(?usize, user_id), editor.scope_maps.items[0].get("__extends"));
-    try std.testing.expectEqual(@as(?u32, @intCast(@intFromEnum(local))), transformer.runtime_helper_import_bindings.get(helper_id));
+    try std.testing.expectEqual(@as(?u32, @intCast(@backingInt(local))), transformer.runtime_helper_import_bindings.get(helper_id));
 }
 
 test "#4819 later runtime helper callsites reuse their already selected SymbolId" {
@@ -3505,8 +3505,8 @@ test "#4819 later runtime helper callsites reuse their already selected SymbolId
     const editor = &transformer.semantic_editor.?;
     const first_reference = (try editor.referenceForNode(first)) orelse return error.MissingFirstRuntimeHelperReference;
     const second_reference = (try editor.referenceForNode(second)) orelse return error.MissingSecondRuntimeHelperReference;
-    try std.testing.expectEqual(first_id, @intFromEnum(first_reference.symbol_id));
-    try std.testing.expectEqual(first_id, @intFromEnum(second_reference.symbol_id));
+    try std.testing.expectEqual(first_id, @backingInt(first_reference.symbol_id));
+    try std.testing.expectEqual(first_id, @backingInt(second_reference.symbol_id));
     try std.testing.expect(first_reference.flags.read and second_reference.flags.read);
 }
 
@@ -3542,10 +3542,10 @@ test "#4819 bundler runtime helper import consumes its callsite SymbolId" {
     _ = try transformer.transform();
 
     const helper_id = transformer.runtime_helper_symbol_ids.get("__extends") orelse return error.MissingCallsiteRuntimeHelperSymbolId;
-    const raw_helper_id: u32 = @intFromEnum(helper_id);
+    const raw_helper_id: u32 = @backingInt(helper_id);
     const helper_local_node = transformer.runtime_helper_import_bindings.get(raw_helper_id) orelse return error.MissingRuntimeHelperImportBinding;
-    try std.testing.expectEqualStrings("$eX", transformer.ast.identifierNameText(transformer.ast.getNode(@enumFromInt(helper_local_node))));
-    try std.testing.expectEqual(@as(?u32, raw_helper_id), transformer.getSymbolIdAt(@enumFromInt(helper_local_node)));
+    try std.testing.expectEqualStrings("$eX", transformer.ast.identifierNameText(transformer.ast.getNode(@fromBackingInt(@intCast(helper_local_node)))));
+    try std.testing.expectEqual(@as(?u32, raw_helper_id), transformer.getSymbolIdAt(@fromBackingInt(@intCast(helper_local_node))));
     try std.testing.expect(raw_helper_id != user_id);
     try std.testing.expectEqual(@as(?usize, raw_helper_id), transformer.semantic_editor.?.helper_scope_map.get("$eX"));
 
@@ -3553,7 +3553,7 @@ test "#4819 bundler runtime helper import consumes its callsite SymbolId" {
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[raw_helper_id].kind);
     var reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != raw_helper_id or reference.flags.declare) continue;
+        if (@backingInt(reference.symbol_id) != raw_helper_id or reference.flags.declare) continue;
         try std.testing.expect(reference.flags.read);
         reads += 1;
     }
@@ -3595,7 +3595,7 @@ test "#4819 grouped bundler runtime helper imports register exact IDs without ca
     };
     const callsite = try es_helpers.makeRuntimeHelperRef(&transformer, bases[0]);
     const callsite_id = transformer.runtime_helper_symbol_ids.get(bases[0]) orelse return error.MissingCallsiteRuntimeHelperSymbolId;
-    try std.testing.expectEqual(@as(u32, @intFromEnum(callsite_id)), transformer.getSymbolIdAt(callsite).?);
+    try std.testing.expectEqual(@as(u32, @backingInt(callsite_id)), transformer.getSymbolIdAt(callsite).?);
     for (bases[1..]) |base| try std.testing.expectEqual(@as(?SymbolId, null), transformer.runtime_helper_symbol_ids.get(base));
 
     var imports: std.ArrayList(AstNodeIndex) = .empty;
@@ -3610,7 +3610,7 @@ test "#4819 grouped bundler runtime helper imports register exact IDs without ca
     var seen = std.AutoHashMapUnmanaged(u32, void).empty;
     for (bases) |base| {
         const symbol_id = transformer.runtime_helper_symbol_ids.get(base) orelse return error.MissingGroupedRuntimeHelperSymbolId;
-        const raw_id = @intFromEnum(symbol_id);
+        const raw_id = @backingInt(symbol_id);
         const gop = try seen.getOrPut(allocator, raw_id);
         try std.testing.expect(!gop.found_existing);
 
@@ -3620,7 +3620,7 @@ test "#4819 grouped bundler runtime helper imports register exact IDs without ca
         try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
 
         const local_raw = transformer.runtime_helper_import_bindings.get(raw_id) orelse return error.MissingGroupedRuntimeHelperImportBinding;
-        const local: AstNodeIndex = @enumFromInt(local_raw);
+        const local: AstNodeIndex = @fromBackingInt(@intCast(local_raw));
         try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(local));
         const local_name = transformer.ast.identifierNameText(transformer.ast.getNode(local));
         try std.testing.expectEqualStrings(local_name, symbol.synthetic_name);
@@ -3632,14 +3632,14 @@ test "#4819 grouped bundler runtime helper imports register exact IDs without ca
     const edited = (try transformer.finishSemanticEdit()).?;
     for (bases) |base| {
         const symbol_id = transformer.runtime_helper_symbol_ids.get(base).?;
-        const raw_id = @intFromEnum(symbol_id);
+        const raw_id = @backingInt(symbol_id);
         const symbol = edited.symbols.items[raw_id];
         try std.testing.expectEqual(SymbolKind.import_binding, symbol.kind);
         try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
         const local_raw = transformer.runtime_helper_import_bindings.get(raw_id).?;
         try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[local_raw]);
         try std.testing.expectEqualStrings(
-            transformer.ast.identifierNameText(transformer.ast.getNode(@enumFromInt(local_raw))),
+            transformer.ast.identifierNameText(transformer.ast.getNode(@fromBackingInt(@intCast(local_raw)))),
             symbol.synthetic_name,
         );
     }
@@ -3675,13 +3675,13 @@ test "#4819 private field runtime import keeps its producer-selected alias under
     const edited = (try transformer.finishSemanticEdit()).?;
 
     const helper_id = transformer.runtime_helper_symbol_ids.get("__classPrivateFieldSet") orelse return error.MissingCallsiteRuntimeHelperSymbolId;
-    const helper_raw: u32 = @intFromEnum(helper_id);
+    const helper_raw: u32 = @backingInt(helper_id);
     try std.testing.expect(helper_raw != user_id);
     try std.testing.expectEqual(@as(?usize, helper_raw), edited.helper_scope_map.get("__zntcClassPrivateFieldSet"));
     const import_node_raw = transformer.runtime_helper_import_bindings.get(helper_raw) orelse return error.MissingRuntimeHelperImportBinding;
-    const import_node = transformer.ast.getNode(@enumFromInt(import_node_raw));
+    const import_node = transformer.ast.getNode(@fromBackingInt(@intCast(import_node_raw)));
     try std.testing.expectEqualStrings("__zntcClassPrivateFieldSet", transformer.ast.getText(import_node.data.string_ref));
-    try std.testing.expectEqual(@as(?u32, helper_raw), transformer.getSymbolIdAt(@enumFromInt(import_node_raw)));
+    try std.testing.expectEqual(@as(?u32, helper_raw), transformer.getSymbolIdAt(@fromBackingInt(@intCast(import_node_raw))));
 }
 
 test "#4819 JSX runtime imports bind exact helper symbols before resync" {
@@ -3734,20 +3734,20 @@ test "#4819 JSX runtime imports bind exact helper symbols before resync" {
         try std.testing.expect(case.local.len > 0);
         const exact_id = case.symbol_id orelse return error.MissingJsxHelperSymbol;
         const helper_id = edited.helper_scope_map.get(case.local) orelse return error.MissingJsxHelperSymbol;
-        try std.testing.expectEqual(@as(usize, @intCast(@intFromEnum(exact_id))), helper_id);
+        try std.testing.expectEqual(@as(usize, @intCast(@backingInt(exact_id))), helper_id);
         try std.testing.expect(helper_id != case.user_id);
         try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
         var declarations: usize = 0;
         var reads: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != helper_id) continue;
+            if (@backingInt(reference.symbol_id) != helper_id) continue;
             if (reference.flags.declare) {
                 declarations += 1;
             } else if (reference.flags.read) {
                 reads += 1;
-                try std.testing.expectEqual(function_scope, @intFromEnum(reference.scope_id));
+                try std.testing.expectEqual(function_scope, @backingInt(reference.scope_id));
                 const node = transformer.ast.getNode(reference.node_index);
-                try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+                try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@backingInt(reference.node_index)]);
                 try std.testing.expectEqualStrings(case.local, transformer.ast.identifierNameText(node));
             }
         }
@@ -3800,8 +3800,8 @@ test "#4819 classic JSX factory reference follows its lexical binding" {
         try std.testing.expectEqual(@as(?u32, react_parameter), edited.symbol_ids[raw]);
         var has_reference = false;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.node_index) != raw) continue;
-            try std.testing.expectEqual(react_parameter, @intFromEnum(reference.symbol_id));
+            if (@backingInt(reference.node_index) != raw) continue;
+            try std.testing.expectEqual(react_parameter, @backingInt(reference.symbol_id));
             try std.testing.expect(reference.flags.read);
             has_reference = true;
         }
@@ -3886,7 +3886,7 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
         }
     }
     const import_node = import_local orelse return error.MissingEmotionCssImportLocal;
-    const import_symbol = analyzer.symbol_ids.items[@intFromEnum(import_node)] orelse
+    const import_symbol = analyzer.symbol_ids.items[@backingInt(import_node)] orelse
         return error.MissingEmotionCssImportSymbol;
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, analyzer.symbols.items[import_symbol].kind);
 
@@ -3924,7 +3924,7 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     const alias_binding = transformer.plugins.emotion.css_prop_alias_binding orelse
         return error.MissingEmotionCssAliasBinding;
     const synthetic_idents = if (transformer.synthetic_idents) |*set| set else return error.MissingSyntheticIdentifierSet;
-    try std.testing.expect(synthetic_idents.contains(@intFromEnum(alias_binding)));
+    try std.testing.expect(synthetic_idents.contains(@backingInt(alias_binding)));
     const alias_symbol = transformer.getSymbolIdAt(alias_binding) orelse
         return error.MissingEmotionCssAliasSymbol;
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[alias_symbol].kind);
@@ -3944,7 +3944,7 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     var retained_import = false;
     var retained_alias_import = false;
     for (transformer.ast.extra_data.items[output_program.data.list.start .. output_program.data.list.start + output_program.data.list.len]) |raw| {
-        const child: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw);
+        const child: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw));
         if (transformer.ast.getNode(child).tag == .import_declaration) retained_import = true;
         if (child == alias_import) retained_alias_import = true;
     }
@@ -3966,8 +3966,8 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
         try std.testing.expectEqual(@as(?u32, expected.symbol), edited.symbol_ids[raw]);
         var node_references: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.node_index) != raw) continue;
-            try std.testing.expectEqual(expected.symbol, @intFromEnum(reference.symbol_id));
+            if (@backingInt(reference.node_index) != raw) continue;
+            try std.testing.expectEqual(expected.symbol, @backingInt(reference.symbol_id));
             try std.testing.expectEqual(expected.scope, reference.scope_id);
             try std.testing.expect(reference.flags.read);
             try std.testing.expect(!reference.flags.write and !reference.flags.declare);
@@ -4066,8 +4066,8 @@ test "#4819 Flow component classic JSX reads are recorded in the transform graph
         try std.testing.expectEqual(@as(?u32, react_symbol), edited.symbol_ids[raw]);
         var has_reference = false;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.node_index) != raw) continue;
-            try std.testing.expectEqual(react_symbol, @intFromEnum(reference.symbol_id));
+            if (@backingInt(reference.node_index) != raw) continue;
+            try std.testing.expectEqual(react_symbol, @backingInt(reference.symbol_id));
             try std.testing.expect(reference.flags.read);
             has_reference = true;
         }
@@ -4118,16 +4118,16 @@ test "#4819 JSX dev runtime call binds its isolated import symbol" {
     const local = transformer.jsx_import_info.jsxDEV_local;
     const helper_id = edited.helper_scope_map.get(local) orelse return error.MissingJsxDevHelperSymbol;
     const exact_id = transformer.jsx_import_info.jsxDEV_symbol_id orelse return error.MissingJsxDevHelperSymbol;
-    try std.testing.expectEqual(helper_id, @as(usize, @intCast(@intFromEnum(exact_id))));
+    try std.testing.expectEqual(helper_id, @as(usize, @intCast(@backingInt(exact_id))));
     try std.testing.expect(helper_id != user_id);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
     var reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != helper_id or reference.flags.declare) continue;
+        if (@backingInt(reference.symbol_id) != helper_id or reference.flags.declare) continue;
         try std.testing.expect(reference.flags.read);
-        try std.testing.expectEqual(function_scope, @intFromEnum(reference.scope_id));
+        try std.testing.expectEqual(function_scope, @backingInt(reference.scope_id));
         const node = transformer.ast.getNode(reference.node_index);
-        try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+        try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@backingInt(reference.node_index)]);
         try std.testing.expectEqualStrings(local, transformer.ast.identifierNameText(node));
         reads += 1;
     }
@@ -4176,19 +4176,19 @@ test "#4819 standalone JSX imports bind exact symbols without bundler helper imp
     try std.testing.expectEqualStrings("_jsx2", local);
     const helper_id = edited.helper_scope_map.get(local) orelse return error.MissingStandaloneJsxHelperSymbol;
     const exact_id = transformer.jsx_import_info.jsx_symbol_id orelse return error.MissingStandaloneJsxHelperSymbol;
-    try std.testing.expectEqual(helper_id, @as(usize, @intCast(@intFromEnum(exact_id))));
+    try std.testing.expectEqual(helper_id, @as(usize, @intCast(@backingInt(exact_id))));
     try std.testing.expect(helper_id != user_id);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, edited.symbols.items[helper_id].kind);
     var declarations: usize = 0;
     var reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != helper_id) continue;
+        if (@backingInt(reference.symbol_id) != helper_id) continue;
         if (reference.flags.declare) {
             declarations += 1;
         } else if (reference.flags.read) {
             reads += 1;
-            try std.testing.expectEqual(expected_function_scope, @intFromEnum(reference.scope_id));
-            try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            try std.testing.expectEqual(expected_function_scope, @backingInt(reference.scope_id));
+            try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@backingInt(reference.node_index)]);
         }
     }
     try std.testing.expectEqual(@as(usize, 1), declarations);
@@ -4214,10 +4214,10 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     try analyzer.analyze();
     var source_loop: ?NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
-        if (node.tag == .for_in_statement) source_loop = @enumFromInt(index);
+        if (node.tag == .for_in_statement) source_loop = @fromBackingInt(@intCast(index));
     }
     const loop = source_loop orelse return error.MissingForInLoop;
-    const loop_scope = analyzer.scope_owner_map.get(@intFromEnum(loop)) orelse return error.MissingForInScope;
+    const loop_scope = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForInScope;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -4228,7 +4228,7 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(loop_scope);
+    transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
     // Model generator operation collection: the wrapper binding identity is
     // known, but references must wait for their final output ScopeIds.
     transformer.state_machine_depth = 1;
@@ -4280,10 +4280,10 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     try analyzer.analyze();
     var source_loop: ?NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
-        if (node.tag == .for_await_of_statement) source_loop = @enumFromInt(index);
+        if (node.tag == .for_await_of_statement) source_loop = @fromBackingInt(@intCast(index));
     }
     const loop = source_loop orelse return error.MissingForAwaitLoop;
-    const loop_scope = analyzer.scope_owner_map.get(@intFromEnum(loop)) orelse return error.MissingForAwaitScope;
+    const loop_scope = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForAwaitScope;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -4294,7 +4294,7 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(loop_scope);
+    transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
     transformer.state_machine_depth = 1;
     transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
 
@@ -4353,10 +4353,10 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     const outer_err_id = source_err_id orelse return error.MissingOuterErrSymbol;
     var source_loop: ?NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
-        if (node.tag == .for_of_statement) source_loop = @enumFromInt(index);
+        if (node.tag == .for_of_statement) source_loop = @fromBackingInt(@intCast(index));
     }
     const loop = source_loop orelse return error.MissingForOfLoop;
-    const loop_scope = analyzer.scope_owner_map.get(@intFromEnum(loop)) orelse return error.MissingForOfScope;
+    const loop_scope = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForOfScope;
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -4367,7 +4367,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     transformer.scope_maps = analyzer.scope_maps.items;
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
-    transformer.current_scope = @enumFromInt(loop_scope);
+    transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
     transformer.state_machine_depth = 1;
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, true);
@@ -4398,7 +4398,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
         catch_clause_raw = @intCast(raw);
     }
     const binding = catch_binding orelse return error.MissingGeneratedForOfCatchBinding;
-    const binding_raw = @intFromEnum(binding);
+    const binding_raw = @backingInt(binding);
     const catch_id = transformer.symbol_ids.items[binding_raw] orelse return error.MissingGeneratedForOfCatchSymbol;
     const catch_name = transformer.ast.getText(transformer.ast.getNode(binding).data.string_ref);
     try std.testing.expectEqualStrings("_err", catch_name);
@@ -4412,14 +4412,14 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     const catch_scope = catch_symbol.scope_id;
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.catch_binding, catch_symbol.kind);
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.catch_clause, editor.scopes.items[catch_scope.toIndex()].kind);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(catch_scope)), editor.scope_owner_map.get(catch_clause_raw.?));
+    try std.testing.expectEqual(@as(?u32, @backingInt(catch_scope)), editor.scope_owner_map.get(catch_clause_raw.?));
     try std.testing.expectEqual(@as(?usize, catch_id), editor.scope_maps.items[catch_scope.toIndex()].get(catch_name));
     var catch_reads: usize = 0;
     var outer_reads: usize = 0;
     for (editor.references.items) |reference| {
         if (reference.flags.declare or !reference.flags.read) continue;
-        const symbol_id = @intFromEnum(reference.symbol_id);
-        const reference_raw = @intFromEnum(reference.node_index);
+        const symbol_id = @backingInt(reference.symbol_id);
+        const reference_raw = @backingInt(reference.node_index);
         if (symbol_id == catch_id) {
             catch_reads += 1;
             try std.testing.expectEqual(catch_scope, reference.scope_id);
@@ -4450,11 +4450,11 @@ fn checkStandaloneForOfTempFinalization(source: []const u8, expect_late_names: b
     const original_symbols = analyzer.symbols.items.len;
     var source_loop: ?NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
-        if (node.tag == .for_of_statement) source_loop = @enumFromInt(raw);
+        if (node.tag == .for_of_statement) source_loop = @fromBackingInt(@intCast(raw));
     }
     const loop = source_loop orelse return error.MissingForOfLoop;
-    const loop_scope_raw = analyzer.scope_owner_map.get(@intFromEnum(loop)) orelse return error.MissingForOfScope;
-    const loop_scope: ScopeId = @enumFromInt(loop_scope_raw);
+    const loop_scope_raw = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForOfScope;
+    const loop_scope: ScopeId = @fromBackingInt(@intCast(loop_scope_raw));
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
@@ -4490,8 +4490,8 @@ fn checkStandaloneForOfTempFinalization(source: []const u8, expect_late_names: b
         try std.testing.expectEqual(@as(usize, 1), binding_count);
         var reference_count: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != id or reference.node_index.isNone()) continue;
-            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            if (@backingInt(reference.symbol_id) != id or reference.node_index.isNone()) continue;
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@backingInt(reference.node_index)]);
             reference_count += 1;
         }
         try std.testing.expect(reference_count > 0);
@@ -4546,7 +4546,7 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     for (transformer.ast.nodes.items) |node| {
         if (node.tag != .catch_clause) continue;
         const param = node.data.binary.left;
-        if (param.isNone() or @intFromEnum(param) < transformer.parser_node_count or
+        if (param.isNone() or @backingInt(param) < transformer.parser_node_count or
             transformer.ast.getNode(param).tag != .binding_identifier) continue;
         if (producer_symbol_count == producer_symbol_ids.len) return error.UnexpectedGeneratedCatchBinding;
         const symbol_id = transformer.getSymbolIdAt(param) orelse return error.MissingProducerCatchBindingSymbolId;
@@ -4573,7 +4573,7 @@ test "#4819 optional catch binding gets a symbol in its catch scope" {
     }
     var outer_b_reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) == (outer_b_id orelse return error.TestUnexpectedResult) and reference.flags.read) outer_b_reads += 1;
+        if (@backingInt(reference.symbol_id) == (outer_b_id orelse return error.TestUnexpectedResult) and reference.flags.read) outer_b_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), outer_b_reads);
     var bindings: usize = 0;
@@ -4649,10 +4649,10 @@ test "#4819 for-await error catch binds its generated reference by exact symbol 
     for (reachable) |raw| {
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .catch_clause or node.data.binary.left.isNone()) continue;
-        const binding_raw = @intFromEnum(node.data.binary.left);
+        const binding_raw = @backingInt(node.data.binary.left);
         if (edited.symbol_ids[binding_raw] != catch_id) continue;
         catch_clauses += 1;
-        try std.testing.expectEqual(@as(?u32, @intFromEnum(catch_scope)), edited.scope_owner_map.get(raw));
+        try std.testing.expectEqual(@as(?u32, @backingInt(catch_scope)), edited.scope_owner_map.get(raw));
     }
     try std.testing.expectEqual(@as(usize, 1), catch_bindings);
     try std.testing.expectEqual(@as(usize, 1), catch_clauses);
@@ -4661,8 +4661,8 @@ test "#4819 for-await error catch binds its generated reference by exact symbol 
     var source_reads: usize = 0;
     for (edited.references) |reference| {
         if (reference.flags.declare or !reference.flags.read) continue;
-        const symbol_id = @intFromEnum(reference.symbol_id);
-        const reference_raw = @intFromEnum(reference.node_index);
+        const symbol_id = @backingInt(reference.symbol_id);
+        const reference_raw = @backingInt(reference.node_index);
         if (symbol_id == catch_id) {
             generated_reads += 1;
             try std.testing.expectEqual(@as(?u32, catch_id), edited.symbol_ids[reference_raw]);
@@ -4701,7 +4701,7 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     var source_loop_scope: ?@import("../semantic/scope.zig").ScopeId = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .for_of_statement) continue;
-        source_loop_scope = @enumFromInt(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult);
+        source_loop_scope = @fromBackingInt(@intCast(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult));
     }
     const loop_scope = source_loop_scope orelse return error.TestUnexpectedResult;
     const outer_scope = analyzer.scopes.items[loop_scope.toIndex()].parent;
@@ -4756,9 +4756,9 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     var loop_reads: usize = 0;
     var finally_reads: usize = 0;
     for (edited.references) |ref| {
-        if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
+        if (@backingInt(ref.symbol_id) != id or ref.flags.declare) continue;
         try std.testing.expect(ref.flags.read);
-        try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+        try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(ref.node_index)]);
         if (ref.scope_id == loop_scope) {
             loop_reads += 1;
         } else if (ref.scope_id == outer_scope) {
@@ -4790,7 +4790,7 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
         if (tag == .binding_identifier) step_bindings += 1;
         if (tag == .identifier_reference) {
             for (edited.references) |ref| {
-                if (@intFromEnum(ref.node_index) != raw or @intFromEnum(ref.symbol_id) != step) continue;
+                if (@backingInt(ref.node_index) != raw or @backingInt(ref.symbol_id) != step) continue;
                 try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, loop_scope));
                 if (ref.flags.read) step_reads += 1;
                 if (ref.flags.write) step_writes += 1;
@@ -4816,7 +4816,7 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
         if (tag == .binding_identifier) completion_bindings += 1;
         if (tag == .identifier_reference) {
             for (edited.references) |ref| {
-                if (@intFromEnum(ref.node_index) != raw or @intFromEnum(ref.symbol_id) != completion) continue;
+                if (@backingInt(ref.node_index) != raw or @backingInt(ref.symbol_id) != completion) continue;
                 if (ref.scope_id == loop_scope and ref.flags.write) completion_loop_writes += 1;
                 if (scopeHasAncestor(edited.scopes, ref.scope_id, outer_scope) and ref.flags.read) completion_finally_reads += 1;
             }
@@ -4839,7 +4839,7 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
     var live_catch_owners: usize = 0;
     for (reachable) |raw| {
         if (transformer.ast.nodes.items[raw].tag != .catch_clause) continue;
-        if (edited.scope_owner_map.get(raw) == @intFromEnum(catch_scope)) live_catch_owners += 1;
+        if (edited.scope_owner_map.get(raw) == @backingInt(catch_scope)) live_catch_owners += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), live_catch_owners);
     for ([_]u32{ did_error_id orelse return error.TestUnexpectedResult, error_value_id orelse return error.TestUnexpectedResult }) |temp| {
@@ -4856,8 +4856,8 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
             if (transformer.ast.nodes.items[raw].tag == .binding_identifier) temp_bindings += 1;
         }
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != temp or ref.flags.declare) continue;
-            try std.testing.expectEqual(@as(?u32, temp), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            if (@backingInt(ref.symbol_id) != temp or ref.flags.declare) continue;
+            try std.testing.expectEqual(@as(?u32, temp), edited.symbol_ids[@backingInt(ref.node_index)]);
             if (scopeHasAncestor(edited.scopes, ref.scope_id, catch_scope) and ref.flags.write) catch_writes += 1;
             if (scopeHasAncestor(edited.scopes, ref.scope_id, outer_scope) and ref.flags.read) temp_finally_reads += 1;
         }
@@ -4875,7 +4875,7 @@ test "#4819 ES5 for-of iterator uses one var symbol across loop and finally" {
         if (transformer.ast.nodes.items[raw].tag == .binding_identifier) catch_bindings += 1;
     }
     for (edited.references) |ref| {
-        if (@intFromEnum(ref.symbol_id) != catch_parameter or ref.flags.declare) continue;
+        if (@backingInt(ref.symbol_id) != catch_parameter or ref.flags.declare) continue;
         try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, catch_scope));
         try std.testing.expect(ref.flags.read);
         catch_reads += 1;
@@ -4903,7 +4903,7 @@ test "#4819 for-of using head keeps one generated binding and reference" {
     var source_scope: ?@import("../semantic/scope.zig").ScopeId = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .for_of_statement)
-            source_scope = @enumFromInt(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult);
+            source_scope = @fromBackingInt(@intCast(analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult));
     }
     const loop_scope = source_scope orelse return error.TestUnexpectedResult;
     const var_scope = analyzer.scopes.items[loop_scope.toIndex()].parent;
@@ -4945,7 +4945,7 @@ test "#4819 for-of using head keeps one generated binding and reference" {
     try std.testing.expectEqual(@as(usize, 1), bindings);
     try std.testing.expectEqual(@as(usize, 1), reads);
     for (edited.references) |ref| {
-        if (@intFromEnum(ref.symbol_id) != id or ref.flags.declare) continue;
+        if (@backingInt(ref.symbol_id) != id or ref.flags.declare) continue;
         try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, loop_scope));
         try std.testing.expect(ref.flags.read);
     }
@@ -5141,8 +5141,8 @@ test "#4819 generated default-export reference keeps its exact allocated name" {
     const reference_name = transformer.ast.getText(transformer.ast.getNode(reference_node).data.string_ref);
     try std.testing.expectEqualStrings("_default22", reference_name);
 
-    const raw_symbol_id = edited.symbol_ids[@intFromEnum(reference_node)] orelse return error.TestUnexpectedResult;
-    const symbol_id: SymbolId = @enumFromInt(raw_symbol_id);
+    const raw_symbol_id = edited.symbol_ids[@backingInt(reference_node)] orelse return error.TestUnexpectedResult;
+    const symbol_id: SymbolId = @fromBackingInt(@intCast(raw_symbol_id));
     const symbol = edited.symbols.items[raw_symbol_id];
     try std.testing.expectEqualStrings("_default22", transformer.ast.getText(symbol.name));
     try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
@@ -5197,7 +5197,7 @@ test "#4819 SymbolId reference helper ignores resolver reservations for its exac
         .variable_var,
         scope,
     )) orelse return error.TestUnexpectedResult;
-    const raw_symbol_id = @intFromEnum(symbol_id);
+    const raw_symbol_id = @backingInt(symbol_id);
     const editor = transformer.semantic_editor orelse return error.TestUnexpectedResult;
     const selected_name_span = editor.symbols.items[raw_symbol_id].name;
     const selected_name = transformer.ast.getText(selected_name_span);
@@ -5330,7 +5330,7 @@ test "#4819 private field helper references retain their producer SymbolIds" {
                 const node = transformer.ast.getNode(reference.node_index);
                 if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "Fields")) continue;
                 if (edited.scopes[reference.scope_id.toIndex()].kind != .block) continue;
-                try std.testing.expectEqual(outer_class_id, @intFromEnum(reference.symbol_id));
+                try std.testing.expectEqual(outer_class_id, @backingInt(reference.symbol_id));
                 static_block_class_refs += 1;
             }
             try std.testing.expect(static_block_class_refs > 0);
@@ -5361,8 +5361,8 @@ test "#4819 private field helper references retain their producer SymbolIds" {
 
                 var rows: usize = 0;
                 for (edited.references) |ref| {
-                    if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
-                    try std.testing.expectEqual(@as(u32, @intCast(id)), @intFromEnum(ref.symbol_id));
+                    if (ref.node_index.isNone() or @backingInt(ref.node_index) != raw) continue;
+                    try std.testing.expectEqual(@as(u32, @intCast(id)), @backingInt(ref.symbol_id));
                     try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, symbol.scope_id));
                     rows += 1;
                 }
@@ -5447,8 +5447,8 @@ test "#4819 private method helpers retain their producer SymbolIds" {
 
                 var rows: usize = 0;
                 for (edited.references) |ref| {
-                    if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
-                    try std.testing.expectEqual(sid, @intFromEnum(ref.symbol_id));
+                    if (ref.node_index.isNone() or @backingInt(ref.node_index) != raw) continue;
+                    try std.testing.expectEqual(sid, @backingInt(ref.symbol_id));
                     const symbol = edited.symbols.items[sid];
                     try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, symbol.scope_id));
                     rows += 1;
@@ -5532,8 +5532,8 @@ test "#4819 class-self captured private methods keep separate inner and outer fu
                 return error.TestUnexpectedResult;
             var rows: usize = 0;
             for (edited.references) |ref| {
-                if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
-                try std.testing.expectEqual(sid, @intFromEnum(ref.symbol_id));
+                if (ref.node_index.isNone() or @backingInt(ref.node_index) != raw) continue;
+                try std.testing.expectEqual(sid, @backingInt(ref.symbol_id));
                 const symbol = edited.symbols.items[sid];
                 try std.testing.expect(scopeHasAncestor(edited.scopes, ref.scope_id, symbol.scope_id));
                 if (ref.flags.read) read_counts[binding_index] += 1;
@@ -5642,7 +5642,7 @@ test "#4819 synthesized private accessors retain exact function and parameter sc
     for (nodes) |parent_raw| {
         var children = @import("../parser/ast_walk.zig").children(transformer.ast, transformer.ast.nodes.items[parent_raw]);
         while (children.next()) |child| {
-            if (!child.isNone()) parents[@intFromEnum(child)] = @enumFromInt(parent_raw);
+            if (!child.isNone()) parents[@backingInt(child)] = @fromBackingInt(@intCast(parent_raw));
         }
     }
     var getter_scope: ?ScopeId = null;
@@ -5654,9 +5654,9 @@ test "#4819 synthesized private accessors retain exact function and parameter sc
         if (name_idx.isNone()) continue;
         const name = transformer.ast.getText(transformer.ast.getNode(name_idx).data.string_ref);
         if (std.mem.eql(u8, name, "_entry_get")) {
-            getter_scope = transformer.outputOwnedScope(@enumFromInt(raw)) orelse return error.TestUnexpectedResult;
+            getter_scope = transformer.outputOwnedScope(@fromBackingInt(@intCast(raw))) orelse return error.TestUnexpectedResult;
         } else if (std.mem.eql(u8, name, "_entry_set")) {
-            setter_scope = transformer.outputOwnedScope(@enumFromInt(raw)) orelse return error.TestUnexpectedResult;
+            setter_scope = transformer.outputOwnedScope(@fromBackingInt(@intCast(raw))) orelse return error.TestUnexpectedResult;
         }
     }
     const get_scope = getter_scope orelse return error.TestUnexpectedResult;
@@ -5670,11 +5670,11 @@ test "#4819 synthesized private accessors retain exact function and parameter sc
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "value")) continue;
         value_binding_count += 1;
-        value_symbol = @enumFromInt(edited.symbol_ids[raw] orelse return error.TestUnexpectedResult);
+        value_symbol = @fromBackingInt(@intCast(edited.symbol_ids[raw] orelse return error.TestUnexpectedResult));
     }
     try std.testing.expectEqual(@as(usize, 1), value_binding_count);
     const value_id = value_symbol orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(set_scope, edited.symbols.items[@intFromEnum(value_id)].scope_id);
+    try std.testing.expectEqual(set_scope, edited.symbols.items[@backingInt(value_id)].scope_id);
 
     var value_reference_count: usize = 0;
     for (nodes) |raw| {
@@ -5689,13 +5689,13 @@ test "#4819 synthesized private accessors retain exact function and parameter sc
                     break;
                 }
             }
-            ancestor = parents[@intFromEnum(ancestor)];
+            ancestor = parents[@backingInt(ancestor)];
         }
         if (!in_setter_scope) continue;
-        try std.testing.expectEqual(@as(?u32, @intFromEnum(value_id)), edited.symbol_ids[raw]);
+        try std.testing.expectEqual(@as(?u32, @backingInt(value_id)), edited.symbol_ids[raw]);
         var exact_rows: usize = 0;
         for (edited.references) |ref| {
-            if (ref.node_index.isNone() or @intFromEnum(ref.node_index) != raw) continue;
+            if (ref.node_index.isNone() or @backingInt(ref.node_index) != raw) continue;
             try std.testing.expectEqual(value_id, ref.symbol_id);
             try std.testing.expectEqual(set_scope, ref.scope_id);
             exact_rows += 1;
@@ -5760,8 +5760,8 @@ test "#4819 static private accessor and method temps have exact semantic referen
             try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
             var found: usize = 0;
             for (edited.references) |ref| {
-                if (@intFromEnum(ref.node_index) != raw) continue;
-                try std.testing.expectEqual(symbol_id, @intFromEnum(ref.symbol_id));
+                if (@backingInt(ref.node_index) != raw) continue;
+                try std.testing.expectEqual(symbol_id, @backingInt(ref.symbol_id));
                 try std.testing.expectEqual(symbol.scope_id, ref.scope_id);
                 if (ref.flags.read and ref.flags.write) updates += 1;
                 found += 1;
@@ -5789,7 +5789,7 @@ fn checkPrivateForInTargetTemp(source: []const u8, expect_late_name: bool) !void
     var expected_method_scope: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .method_definition) continue;
-        const key: AstNodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").MethodExtra.key]);
+        const key: AstNodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").MethodExtra.key]));
         if (!std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(key).span), "run")) continue;
         expected_method_scope = analyzer.scope_owner_map.get(@intCast(raw));
     }
@@ -5818,16 +5818,16 @@ fn checkPrivateForInTargetTemp(source: []const u8, expect_late_name: bool) !void
         const name = transformer.ast.getText(symbol.name);
         if (name.len != 2 or name[0] != '_' or name[1] < 'a' or name[1] > 'z') continue;
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[symbol.scope_id.toIndex()].kind);
-        try std.testing.expectEqual(method_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(method_scope, @backingInt(symbol.scope_id));
         try std.testing.expectEqual(expect_late_name, symbol.synthetic_kind == .standalone_temp_binding);
         try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[symbol.scope_id.toIndex()].get(symbol.synthetic_name));
         var exact_refs: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone()) continue;
-            try std.testing.expect(reachable.contains(@intFromEnum(ref.node_index)));
+            if (@backingInt(ref.symbol_id) != id or ref.node_index.isNone()) continue;
+            try std.testing.expect(reachable.contains(@backingInt(ref.node_index)));
             try std.testing.expect(ref.flags.read);
             try std.testing.expect(!ref.flags.write);
-            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            try std.testing.expectEqual(@as(?u32, @intCast(id)), edited.symbol_ids[@backingInt(ref.node_index)]);
             exact_refs += 1;
         }
         try std.testing.expectEqual(@as(usize, 1), exact_refs);
@@ -5866,13 +5866,13 @@ test "strict inventory does not infer generated global identity from spelling" {
     const local_read = try ast.addNode(.{ .tag = .identifier_reference, .span = storage, .data = .{ .string_ref = storage } });
     const global_read = try ast.addNode(.{ .tag = .identifier_reference, .span = global, .data = .{ .string_ref = global } });
     const static_key = try ast.addNode(.{ .tag = .identifier_reference, .span = property, .data = .{ .string_ref = property } });
-    const member_extra = try ast.addExtras(&.{ @intFromEnum(local_read), @intFromEnum(static_key), 0 });
+    const member_extra = try ast.addExtras(&.{ @backingInt(local_read), @backingInt(static_key), 0 });
     const member = try ast.addExtraNode(.static_member_expression, storage, member_extra);
     const list = try ast.addNodeList(&.{ binding, member, global_read });
     const root = try ast.addNode(.{ .tag = .program, .span = storage, .data = .{ .list = list } });
     var marked: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer marked.deinit(allocator);
-    try marked.put(allocator, @intFromEnum(binding), {});
+    try marked.put(allocator, @backingInt(binding), {});
     var unresolved: std.StringHashMapUnmanaged(void) = .empty;
     defer unresolved.deinit(allocator);
     // A name-only unresolved-global table cannot distinguish this generated
@@ -5882,11 +5882,11 @@ test "strict inventory does not infer generated global identity from spelling" {
     defer scope_owner_map.deinit(allocator);
     var report = try coverage.checkStrict(allocator, &ast, root, 0, &.{}, &.{}, &.{}, &scope_owner_map, &.{}, &marked, &unresolved);
     defer report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.missing_binding)]);
-    try std.testing.expectEqual(@as(usize, 2), report.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
+    try std.testing.expectEqual(@as(usize, 1), report.counts[@backingInt(coverage.StrictStatus.missing_binding)]);
+    try std.testing.expectEqual(@as(usize, 2), report.counts[@backingInt(coverage.StrictStatus.unclassified)]);
     try std.testing.expect(!report.hasCompleteExactCoverage());
     try std.testing.expectEqual(@as(usize, 1), report.marked_synthetic);
-    try std.testing.expectEqual(@intFromEnum(binding), report.findings.items[0].node);
+    try std.testing.expectEqual(@backingInt(binding), report.findings.items[0].node);
 }
 
 test "strict exact coverage rejects counter and finding drift" {
@@ -5905,7 +5905,7 @@ test "strict exact coverage rejects counter and finding drift" {
 
     var missing_detail: coverage.StrictReport = .{};
     defer missing_detail.deinit(allocator);
-    missing_detail.counts[@intFromEnum(coverage.StrictStatus.bound)] = 1;
+    missing_detail.counts[@backingInt(coverage.StrictStatus.bound)] = 1;
     // Conversely, a positive aggregate without a corresponding finding is
     // report drift and must not be accepted as exact coverage.
     try std.testing.expect(!missing_detail.hasCompleteExactCoverage());
@@ -5916,7 +5916,7 @@ test "strict exact coverage rejects counter and finding drift" {
         .symbol_id = 4,
         .name = "_orphan",
         .kind = .variable_var,
-        .scope_id = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
     });
     try std.testing.expect(!hidden_orphan.hasCompleteExactCoverage());
 
@@ -5931,7 +5931,7 @@ test "strict symbol identity delegates only binding scope traces" {
     inline for (std.meta.tags(coverage.StrictStatus)) |status| {
         var report: coverage.StrictReport = .{};
         defer report.deinit(allocator);
-        report.counts[@intFromEnum(status)] = 1;
+        report.counts[@backingInt(status)] = 1;
         try report.findings.append(allocator, .{
             .node = 1,
             .name = "x",
@@ -5948,7 +5948,7 @@ test "strict symbol identity delegates only binding scope traces" {
 
     var bad_reference_scope: coverage.StrictReport = .{};
     defer bad_reference_scope.deinit(allocator);
-    bad_reference_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)] = 1;
+    bad_reference_scope.counts[@backingInt(coverage.StrictStatus.scope_mismatch)] = 1;
     try bad_reference_scope.findings.append(allocator, .{
         .node = 2,
         .name = "x",
@@ -5973,26 +5973,26 @@ test "strict exact external references require matching NodeIndex provenance" {
     const explicit_global = try ast.addNode(.{ .tag = .identifier_reference, .span = window_name, .data = .{ .string_ref = window_name } });
     const mismatched_origin = try ast.addNode(.{ .tag = .identifier_reference, .span = window_name, .data = .{ .string_ref = window_name } });
     const no_origin = try ast.addNode(.{ .tag = .identifier_reference, .span = missing_name, .data = .{ .string_ref = missing_name } });
-    const parser_node_count = @intFromEnum(copied_external);
+    const parser_node_count = @backingInt(copied_external);
     const exact_root = try ast.addListNode(.program, object_name, try ast.addNodeList(&.{ copied_external, explicit_global }));
     const mixed_root = try ast.addListNode(.program, object_name, try ast.addNodeList(&.{ copied_external, explicit_global, mismatched_origin, no_origin }));
 
-    const global_scope: ScopeId = @enumFromInt(0);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
     const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(exact_root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(mixed_root), @intFromEnum(global_scope));
+    try owners.put(allocator, @backingInt(exact_root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(mixed_root), @backingInt(global_scope));
     var unresolved_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved_nodes.deinit(allocator);
-    try unresolved_nodes.put(allocator, @intFromEnum(source_ref), {});
+    try unresolved_nodes.put(allocator, @backingInt(source_ref), {});
     var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer explicit_globals.deinit(allocator);
-    try explicit_globals.put(allocator, @intFromEnum(explicit_global), {});
+    try explicit_globals.put(allocator, @backingInt(explicit_global), {});
     var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer origins.deinit(allocator);
-    try origins.put(allocator, @intFromEnum(copied_external), @intFromEnum(source_ref));
-    try origins.put(allocator, @intFromEnum(mismatched_origin), @intFromEnum(source_ref));
+    try origins.put(allocator, @backingInt(copied_external), @backingInt(source_ref));
+    try origins.put(allocator, @backingInt(mismatched_origin), @backingInt(source_ref));
     const evidence: coverage.StrictExternalEvidence = .{
         .unresolved_reference_nodes = &unresolved_nodes,
         .explicit_global_reference_nodes = &explicit_globals,
@@ -6013,8 +6013,8 @@ test "strict exact external references require matching NodeIndex provenance" {
         evidence,
     );
     defer exact.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 2), exact.counts[@intFromEnum(coverage.StrictStatus.external)]);
-    try std.testing.expectEqual(@as(usize, 0), exact.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
+    try std.testing.expectEqual(@as(usize, 2), exact.counts[@backingInt(coverage.StrictStatus.external)]);
+    try std.testing.expectEqual(@as(usize, 0), exact.counts[@backingInt(coverage.StrictStatus.unclassified)]);
     try std.testing.expect(exact.hasCompleteExactCoverage());
 
     var mixed = try coverage.checkStrictWithExactExternalEvidence(
@@ -6031,8 +6031,8 @@ test "strict exact external references require matching NodeIndex provenance" {
         evidence,
     );
     defer mixed.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 2), mixed.counts[@intFromEnum(coverage.StrictStatus.external)]);
-    try std.testing.expectEqual(@as(usize, 2), mixed.counts[@intFromEnum(coverage.StrictStatus.unclassified)]);
+    try std.testing.expectEqual(@as(usize, 2), mixed.counts[@backingInt(coverage.StrictStatus.external)]);
+    try std.testing.expectEqual(@as(usize, 2), mixed.counts[@backingInt(coverage.StrictStatus.unclassified)]);
     try std.testing.expect(!mixed.hasCompleteExactCoverage());
 }
 
@@ -6042,14 +6042,14 @@ test "strict inventory reports generated symbols with no reachable binding" {
     defer ast.deinit();
     const name = try ast.addString("_unused");
     const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{}) } });
-    const global_scope: ScopeId = @enumFromInt(0);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
     const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
     const symbols = [_]Symbol{
         .{ .name = name, .scope_id = global_scope, .origin_scope = global_scope, .kind = .variable_var, .declaration_span = name, .synthetic_name = "_unused" },
     };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
     var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer synthetic.deinit(allocator);
     const unresolved: std.StringHashMapUnmanaged(void) = .empty;
@@ -6100,7 +6100,7 @@ test "strict inventory reports generated symbols with no reachable binding" {
     // Once the exact symbol is attached to a reachable binding, it is no longer orphaned.
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
     const root_with_binding = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{binding}) } });
-    try owners.put(allocator, @intFromEnum(root_with_binding), @intFromEnum(global_scope));
+    try owners.put(allocator, @backingInt(root_with_binding), @backingInt(global_scope));
     const symbol_ids = [_]?u32{ null, 0, null };
     var attached = try coverage.checkStrict(allocator, &ast, root_with_binding, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer attached.deinit(allocator);
@@ -6118,9 +6118,9 @@ test "strict inventory checks generated identity and exact lexical scope" {
     const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ binding, read }) } });
     const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{block}) } });
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const block_scope: ScopeId = @enumFromInt(1);
-    const sibling_scope: ScopeId = @enumFromInt(2);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const block_scope: ScopeId = @fromBackingInt(@intCast(1));
+    const sibling_scope: ScopeId = @fromBackingInt(@intCast(2));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -6128,8 +6128,8 @@ test "strict inventory checks generated identity and exact lexical scope" {
     };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(block), @backingInt(block_scope));
 
     const symbols = [_]Symbol{
         .{ .name = name, .scope_id = block_scope, .origin_scope = block_scope, .kind = .variable_const, .declaration_span = name },
@@ -6139,50 +6139,50 @@ test "strict inventory checks generated identity and exact lexical scope" {
     const references = [_]Reference{.{
         .node_index = read,
         .scope_id = block_scope,
-        .symbol_id = @enumFromInt(0),
+        .symbol_id = @fromBackingInt(@intCast(0)),
         .flags = .{ .read = true },
     }};
     var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer synthetic.deinit(allocator);
-    try synthetic.put(allocator, @intFromEnum(binding), {});
-    try synthetic.put(allocator, @intFromEnum(read), {});
+    try synthetic.put(allocator, @backingInt(binding), {});
+    try synthetic.put(allocator, @backingInt(read), {});
     const unresolved: std.StringHashMapUnmanaged(void) = .empty;
 
     var correct = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer correct.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 2), correct.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expectEqual(@as(usize, 2), correct.counts[@backingInt(coverage.StrictStatus.bound)]);
     try std.testing.expect(correct.hasCompleteExactCoverage());
 
     // A different in-range SymbolId with the same spelling must not pass as bound.
-    symbol_ids[@intFromEnum(read)] = 1;
+    symbol_ids[@backingInt(read)] = 1;
     var wrong_id = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer wrong_id.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), wrong_id.counts[@intFromEnum(coverage.StrictStatus.identity_mismatch)]);
-    symbol_ids[@intFromEnum(read)] = 0;
+    try std.testing.expectEqual(@as(usize, 1), wrong_id.counts[@backingInt(coverage.StrictStatus.identity_mismatch)]);
+    symbol_ids[@backingInt(read)] = 0;
 
     // Matching ID records are still invalid when that same-name symbol lives
     // in an inaccessible sibling scope.
-    symbol_ids[@intFromEnum(read)] = 1;
+    symbol_ids[@backingInt(read)] = 1;
     var sibling_reference = references;
-    sibling_reference[0].symbol_id = @enumFromInt(1);
+    sibling_reference[0].symbol_id = @fromBackingInt(@intCast(1));
     var invisible = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &sibling_reference, &synthetic, &unresolved);
     defer invisible.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), invisible.counts[@intFromEnum(coverage.StrictStatus.invisible_reference)]);
-    symbol_ids[@intFromEnum(read)] = 0;
+    try std.testing.expectEqual(@as(usize, 1), invisible.counts[@backingInt(coverage.StrictStatus.invisible_reference)]);
+    symbol_ids[@backingInt(read)] = 0;
 
     // A valid but lexically incorrect scope must fail even though the symbol ID is right.
     var wrong_scope_references = references;
     wrong_scope_references[0].scope_id = global_scope;
     var wrong_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &wrong_scope_references, &synthetic, &unresolved);
     defer wrong_scope.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), wrong_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    try std.testing.expectEqual(@as(usize, 1), wrong_scope.counts[@backingInt(coverage.StrictStatus.scope_mismatch)]);
     try std.testing.expect(!wrong_scope.hasCompleteSymbolIdentity());
     try std.testing.expect(!wrong_scope.hasCompleteExactCoverage());
 
     // A SymbolId copied onto a read without the matching Reference record is incomplete.
     var missing_reference = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer missing_reference.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), missing_reference.counts[@intFromEnum(coverage.StrictStatus.missing_reference)]);
+    try std.testing.expectEqual(@as(usize, 1), missing_reference.counts[@backingInt(coverage.StrictStatus.missing_reference)]);
 
     // A transformed binding may keep its source origin after moving into the
     // output AST's exact binding scope.
@@ -6190,7 +6190,7 @@ test "strict inventory checks generated identity and exact lexical scope" {
     wrong_binding_symbols[0].origin_scope = sibling_scope;
     var wrong_binding_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_binding_symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer wrong_binding_scope.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 2), wrong_binding_scope.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expectEqual(@as(usize, 2), wrong_binding_scope.counts[@backingInt(coverage.StrictStatus.bound)]);
     try std.testing.expect(wrong_binding_scope.hasCompleteExactCoverage());
 
     // A valid but unrelated storage ScopeId must fail even if origin_scope is
@@ -6200,13 +6200,13 @@ test "strict inventory checks generated identity and exact lexical scope" {
     wrong_storage_symbols[0].origin_scope = block_scope;
     var wrong_storage_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_storage_symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer wrong_storage_scope.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), wrong_storage_scope.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    try std.testing.expectEqual(@as(usize, 1), wrong_storage_scope.counts[@backingInt(coverage.StrictStatus.scope_mismatch)]);
     const bad_binding = for (wrong_storage_scope.findings.items) |finding| {
-        if (finding.node == @intFromEnum(binding)) break finding;
+        if (finding.node == @backingInt(binding)) break finding;
     } else return error.MissingExpectedFinding;
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(block_scope)), bad_binding.expected_scope_id);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(sibling_scope)), bad_binding.symbol_scope_id);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(block_scope)), bad_binding.symbol_origin_scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(block_scope)), bad_binding.expected_scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(sibling_scope)), bad_binding.symbol_scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(block_scope)), bad_binding.symbol_origin_scope_id);
 
     // A valid ID with a different symbol spelling is not accepted as identity.
     const other_name = try ast.addString("y");
@@ -6214,26 +6214,26 @@ test "strict inventory checks generated identity and exact lexical scope" {
     wrong_name_symbols[0].name = other_name;
     var wrong_name = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_name_symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer wrong_name.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 2), wrong_name.counts[@intFromEnum(coverage.StrictStatus.name_mismatch)]);
+    try std.testing.expectEqual(@as(usize, 2), wrong_name.counts[@backingInt(coverage.StrictStatus.name_mismatch)]);
 
     // Out-of-range IDs and scopes must fail closed instead of passing as valid.
-    symbol_ids[@intFromEnum(read)] = 9;
+    symbol_ids[@backingInt(read)] = 9;
     var invalid_id = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer invalid_id.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), invalid_id.counts[@intFromEnum(coverage.StrictStatus.invalid_id)]);
-    symbol_ids[@intFromEnum(read)] = 0;
+    try std.testing.expectEqual(@as(usize, 1), invalid_id.counts[@backingInt(coverage.StrictStatus.invalid_id)]);
+    symbol_ids[@backingInt(read)] = 0;
 
     var invalid_scope_references = references;
-    invalid_scope_references[0].scope_id = @enumFromInt(99);
+    invalid_scope_references[0].scope_id = @fromBackingInt(@intCast(99));
     var invalid_scope = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &invalid_scope_references, &synthetic, &unresolved);
     defer invalid_scope.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), invalid_scope.counts[@intFromEnum(coverage.StrictStatus.invalid_scope)]);
+    try std.testing.expectEqual(@as(usize, 1), invalid_scope.counts[@backingInt(coverage.StrictStatus.invalid_scope)]);
 
     // One AST reference must have one semantic record; duplicated evidence is ambiguous.
     const duplicate_references = [_]Reference{ references[0], references[0] };
     var duplicate = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &duplicate_references, &synthetic, &unresolved);
     defer duplicate.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), duplicate.counts[@intFromEnum(coverage.StrictStatus.duplicate_reference)]);
+    try std.testing.expectEqual(@as(usize, 1), duplicate.counts[@backingInt(coverage.StrictStatus.duplicate_reference)]);
 
     // A shared AST node reached under two lexical scopes has no single safe scope.
     const sibling_block = try ast.addNode(.{
@@ -6246,11 +6246,11 @@ test "strict inventory checks generated identity and exact lexical scope" {
         .span = name,
         .data = .{ .list = try ast.addNodeList(&.{ block, sibling_block }) },
     });
-    try owners.put(allocator, @intFromEnum(shared_root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(sibling_block), @intFromEnum(sibling_scope));
+    try owners.put(allocator, @backingInt(shared_root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(sibling_block), @backingInt(sibling_scope));
     var ambiguous = try coverage.checkStrict(allocator, &ast, shared_root, 0, &symbol_ids, &symbols, &scopes, &owners, &references, &synthetic, &unresolved);
     defer ambiguous.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), ambiguous.counts[@intFromEnum(coverage.StrictStatus.scope_ambiguous)]);
+    try std.testing.expectEqual(@as(usize, 1), ambiguous.counts[@backingInt(coverage.StrictStatus.scope_ambiguous)]);
 }
 
 test "strict inventory recognizes a lowered var declaration independently of source kind" {
@@ -6259,12 +6259,12 @@ test "strict inventory recognizes a lowered var declaration independently of sou
     defer ast.deinit();
     const name = try ast.addString("_using");
     const binding = try ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
-    const none = @intFromEnum(@import("../parser/ast.zig").NodeIndex.none);
-    const declarator_extra = try ast.addExtras(&.{ @intFromEnum(binding), none, none });
+    const none = @backingInt(@import("../parser/ast.zig").NodeIndex.none);
+    const declarator_extra = try ast.addExtras(&.{ @backingInt(binding), none, none });
     const declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = name, .data = .{ .extra = declarator_extra } });
     const declarators = try ast.addNodeList(&.{declarator});
     const declaration_extra = try ast.addExtras(&.{
-        @intFromEnum(@import("../parser/ast.zig").VariableDeclarationKind.@"var"),
+        @backingInt(@import("../parser/ast.zig").VariableDeclarationKind.@"var"),
         declarators.start,
         declarators.len,
     });
@@ -6272,28 +6272,28 @@ test "strict inventory recognizes a lowered var declaration independently of sou
     const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{declaration}) } });
     const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{block}) } });
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const block_scope: ScopeId = @enumFromInt(1);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const block_scope: ScopeId = @fromBackingInt(@intCast(1));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
     };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(block), @backingInt(block_scope));
     const symbols = [_]Symbol{
         .{ .name = name, .scope_id = global_scope, .origin_scope = block_scope, .kind = .variable_const, .declaration_span = name, .synthetic_name = "_using" },
     };
     const symbol_ids = [_]?u32{ 0, null, null, null, null };
     var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer synthetic.deinit(allocator);
-    try synthetic.put(allocator, @intFromEnum(binding), {});
+    try synthetic.put(allocator, @backingInt(binding), {});
     const unresolved: std.StringHashMapUnmanaged(void) = .empty;
 
     var report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expectEqual(@as(usize, 1), report.counts[@backingInt(coverage.StrictStatus.bound)]);
     try std.testing.expect(report.hasCompleteExactCoverage());
 }
 
@@ -6308,10 +6308,10 @@ test "strict inventory checks emitted storage scopes and accepts relocated sourc
     const block = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = try ast.addNodeList(&.{ var_binding, lexical_binding, function_binding }) } });
     const root = try ast.addNode(.{ .tag = .program, .span = name, .data = .{ .list = try ast.addNodeList(&.{block}) } });
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const function_scope: ScopeId = @enumFromInt(1);
-    const block_scope: ScopeId = @enumFromInt(2);
-    const sibling_scope: ScopeId = @enumFromInt(3);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const function_scope: ScopeId = @fromBackingInt(@intCast(1));
+    const block_scope: ScopeId = @fromBackingInt(@intCast(2));
+    const sibling_scope: ScopeId = @fromBackingInt(@intCast(3));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .function, .is_strict = false },
@@ -6320,8 +6320,8 @@ test "strict inventory checks emitted storage scopes and accepts relocated sourc
     };
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try owners.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try owners.put(allocator, @backingInt(block), @backingInt(block_scope));
 
     const symbols = [_]Symbol{
         .{ .name = name, .scope_id = function_scope, .origin_scope = block_scope, .kind = .variable_var, .declaration_span = name },
@@ -6331,41 +6331,41 @@ test "strict inventory checks emitted storage scopes and accepts relocated sourc
     const symbol_ids = [_]?u32{ 0, 1, 2, null, null };
     var synthetic: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer synthetic.deinit(allocator);
-    try synthetic.put(allocator, @intFromEnum(var_binding), {});
-    try synthetic.put(allocator, @intFromEnum(lexical_binding), {});
-    try synthetic.put(allocator, @intFromEnum(function_binding), {});
+    try synthetic.put(allocator, @backingInt(var_binding), {});
+    try synthetic.put(allocator, @backingInt(lexical_binding), {});
+    try synthetic.put(allocator, @backingInt(function_binding), {});
     const unresolved: std.StringHashMapUnmanaged(void) = .empty;
 
     var report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &symbols, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 3), report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expectEqual(@as(usize, 3), report.counts[@backingInt(coverage.StrictStatus.bound)]);
     try std.testing.expect(report.hasCompleteExactCoverage());
 
     var hoisted_origin = symbols;
     hoisted_origin[0].origin_scope = function_scope;
     var hoisted_origin_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &hoisted_origin, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer hoisted_origin_report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 3), hoisted_origin_report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expectEqual(@as(usize, 3), hoisted_origin_report.counts[@backingInt(coverage.StrictStatus.bound)]);
 
     var wrong_var_storage = symbols;
     wrong_var_storage[0].scope_id = global_scope;
     var wrong_storage_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_var_storage, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer wrong_storage_report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), wrong_storage_report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    try std.testing.expectEqual(@as(usize, 1), wrong_storage_report.counts[@backingInt(coverage.StrictStatus.scope_mismatch)]);
     try std.testing.expect(!wrong_storage_report.hasCompleteExactCoverage());
 
     var wrong_var_origin = symbols;
     wrong_var_origin[0].origin_scope = sibling_scope;
     var wrong_origin_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_var_origin, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer wrong_origin_report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 3), wrong_origin_report.counts[@intFromEnum(coverage.StrictStatus.bound)]);
+    try std.testing.expectEqual(@as(usize, 3), wrong_origin_report.counts[@backingInt(coverage.StrictStatus.bound)]);
     try std.testing.expect(wrong_origin_report.hasCompleteExactCoverage());
 
     var invalid_var_origin = symbols;
     invalid_var_origin[0].origin_scope = .none;
     var invalid_origin_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &invalid_var_origin, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer invalid_origin_report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), invalid_origin_report.counts[@intFromEnum(coverage.StrictStatus.invalid_scope)]);
+    try std.testing.expectEqual(@as(usize, 1), invalid_origin_report.counts[@backingInt(coverage.StrictStatus.invalid_scope)]);
 
     // A regular function declaration inside a block remains block-scoped in
     // this analyzer; the function_scoped flag alone is not enough to hoist it.
@@ -6373,7 +6373,7 @@ test "strict inventory checks emitted storage scopes and accepts relocated sourc
     wrong_function_scope[2].scope_id = global_scope;
     var wrong_function_report = try coverage.checkStrict(allocator, &ast, root, 0, &symbol_ids, &wrong_function_scope, &scopes, &owners, &.{}, &synthetic, &unresolved);
     defer wrong_function_report.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 1), wrong_function_report.counts[@intFromEnum(coverage.StrictStatus.scope_mismatch)]);
+    try std.testing.expectEqual(@as(usize, 1), wrong_function_report.counts[@backingInt(coverage.StrictStatus.scope_mismatch)]);
 }
 
 test "exact coverage detects AST cycles without treating shared children as cycles" {
@@ -6397,12 +6397,12 @@ test "exact coverage detects AST cycles without treating shared children as cycl
         .span = span,
         .data = .{ .list = try ast.addNodeList(&.{ shared_parent_a, shared_parent_b }) },
     });
-    const global_scope: ScopeId = @enumFromInt(0);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
     const scopes = [_]Scope{.{ .parent = .none, .kind = .global, .is_strict = false }};
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
+    try owners.put(allocator, @backingInt(root), @backingInt(global_scope));
     const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -6450,7 +6450,7 @@ test "exact coverage detects AST cycles without treating shared children as cycl
     // reachability walk, allowing identifiers below malformed structure to
     // disappear from the coverage audit.
     const invalid_child_index: u32 = @intCast(ast.nodes.items.len + 7);
-    ast.nodes.items[@intFromEnum(root)].data.list = try ast.addNodeList(&.{@enumFromInt(invalid_child_index)});
+    ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(&.{@fromBackingInt(@intCast(invalid_child_index))});
     const invalid_edge_report = try coverage.checkExact(
         allocator,
         &ast,
@@ -6474,7 +6474,7 @@ test "exact coverage detects AST cycles without treating shared children as cycl
 
     // Mutate a reachable child edge into a root self-cycle. The exact audit
     // must fail closed before its generic tree walker can loop forever.
-    ast.nodes.items[@intFromEnum(root)].data.list = try ast.addNodeList(&.{root});
+    ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(&.{root});
     const cyclic_report = try coverage.checkExact(
         allocator,
         &ast,
@@ -6495,9 +6495,9 @@ test "exact coverage detects AST cycles without treating shared children as cycl
     try std.testing.expectEqual(@as(usize, 1), cyclic_report.cyclic_ast_edges);
     try std.testing.expect(!cyclic_report.isClean());
 
-    ast.nodes.items[@intFromEnum(root)].data.list = try ast.addNodeList(&.{shared_parent_a});
-    ast.nodes.items[@intFromEnum(shared_parent_a)].data.list = try ast.addNodeList(&.{shared_parent_b});
-    ast.nodes.items[@intFromEnum(shared_parent_b)].data.list = try ast.addNodeList(&.{shared_parent_a});
+    ast.nodes.items[@backingInt(root)].data.list = try ast.addNodeList(&.{shared_parent_a});
+    ast.nodes.items[@backingInt(shared_parent_a)].data.list = try ast.addNodeList(&.{shared_parent_b});
+    ast.nodes.items[@backingInt(shared_parent_b)].data.list = try ast.addNodeList(&.{shared_parent_a});
     const back_edge_report = try coverage.checkExact(
         allocator,
         &ast,
@@ -6609,8 +6609,8 @@ test "exact scope audit accepts a generated function-expression self-name scope 
     @memcpy(anchored_references[0..references.len], references);
     anchored_references[references.len] = .{
         .node_index = .none,
-        .scope_id = @enumFromInt(name_scope),
-        .symbol_id = @enumFromInt(name_symbol orelse return error.TestUnexpectedResult),
+        .scope_id = @fromBackingInt(@intCast(name_scope)),
+        .symbol_id = @fromBackingInt(@intCast(name_symbol orelse return error.TestUnexpectedResult)),
         .flags = .{ .declare = true },
     };
     const anchored = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, root, &analyzer, scopes, scope_maps, anchored_references, name_scope);
@@ -6630,7 +6630,7 @@ test "exact scope audit accepts a generated function-expression self-name scope 
     var moved_one = false;
     for (moved_references) |*reference| {
         if (reference.flags.declare) continue;
-        reference.scope_id = @enumFromInt(name_scope);
+        reference.scope_id = @fromBackingInt(@intCast(name_scope));
         moved_one = true;
         break;
     }
@@ -6648,7 +6648,7 @@ test "exact scope audit accepts a generated function-expression self-name scope 
 
     // Without its function expression in the AST the scope has no owner.
     const empty_root = try parser.ast.addNode(.{ .tag = .program, .span = .EMPTY, .data = .{ .list = try parser.ast.addNodeList(&.{}) } });
-    try analyzer.scope_owner_map.put(allocator, @intFromEnum(empty_root), 0);
+    try analyzer.scope_owner_map.put(allocator, @backingInt(empty_root), 0);
     const detached = try checkFunctionNameScopeAsGenerated(allocator, &parser.ast, empty_root, &analyzer, scopes, scope_maps, references, name_scope);
     try std.testing.expect(detached.scope_owner_mismatch > 0);
     try std.testing.expect(!detached.isClean());

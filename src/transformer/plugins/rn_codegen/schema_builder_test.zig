@@ -275,7 +275,7 @@ test "schema_builder: invalid declaration → InvalidNativePropsBody" {
     const program_node = p.parser.ast.getNode(p.program);
     const list = program_node.data.list;
     try std.testing.expect(list.len > 0);
-    const stmt: NodeIndex = @enumFromInt(p.parser.ast.extra_data.items[list.start]);
+    const stmt: NodeIndex = @fromBackingInt(@intCast(p.parser.ast.extra_data.items[list.start]));
 
     const result = schema_builder.build(&p.parser.ast, &p.type_index, "X", null, stmt, null, std.testing.allocator);
     try std.testing.expectError(error.InvalidNativePropsBody, result);

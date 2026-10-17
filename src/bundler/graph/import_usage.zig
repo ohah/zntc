@@ -47,7 +47,7 @@ pub fn isImportAllBindingsUnused(self: anytype, module: *const Module, record: t
         if (x.specs_start + x.specs_len > ast_ptr.extra_data.items.len) return false;
         const spec_indices = ast_ptr.extra_data.items[x.specs_start .. x.specs_start + x.specs_len];
         for (spec_indices) |raw_idx| {
-            const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+            const spec_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (spec_idx.isNone()) return false;
             const spec_node = ast_ptr.getNode(spec_idx);
             // default / namespace 는 보수적으로 keep — JSX pragma 등 implicit value use.
@@ -62,7 +62,7 @@ pub fn isImportAllBindingsUnused(self: anytype, module: *const Module, record: t
             if (!left_idx.isNone()) {
                 spec_self_nodes.append(self.allocator, left_idx) catch return false;
             }
-            if (!local_idx.isNone() and @intFromEnum(local_idx) != @intFromEnum(left_idx)) {
+            if (!local_idx.isNone() and @backingInt(local_idx) != @backingInt(left_idx)) {
                 spec_self_nodes.append(self.allocator, local_idx) catch return false;
             }
         }
@@ -72,10 +72,10 @@ pub fn isImportAllBindingsUnused(self: anytype, module: *const Module, record: t
 
     for (ast_ptr.nodes.items, 0..) |n, ni| {
         if (n.tag != .identifier_reference) continue;
-        const this_idx: NodeIndex = @enumFromInt(@as(u32, @intCast(ni)));
+        const this_idx: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(ni))));
         var is_spec_self = false;
         for (spec_self_nodes.items) |s| {
-            if (@intFromEnum(this_idx) == @intFromEnum(s)) {
+            if (@backingInt(this_idx) == @backingInt(s)) {
                 is_spec_self = true;
                 break;
             }

@@ -185,7 +185,7 @@ fn extractCommandParams(
     defer out.deinit(alloc);
     var i: u32 = 1; // 첫 인자 ref 는 skip — reference 의 `value.params.slice(1)` 와 동일.
     while (i < params_len) : (i += 1) {
-        const p_idx: NodeIndex = @enumFromInt(ast.extra_data.items[params_start + i]);
+        const p_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[params_start + i]));
         // type-level function param: ts_property_signature / flow_property_signature
         // (D103). extra = [key, type_ann, flags].
         const info = decodePropertySignature(ast, p_idx) orelse continue;
@@ -214,8 +214,8 @@ fn decodePropertySignature(ast: *const Ast, sig_idx: NodeIndex) ?PropertySignatu
     const e = sig.data.extra;
     if (e + 2 >= ast.extra_data.items.len) return null;
     return .{
-        .key = @enumFromInt(ast.extra_data.items[e]),
-        .type_ann = @enumFromInt(ast.extra_data.items[e + 1]),
+        .key = @fromBackingInt(@intCast(ast.extra_data.items[e])),
+        .type_ann = @fromBackingInt(@intCast(ast.extra_data.items[e + 1])),
         .flags = PropertySignatureFlags.fromU32(ast.extra_data.items[e + 2]),
     };
 }
@@ -279,22 +279,22 @@ fn collectAllMembers(
             const extends_len = ast.extra_data.items[e + 3];
             var i: u32 = 0;
             while (i < extends_len) : (i += 1) {
-                const ref_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extends_start + i]);
+                const ref_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extends_start + i]));
                 try collectMembersFromTypeRef(ast, type_index, ref_idx, out, visited, depth + 1, alloc);
             }
-            const body_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 4]);
+            const body_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 4]));
             try collectMembersFromValue(ast, type_index, body_idx, out, visited, depth + 1, alloc);
         },
         .ts_type_alias_declaration, .flow_type_alias_declaration => {
             const e = node.data.extra;
             if (e + 2 >= ast.extra_data.items.len) return error.InvalidNativePropsBody;
-            const value_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
+            const value_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 2]));
             try collectMembersFromValue(ast, type_index, value_idx, out, visited, depth + 1, alloc);
         },
         .flow_opaque_type => {
             const e = node.data.extra;
             if (e + 3 >= ast.extra_data.items.len) return error.InvalidNativePropsBody;
-            const value_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 3]);
+            const value_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 3]));
             try collectMembersFromValue(ast, type_index, value_idx, out, visited, depth + 1, alloc);
         },
         else => return error.InvalidNativePropsBody,
@@ -411,7 +411,7 @@ fn collectPickOmitMembers(
             try out.append(alloc, sig_idx); // spread 등 비-property 는 통과
             continue;
         }
-        const key_idx: NodeIndex = @enumFromInt(ast.extra_data.items[sig.data.extra]);
+        const key_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[sig.data.extra]));
         const name = extractKeyName(ast, key_idx) orelse continue;
         const in_k = stringInList(name, k_names);
         if (in_k == is_pick) try out.append(alloc, sig_idx);
@@ -518,7 +518,7 @@ fn isReadonlyWrapperName(name: []const u8) bool {
 fn getNthTypeArgument(ast: *const Ast, node: Node, index: u32) ?NodeIndex {
     const e = node.data.extra;
     if (e + 2 >= ast.extra_data.items.len) return null;
-    const args_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e + 2]);
+    const args_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e + 2]));
     if (args_idx == .none) return null;
 
     const args_node = ast.getNode(args_idx);
@@ -851,7 +851,7 @@ fn mapTypeReference(
             .ts_type_alias_declaration, .flow_type_alias_declaration => v: {
                 const e = alias_node.data.extra;
                 if (e + 2 >= ast.extra_data.items.len) return error.UnsupportedPropType;
-                break :v @enumFromInt(ast.extra_data.items[e + 2]);
+                break :v @fromBackingInt(@intCast(ast.extra_data.items[e + 2]));
             },
             else => return error.UnsupportedPropType,
         };

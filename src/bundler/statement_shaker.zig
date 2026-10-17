@@ -34,7 +34,7 @@ pub fn markUnusedStatements(
     skip_nodes: *std.DynamicBitSet,
     unresolved_globals: ?*const purity.GlobalRefSet,
 ) !void {
-    const root_ni = @intFromEnum(root);
+    const root_ni = @backingInt(root);
     if (root_ni >= ast.nodes.items.len) return;
     const root_node = ast.nodes.items[root_ni];
     if (root_node.tag != .program) return;
@@ -53,8 +53,8 @@ pub fn markUnusedStatements(
     var removable_count: u32 = 0;
 
     for (stmt_raw_indices, 0..) |raw_idx, i| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
-        const ni = @intFromEnum(idx);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        const ni = @backingInt(idx);
         if (ni >= ast.nodes.items.len) {
             stmts[i] = .{ .node_idx = @intCast(ni), .span = .{ .start = 0, .end = 0 } };
             continue;
@@ -166,9 +166,9 @@ fn extractDeclaredNames(
             // export function f() {} / export const x = 1
             const e = node.data.extra;
             if (e + 3 < ast.extra_data.items.len) {
-                const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-                if (!decl_idx.isNone() and @intFromEnum(decl_idx) < ast.nodes.items.len) {
-                    const inner = ast.nodes.items[@intFromEnum(decl_idx)];
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
+                if (!decl_idx.isNone() and @backingInt(decl_idx) < ast.nodes.items.len) {
+                    const inner = ast.nodes.items[@backingInt(decl_idx)];
                     try extractDeclaredNames(ast, inner, stmt_idx, name_to_stmt, allocator);
                 }
             }
@@ -177,8 +177,8 @@ fn extractDeclaredNames(
             try name_to_stmt.put(allocator, "default", stmt_idx);
             // inner declaration의 이름도 등록 (export default function foo() {})
             const inner_idx = node.data.unary.operand;
-            if (!inner_idx.isNone() and @intFromEnum(inner_idx) < ast.nodes.items.len) {
-                const inner = ast.nodes.items[@intFromEnum(inner_idx)];
+            if (!inner_idx.isNone() and @backingInt(inner_idx) < ast.nodes.items.len) {
+                const inner = ast.nodes.items[@backingInt(inner_idx)];
                 try extractDeclaredNames(ast, inner, stmt_idx, name_to_stmt, allocator);
             }
         },
@@ -190,9 +190,9 @@ fn extractDeclaredNames(
 fn getFunctionName(ast: *const Ast, node: Node) ?[]const u8 {
     const e = node.data.extra;
     if (e >= ast.extra_data.items.len) return null;
-    const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
     if (name_idx.isNone()) return null;
-    const ni = @intFromEnum(name_idx);
+    const ni = @backingInt(name_idx);
     if (ni >= ast.nodes.items.len) return null;
     const name_node = ast.nodes.items[ni];
     return ast.getText(name_node.span);
@@ -222,9 +222,9 @@ fn extractVarDeclNames(
     while (i < list_len) : (i += 1) {
         const idx = list_start + i;
         if (idx >= ast.extra_data.items.len) break;
-        const decl_idx: NodeIndex = @enumFromInt(ast.extra_data.items[idx]);
+        const decl_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[idx]));
         if (decl_idx.isNone()) continue;
-        const decl_ni = @intFromEnum(decl_idx);
+        const decl_ni = @backingInt(decl_idx);
         if (decl_ni >= ast.nodes.items.len) continue;
         const decl_node = ast.nodes.items[decl_ni];
         if (decl_node.tag != .variable_declarator) continue;
@@ -232,9 +232,9 @@ fn extractVarDeclNames(
         // variable_declarator: extra [name, type_ann, init_expr]
         const de = decl_node.data.extra;
         if (de >= ast.extra_data.items.len) continue;
-        const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[de]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[de]));
         if (name_idx.isNone()) continue;
-        const name_ni = @intFromEnum(name_idx);
+        const name_ni = @backingInt(name_idx);
         if (name_ni >= ast.nodes.items.len) continue;
         const name_node = ast.nodes.items[name_ni];
         switch (name_node.tag) {
@@ -263,14 +263,14 @@ fn extractObjectPatternNames(
     if (list.start + list.len > ast.extra_data.items.len) return;
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
     for (indices) |raw_idx| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
-        if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) continue;
-        const prop = ast.nodes.items[@intFromEnum(prop_idx)];
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) continue;
+        const prop = ast.nodes.items[@backingInt(prop_idx)];
         if (prop.tag == .binding_property) {
             // shorthand { X } → left == right, rename { X: Y } → right=value
             const val_idx = prop.data.binary.right;
-            if (!val_idx.isNone() and @intFromEnum(val_idx) < ast.nodes.items.len) {
-                const val = ast.nodes.items[@intFromEnum(val_idx)];
+            if (!val_idx.isNone() and @backingInt(val_idx) < ast.nodes.items.len) {
+                const val = ast.nodes.items[@backingInt(val_idx)];
                 if (val.tag == .object_pattern) {
                     try extractObjectPatternNames(ast, val, stmt_idx, name_to_stmt, allocator);
                 } else if (val.tag == .array_pattern) {
@@ -278,8 +278,8 @@ fn extractObjectPatternNames(
                 } else if (val.tag == .assignment_pattern) {
                     // { a = 1 } → assignment_pattern { left=binding, right=default }
                     const binding_idx = val.data.binary.left;
-                    if (!binding_idx.isNone() and @intFromEnum(binding_idx) < ast.nodes.items.len) {
-                        const binding = ast.nodes.items[@intFromEnum(binding_idx)];
+                    if (!binding_idx.isNone() and @backingInt(binding_idx) < ast.nodes.items.len) {
+                        const binding = ast.nodes.items[@backingInt(binding_idx)];
                         const name = ast.getText(binding.span);
                         if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
                     }
@@ -290,8 +290,8 @@ fn extractObjectPatternNames(
             }
         } else if (prop.tag == .rest_element) {
             const arg = prop.data.unary.operand;
-            if (!arg.isNone() and @intFromEnum(arg) < ast.nodes.items.len) {
-                const name = ast.getText(ast.nodes.items[@intFromEnum(arg)].span);
+            if (!arg.isNone() and @backingInt(arg) < ast.nodes.items.len) {
+                const name = ast.getText(ast.nodes.items[@backingInt(arg)].span);
                 if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
             }
         }
@@ -311,24 +311,24 @@ fn extractArrayPatternNames(
     if (list.start + list.len > ast.extra_data.items.len) return;
     const indices = ast.extra_data.items[list.start .. list.start + list.len];
     for (indices) |raw_idx| {
-        const elem_idx: NodeIndex = @enumFromInt(raw_idx);
-        if (elem_idx.isNone() or @intFromEnum(elem_idx) >= ast.nodes.items.len) continue;
-        const elem = ast.nodes.items[@intFromEnum(elem_idx)];
+        const elem_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+        if (elem_idx.isNone() or @backingInt(elem_idx) >= ast.nodes.items.len) continue;
+        const elem = ast.nodes.items[@backingInt(elem_idx)];
         if (elem.tag == .object_pattern) {
             try extractObjectPatternNames(ast, elem, stmt_idx, name_to_stmt, allocator);
         } else if (elem.tag == .array_pattern) {
             try extractArrayPatternNames(ast, elem, stmt_idx, name_to_stmt, allocator);
         } else if (elem.tag == .rest_element) {
             const arg = elem.data.unary.operand;
-            if (!arg.isNone() and @intFromEnum(arg) < ast.nodes.items.len) {
-                const name = ast.getText(ast.nodes.items[@intFromEnum(arg)].span);
+            if (!arg.isNone() and @backingInt(arg) < ast.nodes.items.len) {
+                const name = ast.getText(ast.nodes.items[@backingInt(arg)].span);
                 if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
             }
         } else if (elem.tag == .assignment_pattern) {
             // [a = 1] → assignment_pattern { left=binding, right=default }
             const binding_idx = elem.data.binary.left;
-            if (!binding_idx.isNone() and @intFromEnum(binding_idx) < ast.nodes.items.len) {
-                const binding = ast.nodes.items[@intFromEnum(binding_idx)];
+            if (!binding_idx.isNone() and @backingInt(binding_idx) < ast.nodes.items.len) {
+                const binding = ast.nodes.items[@backingInt(binding_idx)];
                 const name = ast.getText(binding.span);
                 if (name.len > 0) try name_to_stmt.put(allocator, name, stmt_idx);
             }

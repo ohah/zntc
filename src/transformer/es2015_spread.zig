@@ -40,7 +40,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const args_len = extras[e + 2];
             const args = extras[args_start .. args_start + args_len];
             for (args) |raw_idx| {
-                const arg = self.ast.getNode(@enumFromInt(raw_idx));
+                const arg = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (arg.tag == .spread_element) return true;
             }
             return false;
@@ -56,7 +56,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const span = node.span;
 
             // extra_data에서 인덱스만 미리 읽기 (visitNode 전에)
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
             const args_start = self.ast.extra_data.items[e + 1];
             const args_len = self.ast.extra_data.items[e + 2];
 
@@ -72,7 +72,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                 // Already-visited receiver from new_callee. A simple identifier
                 // needs a distinct AST reference; an effectful receiver must
                 // be captured so `.apply` does not evaluate it a second time.
-                const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[new_callee_node.data.extra]);
+                const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[new_callee_node.data.extra]));
                 if (es_helpers.isSimpleIdentifier(self, obj_idx)) {
                     const receiver_ref = try es_helpers.cloneNode(self, obj_idx);
                     try self.duplicateUserReference(obj_idx, receiver_ref);
@@ -80,7 +80,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                 }
 
                 const receiver_capture = try es_helpers.captureToTrackedTemp(self, obj_idx, span);
-                self.ast.extra_data.items[new_callee_node.data.extra] = @intFromEnum(receiver_capture.paren_assign);
+                self.ast.extra_data.items[new_callee_node.data.extra] = @backingInt(receiver_capture.paren_assign);
                 break :blk try es_helpers.makeTrackedTempRef(self, receiver_capture.span, span, .{ .read = true });
             } else try es_helpers.makeVoidZero(self, span);
 
@@ -90,7 +90,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // callee.apply(this, args)
             const apply_prop = try es_helpers.makePropertyName(self, "apply");
             const member_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_callee), @intFromEnum(apply_prop), 0,
+                @backingInt(new_callee), @backingInt(apply_prop), 0,
             });
             const apply_member = try self.ast.addNode(.{
                 .tag = .static_member_expression,
@@ -100,7 +100,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
 
             const call_args = try self.ast.addNodeList(&.{ this_arg, combined_args });
             const call_extra = try self.ast.addExtras(&.{
-                @intFromEnum(apply_member),
+                @backingInt(apply_member),
                 call_args.start,
                 call_args.len,
                 0,
@@ -118,7 +118,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const span = node.span;
 
             // extra_data에서 인덱스만 미리 읽기 (visitNode 전에)
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
             const args_start = self.ast.extra_data.items[e + 1];
             const args_len = self.ast.extra_data.items[e + 2];
 
@@ -167,7 +167,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // [null].concat(combined_args)
             const concat_prop = try es_helpers.makePropertyName(self, "concat");
             const concat_me = try self.ast.addExtras(&.{
-                @intFromEnum(null_arr), @intFromEnum(concat_prop), 0,
+                @backingInt(null_arr), @backingInt(concat_prop), 0,
             });
             const concat_member = try self.ast.addNode(.{
                 .tag = .static_member_expression,
@@ -176,7 +176,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
             const concat_call_args = try self.ast.addNodeList(&.{combined_args});
             const concat_call_extra = try self.ast.addExtras(&.{
-                @intFromEnum(concat_member), concat_call_args.start, concat_call_args.len, 0,
+                @backingInt(concat_member), concat_call_args.start, concat_call_args.len, 0,
             });
             const null_concat = try self.ast.addNode(.{
                 .tag = .call_expression,
@@ -187,7 +187,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // Foo.bind
             const bind_prop = try es_helpers.makePropertyName(self, "bind");
             const bind_me = try self.ast.addExtras(&.{
-                @intFromEnum(bind_target), @intFromEnum(bind_prop), 0,
+                @backingInt(bind_target), @backingInt(bind_prop), 0,
             });
             const bind_member = try self.ast.addNode(.{
                 .tag = .static_member_expression,
@@ -198,7 +198,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // Foo.bind.apply
             const apply_prop = try es_helpers.makePropertyName(self, "apply");
             const apply_me = try self.ast.addExtras(&.{
-                @intFromEnum(bind_member), @intFromEnum(apply_prop), 0,
+                @backingInt(bind_member), @backingInt(apply_prop), 0,
             });
             const apply_member = try self.ast.addNode(.{
                 .tag = .static_member_expression,
@@ -209,7 +209,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // Foo.bind.apply(Foo, [null].concat(args))
             const apply_args = try self.ast.addNodeList(&.{ this_arg, null_concat });
             const apply_extra = try self.ast.addExtras(&.{
-                @intFromEnum(apply_member), apply_args.start, apply_args.len, 0,
+                @backingInt(apply_member), apply_args.start, apply_args.len, 0,
             });
             const bind_apply_call = try self.ast.addNode(.{
                 .tag = .call_expression,
@@ -227,7 +227,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             });
             const empty_new_args = try self.ast.addNodeList(&.{});
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(paren_callee), empty_new_args.start, empty_new_args.len, 0,
+                @backingInt(paren_callee), empty_new_args.start, empty_new_args.len, 0,
             });
             return self.ast.addNode(.{
                 .tag = .new_expression,
@@ -240,7 +240,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
         pub fn hasSpreadInArray(self: *const Transformer, node: Node) bool {
             const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (members) |raw_idx| {
-                const elem = self.ast.getNode(@enumFromInt(raw_idx));
+                const elem = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (elem.tag == .spread_element) return true;
             }
             return false;
@@ -263,7 +263,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < members_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + i_loop];
-                const elem = self.ast.getNode(@enumFromInt(raw_idx));
+                const elem = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (elem.tag == .spread_element) {
                     // 이전 non-spread 그룹을 배열로 flush
                     if (self.scratch.items.len > non_spread_top) {
@@ -284,7 +284,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, wrapped);
                     non_spread_top = self.scratch.items.len;
                 } else {
-                    const visited = try self.visitNode(@enumFromInt(raw_idx));
+                    const visited = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!visited.isNone()) {
                         try self.scratch.append(self.allocator, visited);
                     }
@@ -334,7 +334,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < ba_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[ba_start + i_loop];
-                const arg = self.ast.getNode(@enumFromInt(raw_idx));
+                const arg = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (arg.tag == .spread_element) {
                     // 이전 non-spread를 배열로 flush
                     if (self.scratch.items.len > non_spread_top) {
@@ -355,7 +355,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     non_spread_top = self.scratch.items.len;
                     spread_count += 1;
                 } else {
-                    const visited = try self.visitNode(@enumFromInt(raw_idx));
+                    const visited = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!visited.isNone()) {
                         try self.scratch.append(self.allocator, visited);
                         has_non_spread = true;
@@ -415,7 +415,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             const len = node.data.list.len;
             var has_hole = false;
             for (self.ast.extra_data.items[start .. start + len]) |raw| {
-                if (self.ast.getNode(@enumFromInt(raw)).tag == .elision) {
+                if (self.ast.getNode(@fromBackingInt(@intCast(raw))).tag == .elision) {
                     has_hole = true;
                     break;
                 }
@@ -426,7 +426,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             var i: u32 = 0;
             while (i < len) : (i += 1) {
-                const elem: NodeIndex = @enumFromInt(self.ast.extra_data.items[start + i]);
+                const elem: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[start + i]));
                 const elem_node = self.ast.getNode(elem);
                 const filled = if (elem_node.tag == .elision) try es_helpers.makeVoidZero(self, elem_node.span) else elem;
                 try self.scratch.append(self.allocator, filled);
@@ -451,7 +451,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // [].concat
             const concat_prop = try es_helpers.makePropertyName(self, "concat");
             const member_extra = try self.ast.addExtras(&.{
-                @intFromEnum(empty_arr), @intFromEnum(concat_prop), 0,
+                @backingInt(empty_arr), @backingInt(concat_prop), 0,
             });
             const concat_member = try self.ast.addNode(.{
                 .tag = .static_member_expression,
@@ -462,7 +462,7 @@ pub fn ES2015Spread(comptime Transformer: type) type {
             // [].concat(args...)
             const concat_args = try self.ast.addNodeList(args);
             const call_extra = try self.ast.addExtras(&.{
-                @intFromEnum(concat_member),
+                @backingInt(concat_member),
                 concat_args.start,
                 concat_args.len,
                 0,

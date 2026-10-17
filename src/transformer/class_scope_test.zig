@@ -168,8 +168,8 @@ test "#4819 ES5 computed super assignment and update temps have exact identity" 
     defer allocator.free(reachable);
     var live_exact_refs: usize = 0;
     for (transformer.generator_state_temp_refs.items) |pending| {
-        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(pending.binding)) != null);
-        if (std.mem.indexOfScalar(u32, reachable, @intFromEnum(pending.reference)) == null) continue;
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(pending.binding)) != null);
+        if (std.mem.indexOfScalar(u32, reachable, @backingInt(pending.reference)) == null) continue;
         const binding_id = transformer.getSymbolIdAt(pending.binding) orelse return error.MissingSuperTempSymbol;
         try std.testing.expectEqual(@as(?u32, binding_id), transformer.getSymbolIdAt(pending.reference));
         live_exact_refs += 1;
@@ -448,12 +448,12 @@ test "#4819 class computed-key memo binds only its producer reference" {
     var key_reference: NodeIndex = .none;
     for (transformer.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "key")) continue;
-        key_reference = @enumFromInt(raw);
+        key_reference = @fromBackingInt(@intCast(raw));
         break;
     }
     if (key_reference.isNone()) return error.MissingComputedKeyReference;
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const empty_list = try transformer.ast.addNodeList(&.{});
     const owner_params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
     const owner_body = try transformer.ast.addNode(.{
@@ -461,7 +461,7 @@ test "#4819 class computed-key memo binds only its producer reference" {
         .span = .EMPTY,
         .data = .{ .list = empty_list },
     });
-    const owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(owner_params), @intFromEnum(owner_body), 0, none });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @backingInt(owner_params), @backingInt(owner_body), 0, none });
     const owner = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -499,7 +499,7 @@ test "#4819 class computed-key memo binds only its producer reference" {
 
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
     const reference_record = (try editor.referenceForNode(memo.computed_ref)) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @enumFromInt(id_raw)), reference_record.symbol_id);
+    try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(@intCast(id_raw))), reference_record.symbol_id);
     try std.testing.expectEqual(owner_scope, reference_record.scope_id);
     try std.testing.expect((try editor.referenceForNode(decoy)) == null);
     try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
@@ -671,9 +671,9 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
     }
     for (edited.references) |ref| {
         if (ref.node_index.isNone()) continue;
-        const raw = @intFromEnum(ref.node_index);
+        const raw = @backingInt(ref.node_index);
         if (std.mem.indexOfScalar(u32, reachable, raw) == null) continue;
-        if ((@intFromEnum(ref.symbol_id) == expr_id or @intFromEnum(ref.symbol_id) == decl_id) and
+        if ((@backingInt(ref.symbol_id) == expr_id or @backingInt(ref.symbol_id) == decl_id) and
             raw >= transformer.parser_node_count and ref.flags.read) accessor_refs += 1;
     }
     try std.testing.expect(found_expr_storage and found_decl_storage and found_outer and found_param);
@@ -736,8 +736,8 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
         else
             try std.testing.expectEqual(@as(usize, 0), exact_reference_count);
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
-            const reference_raw = @intFromEnum(reference.node_index);
+            if (@backingInt(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
+            const reference_raw = @backingInt(reference.node_index);
             try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[reference_raw]);
             var visible_scope = reference.scope_id;
             var is_visible = false;
@@ -786,8 +786,8 @@ test "#4819 ES5 class inner write keeps source IDs and binds accessor uses" {
         try std.testing.expectEqual(@as(usize, 1), binding_count);
         try std.testing.expect(reference_count > 0);
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
-            const reference_raw = @intFromEnum(reference.node_index);
+            if (@backingInt(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
+            const reference_raw = @backingInt(reference.node_index);
             try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[reference_raw]);
             var visible_scope = reference.scope_id;
             var is_visible = false;
@@ -865,7 +865,7 @@ test "#4819 ES5 class IIFE scopes enclose source class bodies" {
         var owners: usize = 0;
         var it = edited.scope_owner_map.iterator();
         while (it.next()) |entry| {
-            if (entry.value_ptr.* != @intFromEnum(wrapper)) continue;
+            if (entry.value_ptr.* != @backingInt(wrapper)) continue;
             try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_expression, transformer.ast.nodes.items[entry.key_ptr.*].tag);
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, entry.key_ptr.*) != null);
             owners += 1;
@@ -978,9 +978,9 @@ test "#4819 ES5 class IIFE check alias does not resolve to shadowing parameter" 
     var inner_wrapper_reads: usize = 0;
     for (edited.references) |ref| {
         if (!ref.flags.read or ref.node_index.isNone()) continue;
-        if (@intFromEnum(ref.symbol_id) == alias and @intFromEnum(ref.scope_id) == constructor_scope)
+        if (@backingInt(ref.symbol_id) == alias and @backingInt(ref.scope_id) == constructor_scope)
             alias_constructor_reads += 1;
-        if (@intFromEnum(ref.symbol_id) == inner and ref.scope_id == wrapper)
+        if (@backingInt(ref.symbol_id) == inner and ref.scope_id == wrapper)
             inner_wrapper_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), alias_constructor_reads);
@@ -1041,9 +1041,9 @@ test "#4819 ES5 class declaration IIFE check keeps outer and inner identities" {
     var inner_wrapper_reads: usize = 0;
     for (edited.references) |ref| {
         if (!ref.flags.read or ref.node_index.isNone()) continue;
-        if (@intFromEnum(ref.symbol_id) == alias and @intFromEnum(ref.scope_id) == constructor_scope)
+        if (@backingInt(ref.symbol_id) == alias and @backingInt(ref.scope_id) == constructor_scope)
             alias_constructor_reads += 1;
-        if (@intFromEnum(ref.symbol_id) == inner and ref.scope_id == wrapper)
+        if (@backingInt(ref.symbol_id) == inner and ref.scope_id == wrapper)
             inner_wrapper_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), alias_constructor_reads);
@@ -1094,7 +1094,7 @@ test "#4819 using class copies preserve exact source scope owners" {
         var live_owners: usize = 0;
         var owners = edited.scope_owner_map.iterator();
         while (owners.next()) |entry| {
-            if (entry.value_ptr.* != @intFromEnum(wrapper)) continue;
+            if (entry.value_ptr.* != @backingInt(wrapper)) continue;
             try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.function_expression, transformer.ast.nodes.items[entry.key_ptr.*].tag);
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, entry.key_ptr.*) != null);
             live_owners += 1;
@@ -1139,7 +1139,7 @@ test "#4819 default derived constructors own exact newTarget symbols per functio
         if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_newTarget2")) continue;
         if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
         const raw_id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
-        const scope_id = @intFromEnum(edited.symbols.items[raw_id].scope_id);
+        const scope_id = @backingInt(edited.symbols.items[raw_id].scope_id);
         try generated_symbols.append(allocator, .{ .id = raw_id, .scope = scope_id });
     }
 
@@ -1147,13 +1147,13 @@ test "#4819 default derived constructors own exact newTarget symbols per functio
     try std.testing.expect(generated_symbols.items[0].id != generated_symbols.items[1].id);
     try std.testing.expect(generated_symbols.items[0].scope != generated_symbols.items[1].scope);
     for (generated_symbols.items) |generated| {
-        const scope: @import("../semantic/scope.zig").ScopeId = @enumFromInt(generated.scope);
+        const scope: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(@intCast(generated.scope));
         try std.testing.expectEqual(@as(?usize, @intCast(generated.id)), edited.scope_maps[generated.scope].get("_newTarget2"));
 
         var declarations: usize = 0;
         var reads: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != generated.id) continue;
+            if (@backingInt(reference.symbol_id) != generated.id) continue;
             if (reference.flags.declare) {
                 declarations += 1;
                 try std.testing.expectEqual(scope, reference.scope_id);
@@ -1205,7 +1205,7 @@ test "#4819 explicit derived constructor super calls reuse the exact newTarget h
         if (raw >= edited.symbol_ids.len) return error.TestUnexpectedResult;
         const raw_id = edited.symbol_ids[raw] orelse return error.TestUnexpectedResult;
         if (edited.symbols.items[raw_id].kind != .variable_var) continue;
-        const scope_id = @intFromEnum(edited.symbols.items[raw_id].scope_id);
+        const scope_id = @backingInt(edited.symbols.items[raw_id].scope_id);
         try generated_symbols.append(allocator, .{ .id = raw_id, .scope = scope_id });
     }
 
@@ -1216,13 +1216,13 @@ test "#4819 explicit derived constructor super calls reuse the exact newTarget h
     var nested_read = false;
     var total_reads: usize = 0;
     for (generated_symbols.items) |generated| {
-        const scope: @import("../semantic/scope.zig").ScopeId = @enumFromInt(generated.scope);
+        const scope: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(@intCast(generated.scope));
         try std.testing.expectEqual(@as(?usize, @intCast(generated.id)), edited.scope_maps[generated.scope].get("_newTarget2"));
 
         var declarations: usize = 0;
         var reads: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != generated.id) continue;
+            if (@backingInt(reference.symbol_id) != generated.id) continue;
             if (reference.flags.declare) {
                 declarations += 1;
                 try std.testing.expectEqual(scope, reference.scope_id);
@@ -1289,7 +1289,7 @@ test "#4819 derived field insertion tracks the exact generated super assignment"
             std.mem.eql(u8, transformer.ast.getText(left.data.string_ref), "result") and
             right.tag == .call_expression)
         {
-            const callee: NodeIndex = @enumFromInt(transformer.ast.extra_data.items[right.data.extra]);
+            const callee: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[right.data.extra]));
             if (transformer.ast.getNode(callee).tag == .identifier_reference and
                 std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(callee).data.string_ref), "__callSuper"))
             {
@@ -1308,7 +1308,7 @@ test "#4819 derived field insertion tracks the exact generated super assignment"
     const edited = (try transformer.finishSemanticEdit()).?;
     const generated = transformer.ast.nodes.items[marked_raw];
     const generated_left = generated.data.binary.left;
-    const generated_symbol = edited.symbol_ids[@intFromEnum(generated_left)] orelse
+    const generated_symbol = edited.symbol_ids[@backingInt(generated_left)] orelse
         return error.GeneratedSuperAssignmentLostSymbolId;
     const generated_scope = edited.symbols.items[generated_symbol].scope_id;
     var binding_found = false;
@@ -1390,7 +1390,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
 
     var metadata_reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_metadata_id) continue;
+        if (@backingInt(reference.symbol_id) != exact_metadata_id) continue;
         if (!reference.flags.read) continue;
         if (reference.node_index.isNone()) return error.TestUnexpectedResult;
         const node = transformer.ast.getNode(reference.node_index);
@@ -1439,7 +1439,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
 
         var initializer_reads: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != exact_initializer_id or reference.node_index.isNone()) continue;
+            if (@backingInt(reference.symbol_id) != exact_initializer_id or reference.node_index.isNone()) continue;
             const node = transformer.ast.getNode(reference.node_index);
             try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
             try std.testing.expectEqualStrings(initializer_name, transformer.ast.getText(node.data.string_ref));
@@ -1495,7 +1495,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
 
         var extra_initializer_reads: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != exact_extra_initializer_id or reference.node_index.isNone()) continue;
+            if (@backingInt(reference.symbol_id) != exact_extra_initializer_id or reference.node_index.isNone()) continue;
             const node = transformer.ast.getNode(reference.node_index);
             try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
             try std.testing.expectEqualStrings(case.name, transformer.ast.getText(node.data.string_ref));
@@ -1544,7 +1544,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
 
     var class_decorators_reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_class_decorators_id or !reference.flags.read) continue;
+        if (@backingInt(reference.symbol_id) != exact_class_decorators_id or !reference.flags.read) continue;
         if (reference.node_index.isNone()) return error.TestUnexpectedResult;
         const node = transformer.ast.getNode(reference.node_index);
         try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
@@ -1592,7 +1592,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     var class_descriptor_reads: usize = 0;
     var class_descriptor_writes: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_class_descriptor_id) continue;
+        if (@backingInt(reference.symbol_id) != exact_class_descriptor_id) continue;
         if (reference.node_index.isNone()) {
             try std.testing.expect(!reference.flags.read);
             try std.testing.expect(!reference.flags.write);
@@ -1650,7 +1650,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
 
     var class_extra_initializers_reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_class_extra_initializers_id or !reference.flags.read) continue;
+        if (@backingInt(reference.symbol_id) != exact_class_extra_initializers_id or !reference.flags.read) continue;
         if (reference.node_index.isNone()) return error.TestUnexpectedResult;
         const node = transformer.ast.getNode(reference.node_index);
         try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
@@ -1698,7 +1698,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     var class_this_reads: usize = 0;
     var class_this_writes: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_class_this_id) continue;
+        if (@backingInt(reference.symbol_id) != exact_class_this_id) continue;
         if (reference.node_index.isNone()) {
             try std.testing.expect(!reference.flags.read);
             try std.testing.expect(!reference.flags.write);
@@ -1755,7 +1755,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
 
     var static_extra_initializers_reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_static_extra_initializers_id) continue;
+        if (@backingInt(reference.symbol_id) != exact_static_extra_initializers_id) continue;
         if (reference.node_index.isNone()) {
             try std.testing.expect(!reference.flags.read);
             try std.testing.expect(!reference.flags.write);
@@ -1812,7 +1812,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
     var instance_extra_initializers_scope_counts: [3]usize = .{ 0, 0, 0 };
     var instance_extra_initializers_scope_len: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_instance_extra_initializers_id or reference.node_index.isNone()) continue;
+        if (@backingInt(reference.symbol_id) != exact_instance_extra_initializers_id or reference.node_index.isNone()) continue;
         const node = transformer.ast.getNode(reference.node_index);
         try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
         try std.testing.expectEqualStrings("_instanceExtraInitializers", transformer.ast.getText(node.data.string_ref));
@@ -1874,7 +1874,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         var writes: usize = 0;
         var reference_scope: ?@import("../semantic/scope.zig").ScopeId = null;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != id or reference.node_index.isNone()) continue;
+            if (@backingInt(reference.symbol_id) != id or reference.node_index.isNone()) continue;
             const reference_node = transformer.ast.getNode(reference.node_index);
             try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, reference_node.tag);
             try std.testing.expectEqualStrings(name, transformer.ast.getText(reference_node.data.string_ref));
@@ -1927,7 +1927,7 @@ test "#4819 Stage 3 class copy nests under decorator and ES5 IIFE scopes" {
         var private_descriptor_read_scope: ?@import("../semantic/scope.zig").ScopeId = null;
         var private_descriptor_write_scope: ?@import("../semantic/scope.zig").ScopeId = null;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != exact_private_descriptor_id or reference.node_index.isNone()) continue;
+            if (@backingInt(reference.symbol_id) != exact_private_descriptor_id or reference.node_index.isNone()) continue;
             const node = transformer.ast.getNode(reference.node_index);
             try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
             try std.testing.expectEqualStrings(descriptor_name, transformer.ast.getText(node.data.string_ref));
@@ -2013,7 +2013,7 @@ test "#4819 Stage 3 member extra initializer binds its synthetic constructor rea
     var reads: usize = 0;
     var read_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
+        if (@backingInt(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
         const node = transformer.ast.getNode(reference.node_index);
         try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
         try std.testing.expectEqualStrings("_value_extraInitializers", transformer.ast.getText(node.data.string_ref));
@@ -2092,7 +2092,7 @@ test "#4819 Stage 3 instance extra initializer keeps exact block and constructor
     var reads: usize = 0;
     var read_scopes: [2]@import("../semantic/scope.zig").ScopeId = undefined;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
+        if (@backingInt(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
         const node = transformer.ast.getNode(reference.node_index);
         try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
         try std.testing.expectEqualStrings("_instanceExtraInitializers", transformer.ast.getText(node.data.string_ref));
@@ -2141,8 +2141,8 @@ test "#4819 ES5 class methods retain original scope on emitted functions and bin
     var original_methods: std.ArrayList(struct { owner: NodeIndex, scope: u32 }) = .empty;
     for (parser.ast.nodes.items, 0..) |node, index| {
         if (node.tag != .method_definition) continue;
-        const owner: NodeIndex = @enumFromInt(@as(u32, @intCast(index)));
-        if (analyzer.scope_owner_map.get(@intFromEnum(owner))) |scope| {
+        const owner: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(index))));
+        if (analyzer.scope_owner_map.get(@backingInt(owner))) |scope| {
             try original_methods.append(allocator, .{ .owner = owner, .scope = scope });
         }
     }
@@ -2167,27 +2167,27 @@ test "#4819 ES5 class methods retain original scope on emitted functions and bin
 
     var generated_temp_refs: usize = 0;
     for (original_methods.items) |method| {
-        try std.testing.expect(edited.scope_owner_map.get(@intFromEnum(method.owner)) == null);
+        try std.testing.expect(edited.scope_owner_map.get(@backingInt(method.owner)) == null);
         var final_owner: ?NodeIndex = null;
         var owners = edited.scope_owner_map.iterator();
         while (owners.next()) |entry| {
             if (entry.value_ptr.* != method.scope) continue;
             try std.testing.expect(final_owner == null);
-            final_owner = @enumFromInt(entry.key_ptr.*);
+            final_owner = @fromBackingInt(@intCast(entry.key_ptr.*));
         }
         const owner = final_owner orelse return error.TestUnexpectedResult;
         const tag = transformer.ast.getNode(owner).tag;
         try std.testing.expect(tag == .function_declaration or tag == .function_expression);
-        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(owner)) != null);
+        try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(owner)) != null);
     }
     for (edited.references) |ref| {
-        if (ref.node_index.isNone() or @intFromEnum(ref.node_index) < transformer.parser_node_count) continue;
+        if (ref.node_index.isNone() or @backingInt(ref.node_index) < transformer.parser_node_count) continue;
         const node = transformer.ast.getNode(ref.node_index);
         if (node.tag != .identifier_reference) continue;
         const name = transformer.ast.getText(node.data.string_ref);
         if (!std.mem.startsWith(u8, name, "_")) continue;
         for (original_methods.items) |method| {
-            if (@intFromEnum(ref.scope_id) == method.scope) generated_temp_refs += 1;
+            if (@backingInt(ref.scope_id) == method.scope) generated_temp_refs += 1;
         }
     }
     try std.testing.expect(generated_temp_refs >= 5);
@@ -2235,15 +2235,15 @@ test "#4819 simple named class keeps inner name environment and binds constructo
     const wrapper = edited.scopes[source_scope].parent;
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[wrapper.toIndex()].kind);
     try std.testing.expectEqual(original_parent, edited.scopes[wrapper.toIndex()].parent);
-    try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @enumFromInt(source_scope)), edited.symbols.items[self_id].scope_id);
+    try std.testing.expectEqual(@as(@import("../semantic/scope.zig").ScopeId, @fromBackingInt(@intCast(source_scope))), edited.symbols.items[self_id].scope_id);
     const alias = edited.scope_maps[wrapper.toIndex()].get("_classSelf") orelse return error.TestUnexpectedResult;
     try std.testing.expect(alias != self_id);
     var wrapper_reads: usize = 0;
     var ctor_reads: usize = 0;
     for (edited.references) |ref| {
-        if (@intFromEnum(ref.symbol_id) != alias or !ref.flags.read) continue;
+        if (@backingInt(ref.symbol_id) != alias or !ref.flags.read) continue;
         if (ref.scope_id == wrapper) wrapper_reads += 1;
-        if (@intFromEnum(ref.scope_id) == ctor_scope) ctor_reads += 1;
+        if (@backingInt(ref.scope_id) == ctor_scope) ctor_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), wrapper_reads);
     try std.testing.expectEqual(@as(usize, 1), ctor_reads);
@@ -2305,7 +2305,7 @@ test "#4819 anonymous ES5 class expression name gets an exact SymbolId before wr
 
     var reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
+        if (@backingInt(reference.symbol_id) != exact_id or reference.node_index.isNone()) continue;
         const node = transformer.ast.getNode(reference.node_index);
         try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, node.tag);
         try std.testing.expectEqualStrings(exact_name, transformer.ast.getText(node.data.string_ref));
@@ -2487,14 +2487,14 @@ test "#4819 anonymous default ES5 class export has an exact generated binding" {
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .export_default_declaration) continue;
         const operand: NodeIndex = node.data.unary.operand;
-        if (operand.isNone() or @intFromEnum(operand) >= edited.symbol_ids.len) continue;
-        if (edited.symbol_ids[@intFromEnum(operand)] == outer_id) export_uses_outer_symbol = true;
+        if (operand.isNone() or @backingInt(operand) >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[@backingInt(operand)] == outer_id) export_uses_outer_symbol = true;
     }
     try std.testing.expect(export_uses_outer_symbol);
 
     var inner_reads: usize = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) == inner_id and reference.flags.read) inner_reads += 1;
+        if (@backingInt(reference.symbol_id) == inner_id and reference.flags.read) inner_reads += 1;
     }
     try std.testing.expect(inner_reads > 0);
 }
@@ -2591,7 +2591,7 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
     var wrapper_reference_node_count: usize = 0;
     for (reachable) |reachable_node| {
         const raw = reachable_node;
-        const node = transformer.ast.getNode(@enumFromInt(raw));
+        const node = transformer.ast.getNode(@fromBackingInt(@intCast(raw)));
         const name_span = switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => node.data.string_ref,
             else => continue,
@@ -2605,14 +2605,14 @@ test "#4819 Stage 3 decorated anonymous default class preserves exact generated 
             wrapper_reference_node_count += 1;
             var found_reference = false;
             for (edited.references) |reference| {
-                if (reference.node_index != @as(NodeIndex, @enumFromInt(raw))) continue;
+                if (reference.node_index != @as(NodeIndex, @fromBackingInt(@intCast(raw)))) continue;
                 found_reference = true;
             }
             try std.testing.expect(found_reference);
         }
     }
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != wrapper_id or reference.node_index.isNone()) continue;
+        if (@backingInt(reference.symbol_id) != wrapper_id or reference.node_index.isNone()) continue;
         const node = transformer.ast.getNode(reference.node_index);
         if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
         try std.testing.expect(reference.flags.write);
@@ -2691,7 +2691,7 @@ test "#4819 decorated explicit constructor binds generated nullish temp in origi
     var ctor_scope: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, index| {
         if (node.tag != .method_definition) continue;
-        const key_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra + MethodExtra.key]);
+        const key_idx: NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[node.data.extra + MethodExtra.key]));
         const key = parser.ast.getNode(key_idx);
         if (key.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(key.data.string_ref), "constructor")) continue;
         ctor_scope = analyzer.scope_owner_map.get(@as(u32, @intCast(index)));
@@ -2718,7 +2718,7 @@ test "#4819 decorated explicit constructor binds generated nullish temp in origi
     var owners = edited.scope_owner_map.iterator();
     while (owners.next()) |entry| {
         if (entry.value_ptr.* != source_scope) continue;
-        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         try std.testing.expect(transformer.ast.getNode(owner).tag == .function_declaration);
         ctor_owners += 1;
     }
@@ -2726,13 +2726,13 @@ test "#4819 decorated explicit constructor binds generated nullish temp in origi
 
     var ctor_temp_refs: usize = 0;
     for (edited.references) |ref| {
-        if (@intFromEnum(ref.scope_id) != source_scope or ref.node_index.isNone()) continue;
-        if (@intFromEnum(ref.node_index) < transformer.parser_node_count) continue;
+        if (@backingInt(ref.scope_id) != source_scope or ref.node_index.isNone()) continue;
+        if (@backingInt(ref.node_index) < transformer.parser_node_count) continue;
         const node = transformer.ast.getNode(ref.node_index);
         if (node.tag != .identifier_reference) continue;
         const name = transformer.ast.getText(node.data.string_ref);
         if (!std.mem.eql(u8, name, "_a")) continue;
-        try std.testing.expectEqual(source_scope, @intFromEnum(edited.symbols.items[@intFromEnum(ref.symbol_id)].scope_id));
+        try std.testing.expectEqual(source_scope, @backingInt(edited.symbols.items[@backingInt(ref.symbol_id)].scope_id));
         ctor_temp_refs += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), ctor_temp_refs);
@@ -2804,8 +2804,8 @@ test "#4819 generated class super parameter owns colliding alias references" {
         try std.testing.expect(matched);
         var semantic_reference_count: usize = 0;
         for (edited.references) |reference| {
-            if (reference.node_index != @as(NodeIndex, @enumFromInt(raw))) continue;
-            try std.testing.expectEqual(id, @intFromEnum(reference.symbol_id));
+            if (reference.node_index != @as(NodeIndex, @fromBackingInt(@intCast(raw)))) continue;
+            try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
             try std.testing.expect(reference.flags.read);
             semantic_reference_count += 1;
         }

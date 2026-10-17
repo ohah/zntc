@@ -33,7 +33,7 @@ pub fn ES2018(comptime Transformer: type) type {
         pub fn hasSpreadProperty(self: *Transformer, node: Node) bool {
             const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
             for (indices) |raw_idx| {
-                const child = self.ast.getNode(@enumFromInt(raw_idx));
+                const child = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (child.tag == .spread_element) return true;
             }
             return false;
@@ -55,7 +55,7 @@ pub fn ES2018(comptime Transformer: type) type {
             var j: u32 = 0;
             while (j < list_len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[list_start + j];
-                const child = self.ast.getNode(@enumFromInt(raw_idx));
+                const child = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (child.tag == .spread_element) {
                     // spread: 피연산자를 방문하고 ast에 spread_element로 다시 감싸기
                     const operand = try self.visitNode(child.data.unary.operand);
@@ -67,7 +67,7 @@ pub fn ES2018(comptime Transformer: type) type {
                     try self.scratch.append(self.allocator, new_spread);
                 } else {
                     // non-spread: 자식을 방문하고 추가
-                    const new_child = try self.visitNode(@enumFromInt(raw_idx));
+                    const new_child = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!new_child.isNone()) {
                         try self.scratch.append(self.allocator, new_child);
                     }

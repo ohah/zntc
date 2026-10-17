@@ -23,7 +23,7 @@ pub const ScopeId = enum(u32) {
     }
 
     pub fn toIndex(self: ScopeId) u32 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 };
 

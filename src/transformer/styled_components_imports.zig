@@ -33,12 +33,12 @@ pub fn appendStyledComponentsImport(
         .span = quoted,
         .data = .{ .string_ref = quoted },
     });
-    const specs_start = try self.ast.addExtras(&.{@intFromEnum(local)});
+    const specs_start = try self.ast.addExtras(&.{@backingInt(local)});
     const extra_start = try self.ast.addExtras(&.{
         specs_start,
         1,
-        @intFromEnum(source),
-        @intFromEnum(@import("../parser/module.zig").ImportPhase.none),
+        @backingInt(source),
+        @backingInt(@import("../parser/module.zig").ImportPhase.none),
         0,
         0,
     });

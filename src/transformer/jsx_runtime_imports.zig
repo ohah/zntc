@@ -134,8 +134,8 @@ fn emitImportDeclaration(
     const extra_start = try self.ast.addExtras(&.{
         specs.start,
         specs.len,
-        @intFromEnum(source_node),
-        @intFromEnum(ImportPhase.none),
+        @backingInt(source_node),
+        @backingInt(ImportPhase.none),
         0, // attrs.start
         0, // attrs.len
     });

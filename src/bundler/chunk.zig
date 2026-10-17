@@ -375,7 +375,7 @@ pub const ChunkGraph = struct {
 
     /// 청크를 추가하고 할당된 ChunkIndex를 반환한다.
     pub fn addChunk(self: *ChunkGraph, chunk: Chunk) !ChunkIndex {
-        const idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(self.chunks.items.len)));
+        const idx: ChunkIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.chunks.items.len))));
         var c = chunk;
         c.index = idx;
         try self.chunks.append(self.allocator, c);
@@ -384,17 +384,17 @@ pub const ChunkGraph = struct {
 
     /// 읽기 전용으로 청크를 가져온다.
     pub fn getChunk(self: *const ChunkGraph, idx: ChunkIndex) *const Chunk {
-        return &self.chunks.items[@intFromEnum(idx)];
+        return &self.chunks.items[@backingInt(idx)];
     }
 
     /// 수정 가능한 청크를 가져온다.
     pub fn getChunkMut(self: *ChunkGraph, idx: ChunkIndex) *Chunk {
-        return &self.chunks.items[@intFromEnum(idx)];
+        return &self.chunks.items[@backingInt(idx)];
     }
 
     /// 모듈을 청크에 할당한다.
     pub fn assignModuleToChunk(self: *ChunkGraph, module_idx: ModuleIndex, chunk_idx: ChunkIndex) void {
-        const mi = @intFromEnum(module_idx);
+        const mi = @backingInt(module_idx);
         if (mi < self.module_to_chunk.len) {
             self.module_to_chunk[mi] = chunk_idx;
         }
@@ -402,7 +402,7 @@ pub const ChunkGraph = struct {
 
     /// 모듈이 속한 청크의 인덱스를 반환한다.
     pub fn getModuleChunk(self: *const ChunkGraph, module_idx: ModuleIndex) ChunkIndex {
-        const mi = @intFromEnum(module_idx);
+        const mi = @backingInt(module_idx);
         if (mi >= self.module_to_chunk.len) return .none;
         return self.module_to_chunk[mi];
     }
@@ -654,7 +654,7 @@ pub fn mergeSmallChunks(
         }
         const ti = target orelse continue;
         const dst = &chunk_graph.chunks.items[ti];
-        const dst_idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(ti)));
+        const dst_idx: ChunkIndex = @fromBackingInt(@intCast(@as(u32, @intCast(ti))));
         // 사전 예약 → 루프 중 append 실패로 부분 병합/매핑 불일치 없음(원자적).
         dst.modules.ensureUnusedCapacity(chunk_graph.allocator, src.modules.items.len) catch continue;
         for (src.modules.items) |mi| {
@@ -680,11 +680,11 @@ fn addDynamicEntry(
     if (graph.getModule(idx)) |m| {
         if (m.is_external) return; // external phantom 은 async chunk 불요(번들 외부)
     }
-    const di = @intFromEnum(idx);
+    const di = @backingInt(idx);
     const gop = try dynamic_seen.getOrPut(allocator, di);
     if (gop.found_existing) return;
     for (entries.items) |e| {
-        if (@intFromEnum(e.module_idx) == di and !e.is_dynamic) return; // 이미 user entry
+        if (@backingInt(e.module_idx) == di and !e.is_dynamic) return; // 이미 user entry
     }
     try entries.append(allocator, .{ .module_idx = idx, .is_dynamic = true, .is_import_call = is_import_call });
 }
@@ -805,7 +805,7 @@ pub fn generateChunks(
     var dynamic_entry_modules: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer dynamic_entry_modules.deinit(allocator);
     for (entries.items) |e| {
-        if (e.is_dynamic) try dynamic_entry_modules.put(allocator, @intFromEnum(e.module_idx), {});
+        if (e.is_dynamic) try dynamic_entry_modules.put(allocator, @backingInt(e.module_idx), {});
     }
 
     // (#4553) user(비-dynamic) entry 모듈은 manual 청크에서 제외 — dynamic import 대상과 동일 정책.
@@ -817,7 +817,7 @@ pub fn generateChunks(
     var user_entry_modules: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer user_entry_modules.deinit(allocator);
     for (entries.items) |e| {
-        if (!e.is_dynamic) try user_entry_modules.put(allocator, @intFromEnum(e.module_idx), {});
+        if (!e.is_dynamic) try user_entry_modules.put(allocator, @backingInt(e.module_idx), {});
     }
     // (#4552) run_before_main **클로저**(RBM 모듈 + transitive static deps)를 manual 청크에서 제외 —
     // entry 앞에서 실행돼야 하므로 entry 청크에 co-locate. reg_split(iife/umd/amd)은 cross-chunk RBM 를
@@ -838,7 +838,7 @@ pub fn generateChunks(
             try rbm_stack.append(allocator, m.index);
         }
         while (rbm_stack.pop()) |idx| {
-            const gop = try rbm_modules.getOrPut(allocator, @intFromEnum(idx));
+            const gop = try rbm_modules.getOrPut(allocator, @backingInt(idx));
             if (gop.found_existing) continue;
             const m = graph.getModule(idx) orelse continue;
             for (m.dependencies.items) |dep| try rbm_stack.append(allocator, dep);
@@ -1038,7 +1038,7 @@ pub fn generateChunks(
         while (queue.items.len > 0) {
             const mod_idx = queue.pop() orelse break;
             const m = graph.getModule(mod_idx) orelse continue;
-            const mi = @intFromEnum(mod_idx);
+            const mi = @backingInt(mod_idx);
             // External phantom 은 chunk 에 안 들어감 — 비트 설정 / 큐 추가 모두 skip.
             if (m.is_external) continue;
 
@@ -1050,14 +1050,14 @@ pub fn generateChunks(
             // 후자는 dynamic target 이 별도 entry 가 아니기 때문에 importer 경로로
             // 흡수시키기 위함.
             for (m.dependencies.items) |dep_idx| {
-                const dep_i = @intFromEnum(dep_idx);
+                const dep_i = @backingInt(dep_idx);
                 if (dep_i < module_count and !splitting_info[dep_i].hasBit(@intCast(bit_idx))) {
                     try queue.append(allocator, dep_idx);
                 }
             }
             if (inline_dynamic_imports) {
                 for (m.dynamic_imports.items) |dep_idx| {
-                    const dep_i = @intFromEnum(dep_idx);
+                    const dep_i = @backingInt(dep_idx);
                     if (dep_i < module_count and !splitting_info[dep_i].hasBit(@intCast(bit_idx))) {
                         try queue.append(allocator, dep_idx);
                     }
@@ -1079,7 +1079,7 @@ pub fn generateChunks(
         @memset(module_primary_slot, null);
         for (0..manual_count) |i| {
             for (manual_seeds[i].items) |seed| {
-                const si = @intFromEnum(seed);
+                const si = @backingInt(seed);
                 if (module_primary_slot[si] == null) module_primary_slot[si] = i;
             }
         }
@@ -1093,7 +1093,7 @@ pub fn generateChunks(
             while (queue.items.len > 0) {
                 const mod_idx = queue.pop() orelse break;
                 const m = graph.getModule(mod_idx) orelse continue;
-                const mi = @intFromEnum(mod_idx);
+                const mi = @backingInt(mod_idx);
                 if (m.is_external) continue;
                 if (splitting_info[mi].hasBit(manual_bit)) continue;
                 // (#4553) user entry 는 manual bit 를 받지 않는다 — seed 로 안 걸러졌어도(vendor seed 의
@@ -1107,14 +1107,14 @@ pub fn generateChunks(
                 }
                 splitting_info[mi].setBit(manual_bit);
                 for (m.dependencies.items) |dep_idx| {
-                    const dep_i = @intFromEnum(dep_idx);
+                    const dep_i = @backingInt(dep_idx);
                     if (dep_i < module_count and !splitting_info[dep_i].hasBit(manual_bit)) {
                         try queue.append(allocator, dep_idx);
                     }
                 }
                 if (inline_dynamic_imports) {
                     for (m.dynamic_imports.items) |dep_idx| {
-                        const dep_i = @intFromEnum(dep_idx);
+                        const dep_i = @backingInt(dep_idx);
                         if (dep_i < module_count and !splitting_info[dep_i].hasBit(manual_bit)) {
                             try queue.append(allocator, dep_idx);
                         }
@@ -1233,19 +1233,19 @@ pub fn generateChunks(
         };
 
         chunk_graph.assignModuleToChunk(
-            @enumFromInt(@as(u32, @intCast(mi))),
+            @fromBackingInt(@intCast(@as(u32, @intCast(mi)))),
             chunk_idx,
         );
         try chunk_graph.getChunkMut(chunk_idx).addModule(
             allocator,
-            @enumFromInt(@as(u32, @intCast(mi))),
+            @fromBackingInt(@intCast(@as(u32, @intCast(mi)))),
         );
     }
 
     // 엔트리 모듈은 반드시 자신의 엔트리 청크에 할당되어야 함.
     // Phase 3에서 공통 청크에 배정되었을 수 있으므로, 강제로 엔트리 청크로 이동.
     for (entries.items, 0..) |entry, ci| {
-        const chunk_idx: ChunkIndex = @enumFromInt(@as(u32, @intCast(ci)));
+        const chunk_idx: ChunkIndex = @fromBackingInt(@intCast(@as(u32, @intCast(ci))));
         const current = chunk_graph.getModuleChunk(entry.module_idx);
         if (current.isNone()) {
             // 아직 미할당 → 엔트리 청크에 할당
@@ -1329,7 +1329,7 @@ pub fn generatePreserveModulesChunks(
         var bits = try BitSet.init(allocator, 1);
         errdefer bits.deinit(allocator);
 
-        const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(mi)));
+        const mod_idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(mi))));
         const name = std.fs.path.stem(std.fs.path.basename(m.path));
 
         // 엔트리 모듈이면 bit 설정 (출력 시 엔트리 청크로 인식)
@@ -1439,11 +1439,11 @@ fn crossChunkExportIsShaken(
 ) bool {
     const m = lnk.getModule(canonical_module) orelse return false;
     const is_star_target = if (lnk.tree_shaker) |s| s.isReExportStarTarget(canonical_module) else false;
-    const src_ci = @intFromEnum(src_chunk_idx);
+    const src_ci = @backingInt(src_chunk_idx);
     const is_chunk_entry = blk: {
         if (src_ci >= chunk_graph.chunks.items.len) break :blk true; // 알 수 없으면 보수적(=유지 쪽)
         break :blk switch (chunk_graph.chunks.items[src_ci].kind) {
-            .entry_point => |info| @intFromEnum(info.module) == canonical_module,
+            .entry_point => |info| @backingInt(info.module) == canonical_module,
             .common, .manual => false,
         };
     };
@@ -1486,7 +1486,7 @@ fn addCrossChunkSymbol(
     /// 때 emitter 가 소비자 바인딩명을 `resolveToLocalName` 으로 해석하는 데 쓴다.
     canonical_module: u32,
 ) !void {
-    const src_ci = @intFromEnum(src_chunk_idx);
+    const src_ci = @backingInt(src_chunk_idx);
 
     // (#4495) 선언이 DCE 된 심볼은 어떤 목록에도 올리지 않는다 — provider 의
     // `export {}` 도, 소비자의 `import {}` 도 여기 한 곳에서만 나온다.
@@ -1529,11 +1529,11 @@ fn linkReExportName(
     module_count: usize,
 ) !void {
     const canon = lnk.resolveExportChain(mod_idx, name, 0) orelse return;
-    if (@intFromEnum(canon.module_index) >= module_count) return;
+    if (@backingInt(canon.module_index) >= module_count) return;
     const src_chunk_idx = chunk_graph.getModuleChunk(canon.module_index);
     if (src_chunk_idx.isNone()) return;
     if (src_chunk_idx == chunk.index) return; // 같은 청크 → 스킵
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, src_chunk_idx, canon.export_name, @intFromEnum(canon.module_index));
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, src_chunk_idx, canon.export_name, @backingInt(canon.module_index));
 }
 
 /// `mod_idx` 의 `export_name` 이 namespace re-export 인지 판정하고, 맞으면
@@ -1645,7 +1645,7 @@ fn linkNamespaceCrossChunkOnce(
     target: ModuleIndex,
     module_count: usize,
 ) !void {
-    const gop = try seen_ns_target.getOrPut(allocator, @intFromEnum(target));
+    const gop = try seen_ns_target.getOrPut(allocator, @backingInt(target));
     if (gop.found_existing) return;
     try linkNamespaceCrossChunk(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
 }
@@ -1675,7 +1675,7 @@ fn linkNamespaceCrossChunk(
     // seam — ensureSharedNsVar 가 선제 materialize. 상세는 그 doc 참조.
     const ns_var = try lnk.ensureSharedNsVar(target);
     // ns_var 는 합성 namespace 변수명(예약어 아님) → canonical_module 미사용.
-    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, tgt_chunk, ns_var, @intFromEnum(target));
+    try addCrossChunkSymbol(allocator, chunk_graph, chunk, lnk, seen_static, tgt_chunk, ns_var, @backingInt(target));
     try fanOutModuleExports(allocator, chunk_graph, chunk, seen_static, lnk, target, module_count);
 }
 
@@ -1996,7 +1996,7 @@ pub fn computeCrossChunkLinks(
                 std.debug.assert(false);
                 continue;
             };
-            const mi = @intFromEnum(mod_idx);
+            const mi = @backingInt(mod_idx);
 
             // 정적 의존성 → cross_chunk_imports
             for (m.dependencies.items) |dep_idx| {
@@ -2004,7 +2004,7 @@ pub fn computeCrossChunkLinks(
                 const dep_chunk = chunk_graph.getModuleChunk(dep_idx);
                 if (dep_chunk.isNone()) continue;
                 if (dep_chunk == chunk.index) continue; // 같은 청크 → 스킵
-                const dci = @intFromEnum(dep_chunk);
+                const dci = @backingInt(dep_chunk);
                 const gop = try seen_static.getOrPut(allocator, dci);
                 if (!gop.found_existing) {
                     try chunk.cross_chunk_imports.append(allocator, dep_chunk);
@@ -2038,7 +2038,7 @@ pub fn computeCrossChunkLinks(
                     else
                         continue;
 
-                    const canonical_mi = @intFromEnum(canonical.module_index);
+                    const canonical_mi = @backingInt(canonical.module_index);
                     if (canonical_mi >= module_count) continue;
 
                     const src_chunk_idx = chunk_graph.getModuleChunk(canonical.module_index);
@@ -2114,7 +2114,7 @@ pub fn computeCrossChunkLinks(
                             if (dep.wrap_kind != .cjs) {
                                 const dep_chunk = chunk_graph.getModuleChunk(src_mod);
                                 if (!dep_chunk.isNone() and dep_chunk != chunk.index) {
-                                    const gop = try seen_ns_fanout.getOrPut(allocator, @intFromEnum(src_mod));
+                                    const gop = try seen_ns_fanout.getOrPut(allocator, @backingInt(src_mod));
                                     if (!gop.found_existing)
                                         try fanOutModuleExports(allocator, chunk_graph, chunk, &seen_static, lnk, src_mod, module_count);
                                 }
@@ -2154,8 +2154,8 @@ pub fn computeCrossChunkLinks(
                     if (tmod.wrap_kind != .cjs) continue; // require_X 썽크(CJS)만 — ESM-wrap 은 후속
                     const target_chunk = chunk_graph.getModuleChunk(rec.resolved);
                     if (target_chunk.isNone() or target_chunk == chunk.index) continue;
-                    const ti = @intFromEnum(rec.resolved);
-                    const tci = @intFromEnum(target_chunk);
+                    const ti = @backingInt(rec.resolved);
+                    const tci = @backingInt(target_chunk);
                     try chunk_graph.chunks.items[tci].wrapper_cross_exports.put(allocator, ti, {});
                     const wgop = try chunk.wrapper_cross_imports.getOrPut(allocator, tci);
                     if (!wgop.found_existing) wgop.value_ptr.* = .empty;
@@ -2176,7 +2176,7 @@ pub fn computeCrossChunkLinks(
                 const dyn_chunk = chunk_graph.getModuleChunk(dyn_idx);
                 if (dyn_chunk.isNone()) continue;
                 if (dyn_chunk == chunk.index) continue; // 같은 청크 → 스킵
-                const dci = @intFromEnum(dyn_chunk);
+                const dci = @backingInt(dyn_chunk);
                 const gop = try seen_dynamic.getOrPut(allocator, dci);
                 if (!gop.found_existing) {
                     try chunk.cross_chunk_dynamic_imports.append(allocator, dyn_chunk);

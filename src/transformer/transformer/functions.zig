@@ -39,7 +39,7 @@ pub fn visitArrowFunction(self: *Transformer, source_owner: NodeIndex, node: Nod
     const body_temp_start = self.temp_var_counter;
     const visited_body = try self.visitBodyWorkletAware(body_idx);
     const new_body = try self.hoistArrowBodyTemps(visited_body, body_temp_start, node.span, source_owner);
-    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_params), @intFromEnum(new_body), flags });
+    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_params), @backingInt(new_body), flags });
     const result = try self.ast.addNode(.{ .tag = .arrow_function_expression, .span = node.span, .data = .{ .extra = new_extra } });
 
     const is_auto_worklet = self.plugins.worklet.auto_next;

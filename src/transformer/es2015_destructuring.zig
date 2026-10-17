@@ -56,11 +56,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const id = (try self.declareSyntheticInScope(binding, binding_name, kind, self.current_scope)) orelse
                         std.debug.panic("semantic destructuring temp did not receive a SymbolId", .{});
                     es_helpers.markStandaloneLateSyntheticTemp(self, id, self.current_scope);
-                    try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @intFromEnum(id));
+                    try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, @backingInt(id));
                 }
             }
             if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope) {
-                try self.destructuring_temp_bindings.put(self.allocator, @intFromEnum(binding), {});
+                try self.destructuring_temp_bindings.put(self.allocator, @backingInt(binding), {});
                 try self.namespace_temp_bindings.append(self.allocator, .{ .binding = binding, .span = name_span, .scope = self.current_scope });
             }
             // This temp already has an explicit declaration in the lowered
@@ -73,7 +73,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn makeDestructuringTempRead(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
             if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
-                try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, .{ .read = true });
+                try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(raw_id)), self.current_scope, .{ .read = true });
             } else try self.trackSyntheticTempReference(name_span, node_span, ref, .{ .read = true });
             return ref;
         }
@@ -81,7 +81,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn makeDestructuringTempWrite(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
             const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
             if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
-                try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), self.current_scope, .{ .write = true });
+                try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(raw_id)), self.current_scope, .{ .write = true });
             } else try self.trackSyntheticTempReference(name_span, node_span, ref, .{ .write = true });
             return ref;
         }
@@ -95,9 +95,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const list_len = extras[e + 2];
             const decls = extras[list_start .. list_start + list_len];
             for (decls) |raw_idx| {
-                const decl = self.ast.getNode(@enumFromInt(raw_idx));
+                const decl = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (decl.tag != .variable_declarator) continue;
-                const name: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                const name: NodeIndex = @fromBackingInt(@intCast(extras[decl.data.extra]));
                 if (name.isNone()) continue;
                 const name_node = self.ast.getNode(name);
                 if (name_node.tag == .object_pattern or name_node.tag == .array_pattern) return true;
@@ -115,9 +115,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const list_len = extras[e + 2];
             const decls = extras[list_start .. list_start + list_len];
             for (decls) |raw_idx| {
-                const decl = self.ast.getNode(@enumFromInt(raw_idx));
+                const decl = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (decl.tag != .variable_declarator) continue;
-                const name: NodeIndex = @enumFromInt(extras[decl.data.extra]);
+                const name: NodeIndex = @fromBackingInt(@intCast(extras[decl.data.extra]));
                 if (name.isNone()) continue;
                 const name_node = self.ast.getNode(name);
                 if (name_node.tag == .object_pattern) {
@@ -137,7 +137,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         fn bindPatternTemp(self: *Transformer, binding: NodeIndex, name_span: Span, span: Span, decl_kind: ast_mod.VariableDeclarationKind) Transformer.Error!void {
             if (!self.namespace_iife_scope.isNone() and self.current_scope == self.namespace_iife_scope and
-                self.destructuring_temp_bindings.contains(@intFromEnum(binding))) return;
+                self.destructuring_temp_bindings.contains(@backingInt(binding))) return;
             if (self.getSymbolIdAt(binding)) |id| {
                 try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, id);
                 return;
@@ -177,7 +177,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         fn targetListHasObjectRest(self: *const Transformer, list: NodeList) bool {
             const items = self.ast.extra_data.items[list.start .. list.start + list.len];
             for (items) |raw| {
-                if (destructuringTargetHasObjectRest(self, @enumFromInt(raw))) return true;
+                if (destructuringTargetHasObjectRest(self, @fromBackingInt(@intCast(raw)))) return true;
             }
             return false;
         }
@@ -226,7 +226,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < list_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[list_start + i_loop];
-                const decl = self.ast.getNode(@enumFromInt(raw_idx));
+                const decl = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (decl.tag != .variable_declarator) continue;
 
                 // extras를 visitNode 전에 매번 직접 읽기 (재할당 방지)
@@ -256,7 +256,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     try bindPatternTemp(self, temp_binding, temp_span, span, kind);
                 } else {
                     // 일반 declarator: 그대로 visit
-                    const new_decl = try self.visitNode(@enumFromInt(raw_idx));
+                    const new_decl = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!new_decl.isNone()) {
                         try self.scratch.append(self.allocator, new_decl);
                     }
@@ -267,7 +267,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // 블록 밖으로 새고 같은 이름 `let` 과 충돌한다 (#4790). let/const 를 못 쓰는 타깃은
             // 일반 선언과 같은 규칙(`lowerKind`)으로 낮춘다.
             const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const var_extra = try self.ast.addExtras(&.{ @intFromEnum(kind), new_list.start, new_list.len });
+            const var_extra = try self.ast.addExtras(&.{ @backingInt(kind), new_list.start, new_list.len });
             return self.ast.addNode(.{
                 .tag = .variable_declaration,
                 .span = span,
@@ -329,7 +329,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < non_rest_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[opd_start + i_loop];
-                const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                const prop = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (prop.tag != .binding_property) continue;
 
                 const key_idx = prop.data.binary.left;
@@ -351,7 +351,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 );
                 const member_access = access_result.member;
 
-                if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
+                if (value_idx.isNone() or @backingInt(value_idx) == @backingInt(key_idx)) {
                     // shorthand: { x } → x = _ref.x
                     const target_ref = try makeTrackedBindingWriteRef(self, key_idx, key_node.data.string_ref);
                     const assign = try es_helpers.makeAssignExpr(self, target_ref, member_access, span, 0);
@@ -440,7 +440,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var idx: u32 = 0;
             while (idx < non_rest_len) : (idx += 1) {
                 const raw_idx = self.ast.extra_data.items[apd_start + idx];
-                const elem = self.ast.getNode(@enumFromInt(raw_idx));
+                const elem = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (elem.tag == .elision) continue;
 
                 const elem_access = try makeArrayAccess(self, ref_span, idx, span);
@@ -454,7 +454,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const eq_check = try self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = span,
-                        .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                        .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
                     });
                     const conditional = try self.ast.addNode(.{
                         .tag = .conditional_expression,
@@ -473,10 +473,10 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     _ = try emitNestedPatternAssignment(self, elem, elem_access, span);
                 } else {
                     const target_ref = if (elem.tag == .binding_identifier)
-                        try makeTrackedBindingWriteRef(self, @enumFromInt(raw_idx), elem.data.string_ref)
+                        try makeTrackedBindingWriteRef(self, @fromBackingInt(@intCast(raw_idx)), elem.data.string_ref)
                     else
-                        try self.visitNode(@enumFromInt(raw_idx));
-                    try self.propagateSymbolId(@enumFromInt(raw_idx), target_ref);
+                        try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
+                    try self.propagateSymbolId(@fromBackingInt(@intCast(raw_idx)), target_ref);
                     const assign = try es_helpers.makeAssignExpr(self, target_ref, elem_access, span, 0);
                     try self.scratch.append(self.allocator, assign);
                 }
@@ -569,7 +569,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < non_rest_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[oa_start + i_loop];
-                const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                const prop = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
 
                 const key_idx = prop.data.binary.left;
                 if (key_idx.isNone()) continue;
@@ -662,7 +662,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var idx: u32 = 0;
             while (idx < non_rest_len) : (idx += 1) {
                 const raw_idx = self.ast.extra_data.items[aa_start + idx];
-                const elem = self.ast.getNode(@enumFromInt(raw_idx));
+                const elem = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (elem.tag == .elision) continue;
 
                 // _ref[idx]
@@ -675,7 +675,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     const eq_check = try self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = span,
-                        .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                        .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
                     });
                     // _ref[idx] 다시 생성 (access는 eq_check에서 소비)
                     const access2 = try makeArrayAccess(self, ref_span, idx, span);
@@ -687,7 +687,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     try emitTargetAssignOrRecurse(self, elem.data.binary.left, conditional, span);
                 } else {
                     // target = _ref[idx]. nested destructuring, private field, 일반 assignment 분기.
-                    try emitTargetAssignOrRecurse(self, @enumFromInt(raw_idx), access, span);
+                    try emitTargetAssignOrRecurse(self, @fromBackingInt(@intCast(raw_idx)), access, span);
                 }
             }
             // rest element: `rest = _ref.slice(N)` (#4789). `_ref` 는 `__read` 로 만든 배열이라
@@ -775,7 +775,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < non_rest_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[opd_start + i_loop];
-                const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                const prop = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
 
                 if (prop.tag != .binding_property) continue;
 
@@ -799,7 +799,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const member_access = access_result.member;
 
                 // value 처리: shorthand vs long-form, default value
-                if (value_idx.isNone() or @intFromEnum(value_idx) == @intFromEnum(key_idx)) {
+                if (value_idx.isNone() or @backingInt(value_idx) == @backingInt(key_idx)) {
                     // shorthand: { a } → var a = _ref.a
                     // block scoping rename이 필요한 경우 이름 교체.
                     // 파서가 만든 식별자는 span 과 string_ref 가 같아 이름 span 을 노드 위치로 쓴다.
@@ -901,7 +901,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var idx: u32 = 0;
             while (idx < non_rest_len) : (idx += 1) {
                 const raw_idx = self.ast.extra_data.items[apd_start + idx];
-                const elem = self.ast.getNode(@enumFromInt(raw_idx));
+                const elem = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
 
                 if (elem.tag == .elision) continue; // 빈 슬롯 스킵
 
@@ -921,7 +921,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         const eq_check = try self.ast.addNode(.{
                             .tag = .binary_expression,
                             .span = span,
-                            .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                            .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
                         });
                         const conditional = try self.ast.addNode(.{
                             .tag = .conditional_expression,
@@ -948,7 +948,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         const eq_check = try self.ast.addNode(.{
                             .tag = .binary_expression,
                             .span = span,
-                            .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                            .data = .{ .binary = .{ .left = elem_access, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
                         });
                         const conditional = try self.ast.addNode(.{
                             .tag = .conditional_expression,
@@ -972,7 +972,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     try bindPatternTemp(self, nested_binding, nested_span, span, decl_kind);
                 } else {
                     // 단순: [x] → var x = _ref[0]
-                    const binding = try self.visitNode(@enumFromInt(raw_idx));
+                    const binding = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     const decl = try es_helpers.makeDeclarator(self, binding, elem_access, span);
                     try self.scratch.append(self.allocator, decl);
                 }
@@ -1013,7 +1013,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
-                .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @intFromEnum(token_mod.Kind.eq3) } },
+                .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
             });
             // access는 이미 eq_check에서 소비되었으므로 다시 생성
             const ref2 = try makeDestructuringTempRead(self, ref_span, ref_span);
@@ -1089,7 +1089,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             var i: u32 = start_idx;
             while (i < non_rest_len) : (i += 1) {
                 const raw = self.ast.extra_data.items[pattern.data.list.start + i];
-                try collectBindingNames(self, @enumFromInt(raw), out);
+                try collectBindingNames(self, @fromBackingInt(@intCast(raw)), out);
             }
             if (split.rest_operand) |rest| try collectBindingNames(self, rest, out);
         }
@@ -1144,7 +1144,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .data = .{ .binary = .{
                             .left = try makeDestructuringTempWrite(self, key_span, span),
                             .right = try self.visitNode(key_node.data.unary.operand),
-                            .flags = @intFromEnum(token_mod.Kind.eq),
+                            .flags = @backingInt(token_mod.Kind.eq),
                         } },
                     }),
                 };
@@ -1288,7 +1288,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const list_len = self.readU32(le, 2);
             if (list_len == 0) return visitForInDefault(self, node);
 
-            const first_decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
+            const first_decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start]));
             const first_decl = self.ast.getNode(first_decl_idx);
             if (first_decl.tag != .variable_declarator) return visitForInDefault(self, node);
 
@@ -1336,7 +1336,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // scratch에 쌓인 declarator들로 variable_declaration 생성
             const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-            const var_extra = try self.ast.addExtras(&.{ @intFromEnum(out_kind), decl_list.start, decl_list.len });
+            const var_extra = try self.ast.addExtras(&.{ @backingInt(out_kind), decl_list.start, decl_list.len });
             const destr_decl = try self.ast.addNode(.{
                 .tag = .variable_declaration,
                 .span = span,

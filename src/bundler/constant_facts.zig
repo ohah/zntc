@@ -219,7 +219,7 @@ pub fn materializeWithScratchDetailed(
             ast.nodes.items[i] = replacement;
             changed = true;
             if (tracked_nodes_complete) {
-                tracked_nodes.?.append(allocator, @enumFromInt(ni)) catch {
+                tracked_nodes.?.append(allocator, @fromBackingInt(@intCast(ni))) catch {
                     tracked_nodes_complete = false;
                 };
             }
@@ -266,7 +266,7 @@ fn markMinifySensitiveIdentifierRefs(
         var it = ast_walk.children(ast, parent);
         while (it.next()) |child| {
             if (child.isNone()) continue;
-            const child_i = @intFromEnum(child);
+            const child_i = @backingInt(child);
             if (child_i >= ast.nodes.items.len or child_i >= sensitive_refs.capacity()) continue;
             if (ast.nodes.items[child_i].tag == .identifier_reference) {
                 sensitive_refs.set(child_i);

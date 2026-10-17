@@ -61,7 +61,7 @@ pub fn foldValues(a: f64, b: f64, op: Kind) ?f64 {
 
 fn evalLiteralExpression(ast: *const Ast, root: NodeIndex, saw_binary: *bool, depth: u32) ?f64 {
     if (root.isNone() or depth > 64) return null;
-    const raw: u32 = @intFromEnum(root);
+    const raw: u32 = @backingInt(root);
     if (raw >= ast.nodes.items.len) return null;
     const node = ast.nodes.items[raw];
     return switch (node.tag) {
@@ -71,7 +71,7 @@ fn evalLiteralExpression(ast: *const Ast, root: NodeIndex, saw_binary: *bool, de
             saw_binary.* = true;
             const left = evalLiteralExpression(ast, node.data.binary.left, saw_binary, depth + 1) orelse break :blk null;
             const right = evalLiteralExpression(ast, node.data.binary.right, saw_binary, depth + 1) orelse break :blk null;
-            const op: Kind = @enumFromInt(node.data.binary.flags);
+            const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
             break :blk foldValues(left, right, op);
         },
         else => null,
@@ -92,7 +92,7 @@ inline fn spanByteLen(span: Span) u32 {
 /// the regular minify pass.
 pub fn foldLiteralExpression(ast: *Ast, root: NodeIndex) ?Span {
     if (root.isNone()) return null;
-    const raw: u32 = @intFromEnum(root);
+    const raw: u32 = @backingInt(root);
     if (raw >= ast.nodes.items.len) return null;
 
     var saw_binary = false;

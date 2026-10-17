@@ -83,7 +83,7 @@ pub fn findDirectiveOffset(self: *Transformer, body_idx: NodeIndex, directive: [
     const search_len = @min(list.len, 5);
     var si: u32 = 0;
     while (si < search_len) : (si += 1) {
-        const stmt_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + si]);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + si]));
         const text = directiveText(self.ast, stmt_idx) orelse continue;
         if (std.mem.eql(u8, text, directive)) return si;
     }
@@ -109,7 +109,7 @@ pub fn stripWorkletDirective(self: *Transformer, body_idx: NodeIndex) Error!Node
     while (i < list.len) : (i += 1) {
         if (i == dir_offset) continue; // 디렉티브 문장 건너뜀
         const raw_idx = self.ast.extra_data.items[list.start + i];
-        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
     }
 
     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -190,7 +190,7 @@ pub fn collectClosureVars(
     var pi: u32 = 0;
     while (pi < params.len) : (pi += 1) {
         const param_raw = self.ast.extra_data.items[params.start + pi];
-        const param_idx: NodeIndex = @enumFromInt(param_raw);
+        const param_idx: NodeIndex = @fromBackingInt(@intCast(param_raw));
         if (!param_idx.isNone()) {
             try collectBindingNames(self, param_idx, &locals);
         }
@@ -327,7 +327,7 @@ fn walkScopedBody(
     defer inner_locals.deinit(self.allocator);
 
     for (param_nodes) |raw| {
-        try collectAllIdentifiers(self, @enumFromInt(raw), &inner_locals);
+        try collectAllIdentifiers(self, @fromBackingInt(@intCast(raw)), &inner_locals);
     }
 
     var inner_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
@@ -348,12 +348,12 @@ fn walkScopedBody(
 fn collectAllIdentifiers(self: *Transformer, idx: NodeIndex, locals: *std.StringHashMapUnmanaged(void)) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
-    if (!idx.isNone() and @intFromEnum(idx) < self.ast.nodes.items.len) {
+    if (!idx.isNone() and @backingInt(idx) < self.ast.nodes.items.len) {
         try stack.append(self.allocator, idx);
     }
     while (stack.pop()) |cur| {
         if (cur.isNone()) continue;
-        if (@intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+        if (@backingInt(cur) >= self.ast.nodes.items.len) continue;
         const node = self.ast.getNode(cur);
         switch (node.tag) {
             .identifier_reference, .binding_identifier, .assignment_target_identifier => {
@@ -398,17 +398,17 @@ fn collectNewExpressionCallees(
 ) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
-    if (!idx.isNone() and @intFromEnum(idx) < self.ast.nodes.items.len) {
+    if (!idx.isNone() and @backingInt(idx) < self.ast.nodes.items.len) {
         try stack.append(self.allocator, idx);
     }
     while (stack.pop()) |cur| {
         if (cur.isNone()) continue;
-        if (@intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+        if (@backingInt(cur) >= self.ast.nodes.items.len) continue;
         const node = self.ast.getNode(cur);
         if (node.tag == .new_expression) {
             const e = node.data.extra;
             if (e < self.ast.extra_data.items.len) {
-                const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                 if (!callee_idx.isNone()) {
                     const callee = self.ast.getNode(callee_idx);
                     if (callee.tag == .identifier_reference) {
@@ -439,13 +439,13 @@ fn walkBodyForClosureAnalysis(
 ) Error!void {
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(self.allocator);
-    if (!idx.isNone() and @intFromEnum(idx) < self.ast.nodes.items.len) {
+    if (!idx.isNone() and @backingInt(idx) < self.ast.nodes.items.len) {
         try stack.append(self.allocator, idx);
     }
 
     while (stack.pop()) |cur| {
         if (cur.isNone()) continue;
-        if (@intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+        if (@backingInt(cur) >= self.ast.nodes.items.len) continue;
         const node = self.ast.getNode(cur);
         const tag = node.tag;
 
@@ -465,10 +465,10 @@ fn walkBodyForClosureAnalysis(
             .function_declaration, .function_expression, .function => {
                 const e = node.data.extra;
                 if (tag == .function_declaration) {
-                    try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
+                    try collectBindingNames(self, @fromBackingInt(@intCast(self.ast.extra_data.items[e])), locals);
                 }
                 if (!self.ast.hasExtra(e, 3)) continue;
-                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
                 if (body_idx.isNone()) continue;
                 const plist = self.ast.functionParamsList(node);
                 const p_start = plist.start;
@@ -476,11 +476,11 @@ fn walkBodyForClosureAnalysis(
                 var fn_locals: std.StringHashMapUnmanaged(void) = .empty;
                 defer fn_locals.deinit(self.allocator);
                 // name + params → param_nodes (extra_data 슬라이스 + name 앞에 추가)
-                try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[e]), &fn_locals);
+                try collectAllIdentifiers(self, @fromBackingInt(@intCast(self.ast.extra_data.items[e])), &fn_locals);
                 var fpi: u32 = 0;
                 while (fpi < p_len) : (fpi += 1) {
                     if (p_start + fpi < self.ast.extra_data.items.len)
-                        try collectAllIdentifiers(self, @enumFromInt(self.ast.extra_data.items[p_start + fpi]), &fn_locals);
+                        try collectAllIdentifiers(self, @fromBackingInt(@intCast(self.ast.extra_data.items[p_start + fpi])), &fn_locals);
                 }
                 var fn_refs: std.StringHashMapUnmanaged(NodeIndex) = .empty;
                 defer fn_refs.deinit(self.allocator);
@@ -496,7 +496,7 @@ fn walkBodyForClosureAnalysis(
             .arrow_function_expression => {
                 const e = node.data.extra;
                 if (!self.ast.hasExtra(e, 2)) continue;
-                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+                const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
                 if (body_idx.isNone()) continue;
                 try walkScopedBody(self, body_idx, &.{self.ast.extra_data.items[e]}, locals, refs);
                 continue;
@@ -504,7 +504,7 @@ fn walkBodyForClosureAnalysis(
             .method_definition => {
                 const e = node.data.extra;
                 if (!self.ast.hasExtra(e, 3)) continue;
-                const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
                 if (body_idx.isNone()) continue;
                 const plist = self.ast.functionParamsList(node);
                 const p_start = plist.start;
@@ -521,16 +521,16 @@ fn walkBodyForClosureAnalysis(
             .property_definition, .accessor_property => {
                 const e = node.data.extra;
                 if (!self.ast.hasExtra(e, 5)) continue;
-                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + ast_mod.PropertyExtra.key]);
+                const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + ast_mod.PropertyExtra.key]));
                 if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key)
                     try stack.append(self.allocator, key_idx);
-                const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + ast_mod.PropertyExtra.init]);
+                const init_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + ast_mod.PropertyExtra.init]));
                 if (!init_idx.isNone()) try stack.append(self.allocator, init_idx);
                 const deco_start = self.ast.extra_data.items[e + ast_mod.PropertyExtra.deco_start];
                 const deco_len = self.ast.extra_data.items[e + ast_mod.PropertyExtra.deco_len];
                 if (deco_start <= self.ast.extra_data.items.len and deco_len <= self.ast.extra_data.items.len - deco_start) {
                     for (self.ast.extra_data.items[deco_start .. deco_start + deco_len]) |decorator_raw|
-                        try stack.append(self.allocator, @enumFromInt(decorator_raw));
+                        try stack.append(self.allocator, @fromBackingInt(@intCast(decorator_raw)));
                 }
                 continue;
             },
@@ -539,8 +539,8 @@ fn walkBodyForClosureAnalysis(
             .variable_declarator => {
                 const e = node.data.extra;
                 if (!self.ast.hasExtra(e, 3)) continue;
-                try collectBindingNames(self, @enumFromInt(self.ast.extra_data.items[e]), locals);
-                try stack.append(self.allocator, @enumFromInt(self.ast.extra_data.items[e + 2]));
+                try collectBindingNames(self, @fromBackingInt(@intCast(self.ast.extra_data.items[e])), locals);
+                try stack.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2])));
                 continue;
             },
 
@@ -587,7 +587,7 @@ fn walkBodyForClosureAnalysis(
             .static_member_expression, .private_field_expression => {
                 const me = node.data.extra;
                 if (self.ast.hasExtra(me, 2)) {
-                    try stack.append(self.allocator, @enumFromInt(self.ast.extra_data.items[me]));
+                    try stack.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[me])));
                 }
                 continue;
             },
@@ -625,7 +625,7 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
     // funcName (원본 binding_identifier의 symbol_id를 물려받아 scope hoisting rename 지원)
     const name_idx: NodeIndex = if (func_name_node_idx.isNone()) .none else blk: {
         const func_node = self.ast.getNode(func_name_node_idx);
-        break :blk @enumFromInt(self.ast.extra_data.items[func_node.data.extra]);
+        break :blk @fromBackingInt(@intCast(self.ast.extra_data.items[func_node.data.extra]));
     };
     const obj_ref = try self.makeIdentifierRefWithSymbol(func_name_span, name_idx);
     if (self.semantic_edit_enabled and !name_idx.isNone()) {
@@ -633,7 +633,7 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
             // This generated read is emitted beside the function declaration.
             // Keep its exact binding identity and record it for semantic edits.
             try self.removeSemanticReference(obj_ref);
-            try self.addSyntheticRefInScope(obj_ref, @enumFromInt(raw_id), self.current_scope, .{ .read = true });
+            try self.addSyntheticRefInScope(obj_ref, @fromBackingInt(@intCast(raw_id)), self.current_scope, .{ .read = true });
         }
     }
 
@@ -642,8 +642,8 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
 
     // funcName.__propName (static_member_expression: extra = [object, property, flags])
     const member = try self.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(obj_ref),
-        @intFromEnum(prop_ref),
+        @backingInt(obj_ref),
+        @backingInt(prop_ref),
         0, // flags
     });
 
@@ -651,7 +651,7 @@ fn buildPropAssignment(self: *Transformer, func_name_span: Span, prop_name: []co
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = zero_span,
-        .data = .{ .binary = .{ .left = member, .right = value, .flags = @intFromEnum(token_mod.Kind.eq) } },
+        .data = .{ .binary = .{ .left = member, .right = value, .flags = @backingInt(token_mod.Kind.eq) } },
     });
 
     // expression statement wrapper
@@ -681,7 +681,7 @@ pub fn buildWorkletPropertyAssignments(
     const func_name_span = blk: {
         if (!func_node_idx.isNone()) {
             const func_node = self.ast.getNode(func_node_idx);
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[func_node.data.extra]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[func_node.data.extra]));
             if (!name_idx.isNone()) {
                 const name_node = self.ast.getNode(name_idx);
                 if (name_node.tag == .binding_identifier) {
@@ -759,12 +759,12 @@ fn buildStackDetailsArray(
     const error_id = try es_helpers.makePropertyName(self, "Error");
     // global.Error member expression
     const global_error = try self.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(global_id), @intFromEnum(error_id), 0,
+        @backingInt(global_id), @backingInt(error_id), 0,
     });
     // new global.Error()
     const empty_args = try self.ast.addNodeList(&.{});
     const new_expr = try self.addExtraNode(.new_expression, zero_span, &.{
-        @intFromEnum(global_error), empty_args.start, empty_args.len, 0,
+        @backingInt(global_error), empty_args.start, empty_args.len, 0,
     });
 
     // 숫자 literal 2개 (lineOffset, -27)
@@ -795,7 +795,7 @@ fn makeI32Literal(self: *Transformer, value: i32) Error!NodeIndex {
     });
     if (value >= 0) return num;
     // unary_expression: extra = [operand, operator_kind]
-    const extra = try self.ast.addExtras(&.{ @intFromEnum(num), @intFromEnum(token_mod.Kind.minus) });
+    const extra = try self.ast.addExtras(&.{ @backingInt(num), @backingInt(token_mod.Kind.minus) });
     return self.ast.addNode(.{
         .tag = .unary_expression,
         .span = span,
@@ -823,7 +823,7 @@ fn buildClosureObject(self: *Transformer, closure_vars: []const ClosureVar) Erro
             const base_ref = try self.makeUserRefNamed(base, cv.ref_idx);
             const factory_ref = try es_helpers.makePropertyNameFromSpan(self, key_span);
             break :blk try self.addExtraNode(.static_member_expression, zero_span, &.{
-                @intFromEnum(base_ref), @intFromEnum(factory_ref), 0,
+                @backingInt(base_ref), @backingInt(factory_ref), 0,
             });
         } else blk: {
             const ref = try self.makeIdentifierRefWithSymbol(source_name_span, cv.ref_idx);
@@ -972,12 +972,12 @@ pub fn generateInitCode(
 
     // synthetic function: function funcName(params) { ...body... }
     const name_node = try es_helpers.makeSyntheticBinding(self, try self.ast.addString(func_name));
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     const params_node = try self.ast.addFormalParameters(params, zero_span);
     const synthetic_func = try self.addExtraNode(.function_declaration, zero_span, &.{
-        @intFromEnum(name_node),    @intFromEnum(params_node),
-        @intFromEnum(new_body_idx), flags,
+        @backingInt(name_node),    @backingInt(params_node),
+        @backingInt(new_body_idx), flags,
         none,
     });
 
@@ -1014,7 +1014,7 @@ pub fn generateInitCode(
 fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVar, zero_span: Span) Error!NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     // object binding pattern: { var1, var2, ... }
     // codegen에서 binding_property.right가 NodeIndex.none이면 `{key}` shorthand로 출력됨.
@@ -1052,16 +1052,16 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
     });
     const closure_prop = try es_helpers.makePropertyName(self, "__closure");
     const this_closure = try self.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(this_node),
-        @intFromEnum(closure_prop),
+        @backingInt(this_node),
+        @backingInt(closure_prop),
         0, // flags
     });
 
     // variable_declarator: pattern = this.__closure
     const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
-        @intFromEnum(pattern),
+        @backingInt(pattern),
         none, // type annotation
-        @intFromEnum(this_closure), // init
+        @backingInt(this_closure), // init
     });
 
     // const 선언 (kind = 2: const)

@@ -82,7 +82,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e >= extras.len) return false;
-            const callee: NodeIndex = @enumFromInt(extras[e]);
+            const callee: NodeIndex = @fromBackingInt(@intCast(extras[e]));
             return isSuperUnwrapped(self, callee);
         }
 
@@ -116,7 +116,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 var i_loop: u32 = 0;
                 while (i_loop < args_len) : (i_loop += 1) {
                     const raw_idx = self.ast.extra_data.items[args_start + i_loop];
-                    const new_arg = try self.visitNode(@enumFromInt(raw_idx));
+                    const new_arg = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!new_arg.isNone()) {
                         try self.scratch.append(self.allocator, new_arg);
                     }
@@ -141,7 +141,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .binary = .{ .left = this_ref, .right = call, .flags = 0 } },
             });
-            try self.generated_super_call_assignments.put(self.allocator, @intFromEnum(raw_assign), {});
+            try self.generated_super_call_assignments.put(self.allocator, @backingInt(raw_assign), {});
             const assert_uninit = try es_helpers.makeRuntimeHelperRef(self, "__assertThisUninitialized");
             const current_this = try makeThisAliasRef(self);
             const assert_call = try es_helpers.makeCallExpr(self, assert_uninit, &.{current_this}, span);
@@ -165,13 +165,13 @@ pub fn SuperProps(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e >= extras.len) return false;
-            const callee: NodeIndex = @enumFromInt(extras[e]);
+            const callee: NodeIndex = @fromBackingInt(@intCast(extras[e]));
             if (callee.isNone()) return false;
             const callee_node = self.ast.getNode(callee);
             if (callee_node.tag != .static_member_expression) return false;
             const me = callee_node.data.extra;
             if (me >= extras.len) return false;
-            const obj: NodeIndex = @enumFromInt(extras[me]);
+            const obj: NodeIndex = @fromBackingInt(@intCast(extras[me]));
             return isSuperUnwrapped(self, obj);
         }
 
@@ -227,7 +227,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 var i_loop: u32 = 0;
                 while (i_loop < args_len) : (i_loop += 1) {
                     const raw_idx = self.ast.extra_data.items[args_start + i_loop];
-                    const new_arg = try self.visitNode(@enumFromInt(raw_idx));
+                    const new_arg = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!new_arg.isNone()) {
                         try self.scratch.append(self.allocator, new_arg);
                     }
@@ -236,7 +236,7 @@ pub fn SuperProps(comptime Transformer: type) type {
 
             const new_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(call_callee), new_args.start, new_args.len, 0,
+                @backingInt(call_callee), new_args.start, new_args.len, 0,
             });
             return self.ast.addNode(.{
                 .tag = .call_expression,
@@ -250,7 +250,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e >= extras.len) return false;
-            const obj: NodeIndex = @enumFromInt(extras[e]);
+            const obj: NodeIndex = @fromBackingInt(@intCast(extras[e]));
             return isSuperUnwrapped(self, obj);
         }
 
@@ -328,7 +328,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 .data = .{ .binary = .{
                     .left = temp_lhs,
                     .right = visited,
-                    .flags = @intFromEnum(token_mod.Kind.eq),
+                    .flags = @backingInt(token_mod.Kind.eq),
                 } },
             });
             return .{
@@ -465,7 +465,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e >= extras.len) return false;
-            const obj: NodeIndex = @enumFromInt(extras[e]);
+            const obj: NodeIndex = @fromBackingInt(@intCast(extras[e]));
             return isSuperUnwrapped(self, obj);
         }
 
@@ -514,7 +514,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 .static_member_expression, .computed_member_expression => blk: {
                     const e = node.data.extra;
                     if (e >= self.ast.extra_data.items.len) break :blk false;
-                    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                     break :blk isSuperUnwrapped(self, obj_idx);
                 },
                 .object_assignment_target, .array_assignment_target => blk: {
@@ -523,7 +523,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                     var i: u32 = 0;
                     while (i < len) : (i += 1) {
                         const child_raw = self.ast.extra_data.items[start + i];
-                        if (destructuringTargetHasSuper(self, @enumFromInt(child_raw))) break :blk true;
+                        if (destructuringTargetHasSuper(self, @fromBackingInt(@intCast(child_raw)))) break :blk true;
                     }
                     break :blk false;
                 },
@@ -551,7 +551,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             if (!isSuperUnwrapped(self, obj_idx)) return null;
 
             const prop_idx: NodeIndex = self.readNodeIdx(le, 1);
-            const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+            const op_kind: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
             const span = node.span;
 
             if (op_kind == .eq) {
@@ -575,7 +575,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                     const logical = try self.ast.addNode(.{
                         .tag = .logical_expression,
                         .span = span,
-                        .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(logical_op) } },
+                        .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @backingInt(logical_op) } },
                     });
                     return wrapSuperPropInit(self, prop_ref, logical, span);
                 }
@@ -597,7 +597,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 const logical = try self.ast.addNode(.{
                     .tag = .logical_expression,
                     .span = span,
-                    .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @intFromEnum(token_mod.Kind.question2) } },
+                    .data = .{ .binary = .{ .left = get_read, .right = set_call, .flags = @backingInt(token_mod.Kind.question2) } },
                 });
                 return wrapSuperPropInit(self, prop_ref, logical, span);
             }
@@ -605,7 +605,7 @@ pub fn SuperProps(comptime Transformer: type) type {
             if (compoundAssignBaseOp(node.data.binary.flags)) |bin_op| {
                 const get_call = try buildSuperPropGet(self, prop_ref.read, span);
                 const new_rhs = try self.visitNode(node.data.binary.right);
-                const computed = if (bin_op == @intFromEnum(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
+                const computed = if (bin_op == @backingInt(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
                     try es_helpers.makeMathPowCall(self, get_call, new_rhs, span)
                 else
                     try self.ast.addNode(.{
@@ -633,9 +633,9 @@ pub fn SuperProps(comptime Transformer: type) type {
             if (!isSuperUnwrapped(self, obj_idx)) return null;
 
             const op_kind = op_flags & 0xff;
-            const is_increment = (op_kind == @intFromEnum(token_mod.Kind.plus2));
+            const is_increment = (op_kind == @backingInt(token_mod.Kind.plus2));
             const is_postfix = (op_flags & ast_mod.UnaryFlags.postfix) != 0;
-            const bin_op: u16 = if (is_increment) @intFromEnum(token_mod.Kind.plus) else @intFromEnum(token_mod.Kind.minus);
+            const bin_op: u16 = if (is_increment) @backingInt(token_mod.Kind.plus) else @backingInt(token_mod.Kind.minus);
             const prop_ref = try makeSuperPropRefForAssignment(self, self.readNodeIdx(e, 1), is_computed, span);
 
             if (is_postfix) {
@@ -649,7 +649,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 const init_old = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = span,
-                    .data = .{ .binary = .{ .left = tmp_lhs, .right = get_call, .flags = @intFromEnum(token_mod.Kind.eq) } },
+                    .data = .{ .binary = .{ .left = tmp_lhs, .right = get_call, .flags = @backingInt(token_mod.Kind.eq) } },
                 });
                 try self.scratch.append(self.allocator, init_old);
 
@@ -689,13 +689,13 @@ pub fn SuperProps(comptime Transformer: type) type {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
             if (e >= extras.len) return false;
-            const callee: NodeIndex = @enumFromInt(extras[e]);
+            const callee: NodeIndex = @fromBackingInt(@intCast(extras[e]));
             if (callee.isNone()) return false;
             const callee_node = self.ast.getNode(callee);
             if (callee_node.tag != .computed_member_expression) return false;
             const me = callee_node.data.extra;
             if (me >= extras.len) return false;
-            const obj: NodeIndex = @enumFromInt(extras[me]);
+            const obj: NodeIndex = @fromBackingInt(@intCast(extras[me]));
             return isSuperUnwrapped(self, obj);
         }
 
@@ -729,7 +729,7 @@ pub fn SuperProps(comptime Transformer: type) type {
                 var i_loop: u32 = 0;
                 while (i_loop < args_len) : (i_loop += 1) {
                     const raw_idx = self.ast.extra_data.items[args_start + i_loop];
-                    const new_arg = try self.visitNode(@enumFromInt(raw_idx));
+                    const new_arg = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!new_arg.isNone()) {
                         try self.scratch.append(self.allocator, new_arg);
                     }
@@ -738,7 +738,7 @@ pub fn SuperProps(comptime Transformer: type) type {
 
             const new_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(call_callee), new_args.start, new_args.len, 0,
+                @backingInt(call_callee), new_args.start, new_args.len, 0,
             });
             return self.ast.addNode(.{
                 .tag = .call_expression,

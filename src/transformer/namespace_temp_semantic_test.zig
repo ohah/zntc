@@ -32,7 +32,7 @@ test "#4819 namespace variable uses become member AST nodes with the exact IIFE 
     const namespace_scope_id = namespace_scope orelse return error.MissingNamespaceScope;
     var parameter_sid: ?u32 = null;
     for (analyzer.symbols.items, 0..) |symbol, raw| {
-        if (symbol.synthetic_kind == .namespace_iife_parameter and @intFromEnum(symbol.scope_id) == namespace_scope_id) {
+        if (symbol.synthetic_kind == .namespace_iife_parameter and @backingInt(symbol.scope_id) == namespace_scope_id) {
             parameter_sid = @intCast(raw);
             break;
         }
@@ -43,7 +43,7 @@ test "#4819 namespace variable uses become member AST nodes with the exact IIFE 
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .binding_identifier or !std.mem.eql(u8, parser.ast.getText(node.data.string_ref), "x")) continue;
         const sid = analyzer.symbol_ids.items[raw] orelse continue;
-        if (@intFromEnum(analyzer.symbols.items[sid].scope_id) == namespace_scope_id) {
+        if (@backingInt(analyzer.symbols.items[sid].scope_id) == namespace_scope_id) {
             exported_sid = sid;
             break;
         }
@@ -106,8 +106,8 @@ test "#4819 namespace variable uses become member AST nodes with the exact IIFE 
 
     var parameter_reads: usize = 0;
     for (edited.references) |reference| {
-        if (reference.flags.declare or @intFromEnum(reference.symbol_id) != expected_parameter_sid) continue;
-        const raw = @intFromEnum(reference.node_index);
+        if (reference.flags.declare or @backingInt(reference.symbol_id) != expected_parameter_sid) continue;
+        const raw = @backingInt(reference.node_index);
         if (std.mem.indexOfScalar(u32, reachable, raw) == null) continue;
         try std.testing.expect(reference.flags.read and !reference.flags.write);
         try std.testing.expectEqual(@as(?u32, expected_parameter_sid), edited.symbol_ids[raw]);
@@ -205,7 +205,7 @@ test "#4819 merged namespace proxy references become member AST nodes" {
     const expected_namespace_scope = second_namespace_scope orelse return error.MissingSecondNamespaceScope;
     var expected_parameter_symbol_id: ?u32 = null;
     for (analyzer.symbols.items, 0..) |symbol, raw| {
-        if (symbol.synthetic_kind == .namespace_iife_parameter and @intFromEnum(symbol.scope_id) == expected_namespace_scope) {
+        if (symbol.synthetic_kind == .namespace_iife_parameter and @backingInt(symbol.scope_id) == expected_namespace_scope) {
             expected_parameter_symbol_id = @intCast(raw);
             break;
         }
@@ -244,10 +244,10 @@ test "#4819 merged namespace proxy references become member AST nodes" {
 
     var parameter_reads: usize = 0;
     for (edited.references) |reference| {
-        if (reference.flags.declare or @intFromEnum(reference.symbol_id) != expected_parameter) continue;
-        if (std.mem.indexOfScalar(u32, reachable, @intFromEnum(reference.node_index)) == null) continue;
+        if (reference.flags.declare or @backingInt(reference.symbol_id) != expected_parameter) continue;
+        if (std.mem.indexOfScalar(u32, reachable, @backingInt(reference.node_index)) == null) continue;
         try std.testing.expect(reference.flags.read and !reference.flags.write);
-        try std.testing.expectEqual(@as(?u32, expected_parameter), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+        try std.testing.expectEqual(@as(?u32, expected_parameter), edited.symbol_ids[@backingInt(reference.node_index)]);
         parameter_reads += 1;
     }
     try std.testing.expectEqual(proxy_member_accesses + 1, parameter_reads);
@@ -279,7 +279,7 @@ test "#4819 nested merged namespace proxy uses the canonical namespace owner" {
     const expected_proxy = proxy_symbol orelse return error.MissingNestedMemberProxy;
     var original_proxy_references: usize = 0;
     for (analyzer.references.items) |reference| {
-        if (!reference.flags.declare and @intFromEnum(reference.symbol_id) == expected_proxy) original_proxy_references += 1;
+        if (!reference.flags.declare and @backingInt(reference.symbol_id) == expected_proxy) original_proxy_references += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), original_proxy_references);
 
@@ -292,7 +292,7 @@ test "#4819 nested merged namespace proxy uses the canonical namespace owner" {
         if (name.isNone() or !std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(name).span), "Inner")) continue;
         if (inner_count == 1) {
             second_inner_scope = analyzer.scope_owner_map.get(@intCast(raw));
-            second_inner_name_symbol = analyzer.symbol_ids.items[@intFromEnum(name)];
+            second_inner_name_symbol = analyzer.symbol_ids.items[@backingInt(name)];
         }
         inner_count += 1;
     }
@@ -304,7 +304,7 @@ test "#4819 nested merged namespace proxy uses the canonical namespace owner" {
     try std.testing.expect(inner_name_symbol != canonical_inner_owner);
     var expected_parameter_symbol_id: ?u32 = null;
     for (analyzer.symbols.items, 0..) |symbol, raw| {
-        if (symbol.synthetic_kind == .namespace_iife_parameter and @intFromEnum(symbol.scope_id) == expected_inner_scope) {
+        if (symbol.synthetic_kind == .namespace_iife_parameter and @backingInt(symbol.scope_id) == expected_inner_scope) {
             expected_parameter_symbol_id = @intCast(raw);
             break;
         }
@@ -393,7 +393,7 @@ test "#4819 namespace destructuring temp has one IIFE binding and exact read ref
     for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, si| {
         if (!std.mem.eql(u8, symbol.synthetic_name, "_a")) continue;
         temp_count += 1;
-        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expected_scope, @backingInt(symbol.scope_id));
         try std.testing.expectEqual(@as(?usize, si), edited.scope_maps[expected_scope].get("_a"));
         var binding_count: usize = 0;
         for (reachable) |raw| {
@@ -403,12 +403,12 @@ test "#4819 namespace destructuring temp has one IIFE binding and exact read ref
         try std.testing.expectEqual(@as(usize, 1), binding_count);
         var read_count: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != si or ref.flags.declare) continue;
-            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(ref.node_index)) != null);
+            if (@backingInt(ref.symbol_id) != si or ref.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(ref.node_index)) != null);
             var use_scope = ref.scope_id;
             var resolves_temp = false;
             while (!use_scope.isNone()) {
-                if (@intFromEnum(use_scope) == expected_scope) {
+                if (@backingInt(use_scope) == expected_scope) {
                     resolves_temp = true;
                     break;
                 }
@@ -417,7 +417,7 @@ test "#4819 namespace destructuring temp has one IIFE binding and exact read ref
             try std.testing.expect(resolves_temp);
             try std.testing.expect(ref.flags.read and !ref.flags.write);
             try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
-            try std.testing.expectEqual(@as(?u32, @intCast(si)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            try std.testing.expectEqual(@as(?u32, @intCast(si)), edited.symbol_ids[@backingInt(ref.node_index)]);
             read_count += 1;
         }
         try std.testing.expectEqual(@as(usize, 1), read_count);
@@ -472,12 +472,12 @@ test "#4819 empty namespace destructuring temps retain SymbolId and IIFE scope" 
         try std.testing.expect(transformer.ast.nodes.items[raw].tag == .binding_identifier);
         const sid = if (raw < edited.symbol_ids.len) edited.symbol_ids[raw] orelse return error.MissingNamespaceTempSymbol else return error.MissingNamespaceTempSymbol;
         const symbol = edited.symbols.items[sid];
-        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expected_scope, @backingInt(symbol.scope_id));
         try std.testing.expectEqual(@as(?usize, sid), edited.scope_maps[expected_scope].get(symbol.synthetic_name));
         try std.testing.expectEqual(@as(u32, 0), symbol.reference_count);
         try std.testing.expectEqual(@as(u32, 0), symbol.write_count);
         for (edited.references) |ref| {
-            if (!ref.flags.declare) try std.testing.expect(@intFromEnum(ref.symbol_id) != sid);
+            if (!ref.flags.declare) try std.testing.expect(@backingInt(ref.symbol_id) != sid);
         }
         temp_count += 1;
     }
@@ -540,7 +540,7 @@ test "namespace generated references retain their declaration owner through two 
         const scope = edited.scope_owner_map.get(raw) orelse return error.MissingNamespaceScope;
         var parameter_sid: ?u32 = null;
         for (edited.symbols.items, 0..) |symbol, sid| {
-            if (symbol.synthetic_kind == .namespace_iife_parameter and @intFromEnum(symbol.scope_id) == scope) {
+            if (symbol.synthetic_kind == .namespace_iife_parameter and @backingInt(symbol.scope_id) == scope) {
                 parameter_sid = @intCast(sid);
                 break;
             }
@@ -583,17 +583,17 @@ test "namespace generated references retain their declaration owner through two 
             const symbol = fresh.symbols.items[sid];
             try std.testing.expect(symbol.synthetic_kind == .namespace_iife_parameter);
             try std.testing.expect(symbol.kind == .parameter);
-            try std.testing.expectEqual(scope, @intFromEnum(symbol.scope_id));
+            try std.testing.expectEqual(scope, @backingInt(symbol.scope_id));
             try std.testing.expect(!fresh.unresolved_references.contains(refs.parameter_name));
             for (refs.nodes.items) |raw| {
                 try std.testing.expectEqual(@as(?u32, @intCast(sid)), fresh.symbol_ids.items[raw]);
                 var reference_count: usize = 0;
                 for (fresh.references.items) |reference| {
-                    if (reference.flags.declare or @intFromEnum(reference.node_index) != raw) continue;
-                    try std.testing.expectEqual(sid, @intFromEnum(reference.symbol_id));
+                    if (reference.flags.declare or @backingInt(reference.node_index) != raw) continue;
+                    try std.testing.expectEqual(sid, @backingInt(reference.symbol_id));
                     try std.testing.expect(reference.flags.read and !reference.flags.write);
                     var use_scope = reference.scope_id;
-                    while (!use_scope.isNone() and @intFromEnum(use_scope) != scope) {
+                    while (!use_scope.isNone() and @backingInt(use_scope) != scope) {
                         use_scope = fresh.scopes.items[use_scope.toIndex()].parent;
                     }
                     try std.testing.expect(!use_scope.isNone());

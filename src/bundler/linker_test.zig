@@ -94,8 +94,8 @@ test "linker: createRequire shim local has an exact detached SymbolId and reserv
     try std.testing.expectEqual(@as(usize, 1), output_identity_count);
     const local_owner = owner orelse return error.TestUnexpectedResult;
     const inner = local_owner.require_shim_local_symbol.?;
-    const id = bundler_symbol.SymbolID.make(local_owner.index, @intFromEnum(inner));
-    const symbol = local_owner.semantic.?.symbols.items[@intFromEnum(inner)];
+    const id = bundler_symbol.SymbolID.make(local_owner.index, @backingInt(inner));
+    const symbol = local_owner.semantic.?.symbols.items[@backingInt(inner)];
     try std.testing.expectEqual(semantic_symbol.SymbolKind.import_binding, symbol.kind);
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.require_shim_local, symbol.synthetic_kind.?);
     try std.testing.expectEqualStrings("createRequire", symbol.synthetic_name);
@@ -104,11 +104,11 @@ test "linker: createRequire shim local has an exact detached SymbolId and reserv
 
     // The output-owned import has no AST binding/reference or lexical-map edge.
     const sem = &local_owner.semantic.?;
-    for (sem.symbol_ids) |maybe_id| try std.testing.expect(maybe_id == null or maybe_id.? != @intFromEnum(inner));
+    for (sem.symbol_ids) |maybe_id| try std.testing.expect(maybe_id == null or maybe_id.? != @backingInt(inner));
     for (sem.references) |reference| try std.testing.expect(reference.symbol_id != inner);
     for (sem.scope_maps) |scope_map| {
         var entries = scope_map.valueIterator();
-        while (entries.next()) |mapped| try std.testing.expect(mapped.* != @intFromEnum(inner));
+        while (entries.next()) |mapped| try std.testing.expect(mapped.* != @backingInt(inner));
     }
 
     // Repeated preparation must ignore its own canonical spelling and recover
@@ -138,13 +138,13 @@ test "linker: createRequire shim local has an exact detached SymbolId and reserv
     try std.testing.expectEqualStrings(reserved_name, r.linker.rename_table.get(id) orelse return error.TestUnexpectedResult);
 
     // Malformed typed rows fail closed instead of silently receiving a name.
-    const original = local_owner.semantic.?.symbols.items[@intFromEnum(inner)];
-    local_owner.semantic.?.symbols.items[@intFromEnum(inner)].synthetic_name = "wrong-name";
+    const original = local_owner.semantic.?.symbols.items[@backingInt(inner)];
+    local_owner.semantic.?.symbols.items[@backingInt(inner)].synthetic_name = "wrong-name";
     try std.testing.expectError(error.RequireShimLocalIdentityInvalid, r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items));
-    local_owner.semantic.?.symbols.items[@intFromEnum(inner)] = original;
-    local_owner.semantic.?.symbols.items[@intFromEnum(inner)].kind = .variable_var;
+    local_owner.semantic.?.symbols.items[@backingInt(inner)] = original;
+    local_owner.semantic.?.symbols.items[@backingInt(inner)].kind = .variable_var;
     try std.testing.expectError(error.RequireShimLocalIdentityInvalid, r.linker.prepareRequireShimLocalName(std.testing.allocator, output_modules.items));
-    local_owner.semantic.?.symbols.items[@intFromEnum(inner)] = original;
+    local_owner.semantic.?.symbols.items[@backingInt(inner)] = original;
 
     const arena = local_owner.parse_arena.?.allocator();
     const sem_mut = &local_owner.semantic.?;
@@ -179,7 +179,7 @@ test "linker: direct import resolves to export" {
     try std.testing.expect(binding != null);
     try std.testing.expectEqualStrings("x", binding.?.canonical.export_name);
     // canonical이 b.ts(index 1)를 가리킴
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(binding.?.canonical.module_index));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(binding.?.canonical.module_index));
 }
 
 test "linker: CJS runtime factory alias keeps one exact SymbolId across cache and chunk changes" {
@@ -221,7 +221,7 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     try std.testing.expectEqual(original_internal_ids.require_function, recovered_internal_ids.require_function);
     mutable_owner.wrap_kind = .cjs;
     const sem = cjs_module.semantic orelse return error.TestUnexpectedResult;
-    const symbol = sem.symbols.items[@intFromEnum(inner)];
+    const symbol = sem.symbols.items[@backingInt(inner)];
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_runtime_factory, symbol.synthetic_kind.?);
     var runtime_symbol_count: usize = 0;
     var module_it = r.graph.modulesIterator();
@@ -234,18 +234,18 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     }
     try std.testing.expectEqual(@as(usize, 1), runtime_symbol_count);
 
-    const runtime_id = bundler_symbol.SymbolID.make(cjs_module.index, @intFromEnum(inner));
+    const runtime_id = bundler_symbol.SymbolID.make(cjs_module.index, @backingInt(inner));
     // Output ownership must not recover this generated identity by its current
     // spelling; the rename passes below only need the exact SymbolID.
     if (mutable_owner.semantic) |*mutable_sem| {
-        mutable_sem.symbols.items[@intFromEnum(inner)].synthetic_name = "runtime_factory_identity_without_spelling";
+        mutable_sem.symbols.items[@backingInt(inner)].synthetic_name = "runtime_factory_identity_without_spelling";
     }
     try r.linker.computeRenames();
     try expectCjsRuntimeInternalNames(&r.linker, cjs_index, recovered_internal_ids);
     mutable_owner.cjs_runtime_internal_symbols = null;
     try std.testing.expectError(error.CjsRuntimeInternalSymbolsMissing, r.linker.cjsFactoryRuntimeInternalNames());
     mutable_owner.cjs_runtime_internal_symbols = recovered_internal_ids;
-    const callback_id = bundler_symbol.SymbolID.make(cjs_index, @intFromEnum(recovered_internal_ids.callback_parameter));
+    const callback_id = bundler_symbol.SymbolID.make(cjs_index, @backingInt(recovered_internal_ids.callback_parameter));
     const removed_callback_name = r.linker.rename_table.map.fetchRemove(callback_id) orelse return error.TestUnexpectedResult;
     try std.testing.expectError(error.CjsRuntimeInternalNameMissing, r.linker.cjsFactoryRuntimeInternalNames());
     try r.linker.rename_table.put(r.linker.allocator, callback_id, removed_callback_name.value);
@@ -318,12 +318,12 @@ test "linker: CJS runtime factory alias keeps one exact SymbolId across cache an
     // must still rediscover the cached helper identity and restore its names.
     r.linker.clearCanonicalNames();
     r.linker.cjs_factory_runtime_symbol_id = null;
-    mutable_owner.cjs_runtime_factory_symbol = @enumFromInt(999_999);
+    mutable_owner.cjs_runtime_factory_symbol = @fromBackingInt(@intCast(999_999));
     mutable_owner.cjs_runtime_internal_symbols = .{
-        .callback_parameter = @enumFromInt(999_999),
-        .module_parameter = @enumFromInt(999_999),
-        .catch_parameter = @enumFromInt(999_999),
-        .require_function = @enumFromInt(999_999),
+        .callback_parameter = @fromBackingInt(@intCast(999_999)),
+        .module_parameter = @fromBackingInt(@intCast(999_999)),
+        .catch_parameter = @fromBackingInt(@intCast(999_999)),
+        .require_function = @fromBackingInt(@intCast(999_999)),
     };
     try r.linker.finalize(.{
         .compute_renames = false,
@@ -342,19 +342,19 @@ fn expectCjsRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids
     try std.testing.expectEqualStrings("__require", names.require_function);
     try std.testing.expectEqualStrings(
         names.callback_parameter,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.callback_parameter))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.callback_parameter))) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         names.module_parameter,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.module_parameter))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.module_parameter))) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         names.catch_parameter,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.catch_parameter))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.catch_parameter))) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         names.require_function,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.require_function))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.require_function))) orelse return error.TestUnexpectedResult,
     );
 }
 
@@ -380,7 +380,7 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
     const runtime_inner = entry.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(
         semantic_symbol.SyntheticKind.cjs_runtime_factory,
-        entry_sem.symbols.items[@intFromEnum(runtime_inner)].synthetic_kind.?,
+        entry_sem.symbols.items[@backingInt(runtime_inner)].synthetic_kind.?,
     );
     const internal_ids = entry.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
 
@@ -392,7 +392,7 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
             const require_inner = module.require_symbol orelse return error.TestUnexpectedResult;
             try std.testing.expectEqual(
                 semantic_symbol.SyntheticKind.cjs_require,
-                wrapper_sem.symbols.items[@intFromEnum(require_inner)].synthetic_kind.?,
+                wrapper_sem.symbols.items[@backingInt(require_inner)].synthetic_kind.?,
             );
             try std.testing.expect(module.getRequireName(null) != null);
             has_ast_less_cjs_with_exact_wrapper = true;
@@ -406,7 +406,7 @@ test "linker: semantic-less CJS wrappers use a parsed graph SymbolID for the run
     r.linker.cjs_factory_runtime_symbol_id = null;
     try std.testing.expectError(error.CjsRuntimeFactoryIdentityMissing, r.linker.cjsFactoryRuntimeInternalNames());
     r.linker.cjs_factory_runtime_symbol_id = saved_factory_id;
-    const runtime_id = bundler_symbol.SymbolID.make(entry_index, @intFromEnum(runtime_inner));
+    const runtime_id = bundler_symbol.SymbolID.make(entry_index, @backingInt(runtime_inner));
     const runtime_name = r.linker.rename_table.get(runtime_id) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("__commonJS", runtime_name);
 
@@ -450,20 +450,20 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     const first_exports_param = first.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
     const first_module_param = first.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
     const first_wrapper_scope = first_sem.scopes[0].parent;
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(first_wrapper_scope));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(first_wrapper_scope));
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.global, first_sem.scopes[0].kind);
-    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, first_sem.scopes[@intFromEnum(first_wrapper_scope)].kind);
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, first_sem.scopes[@backingInt(first_wrapper_scope)].kind);
     try std.testing.expectEqual(@as(usize, 2), first_sem.scope_maps[0].count());
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_exports_param)), first_sem.scope_maps[0].get("exports"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_module_param)), first_sem.scope_maps[0].get("module"));
-    try std.testing.expectEqual(@as(usize, 2), first_sem.scope_maps[@intFromEnum(first_wrapper_scope)].count());
+    try std.testing.expectEqual(@as(?usize, @backingInt(first_exports_param)), first_sem.scope_maps[0].get("exports"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(first_module_param)), first_sem.scope_maps[0].get("module"));
+    try std.testing.expectEqual(@as(usize, 2), first_sem.scope_maps[@backingInt(first_wrapper_scope)].count());
 
     const first_inner = first.require_symbol orelse return error.TestUnexpectedResult;
     const second_inner = second.require_symbol orelse return error.TestUnexpectedResult;
-    const first_row = first_sem.symbols.items[@intFromEnum(first_inner)];
-    const second_row = second_sem.symbols.items[@intFromEnum(second_inner)];
-    const first_exports_row = first_sem.symbols.items[@intFromEnum(first_exports_param)];
-    const first_module_row = first_sem.symbols.items[@intFromEnum(first_module_param)];
+    const first_row = first_sem.symbols.items[@backingInt(first_inner)];
+    const second_row = second_sem.symbols.items[@backingInt(second_inner)];
+    const first_exports_row = first_sem.symbols.items[@backingInt(first_exports_param)];
+    const first_module_row = first_sem.symbols.items[@backingInt(first_module_param)];
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, first_row.synthetic_kind.?);
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_require, second_row.synthetic_kind.?);
     try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_wrapper_exports_parameter, first_exports_row.synthetic_kind.?);
@@ -472,8 +472,8 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
     try std.testing.expectEqual(first_wrapper_scope, first_module_row.scope_id);
     try std.testing.expectEqual(first_wrapper_scope, first_exports_row.origin_scope);
     try std.testing.expectEqual(first_wrapper_scope, first_module_row.origin_scope);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_exports_param)), first_sem.scope_maps[@intFromEnum(first_wrapper_scope)].get("exports"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(first_module_param)), first_sem.scope_maps[@intFromEnum(first_wrapper_scope)].get("module"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(first_exports_param)), first_sem.scope_maps[@backingInt(first_wrapper_scope)].get("exports"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(first_module_param)), first_sem.scope_maps[@backingInt(first_wrapper_scope)].get("module"));
     try std.testing.expectEqualStrings("require_logo", first.getRequireName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("require_logo$2", second.getRequireName(null) orelse return error.TestUnexpectedResult);
     const first_symbol_count = first_sem.symbols.items.len;
@@ -494,10 +494,10 @@ test "linker: AST-less CJS wrapper names have recoverable exact SymbolIds" {
 
     // The exact wrapper ScopeId is an invariant, even when the convenience
     // symbol IDs are still present and point to valid symbols.
-    first.semantic.?.symbols.items[@intFromEnum(first_exports_param)].scope_id = @enumFromInt(0);
+    first.semantic.?.symbols.items[@backingInt(first_exports_param)].scope_id = @fromBackingInt(@intCast(0));
     try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(graph));
-    first.semantic.?.symbols.items[@intFromEnum(first_exports_param)].scope_id = first_wrapper_scope;
-    first.semantic.?.symbols.items[@intFromEnum(first_exports_param)].origin_scope = .none;
+    first.semantic.?.symbols.items[@backingInt(first_exports_param)].scope_id = first_wrapper_scope;
+    first.semantic.?.symbols.items[@backingInt(first_exports_param)].origin_scope = .none;
     try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(graph));
 }
 
@@ -516,31 +516,31 @@ test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
     const exports_id = module.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
     const module_id = module.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
     const sem = module.semantic orelse return error.TestUnexpectedResult;
-    const exports_row = sem.symbols.items[@intFromEnum(exports_id)];
-    const module_row = sem.symbols.items[@intFromEnum(module_id)];
+    const exports_row = sem.symbols.items[@backingInt(exports_id)];
+    const module_row = sem.symbols.items[@backingInt(module_id)];
     const wrapper_scope = sem.scopes[0].parent;
 
     try std.testing.expect(!wrapper_scope.isNone());
-    try std.testing.expectEqual(@as(usize, sem.scopes.len - 1), @intFromEnum(wrapper_scope));
-    try std.testing.expectEqual(@as(usize, sem.scope_maps.len - 1), @intFromEnum(wrapper_scope));
-    try std.testing.expectEqual(@as(@TypeOf(wrapper_scope), .none), sem.scopes[@intFromEnum(wrapper_scope)].parent);
-    try std.testing.expectEqual(@as(@TypeOf(sem.scopes[0].kind), .function), sem.scopes[@intFromEnum(wrapper_scope)].kind);
+    try std.testing.expectEqual(@as(usize, sem.scopes.len - 1), @backingInt(wrapper_scope));
+    try std.testing.expectEqual(@as(usize, sem.scope_maps.len - 1), @backingInt(wrapper_scope));
+    try std.testing.expectEqual(@as(@TypeOf(wrapper_scope), .none), sem.scopes[@backingInt(wrapper_scope)].parent);
+    try std.testing.expectEqual(@as(@TypeOf(sem.scopes[0].kind), .function), sem.scopes[@backingInt(wrapper_scope)].kind);
     try std.testing.expectEqual(wrapper_scope, exports_row.scope_id);
     try std.testing.expectEqual(wrapper_scope, module_row.scope_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(exports_id)), sem.scope_maps[@intFromEnum(wrapper_scope)].get("exports"));
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(module_id)), sem.scope_maps[@intFromEnum(wrapper_scope)].get("module"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(exports_id)), sem.scope_maps[@backingInt(wrapper_scope)].get("exports"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(module_id)), sem.scope_maps[@backingInt(wrapper_scope)].get("module"));
     try std.testing.expectEqual(wrapper_scope, sem.scopes[0].parent);
 
     const source_exports = sem.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult;
     const source_module = sem.scope_maps[0].get("module") orelse return error.TestUnexpectedResult;
-    try std.testing.expect(source_exports != @intFromEnum(exports_id));
-    try std.testing.expect(source_module != @intFromEnum(module_id));
+    try std.testing.expect(source_exports != @backingInt(exports_id));
+    try std.testing.expect(source_module != @backingInt(module_id));
     try std.testing.expectEqualStrings("exports", sem.symbols.items[source_exports].nameText(module.source));
     try std.testing.expectEqualStrings("module", sem.symbols.items[source_module].nameText(module.source));
 
     try r.linker.finalize(.{ .compute_renames = false, .compute_mangling = false });
-    const exports_output_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @intFromEnum(exports_id))) orelse return error.TestUnexpectedResult;
-    const module_output_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @intFromEnum(module_id))) orelse return error.TestUnexpectedResult;
+    const exports_output_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @backingInt(exports_id))) orelse return error.TestUnexpectedResult;
+    const module_output_name = r.linker.rename_table.get(bundler_symbol.SymbolID.make(index, @backingInt(module_id))) orelse return error.TestUnexpectedResult;
     try std.testing.expect(!std.mem.eql(u8, exports_output_name, "exports"));
     try std.testing.expect(!std.mem.eql(u8, module_output_name, "module"));
     try std.testing.expect(!std.mem.eql(u8, exports_output_name, module_output_name));
@@ -557,7 +557,7 @@ test "#4819: CJS lexical conflicts keep distinct wrapper parameter SymbolIds" {
     try std.testing.expectEqual(scope_map_count, module.semantic.?.scope_maps.len);
 
     const mutable_scope_maps = @constCast(sem.scope_maps);
-    mutable_scope_maps[@intFromEnum(wrapper_scope)].putAssumeCapacity("exports", @intFromEnum(module_id));
+    mutable_scope_maps[@backingInt(wrapper_scope)].putAssumeCapacity("exports", @backingInt(module_id));
     try std.testing.expectError(error.CjsWrapperParameterScopeMismatch, graph_finalize.registerWrapperSymbols(r.graph));
 }
 
@@ -578,11 +578,11 @@ test "#4819: escaped CJS var redeclaration shares the wrapper parameter SymbolId
     const wrapper_scope = sem.scopes[0].parent;
     const escaped_source_key = "exp\\u006frts";
     try std.testing.expect(!wrapper_scope.isNone());
-    try std.testing.expectEqual(@as(usize, @intFromEnum(exports_id)), sem.scope_maps[0].get(escaped_source_key) orelse return error.TestUnexpectedResult);
-    try std.testing.expectEqual(@as(usize, @intFromEnum(exports_id)), sem.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult);
-    try std.testing.expectEqual(@as(usize, @intFromEnum(exports_id)), sem.scope_maps[@intFromEnum(wrapper_scope)].get("exports") orelse return error.TestUnexpectedResult);
-    try std.testing.expectEqual(wrapper_scope, sem.symbols.items[@intFromEnum(exports_id)].scope_id);
-    try std.testing.expect(sem.symbols.items[@intFromEnum(exports_id)].synthetic_kind == null);
+    try std.testing.expectEqual(@as(usize, @backingInt(exports_id)), sem.scope_maps[0].get(escaped_source_key) orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(@as(usize, @backingInt(exports_id)), sem.scope_maps[0].get("exports") orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(@as(usize, @backingInt(exports_id)), sem.scope_maps[@backingInt(wrapper_scope)].get("exports") orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqual(wrapper_scope, sem.symbols.items[@backingInt(exports_id)].scope_id);
+    try std.testing.expect(sem.symbols.items[@backingInt(exports_id)].synthetic_kind == null);
     const scope_count = sem.scopes.len;
     const scope_map_count = sem.scope_maps.len;
     try graph_finalize.registerWrapperSymbols(r.graph);
@@ -600,7 +600,7 @@ test "#4819: escaped CJS var redeclaration shares the wrapper parameter SymbolId
     const decoded = try module_codec.deserialize(encoded.items, decoded_arena.allocator());
     const decoded_wrapper_scope = decoded.semantic.scopes[0].parent;
     try std.testing.expect(!decoded_wrapper_scope.isNone());
-    const decoded_wrapper_raw: usize = @intFromEnum(decoded_wrapper_scope);
+    const decoded_wrapper_raw: usize = @backingInt(decoded_wrapper_scope);
     const decoded_exports_id = decoded.semantic.scope_maps[decoded_wrapper_raw].get("exports") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(decoded_wrapper_scope, decoded.semantic.symbols.items[decoded_exports_id].scope_id);
     try std.testing.expectEqual(decoded_exports_id, decoded.semantic.scope_maps[0].get(escaped_source_key) orelse return error.TestUnexpectedResult);
@@ -653,11 +653,11 @@ test "linker: semantic refresh restores graph-owned wrapper identities" {
     const exports_id = module.exports_symbol orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(
         semantic_symbol.SyntheticKind.cjs_require,
-        semantic.symbols.items[@intFromEnum(require_id)].synthetic_kind.?,
+        semantic.symbols.items[@backingInt(require_id)].synthetic_kind.?,
     );
     try std.testing.expectEqual(
         semantic_symbol.SyntheticKind.cjs_exports,
-        semantic.symbols.items[@intFromEnum(exports_id)].synthetic_kind.?,
+        semantic.symbols.items[@backingInt(exports_id)].synthetic_kind.?,
     );
     try std.testing.expectEqualStrings(old_require_name, module.getRequireName(&r.linker.rename_table) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings(old_exports_name, module.getExportsName(&r.linker.rename_table) orelse return error.TestUnexpectedResult);
@@ -665,12 +665,12 @@ test "linker: semantic refresh restores graph-owned wrapper identities" {
     const factory_id = module.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(
         semantic_symbol.SyntheticKind.cjs_runtime_factory,
-        semantic.symbols.items[@intFromEnum(factory_id)].synthetic_kind.?,
+        semantic.symbols.items[@backingInt(factory_id)].synthetic_kind.?,
     );
     const internal_ids = module.cjs_runtime_internal_symbols orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(
         semantic_symbol.SyntheticKind.cjs_runtime_internal_local,
-        semantic.symbols.items[@intFromEnum(internal_ids.callback_parameter)].synthetic_kind.?,
+        semantic.symbols.items[@backingInt(internal_ids.callback_parameter)].synthetic_kind.?,
     );
     const runtime_names = try r.linker.cjsFactoryRuntimeInternalNames();
     try std.testing.expect(runtime_names.callback_parameter.len > 0);
@@ -731,8 +731,8 @@ test "linker: semantic-less binary entry assigns exact runtime SymbolIds" {
     try std.testing.expectEqual(@as(usize, 1), binary_count);
     const cjs_module = factory_owner orelse return error.TestUnexpectedResult;
     const binary_module = binary_owner orelse return error.TestUnexpectedResult;
-    const factory_id = bundler_symbol.SymbolID.make(cjs_module.index, @intFromEnum(cjs_module.cjs_runtime_factory_symbol.?));
-    const binary_id = bundler_symbol.SymbolID.make(binary_module.index, @intFromEnum(binary_module.to_binary_runtime_symbol.?));
+    const factory_id = bundler_symbol.SymbolID.make(cjs_module.index, @backingInt(cjs_module.cjs_runtime_factory_symbol.?));
+    const binary_id = bundler_symbol.SymbolID.make(binary_module.index, @backingInt(binary_module.to_binary_runtime_symbol.?));
     const factory_name = linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult;
     const binary_name = try linker.toBinaryRuntimeName();
     const saved_factory_name = try std.testing.allocator.dupe(u8, factory_name);
@@ -793,7 +793,7 @@ test "linker: CJS runtime factory emission requires a graph SymbolId" {
     try expectCjsRuntimeInternalNames(&linker, index, internal_ids);
     try std.testing.expectEqual(
         try linker.cjsFactoryRuntimeName(),
-        linker.rename_table.get(bundler_symbol.SymbolID.make(index, @intFromEnum(factory_id))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(index, @backingInt(factory_id))) orelse return error.TestUnexpectedResult,
     );
 }
 
@@ -839,18 +839,18 @@ test "linker: disabled CJS wrappers receive runtime SymbolIds without source sem
     try std.testing.expectEqual(@as(usize, 2), semantic.scopes.len);
     try std.testing.expectEqual(@as(usize, 2), semantic.scope_maps.len);
     const wrapper_scope = semantic.scopes[0].parent;
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(wrapper_scope));
-    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, semantic.scopes[@intFromEnum(wrapper_scope)].kind);
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(wrapper_scope));
+    try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, semantic.scopes[@backingInt(wrapper_scope)].kind);
     const exports_parameter = module.cjs_wrapper_exports_parameter_symbol orelse return error.TestUnexpectedResult;
     const module_parameter = module.cjs_wrapper_module_parameter_symbol orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(wrapper_scope, semantic.symbols.items[@intFromEnum(exports_parameter)].scope_id);
-    try std.testing.expectEqual(wrapper_scope, semantic.symbols.items[@intFromEnum(module_parameter)].scope_id);
+    try std.testing.expectEqual(wrapper_scope, semantic.symbols.items[@backingInt(exports_parameter)].scope_id);
+    try std.testing.expectEqual(wrapper_scope, semantic.symbols.items[@backingInt(module_parameter)].scope_id);
     const factory_inner = module.cjs_runtime_factory_symbol orelse return error.TestUnexpectedResult;
 
     var linker = Linker.initWithGlobalIdentifiers(std.testing.allocator, graph, .esm, &.{"__commonJS"});
     defer linker.deinit();
     try linker.computeRenames();
-    const factory_id = bundler_symbol.SymbolID.make(index, @intFromEnum(factory_inner));
+    const factory_id = bundler_symbol.SymbolID.make(index, @backingInt(factory_inner));
     const factory_name = linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult;
     try std.testing.expect(!std.mem.eql(u8, "__commonJS", factory_name));
     try std.testing.expectEqualStrings(factory_name, try linker.cjsFactoryRuntimeName());
@@ -887,10 +887,10 @@ test "linker: semantic-less ESM wrappers receive exact wrapper and runtime Symbo
     const exports_inner = module.exports_symbol orelse return error.TestUnexpectedResult;
     const second_init_inner = second.init_symbol orelse return error.TestUnexpectedResult;
     const second_exports_inner = second.exports_symbol orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_init, semantic.symbols.items[@intFromEnum(init_inner)].synthetic_kind.?);
-    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_exports, semantic.symbols.items[@intFromEnum(exports_inner)].synthetic_kind.?);
-    try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_init, second_semantic.symbols.items[@intFromEnum(second_init_inner)].synthetic_kind.?);
-    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_exports, second_semantic.symbols.items[@intFromEnum(second_exports_inner)].synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_init, semantic.symbols.items[@backingInt(init_inner)].synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_exports, semantic.symbols.items[@backingInt(exports_inner)].synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_init, second_semantic.symbols.items[@backingInt(second_init_inner)].synthetic_kind.?);
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.cjs_exports, second_semantic.symbols.items[@backingInt(second_exports_inner)].synthetic_kind.?);
     try std.testing.expectEqualStrings("init_runtime_only_esm", module.getInitName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("exports_runtime_only_esm", module.getExportsName(null) orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("init_runtime_only_esm$2", second.getInitName(null) orelse return error.TestUnexpectedResult);
@@ -916,7 +916,7 @@ test "linker: semantic-less ESM wrappers receive exact wrapper and runtime Symbo
     var linker = Linker.initWithGlobalIdentifiers(std.testing.allocator, graph, .esm, &.{"__esm"});
     defer linker.deinit();
     try linker.computeRenames();
-    const factory_id = bundler_symbol.SymbolID.make(index, @intFromEnum(factory_inner));
+    const factory_id = bundler_symbol.SymbolID.make(index, @backingInt(factory_inner));
     const factory_name = try linker.esmFactoryRuntimeName();
     try std.testing.expect(!std.mem.eql(u8, "__esm", factory_name));
     try std.testing.expectEqualStrings(factory_name, linker.rename_table.get(factory_id) orelse return error.TestUnexpectedResult);
@@ -950,7 +950,7 @@ test "linker: ESM raw runtime locals recover by exact IDs and fail closed" {
         .{ .id = ids.factory_local, .name = names.factory_local, .kind = .variable_var },
     };
     for (expected) |item| {
-        const symbol = module.semantic.?.symbols.items[@intFromEnum(item.id)];
+        const symbol = module.semantic.?.symbols.items[@backingInt(item.id)];
         try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_runtime_internal_local, symbol.synthetic_kind.?);
         try std.testing.expectEqual(item.kind, symbol.kind);
         try std.testing.expectEqualStrings(item.name, symbol.synthetic_name);
@@ -969,25 +969,25 @@ test "linker: ESM raw runtime locals recover by exact IDs and fail closed" {
     try r.linker.prepareEsmRuntimeInternalNames();
     try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
     module.esm_runtime_internal_symbols = .{
-        .factory_parameter = @enumFromInt(999_999),
-        .result_parameter = @enumFromInt(999_999),
-        .catch_parameter = @enumFromInt(999_999),
-        .init_function = @enumFromInt(999_999),
-        .factory_local = @enumFromInt(999_999),
+        .factory_parameter = @fromBackingInt(@intCast(999_999)),
+        .result_parameter = @fromBackingInt(@intCast(999_999)),
+        .catch_parameter = @fromBackingInt(@intCast(999_999)),
+        .init_function = @fromBackingInt(@intCast(999_999)),
+        .factory_local = @fromBackingInt(@intCast(999_999)),
     };
     try r.linker.prepareEsmRuntimeInternalNames();
     try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
 
     // Chunk/dev paths may reset the rename table. Recover those entries from
     // the exact typed rows before returning names to the template emitter.
-    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.factory_parameter));
+    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @backingInt(ids.factory_parameter));
     _ = r.linker.rename_table.map.fetchRemove(missing_name_id) orelse return error.TestUnexpectedResult;
     try expectEsmRuntimeInternalNames(&r.linker, module_index, ids);
 
     // Typed rows are the recovery oracle; a wrong synthetic kind must not be
     // accepted merely because the cached Module field still names that row.
     module.esm_runtime_internal_symbols = null;
-    const local_index = @intFromEnum(ids.factory_local);
+    const local_index = @backingInt(ids.factory_local);
     const original_kind = module.semantic.?.symbols.items[local_index].synthetic_kind;
     module.semantic.?.symbols.items[local_index].synthetic_kind = .bundler_runtime_helper;
     try std.testing.expectError(error.EsmRuntimeInternalSymbolsMissing, r.linker.prepareEsmRuntimeInternalNames());
@@ -1036,11 +1036,11 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
         .{ .id = ids.to_common_js_module, .identity = "to_common_js.module", .output_name = names.to_common_js_module, .kind = .parameter },
     };
     for (expected) |item| {
-        const symbol = module.semantic.?.symbols.items[@intFromEnum(item.id)];
+        const symbol = module.semantic.?.symbols.items[@backingInt(item.id)];
         try std.testing.expectEqual(semantic_symbol.SyntheticKind.esm_interop_runtime_internal_local, symbol.synthetic_kind.?);
         try std.testing.expectEqual(item.kind, symbol.kind);
         try std.testing.expectEqualStrings(item.identity, symbol.synthetic_name);
-        try std.testing.expectEqualStrings(item.output_name, r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(item.id))) orelse return error.TestUnexpectedResult);
+        try std.testing.expectEqualStrings(item.output_name, r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(item.id))) orelse return error.TestUnexpectedResult);
     }
 
     // The typed rows are authoritative. Dropped and corrupt convenience IDs
@@ -1048,37 +1048,37 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
     module.esm_interop_runtime_internal_symbols = null;
     try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
     module.esm_interop_runtime_internal_symbols = .{
-        .copy_props_to = @enumFromInt(999_999),
-        .copy_props_from = @enumFromInt(999_999),
-        .copy_props_desc = @enumFromInt(999_999),
-        .copy_props_keys = @enumFromInt(999_999),
-        .copy_props_index = @enumFromInt(999_999),
-        .copy_props_key = @enumFromInt(999_999),
-        .copy_props_closure_key = @enumFromInt(999_999),
-        .to_esm_module = @enumFromInt(999_999),
-        .to_esm_node_mode = @enumFromInt(999_999),
-        .to_esm_target = @enumFromInt(999_999),
-        .export_target = @enumFromInt(999_999),
-        .export_all = @enumFromInt(999_999),
-        .export_name = @enumFromInt(999_999),
-        .to_common_js_module = @enumFromInt(999_999),
+        .copy_props_to = @fromBackingInt(@intCast(999_999)),
+        .copy_props_from = @fromBackingInt(@intCast(999_999)),
+        .copy_props_desc = @fromBackingInt(@intCast(999_999)),
+        .copy_props_keys = @fromBackingInt(@intCast(999_999)),
+        .copy_props_index = @fromBackingInt(@intCast(999_999)),
+        .copy_props_key = @fromBackingInt(@intCast(999_999)),
+        .copy_props_closure_key = @fromBackingInt(@intCast(999_999)),
+        .to_esm_module = @fromBackingInt(@intCast(999_999)),
+        .to_esm_node_mode = @fromBackingInt(@intCast(999_999)),
+        .to_esm_target = @fromBackingInt(@intCast(999_999)),
+        .export_target = @fromBackingInt(@intCast(999_999)),
+        .export_all = @fromBackingInt(@intCast(999_999)),
+        .export_name = @fromBackingInt(@intCast(999_999)),
+        .to_common_js_module = @fromBackingInt(@intCast(999_999)),
     };
     try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
 
-    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.copy_props_to));
+    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @backingInt(ids.copy_props_to));
     _ = r.linker.rename_table.map.fetchRemove(missing_name_id) orelse return error.TestUnexpectedResult;
     try expectEsmInteropRuntimeInternalNames(&r.linker, module_index, ids);
 
     // Exact typed rows are also a fail-closed boundary: wrong kind, duplicate
     // identity, and a missing row must not be papered over by stale cached IDs.
     const sem = &module.semantic.?;
-    const local_index = @intFromEnum(ids.copy_props_to);
+    const local_index = @backingInt(ids.copy_props_to);
     const original_kind = sem.symbols.items[local_index].kind;
     sem.symbols.items[local_index].kind = .variable_var;
     try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsInvalid, r.linker.prepareEsmInteropRuntimeNames());
     sem.symbols.items[local_index].kind = original_kind;
 
-    const duplicate_index = @intFromEnum(ids.copy_props_from);
+    const duplicate_index = @backingInt(ids.copy_props_from);
     const original_identity = sem.symbols.items[duplicate_index].synthetic_name;
     sem.symbols.items[duplicate_index].synthetic_name = "copy_props.to";
     try std.testing.expectError(error.EsmInteropRuntimeInternalSymbolsInvalid, r.linker.prepareEsmInteropRuntimeNames());
@@ -1098,7 +1098,7 @@ test "linker: ESM interop raw locals recover by exact IDs and reject malformed r
     // Module convenience cache survives. The pre-emit audit must recreate the
     // whole canonical set before workers start; a partial set still fails above.
     const rebuild_sem = &module.semantic.?;
-    const first_local = @intFromEnum(ids.copy_props_to);
+    const first_local = @backingInt(ids.copy_props_to);
     try std.testing.expectEqual(@as(usize, 14), rebuild_sem.symbols.items.len - first_local);
     rebuild_sem.symbols.items.len = first_local;
     try r.linker.prepareEsmInteropRuntimeNamesForEmit();
@@ -1160,23 +1160,23 @@ test "linker: HMR preamble names are graph-owned and recover exact identities" {
         .{ .id = ids.apply_update, .identity = "hmr.apply_update", .output_name = names.apply_update, .kind = .function_decl },
     };
     for (expected) |item| {
-        const symbol = module.semantic.?.symbols.items[@intFromEnum(item.id)];
+        const symbol = module.semantic.?.symbols.items[@backingInt(item.id)];
         try std.testing.expectEqual(semantic_symbol.SyntheticKind.hmr_runtime_internal_local, symbol.synthetic_kind.?);
         try std.testing.expectEqual(item.kind, symbol.kind);
         try std.testing.expectEqualStrings(item.identity, symbol.synthetic_name);
-        try std.testing.expectEqualStrings(item.output_name, r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(item.id))) orelse return error.TestUnexpectedResult);
+        try std.testing.expectEqualStrings(item.output_name, r.linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(item.id))) orelse return error.TestUnexpectedResult);
     }
 
     // Typed rows recover the convenience ID cache and restore names after a
     // chunk pass drops entries from the transient rename table.
     module.hmr_runtime_internal_symbols = null;
     try expectHmrRuntimeInternalNames(&r.linker, module_index, ids);
-    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.hot_callbacks));
+    const missing_name_id = bundler_symbol.SymbolID.make(module_index, @backingInt(ids.hot_callbacks));
     _ = r.linker.rename_table.map.fetchRemove(missing_name_id) orelse return error.TestUnexpectedResult;
     try expectHmrRuntimeInternalNames(&r.linker, module_index, ids);
 
     const sem = &module.semantic.?;
-    const changed_index = @intFromEnum(ids.hot_callbacks);
+    const changed_index = @backingInt(ids.hot_callbacks);
     const original_kind = sem.symbols.items[changed_index].kind;
     sem.symbols.items[changed_index].kind = .function_decl;
     try std.testing.expectError(error.HmrRuntimeInternalSymbolsInvalid, r.linker.prepareHmrRuntimeInternalNames());
@@ -1223,7 +1223,7 @@ fn expectHmrRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids
         .{ ids.apply_update, names.apply_update },
     };
     inline for (values) |value| {
-        try std.testing.expectEqualStrings(value[1], linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(value[0]))) orelse return error.TestUnexpectedResult);
+        try std.testing.expectEqualStrings(value[1], linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(value[0]))) orelse return error.TestUnexpectedResult);
     }
 }
 
@@ -1247,7 +1247,7 @@ fn expectEsmInteropRuntimeInternalNames(linker: *Linker, module_index: ModuleInd
     };
     inline for (values) |value| {
         try std.testing.expectEqualStrings(value[2], value[1]);
-        try std.testing.expectEqualStrings(value[1], linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(value[0]))) orelse return error.TestUnexpectedResult);
+        try std.testing.expectEqualStrings(value[1], linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(value[0]))) orelse return error.TestUnexpectedResult);
     }
 }
 
@@ -1260,23 +1260,23 @@ fn expectEsmRuntimeInternalNames(linker: *Linker, module_index: ModuleIndex, ids
     try std.testing.expectEqualStrings("f", names.factory_local);
     try std.testing.expectEqualStrings(
         names.factory_parameter,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.factory_parameter))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.factory_parameter))) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         names.result_parameter,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.result_parameter))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.result_parameter))) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         names.catch_parameter,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.catch_parameter))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.catch_parameter))) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         names.init_function,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.init_function))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.init_function))) orelse return error.TestUnexpectedResult,
     );
     try std.testing.expectEqualStrings(
         names.factory_local,
-        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @intFromEnum(ids.factory_local))) orelse return error.TestUnexpectedResult,
+        linker.rename_table.get(bundler_symbol.SymbolID.make(module_index, @backingInt(ids.factory_local))) orelse return error.TestUnexpectedResult,
     );
 }
 
@@ -1297,7 +1297,7 @@ test "linker: re-export chain resolved" {
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // chain: a→b→c, canonical은 c(index 2)
-    try std.testing.expectEqual(@as(u32, 2), @intFromEnum(binding.?.canonical.module_index));
+    try std.testing.expectEqual(@as(u32, 2), @backingInt(binding.?.canonical.module_index));
 }
 
 test "linker: missing export produces diagnostic" {
@@ -1335,7 +1335,7 @@ test "linker: export * resolves through re-export all" {
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // export * → c.ts(index 2)
-    try std.testing.expectEqual(@as(u32, 2), @intFromEnum(binding.?.canonical.module_index));
+    try std.testing.expectEqual(@as(u32, 2), @backingInt(binding.?.canonical.module_index));
 }
 
 test "linker: export * from CJS resolves to CJS module" {
@@ -1358,7 +1358,7 @@ test "linker: export * from CJS resolves to CJS module" {
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // c.js는 CJS이므로, resolveExportChain이 c.js(index 2)를 반환
-    try std.testing.expectEqual(@as(u32, 2), @intFromEnum(binding.?.canonical.module_index));
+    try std.testing.expectEqual(@as(u32, 2), @backingInt(binding.?.canonical.module_index));
     try std.testing.expectEqualStrings("x", binding.?.canonical.export_name);
     // c.js가 실제로 CJS로 감지되었는지 확인
     try std.testing.expectEqual(types.WrapKind.cjs, r.graph.getModule(ModuleIndex.fromUsize(2)).?.wrap_kind);
@@ -1384,7 +1384,7 @@ test "linker: namespace re-export resolves to local binding" {
     const binding = r.linker.getResolvedBinding(0, a.import_bindings[0].local_span);
     try std.testing.expect(binding != null);
     // namespace re-export는 b.ts(index 1)의 로컬 바인딩을 반환
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(binding.?.canonical.module_index));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(binding.?.canonical.module_index));
     try std.testing.expectEqualStrings("ns", binding.?.canonical.export_name);
 }
 
@@ -1418,7 +1418,7 @@ test "linker: resolveExportChain on CJS module returns null for named exports" {
 
     // CJS 모듈(index 1)에 직접 resolveExportChain 호출 → null
     // CJS는 정적 export가 없으므로 named export를 찾을 수 없다
-    const result = linker.resolveExportChain(@enumFromInt(1), "x", 0);
+    const result = linker.resolveExportChain(@fromBackingInt(@intCast(1)), "x", 0);
     try std.testing.expect(result == null);
 }
 
@@ -1792,7 +1792,7 @@ test "computeRenamesForModules: 지정된 모듈만 대상으로 충돌 감지" 
     try std.testing.expectEqual(@as(usize, 2), global_rename_count);
 
     // per-module rename: 모듈 0, 1만 대상 → 1개만 rename됨
-    const subset = &[_]ModuleIndex{ @enumFromInt(0), @enumFromInt(1) };
+    const subset = &[_]ModuleIndex{ @fromBackingInt(@intCast(0)), @fromBackingInt(@intCast(1)) };
     try linker.computeRenamesForModules(subset, &.{});
     var subset_rename_count: usize = 0;
     for (0..graph.moduleCount()) |i| {
@@ -2312,7 +2312,7 @@ test "export * as: does not pollute parent seen (name collision)" {
     const resolved = r.linker.resolveExportChain(core_idx, "string", 0);
     try std.testing.expect(resolved != null);
     // schemas(plain star)의 factory 로 해석되어야 한다 — regexes(namespaced)가 아님.
-    try std.testing.expectEqual(@intFromEnum(schemas_idx), @intFromEnum(resolved.?.module_index));
+    try std.testing.expectEqual(@backingInt(schemas_idx), @backingInt(resolved.?.module_index));
 }
 
 test "export * as: namespaced inner name does not leak to top-level (no false resolve)" {
@@ -2844,7 +2844,7 @@ test "applyPendingRenames: pending 반영 + mutated module stale entry prune (RF
     const symbol_mod = @import("symbol.zig");
     const m0 = r.graph.modules.at(0);
     defer m0.pending_renames.deinit(std.testing.allocator);
-    const mi: ModuleIndex = @enumFromInt(0);
+    const mi: ModuleIndex = @fromBackingInt(@intCast(0));
 
     // carry-over 모사: resync 로 idx 가 바뀌어 (m0, 99) 가 stale 가 된 상태 + new idx (m0, 0) pending.
     try r.linker.rename_table.put(std.testing.allocator, symbol_mod.SymbolID.make(mi, 99), "stale");
@@ -2886,8 +2886,8 @@ test "populateSymbolRefCounts: stale alias id 는 건너뜀 (bounds guard)" {
         .import_record_index = 0,
         .symbol = .{
             .alias = .{
-                .module = @enumFromInt(1),
-                .symbol = @enumFromInt(5), // stale — table.count() == 0
+                .module = @fromBackingInt(@intCast(1)),
+                .symbol = @fromBackingInt(@intCast(5)), // stale — table.count() == 0
             },
         },
     };
@@ -2900,8 +2900,8 @@ test "populateSymbolRefCounts: stale alias id 는 건너뜀 (bounds guard)" {
     defer cache.deinit();
     var graph = ModuleGraph.init(allocator, &cache);
     defer graph.deinit();
-    try graph.modules.append(allocator, module_mod.Module.init(@enumFromInt(0), "/a.ts"));
-    try graph.modules.append(allocator, module_mod.Module.init(@enumFromInt(1), "/b.ts"));
+    try graph.modules.append(allocator, module_mod.Module.init(@fromBackingInt(@intCast(0)), "/a.ts"));
+    try graph.modules.append(allocator, module_mod.Module.init(@fromBackingInt(@intCast(1)), "/b.ts"));
 
     // importer module 의 import_bindings 를 주입.
     var ibs = [_]ImportBindingT{ib};
@@ -2935,7 +2935,7 @@ test "populateImportSymbols: named import의 local_symbol이 현재 모듈 seman
         if (std.mem.eql(u8, ib.local_name, "x")) {
             try std.testing.expect(ib.local_symbol.isValid());
             // 현재 모듈(a=0)을 가리켜야 함 — source(b=1)가 아님
-            try std.testing.expectEqual(@as(u32, 0), @intFromEnum(ib.local_symbol.moduleIndex()));
+            try std.testing.expectEqual(@as(u32, 0), @backingInt(ib.local_symbol.moduleIndex()));
             found = true;
         }
     }
@@ -2955,7 +2955,7 @@ fn expectRenameTablesEqual(a: *const Linker, b: *const Linker) !void {
     while (it.next()) |e| {
         const other = b.rename_table.get(e.key_ptr.*) orelse {
             std.debug.print("missing key in b: mod={d} inner={d}\n", .{
-                @intFromEnum(e.key_ptr.module), @intFromEnum(e.key_ptr.inner),
+                @backingInt(e.key_ptr.module), @backingInt(e.key_ptr.inner),
             });
             return error.MissingKey;
         };
@@ -3100,7 +3100,7 @@ test "reuse: G3 by-name 재유도 — 스냅샷의 inner idx 가 흔들려도 �
     // 재유도하므로, 망가진 idx 와 무관하게 동일 결과가 나와야 한다 (G3 핵심).
     for (snap.entries) |*e| {
         // local_name 은 유지, id.inner 만 손상.
-        e.id.inner = @enumFromInt(@as(u32, 0xFFFF));
+        e.id.inner = @fromBackingInt(@intCast(@as(u32, 0xFFFF)));
     }
 
     var fresh = Linker.init(std.testing.allocator, r.graph, .esm);
@@ -3215,7 +3215,7 @@ test "reuse: nested shadow 추가 시 guard=false (toplevel 불변이라 G2 가 
     // a.ts 모듈의 fresh fingerprint 와 스냅샷을 직접 대조해 어떤 게이트가 잡는지 확인:
     // toplevel/import-local 은 일치, nested 만 불일치여야 한다.
     const a_idx = findModuleIdx(rB.graph, "a.ts").?;
-    const ai: usize = @intFromEnum(a_idx);
+    const ai: usize = @backingInt(a_idx);
     const cur = try rB.linker.moduleFingerprint(rB.graph.getModule(a_idx).?.*);
     const old = snap.fingerprint[ai];
     try std.testing.expectEqual(old.path_hash, cur.path_hash); // 같은 파일
@@ -3258,7 +3258,7 @@ test "reuse: wrap_kind flip (ESM→CJS) 시 guard=false" {
     try std.testing.expectEqual(types.WrapKind.cjs, rB.graph.getModule(b_idx).?.wrap_kind);
 
     // wrap_kind 가 import_locals_wrap_hash 의 seed 라 b 의 fingerprint 가 달라진다.
-    const bi: usize = @intFromEnum(b_idx);
+    const bi: usize = @backingInt(b_idx);
     const cur = try rB.linker.moduleFingerprint(rB.graph.getModule(b_idx).?.*);
     try std.testing.expect(snap.fingerprint[bi].import_locals_wrap_hash != cur.import_locals_wrap_hash);
 
@@ -3288,7 +3288,7 @@ test "reuse: F5 — rename_table 키의 symbolLocalName 이 null 이면 스냅�
     //    symbolLocalName→null 이 된다. scope_maps 에도 없고 synthetic 도 아닌, totality 가
     //    깨지는 정확한 케이스. value 는 borrow 라 별도 free 불필요(canonical_strings 소유가
     //    아닌 string literal — RenameTable.deinit 은 map 만 해제).
-    const oob_module: types.ModuleIndex = @enumFromInt(@as(u32, @intCast(r.graph.moduleCount())) + 7);
+    const oob_module: types.ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(r.graph.moduleCount())) + 7));
     const bad_id = bundler_symbol.SymbolID.make(oob_module, 0);
     // sanity: 정말로 null 을 반환하는지 — buildRenameSnapshot 폐기 조건의 전제 확인.
     try std.testing.expect(r.linker.symbolLocalName(bad_id) == null);

@@ -269,7 +269,7 @@ fn parsePostfixType(self: *Parser) ParseError2!NodeIndex {
                 // .extra (child_offsets = &.{} 라 ast_walk 미접근). TS parser 와 동일.
                 try self.advance(); // [
                 try self.advance(); // ]
-                const extra_idx = try self.ast.addExtras(&.{@intFromEnum(base)});
+                const extra_idx = try self.ast.addExtras(&.{@backingInt(base)});
                 base = try self.ast.addNode(.{
                     .tag = .flow_array_type,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -398,7 +398,7 @@ fn parsePrimaryType(self: *Parser) ParseError2!NodeIndex {
                 }
                 const extra_start = try self.ast.addExtra(span.start);
                 _ = try self.ast.addExtra(name_end);
-                _ = try self.ast.addExtra(@intFromEnum(type_args));
+                _ = try self.ast.addExtra(@backingInt(type_args));
                 return try self.ast.addNode(.{
                     .tag = .flow_type_reference,
                     .span = .{ .start = span.start, .end = self.currentSpan().start },
@@ -587,7 +587,7 @@ fn parseTypeReference(self: *Parser) ParseError2!NodeIndex {
 
     const extra_start = try self.ast.addExtra(name_span.start);
     _ = try self.ast.addExtra(name_end);
-    _ = try self.ast.addExtra(@intFromEnum(type_args));
+    _ = try self.ast.addExtra(@backingInt(type_args));
 
     return try self.ast.addNode(.{
         .tag = .flow_type_reference,
@@ -771,7 +771,7 @@ fn parseParenOrFunctionType(self: *Parser) ParseError2!NodeIndex {
                     const named = try parseFunctionTypeParamList(self);
                     var i: u32 = 0;
                     while (i < named.len) : (i += 1) {
-                        const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[named.start + i]);
+                        const idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[named.start + i]));
                         try self.scratch.append(self.allocator, idx);
                     }
                     break;
@@ -818,10 +818,10 @@ fn makeFunctionType(
     return_type: NodeIndex,
 ) !NodeIndex {
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(type_params),
+        @backingInt(type_params),
         params.start,
         params.len,
-        @intFromEnum(return_type),
+        @backingInt(return_type),
     });
     return self.ast.addNode(.{
         .tag = .flow_function_type,
@@ -894,8 +894,8 @@ fn parseFunctionTypeParamList(self: *Parser) ParseError2!ast_mod.NodeList {
                     .readonly = false,
                 };
                 const extra = try self.ast.addExtras(&.{
-                    @intFromEnum(name_node),
-                    @intFromEnum(type_ann),
+                    @backingInt(name_node),
+                    @backingInt(type_ann),
                     flags.toU32(),
                 });
                 try self.scratch.append(self.allocator, try self.ast.addNode(.{
@@ -1168,8 +1168,8 @@ fn parseFlowTypeMember(self: *Parser) ParseError2!NodeIndex {
     };
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(key),
-        @intFromEnum(type_ann),
+        @backingInt(key),
+        @backingInt(type_ann),
         flags.toU32(),
     });
     return try self.ast.addNode(.{
@@ -1288,9 +1288,9 @@ pub fn parseFlowTypeAliasDeclaration(self: *Parser) ParseError2!NodeIndex {
     _ = try self.eat(.semicolon);
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(name),
-        @intFromEnum(type_params),
-        @intFromEnum(value),
+        @backingInt(name),
+        @backingInt(type_params),
+        @backingInt(value),
     });
     return try self.ast.addNode(.{
         .tag = .flow_type_alias_declaration,
@@ -1341,10 +1341,10 @@ pub fn parseFlowOpaqueType(self: *Parser) ParseError2!NodeIndex {
     _ = try self.eat(.semicolon);
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(name),
-        @intFromEnum(type_params),
-        @intFromEnum(supertype),
-        @intFromEnum(value),
+        @backingInt(name),
+        @backingInt(type_params),
+        @backingInt(supertype),
+        @backingInt(value),
     });
     return try self.ast.addNode(.{
         .tag = .flow_opaque_type,
@@ -1649,11 +1649,11 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         });
 
         // 1) function Name_withRef({...props}, ref) { body }
-        const none = @intFromEnum(NodeIndex.none);
+        const none = @backingInt(NodeIndex.none);
         const params_node = try self.wrapAsFormalParametersFromList(params, .{ .start = 0, .end = 0 });
-        const func_extra = try self.ast.addExtra(@intFromEnum(with_ref_name));
-        _ = try self.ast.addExtra(@intFromEnum(params_node));
-        _ = try self.ast.addExtra(@intFromEnum(body));
+        const func_extra = try self.ast.addExtra(@backingInt(with_ref_name));
+        _ = try self.ast.addExtra(@backingInt(params_node));
+        _ = try self.ast.addExtra(@backingInt(body));
         _ = try self.ast.addExtra(0); // flags
         _ = try self.ast.addExtra(none); // return_type
         const func_decl = try self.ast.addNode(.{
@@ -1677,7 +1677,7 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         });
         // static_member_expression: extra = [object, property, flags]
         const member_extra = try self.ast.addExtras(&.{
-            @intFromEnum(react_ref), @intFromEnum(fwd_id), 0,
+            @backingInt(react_ref), @backingInt(fwd_id), 0,
         });
         const callee = try self.ast.addNode(.{
             .tag = .static_member_expression,
@@ -1691,7 +1691,7 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         });
         const args_list = try self.ast.addNodeList(&.{arg_ref});
         const call_extra = try self.ast.addExtras(&.{
-            @intFromEnum(callee), args_list.start, args_list.len, 0,
+            @backingInt(callee), args_list.start, args_list.len, 0,
         });
         const call_node = try self.ast.addNode(.{
             .tag = .call_expression,
@@ -1712,7 +1712,7 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         });
         // variable_declarator: extra = [name, type_ann, init]
         const decl_extra = try self.ast.addExtras(&.{
-            @intFromEnum(binding), none, @intFromEnum(call_node),
+            @backingInt(binding), none, @backingInt(call_node),
         });
         const declarator = try self.ast.addNode(.{
             .tag = .variable_declarator,
@@ -1721,7 +1721,7 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
         });
         // variable_declaration: extra = [kind_flags, list_start, list_len]
         const decl_list = try self.ast.addNodeList(&.{declarator});
-        const var_extra = try self.ast.addExtras(&.{ @intFromEnum(VariableDeclarationKind.@"const"), decl_list.start, decl_list.len });
+        const var_extra = try self.ast.addExtras(&.{ @backingInt(VariableDeclarationKind.@"const"), decl_list.start, decl_list.len });
         const const_decl = try self.ast.addNode(.{
             .tag = .variable_declaration,
             .span = span,
@@ -1730,7 +1730,7 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
 
         // wrapper: extra = [func_decl, const_decl]
         const wrapper_extra = try self.ast.addExtras(&.{
-            @intFromEnum(func_decl), @intFromEnum(const_decl),
+            @backingInt(func_decl), @backingInt(const_decl),
         });
         return try self.ast.addNode(.{
             .tag = .flow_component_wrapper,
@@ -1740,11 +1740,11 @@ pub fn parseFlowComponentDeclaration(self: *Parser) ParseError2!NodeIndex {
     }
 
     // ref가 없으면 일반 함수 선언
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const params_node = try self.wrapAsFormalParametersFromList(params, .{ .start = 0, .end = 0 });
-    const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(@intFromEnum(params_node));
-    _ = try self.ast.addExtra(@intFromEnum(body));
+    const extra_start = try self.ast.addExtra(@backingInt(name));
+    _ = try self.ast.addExtra(@backingInt(params_node));
+    _ = try self.ast.addExtra(@backingInt(body));
     _ = try self.ast.addExtra(0);
     _ = try self.ast.addExtra(none);
 
@@ -1991,11 +1991,11 @@ pub fn parseFlowInterfaceDeclaration(self: *Parser) ParseError2!NodeIndex {
         NodeIndex.none;
 
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(name),
-        @intFromEnum(type_params),
+        @backingInt(name),
+        @backingInt(type_params),
         extends_start,
         extends_len,
-        @intFromEnum(body),
+        @backingInt(body),
     });
     return try self.ast.addNode(.{
         .tag = .flow_interface_declaration,
@@ -2082,7 +2082,7 @@ pub fn parseMatchExpression(self: *Parser) ParseError2!NodeIndex {
 
     // flow_match_expression: extra = [discriminant, arms_start, arms_len]
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(discriminant),
+        @backingInt(discriminant),
         arms_list.start,
         arms_list.len,
     });
@@ -2396,10 +2396,10 @@ pub fn parseFlowEnumDeclaration(self: *Parser) ParseError2!NodeIndex {
     self.restoreScratch(scratch_top);
 
     const extra_start = try self.ast.addExtras(&.{
-        @intFromEnum(name),
+        @backingInt(name),
         members.start,
         members.len,
-        @intFromEnum(base_type),
+        @backingInt(base_type),
     });
 
     self.ast.has_flow_enum_declaration = true;

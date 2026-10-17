@@ -61,7 +61,7 @@ fn cjsWrapperParamOutputName(
         return fallback;
     };
     const sem = module.semantic orelse return error.MissingSemantic;
-    const raw: usize = @intFromEnum(id);
+    const raw: usize = @backingInt(id);
     if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
     const symbol = sem.symbols.items[raw];
     if (symbol.synthetic_kind != null and symbol.synthetic_name.len == 0)
@@ -111,7 +111,7 @@ test "CJS wrapper parameter codegen requires its exact output ScopeId" {
     const allocator = std.testing.allocator;
     const semantic_symbol = @import("../semantic/symbol.zig");
     const scope_mod = @import("../semantic/scope.zig");
-    const wrapper_scope: scope_mod.ScopeId = @enumFromInt(1);
+    const wrapper_scope: scope_mod.ScopeId = @fromBackingInt(@intCast(1));
     var symbols: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer symbols.deinit(allocator);
     const exports_id = try semantic_symbol.extendSymbol(
@@ -131,7 +131,7 @@ test "CJS wrapper parameter codegen requires its exact output ScopeId" {
         .EMPTY,
     );
     for ([_]semantic_symbol.SymbolId{ exports_id, module_id }) |id| {
-        const symbol = &symbols.items[@intFromEnum(id)];
+        const symbol = &symbols.items[@backingInt(id)];
         symbol.scope_id = wrapper_scope;
         symbol.origin_scope = wrapper_scope;
     }
@@ -143,10 +143,10 @@ test "CJS wrapper parameter codegen requires its exact output ScopeId" {
     var scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
     defer scope_maps[0].deinit(allocator);
     defer scope_maps[1].deinit(allocator);
-    try scope_maps[1].put(allocator, "exports", @intFromEnum(exports_id));
-    try scope_maps[1].put(allocator, "module", @intFromEnum(module_id));
+    try scope_maps[1].put(allocator, "exports", @backingInt(exports_id));
+    try scope_maps[1].put(allocator, "module", @backingInt(module_id));
 
-    var module = Module.init(@enumFromInt(0), "disabled.cjs");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "disabled.cjs");
     module.wrap_kind = .cjs;
     module.cjs_wrapper_exports_parameter_symbol = exports_id;
     module.cjs_wrapper_module_parameter_symbol = module_id;
@@ -182,7 +182,7 @@ test "CJS wrapper parameter codegen requires its exact output ScopeId" {
         ),
     );
 
-    module.semantic.?.symbols.items[@intFromEnum(exports_id)].scope_id = @enumFromInt(0);
+    module.semantic.?.symbols.items[@backingInt(exports_id)].scope_id = @fromBackingInt(@intCast(0));
     try std.testing.expectError(
         error.MissingCjsWrapperParameterName,
         cjsWrapperParamOutputName(
@@ -1730,7 +1730,7 @@ fn resolveTlaPromiseName(module: *const Module, linker: ?*const Linker) ?[]const
     const binding = ast.nodes.items[binding_raw];
     if (binding.tag != .binding_identifier) return null;
 
-    const symbol_raw = @intFromEnum(reference.symbol_id);
+    const symbol_raw = @backingInt(reference.symbol_id);
     const source_name = ast.getText(binding.data.string_ref);
     if (linker) |l| {
         const linked_id = SymbolID.make(module.index, symbol_raw);
@@ -2946,9 +2946,9 @@ pub fn collectImportBindingNames(
             .import_specifier => {
                 const local_idx = spec_node.data.binary.right;
                 if (!local_idx.isNone()) {
-                    const local_node = esm_ast.nodes.items[@intFromEnum(local_idx)];
+                    const local_node = esm_ast.nodes.items[@backingInt(local_idx)];
                     const name = try name_arena.dupe(u8, esm_ast.getText(local_node.data.string_ref));
-                    const resolved_raw = resolveNodeName(md, @intFromEnum(local_idx), name);
+                    const resolved_raw = resolveNodeName(md, @backingInt(local_idx), name);
                     // namespace 접근 패턴 rename (__ns_N.prop)은 var 선언에 넣을 수 없음.
                     // namespace 변수는 dev_ns_vars로 별도 호이스팅됨.
                     if (std.mem.indexOfScalar(u8, resolved_raw, '.') != null) continue;
@@ -3006,8 +3006,8 @@ const emitFormatEpilogue = format_wrapper.emitFormatEpilogue;
 
 /// fatal_diagnostics 결정성 정렬 키 (#3564): severity → file_path → span.start → message.
 fn diagnosticLessThan(_: void, a: types.BundlerDiagnostic, b: types.BundlerDiagnostic) bool {
-    const a_sev = @intFromEnum(a.severity);
-    const b_sev = @intFromEnum(b.severity);
+    const a_sev = @backingInt(a.severity);
+    const b_sev = @backingInt(b.severity);
     if (a_sev != b_sev) return a_sev < b_sev;
     const path_order = std.mem.order(u8, a.file_path, b.file_path);
     if (path_order != .eq) return path_order == .lt;

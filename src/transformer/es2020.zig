@@ -47,8 +47,8 @@ pub fn ES2020(comptime Transformer: type) type {
 
         /// `a ?? b` → `a != null ? a : b`
         fn isUnresolvedSourceIdentifierReference(self: *const Transformer, node_idx: NodeIndex) bool {
-            if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
-            const raw_idx = @intFromEnum(node_idx);
+            if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) return false;
+            const raw_idx = @backingInt(node_idx);
             const node = self.ast.getNode(node_idx);
             if (node.tag != .identifier_reference) return false;
             if (self.unresolved_reference_nodes) |nodes| return nodes.contains(raw_idx);
@@ -84,7 +84,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     .data = .{ .binary = .{
                         .left = new_left,
                         .right = null_node,
-                        .flags = @intFromEnum(token_mod.Kind.neq),
+                        .flags = @backingInt(token_mod.Kind.neq),
                     } },
                 });
                 return self.ast.addNode(.{
@@ -102,7 +102,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     .data = .{ .binary = .{
                         .left = temp_ref1,
                         .right = new_left,
-                        .flags = @intFromEnum(token_mod.Kind.eq),
+                        .flags = @backingInt(token_mod.Kind.eq),
                     } },
                 });
                 const neq_null = try self.ast.addNode(.{
@@ -111,7 +111,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     .data = .{ .binary = .{
                         .left = assign_node,
                         .right = null_node,
-                        .flags = @intFromEnum(token_mod.Kind.neq),
+                        .flags = @backingInt(token_mod.Kind.neq),
                     } },
                 });
                 const temp_ref2 = try helpers.makeTempVarRef(self, temp_span, node.span);
@@ -247,7 +247,7 @@ pub fn ES2020(comptime Transformer: type) type {
             if (call_extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - call_extra < 4 or
                 (self.readU32(call_extra, 3) & ast_mod.CallFlags.optional_chain) == 0) return null;
             const callee_idx = self.readNodeIdx(call_extra, 0);
-            if (callee_idx.isNone() or @intFromEnum(callee_idx) >= self.ast.nodes.items.len) return null;
+            if (callee_idx.isNone() or @backingInt(callee_idx) >= self.ast.nodes.items.len) return null;
             const callee = self.ast.getNode(callee_idx);
             if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return null;
 
@@ -255,7 +255,7 @@ pub fn ES2020(comptime Transformer: type) type {
             var receiver_base: ?NodeIndex = null;
             var remaining_nodes = self.ast.nodes.items.len;
             while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-                if (current.isNone() or @intFromEnum(current) >= self.ast.nodes.items.len) return null;
+                if (current.isNone() or @backingInt(current) >= self.ast.nodes.items.len) return null;
                 const current_node = self.ast.getNode(current);
                 switch (current_node.tag) {
                     .static_member_expression, .computed_member_expression, .private_field_expression => {
@@ -318,11 +318,11 @@ pub fn ES2020(comptime Transformer: type) type {
                     const flags = self.readU32(extra, 2);
                     if (old_obj == receiver_base and (flags & ast_mod.MemberFlags.optional_chain) != 0) {
                         const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
-                        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(chain_base), @intFromEnum(prop), new_flags });
+                        const new_extra = try self.ast.addExtras(&.{ @backingInt(chain_base), @backingInt(prop), new_flags });
                         return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                     }
                     const new_obj = try replaceOptionalBoundaryWithTemp(self, self.ast.getNode(old_obj), receiver_base, chain_base);
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(prop), flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_obj), @backingInt(prop), flags });
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                 },
                 .call_expression => {
@@ -332,7 +332,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     const args_len = self.readU32(extra, 2);
                     const flags = self.readU32(extra, 3);
                     const new_callee = try replaceOptionalBoundaryWithTemp(self, self.ast.getNode(old_callee), receiver_base, chain_base);
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), args_start, args_len, flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_callee), args_start, args_len, flags });
                     return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
                 },
                 else => unreachable,
@@ -403,7 +403,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
             const new_prop = try self.visitNode(old_prop);
             const member_flags = flags & ~ast_mod.MemberFlags.optional_chain;
-            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(member_obj), @intFromEnum(new_prop), member_flags });
+            const member_extra = try self.ast.addExtras(&.{ @backingInt(member_obj), @backingInt(new_prop), member_flags });
             const member = try self.ast.addNode(.{ .tag = base.tag, .span = base.span, .data = .{ .extra = member_extra } });
 
             const fn_cap = try captureTrackedTemp(self, member, root.span);
@@ -458,7 +458,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
             const new_prop = try self.visitNode(old_prop);
             const new_member_flags = member_flags & ~ast_mod.MemberFlags.optional_chain;
-            const member_extra = try self.ast.addExtras(&.{ @intFromEnum(member_obj), @intFromEnum(new_prop), new_member_flags });
+            const member_extra = try self.ast.addExtras(&.{ @backingInt(member_obj), @backingInt(new_prop), new_member_flags });
             const base_node = self.ast.getNode(base_idx);
             const member = try self.ast.addNode(.{
                 .tag = base_node.tag,
@@ -521,12 +521,12 @@ pub fn ES2020(comptime Transformer: type) type {
                             found = extra;
                         }
                         const next = self.readNodeIdx(extra, 0);
-                        if (next.isNone() or @intFromEnum(next) >= self.ast.nodes.items.len) return found;
+                        if (next.isNone() or @backingInt(next) >= self.ast.nodes.items.len) return found;
                         current = self.ast.getNode(next);
                     },
                     .static_member_expression, .computed_member_expression, .private_field_expression => {
                         const next = self.readNodeIdx(current.data.extra, 0);
-                        if (next.isNone() or @intFromEnum(next) >= self.ast.nodes.items.len) return found;
+                        if (next.isNone() or @backingInt(next) >= self.ast.nodes.items.len) return found;
                         current = self.ast.getNode(next);
                     },
                     else => return found,
@@ -551,7 +551,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         const callee = self.readNodeIdx(extra, 0);
                         const flags = self.readU32(extra, 3);
                         if ((flags & ast_mod.CallFlags.optional_chain) != 0 and
-                            !callee.isNone() and @intFromEnum(callee) < self.ast.nodes.items.len)
+                            !callee.isNone() and @backingInt(callee) < self.ast.nodes.items.len)
                         {
                             const callee_node = self.ast.getNode(callee);
                             if (callee_node.tag == .static_member_expression or callee_node.tag == .computed_member_expression) {
@@ -568,7 +568,7 @@ pub fn ES2020(comptime Transformer: type) type {
                                 }
                             }
                         }
-                        if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return found;
+                        if (callee.isNone() or @backingInt(callee) >= self.ast.nodes.items.len) return found;
                         current = self.ast.getNode(callee);
                     },
                     .static_member_expression, .computed_member_expression, .private_field_expression => {
@@ -576,7 +576,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         if (extra > self.ast.extra_data.items.len or self.ast.extra_data.items.len - extra <= 2)
                             return found;
                         const receiver = self.readNodeIdx(extra, 0);
-                        if (receiver.isNone() or @intFromEnum(receiver) >= self.ast.nodes.items.len) return found;
+                        if (receiver.isNone() or @backingInt(receiver) >= self.ast.nodes.items.len) return found;
                         current = self.ast.getNode(receiver);
                     },
                     else => return found,
@@ -586,7 +586,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
         fn hasOptionalChainSegment(self: *const Transformer, start: NodeIndex) bool {
             var current = start;
-            while (!current.isNone() and @intFromEnum(current) < self.ast.nodes.items.len) {
+            while (!current.isNone() and @backingInt(current) < self.ast.nodes.items.len) {
                 const node = self.ast.getNode(current);
                 if (hasOptionalFlag(self, node)) return true;
                 switch (node.tag) {
@@ -673,11 +673,11 @@ pub fn ES2020(comptime Transformer: type) type {
                     const flags = self.readU32(e, 2);
                     if (obj_idx == base_idx and (flags & ast_mod.MemberFlags.optional_chain) != 0) {
                         const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
-                        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(obj_idx), @intFromEnum(prop), new_flags });
+                        const new_extra = try self.ast.addExtras(&.{ @backingInt(obj_idx), @backingInt(prop), new_flags });
                         return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                     }
                     const new_obj = try stripOptionalAtBase(self, self.ast.getNode(obj_idx), base_idx);
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(prop), flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_obj), @backingInt(prop), flags });
                     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
                 },
                 .call_expression => {
@@ -688,11 +688,11 @@ pub fn ES2020(comptime Transformer: type) type {
                     const flags = self.readU32(e, 3);
                     if (callee_idx == base_idx and (flags & ast_mod.CallFlags.optional_chain) != 0) {
                         const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
-                        const new_extra = try self.ast.addExtras(&.{ @intFromEnum(callee_idx), args_start, args_len, new_flags });
+                        const new_extra = try self.ast.addExtras(&.{ @backingInt(callee_idx), args_start, args_len, new_flags });
                         return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
                     }
                     const new_callee = try stripOptionalAtBase(self, self.ast.getNode(callee_idx), base_idx);
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), args_start, args_len, flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_callee), args_start, args_len, flags });
                     return self.ast.addNode(.{ .tag = .call_expression, .span = node.span, .data = .{ .extra = new_extra } });
                 },
                 else => unreachable,
@@ -745,7 +745,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .none = 0 },
             });
-            const extra = try self.ast.addExtras(&.{ @intFromEnum(super_node), @intFromEnum(prop), flags });
+            const extra = try self.ast.addExtras(&.{ @backingInt(super_node), @backingInt(prop), flags });
             return self.ast.addNode(.{ .tag = member_tag, .span = span, .data = .{ .extra = extra } });
         }
 
@@ -787,8 +787,8 @@ pub fn ES2020(comptime Transformer: type) type {
         }
 
         fn makeDeleteOf(self: *Transformer, operand: NodeIndex, span: Span) Transformer.Error!NodeIndex {
-            const op_flags: u32 = @intFromEnum(token_mod.Kind.kw_delete);
-            const new_extra = try self.ast.addExtras(&.{ @intFromEnum(operand), op_flags });
+            const op_flags: u32 = @backingInt(token_mod.Kind.kw_delete);
+            const new_extra = try self.ast.addExtras(&.{ @backingInt(operand), op_flags });
             return self.ast.addNode(.{
                 .tag = .unary_expression,
                 .span = span,
@@ -816,7 +816,7 @@ pub fn ES2020(comptime Transformer: type) type {
         fn getChainObject(self: *const Transformer, node: Node) NodeIndex {
             const extras = self.ast.extra_data.items;
             const e = node.data.extra;
-            return @enumFromInt(extras[e]);
+            return @fromBackingInt(@intCast(extras[e]));
         }
 
         fn rebuildChainNode(self: *Transformer, old_node: Node, chain_base: NodeIndex) Transformer.Error!NodeIndex {
@@ -841,7 +841,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     }
                     const new_prop = try self.visitNode(old_prop);
                     const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(new_prop), new_flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_obj), @backingInt(new_prop), new_flags });
                     return self.ast.addNode(.{ .tag = old_node.tag, .span = old_node.span, .data = .{ .extra = new_extra } });
                 },
                 .call_expression => {
@@ -857,7 +857,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         try rebuildChainNode(self, self.ast.getNode(old_callee), chain_base);
                     const new_args = try self.visitExtraList(.{ .start = args_start, .len = args_len });
                     const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), new_args.start, new_args.len, new_flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_callee), new_args.start, new_args.len, new_flags });
                     return self.ast.addNode(.{ .tag = .call_expression, .span = old_node.span, .data = .{ .extra = new_extra } });
                 },
                 else => unreachable,
@@ -884,7 +884,7 @@ pub fn ES2020(comptime Transformer: type) type {
                         try rebuildChainNodeWithOptionalMemberCallThis(self, self.ast.getNode(old_obj), chain_base, optional_call_callee_idx, receiver);
                     const new_prop = try self.visitNode(old_prop);
                     const new_flags = flags & ~ast_mod.MemberFlags.optional_chain;
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_obj), @intFromEnum(new_prop), new_flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_obj), @backingInt(new_prop), new_flags });
                     return self.ast.addNode(.{ .tag = old_node.tag, .span = old_node.span, .data = .{ .extra = new_extra } });
                 },
                 .call_expression => {
@@ -919,7 +919,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     else
                         try rebuildChainNodeWithOptionalMemberCallThis(self, self.ast.getNode(old_callee), chain_base, optional_call_callee_idx, receiver);
                     const new_flags = flags & ~ast_mod.CallFlags.optional_chain;
-                    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_callee), new_args.start, new_args.len, new_flags });
+                    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_callee), new_args.start, new_args.len, new_flags });
                     return self.ast.addNode(.{ .tag = .call_expression, .span = old_node.span, .data = .{ .extra = new_extra } });
                 },
                 else => unreachable,
@@ -961,8 +961,8 @@ pub fn ES2020(comptime Transformer: type) type {
                     .tag = old_callee_node.tag,
                     .span = old_callee_node.span,
                     .data = .{ .extra = try self.ast.addExtras(&.{
-                        @intFromEnum(member_obj),
-                        @intFromEnum(prop),
+                        @backingInt(member_obj),
+                        @backingInt(prop),
                         member_flags & ~ast_mod.MemberFlags.optional_chain,
                     }) },
                 });
@@ -1007,7 +1007,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const fn_ref = try readTrackedTemp(self, fn_cap.span, old_call.span);
             const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, old_call.span);
             const call_extra = try self.ast.addExtras(&.{
-                @intFromEnum(fn_ref),
+                @backingInt(fn_ref),
                 args.start,
                 args.len,
                 call_flags,

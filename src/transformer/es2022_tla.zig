@@ -160,8 +160,8 @@ fn collectTopLevelDeclaredNames(ast: *const ast_mod.Ast, allocator: std.mem.Allo
             const len = ast.extra_data.items[e + 2];
             var i: u32 = 0;
             while (i < len) : (i += 1) {
-                const declarator = ast.getNode(@enumFromInt(ast.extra_data.items[start + i]));
-                const binding: NodeIndex = @enumFromInt(ast.extra_data.items[declarator.data.extra]);
+                const declarator = ast.getNode(@fromBackingInt(@intCast(ast.extra_data.items[start + i])));
+                const binding: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[declarator.data.extra]));
                 if (!binding.isNone() and !try collectNames(ast, allocator, binding, .binding_identifier, names)) return false;
             }
             return true;
@@ -203,7 +203,7 @@ fn collectHoistableFunctions(
     var started = false;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start + i]));
         const child_node = ast.getNode(child);
         if (isModuleDeclaration(child_node.tag)) continue;
         if (!started) {
@@ -261,7 +261,7 @@ fn collectHoistableFunctions(
         }
     }
     for (candidates.items) |c| {
-        if (c.hoistable) try out.put(allocator, @intFromEnum(c.idx), {});
+        if (c.hoistable) try out.put(allocator, @backingInt(c.idx), {});
     }
 }
 
@@ -327,7 +327,7 @@ fn programScopeForHoist(comptime Transformer: type, self: *Transformer) ?ScopeId
     if (self.symbols.len == 0 and self.semantic_editor == null) return null;
     if (self.parser_node_count == 0) return null;
     const raw = self.scope_owner_map.get(self.parser_node_count - 1) orelse return null;
-    return @enumFromInt(raw);
+    return @fromBackingInt(@intCast(raw));
 }
 
 fn isProgramBinding(comptime Transformer: type, self: *Transformer, binding: NodeIndex, program_scope: ScopeId) bool {
@@ -354,7 +354,7 @@ fn collectProgramBindings(comptime Transformer: type, self: *Transformer, idx: N
             const elements = try self.allocator.dupe(u32, split.elements);
             defer self.allocator.free(elements);
             for (elements) |raw| {
-                const elem: NodeIndex = @enumFromInt(raw);
+                const elem: NodeIndex = @fromBackingInt(@intCast(raw));
                 if (elem.isNone()) continue;
                 const elem_node = self.ast.getNode(elem);
                 const target = switch (elem_node.tag) {
@@ -386,7 +386,7 @@ fn bindingWriteTarget(comptime Transformer: type, self: *Transformer, binding: N
 fn splitWrappedDeclaration(comptime Transformer: type, self: *Transformer, decl_idx: NodeIndex, exported: bool, program_scope: ScopeId, bindings: *WrappedBindings, body: *std.ArrayList(NodeIndex)) Transformer.Error!void {
     const decl = self.ast.getNode(decl_idx);
     const e = decl.data.extra;
-    const kind: ast_mod.VariableDeclarationKind = @enumFromInt(self.ast.extra_data.items[e]);
+    const kind: ast_mod.VariableDeclarationKind = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
     const list_start = self.ast.extra_data.items[e + 1];
     const list_len = self.ast.extra_data.items[e + 2];
     var kept: std.ArrayList(NodeIndex) = .empty;
@@ -395,10 +395,10 @@ fn splitWrappedDeclaration(comptime Transformer: type, self: *Transformer, decl_
     defer names.deinit(self.allocator);
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
-        const declarator_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+        const declarator_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start + i]));
         const declarator = self.ast.getNode(declarator_idx);
-        const binding: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
-        const init: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra + 2]);
+        const binding: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[declarator.data.extra]));
+        const init: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[declarator.data.extra + 2]));
         names.clearRetainingCapacity();
         // A lowering temp (`_ref` of a lowered pattern, even in an export)
         // keeps its declaration inside the wrapper.
@@ -428,9 +428,9 @@ fn splitWrappedClass(comptime Transformer: type, self: *Transformer, class_idx: 
     const class = self.ast.getNode(class_idx);
     var slots: [8]u32 = undefined;
     for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[class.data.extra + slot];
-    const name: NodeIndex = @enumFromInt(slots[ast_mod.ClassExtra.name]);
+    const name: NodeIndex = @fromBackingInt(@intCast(slots[ast_mod.ClassExtra.name]));
     if (!isProgramBinding(Transformer, self, name, program_scope)) return false;
-    slots[ast_mod.ClassExtra.name] = @intFromEnum(NodeIndex.none);
+    slots[ast_mod.ClassExtra.name] = @backingInt(NodeIndex.none);
     const expr_extra = try self.ast.addExtras(&slots);
     const expr = try self.ast.addNode(.{ .tag = .class_expression, .span = class.span, .data = .{ .extra = expr_extra } });
     if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(class_idx, expr);
@@ -451,7 +451,7 @@ fn placeWrappedStatement(comptime Transformer: type, self: *Transformer, stmt: N
         .variable_declaration => try splitWrappedDeclaration(Transformer, self, stmt, false, program_scope, bindings, body),
         .class_declaration => if (!try splitWrappedClass(Transformer, self, stmt, false, program_scope, bindings, body)) try body.append(self.allocator, stmt),
         .export_named_declaration => {
-            const declaration: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            const declaration: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
             if (declaration.isNone()) return post.append(self.allocator, stmt);
             switch (self.ast.getNode(declaration).tag) {
                 .variable_declaration => try splitWrappedDeclaration(Transformer, self, declaration, true, program_scope, bindings, body),
@@ -511,7 +511,7 @@ fn moveDefaultExport(comptime Transformer: type, self: *Transformer, stmt: NodeI
         .data = .{ .binary = .{ .left = local_ref, .right = try es_helpers.makePropertyName(self, "default"), .flags = 0 } },
     });
     const specs = try self.ast.addNodeList(&.{spec});
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     try post.append(self.allocator, try self.addExtraNode(.export_named_declaration, node.span, &.{ none, specs.start, specs.len, none, 0, 0 }));
     return true;
 }
@@ -529,8 +529,8 @@ fn appendHoistedDeclarations(comptime Transformer: type, self: *Transformer, bin
             try out.append(self.allocator, decl);
             continue;
         }
-        const none = @intFromEnum(NodeIndex.none);
-        try out.append(self.allocator, try self.addExtraNode(.export_named_declaration, span, &.{ @intFromEnum(decl), 0, 0, none, 0, 0 }));
+        const none = @backingInt(NodeIndex.none);
+        try out.append(self.allocator, try self.addExtraNode(.export_named_declaration, span, &.{ @backingInt(decl), 0, 0, none, 0, 0 }));
     }
 }
 
@@ -559,7 +559,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     var has_tla = false;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (isModuleDeclaration(self.ast.getNode(child).tag)) continue;
         if (try hasTopLevelAwait(self.ast, child)) {
             has_tla = true;
@@ -587,7 +587,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // imports pass-through (visit 하여 기본 변환 적용)
     i = 0;
     while (i < list.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) {
             const pt = self.pending_nodes.items.len;
@@ -604,8 +604,8 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     const empty_params = try self.ast.addNodeList(&.{});
     const empty_params_node = try self.ast.addFormalParameters(empty_params, node.span);
     const arrow_extra = try self.ast.addExtras(&.{
-        @intFromEnum(empty_params_node),
-        @intFromEnum(NodeIndex.none),
+        @backingInt(empty_params_node),
+        @backingInt(NodeIndex.none),
         ast_mod.ArrowFlags.is_async,
     });
     const arrow = try self.ast.addNode(.{
@@ -647,7 +647,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     defer moved.deinit(self.allocator);
     i = 0;
     while (i < list.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
         if (isModuleDeclaration(child_node.tag)) {
@@ -661,25 +661,25 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
                 if (!self.options.tla_module_awaited) continue;
                 if (child_node.tag == .export_default_declaration) {
                     if (try moveDefaultExport(Transformer, self, child, scope, &bindings, &self.scratch, &post_exports))
-                        try prelude_exports.put(self.allocator, @intFromEnum(child), {});
+                        try prelude_exports.put(self.allocator, @backingInt(child), {});
                     continue;
                 }
                 if (child_node.tag != .export_named_declaration) continue;
-                if (self.ast.extra_data.items[child_node.data.extra] == @intFromEnum(NodeIndex.none)) continue;
+                if (self.ast.extra_data.items[child_node.data.extra] == @backingInt(NodeIndex.none)) continue;
                 const pt = self.pending_nodes.items.len;
                 const tt = self.trailing_nodes.items.len;
                 const visited = try self.visitNode(child);
                 moved.clearRetainingCapacity();
                 try drainPendingAroundTo(Transformer, self, pt, tt, visited, &moved);
                 for (moved.items) |stmt| try placeWrappedStatement(Transformer, self, stmt, true, scope, &bindings, &prelude_stmts, &self.scratch, &post_exports);
-                try prelude_exports.put(self.allocator, @intFromEnum(child), {});
+                try prelude_exports.put(self.allocator, @backingInt(child), {});
                 continue;
             }
             const pt = self.pending_nodes.items.len;
             const tt = self.trailing_nodes.items.len;
             const visited = try self.visitNode(child);
             try drainPendingAroundTo(Transformer, self, pt, tt, visited, &prelude_stmts);
-            try prelude_exports.put(self.allocator, @intFromEnum(child), {});
+            try prelude_exports.put(self.allocator, @backingInt(child), {});
             continue;
         }
         const pt = self.pending_nodes.items.len;
@@ -689,11 +689,11 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
         if (wrapper_started) if (program_scope) |scope| {
             moved.clearRetainingCapacity();
             try drainPendingAroundTo(Transformer, self, pt, tt, visited, &moved);
-            const hoist_function = hoisted_functions.contains(@intFromEnum(child));
+            const hoist_function = hoisted_functions.contains(@backingInt(child));
             for (moved.items) |stmt| try placeWrappedStatement(Transformer, self, stmt, hoist_function, scope, &bindings, &prelude_stmts, &self.scratch, &post_exports);
             continue;
         };
-        const destination = if (wrapper_started and !hoisted_functions.contains(@intFromEnum(child))) &self.scratch else &prelude_stmts;
+        const destination = if (wrapper_started and !hoisted_functions.contains(@backingInt(child))) &self.scratch else &prelude_stmts;
         try drainPendingAroundTo(Transformer, self, pt, tt, visited, destination);
     }
     const body_stmts_end = self.scratch.items.len;
@@ -709,7 +709,7 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     });
 
     // Fill the pre-registered async arrow once the visited body is available.
-    self.ast.extra_data.items[arrow_extra + 1] = @intFromEnum(body_block);
+    self.ast.extra_data.items[arrow_extra + 1] = @backingInt(body_block);
     // Scopes of the moved statements (a user arrow, a block) now nest inside
     // the wrapper; left under the program scope, an arrow's parameter
     // initializer lost the wrapped declarations it reads (#5562).
@@ -765,11 +765,11 @@ pub fn lowerProgram(comptime Transformer: type, self: *Transformer, node: Node) 
     // exports pass-through
     i = 0;
     while (i < list.len) : (i += 1) {
-        const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         const child_node = self.ast.getNode(child);
         if (child_node.tag == .import_declaration or child_node.tag == .ts_import_equals_declaration) continue;
         if (!isModuleDeclaration(child_node.tag)) continue;
-        if (prelude_exports.contains(@intFromEnum(child))) continue;
+        if (prelude_exports.contains(@backingInt(child))) continue;
         const pt = self.pending_nodes.items.len;
         const tt = self.trailing_nodes.items.len;
         const visited = try self.visitNode(child);

@@ -35,7 +35,7 @@ pub fn ES2021(comptime Transformer: type) type {
                 try self.splitLogicalAssignmentIdentifierReferences(target.read, value_read, target.write);
             }
             const new_right = try self.visitNode(node.data.binary.right);
-            const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
+            const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @backingInt(token_mod.Kind.eq));
 
             if (self.options.unsupported.nullish_coalescing) {
                 // ternary lowering 은 condition 과 truthy branch 두 자리에 read 표현을 emit 한다.
@@ -80,7 +80,7 @@ pub fn ES2021(comptime Transformer: type) type {
                 .data = .{ .binary = .{
                     .left = target.read,
                     .right = assign,
-                    .flags = @intFromEnum(token_mod.Kind.question2),
+                    .flags = @backingInt(token_mod.Kind.question2),
                 } },
             });
         }
@@ -96,14 +96,14 @@ pub fn ES2021(comptime Transformer: type) type {
             }
             try es_helpers.trackAssignmentTargetRefs(self, target, false, true);
             const new_right = try self.visitNode(node.data.binary.right);
-            const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @intFromEnum(token_mod.Kind.eq));
+            const assign = try es_helpers.makeAssignExpr(self, target.write, new_right, node.span, @backingInt(token_mod.Kind.eq));
             return self.ast.addNode(.{
                 .tag = .logical_expression,
                 .span = node.span,
                 .data = .{ .binary = .{
                     .left = target.read,
                     .right = assign,
-                    .flags = @intFromEnum(logical_op),
+                    .flags = @backingInt(logical_op),
                 } },
             });
         }

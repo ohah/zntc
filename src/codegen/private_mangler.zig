@@ -47,9 +47,9 @@ fn processClass(ast: *Ast, class_ni: u32) void {
     const e = class.data.extra;
     // ClassExtra.body = 2
     if (!ast.hasExtra(e, 2)) return;
-    const body_idx: NodeIndex = @enumFromInt(ast.readExtra(e, 2));
+    const body_idx: NodeIndex = @fromBackingInt(@intCast(ast.readExtra(e, 2)));
     if (body_idx.isNone()) return;
-    const body_ni = @intFromEnum(body_idx);
+    const body_ni = @backingInt(body_idx);
     if (body_ni >= ast.nodes.items.len) return;
     if (ast.nodes.items[body_ni].tag != .class_body) return;
 
@@ -157,7 +157,7 @@ fn applyRenames(ast: *Ast, idx: NodeIndex, renames: *const std.StringHashMapUnma
     ast_walk.walkPreorderIterative(ast.allocator, ast, idx, &c, renameCollectVisit) catch return;
     if (c.oom) return;
     for (targets.items) |t| {
-        const ni = @intFromEnum(t.idx);
+        const ni = @backingInt(t.idx);
         // span 과 data.string_ref 둘 다 — codegen 은 string_ref 를 읽음.
         ast.nodes.items[ni].span = t.new_span;
         ast.nodes.items[ni].data = .{ .string_ref = t.new_span };

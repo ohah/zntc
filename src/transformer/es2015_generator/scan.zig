@@ -62,7 +62,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             => {
                 const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
                 for (members) |raw_idx| {
-                    if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(raw_idx)))) return true;
                 }
             },
             .expression_statement,
@@ -90,7 +90,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e >= extras.len) continue;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e]))) return true;
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e])))) return true;
             },
             .assignment_expression,
             .binary_expression,
@@ -106,8 +106,8 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
             => {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e]))) return true;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e + 1]))) return true;
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e])))) return true;
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + 1])))) return true;
             },
             .conditional_expression,
             .if_statement,
@@ -135,14 +135,14 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 2 >= extras.len) continue;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e + 1]))) return true; // super
-                if (!pushNode(self, &stack, @enumFromInt(extras[e + 2]))) return true; // body
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + 1])))) return true; // super
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + 2])))) return true; // body
             },
             .method_definition, .property_definition, .accessor_property => {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e >= extras.len) continue;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e]))) return true; // key
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e])))) return true; // key
             },
             .for_statement => {
                 // init/test/update 도 봐야 한다 — 헤더에만 yield 가 있으면 루프가
@@ -151,7 +151,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const e = node.data.extra;
                 if (e + 3 >= extras.len) continue;
                 for (0..4) |slot| {
-                    if (!pushNode(self, &stack, @enumFromInt(extras[e + slot]))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + slot])))) return true;
                 }
             },
             .switch_statement, .variable_declaration => {
@@ -163,7 +163,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const list_len = extras[e + 2];
                 const items = extras[list_start .. list_start + list_len];
                 for (items) |raw_idx| {
-                    if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(raw_idx)))) return true;
                 }
             },
             .switch_case => {
@@ -175,7 +175,7 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const stmts_len = extras[e + 2];
                 const stmts = extras[stmts_start .. stmts_start + stmts_len];
                 for (stmts) |raw_idx| {
-                    if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(raw_idx)))) return true;
                 }
             },
             .call_expression, .new_expression => {
@@ -183,19 +183,19 @@ pub fn containsYield(self: anytype, root_idx: NodeIndex) bool {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 2 >= extras.len) continue;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e]))) return true;
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e])))) return true;
                 const args_start = extras[e + 1];
                 const args_len = extras[e + 2];
                 const args = extras[args_start .. args_start + args_len];
                 for (args) |raw_idx| {
-                    if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(raw_idx)))) return true;
                 }
             },
             .variable_declarator => {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 2 >= extras.len) continue;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e + 2]))) return true; // init
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + 2])))) return true; // init
             },
             else => {},
         }
@@ -246,7 +246,7 @@ pub fn containsReturn(self: anytype, root_idx: NodeIndex) bool {
             .block_statement, .function_body => {
                 const members = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
                 for (members) |raw_idx| {
-                    if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(raw_idx)))) return true;
                 }
             },
             .if_statement, .for_in_statement, .for_of_statement, .for_await_of_statement => {
@@ -260,7 +260,7 @@ pub fn containsReturn(self: anytype, root_idx: NodeIndex) bool {
                 const extras = self.ast.extra_data.items;
                 const e = node.data.extra;
                 if (e + 3 >= extras.len) continue;
-                if (!pushNode(self, &stack, @enumFromInt(extras[e + 3]))) return true;
+                if (!pushNode(self, &stack, @fromBackingInt(@intCast(extras[e + 3])))) return true;
             },
             .switch_statement => {
                 const extras = self.ast.extra_data.items;
@@ -270,7 +270,7 @@ pub fn containsReturn(self: anytype, root_idx: NodeIndex) bool {
                 const cases_len = extras[e + 2];
                 const cases = extras[cases_start .. cases_start + cases_len];
                 for (cases) |raw_idx| {
-                    if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(raw_idx)))) return true;
                 }
             },
             .switch_case => {
@@ -281,7 +281,7 @@ pub fn containsReturn(self: anytype, root_idx: NodeIndex) bool {
                 const stmts_len = extras[e + 2];
                 const stmts = extras[stmts_start .. stmts_start + stmts_len];
                 for (stmts) |raw_idx| {
-                    if (!pushNode(self, &stack, @enumFromInt(raw_idx))) return true;
+                    if (!pushNode(self, &stack, @fromBackingInt(@intCast(raw_idx)))) return true;
                 }
             },
             .try_statement => {

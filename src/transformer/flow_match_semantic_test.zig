@@ -25,7 +25,7 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
     var match_node: ?@import("../parser/ast.zig").NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .flow_match_expression) {
-            match_node = @enumFromInt(raw);
+            match_node = @fromBackingInt(@intCast(raw));
             break;
         }
     }
@@ -46,11 +46,11 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
     const lowered = try transformer.visitNode(source_match);
     const call = transformer.ast.getNode(lowered);
     try std.testing.expectEqual(Tag.call_expression, call.tag);
-    const fn_expr: @TypeOf(source_match) = @enumFromInt(transformer.ast.extra_data.items[call.data.extra]);
+    const fn_expr: @TypeOf(source_match) = @fromBackingInt(@intCast(transformer.ast.extra_data.items[call.data.extra]));
     const function = transformer.ast.getNode(fn_expr);
     const params = transformer.ast.functionParamsList(function);
     try std.testing.expectEqual(@as(u32, 1), params.len);
-    const parameter: @TypeOf(source_match) = @enumFromInt(transformer.ast.extra_data.items[params.start]);
+    const parameter: @TypeOf(source_match) = @fromBackingInt(@intCast(transformer.ast.extra_data.items[params.start]));
     const parameter_id = transformer.getSymbolIdAt(parameter) orelse return error.TestUnexpectedResult;
     const function_scope = transformer.outputOwnedScope(fn_expr) orelse return error.TestUnexpectedResult;
     const editor = &transformer.semantic_editor.?;
@@ -68,12 +68,12 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
     for (reachable) |raw| {
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_a")) continue;
-        const id = transformer.getSymbolIdAt(@enumFromInt(raw)) orelse return error.TestUnexpectedResult;
+        const id = transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))) orelse return error.TestUnexpectedResult;
         try std.testing.expectEqual(parameter_id, id);
         var reference_found = false;
         for (editor.references.items) |reference| {
-            if (reference.node_index != @as(@TypeOf(source_match), @enumFromInt(raw))) continue;
-            try std.testing.expectEqual(parameter_id, @intFromEnum(reference.symbol_id));
+            if (reference.node_index != @as(@TypeOf(source_match), @fromBackingInt(@intCast(raw)))) continue;
+            try std.testing.expectEqual(parameter_id, @backingInt(reference.symbol_id));
             if (reference.scope_id == function_scope) function_scope_reads += 1;
             if (reference.scope_id != function_scope) {
                 try std.testing.expectEqual(function_scope, editor.scopes.items[reference.scope_id.toIndex()].parent);
@@ -91,12 +91,12 @@ test "#4819 Flow match temp binding and every emitted read get IDs during loweri
 
     var registered_reads: usize = 0;
     for (editor.references.items) |reference| {
-        if (@intFromEnum(reference.symbol_id) != parameter_id) continue;
+        if (@backingInt(reference.symbol_id) != parameter_id) continue;
         if (reference.node_index.isNone()) {
             try std.testing.expect(reference.flags.declare);
             continue;
         }
-        const raw = @intFromEnum(reference.node_index);
+        const raw = @backingInt(reference.node_index);
         try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
         registered_reads += 1;
     }
@@ -120,7 +120,7 @@ test "#4819 Flow match temp reserves a computed eval name and keeps the dynamic 
     var match_node: ?@import("../parser/ast.zig").NodeIndex = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .flow_match_expression) {
-            match_node = @enumFromInt(raw);
+            match_node = @fromBackingInt(@intCast(raw));
             break;
         }
     }
@@ -139,10 +139,10 @@ test "#4819 Flow match temp reserves a computed eval name and keeps the dynamic 
 
     const lowered = try transformer.visitNode(source_match);
     const call = transformer.ast.getNode(lowered);
-    const fn_expr: @TypeOf(source_match) = @enumFromInt(transformer.ast.extra_data.items[call.data.extra]);
+    const fn_expr: @TypeOf(source_match) = @fromBackingInt(@intCast(transformer.ast.extra_data.items[call.data.extra]));
     const function = transformer.ast.getNode(fn_expr);
     const params = transformer.ast.functionParamsList(function);
-    const parameter: @TypeOf(source_match) = @enumFromInt(transformer.ast.extra_data.items[params.start]);
+    const parameter: @TypeOf(source_match) = @fromBackingInt(@intCast(transformer.ast.extra_data.items[params.start]));
     const parameter_id = transformer.getSymbolIdAt(parameter) orelse return error.TestUnexpectedResult;
     const symbol = transformer.semantic_editor.?.symbols.items[@intCast(parameter_id)];
     try std.testing.expectEqualStrings("_b", symbol.synthetic_name);

@@ -41,7 +41,7 @@ pub const SymbolRef = union(enum) {
     pub fn makeSemantic(module: ModuleIndex, sym_idx: anytype) SymbolRef {
         return .{ .semantic = .{
             .module = module,
-            .symbol = @enumFromInt(@as(u32, @intCast(sym_idx))),
+            .symbol = @fromBackingInt(@intCast(@as(u32, @intCast(sym_idx)))),
         } };
     }
 
@@ -63,7 +63,7 @@ pub const SymbolRef = union(enum) {
     /// `if (ref == .semantic) @intFromEnum(ref.semantic.symbol)` 반복 패턴 단축.
     pub fn semanticIndex(self: SymbolRef) ?u32 {
         return switch (self) {
-            .semantic => |s| if (s.symbol.isNone()) null else @intFromEnum(s.symbol),
+            .semantic => |s| if (s.symbol.isNone()) null else @backingInt(s.symbol),
             .alias => null,
         };
     }
@@ -109,7 +109,7 @@ pub const SymbolID = packed struct {
     pub fn make(module: ModuleIndex, sym_idx: anytype) SymbolID {
         return .{
             .module = module,
-            .inner = @enumFromInt(@as(u32, @intCast(sym_idx))),
+            .inner = @fromBackingInt(@intCast(@as(u32, @intCast(sym_idx)))),
         };
     }
 
@@ -290,17 +290,17 @@ pub const AliasTable = struct {
 
     /// Alias 등록. 같은 exported_name이 여러 export 문에서 나올 수 있으므로 항상 new id.
     pub fn declare(self: *AliasTable, name: []const u8) !AliasId {
-        const id: AliasId = @enumFromInt(@as(u32, @intCast(self.aliases.items.len)));
+        const id: AliasId = @fromBackingInt(@intCast(@as(u32, @intCast(self.aliases.items.len))));
         try self.aliases.append(self.allocator, .{ .name = name });
         return id;
     }
 
     pub fn setCanonicalName(self: *AliasTable, id: AliasId, name: []const u8) void {
-        self.aliases.items[@intFromEnum(id)].canonical_name = name;
+        self.aliases.items[@backingInt(id)].canonical_name = name;
     }
 
     pub fn incRefCount(self: *AliasTable, id: AliasId) void {
-        self.aliases.items[@intFromEnum(id)].ref_count += 1;
+        self.aliases.items[@backingInt(id)].ref_count += 1;
     }
 
     pub fn count(self: *const AliasTable) u32 {
@@ -308,22 +308,22 @@ pub const AliasTable = struct {
     }
 
     pub fn getName(self: *const AliasTable, id: AliasId) []const u8 {
-        return self.aliases.items[@intFromEnum(id)].name;
+        return self.aliases.items[@backingInt(id)].name;
     }
 
     /// canonical_name이 비어있으면 원본 name 반환.
     pub fn getCanonicalName(self: *const AliasTable, id: AliasId) []const u8 {
-        const a = &self.aliases.items[@intFromEnum(id)];
+        const a = &self.aliases.items[@backingInt(id)];
         return if (a.canonical_name.len > 0) a.canonical_name else a.name;
     }
 
     /// `setCanonicalName`이 호출된 적 있는지 — 체인 resolve 완료 판정.
     pub fn hasCanonicalName(self: *const AliasTable, id: AliasId) bool {
-        return self.aliases.items[@intFromEnum(id)].canonical_name.len > 0;
+        return self.aliases.items[@backingInt(id)].canonical_name.len > 0;
     }
 
     pub fn getRefCount(self: *const AliasTable, id: AliasId) u32 {
-        return self.aliases.items[@intFromEnum(id)].ref_count;
+        return self.aliases.items[@backingInt(id)].ref_count;
     }
 };
 
@@ -363,12 +363,12 @@ test "AliasTable: ref_count" {
 
 test "SymbolRef: semantic vs alias 공간 구분" {
     const sem: SymbolRef = .{ .semantic = .{
-        .module = @enumFromInt(1),
-        .symbol = @enumFromInt(2),
+        .module = @fromBackingInt(@intCast(1)),
+        .symbol = @fromBackingInt(@intCast(2)),
     } };
     const bnd: SymbolRef = .{ .alias = .{
-        .module = @enumFromInt(1),
-        .symbol = @enumFromInt(2),
+        .module = @fromBackingInt(@intCast(1)),
+        .symbol = @fromBackingInt(@intCast(2)),
     } };
     try std.testing.expect(!sem.eql(bnd));
     try std.testing.expect(sem.eql(sem));
@@ -376,9 +376,9 @@ test "SymbolRef: semantic vs alias 공간 구분" {
 }
 
 test "SymbolID: make + toRef roundtrip" {
-    const id = SymbolID.make(@as(ModuleIndex, @enumFromInt(3)), 7);
-    try std.testing.expectEqual(@as(ModuleIndex, @enumFromInt(3)), id.module);
-    try std.testing.expectEqual(@as(SemanticSymbolId, @enumFromInt(7)), id.inner);
+    const id = SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(3))), 7);
+    try std.testing.expectEqual(@as(ModuleIndex, @fromBackingInt(@intCast(3))), id.module);
+    try std.testing.expectEqual(@as(SemanticSymbolId, @fromBackingInt(@intCast(7))), id.inner);
     try std.testing.expect(id.isValid());
 
     const ref = id.toRef();
@@ -387,33 +387,33 @@ test "SymbolID: make + toRef roundtrip" {
 }
 
 test "SymbolID: fromRef — semantic 만 매핑, alias/invalid 는 null" {
-    const sem: SymbolRef = .{ .semantic = .{ .module = @enumFromInt(1), .symbol = @enumFromInt(2) } };
+    const sem: SymbolRef = .{ .semantic = .{ .module = @fromBackingInt(@intCast(1)), .symbol = @fromBackingInt(@intCast(2)) } };
     const got = SymbolID.fromRef(sem).?;
-    try std.testing.expectEqual(@as(ModuleIndex, @enumFromInt(1)), got.module);
-    try std.testing.expectEqual(@as(SemanticSymbolId, @enumFromInt(2)), got.inner);
+    try std.testing.expectEqual(@as(ModuleIndex, @fromBackingInt(@intCast(1))), got.module);
+    try std.testing.expectEqual(@as(SemanticSymbolId, @fromBackingInt(@intCast(2))), got.inner);
 
-    const alias: SymbolRef = .{ .alias = .{ .module = @enumFromInt(1), .symbol = @enumFromInt(2) } };
+    const alias: SymbolRef = .{ .alias = .{ .module = @fromBackingInt(@intCast(1)), .symbol = @fromBackingInt(@intCast(2)) } };
     try std.testing.expectEqual(@as(?SymbolID, null), SymbolID.fromRef(alias));
 
     // semantic 이지만 none sentinel → invalid → null
-    const none_mod: SymbolRef = .{ .semantic = .{ .module = .none, .symbol = @enumFromInt(2) } };
+    const none_mod: SymbolRef = .{ .semantic = .{ .module = .none, .symbol = @fromBackingInt(@intCast(2)) } };
     try std.testing.expectEqual(@as(?SymbolID, null), SymbolID.fromRef(none_mod));
-    const none_sym: SymbolRef = .{ .semantic = .{ .module = @enumFromInt(1), .symbol = .none } };
+    const none_sym: SymbolRef = .{ .semantic = .{ .module = @fromBackingInt(@intCast(1)), .symbol = .none } };
     try std.testing.expectEqual(@as(?SymbolID, null), SymbolID.fromRef(none_sym));
 }
 
 test "SymbolID: isValid + invalid sentinel" {
     try std.testing.expect(!SymbolID.invalid.isValid());
-    try std.testing.expect(SymbolID.make(@as(ModuleIndex, @enumFromInt(0)), 0).isValid());
+    try std.testing.expect(SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(0))), 0).isValid());
 }
 
 test "SymbolID: AutoHashMap 키로 사용 (RenameTable 기반)" {
     var map = std.AutoHashMap(SymbolID, []const u8).init(std.testing.allocator);
     defer map.deinit();
 
-    const a = SymbolID.make(@as(ModuleIndex, @enumFromInt(1)), 10);
-    const b = SymbolID.make(@as(ModuleIndex, @enumFromInt(1)), 11);
-    const c = SymbolID.make(@as(ModuleIndex, @enumFromInt(2)), 10);
+    const a = SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(1))), 10);
+    const b = SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(1))), 11);
+    const c = SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(2))), 10);
 
     try map.put(a, "a$1");
     try map.put(b, "b$2");
@@ -425,15 +425,15 @@ test "SymbolID: AutoHashMap 키로 사용 (RenameTable 기반)" {
     // 같은 module 다른 inner, 다른 module 같은 inner 모두 구분
     try std.testing.expectEqual(@as(u32, 3), map.count());
     // 동일 키 재조회 (eql 동작)
-    try std.testing.expectEqualStrings("a$1", map.get(SymbolID.make(@as(ModuleIndex, @enumFromInt(1)), 10)).?);
+    try std.testing.expectEqualStrings("a$1", map.get(SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(1))), 10)).?);
 }
 
 test "RenameTable: put/get/count/clear + 덮어쓰기" {
     var rt: RenameTable = .{};
     defer rt.deinit(std.testing.allocator);
 
-    const a = SymbolID.make(@as(ModuleIndex, @enumFromInt(0)), 1);
-    const b = SymbolID.make(@as(ModuleIndex, @enumFromInt(0)), 2);
+    const a = SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(0))), 1);
+    const b = SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(0))), 2);
 
     try std.testing.expectEqual(@as(?[]const u8, null), rt.get(a));
     try rt.put(std.testing.allocator, a, "a$1");

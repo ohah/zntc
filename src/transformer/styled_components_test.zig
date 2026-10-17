@@ -1647,7 +1647,7 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
         if (node.tag != .binding_identifier or raw < transformer.parser_node_count) continue;
         const name = transformer.ast.getText(node.data.string_ref);
         if (std.mem.startsWith(u8, name, "_styled_")) {
-            generated_binding = @enumFromInt(raw);
+            generated_binding = @fromBackingInt(@intCast(raw));
             break;
         }
     }
@@ -1667,7 +1667,7 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .binding_identifier or raw >= transformer.parser_node_count) continue;
         if (std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_styled_0")) {
-            original_binding = @enumFromInt(raw);
+            original_binding = @fromBackingInt(@intCast(raw));
             break;
         }
     }
@@ -1683,9 +1683,9 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
             binding_count += 1;
     }
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != binding_id) continue;
+        if (@backingInt(reference.symbol_id) != binding_id) continue;
         if (reference.node_index.isNone()) continue;
-        const raw = @intFromEnum(reference.node_index);
+        const raw = @backingInt(reference.node_index);
         try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
         try std.testing.expect(transformer.ast.nodes.items[raw].tag == .identifier_reference);
         try std.testing.expect(reference.flags.read);
@@ -1752,7 +1752,7 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
         if (raw >= transformer.parser_node_count) continue;
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "p")) continue;
-        source_p_symbol = transformer.getSymbolIdAt(@enumFromInt(raw));
+        source_p_symbol = transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw)));
         break;
     }
     const outer_p_symbol = source_p_symbol orelse return error.TestExpectedEqual;
@@ -1768,14 +1768,14 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
         if (arrow.tag != .arrow_function_expression) continue;
         const extra = arrow.data.extra;
         if (extra + 2 >= transformer.ast.extra_data.items.len) continue;
-        const params_idx: NodeIndex = @enumFromInt(transformer.ast.extra_data.items[extra]);
+        const params_idx: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[extra]));
         const params = transformer.ast.getNode(params_idx);
         if (params.tag != .formal_parameters) continue;
 
         const param_list = params.data.list;
         var p_binding: ?NodeIndex = null;
         for (transformer.ast.extra_data.items[param_list.start .. param_list.start + param_list.len]) |raw_param| {
-            const param_idx: NodeIndex = @enumFromInt(raw_param);
+            const param_idx: NodeIndex = @fromBackingInt(@intCast(raw_param));
             const param = transformer.ast.getNode(param_idx);
             if (param.tag == .binding_identifier and std.mem.eql(u8, transformer.ast.getText(param.data.string_ref), "p")) {
                 p_binding = param_idx;
@@ -1791,7 +1791,7 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
         try std.testing.expect(!inserted.found_existing);
 
         const callback_scope_raw = edited.scope_owner_map.get(raw) orelse return error.TestExpectedEqual;
-        const callback_scope = @as(@TypeOf(edited.symbols.items[symbol_id].scope_id), @enumFromInt(callback_scope_raw));
+        const callback_scope = @as(@TypeOf(edited.symbols.items[symbol_id].scope_id), @fromBackingInt(@intCast(callback_scope_raw)));
         const symbol = edited.symbols.items[symbol_id];
         try std.testing.expectEqual(callback_scope, symbol.scope_id);
         try std.testing.expectEqualStrings("p", transformer.ast.getText(symbol.name));
@@ -1799,7 +1799,7 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
 
         try std.testing.expectEqual(transformer.programScope(), edited.scopes[callback_scope_raw].parent);
 
-        const body: NodeIndex = @enumFromInt(transformer.ast.extra_data.items[extra + 1]);
+        const body: NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[extra + 1]));
         var stack: std.ArrayList(NodeIndex) = .empty;
         defer stack.deinit(allocator);
         var seen_nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -1807,8 +1807,8 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
         try stack.append(allocator, body);
         var callback_ref_count: usize = 0;
         while (stack.pop()) |node_idx| {
-            if (node_idx.isNone() or @intFromEnum(node_idx) >= transformer.ast.nodes.items.len) continue;
-            const node_raw = @intFromEnum(node_idx);
+            if (node_idx.isNone() or @backingInt(node_idx) >= transformer.ast.nodes.items.len) continue;
+            const node_raw = @backingInt(node_idx);
             const node_seen = try seen_nodes.getOrPut(allocator, node_raw);
             if (node_seen.found_existing) continue;
             const node = transformer.ast.nodes.items[node_raw];
@@ -1823,8 +1823,8 @@ test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
 
         var graph_ref_count: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
-            const ref_raw = @intFromEnum(reference.node_index);
+            if (@backingInt(reference.symbol_id) != symbol_id or reference.node_index.isNone()) continue;
+            const ref_raw = @backingInt(reference.node_index);
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, ref_raw) != null);
             const expected = output_scope.expectedScope(
                 transformer.ast,
@@ -1896,19 +1896,19 @@ test "#4819 auto-injected styled import carries the generated reference SymbolId
         if (raw < transformer.parser_node_count) continue;
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_styled3")) continue;
-        generated_ref = @enumFromInt(raw);
+        generated_ref = @fromBackingInt(@intCast(raw));
         generated_ref_count += 1;
     }
     try std.testing.expectEqualStrings("_styled3", injected_name);
     const ref = generated_ref orelse return error.TestExpectedEqual;
     const symbol_id = transformer.getSymbolIdAt(ref) orelse return error.TestExpectedEqual;
     const reserved_symbol_id = transformer.plugins.styled_components.css_prop_inject_symbol_id orelse return error.TestExpectedEqual;
-    try std.testing.expectEqual(symbol_id, @intFromEnum(reserved_symbol_id));
+    try std.testing.expectEqual(symbol_id, @backingInt(reserved_symbol_id));
     try std.testing.expectEqual(@as(usize, 2), generated_ref_count);
     for (reachable) |raw| {
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .identifier_reference or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), injected_name)) continue;
-        try std.testing.expectEqual(symbol_id, transformer.getSymbolIdAt(@enumFromInt(raw)).?);
+        try std.testing.expectEqual(symbol_id, transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))).?);
     }
     const edited = (try transformer.finishSemanticEdit()).?;
     const symbol = edited.symbols.items[symbol_id];
@@ -1926,7 +1926,7 @@ test "#4819 auto-injected styled import carries the generated reference SymbolId
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .import_default_specifier or
             !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), injected_name)) continue;
-        try std.testing.expectEqual(symbol_id, transformer.getSymbolIdAt(@enumFromInt(raw)).?);
+        try std.testing.expectEqual(symbol_id, transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))).?);
         import_specifier_found = true;
         break;
     }
@@ -1975,7 +1975,7 @@ test "#4819 auto-injected styled import keeps its staging name when descendant e
     const edited = (try transformer.finishSemanticEdit()).?;
     const symbol_id = transformer.plugins.styled_components.css_prop_inject_symbol_id orelse
         return error.MissingStyledCssPropSymbolId;
-    const symbol = edited.symbols.items[@intFromEnum(symbol_id)];
+    const symbol = edited.symbols.items[@backingInt(symbol_id)];
     try std.testing.expectEqual(@as(?@import("../semantic/symbol.zig").SyntheticKind, null), symbol.synthetic_kind);
     try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
 }

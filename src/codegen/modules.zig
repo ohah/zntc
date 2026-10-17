@@ -45,7 +45,7 @@ pub fn emitImportAttributes(self: anytype, attrs_start: u32, attrs_len: u32) !vo
     const indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
     for (indices, 0..) |raw_idx, i| {
         if (i > 0) try self.write(", ");
-        const attr_node = self.ast.getNode(@enumFromInt(raw_idx));
+        const attr_node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         // 키는 identifier 또는 string literal — string_literal emit의 quote-strip을 피해 raw span 사용.
         const key_node = self.ast.getNode(attr_node.data.binary.left);
         try self.writeNodeSpan(key_node);
@@ -65,7 +65,7 @@ pub fn emitImportSpecifiers(self: anytype, specs_start: u32, specs_len: u32) !vo
 
     // 1단계: default, namespace 출력
     for (spec_indices) |raw_idx| {
-        const spec: NodeIndex = @enumFromInt(raw_idx);
+        const spec: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (spec.isNone()) continue;
         const spec_node = self.ast.getNode(spec);
         switch (spec_node.tag) {
@@ -97,7 +97,7 @@ pub fn emitImportSpecifiers(self: anytype, specs_start: u32, specs_len: u32) !vo
         const sep: []const u8 = self.listSep();
         var named_first = true;
         for (spec_indices) |raw_idx| {
-            const spec: NodeIndex = @enumFromInt(raw_idx);
+            const spec: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (spec.isNone()) continue;
             const spec_node = self.ast.getNode(spec);
             if (spec_node.tag == .import_specifier) {
@@ -129,7 +129,7 @@ pub fn emitImportCJS(self: anytype, source: NodeIndex, specs_start: u32, specs_l
     var named_count: u32 = 0;
 
     for (spec_indices) |raw_idx| {
-        const spec = self.ast.getNode(@enumFromInt(raw_idx));
+        const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         switch (spec.tag) {
             .import_default_specifier => has_default = true,
             .import_namespace_specifier => has_namespace = true,
@@ -145,7 +145,7 @@ pub fn emitImportCJS(self: anytype, source: NodeIndex, specs_start: u32, specs_l
         const meta = self.options.linking_metadata.?;
         var all_expr_renamed = true;
         for (spec_indices) |raw_idx| {
-            const spec = self.ast.getNode(@enumFromInt(raw_idx));
+            const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (spec.tag != .import_specifier) continue;
             const local_idx = spec.data.binary.right;
             if (!local_idx.isNone()) {
@@ -182,18 +182,18 @@ pub fn emitImportCJS(self: anytype, source: NodeIndex, specs_start: u32, specs_l
     if (has_namespace) {
         // import * as bar from './bar' → [var] bar=require('./bar');
         for (spec_indices) |raw_idx| {
-            const spec = self.ast.getNode(@enumFromInt(raw_idx));
+            const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (spec.tag == .import_namespace_specifier) {
-                try emitSpecifierWithRename(self, @enumFromInt(raw_idx), spec);
+                try emitSpecifierWithRename(self, @fromBackingInt(@intCast(raw_idx)), spec);
                 break;
             }
         }
     } else if (has_default and named_count == 0) {
         // import bar from './bar' → [var] bar=require('./bar').default;
         for (spec_indices) |raw_idx| {
-            const spec = self.ast.getNode(@enumFromInt(raw_idx));
+            const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (spec.tag == .import_default_specifier) {
-                try emitSpecifierWithRename(self, @enumFromInt(raw_idx), spec);
+                try emitSpecifierWithRename(self, @fromBackingInt(@intCast(raw_idx)), spec);
                 break;
             }
         }
@@ -204,17 +204,17 @@ pub fn emitImportCJS(self: anytype, source: NodeIndex, specs_start: u32, specs_l
         var first = true;
         if (has_default) {
             for (spec_indices) |raw_idx| {
-                const spec = self.ast.getNode(@enumFromInt(raw_idx));
+                const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (spec.tag == .import_default_specifier) {
                     try self.write("\"default\":");
-                    try emitSpecifierWithRename(self, @enumFromInt(raw_idx), spec);
+                    try emitSpecifierWithRename(self, @fromBackingInt(@intCast(raw_idx)), spec);
                     first = false;
                     break;
                 }
             }
         }
         for (spec_indices) |raw_idx| {
-            const spec = self.ast.getNode(@enumFromInt(raw_idx));
+            const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (spec.tag == .import_specifier) {
                 if (!first) try self.writeByte(',');
                 try emitImportSpecifierRename(self, spec, ":");
@@ -253,7 +253,7 @@ pub fn emitImportCJS(self: anytype, source: NodeIndex, specs_start: u32, specs_l
 pub fn emitSpecifierWithRename(self: anytype, idx: NodeIndex, spec: Node) !void {
     try self.addSourceMapping(spec.span);
     if (self.options.linking_metadata) |meta| {
-        const ni = @intFromEnum(idx);
+        const ni = @backingInt(idx);
         if (ni < meta.symbol_ids.len) {
             if (meta.symbol_ids[ni]) |sid| {
                 if (meta.renames.get(sid)) |renamed| {
@@ -279,7 +279,7 @@ pub fn emitImportSpecifierRename(self: anytype, spec_node: Node, sep: []const u8
     try self.writeSpan(imported_node.span);
     // local이 rename 되었거나 원본 imported와 다른 경우 → separator + local 출력
     const needs_rename = blk: {
-        if (local.isNone() or @intFromEnum(local) == @intFromEnum(imported)) break :blk false;
+        if (local.isNone() or @backingInt(local) == @backingInt(imported)) break :blk false;
         // 원본 텍스트가 다르면 항상 rename 필요 (import { foo as bar })
         const imp_text = self.ast.getText(self.ast.getNode(imported).span);
         const loc_text = self.ast.getText(self.ast.getNode(local).span);
@@ -365,7 +365,7 @@ pub fn emitExportSpecifier(self: anytype, node: Node) !void {
 pub fn emitExportNamedCJS(self: anytype, decl: NodeIndex, specs_start: u32, specs_len: u32, source: NodeIndex) !void {
     if (self.options.skip_cjs_named_export_decls) return;
 
-    if (!decl.isNone() and @intFromEnum(decl) < self.ast.nodes.items.len) {
+    if (!decl.isNone() and @backingInt(decl) < self.ast.nodes.items.len) {
         // export const x = 1 → const x=1; (+ exports.x=x; unless __esm)
         try self.emitNode(decl);
         if (!self.options.skip_cjs_exports)
@@ -375,10 +375,10 @@ pub fn emitExportNamedCJS(self: anytype, decl: NodeIndex, specs_start: u32, spec
         // __esm 모듈: export { } 구문은 __export()가 처리하므로 생략
         return;
     } else {
-        const has_source = !source.isNone() and @intFromEnum(source) < self.ast.nodes.items.len;
+        const has_source = !source.isNone() and @backingInt(source) < self.ast.nodes.items.len;
         const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
         for (spec_indices) |raw_idx| {
-            const spec = self.ast.getNode(@enumFromInt(raw_idx));
+            const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (spec.tag != .export_specifier) continue;
 
             // export_specifier: { left=local/imported, right=exported }
@@ -414,9 +414,9 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
             const list_len = self.ast.extra_data.items[e + 2];
             const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
             for (declarators) |raw_idx| {
-                const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+                const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const de = declarator.data.extra;
-                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[de]));
                 if (!name_idx.isNone()) {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.getText(name_node.data.string_ref);
@@ -440,7 +440,7 @@ pub fn emitCJSExportBinding(self: anytype, decl_idx: NodeIndex) !void {
         },
         .function_declaration, .class_declaration => {
             const e = decl.data.extra;
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
             if (!name_idx.isNone()) {
                 const name_node = self.ast.getNode(name_idx);
                 const name = self.ast.getText(name_node.data.string_ref);
@@ -475,7 +475,7 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
             if (!inner.isNone()) {
                 const inner_node = self.ast.getNode(inner);
                 const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
-                    !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
+                    !(@as(NodeIndex, @fromBackingInt(@intCast(self.ast.extra_data.items[inner_node.data.extra])))).isNone();
                 if (is_named_decl) {
                     // export default function foo() {} → 선언만 출력
                     try self.emitNode(inner);
@@ -520,7 +520,7 @@ pub fn emitExportDefault(self: anytype, node: Node) !void {
                 const inner_node = self.ast.getNode(inner);
                 // 이름이 있는 function/class → 그대로 출력
                 const is_named_decl = (inner_node.tag == .function_declaration or inner_node.tag == .class_declaration) and
-                    !(@as(NodeIndex, @enumFromInt(self.ast.extra_data.items[inner_node.data.extra]))).isNone();
+                    !(@as(NodeIndex, @fromBackingInt(@intCast(self.ast.extra_data.items[inner_node.data.extra])))).isNone();
                 if (is_named_decl) {
                     try self.emitNode(inner);
                 } else if (inner_node.tag == .function_declaration and !self.options.esm_var_assign_only) {

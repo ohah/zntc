@@ -39,7 +39,7 @@ fn markStandaloneLateStage3Symbol(
         semantic_editor
     else
         std.debug.panic("late-named Stage 3 binding has no semantic editor", .{});
-    editor.symbols.items[@intFromEnum(symbol_id)].synthetic_kind = kind;
+    editor.symbols.items[@backingInt(symbol_id)].synthetic_kind = kind;
 }
 
 fn markLateStage3OutputSymbol(
@@ -55,7 +55,7 @@ fn markLateStage3OutputSymbol(
         semantic_editor
     else
         std.debug.panic("late-named Stage 3 output binding has no semantic editor", .{});
-    const raw = @intFromEnum(symbol_id);
+    const raw = @backingInt(symbol_id);
     if (raw >= editor.symbols.items.len) std.debug.panic("late-named Stage 3 output binding has an invalid SymbolId", .{});
     const symbol = &editor.symbols.items[raw];
     symbol.synthetic_kind = kind;
@@ -69,10 +69,10 @@ fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex
     const list_start = self.ast.extra_data.items[declaration_extra + 1];
     const list_len = self.ast.extra_data.items[declaration_extra + 2];
     if (list_len != 1) std.debug.panic("Stage 3 generated local declaration must have one declarator", .{});
-    const declarator_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start]);
+    const declarator_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start]));
     const declarator = self.ast.getNode(declarator_idx);
     if (declarator.tag != .variable_declarator) std.debug.panic("Stage 3 generated local has no declarator", .{});
-    return @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+    return @fromBackingInt(@intCast(self.ast.extra_data.items[declarator.data.extra]));
 }
 
 fn uniqueMemberDecoratorName(self: *Transformer, member_infos: []const Stage3MemberInfo, base_name: []const u8) Error![]const u8 {
@@ -104,9 +104,9 @@ fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_
     const saved_temp_counter = self.temp_var_counter;
     defer self.temp_var_counter = saved_temp_counter;
     if (self.semantic_edit_enabled) {
-        const key = @intFromEnum(method_idx);
+        const key = @backingInt(method_idx);
         if (self.transformed_scope_owner_map.get(key) orelse self.scope_owner_map.get(key)) |scope| {
-            self.current_scope = @enumFromInt(scope);
+            self.current_scope = @fromBackingInt(@intCast(scope));
         }
     }
     // This path visits a preserved method body directly, bypassing the usual
@@ -133,7 +133,7 @@ fn visitMethodBodyInSourceScope(self: *Transformer, method_idx: NodeIndex, body_
 pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node: Node) Error!NodeIndex {
     const e = node.data.extra;
     const zero_span = Span{ .start = 0, .end = 0 };
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     // 런타임 헬퍼 사용 표시
     self.runtime_helpers.es_decorator = true;
@@ -229,7 +229,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         var i: u32 = 0;
         while (i < body_len) : (i += 1) {
             const raw = self.ast.extra_data.items[body_start + i];
-            const member_idx: NodeIndex = @enumFromInt(raw);
+            const member_idx: NodeIndex = @fromBackingInt(@intCast(raw));
             if (member_idx.isNone()) continue;
             const member = self.ast.getNode(member_idx);
             const me = member.data.extra;
@@ -336,9 +336,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         try visitMethodBodyInSourceScope(self, member_idx, self.readNodeIdx(me, ast_mod.MethodExtra.body));
                     const empty_list = try self.ast.addNodeList(&.{});
                     const new_method = try self.addExtraNode(.method_definition, member.span, &.{
-                        @intFromEnum(new_key),
+                        @backingInt(new_key),
                         self.readU32(me, ast_mod.MethodExtra.params),
-                        @intFromEnum(new_body),
+                        @backingInt(new_body),
                         flags,
                         empty_list.start,
                         empty_list.len,
@@ -413,14 +413,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const init_call = if (!raw_init.isNone()) init_blk: {
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr, raw_init });
                         break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
-                            @intFromEnum(callee), args.start, args.len, 0,
+                            @backingInt(callee), args.start, args.len, 0,
                         });
                     } else init_blk: {
                         // 초기값 없어도 void 0을 명시적으로 전달 — __runInitializers가 arguments.length > 2를 체크
                         const void0 = try es_helpers.makeVoidZero(self, .{ .start = 0, .end = 0 });
                         const args = try self.ast.addNodeList(&.{ this_node, init_arr, void0 });
                         break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
-                            @intFromEnum(callee), args.start, args.len, 0,
+                            @backingInt(callee), args.start, args.len, 0,
                         });
                     };
 
@@ -462,8 +462,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     raw_init;
                 const empty_list = try self.ast.addNodeList(&.{});
                 const new_prop = try self.addExtraNode(.property_definition, member.span, &.{
-                    @intFromEnum(new_key),
-                    @intFromEnum(new_init),
+                    @backingInt(new_key),
+                    @backingInt(new_init),
                     flags,
                     empty_list.start,
                     empty_list.len,
@@ -550,7 +550,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                             const value = if (new_init.isNone()) try es_helpers.makeVoidZero(self, zero_span) else new_init;
                             const args = try self.ast.addNodeList(&.{ this_node, init_arr_ref, value });
                             break :init_blk try self.addExtraNode(.call_expression, zero_span, &.{
-                                @intFromEnum(callee), args.start, args.len, 0,
+                                @backingInt(callee), args.start, args.len, 0,
                             });
                         };
 
@@ -580,8 +580,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
                     const empty_decos = try self.ast.addNodeList(&.{});
                     const backing_field = try self.addExtraNode(.property_definition, member.span, &.{
-                        @intFromEnum(storage_key),
-                        @intFromEnum(init_val),
+                        @backingInt(storage_key),
+                        @backingInt(init_val),
                         flags, // static 플래그 보존
                         empty_decos.start,
                         empty_decos.len,
@@ -645,8 +645,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     // decorator 없는 accessor → 그대로 유지
                     const empty_list = try self.ast.addNodeList(&.{});
                     const new_acc = try self.addExtraNode(.accessor_property, member.span, &.{
-                        @intFromEnum(new_key),
-                        @intFromEnum(new_init),
+                        @backingInt(new_key),
+                        @backingInt(new_init),
                         flags,
                         empty_list.start,
                         empty_list.len,
@@ -761,7 +761,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             try self.ast.addString("default")
         else if (self.options.unsupported.class or stage3OutputNeedsClassLowering(self))
             null
-        else if (self.class_inferred_names.get(@intFromEnum(source_idx))) |inferred|
+        else if (self.class_inferred_names.get(@backingInt(source_idx))) |inferred|
             (if (inferred.end > inferred.start) inferred else null)
         else
             null;
@@ -1013,7 +1013,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 const new_ctor_method = try self.addExtraNode(.method_definition, m.span, &.{
                     self.readU32(m.data.extra, 0), // key
                     self.readU32(m.data.extra, 1), // params (formal_parameters idx)
-                    @intFromEnum(new_body_ctor),
+                    @backingInt(new_body_ctor),
                     self.readU32(m.data.extra, 3), // flags
                     empty_decos.start,
                     empty_decos.len,
@@ -1060,9 +1060,9 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             const ctor_key = try es_helpers.makePropertyName(self, "constructor");
             const empty_decos = try self.ast.addNodeList(&.{});
             const ctor_method = try self.addExtraNode(.method_definition, zero_span, &.{
-                @intFromEnum(ctor_key),
-                @intFromEnum(ctor_params_node),
-                @intFromEnum(ctor_body),
+                @backingInt(ctor_key),
+                @backingInt(ctor_params_node),
+                @backingInt(ctor_body),
                 0, // flags (no static/getter/setter)
                 empty_decos.start,
                 empty_decos.len,
@@ -1100,28 +1100,28 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const new_super = try self.visitNode(super_idx);
     const empty_decos = try self.ast.addNodeList(&.{});
     const inner_class = try self.addExtraNode(.class_expression, node.span, &.{
-        none,              @intFromEnum(new_super), @intFromEnum(new_body),
-        none,              0,                       0,
+        none,              @backingInt(new_super), @backingInt(new_body),
+        none,              0,                      0,
         empty_decos.start, empty_decos.len,
     });
     try self.remapCopiedScopeOwner(source_idx, inner_class);
     // `var Foo = class {…}` names the class "Foo"; a later class lowering binds
     // it to a generated name, so it restores this one (#4811).
     if (!class_name_origin.isNone())
-        try self.class_inferred_names.put(self.allocator, @intFromEnum(inner_class), self.ast.getNode(name_idx).data.string_ref);
+        try self.class_inferred_names.put(self.allocator, @backingInt(inner_class), self.ast.getNode(name_idx).data.string_ref);
     // The rewritten class is intentionally anonymous: the source class-self
     // symbol belongs to the wrapper's `var Foo`, not the ES5 `_Class` helper.
     if (self.semantic_edit_enabled and !class_name_origin.isNone())
-        try self.generated_class_self_relocated_to_wrapper.put(self.allocator, @intFromEnum(inner_class), {});
+        try self.generated_class_self_relocated_to_wrapper.put(self.allocator, @backingInt(inner_class), {});
     if (!class_name_origin.isNone()) {
-        if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |class_self_id| {
+        if (self.class_self_symbol_map.get(@backingInt(source_idx))) |class_self_id| {
             try self.rebindOutputBinding(inner_binding, class_self_id);
         }
     }
 
     // IIFE 내부: var Foo = class { ... }; 선언과 재대입은 위에서 만든 exact binding을 공유한다.
     const inner_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
-        @intFromEnum(inner_binding), none, @intFromEnum(inner_class),
+        @backingInt(inner_binding), none, @backingInt(inner_class),
     });
     const inner_decl_list = try self.ast.addNodeList(&.{inner_declarator});
     const inner_var_decl = try self.addExtraNode(.variable_declaration, zero_span, &.{
@@ -1173,20 +1173,20 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     var directly_bound_member_set: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer directly_bound_member_set.deinit(self.allocator);
     for (member_infos.items) |info| {
-        if (!info.deco_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.deco_binding), {});
-        if (!info.descriptor_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.descriptor_binding), {});
-        if (!info.initializers_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.initializers_binding), {});
-        if (!info.extra_initializers_binding.isNone()) try directly_bound_member_set.put(self.allocator, @intFromEnum(info.extra_initializers_binding), {});
+        if (!info.deco_binding.isNone()) try directly_bound_member_set.put(self.allocator, @backingInt(info.deco_binding), {});
+        if (!info.descriptor_binding.isNone()) try directly_bound_member_set.put(self.allocator, @backingInt(info.descriptor_binding), {});
+        if (!info.initializers_binding.isNone()) try directly_bound_member_set.put(self.allocator, @backingInt(info.initializers_binding), {});
+        if (!info.extra_initializers_binding.isNone()) try directly_bound_member_set.put(self.allocator, @backingInt(info.extra_initializers_binding), {});
     }
     if (!instance_extra_initializers_binding.isNone())
-        try directly_bound_member_set.put(self.allocator, @intFromEnum(instance_extra_initializers_binding), {});
+        try directly_bound_member_set.put(self.allocator, @backingInt(instance_extra_initializers_binding), {});
     var unregistered_stage3_let_bindings: std.ArrayList(NodeIndex) = .empty;
     defer unregistered_stage3_let_bindings.deinit(self.allocator);
     for (let_decls) |declaration| {
         const binding = generatedLetBinding(self, declaration);
         if (binding != class_decorators_binding and binding != class_descriptor_binding and
             binding != class_extra_initializers_binding and binding != class_this_binding and
-            binding != static_extra_initializers_binding and !directly_bound_member_set.contains(@intFromEnum(binding)))
+            binding != static_extra_initializers_binding and !directly_bound_member_set.contains(@backingInt(binding)))
         {
             try unregistered_stage3_let_bindings.append(self.allocator, binding);
         }
@@ -1216,7 +1216,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // params = .none → codegen이 "()" 출력
     const arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
         none, // params = .none (빈 파라미터)
-        @intFromEnum(iife_body),
+        @backingInt(iife_body),
         0, // flags (not async)
     });
     const source_class_scope = class_parent_scope;
@@ -1529,7 +1529,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     });
     const empty_args = try self.ast.addNodeList(&.{});
     const iife_call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(paren_arrow), empty_args.start, empty_args.len, 0,
+        @backingInt(paren_arrow), empty_args.start, empty_args.len, 0,
     });
 
     // class expression / 익명 class / export default class → IIFE call 직접 반환
@@ -1551,7 +1551,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
     const outer_binding = try self.makeUserBinding(outer_name_span, name_idx);
     const outer_declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
-        @intFromEnum(outer_binding), none, @intFromEnum(iife_call),
+        @backingInt(outer_binding), none, @backingInt(iife_call),
     });
     const outer_decl_list = try self.ast.addNodeList(&.{outer_declarator});
     const outer_var_decl = try self.addExtraNode(.variable_declaration, zero_span, &.{
@@ -1643,9 +1643,9 @@ fn buildPrivateAccessorDescriptor(
         const body = try blockOf(self, &.{try es_helpers.makeExprStmt(self, call, zero_span)});
         const empty_decos = try self.ast.addNodeList(&.{});
         const setter = try self.addExtraNode(.method_definition, zero_span, &.{
-            @intFromEnum(key),
-            @intFromEnum(param.params),
-            @intFromEnum(body),
+            @backingInt(key),
+            @backingInt(param.params),
+            @backingInt(body),
             0x04 | (if (is_static) @as(u32, 0x01) else 0),
             empty_decos.start,
             empty_decos.len,
@@ -1683,7 +1683,7 @@ fn blockOf(self: *Transformer, statements: []const NodeIndex) Error!NodeIndex {
 
 fn functionExpression(self: *Transformer, params: NodeIndex, body: NodeIndex) Error!NodeIndex {
     return self.addExtraNode(.function_expression, .{ .start = 0, .end = 0 }, &.{
-        @intFromEnum(NodeIndex.none), @intFromEnum(params), @intFromEnum(body), 0, @intFromEnum(NodeIndex.none),
+        @backingInt(NodeIndex.none), @backingInt(params), @backingInt(body), 0, @backingInt(NodeIndex.none),
     });
 }
 
@@ -1717,7 +1717,7 @@ const type_only_property_flags = ast_mod.PropertyFlags.is_abstract | ast_mod.Pro
 fn hasStaticMethodDecorator(self: *Transformer, body_idx: NodeIndex) bool {
     const body = self.ast.getNode(body_idx);
     for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
-        const member = self.ast.getNode(@enumFromInt(raw));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(raw)));
         if (member.tag != .method_definition) continue;
         const flags = self.readU32(member.data.extra, ast_mod.MethodExtra.flags);
         if ((flags & ast_mod.MethodFlags.is_static) != 0 and
@@ -1740,7 +1740,7 @@ fn takeStaticExtraCall(
     const extra_ref = try es_helpers.makeSyntheticRef(self, pending.name);
     try refs.append(self.allocator, .{ .node = extra_ref, .info_index = pending.info_index, .scope = reference_scope });
     const args = try self.ast.addNodeList(&.{ this_node, extra_ref });
-    return try self.addExtraNode(.call_expression, zero_span, &.{ @intFromEnum(callee), args.start, args.len, 0 });
+    return try self.addExtraNode(.call_expression, zero_span, &.{ @backingInt(callee), args.start, args.len, 0 });
 }
 
 /// `(__runInitializers(this, _pending), init)` — a static field runs the
@@ -1811,7 +1811,7 @@ fn buildPiggybackedInitCall(
         try instance_extra_initializer_refs.append(self.allocator, prev_arr);
     const prev_args = try self.ast.addNodeList(&.{ prev_this, prev_arr });
     const prev_call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(prev_callee), prev_args.start, prev_args.len, 0,
+        @backingInt(prev_callee), prev_args.start, prev_args.len, 0,
     });
     if (!init_call.isNone()) {
         const seq_list = try self.ast.addNodeList(&.{ prev_call, init_call });
@@ -1902,7 +1902,7 @@ pub fn lowerPlainAutoAccessors(self: *Transformer, class_idx: NodeIndex, source_
     if (body_idx.isNone()) return null;
     const body_list = self.ast.getNode(body_idx).data.list;
     const has_accessor = for (self.ast.extra_data.items[body_list.start .. body_list.start + body_list.len]) |raw| {
-        if (isPlainAutoAccessor(self, @enumFromInt(raw))) break true;
+        if (isPlainAutoAccessor(self, @fromBackingInt(@intCast(raw)))) break true;
     } else false;
     if (!has_accessor) return null;
 
@@ -1918,7 +1918,7 @@ pub fn lowerPlainAutoAccessors(self: *Transformer, class_idx: NodeIndex, source_
     defer members.deinit(self.allocator);
     var i: u32 = 0;
     while (i < body_list.len) : (i += 1) {
-        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body_list.start + i]);
+        const member_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[body_list.start + i]));
         if (!isPlainAutoAccessor(self, member_idx)) {
             try members.append(self.allocator, member_idx);
             continue;
@@ -1946,7 +1946,7 @@ pub fn lowerPlainAutoAccessors(self: *Transformer, class_idx: NodeIndex, source_
         const storage_key = try self.ast.addNode(.{ .tag = .private_identifier, .span = storage_span, .data = .{ .string_ref = storage_span } });
         const empty_decos = try self.ast.addNodeList(&.{});
         try members.append(self.allocator, try self.addExtraNode(.property_definition, member.span, &.{
-            @intFromEnum(storage_key), @intFromEnum(init), flags, empty_decos.start, empty_decos.len,
+            @backingInt(storage_key), @backingInt(init), flags, empty_decos.start, empty_decos.len,
         }));
 
         // A runtime computed key is visited here, as the decorated path does
@@ -1983,7 +1983,7 @@ pub fn lowerPlainAutoAccessors(self: *Transformer, class_idx: NodeIndex, source_
     var slots: [8]u32 = undefined;
     const ce = self.ast.getNode(class_idx).data.extra;
     for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[ce + slot];
-    slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+    slots[ast_mod.ClassExtra.body] = @backingInt(new_body);
     const new_class = try self.addExtraNode(node.tag, node.span, &slots);
     if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(class_idx, new_class);
     return new_class;

@@ -52,7 +52,7 @@ fn isDirectEvalIdentifier(ast: *const Ast, node: Node) bool {
 
 fn isDirectEvalCallee(ast: *const Ast, source: NodeIndex) bool {
     var idx = source;
-    while (!idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len) {
+    while (!idx.isNone() and @backingInt(idx) < ast.nodes.items.len) {
         const node = ast.getNode(idx);
         if (node.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) {
             idx = node.data.unary.operand;
@@ -471,7 +471,7 @@ pub const SemanticAnalyzer = struct {
         try self.references.ensureTotalCapacity(self.allocator, self.ast.nodes.items.len / 4);
 
         const root_idx: NodeIndex = self.ast.transformed_root orelse
-            @as(NodeIndex, @enumFromInt(@as(u32, @intCast(self.ast.nodes.items.len - 1))));
+            @as(NodeIndex, @fromBackingInt(@intCast(@as(u32, @intCast(self.ast.nodes.items.len - 1)))));
         try self.visitNode(root_idx);
 
         // void visitor 내부에서 삼킨 allocation 실패를 여기서 표면화 — symbol/reference 가
@@ -510,7 +510,7 @@ pub const SemanticAnalyzer = struct {
             self.scopes.items[parent.toIndex()].is_strict
         else
             false;
-        const new_id: ScopeId = @enumFromInt(@as(u32, @intCast(self.scopes.items.len)));
+        const new_id: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(self.scopes.items.len))));
         try self.scopes.append(self.allocator, .{
             .parent = parent,
             .kind = kind,
@@ -519,7 +519,7 @@ pub const SemanticAnalyzer = struct {
         // scope_maps는 scopes와 동일 인덱스를 공유 — 빈 HashMap 추가
         try self.scope_maps.append(self.allocator, .empty);
         if (!self.current_visit_node.isNone()) {
-            try self.scope_owner_map.put(self.allocator, @intFromEnum(self.current_visit_node), @intFromEnum(new_id));
+            try self.scope_owner_map.put(self.allocator, @backingInt(self.current_visit_node), @backingInt(new_id));
         }
         self.current_scope = new_id;
         return parent;
@@ -587,7 +587,7 @@ pub const SemanticAnalyzer = struct {
 
     /// `if (x) function f() {}` 처럼 if/else 본문이 곧 함수 선언인지 (Annex B.3.4).
     fn isFunctionDeclarationNode(self: *const SemanticAnalyzer, idx: NodeIndex) bool {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
         return self.ast.getNode(idx).tag == .function_declaration;
     }
 
@@ -735,7 +735,7 @@ pub const SemanticAnalyzer = struct {
     fn visitPrivateFieldExpr(self: *SemanticAnalyzer, extra: u32, recognize_enum_object: bool) AllocError!void {
         if (self.ast.hasExtra(extra, 1)) {
             const prop_idx = self.ast.readExtraNode(extra, 1);
-            if (!prop_idx.isNone() and @intFromEnum(prop_idx) < self.ast.nodes.items.len) {
+            if (!prop_idx.isNone() and @backingInt(prop_idx) < self.ast.nodes.items.len) {
                 const prop_node = self.ast.getNode(prop_idx);
                 if (prop_node.tag == .private_identifier) {
                     const raw = self.ast.getText(prop_node.span);
@@ -754,13 +754,13 @@ pub const SemanticAnalyzer = struct {
         const object_idx = self.ast.readExtraNode(extra, 0);
         var candidate = object_idx;
         var guard: u8 = 0;
-        while (!candidate.isNone() and @intFromEnum(candidate) < self.ast.nodes.items.len and guard < 64) : (guard += 1) {
+        while (!candidate.isNone() and @backingInt(candidate) < self.ast.nodes.items.len and guard < 64) : (guard += 1) {
             const node = self.ast.getNode(candidate);
             if (!ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) break;
             candidate = node.data.unary.operand;
         }
         const saved_object_base = self.enum_object_base_node;
-        self.enum_object_base_node = if (recognize_enum_object and !candidate.isNone() and @intFromEnum(candidate) < self.ast.nodes.items.len and
+        self.enum_object_base_node = if (recognize_enum_object and !candidate.isNone() and @backingInt(candidate) < self.ast.nodes.items.len and
             self.ast.getNode(candidate).tag == .identifier_reference)
             candidate
         else
@@ -970,9 +970,9 @@ pub const SemanticAnalyzer = struct {
         if (self.enable_stmt_info and self.current_stmt_idx == symbol_mod.Reference.NO_STMT) return;
         self.references.append(self.allocator, .{
             .node_index = .none,
-            .declaration_node_index = if (declaration_node_index) |raw| @enumFromInt(raw) else .none,
+            .declaration_node_index = if (declaration_node_index) |raw| @fromBackingInt(@intCast(raw)) else .none,
             .scope_id = scope_id,
-            .symbol_id = @enumFromInt(sym_index),
+            .symbol_id = @fromBackingInt(@intCast(sym_index)),
             .stmt_idx = if (self.enable_stmt_info) self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT else symbol_mod.Reference.NO_STMT,
             .scope_stmt_idx = if (self.enable_stmt_info) self.current_stmt_idx else symbol_mod.Reference.NO_STMT,
             .flags = .{ .declare = true },
@@ -1022,7 +1022,7 @@ pub const SemanticAnalyzer = struct {
     fn checkVarHoistingConflict(self: *SemanticAnalyzer, var_scope: ScopeId, name: []const u8, decl_span: Span) AllocError!bool {
         // current_scope부터 var_scope까지의 중간 블록 스코프에서 let/const 선언을 찾는다
         var scope_id = self.current_scope;
-        while (!scope_id.isNone() and @intFromEnum(scope_id) != @intFromEnum(var_scope)) {
+        while (!scope_id.isNone() and @backingInt(scope_id) != @backingInt(var_scope)) {
             if (self.findSymbolInScope(scope_id, name)) |existing| {
                 // block scope의 let/const/class와 충돌하거나,
                 // block scope의 function-like 선언과도 충돌
@@ -1063,7 +1063,7 @@ pub const SemanticAnalyzer = struct {
     fn isScopeDescendantOf(self: *const SemanticAnalyzer, child: ScopeId, parent: ScopeId) bool {
         var scope_id = child;
         while (!scope_id.isNone()) {
-            if (@intFromEnum(scope_id) == @intFromEnum(parent)) return true;
+            if (@backingInt(scope_id) == @backingInt(parent)) return true;
             scope_id = self.scopes.items[scope_id.toIndex()].parent;
         }
         return false;
@@ -1217,7 +1217,7 @@ pub const SemanticAnalyzer = struct {
                 .declaration_span = binding.name_span,
                 .synthetic_kind = .enum_iife_member,
                 .synthetic_name = stable_name,
-                .synthetic_owner_id = if (enum_context.parameter_symbol_id) |owner| @enumFromInt(owner) else null,
+                .synthetic_owner_id = if (enum_context.parameter_symbol_id) |owner| @fromBackingInt(@intCast(owner)) else null,
             }) catch {
                 self.alloc_failed = true;
                 return null;
@@ -1260,14 +1260,14 @@ pub const SemanticAnalyzer = struct {
                     self.symbols.items[sym_idx].reference_count += 1;
                     if (flags.write) self.symbols.items[sym_idx].write_count += 1;
                 }
-                const ni: u32 = @intFromEnum(node_idx);
+                const ni: u32 = @backingInt(node_idx);
                 if (ni < self.symbol_ids.items.len) {
                     self.symbol_ids.items[ni] = @intCast(sym_idx);
                 }
                 self.references.append(self.allocator, .{
                     .node_index = node_idx,
                     .scope_id = self.current_scope,
-                    .symbol_id = @enumFromInt(sym_idx),
+                    .symbol_id = @fromBackingInt(@intCast(sym_idx)),
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                     .scope_stmt_idx = self.current_stmt_idx,
                     .flags = effective,
@@ -1290,12 +1290,12 @@ pub const SemanticAnalyzer = struct {
                     self.symbols.items[sym_idx].reference_count += 1;
                     if (flags.write) self.symbols.items[sym_idx].write_count += 1;
                 }
-                const ni: u32 = @intFromEnum(node_idx);
+                const ni: u32 = @backingInt(node_idx);
                 if (ni < self.symbol_ids.items.len) self.symbol_ids.items[ni] = @intCast(sym_idx);
                 self.references.append(self.allocator, .{
                     .node_index = node_idx,
                     .scope_id = self.current_scope,
-                    .symbol_id = @enumFromInt(sym_idx),
+                    .symbol_id = @fromBackingInt(@intCast(sym_idx)),
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                     .scope_stmt_idx = self.current_stmt_idx,
                     .flags = effective,
@@ -1325,14 +1325,14 @@ pub const SemanticAnalyzer = struct {
                 // symbol_ids + references 기록. node_idx 는 non-none 으로 강제 (NodeIndex
                 // 타입). nullable 경로를 우회하면 mangler liveness 에 silent 누락이 생기므로
                 // 타입 수준에서 차단한다.
-                const ni: u32 = @intFromEnum(node_idx);
+                const ni: u32 = @backingInt(node_idx);
                 if (ni < self.symbol_ids.items.len) {
                     self.symbol_ids.items[ni] = @intCast(sym_idx);
                 }
                 self.references.append(self.allocator, .{
                     .node_index = node_idx,
                     .scope_id = self.current_scope,
-                    .symbol_id = @enumFromInt(sym_idx),
+                    .symbol_id = @fromBackingInt(@intCast(sym_idx)),
                     .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                     .scope_stmt_idx = self.current_stmt_idx,
                     .flags = effective,
@@ -1355,12 +1355,12 @@ pub const SemanticAnalyzer = struct {
                             self.symbols.items[member_sid].reference_count += 1;
                             if (flags.write) self.symbols.items[member_sid].write_count += 1;
                         }
-                        const ni: u32 = @intFromEnum(node_idx);
+                        const ni: u32 = @backingInt(node_idx);
                         if (ni < self.symbol_ids.items.len) self.symbol_ids.items[ni] = member_sid;
                         self.references.append(self.allocator, .{
                             .node_index = node_idx,
                             .scope_id = self.current_scope,
-                            .symbol_id = @enumFromInt(member_sid),
+                            .symbol_id = @fromBackingInt(@intCast(member_sid)),
                             .stmt_idx = self.current_top_stmt_idx orelse symbol_mod.Reference.NO_STMT,
                             .scope_stmt_idx = self.current_stmt_idx,
                             .flags = effective,
@@ -1387,7 +1387,7 @@ pub const SemanticAnalyzer = struct {
         // 쪽(getTextStable)과 대칭으로 stable 사본 키 사용. 이미 등록된 키면
         // 사본을 만들지 않는다.
         if (self.collect_unresolved_reference_nodes) {
-            self.unresolved_reference_nodes.put(self.allocator, @intFromEnum(node_idx), {}) catch {
+            self.unresolved_reference_nodes.put(self.allocator, @backingInt(node_idx), {}) catch {
                 self.alloc_failed = true;
             };
         }
@@ -1424,7 +1424,7 @@ pub const SemanticAnalyzer = struct {
     /// 경계 / `.none` / empty 매핑을 모두 null 로 통일.
     fn symbolIndexOfNode(self: *const SemanticAnalyzer, node_idx: NodeIndex) ?usize {
         if (node_idx.isNone()) return null;
-        const ni: u32 = @intFromEnum(node_idx);
+        const ni: u32 = @backingInt(node_idx);
         if (ni >= self.symbol_ids.items.len) return null;
         const sym_idx = self.symbol_ids.items[ni] orelse return null;
         if (sym_idx >= self.symbols.items.len) return null;
@@ -1442,10 +1442,10 @@ pub const SemanticAnalyzer = struct {
             self.symbol_ids.items[node_idx] = @intCast(sym_idx);
         }
         for (self.references.items) |*reference| {
-            if (reference.flags.declare and @intFromEnum(reference.symbol_id) == sym_idx and
+            if (reference.flags.declare and @backingInt(reference.symbol_id) == sym_idx and
                 reference.declaration_node_index.isNone())
             {
-                reference.declaration_node_index = @enumFromInt(node_idx);
+                reference.declaration_node_index = @fromBackingInt(@intCast(node_idx));
                 break;
             }
         }
@@ -1460,7 +1460,7 @@ pub const SemanticAnalyzer = struct {
     /// ECMA §sec-block-static-semantics-early-errors 에 따라 재선언 에러를 보고한다.
     fn recheckPredeclaredVar(self: *SemanticAnalyzer, binding_idx: NodeIndex) AllocError!void {
         if (binding_idx.isNone()) return;
-        if (@intFromEnum(binding_idx) >= self.ast.nodes.items.len) return;
+        if (@backingInt(binding_idx) >= self.ast.nodes.items.len) return;
         const bnode = self.ast.getNode(binding_idx);
         switch (bnode.tag) {
             .binding_identifier, .assignment_target_identifier => {},
@@ -1468,7 +1468,7 @@ pub const SemanticAnalyzer = struct {
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(bnode.data.list);
                 for (split.elements) |raw| {
-                    try self.recheckPredeclaredVar(@enumFromInt(raw));
+                    try self.recheckPredeclaredVar(@fromBackingInt(@intCast(raw)));
                 }
                 if (split.rest_operand) |op| {
                     try self.recheckPredeclaredVar(op);
@@ -1512,7 +1512,7 @@ pub const SemanticAnalyzer = struct {
     /// 원래 선언 위치가 아닌 바인딩마다 선언 행을 남겨 이 문장도 `x` 의 선언으로 잇는다.
     fn recordVarRedeclarations(self: *SemanticAnalyzer, idx: NodeIndex) void {
         if (idx.isNone()) return;
-        const ni = @intFromEnum(idx);
+        const ni = @backingInt(idx);
         if (ni >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
@@ -1526,7 +1526,7 @@ pub const SemanticAnalyzer = struct {
             },
             .array_pattern, .object_pattern => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
-                for (split.elements) |raw| self.recordVarRedeclarations(@enumFromInt(raw));
+                for (split.elements) |raw| self.recordVarRedeclarations(@fromBackingInt(@intCast(raw)));
                 if (split.rest_operand) |op| self.recordVarRedeclarations(op);
             },
             .binding_property => self.recordVarRedeclarations(node.data.binary.right),
@@ -1537,7 +1537,7 @@ pub const SemanticAnalyzer = struct {
 
     fn setSymbolIdForPredeclaredBinding(self: *SemanticAnalyzer, idx: NodeIndex) void {
         if (idx.isNone()) return;
-        const ni = @intFromEnum(idx);
+        const ni = @backingInt(idx);
         if (ni >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
@@ -1547,7 +1547,7 @@ pub const SemanticAnalyzer = struct {
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw| {
-                    self.setSymbolIdForPredeclaredBinding(@enumFromInt(raw));
+                    self.setSymbolIdForPredeclaredBinding(@fromBackingInt(@intCast(raw)));
                 }
                 if (split.rest_operand) |op| {
                     self.setSymbolIdForPredeclaredBinding(op);
@@ -1621,7 +1621,7 @@ pub const SemanticAnalyzer = struct {
     /// `({[k]: t = d} = o)` 의 `k` 는 참조 0 → DCE/const-inline 이 `const k` 를 지우고,
     /// codegen 은 key 를 원본 이름으로 내보내 `ReferenceError: k is not defined` (#4515).
     fn visitComputedPatternKey(self: *SemanticAnalyzer, key_idx: NodeIndex) AllocError!void {
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
+        if (key_idx.isNone() or @backingInt(key_idx) >= self.ast.nodes.items.len) return;
         if (self.ast.getNode(key_idx).tag != .computed_property_key) return;
         try self.visitNode(key_idx);
     }
@@ -1632,7 +1632,7 @@ pub const SemanticAnalyzer = struct {
     /// 일반 식별자 처리 분기에서는 이 컨텍스트를 알 수 없어 read로 취급되어 write_count가
     /// 누락된다.
     fn visitAsWriteTarget(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .identifier_reference, .assignment_target_identifier => {
@@ -1643,7 +1643,7 @@ pub const SemanticAnalyzer = struct {
             .array_assignment_target, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw| {
-                    try self.visitAsWriteTarget(@enumFromInt(raw));
+                    try self.visitAsWriteTarget(@fromBackingInt(@intCast(raw)));
                 }
                 if (split.rest_operand) |op| {
                     try self.visitAsWriteTarget(op);
@@ -1682,7 +1682,7 @@ pub const SemanticAnalyzer = struct {
     /// `write_count`를 증가시킨다. 일반 read 참조에서는 `visitNode` 경유.
     /// flags 는 호출자가 compound(`x += 1`, `x++`)인지 pure write(`x = 1`)인지 구분해 전달.
     fn tryResolveNodeAsRef(self: *SemanticAnalyzer, node_idx: NodeIndex, flags: symbol_mod.ReferenceFlags) bool {
-        if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+        if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) return false;
         const node = self.ast.getNode(node_idx);
         if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
             const name = self.ast.identifierNameText(node);
@@ -1717,7 +1717,7 @@ pub const SemanticAnalyzer = struct {
         var idx = start;
         var guard: u8 = 0;
         while (guard < 64) : (guard += 1) {
-            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return idx;
+            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return idx;
             const n = self.ast.getNode(idx);
             if (!Tag.isTransparentWrapper(n.tag)) return idx;
             idx = n.data.unary.operand;
@@ -1730,7 +1730,7 @@ pub const SemanticAnalyzer = struct {
     /// 분기 비대칭(이 함수의 과거 OOB 버그 원인)을 구조적으로 차단한다.
     fn unwrapTargetNode(self: *const SemanticAnalyzer, start: NodeIndex) ?Node {
         const idx = self.unwrapTarget(start);
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return null;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return null;
         return self.ast.getNode(idx);
     }
 
@@ -1755,7 +1755,7 @@ pub const SemanticAnalyzer = struct {
             // (read)은 제외하고 target 부분만 따라간다.
             .array_assignment_target, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(t.data.list);
-                for (split.elements) |raw| try self.checkImportMutation(@enumFromInt(raw), is_delete);
+                for (split.elements) |raw| try self.checkImportMutation(@fromBackingInt(@intCast(raw)), is_delete);
                 if (split.rest_operand) |op| try self.checkImportMutation(op, is_delete);
             },
             .assignment_target_property_identifier => try self.checkImportMutation(t.data.binary.left, is_delete),
@@ -1852,7 +1852,7 @@ pub const SemanticAnalyzer = struct {
 
     /// idx 가 유효하고 binary_expression/logical_expression 인지 (좌결합 스파인 평탄화용, #4123).
     fn isBinaryOrLogical(self: *SemanticAnalyzer, idx: NodeIndex) bool {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
         const tag = self.ast.getNode(idx).tag;
         return tag == .binary_expression or tag == .logical_expression;
     }
@@ -1860,7 +1860,7 @@ pub const SemanticAnalyzer = struct {
     fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
         if (idx.isNone()) return;
         // 바운드 체크: 잘못된 인덱스 방어
-        if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (@backingInt(idx) >= self.ast.nodes.items.len) return;
         const saved_visit_node = self.current_visit_node;
         self.current_visit_node = idx;
         defer self.current_visit_node = saved_visit_node;
@@ -1987,7 +1987,7 @@ pub const SemanticAnalyzer = struct {
                     // `import * as fiberRefs`의 namespace 객체로 치환됨).
                     // private_identifier key는 collectPrivateNames에서 이미 선언 등록했으므로
                     // 여기서 방문하면 usePrivateName(.read)가 잘못 호출된다.
-                    const key_idx: NodeIndex = @enumFromInt(extras[extra_start + ast_mod.MethodExtra.key]);
+                    const key_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + ast_mod.MethodExtra.key]));
                     const key_node = self.ast.getNode(key_idx);
                     if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
@@ -2009,7 +2009,7 @@ pub const SemanticAnalyzer = struct {
                     // getter/setter 파라미터 개수 검증
                     try checker.checkGetterSetterParams(self.ast, node, &self.errors, self.allocator);
 
-                    const body_idx: NodeIndex = @enumFromInt(extras[extra_start + ast_mod.MethodExtra.body]);
+                    const body_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + ast_mod.MethodExtra.body]));
                     const has_parameter_expressions = try paramsHaveExpressions(self, params_list);
                     const function_scopes = try self.enterFunctionScopesWithParams(
                         functionParamsNode(self, node),
@@ -2031,12 +2031,12 @@ pub const SemanticAnalyzer = struct {
                 const e = node.data.extra;
                 const extras_p = self.ast.extra_data.items;
                 if (e + 1 < extras_p.len) {
-                    const key_idx: NodeIndex = @enumFromInt(extras_p[e + ast_mod.PropertyExtra.key]);
+                    const key_idx: NodeIndex = @fromBackingInt(@intCast(extras_p[e + ast_mod.PropertyExtra.key]));
                     const key_node = self.ast.getNode(key_idx);
                     if (key_node.tag == .computed_property_key) {
                         try self.visitNode(key_idx);
                     }
-                    try self.visitNode(@enumFromInt(extras_p[e + ast_mod.PropertyExtra.init]));
+                    try self.visitNode(@fromBackingInt(@intCast(extras_p[e + ast_mod.PropertyExtra.init])));
                 }
                 // 필드/accessor decorator 순회 — 누락 시 import binding tree-shake로 drop.
                 if (e + 4 < extras_p.len) {
@@ -2097,13 +2097,13 @@ pub const SemanticAnalyzer = struct {
                 // ESM(번들): import 바인딩/namespace 멤버 대입 불가 (esbuild/rolldown parity).
                 try self.checkImportMutation(lhs_idx, false);
                 // operator 토큰은 binary.flags 에 저장. compound 면 LHS 는 read+write, 아니면 pure write.
-                const op_kind: token.Kind = @enumFromInt(node.data.binary.flags);
+                const op_kind: token.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 const lhs_flags: symbol_mod.ReferenceFlags = if (op_kind.isCompoundAssignment())
                     .{ .read = true, .write = true }
                 else
                     .{ .write = true };
                 if (!self.tryResolveNodeAsRef(lhs_idx, lhs_flags)) {
-                    if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len and
+                    if (!lhs_idx.isNone() and @backingInt(lhs_idx) < self.ast.nodes.items.len and
                         self.ast.getNode(lhs_idx).tag == .private_field_expression)
                     {
                         try self.visitPrivateFieldExpr(self.ast.getNode(lhs_idx).data.extra, false);
@@ -2156,11 +2156,11 @@ pub const SemanticAnalyzer = struct {
                 const e = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (e < extras.len) {
-                    const operand_idx: NodeIndex = @enumFromInt(extras[e]);
+                    const operand_idx: NodeIndex = @fromBackingInt(@intCast(extras[e]));
                     // ESM(번들): import 바인딩/namespace 멤버 update(`ns.x++`) 불가.
                     try self.checkImportMutation(operand_idx, false);
                     if (!self.tryResolveNodeAsRef(operand_idx, .{ .read = true, .write = true })) {
-                        if (!operand_idx.isNone() and @intFromEnum(operand_idx) < self.ast.nodes.items.len and
+                        if (!operand_idx.isNone() and @backingInt(operand_idx) < self.ast.nodes.items.len and
                             self.ast.getNode(operand_idx).tag == .private_field_expression)
                         {
                             try self.visitPrivateFieldExpr(self.ast.getNode(operand_idx).data.extra, false);
@@ -2174,13 +2174,13 @@ pub const SemanticAnalyzer = struct {
                 // extra: [operand, operator_and_flags]
                 const e = node.data.extra;
                 if (e + 1 < self.ast.extra_data.items.len) {
-                    const operand_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                    const operand_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                     // ESM(번들): `delete ns.x`(namespace 멤버)·`delete importedBinding` 불가.
-                    const op: token.Kind = @enumFromInt(@as(u8, @truncate(self.ast.extra_data.items[e + 1])));
+                    const op: token.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(self.ast.extra_data.items[e + 1]))));
                     if (op == .kw_delete) try self.checkImportMutation(operand_idx, true);
                     try self.visitNode(operand_idx);
                 } else if (e < self.ast.extra_data.items.len) {
-                    try self.visitNode(@enumFromInt(self.ast.extra_data.items[e]));
+                    try self.visitNode(@fromBackingInt(@intCast(self.ast.extra_data.items[e])));
                 }
             },
             .yield_expression,
@@ -2233,7 +2233,7 @@ pub const SemanticAnalyzer = struct {
                     // @__NO_SIDE_EFFECTS__ 자동 전파: callee symbol이 no_side_effects이면
                     // CallFlags.is_pure 자동 설정 (O(1) — resolveIdentifier가 설정한 symbol_ids 활용)
                     if (self.ast.hasExtra(e, 3) and !callee_idx.isNone()) {
-                        const callee_ni = @intFromEnum(callee_idx);
+                        const callee_ni = @backingInt(callee_idx);
                         if (callee_ni < self.symbol_ids.items.len) {
                             if (self.symbol_ids.items[callee_ni]) |sym_idx| {
                                 if (sym_idx < self.symbols.items.len and
@@ -2495,7 +2495,7 @@ pub const SemanticAnalyzer = struct {
         while (stack.pop()) |cur| {
             // children() 는 extra_data 값을 그대로 yield 하므로(범위 검증 안 함) none 외에
             // out-of-range 도 가능 → getNode 전 bounds 가드(walkPreorderIterative/scanChildren 동일).
-            if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) continue;
+            if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) continue;
             const cnode = self.ast.getNode(cur);
             if (isTypeContextGenericNode(cnode.tag)) {
                 try Push.go(self.ast, cnode, &stack, &child_buf, self.allocator);
@@ -2528,7 +2528,7 @@ pub const SemanticAnalyzer = struct {
                 self.resolveIdentifier(base, idx, .{ .read = true });
             }
         }
-        const type_args: NodeIndex = @enumFromInt(extras[e + 2]);
+        const type_args: NodeIndex = @fromBackingInt(@intCast(extras[e + 2]));
         if (!type_args.isNone()) try self.visitNode(type_args);
     }
 
@@ -2537,7 +2537,7 @@ pub const SemanticAnalyzer = struct {
         if (list.start + list.len > self.ast.extra_data.items.len) return; // 바운드 방어
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            const idx: NodeIndex = @enumFromInt(raw_idx);
+            const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             try self.visitNode(idx);
         }
     }
@@ -2553,7 +2553,7 @@ pub const SemanticAnalyzer = struct {
         const saved = self.current_stmt_idx;
         for (indices, 0..) |raw_idx, i| {
             self.current_stmt_idx = @intCast(i);
-            try self.visitNode(@enumFromInt(raw_idx));
+            try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
         }
         self.current_stmt_idx = saved;
     }
@@ -2599,7 +2599,7 @@ pub const SemanticAnalyzer = struct {
                         self.current_top_stmt_idx = @intCast(i);
                         self.current_stmt_idx = @intCast(i);
                     }
-                    try self.visitNode(@enumFromInt(raw_idx));
+                    try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                 }
                 if (self.enable_stmt_info) {
                     self.current_top_stmt_idx = null;
@@ -2643,8 +2643,8 @@ pub const SemanticAnalyzer = struct {
 
     fn flowComponentConstDeclaration(self: *SemanticAnalyzer, wrapper: Node) ?Node {
         if (wrapper.tag != .flow_component_wrapper or !self.ast.hasExtra(wrapper.data.extra, 1)) return null;
-        const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[wrapper.data.extra + 1]);
-        if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) return null;
+        const decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[wrapper.data.extra + 1]));
+        if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) return null;
         const decl = self.ast.getNode(decl_idx);
         return if (decl.tag == .variable_declaration) decl else null;
     }
@@ -2665,8 +2665,8 @@ pub const SemanticAnalyzer = struct {
                 self.current_top_stmt_idx = @intCast(i);
                 self.current_stmt_idx = @intCast(i);
             }
-            const idx: NodeIndex = @enumFromInt(raw_idx);
-            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
 
             const node = self.ast.getNode(idx);
             switch (node.tag) {
@@ -2688,8 +2688,8 @@ pub const SemanticAnalyzer = struct {
                     const extra_start = node.data.extra;
                     const extras = self.ast.extra_data.items;
                     if (extra_start + 3 >= extras.len) continue;
-                    const decl_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+                    if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
                     const decl_node = self.ast.getNode(decl_idx);
                     switch (decl_node.tag) {
                         .variable_declaration => try self.predeclareVarDecl(decl_node),
@@ -2707,7 +2707,7 @@ pub const SemanticAnalyzer = struct {
                 .export_default_declaration => {
                     // export default function f() {}, export default class C {}
                     const inner_idx = node.data.unary.operand;
-                    if (inner_idx.isNone() or @intFromEnum(inner_idx) >= self.ast.nodes.items.len) continue;
+                    if (inner_idx.isNone() or @backingInt(inner_idx) >= self.ast.nodes.items.len) continue;
                     const inner_node = self.ast.getNode(inner_idx);
                     switch (inner_node.tag) {
                         .function_declaration => try self.predeclareFuncDecl(inner_node),
@@ -2727,34 +2727,34 @@ pub const SemanticAnalyzer = struct {
         const extras = self.ast.extra_data.items;
         if (list.start + list.len > extras.len) return;
         for (extras[list.start .. list.start + list.len]) |raw_idx| {
-            const stmt_idx: NodeIndex = @enumFromInt(raw_idx);
-            if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= self.ast.nodes.items.len) continue;
+            const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (stmt_idx.isNone() or @backingInt(stmt_idx) >= self.ast.nodes.items.len) continue;
             const stmt = self.ast.getNode(stmt_idx);
             const decl_idx: NodeIndex = if (stmt.tag == .export_named_declaration) blk: {
                 if (stmt.data.extra >= extras.len) continue;
-                break :blk @enumFromInt(extras[stmt.data.extra]);
+                break :blk @fromBackingInt(@intCast(extras[stmt.data.extra]));
             } else stmt_idx;
-            if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+            if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
             const decl = self.ast.getNode(decl_idx);
             if (decl.tag != .ts_module_declaration or decl.data.binary.flags == 1) continue;
             const namespace_name_idx = decl.data.binary.left;
-            if (namespace_name_idx.isNone() or @intFromEnum(namespace_name_idx) >= self.symbol_ids.items.len) continue;
-            const owner_sid = self.symbol_ids.items[@intFromEnum(namespace_name_idx)] orelse continue;
+            if (namespace_name_idx.isNone() or @backingInt(namespace_name_idx) >= self.symbol_ids.items.len) continue;
+            const owner_sid = self.symbol_ids.items[@backingInt(namespace_name_idx)] orelse continue;
             var declaration_count: usize = 0;
             for (extras[list.start .. list.start + list.len]) |other_raw| {
-                const other_idx: NodeIndex = @enumFromInt(other_raw);
-                if (other_idx.isNone() or @intFromEnum(other_idx) >= self.ast.nodes.items.len) continue;
+                const other_idx: NodeIndex = @fromBackingInt(@intCast(other_raw));
+                if (other_idx.isNone() or @backingInt(other_idx) >= self.ast.nodes.items.len) continue;
                 const other_stmt = self.ast.getNode(other_idx);
                 const other_decl_idx: NodeIndex = if (other_stmt.tag == .export_named_declaration) blk: {
                     if (other_stmt.data.extra >= extras.len) continue;
-                    break :blk @enumFromInt(extras[other_stmt.data.extra]);
+                    break :blk @fromBackingInt(@intCast(extras[other_stmt.data.extra]));
                 } else other_idx;
-                if (other_decl_idx.isNone() or @intFromEnum(other_decl_idx) >= self.ast.nodes.items.len) continue;
+                if (other_decl_idx.isNone() or @backingInt(other_decl_idx) >= self.ast.nodes.items.len) continue;
                 const other_decl = self.ast.getNode(other_decl_idx);
                 if (other_decl.tag != .ts_module_declaration or other_decl.data.binary.flags == 1) continue;
                 const other_name = other_decl.data.binary.left;
-                if (other_name.isNone() or @intFromEnum(other_name) >= self.symbol_ids.items.len) continue;
-                if (self.symbol_ids.items[@intFromEnum(other_name)] == owner_sid) declaration_count += 1;
+                if (other_name.isNone() or @backingInt(other_name) >= self.symbol_ids.items.len) continue;
+                if (self.symbol_ids.items[@backingInt(other_name)] == owner_sid) declaration_count += 1;
             }
             if (declaration_count < 2) continue;
             try self.collectNamespaceMembersFromDeclaration(owner_sid, decl);
@@ -2771,12 +2771,12 @@ pub const SemanticAnalyzer = struct {
     fn collectNamespaceMembersFromDeclaration(self: *SemanticAnalyzer, owner_sid: u32, decl: Node) AllocError!void {
         const extras = self.ast.extra_data.items;
         const body_idx = decl.data.binary.right;
-        if (body_idx.isNone() or @intFromEnum(body_idx) >= self.ast.nodes.items.len) return;
+        if (body_idx.isNone() or @backingInt(body_idx) >= self.ast.nodes.items.len) return;
         const body = self.ast.getNode(body_idx);
         if (body.tag == .ts_module_declaration) {
             const nested_name = body.data.binary.left;
             try self.addNamespaceMemberBinding(owner_sid, nested_name);
-            if (!nested_name.isNone() and @intFromEnum(nested_name) < self.ast.nodes.items.len) {
+            if (!nested_name.isNone() and @backingInt(nested_name) < self.ast.nodes.items.len) {
                 const nested_text = self.ast.getText(self.ast.getNode(nested_name).span);
                 if (self.namespaceMemberProxy(owner_sid, nested_text)) |nested_owner| {
                     try self.collectNamespaceMembersFromDeclaration(nested_owner, body);
@@ -2787,12 +2787,12 @@ pub const SemanticAnalyzer = struct {
         if (body.tag != .block_statement) return;
         if (body.data.list.start + body.data.list.len > extras.len) return;
         for (extras[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw_member_idx| {
-            const member_idx: NodeIndex = @enumFromInt(raw_member_idx);
-            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_member_idx));
+            if (member_idx.isNone() or @backingInt(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);
             if (member.tag != .export_named_declaration or member.data.extra >= extras.len) continue;
-            const exported_idx: NodeIndex = @enumFromInt(extras[member.data.extra]);
-            if (exported_idx.isNone() or @intFromEnum(exported_idx) >= self.ast.nodes.items.len) continue;
+            const exported_idx: NodeIndex = @fromBackingInt(@intCast(extras[member.data.extra]));
+            if (exported_idx.isNone() or @backingInt(exported_idx) >= self.ast.nodes.items.len) continue;
             const exported = self.ast.getNode(exported_idx);
             switch (exported.tag) {
                 .variable_declaration => {
@@ -2802,21 +2802,21 @@ pub const SemanticAnalyzer = struct {
                     const len = extras[e + 2];
                     if (start + len > extras.len) continue;
                     for (extras[start .. start + len]) |raw_declarator| {
-                        const declarator = self.ast.getNode(@enumFromInt(raw_declarator));
+                        const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_declarator)));
                         if (declarator.tag != .variable_declarator) continue;
-                        const binding_idx: NodeIndex = @enumFromInt(extras[declarator.data.extra]);
+                        const binding_idx: NodeIndex = @fromBackingInt(@intCast(extras[declarator.data.extra]));
                         try self.addNamespaceMemberBinding(owner_sid, binding_idx);
                     }
                 },
                 .function_declaration, .class_declaration, .ts_enum_declaration => {
                     const e = exported.data.extra;
                     if (e >= extras.len) continue;
-                    try self.addNamespaceMemberBinding(owner_sid, @enumFromInt(extras[e]));
+                    try self.addNamespaceMemberBinding(owner_sid, @fromBackingInt(@intCast(extras[e])));
                 },
                 .ts_module_declaration => {
                     const nested_name = exported.data.binary.left;
                     try self.addNamespaceMemberBinding(owner_sid, nested_name);
-                    if (!nested_name.isNone() and @intFromEnum(nested_name) < self.ast.nodes.items.len) {
+                    if (!nested_name.isNone() and @backingInt(nested_name) < self.ast.nodes.items.len) {
                         const nested_text = self.ast.getText(self.ast.getNode(nested_name).span);
                         if (self.namespaceMemberProxy(owner_sid, nested_text)) |nested_owner| {
                             try self.collectNamespaceMembersFromDeclaration(nested_owner, exported);
@@ -2829,12 +2829,12 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn addNamespaceMemberBinding(self: *SemanticAnalyzer, owner_sid: u32, binding_idx: NodeIndex) AllocError!void {
-        if (binding_idx.isNone() or @intFromEnum(binding_idx) >= self.ast.nodes.items.len) return;
+        if (binding_idx.isNone() or @backingInt(binding_idx) >= self.ast.nodes.items.len) return;
         const binding = self.ast.getNode(binding_idx);
         switch (binding.tag) {
             .array_pattern, .object_pattern => {
                 const split = self.ast.nodeListSplitRest(binding.data.list);
-                for (split.elements) |raw_idx| try self.addNamespaceMemberBinding(owner_sid, @enumFromInt(raw_idx));
+                for (split.elements) |raw_idx| try self.addNamespaceMemberBinding(owner_sid, @fromBackingInt(@intCast(raw_idx)));
                 if (split.rest_operand) |rest| try self.addNamespaceMemberBinding(owner_sid, rest);
                 return;
             },
@@ -2885,8 +2885,8 @@ pub const SemanticAnalyzer = struct {
                 self.current_top_stmt_idx = @intCast(i);
                 self.current_stmt_idx = @intCast(i);
             }
-            const idx: NodeIndex = @enumFromInt(raw_idx);
-            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
             const node = self.ast.getNode(idx);
             switch (node.tag) {
                 .variable_declaration,
@@ -2899,8 +2899,8 @@ pub const SemanticAnalyzer = struct {
                     const extra_start = node.data.extra;
                     const extras = self.ast.extra_data.items;
                     if (extra_start >= extras.len) continue;
-                    const decl_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+                    if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
                     const decl_node = self.ast.getNode(decl_idx);
                     switch (decl_node.tag) {
                         .variable_declaration,
@@ -2932,11 +2932,11 @@ pub const SemanticAnalyzer = struct {
         if (decl_start + decl_len > extras.len) return;
         const decl_indices = extras[decl_start .. decl_start + decl_len];
         for (decl_indices) |raw_idx| {
-            const decl_idx: NodeIndex = @enumFromInt(raw_idx);
-            if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+            const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
             const decl_node = self.ast.getNode(decl_idx);
             if (decl_node.tag == .variable_declarator) {
-                const binding_idx: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+                const binding_idx: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra]));
                 // 이름만 등록 — registerBinding 대신 predeclareBindingNames를 사용하여
                 // default value 표현식을 순회하지 않는다.
                 try self.predeclareBindingNames(binding_idx, sym_kind);
@@ -2948,21 +2948,21 @@ pub const SemanticAnalyzer = struct {
     /// registerBinding과 동일한 구조이지만, assignment_pattern의 default value 등
     /// 표현식 노드를 visitNode하지 않는다. forward reference pre-declaration 전용.
     fn predeclareBindingNames(self: *SemanticAnalyzer, idx: NodeIndex, kind: SymbolKind) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .formal_parameter => {
                 const extra = node.data.extra;
                 if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.pattern)) return;
-                try self.predeclareBindingNames(@enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]), kind);
+                try self.predeclareBindingNames(@fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern])), kind);
             },
             .binding_identifier, .assignment_target_identifier => {
-                try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
+                try self.declareSymbolWithNode(node.span, kind, node.span, @backingInt(idx));
             },
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw_idx| {
-                    try self.predeclareBindingNames(@enumFromInt(raw_idx), kind);
+                    try self.predeclareBindingNames(@fromBackingInt(@intCast(raw_idx)), kind);
                 }
                 if (split.rest_operand) |op| {
                     try self.predeclareBindingNames(op, kind);
@@ -2986,14 +2986,14 @@ pub const SemanticAnalyzer = struct {
     /// default value 표현식을 순회한다. 이름 등록은 하지 않음 (이미 pre-declared).
     /// 예: const { x = someExpr } = obj; 에서 someExpr를 visitNode한다.
     fn visitBindingPatternExpressions(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .formal_parameter => {
                 const extra = node.data.extra;
                 if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.default)) return;
-                const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]);
-                const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]);
+                const pattern: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]));
+                const default_value: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]));
                 // A whole-parameter default runs before the nested pattern's
                 // computed keys and defaults.
                 if (!default_value.isNone()) try self.visitNode(default_value);
@@ -3005,7 +3005,7 @@ pub const SemanticAnalyzer = struct {
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw_idx| {
-                    try self.visitBindingPatternExpressions(@enumFromInt(raw_idx));
+                    try self.visitBindingPatternExpressions(@fromBackingInt(@intCast(raw_idx)));
                 }
                 if (split.rest_operand) |op| {
                     try self.visitBindingPatternExpressions(op);
@@ -3063,11 +3063,11 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 4 >= extras.len) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
 
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(extras[extra_start + 3]), node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(extras[extra_start + 3]), node.span, @backingInt(name_idx));
         }
     }
 
@@ -3076,11 +3076,11 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
 
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @backingInt(name_idx));
         }
     }
 
@@ -3090,11 +3090,11 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 3 >= extras.len) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
 
         if (!name_idx.isNone()) {
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @backingInt(name_idx));
         }
     }
 
@@ -3104,11 +3104,11 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 3 >= extras.len) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+        if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len) return;
         const name_node = self.ast.getNode(name_idx);
         if (name_node.tag != .binding_identifier) return;
-        try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @intFromEnum(name_idx));
+        try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @backingInt(name_idx));
     }
 
     /// Flow enum member keys are names, not lexical references. Visit only explicit
@@ -3121,8 +3121,8 @@ pub const SemanticAnalyzer = struct {
         const members_len = extras[e + 2];
         if (members_start + members_len > extras.len) return;
         for (extras[members_start .. members_start + members_len]) |raw_idx| {
-            const member_idx: NodeIndex = @enumFromInt(raw_idx);
-            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (member_idx.isNone() or @backingInt(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);
             if (member.tag != .flow_enum_member or member.data.binary.right.isNone()) continue;
             try self.visitNode(member.data.binary.right);
@@ -3138,7 +3138,7 @@ pub const SemanticAnalyzer = struct {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (e + 3 >= extras.len or (extras[e + 3] & 2) != 0) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[e]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[e]));
         const members_start = extras[e + 1];
         const members_len = extras[e + 2];
         if (members_start + members_len > extras.len) return;
@@ -3164,8 +3164,8 @@ pub const SemanticAnalyzer = struct {
         }
 
         for (extras[members_start .. members_start + members_len]) |raw_idx| {
-            const member_idx: NodeIndex = @enumFromInt(raw_idx);
-            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (member_idx.isNone() or @backingInt(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);
             if (member.tag != .ts_enum_member or member.data.binary.left.isNone()) continue;
             if (!member.data.binary.right.isNone()) try self.visitNode(member.data.binary.right);
@@ -3187,7 +3187,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn enumMemberName(self: *SemanticAnalyzer, key_idx: NodeIndex) AllocError!?EnumMemberName {
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return null;
+        if (key_idx.isNone() or @backingInt(key_idx) >= self.ast.nodes.items.len) return null;
         const key = self.ast.getNode(key_idx);
         return switch (key.tag) {
             .identifier_reference, .binding_identifier => .{ .text = self.ast.identifierNameText(key) },
@@ -3227,8 +3227,8 @@ pub const SemanticAnalyzer = struct {
 
         // 방어선 1: helper virtual module (`\x00zntc:runtime/...`) import 통째 skip.
         // source 노드 텍스트는 따옴표 포함 (`"\x00zntc:runtime/extends"`).
-        const source_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
-        if (!source_idx.isNone() and @intFromEnum(source_idx) < self.ast.nodes.items.len) {
+        const source_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + 2]));
+        if (!source_idx.isNone() and @backingInt(source_idx) < self.ast.nodes.items.len) {
             const raw = self.ast.getText(self.ast.getNode(source_idx).span);
             const unquoted = if (raw.len >= 2 and (raw[0] == '\'' or raw[0] == '"' or raw[0] == '`'))
                 raw[1 .. raw.len - 1]
@@ -3238,9 +3238,9 @@ pub const SemanticAnalyzer = struct {
         }
 
         for (extras[specs_start .. specs_start + specs_len]) |raw_idx| {
-            const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+            const spec_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (spec_idx.isNone()) continue;
-            if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+            if (@backingInt(spec_idx) >= self.ast.nodes.items.len) continue;
             const spec_node = self.ast.getNode(spec_idx);
             // local: default/namespace 는 spec 노드 자체 (별도 name 노드 없음, 이름은
             // spec.span string_ref), named 는 binary.right (= local) 노드.
@@ -3249,7 +3249,7 @@ pub const SemanticAnalyzer = struct {
                 .import_specifier => blk: {
                     const li = spec_node.data.binary.right;
                     if (li.isNone()) continue;
-                    if (@intFromEnum(li) >= self.ast.nodes.items.len) continue;
+                    if (@backingInt(li) >= self.ast.nodes.items.len) continue;
                     break :blk .{ li, self.ast.getNode(li).span };
                 },
                 else => continue,
@@ -3261,7 +3261,7 @@ pub const SemanticAnalyzer = struct {
             // 정공법: user import 를 진짜 import_binding symbol 로 등록.
             // checkStrictBindingName 은 2nd-pass visitImportDeclaration 가 수행
             // (predeclare* 들은 declare 만 하고 strict 검증은 visit 단계 — 일관).
-            try self.declareSymbolWithNode(name_span, .import_binding, spec_node.span, @intFromEnum(local_idx));
+            try self.declareSymbolWithNode(name_span, .import_binding, spec_node.span, @backingInt(local_idx));
             // `import * as ns` 는 namespace 바인딩 표시 — checkImportMutation 의 `ns.x = v`
             // 판정용. named import(`import {obj}`)는 표시 안 함(객체 멤버 변형은 합법).
             if (spec_node.tag == .import_namespace_specifier) self.markNamespaceImport(name_span);
@@ -3298,7 +3298,7 @@ pub const SemanticAnalyzer = struct {
         var names_by_scope: NamespaceIifeParameterNames = .empty;
         for (symbols) |symbol| {
             if (symbol.synthetic_kind != .namespace_iife_parameter or symbol.scope_id.isNone()) continue;
-            try names_by_scope.put(arena_alloc, @intFromEnum(symbol.scope_id), symbol.synthetic_name);
+            try names_by_scope.put(arena_alloc, @backingInt(symbol.scope_id), symbol.synthetic_name);
         }
         var names_by_declaration: NamespaceIifeParameterNames = .empty;
         if (names_by_scope.count() == 0) return names_by_declaration;
@@ -3352,9 +3352,9 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn declareNamespaceIifeParameter(self: *SemanticAnalyzer, name_idx: NodeIndex, declaration: Node) AllocError!?[]const u8 {
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
+        if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
         const preserved_name = if (self.preserved_namespace_iife_parameter_names) |names|
-            names.get(@intFromEnum(self.current_visit_node))
+            names.get(@backingInt(self.current_visit_node))
         else
             null;
         const candidate = if (preserved_name) |name|
@@ -3385,12 +3385,12 @@ pub const SemanticAnalyzer = struct {
         members_start: u32,
         members_len: u32,
     ) AllocError!?EnumIifeParameter {
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
+        if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len or self.current_scope.isNone()) return null;
         const name_text = self.ast.getText(self.ast.getNode(name_idx).span);
         var needs_rename = false;
         for (self.ast.extra_data.items[members_start .. members_start + members_len]) |raw_idx| {
-            const member_idx: NodeIndex = @enumFromInt(raw_idx);
-            if (member_idx.isNone() or @intFromEnum(member_idx) >= self.ast.nodes.items.len) continue;
+            const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (member_idx.isNone() or @backingInt(member_idx) >= self.ast.nodes.items.len) continue;
             const member = self.ast.getNode(member_idx);
             if (member.tag != .ts_enum_member or member.data.binary.left.isNone()) continue;
             const key_name = (try self.enumMemberName(member.data.binary.left)) orelse continue;
@@ -3446,14 +3446,14 @@ pub const SemanticAnalyzer = struct {
         // Ambient namespaces have no runtime body or value references.
         if (node.data.binary.flags == 1) return;
         const name_idx = node.data.binary.left;
-        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+        if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
             const name_node = self.ast.getNode(name_idx);
             if (name_node.tag == .binding_identifier) {
                 const name = self.ast.getText(name_node.span);
                 if (self.findSymbolIndexInScope(self.current_scope, name)) |sym_idx| {
-                    self.symbol_ids.items[@intFromEnum(name_idx)] = @intCast(sym_idx);
+                    self.symbol_ids.items[@backingInt(name_idx)] = @intCast(sym_idx);
                 } else {
-                    try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+                    try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @backingInt(name_idx));
                 }
             }
         }
@@ -3461,8 +3461,8 @@ pub const SemanticAnalyzer = struct {
         const parent_scope = self.current_scope;
         const saved = try self.enterScope(.function, self.is_strict_mode);
         defer self.exitScope(saved);
-        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.symbol_ids.items.len) {
-            if (self.symbol_ids.items[@intFromEnum(name_idx)]) |sid| {
+        if (!name_idx.isNone() and @backingInt(name_idx) < self.symbol_ids.items.len) {
+            if (self.symbol_ids.items[@backingInt(name_idx)]) |sid| {
                 var canonical = sid;
                 if (!parent_scope.isNone()) {
                     if (self.namespace_scope_owners.get(parent_scope.toIndex())) |parent_owner| {
@@ -3479,7 +3479,7 @@ pub const SemanticAnalyzer = struct {
         self.namespace_depth += 1;
         defer self.namespace_depth -= 1;
         const body_idx = node.data.binary.right;
-        if (body_idx.isNone() or @intFromEnum(body_idx) >= self.ast.nodes.items.len) return;
+        if (body_idx.isNone() or @backingInt(body_idx) >= self.ast.nodes.items.len) return;
         const body = self.ast.getNode(body_idx);
         const namespace_iife_param_name = try self.declareNamespaceIifeParameter(name_idx, node);
         defer if (namespace_iife_param_name != null) {
@@ -3501,14 +3501,14 @@ pub const SemanticAnalyzer = struct {
     fn predeclareNamespaceDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
         if (node.data.binary.flags == 1) return;
         const name_idx = node.data.binary.left;
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len) return;
         const name_node = self.ast.getNode(name_idx);
         if (name_node.tag != .binding_identifier) return;
         const name = self.ast.getText(name_node.span);
         if (self.findSymbolIndexInScope(self.current_scope, name)) |sym_idx| {
-            self.symbol_ids.items[@intFromEnum(name_idx)] = @intCast(sym_idx);
+            self.symbol_ids.items[@backingInt(name_idx)] = @intCast(sym_idx);
         } else {
-            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, .variable_var, node.span, @backingInt(name_idx));
         }
     }
 
@@ -3517,15 +3517,15 @@ pub const SemanticAnalyzer = struct {
     /// share the same SymbolId.
     fn predeclareImportEqualsDecl(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const name_idx = node.data.binary.left;
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len) return;
         const name_node = self.ast.getNode(name_idx);
         if (name_node.tag != .identifier_reference) return;
-        try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @intFromEnum(name_idx));
+        try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @backingInt(name_idx));
     }
 
     fn visitImportEqualsDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const name_idx = node.data.binary.left;
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) return;
+        if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len) return;
         const name_node = self.ast.getNode(name_idx);
         if (name_node.tag != .identifier_reference) return;
         try self.checkStrictBindingName(name_node.span);
@@ -3534,7 +3534,7 @@ pub const SemanticAnalyzer = struct {
         if (self.symbolIndexOfNode(name_idx) == null and
             self.findSymbolIndexInScope(self.current_scope, self.ast.getText(name_node.span)) == null)
         {
-            try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, .variable_const, node.span, @backingInt(name_idx));
         }
         // The left child is the declaration name, not a read reference. The RHS
         // is an ordinary value expression (`require(...)` or a namespace alias).
@@ -3551,8 +3551,8 @@ pub const SemanticAnalyzer = struct {
         defer self.current_stmt_idx = saved;
         for (indices, 0..) |raw_idx, i| {
             if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
-            const idx: NodeIndex = @enumFromInt(raw_idx);
-            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
             const stmt = self.ast.getNode(idx);
             switch (stmt.tag) {
                 .variable_declaration => {
@@ -3573,11 +3573,11 @@ pub const SemanticAnalyzer = struct {
                     const extra_start = stmt.data.extra;
                     const extras = self.ast.extra_data.items;
                     if (extra_start >= extras.len) continue;
-                    const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-                    if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len) continue;
+                    const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+                    if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len) continue;
                     const name_node = self.ast.getNode(name_idx);
                     if (name_node.tag != .binding_identifier) continue;
-                    self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @intFromEnum(name_idx)) catch {
+                    self.declareSymbolWithNode(name_node.span, .class_decl, stmt.span, @backingInt(name_idx)) catch {
                         self.alloc_failed = true;
                     };
                 },
@@ -3610,13 +3610,13 @@ pub const SemanticAnalyzer = struct {
         const decl_len = extras[extra_start + 2];
         if (decl_start + decl_len > extras.len) return;
         for (extras[decl_start .. decl_start + decl_len]) |raw| {
-            const decl_idx: NodeIndex = @enumFromInt(raw);
-            if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+            const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw));
+            if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
             const decl_node = self.ast.getNode(decl_idx);
             if (decl_node.tag != .variable_declarator) continue;
             const decl_extra = decl_node.data.extra;
             if (decl_extra >= extras.len) continue;
-            const binding_idx: NodeIndex = @enumFromInt(extras[decl_extra]);
+            const binding_idx: NodeIndex = @fromBackingInt(@intCast(extras[decl_extra]));
             try self.predeclareLexicalBinding(binding_idx, sym_kind, node.span);
         }
     }
@@ -3626,7 +3626,7 @@ pub const SemanticAnalyzer = struct {
     /// (predeclareLexicalBinding 이 동일 선언 안의 leaf 를 묶어 등록하므로).
     fn isLexicalPredeclared(self: *const SemanticAnalyzer, idx: NodeIndex) bool {
         if (idx.isNone()) return false;
-        const ni = @intFromEnum(idx);
+        const ni = @backingInt(idx);
         if (ni >= self.ast.nodes.items.len) return false;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
@@ -3637,7 +3637,7 @@ pub const SemanticAnalyzer = struct {
             .array_pattern, .object_pattern => {
                 if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return false;
                 for (self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len]) |raw| {
-                    const child: NodeIndex = @enumFromInt(raw);
+                    const child: NodeIndex = @fromBackingInt(@intCast(raw));
                     if (self.isLexicalPredeclared(child)) return true;
                 }
                 return false;
@@ -3652,19 +3652,19 @@ pub const SemanticAnalyzer = struct {
 
     /// binding pattern 을 따라 내려가며 binding_identifier 를 현재 scope 에 등록.
     fn predeclareLexicalBinding(self: *SemanticAnalyzer, idx: NodeIndex, sym_kind: SymbolKind, decl_span: Span) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const n = self.ast.getNode(idx);
         switch (n.tag) {
             .binding_identifier => {
-                self.declareSymbolWithNode(n.span, sym_kind, decl_span, @intFromEnum(idx)) catch {
+                self.declareSymbolWithNode(n.span, sym_kind, decl_span, @backingInt(idx)) catch {
                     self.alloc_failed = true;
                 };
             },
             .array_pattern, .object_pattern => {
                 if (n.data.list.start + n.data.list.len > self.ast.extra_data.items.len) return;
                 for (self.ast.extra_data.items[n.data.list.start .. n.data.list.start + n.data.list.len]) |raw| {
-                    const child: NodeIndex = @enumFromInt(raw);
-                    if (child.isNone() or @intFromEnum(child) >= self.ast.nodes.items.len) continue;
+                    const child: NodeIndex = @fromBackingInt(@intCast(raw));
+                    if (child.isNone() or @backingInt(child) >= self.ast.nodes.items.len) continue;
                     const cn = self.ast.getNode(child);
                     // object_pattern 의 property_property 는 value(binary.right) 에서 실제 binding.
                     // array 의 rest_element 도 operand 로 내려간다.
@@ -3688,8 +3688,8 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 4 >= extras.len) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+        const body_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + 2]));
         const flags = extras[extra_start + 3];
 
         const symbol_kind = functionSymbolKind(flags);
@@ -3720,10 +3720,10 @@ pub const SemanticAnalyzer = struct {
             };
             if (!fn_predeclared) {
                 const name_node = self.ast.getNode(name_idx);
-                try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @intFromEnum(name_idx));
+                try self.declareSymbolWithNode(name_node.span, symbol_kind, node.span, @backingInt(name_idx));
             } else {
                 const name_node = self.ast.getNode(name_idx);
-                self.setSymbolIdForPredeclared(name_node.span, @intFromEnum(name_idx));
+                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx));
             }
 
             // @__NO_SIDE_EFFECTS__ → symbol에 전파 (predeclared 여부와 무관하게 항상 수행)
@@ -3764,14 +3764,14 @@ pub const SemanticAnalyzer = struct {
     fn visitFlowComponentWrapper(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const e = node.data.extra;
         if (!self.ast.hasExtra(e, 1)) return;
-        const func_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-        const const_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+        const func_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+        const const_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
         if (func_idx.isNone()) return;
         const func_node = self.ast.getNode(func_idx);
         if (func_node.tag != .function_declaration) return;
         const fe = func_node.data.extra;
         if (!self.ast.hasExtra(fe, 2)) return;
-        const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 2]);
+        const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[fe + 2]));
         if (body_idx.isNone()) return;
 
         // 1) Name_withRef 함수: 독립 parameter/body 환경에서 순회.
@@ -3803,7 +3803,7 @@ pub const SemanticAnalyzer = struct {
         const extra = self.ast.extra_data.items;
         if (start > extra.len or len > extra.len - start) return;
         for (extra[start .. start + len]) |arm| {
-            try self.visitNode(@enumFromInt(arm));
+            try self.visitNode(@fromBackingInt(@intCast(arm)));
         }
     }
 
@@ -3823,7 +3823,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitFlowMatchPatternValues(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .flow_match_binding_pattern, .flow_match_rest, .flow_match_opaque_pattern => {},
@@ -3852,24 +3852,24 @@ pub const SemanticAnalyzer = struct {
         if (list.start > extra.len or list.len > extra.len - list.start) return;
         var i: u32 = 0;
         while (i < list.len) : (i += 1) {
-            try self.visitFlowMatchPatternValues(@enumFromInt(extra[list.start + i]));
+            try self.visitFlowMatchPatternValues(@fromBackingInt(@intCast(extra[list.start + i])));
         }
     }
 
     fn declareFlowMatchPatternBindings(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
-            .flow_match_binding_pattern => try self.declareSymbolWithNode(node.span, .variable_let, node.span, @intFromEnum(idx)),
+            .flow_match_binding_pattern => try self.declareSymbolWithNode(node.span, .variable_let, node.span, @backingInt(idx)),
             .flow_match_rest => if (node.data.none != 0) {
-                try self.declareSymbolWithNode(node.span, .variable_let, node.span, @intFromEnum(idx));
+                try self.declareSymbolWithNode(node.span, .variable_let, node.span, @backingInt(idx));
             },
             .flow_match_as_pattern => {
                 try self.declareFlowMatchPatternBindings(node.data.binary.left);
                 const binding = node.data.binary.right;
-                if (!binding.isNone() and @intFromEnum(binding) < self.ast.nodes.items.len) {
+                if (!binding.isNone() and @backingInt(binding) < self.ast.nodes.items.len) {
                     const binding_node = self.ast.getNode(binding);
-                    try self.declareSymbolWithNode(binding_node.span, .variable_let, binding_node.span, @intFromEnum(binding));
+                    try self.declareSymbolWithNode(binding_node.span, .variable_let, binding_node.span, @backingInt(binding));
                 }
             },
             .flow_match_guard_pattern => try self.declareFlowMatchPatternBindings(node.data.binary.left),
@@ -3890,12 +3890,12 @@ pub const SemanticAnalyzer = struct {
         var i: u32 = 0;
         while (i < list.len) : (i += 1) {
             const raw = extra[list.start + i];
-            try self.declareFlowMatchPatternBindings(@enumFromInt(raw));
+            try self.declareFlowMatchPatternBindings(@fromBackingInt(@intCast(raw)));
         }
     }
 
     fn visitFlowMatchPatternGuards(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .flow_match_guard_pattern => {
@@ -3917,7 +3917,7 @@ pub const SemanticAnalyzer = struct {
         if (list.start > extra.len or list.len > extra.len - list.start) return;
         var i: u32 = 0;
         while (i < list.len) : (i += 1) {
-            try self.visitFlowMatchPatternGuards(@enumFromInt(extra[list.start + i]));
+            try self.visitFlowMatchPatternGuards(@fromBackingInt(@intCast(extra[list.start + i])));
         }
     }
 
@@ -3926,8 +3926,8 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 3 >= extras.len) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        const body_idx: NodeIndex = @enumFromInt(extras[extra_start + 2]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+        const body_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + 2]));
         const fn_flags = extras[extra_start + 3];
 
         // 함수 표현식 이름은 외부 scope 에는 노출되지 않지만 parameter initializer 와
@@ -3936,7 +3936,7 @@ pub const SemanticAnalyzer = struct {
         const name_saved = if (!name_idx.isNone()) blk: {
             const saved = try self.enterScope(.block, self.is_strict_mode);
             const name_node = self.ast.getNode(name_idx);
-            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(fn_flags), name_node.span, @intFromEnum(name_idx));
+            try self.declareSymbolWithNode(name_node.span, functionSymbolKind(fn_flags), name_node.span, @backingInt(name_idx));
             break :blk saved;
         } else ScopeId.none;
         defer if (!name_saved.isNone()) self.exitScope(name_saved);
@@ -3968,10 +3968,10 @@ pub const SemanticAnalyzer = struct {
         const e = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (e + 2 >= extras.len) return;
-        const body_idx: NodeIndex = @enumFromInt(extras[e + 1]);
+        const body_idx: NodeIndex = @fromBackingInt(@intCast(extras[e + 1]));
 
         // left가 단일 파라미터(binding_identifier) 또는 파라미터 리스트일 수 있음
-        const param_idx: NodeIndex = @enumFromInt(extras[e]);
+        const param_idx: NodeIndex = @fromBackingInt(@intCast(extras[e]));
         const has_parameter_expressions = if (param_idx.isNone())
             false
         else
@@ -3996,11 +3996,11 @@ pub const SemanticAnalyzer = struct {
     /// - identifier_reference: cover grammar에서 변환된 식별자
     /// - assignment_target_identifier: cover grammar 변환된 식별자
     fn declareArrowParams(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
+                try self.declareSymbolWithNode(node.span, .parameter, node.span, @backingInt(idx));
             },
             // 파서가 정규화한 formal_parameters list (#1283 이후 기본 형태).
             // 이 케이스가 누락되면 arrow function 파라미터가 스코프에 등록되지 않아
@@ -4010,13 +4010,13 @@ pub const SemanticAnalyzer = struct {
                 if (node.data.list.start + node.data.list.len > self.ast.extra_data.items.len) return;
                 const indices = self.ast.extra_data.items[node.data.list.start .. node.data.list.start + node.data.list.len];
                 for (indices) |raw_idx| {
-                    try self.declareArrowParams(@enumFromInt(raw_idx));
+                    try self.declareArrowParams(@fromBackingInt(@intCast(raw_idx)));
                 }
             },
             .formal_parameter => {
                 const e = node.data.extra;
                 if (!self.ast.hasExtra(e, ast_mod.FormalParameterExtra.pattern)) return;
-                const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const pattern: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                 try self.declareArrowParams(pattern);
             },
             .parenthesized_expression => {
@@ -4029,7 +4029,7 @@ pub const SemanticAnalyzer = struct {
                 if (list.start + list.len > self.ast.extra_data.items.len) return;
                 const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
                 for (indices) |raw_idx| {
-                    try self.declareArrowParams(@enumFromInt(raw_idx));
+                    try self.declareArrowParams(@fromBackingInt(@intCast(raw_idx)));
                 }
             },
             .assignment_pattern, .assignment_expression, .assignment_target_with_default => {
@@ -4051,20 +4051,20 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn declareArrowBindingNames(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
+                try self.declareSymbolWithNode(node.span, .parameter, node.span, @backingInt(idx));
             },
             .formal_parameter => {
                 const extra = node.data.extra;
                 if (self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.pattern))
-                    try self.declareArrowBindingNames(@enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]));
+                    try self.declareArrowBindingNames(@fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern])));
             },
             .formal_parameters, .sequence_expression, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
-                for (split.elements) |raw| try self.declareArrowBindingNames(@enumFromInt(raw));
+                for (split.elements) |raw| try self.declareArrowBindingNames(@fromBackingInt(@intCast(raw)));
                 if (split.rest_operand) |rest| try self.declareArrowBindingNames(rest);
             },
             .parenthesized_expression => try self.declareArrowBindingNames(node.data.unary.operand),
@@ -4077,14 +4077,14 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitArrowParameterExpressions(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .formal_parameters, .sequence_expression => {
                 const list = node.data.list;
                 if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) return;
                 for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                    try self.visitArrowParameterExpressions(@enumFromInt(raw));
+                    try self.visitArrowParameterExpressions(@fromBackingInt(@intCast(raw)));
                 }
             },
             .formal_parameter, .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target => try self.visitBindingPatternExpressions(idx),
@@ -4101,16 +4101,16 @@ pub const SemanticAnalyzer = struct {
 
     /// destructuring 패턴에서 binding identifier를 재귀적으로 추출하여 parameter로 등록한다.
     fn declareBindingPattern(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier, .identifier_reference, .assignment_target_identifier => {
-                try self.declareSymbolWithNode(node.span, .parameter, node.span, @intFromEnum(idx));
+                try self.declareSymbolWithNode(node.span, .parameter, node.span, @backingInt(idx));
             },
             .object_pattern, .object_assignment_target, .array_pattern, .array_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw_idx| {
-                    try self.declareBindingPattern(@enumFromInt(raw_idx));
+                    try self.declareBindingPattern(@fromBackingInt(@intCast(raw_idx)));
                 }
                 if (split.rest_operand) |op| {
                     try self.declareBindingPattern(op);
@@ -4153,7 +4153,7 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
 
         // 클래스 decorator 순회 — outer scope에서 평가되므로 class scope push 전에.
         // 누락 시 import binding이 resolve 안 돼 tree-shake로 drop.
@@ -4167,19 +4167,19 @@ pub const SemanticAnalyzer = struct {
         // 미리 등록되므로 binding_identifier 의 symbol_id 로 구분한다.
         if (!name_idx.isNone()) {
             const already_declared = self.isInPredeclaredScope() or blk: {
-                const ni = @intFromEnum(name_idx);
+                const ni = @backingInt(name_idx);
                 if (ni >= self.symbol_ids.items.len) break :blk false;
                 break :blk self.symbol_ids.items[ni] != null;
             };
             if (!already_declared) {
                 const name_node = self.ast.getNode(name_idx);
-                try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @intFromEnum(name_idx));
+                try self.declareSymbolWithNode(name_node.span, .class_decl, node.span, @backingInt(name_idx));
             } else {
                 const name_node = self.ast.getNode(name_idx);
-                self.setSymbolIdForPredeclared(name_node.span, @intFromEnum(name_idx));
+                self.setSymbolIdForPredeclared(name_node.span, @backingInt(name_idx));
             }
             const name_node = self.ast.getNode(name_idx);
-            const name_raw = @intFromEnum(name_idx);
+            const name_raw = @backingInt(name_idx);
             const outer_idx = if (name_raw < self.symbol_ids.items.len) self.symbol_ids.items[name_raw] else null;
             if (outer_idx) |idx| {
                 self.symbols.items[idx].decl_flags.preserve_class_name = true;
@@ -4188,8 +4188,8 @@ pub const SemanticAnalyzer = struct {
             }
         }
 
-        const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
-        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]), name_idx, true);
+        const heritage_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + 1]));
+        try self.visitClassWithHeritage(heritage_idx, @fromBackingInt(@intCast(extras[extra_start + 2])), name_idx, true);
     }
 
     fn visitClassExpression(self: *SemanticAnalyzer, node: Node) AllocError!void {
@@ -4201,9 +4201,9 @@ pub const SemanticAnalyzer = struct {
             try self.visitNodeList(.{ .start = extras[extra_start + 6], .len = extras[extra_start + 7] });
         }
 
-        const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-        const heritage_idx: NodeIndex = @enumFromInt(extras[extra_start + 1]);
-        try self.visitClassWithHeritage(heritage_idx, @enumFromInt(extras[extra_start + 2]), name_idx, false);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+        const heritage_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + 1]));
+        try self.visitClassWithHeritage(heritage_idx, @fromBackingInt(@intCast(extras[extra_start + 2])), name_idx, false);
     }
 
     /// class를 순회한다. heritage expression과 body를 올바른 private name 환경에서 처리.
@@ -4227,9 +4227,9 @@ pub const SemanticAnalyzer = struct {
         const saved = try self.enterScope(.class_body, true);
         if (!class_name_idx.isNone()) {
             const name_node = self.ast.getNode(class_name_idx);
-            const binding_node: ?u32 = if (is_declaration) null else @intFromEnum(class_name_idx);
+            const binding_node: ?u32 = if (is_declaration) null else @backingInt(class_name_idx);
             const inner = try self.declareClassInnerName(name_node.span, binding_node);
-            try self.class_self_symbol_map.put(self.allocator, @intFromEnum(self.current_visit_node), inner);
+            try self.class_self_symbol_map.put(self.allocator, @backingInt(self.current_visit_node), inner);
         }
         if (!heritage_idx.isNone()) {
             try self.visitNode(heritage_idx);
@@ -4238,7 +4238,7 @@ pub const SemanticAnalyzer = struct {
         // Private-name environment begins after heritage evaluation.
         try self.pushClassScope();
 
-        if (!body_idx.isNone() and @intFromEnum(body_idx) < self.ast.nodes.items.len) {
+        if (!body_idx.isNone() and @backingInt(body_idx) < self.ast.nodes.items.len) {
             const body_node = self.ast.getNode(body_idx);
             if (body_node.tag == .class_body) {
                 // 1차: private name 선언 수집 (멤버 순회)
@@ -4261,14 +4261,14 @@ pub const SemanticAnalyzer = struct {
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            const idx: NodeIndex = @enumFromInt(raw_idx);
-            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
             const node = self.ast.getNode(idx);
             switch (node.tag) {
                 .method_definition => {
                     const extra_start = node.data.extra;
                     if (extra_start >= self.ast.extra_data.items.len) continue;
-                    const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra_start + ast_mod.MethodExtra.key]);
+                    const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra_start + ast_mod.MethodExtra.key]));
                     const kind: PrivateNameKind = blk: {
                         if (extra_start + 3 < self.ast.extra_data.items.len) {
                             const flags = self.ast.extra_data.items[extra_start + ast_mod.MethodExtra.flags];
@@ -4282,7 +4282,7 @@ pub const SemanticAnalyzer = struct {
                 .property_definition, .accessor_property => {
                     const e = node.data.extra;
                     if (e < self.ast.extra_data.items.len) {
-                        try self.tryRegisterPrivateKey(@enumFromInt(self.ast.extra_data.items[e + ast_mod.PropertyExtra.key]), .field);
+                        try self.tryRegisterPrivateKey(@fromBackingInt(@intCast(self.ast.extra_data.items[e + ast_mod.PropertyExtra.key])), .field);
                     }
                 },
                 else => {},
@@ -4292,7 +4292,7 @@ pub const SemanticAnalyzer = struct {
 
     /// key가 private_identifier이면 선언 등록한다.
     fn tryRegisterPrivateKey(self: *SemanticAnalyzer, key_idx: NodeIndex, kind: PrivateNameKind) AllocError!void {
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= self.ast.nodes.items.len) return;
+        if (key_idx.isNone() or @backingInt(key_idx) >= self.ast.nodes.items.len) return;
         const key_node = self.ast.getNode(key_idx);
         if (key_node.tag == .private_identifier) {
             const raw = self.ast.getText(key_node.span);
@@ -4309,10 +4309,10 @@ pub const SemanticAnalyzer = struct {
 
         // for문은 블록 스코프를 생성 (for(let i=0; ...) 의 i가 블록 스코프)
         const saved = try self.enterScope(.block, self.is_strict_mode);
-        try self.visitNode(@enumFromInt(extras[extra_start])); // init
-        try self.visitNode(@enumFromInt(extras[extra_start + 1])); // test
-        try self.visitNode(@enumFromInt(extras[extra_start + 2])); // update
-        try self.visitNode(@enumFromInt(extras[extra_start + 3])); // body
+        try self.visitNode(@fromBackingInt(@intCast(extras[extra_start]))); // init
+        try self.visitNode(@fromBackingInt(@intCast(extras[extra_start + 1]))); // test
+        try self.visitNode(@fromBackingInt(@intCast(extras[extra_start + 2]))); // update
+        try self.visitNode(@fromBackingInt(@intCast(extras[extra_start + 3]))); // body
         self.exitScope(saved);
     }
 
@@ -4387,7 +4387,7 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
-        try self.visitNode(@enumFromInt(extras[extra_start])); // discriminant
+        try self.visitNode(@fromBackingInt(@intCast(extras[extra_start]))); // discriminant
 
         // switch body는 하나의 블록 스코프 (모든 case가 같은 스코프)
         const saved = try self.enterScope(.switch_block, self.is_strict_mode);
@@ -4404,7 +4404,7 @@ pub const SemanticAnalyzer = struct {
         if (cases.start > extras.len or cases.len > extras.len - cases.start) return;
         for (extras[cases.start .. cases.start + cases.len]) |raw_case_idx| {
             if (raw_case_idx >= self.ast.nodes.items.len) continue;
-            const switch_case = self.ast.getNode(@enumFromInt(raw_case_idx));
+            const switch_case = self.ast.getNode(@fromBackingInt(@intCast(raw_case_idx)));
             if (switch_case.tag != .switch_case) continue;
             const extra = switch_case.data.extra;
             if (extra > extras.len or extras.len - extra < 3) continue;
@@ -4420,12 +4420,12 @@ pub const SemanticAnalyzer = struct {
         name_idx: NodeIndex,
         declaration_span: Span,
     ) bool {
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= self.ast.nodes.items.len or
+        if (name_idx.isNone() or @backingInt(name_idx) >= self.ast.nodes.items.len or
             self.current_scope.isNone() or
             self.current_scope.toIndex() >= self.scopes.items.len) return false;
         const current_scope = self.scopes.items[self.current_scope.toIndex()];
         if (current_scope.kind.isVarScope()) return false;
-        const raw_name = @intFromEnum(name_idx);
+        const raw_name = @backingInt(name_idx);
         if (raw_name >= self.symbol_ids.items.len) return false;
         const symbol_id = self.symbol_ids.items[raw_name] orelse return false;
         if (symbol_id >= self.symbols.items.len) return false;
@@ -4451,7 +4451,7 @@ pub const SemanticAnalyzer = struct {
         if (!param_idx.isNone()) {
             const param_node = self.ast.getNode(param_idx);
             if (param_node.tag == .binding_identifier) {
-                try self.declareSymbolWithNode(param_node.span, .catch_binding, param_node.span, @intFromEnum(param_idx));
+                try self.declareSymbolWithNode(param_node.span, .catch_binding, param_node.span, @backingInt(param_idx));
                 try catch_names.append(self.allocator, param_node.span);
             } else {
                 // Destructuring pattern — collect all binding names and check duplicates
@@ -4506,7 +4506,7 @@ pub const SemanticAnalyzer = struct {
                 try self.addRedeclarationError(leaf.span, name_text, existing);
                 continue;
             }
-            try self.declareSymbolWithNode(leaf.span, .catch_binding, leaf.span, @intFromEnum(leaf_idx));
+            try self.declareSymbolWithNode(leaf.span, .catch_binding, leaf.span, @backingInt(leaf_idx));
             try names.append(self.allocator, leaf.span);
         }
     }
@@ -4515,7 +4515,7 @@ pub const SemanticAnalyzer = struct {
     fn checkCatchBodyConflicts(self: *SemanticAnalyzer, catch_names: []const Span) AllocError!void {
         // Check symbols declared in current scope against catch parameter names
         for (self.symbols.items) |sym| {
-            if (@intFromEnum(sym.scope_id) != @intFromEnum(self.current_scope)) continue;
+            if (@backingInt(sym.scope_id) != @backingInt(self.current_scope)) continue;
             // Only block-scoped (let/const/class) and function-like declarations conflict
             if (!sym.kind.isBlockScoped() and !sym.kind.isFunctionLike()) continue;
             // Annex B: if/else body의 function declaration은 catch parameter와 충돌하지 않는다.
@@ -4538,7 +4538,7 @@ pub const SemanticAnalyzer = struct {
         const extras = self.ast.extra_data.items;
         if (extra_start + 2 >= extras.len) return;
         // test_expr 순회 — 식별자 참조를 포함할 수 있음 (e.g. case VAL:)
-        try self.visitNode(@enumFromInt(extras[extra_start]));
+        try self.visitNode(@fromBackingInt(@intCast(extras[extra_start])));
         const body_start = extras[extra_start + 1];
         const body_len = extras[extra_start + 2];
         try self.visitNodeList(.{ .start = body_start, .len = body_len });
@@ -4573,7 +4573,7 @@ pub const SemanticAnalyzer = struct {
         if (decl_start + decl_len > extras.len) return;
         const decl_indices = self.ast.extra_data.items[decl_start .. decl_start + decl_len];
         for (decl_indices) |raw_idx| {
-            const decl_idx: NodeIndex = @enumFromInt(raw_idx);
+            const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (decl_idx.isNone()) continue;
             const decl_node = self.ast.getNode(decl_idx);
             if (decl_node.tag == .variable_declarator) {
@@ -4581,8 +4581,8 @@ pub const SemanticAnalyzer = struct {
                 const decl_extra = decl_node.data.extra;
                 const decl_extras = self.ast.extra_data.items;
                 if (decl_extra + 2 >= decl_extras.len) continue;
-                const binding_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra]);
-                const init_idx: NodeIndex = @enumFromInt(decl_extras[decl_extra + 2]);
+                const binding_idx: NodeIndex = @fromBackingInt(@intCast(decl_extras[decl_extra]));
+                const init_idx: NodeIndex = @fromBackingInt(@intCast(decl_extras[decl_extra + 2]));
 
                 // predeclared_scope에서는 이미 1st pass에서 바인딩이 등록되었으므로 건너뛴다.
                 // var hoisting: 함수 body에서 predeclareVarDecls로 미리 등록된 var는
@@ -4592,7 +4592,7 @@ pub const SemanticAnalyzer = struct {
                 else if (sym_kind == .variable_var) blk: {
                     // var + var 조합은 ECMA 상 재선언 합법 — 기존 심볼 재사용 (predeclare 경로).
                     // 그러나 function/let/const/class 가 먼저 등록되어 있는 경우에는 충돌 검사 필요.
-                    if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
+                    if (!binding_idx.isNone() and @backingInt(binding_idx) < self.ast.nodes.items.len) {
                         const bnode = self.ast.getNode(binding_idx);
                         if (bnode.tag == .binding_identifier or bnode.tag == .assignment_target_identifier) {
                             const bname = self.ast.getText(bnode.span);
@@ -4634,11 +4634,11 @@ pub const SemanticAnalyzer = struct {
                 // init 표현식도 순회 (내부에 함수 표현식 등이 있을 수 있음)
                 try self.visitNode(init_idx);
 
-                if (!init_idx.isNone() and @intFromEnum(init_idx) < self.ast.nodes.items.len) {
+                if (!init_idx.isNone() and @backingInt(init_idx) < self.ast.nodes.items.len) {
                     const init_node = self.ast.getNode(init_idx);
                     // @__NO_SIDE_EFFECTS__ 전파
                     if (self.isFunctionWithNoSideEffects(init_node)) {
-                        if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
+                        if (!binding_idx.isNone() and @backingInt(binding_idx) < self.ast.nodes.items.len) {
                             const binding_node = self.ast.getNode(binding_idx);
                             self.markSymbolNoSideEffects(binding_node.span);
                         }
@@ -4650,7 +4650,7 @@ pub const SemanticAnalyzer = struct {
                     if (sym_kind == .variable_const or sym_kind == .variable_let) {
                         const cv = self.extractConstValue(init_node);
                         if (cv.kind != .none) {
-                            if (!binding_idx.isNone() and @intFromEnum(binding_idx) < self.ast.nodes.items.len) {
+                            if (!binding_idx.isNone() and @backingInt(binding_idx) < self.ast.nodes.items.len) {
                                 const binding_node = self.ast.getNode(binding_idx);
                                 self.setSymbolConstValue(binding_node.span, cv);
                             }
@@ -4675,9 +4675,9 @@ pub const SemanticAnalyzer = struct {
 
         const spec_indices = extras[specs_start .. specs_start + specs_len];
         for (spec_indices) |raw_idx| {
-            const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+            const spec_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (spec_idx.isNone()) continue;
-            if (@intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+            if (@backingInt(spec_idx) >= self.ast.nodes.items.len) continue;
 
             const spec_node = self.ast.getNode(spec_idx);
             switch (spec_node.tag) {
@@ -4687,23 +4687,23 @@ pub const SemanticAnalyzer = struct {
                         // CSS-prop can inject a default styled-components import.
                         // predeclareImportDecl skips marked helpers, so register
                         // this binding in the isolated helper map like named helpers.
-                        try self.declareHelperImportSpec(spec_node.span, spec_node.span, @intFromEnum(spec_idx));
+                        try self.declareHelperImportSpec(spec_node.span, spec_node.span, @backingInt(spec_idx));
                     } else {
                         // D20: predeclareImportDecl registered ordinary top-level
                         // imports in pass one. Preserve the fallback for nested imports.
                         if (self.isInPredeclaredScope()) continue;
-                        try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
+                        try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @backingInt(spec_idx));
                     }
                 },
                 .import_namespace_specifier => {
                     try self.checkStrictBindingName(spec_node.span);
                     if (self.isInPredeclaredScope()) continue;
-                    try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @intFromEnum(spec_idx));
+                    try self.declareSymbolWithNode(spec_node.span, .import_binding, spec_node.span, @backingInt(spec_idx));
                     self.markNamespaceImport(spec_node.span);
                 },
                 .import_specifier => {
                     const local_idx = spec_node.data.binary.right;
-                    if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
+                    if (!local_idx.isNone() and @backingInt(local_idx) < self.ast.nodes.items.len) {
                         const local_node = self.ast.getNode(local_idx);
                         try self.checkStrictBindingName(local_node.span);
                         // #2869 transformer 가 marker 에 등록한 specifier 면 user scope 와
@@ -4713,11 +4713,11 @@ pub const SemanticAnalyzer = struct {
                         // helper 는 predeclareImportDecl 가 skip 하므로 2nd-pass 의 이
                         // 정규 격리 경로가 helper_scope_map 등록을 전담 (D20 무침범).
                         if (self.isHelperRefNode(local_idx)) {
-                            try self.declareHelperImportSpec(local_node.span, spec_node.span, @intFromEnum(local_idx));
+                            try self.declareHelperImportSpec(local_node.span, spec_node.span, @backingInt(local_idx));
                         } else if (!self.isInPredeclaredScope()) {
                             // user named import — predeclareImportDecl 미등록 시에만
                             // (nested import 등 비-top-level; ESM 상 드묾) 직접 declare.
-                            try self.declareSymbolWithNode(local_node.span, .import_binding, spec_node.span, @intFromEnum(local_idx));
+                            try self.declareSymbolWithNode(local_node.span, .import_binding, spec_node.span, @backingInt(local_idx));
                         }
                     }
                 },
@@ -4730,7 +4730,7 @@ pub const SemanticAnalyzer = struct {
     inline fn isExplicitGlobalRefNode(self: *const SemanticAnalyzer, node_idx: NodeIndex) bool {
         const sorted = self.explicit_global_ref_nodes;
         if (sorted.len == 0) return false;
-        const key: u32 = @intFromEnum(node_idx);
+        const key: u32 = @backingInt(node_idx);
         const Ctx = struct {
             fn order(ctx: u32, item: u32) std.math.Order {
                 return std.math.order(ctx, item);
@@ -4745,7 +4745,7 @@ pub const SemanticAnalyzer = struct {
     inline fn isHelperRefNode(self: *const SemanticAnalyzer, node_idx: NodeIndex) bool {
         const sorted = self.helper_ref_nodes;
         if (sorted.len == 0) return false;
-        const key: u32 = @intFromEnum(node_idx);
+        const key: u32 = @backingInt(node_idx);
         const Ctx = struct {
             fn order(ctx: u32, item: u32) std.math.Order {
                 return std.math.order(ctx, item);
@@ -4829,10 +4829,10 @@ pub const SemanticAnalyzer = struct {
         const extra_start = node.data.extra;
         const extras = self.ast.extra_data.items;
         if (extra_start + 3 >= extras.len) return;
-        const decl_idx: NodeIndex = @enumFromInt(extras[extra_start]);
+        const decl_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
         const specs_start = extras[extra_start + 1];
         const specs_len = extras[extra_start + 2];
-        const source_idx: NodeIndex = @enumFromInt(extras[extra_start + 3]);
+        const source_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start + 3]));
 
         if (self.namespace_depth > 0) {
             // Namespace export is a property of its IIFE parameter. Keep the
@@ -4841,7 +4841,7 @@ pub const SemanticAnalyzer = struct {
             // it. Mark its binding live so the bundle dead-store pass cannot
             // erase the initializer before codegen writes namespace.property.
             try self.visitNode(decl_idx);
-            if (!decl_idx.isNone() and @intFromEnum(decl_idx) < self.ast.nodes.items.len) {
+            if (!decl_idx.isNone() and @backingInt(decl_idx) < self.ast.nodes.items.len) {
                 self.markExportedDeclSymbols(self.ast.getNode(decl_idx));
             }
             return;
@@ -4851,8 +4851,8 @@ pub const SemanticAnalyzer = struct {
         if (specs_len > 0 and specs_start + specs_len <= extras.len) {
             const spec_indices = extras[specs_start .. specs_start + specs_len];
             for (spec_indices) |raw_idx| {
-                const spec_idx: NodeIndex = @enumFromInt(raw_idx);
-                if (spec_idx.isNone() or @intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+                const spec_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                if (spec_idx.isNone() or @backingInt(spec_idx) >= self.ast.nodes.items.len) continue;
                 const spec_node = self.ast.getNode(spec_idx);
                 if (spec_node.tag == .export_specifier) {
                     // markAutoTypeOnlyExportSpecifiers (transpile.zig) 가 이미 type-only 로
@@ -4862,7 +4862,7 @@ pub const SemanticAnalyzer = struct {
 
                     // exported name = right (the "as" name, or same as local if no "as")
                     const exported_idx = spec_node.data.binary.right;
-                    if (!exported_idx.isNone() and @intFromEnum(exported_idx) < self.ast.nodes.items.len) {
+                    if (!exported_idx.isNone() and @backingInt(exported_idx) < self.ast.nodes.items.len) {
                         const exported_node = self.ast.getNode(exported_idx);
                         const name = self.ast.getText(exported_node.span);
                         // string literal은 따옴표 제거
@@ -4876,7 +4876,7 @@ pub const SemanticAnalyzer = struct {
                     // source 없는 export { x } — local 바인딩이 존재하는지 검증 필요
                     if (source_idx.isNone() and self.is_module) {
                         const local_idx = spec_node.data.binary.left;
-                        if (!local_idx.isNone() and @intFromEnum(local_idx) < self.ast.nodes.items.len) {
+                        if (!local_idx.isNone() and @backingInt(local_idx) < self.ast.nodes.items.len) {
                             const local_node = self.ast.getNode(local_idx);
                             if (local_node.tag != .string_literal) {
                                 const local_name = self.ast.getText(local_node.span);
@@ -4898,7 +4898,7 @@ pub const SemanticAnalyzer = struct {
         }
 
         // export declaration (export var/let/const/function/class)
-        if (!decl_idx.isNone() and @intFromEnum(decl_idx) < self.ast.nodes.items.len) {
+        if (!decl_idx.isNone() and @backingInt(decl_idx) < self.ast.nodes.items.len) {
             const decl_node = self.ast.getNode(decl_idx);
             // 선언에서 내보내는 이름 추적
             try self.collectExportedDeclNames(decl_node);
@@ -4907,7 +4907,7 @@ pub const SemanticAnalyzer = struct {
         try self.visitNode(decl_idx);
 
         // visitNode 가 심볼을 생성한 뒤에야 플래그 세팅이 가능. 그 이전에는 심볼이 존재하지 않는다.
-        if (!decl_idx.isNone() and @intFromEnum(decl_idx) < self.ast.nodes.items.len) {
+        if (!decl_idx.isNone() and @backingInt(decl_idx) < self.ast.nodes.items.len) {
             const decl_node = self.ast.getNode(decl_idx);
             self.markExportedDeclSymbols(decl_node);
         }
@@ -4938,7 +4938,7 @@ pub const SemanticAnalyzer = struct {
                     .synthetic_name = "_default",
                 });
                 // symbol_ids에 export_default_declaration 노드 자체를 기록
-                const ni = @intFromEnum(node_idx);
+                const ni = @backingInt(node_idx);
                 if (ni < self.symbol_ids.items.len) {
                     self.symbol_ids.items[ni] = @intCast(sym_index);
                 }
@@ -4950,7 +4950,7 @@ pub const SemanticAnalyzer = struct {
                 // StmtInfo 사전 수집: facade 심볼을 declared 로 기록 (#1669: scope 무관).
                 self.recordDeclareRef(@intCast(sym_index), module_scope, null);
                 // export default <literal> → facade 심볼에 const_kind + 사이드테이블 텍스트 설정
-                if (!inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
+                if (!inner_idx.isNone() and @backingInt(inner_idx) < self.ast.nodes.items.len) {
                     const cv = self.extractConstValue(self.ast.getNode(inner_idx));
                     if (cv.kind != .none) {
                         self.symbols.items[sym_index].const_kind = cv.kind;
@@ -4969,14 +4969,14 @@ pub const SemanticAnalyzer = struct {
 
         // needs_facade=false 경로: inner 가 named function/class/identifier 이므로 원본 이름이
         // public default export 로 노출된다. 해당 심볼의 mangle 을 막기 위해 플래그 세팅.
-        if (!needs_facade and !inner_idx.isNone() and @intFromEnum(inner_idx) < self.ast.nodes.items.len) {
+        if (!needs_facade and !inner_idx.isNone() and @backingInt(inner_idx) < self.ast.nodes.items.len) {
             const inner = self.ast.getNode(inner_idx);
             switch (inner.tag) {
                 .function_declaration, .class_declaration => {
                     const e = inner.data.extra;
                     if (e < self.ast.extra_data.items.len) {
-                        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-                        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                        const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+                        if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                             const name_node = self.ast.getNode(name_idx);
                             self.markSymbolExported(self.ast.getText(name_node.span), true);
                         }
@@ -4997,7 +4997,7 @@ pub const SemanticAnalyzer = struct {
         const inner_idx = node.data.unary.operand;
         try self.visitNode(inner_idx);
 
-        if (inner_idx.isNone() or @intFromEnum(inner_idx) >= self.ast.nodes.items.len) return;
+        if (inner_idx.isNone() or @backingInt(inner_idx) >= self.ast.nodes.items.len) return;
         const inner = self.ast.getNode(inner_idx);
         if (inner.tag == .identifier_reference) {
             self.markSymbolExported(self.ast.getText(inner.span), false);
@@ -5008,7 +5008,7 @@ pub const SemanticAnalyzer = struct {
     fn visitExportAllDeclaration(self: *SemanticAnalyzer, node: Node) AllocError!void {
         const x = module_parser.readExportAllExtras(self.ast, node.data.extra);
         const name_idx = x.exported_name;
-        if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+        if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
             const name_node = self.ast.getNode(name_idx);
             const name = self.ast.getText(name_node.span);
             const effective_name = if (name.len >= 2 and (name[0] == '\'' or name[0] == '"'))
@@ -5031,11 +5031,11 @@ pub const SemanticAnalyzer = struct {
                 const decl_len = extras[extra_start + 2];
                 if (decl_start + decl_len > extras.len) return;
                 for (extras[decl_start .. decl_start + decl_len]) |raw_idx| {
-                    const decl_idx: NodeIndex = @enumFromInt(raw_idx);
-                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                    if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
                     const decl_node = self.ast.getNode(decl_idx);
                     if (decl_node.tag == .variable_declarator) {
-                        const binding_idx: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+                        const binding_idx: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra]));
                         try self.collectBindingExportNames(binding_idx);
                     }
                 }
@@ -5043,8 +5043,8 @@ pub const SemanticAnalyzer = struct {
             .function_declaration, .class_declaration, .ts_enum_declaration, .flow_enum_declaration => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra >= extras.len) return;
-                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[node.data.extra]));
+                if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.getText(name_node.span);
                     try self.registerExportedName(name, name_node.span);
@@ -5052,7 +5052,7 @@ pub const SemanticAnalyzer = struct {
             },
             .ts_module_declaration => {
                 const name_idx = node.data.binary.left;
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
                     if (name_node.tag == .binding_identifier)
                         try self.registerExportedName(self.ast.getText(name_node.span), name_node.span);
@@ -5067,7 +5067,7 @@ pub const SemanticAnalyzer = struct {
 
     /// 바인딩 패턴에서 내보내는 이름을 수집한다.
     fn collectBindingExportNames(self: *SemanticAnalyzer, idx: NodeIndex) AllocError!void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         if (node.tag == .binding_identifier) {
             const name = self.ast.getText(node.span);
@@ -5092,11 +5092,11 @@ pub const SemanticAnalyzer = struct {
                 const decl_len = extras[extra_start + 2];
                 if (decl_start + decl_len > extras.len) return;
                 for (extras[decl_start .. decl_start + decl_len]) |raw_idx| {
-                    const decl_idx: NodeIndex = @enumFromInt(raw_idx);
-                    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+                    const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
+                    if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
                     const decl_node = self.ast.getNode(decl_idx);
                     if (decl_node.tag == .variable_declarator) {
-                        const binding_idx: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+                        const binding_idx: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra]));
                         self.markExportedBinding(binding_idx);
                     }
                 }
@@ -5104,8 +5104,8 @@ pub const SemanticAnalyzer = struct {
             .function_declaration, .class_declaration, .ts_enum_declaration, .flow_enum_declaration => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra >= extras.len) return;
-                const name_idx: NodeIndex = @enumFromInt(extras[node.data.extra]);
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[node.data.extra]));
+                if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
                     const name = self.ast.getText(name_node.span);
                     self.markSymbolExported(name, false);
@@ -5113,7 +5113,7 @@ pub const SemanticAnalyzer = struct {
             },
             .ts_module_declaration => {
                 const name_idx = node.data.binary.left;
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
                     if (name_node.tag == .binding_identifier)
                         self.markSymbolExported(self.ast.getText(name_node.span), false);
@@ -5130,7 +5130,7 @@ pub const SemanticAnalyzer = struct {
     /// destructuring export 지원 (`export const { a, b } = obj`). 지원 태그는
     /// `registerBinding` 의 부분집합 — assignment_target_* 은 export 가 아니므로 제외.
     fn markExportedBinding(self: *SemanticAnalyzer, idx: NodeIndex) void {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .binding_identifier => {
@@ -5140,7 +5140,7 @@ pub const SemanticAnalyzer = struct {
             .array_pattern, .object_pattern => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw_idx| {
-                    self.markExportedBinding(@enumFromInt(raw_idx));
+                    self.markExportedBinding(@fromBackingInt(@intCast(raw_idx)));
                 }
                 if (split.rest_operand) |op| self.markExportedBinding(op);
             },
@@ -5223,20 +5223,20 @@ pub const SemanticAnalyzer = struct {
             .formal_parameter => {
                 const e = node.data.extra;
                 if (!self.ast.hasExtra(e, 2)) return;
-                const pattern: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-                const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+                const pattern: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+                const default_value: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
                 try self.registerBinding(pattern, kind);
                 if (!default_value.isNone()) {
                     try self.visitNode(default_value);
                 }
             },
             .binding_identifier, .assignment_target_identifier => {
-                try self.declareSymbolWithNode(node.span, kind, node.span, @intFromEnum(idx));
+                try self.declareSymbolWithNode(node.span, kind, node.span, @backingInt(idx));
             },
             .array_pattern, .array_assignment_target, .object_pattern, .object_assignment_target => {
                 const split = self.ast.nodeListSplitRest(node.data.list);
                 for (split.elements) |raw_idx| {
-                    try self.registerBinding(@enumFromInt(raw_idx), kind);
+                    try self.registerBinding(@fromBackingInt(@intCast(raw_idx)), kind);
                 }
                 if (split.rest_operand) |op| {
                     try self.registerBinding(op, kind);
@@ -5273,7 +5273,7 @@ pub const SemanticAnalyzer = struct {
     fn visitParameterDecorators(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!void {
         const split = self.ast.nodeListSplitRest(params);
         for (split.elements) |raw_idx| {
-            const param_idx: NodeIndex = @enumFromInt(raw_idx);
+            const param_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
             if (param_idx.isNone()) continue;
             const param = self.ast.getNode(param_idx);
             if (param.tag != .formal_parameter) continue;
@@ -5293,13 +5293,13 @@ pub const SemanticAnalyzer = struct {
         // their TDZ binding), so install every parameter identity before
         // resolving any initializer expression.
         for (split.elements) |raw_idx| {
-            try self.predeclareBindingNames(@enumFromInt(raw_idx), .parameter);
+            try self.predeclareBindingNames(@fromBackingInt(@intCast(raw_idx)), .parameter);
         }
         if (split.rest_operand) |op| {
             try self.predeclareBindingNames(op, .parameter);
         }
         for (split.elements) |raw_idx| {
-            try self.visitBindingPatternExpressions(@enumFromInt(raw_idx));
+            try self.visitBindingPatternExpressions(@fromBackingInt(@intCast(raw_idx)));
         }
         if (split.rest_operand) |op| {
             try self.visitBindingPatternExpressions(op);
@@ -5317,7 +5317,7 @@ pub const SemanticAnalyzer = struct {
         has_parameter_expressions: bool,
     ) AllocError!?ScopeId {
         if (!has_parameter_expressions) return null;
-        if (params_root.isNone() or @intFromEnum(params_root) >= self.ast.nodes.items.len)
+        if (params_root.isNone() or @backingInt(params_root) >= self.ast.nodes.items.len)
             std.debug.panic("parameter expressions require a parameter AST owner", .{});
         const saved_visit_node = self.current_visit_node;
         self.current_visit_node = params_root;
@@ -5376,7 +5376,7 @@ pub const SemanticAnalyzer = struct {
     fn paramsHaveExpressions(self: *SemanticAnalyzer, params: ast_mod.NodeList) AllocError!bool {
         const split = self.ast.nodeListSplitRest(params);
         for (split.elements) |raw_idx| {
-            if (try parameterHasExpressions(self, @enumFromInt(raw_idx))) return true;
+            if (try parameterHasExpressions(self, @fromBackingInt(@intCast(raw_idx)))) return true;
         }
         if (split.rest_operand) |rest| return parameterHasExpressions(self, rest);
         return false;
@@ -5393,44 +5393,44 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn parameterHasExpressions(self: *SemanticAnalyzer, root: NodeIndex) AllocError!bool {
-        if (root.isNone() or @intFromEnum(root) >= self.ast.nodes.items.len) return false;
+        if (root.isNone() or @backingInt(root) >= self.ast.nodes.items.len) return false;
         var pending: std.ArrayList(NodeIndex) = .empty;
         defer pending.deinit(self.allocator);
         try pending.append(self.allocator, root);
         while (pending.pop()) |idx| {
-            if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+            if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
             const node = self.ast.getNode(idx);
             switch (node.tag) {
                 .formal_parameter => {
                     const extra = node.data.extra;
                     if (!self.ast.hasExtra(extra, ast_mod.FormalParameterExtra.default)) continue;
-                    const default_value: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]);
+                    const default_value: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.default]));
                     if (!default_value.isNone()) return true;
-                    try pending.append(self.allocator, @enumFromInt(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern]));
+                    try pending.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[extra + ast_mod.FormalParameterExtra.pattern])));
                 },
                 .formal_parameters, .sequence_expression => {
                     const list = node.data.list;
                     if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) continue;
                     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-                        try pending.append(self.allocator, @enumFromInt(raw));
+                        try pending.append(self.allocator, @fromBackingInt(@intCast(raw)));
                     }
                 },
                 .parenthesized_expression => try pending.append(self.allocator, node.data.unary.operand),
                 .assignment_pattern, .assignment_expression, .assignment_target_with_default => return true,
                 .array_pattern, .array_assignment_target => {
                     const split = self.ast.nodeListSplitRest(node.data.list);
-                    for (split.elements) |raw| try pending.append(self.allocator, @enumFromInt(raw));
+                    for (split.elements) |raw| try pending.append(self.allocator, @fromBackingInt(@intCast(raw)));
                     if (split.rest_operand) |rest| try pending.append(self.allocator, rest);
                 },
                 .object_pattern, .object_assignment_target => {
                     const split = self.ast.nodeListSplitRest(node.data.list);
                     for (split.elements) |raw| {
-                        const child_idx: NodeIndex = @enumFromInt(raw);
-                        if (child_idx.isNone() or @intFromEnum(child_idx) >= self.ast.nodes.items.len) continue;
+                        const child_idx: NodeIndex = @fromBackingInt(@intCast(raw));
+                        if (child_idx.isNone() or @backingInt(child_idx) >= self.ast.nodes.items.len) continue;
                         const child = self.ast.getNode(child_idx);
                         if (child.tag == .binding_property or child.tag == .assignment_target_property_property) {
                             const key = child.data.binary.left;
-                            if (!key.isNone() and @intFromEnum(key) < self.ast.nodes.items.len and
+                            if (!key.isNone() and @backingInt(key) < self.ast.nodes.items.len and
                                 self.ast.getNode(key).tag == .computed_property_key) return true;
                             try pending.append(self.allocator, child.data.binary.right);
                         } else if (child.tag == .assignment_target_property_identifier) {
@@ -5444,7 +5444,7 @@ pub const SemanticAnalyzer = struct {
                 .rest_element, .spread_element, .binding_rest_element, .assignment_target_rest => try pending.append(self.allocator, node.data.unary.operand),
                 .binding_property, .assignment_target_property_property => {
                     const key = node.data.binary.left;
-                    if (!key.isNone() and @intFromEnum(key) < self.ast.nodes.items.len and
+                    if (!key.isNone() and @backingInt(key) < self.ast.nodes.items.len and
                         self.ast.getNode(key).tag == .computed_property_key) return true;
                     try pending.append(self.allocator, node.data.binary.right);
                 },
@@ -5484,7 +5484,7 @@ pub const SemanticAnalyzer = struct {
         defer self.current_stmt_idx = saved;
         for (indices, 0..) |raw_idx, i| {
             if (self.enable_stmt_info) self.current_stmt_idx = @intCast(i);
-            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx), true);
+            try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(raw_idx)), true);
         }
     }
 
@@ -5493,7 +5493,7 @@ pub const SemanticAnalyzer = struct {
         if (list.start + list.len > self.ast.extra_data.items.len) return;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            try self.predeclareVarDeclsRecursive(@enumFromInt(raw_idx), false);
+            try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(raw_idx)), false);
         }
     }
 
@@ -5503,7 +5503,7 @@ pub const SemanticAnalyzer = struct {
         is_direct_function_body_statement: bool,
     ) AllocError!void {
         if (idx.isNone()) return;
-        if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+        if (@backingInt(idx) >= self.ast.nodes.items.len) return;
         const node = self.ast.getNode(idx);
         switch (node.tag) {
             .variable_declaration => {
@@ -5522,8 +5522,8 @@ pub const SemanticAnalyzer = struct {
                 const extra_start = node.data.extra;
                 const extras = self.ast.extra_data.items;
                 if (extra_start + ast_mod.FunctionExtra.flags >= extras.len) return;
-                const name_idx: NodeIndex = @enumFromInt(extras[extra_start]);
-                if (!name_idx.isNone() and @intFromEnum(name_idx) < self.ast.nodes.items.len) {
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(extras[extra_start]));
+                if (!name_idx.isNone() and @backingInt(name_idx) < self.ast.nodes.items.len) {
                     const name_node = self.ast.getNode(name_idx);
                     const var_scope = self.findVarScope();
                     const name_text = self.ast.getText(name_node.span);
@@ -5556,8 +5556,8 @@ pub const SemanticAnalyzer = struct {
             .for_statement => {
                 const extras = self.ast.extra_data.items;
                 if (node.data.extra + 3 < extras.len) {
-                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra]), false); // init
-                    try self.predeclareVarDeclsRecursive(@enumFromInt(extras[node.data.extra + 3]), false); // body
+                    try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(extras[node.data.extra])), false); // init
+                    try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(extras[node.data.extra + 3])), false); // body
                 }
             },
             .for_in_statement, .for_of_statement, .for_await_of_statement => {
@@ -5586,7 +5586,7 @@ pub const SemanticAnalyzer = struct {
                 if (cases_start > extras.len or cases_len > extras.len - cases_start) return;
                 var i: u32 = 0;
                 while (i < cases_len) : (i += 1) {
-                    try self.predeclareVarDeclsRecursive(@enumFromInt(self.ast.extra_data.items[cases_start + i]), false);
+                    try self.predeclareVarDeclsRecursive(@fromBackingInt(@intCast(self.ast.extra_data.items[cases_start + i])), false);
                 }
             },
             .switch_case => {

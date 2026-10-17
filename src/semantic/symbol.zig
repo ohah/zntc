@@ -471,7 +471,7 @@ pub fn extendSymbol(
         .synthetic_kind = synthetic,
         .synthetic_name = name_text,
     });
-    return @enumFromInt(id_u32);
+    return @fromBackingInt(@intCast(id_u32));
 }
 
 /// 참조 하나의 데이터.

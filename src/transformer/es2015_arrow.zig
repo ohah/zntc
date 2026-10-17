@@ -70,8 +70,8 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             try stack.append(self.allocator, source_owner);
 
             while (stack.pop()) |idx| {
-                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
-                const raw = @intFromEnum(idx);
+                if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
+                const raw = @backingInt(idx);
                 if (seen.contains(raw)) continue;
                 try seen.put(self.allocator, raw, {});
                 const node = self.ast.getNode(idx);
@@ -129,7 +129,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
         /// Scan through nested functions too: their eval calls can see aliases
         /// created by an enclosing lowered arrow.
         pub fn hasDynamicEvalArgument(self: *Transformer, root: NodeIndex) std.mem.Allocator.Error!bool {
-            if (root.isNone() or @intFromEnum(root) >= self.ast.nodes.items.len) return false;
+            if (root.isNone() or @backingInt(root) >= self.ast.nodes.items.len) return false;
 
             // The analyzer propagates direct-eval presence through ancestor
             // scopes, so most arrows can avoid a second AST walk. If ownership
@@ -161,8 +161,8 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
                 const arg_raw = extras[args_start];
                 if (arg_raw >= self.ast.nodes.items.len) return true;
 
-                var arg_idx: NodeIndex = @enumFromInt(arg_raw);
-                while (!arg_idx.isNone() and @intFromEnum(arg_idx) < self.ast.nodes.items.len) {
+                var arg_idx: NodeIndex = @fromBackingInt(@intCast(arg_raw));
+                while (!arg_idx.isNone() and @backingInt(arg_idx) < self.ast.nodes.items.len) {
                     const arg = self.ast.getNode(arg_idx);
                     if (arg.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(arg.tag)) {
                         arg_idx = arg.data.unary.operand;
@@ -186,8 +186,8 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             try stack.append(self.allocator, root);
 
             while (stack.pop()) |idx| {
-                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
-                const raw = @intFromEnum(idx);
+                if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
+                const raw = @backingInt(idx);
                 if (seen.contains(raw)) continue;
                 try seen.put(self.allocator, raw, {});
                 const node = self.ast.getNode(idx);
@@ -313,12 +313,12 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             else
                 0;
 
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(param_list, node.span);
             const new_extra = try self.ast.addExtras(&.{
                 none, // name (anonymous)
-                @intFromEnum(params_node),
-                @intFromEnum(func_body),
+                @backingInt(params_node),
+                @backingInt(func_body),
                 func_flags,
                 none, // return_type
             });
@@ -377,10 +377,10 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
             // it the assignment-pattern shape the parameter lowering handles,
             // or ES5 output kept `function(a = 1)` (#5659).
             for (self.ast.extra_data.items[list.start .. list.start + list.len]) |*raw| {
-                const param = self.ast.getNode(@enumFromInt(raw.*));
+                const param = self.ast.getNode(@fromBackingInt(@intCast(raw.*)));
                 if (param.tag != .assignment_expression) continue;
-                if (param.data.binary.flags != @intFromEnum(@import("../lexer/token.zig").Kind.eq)) continue;
-                raw.* = @intFromEnum(try self.ast.addNode(.{
+                if (param.data.binary.flags != @backingInt(@import("../lexer/token.zig").Kind.eq)) continue;
+                raw.* = @backingInt(try self.ast.addNode(.{
                     .tag = .assignment_pattern,
                     .span = param.span,
                     .data = .{ .binary = .{ .left = param.data.binary.left, .right = param.data.binary.right, .flags = 0 } },
@@ -415,7 +415,7 @@ pub fn ES2015Arrow(comptime Transformer: type) type {
 
 fn isDirectEvalCallee(ast: *const ast_mod.Ast, source: NodeIndex) bool {
     var idx = source;
-    while (!idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len) {
+    while (!idx.isNone() and @backingInt(idx) < ast.nodes.items.len) {
         const node = ast.getNode(idx);
         if (node.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) {
             idx = node.data.unary.operand;
@@ -465,8 +465,8 @@ fn findLexicalNewTargetSpan(
     defer seen.deinit(self.allocator);
     try stack.append(self.allocator, root);
     while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(idx);
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(idx);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(idx);
@@ -542,11 +542,11 @@ fn wrapNativeParameterArrow(
         .data = .{ .list = try self.ast.addNodeList(&.{return_stmt}) },
     });
     const wrapper_extra = try self.ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(params),
-        @intFromEnum(wrapper_body),
+        @backingInt(NodeIndex.none),
+        @backingInt(params),
+        @backingInt(wrapper_body),
         0,
-        @intFromEnum(NodeIndex.none),
+        @backingInt(NodeIndex.none),
     });
     const wrapper = try self.ast.addNode(.{
         .tag = .function_expression,
