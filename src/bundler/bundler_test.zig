@@ -47,5 +47,6 @@ comptime {
     _ = @import("bundler_test/incremental_bench_v4.zig");
     _ = @import("bundler_test/link_subphase_bench.zig");
     _ = @import("bundler_test/ns_dblfree_repro.zig");
+    _ = @import("graph/transform_prepass.zig");
     _ = @import("namespace_access_test.zig");
 }
