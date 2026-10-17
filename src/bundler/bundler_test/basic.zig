@@ -243,6 +243,102 @@ test "Bundler: optional catch binding keeps direct-eval-visible names reserved" 
     try std.testing.expectEqualStrings("undefined\n", node_result.stdout);
 }
 
+test "Bundler: class super parameter takes its linker name from the exact SymbolId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js",
+        \\var _super = "outer";
+        \\class Base { value() { return 41; } }
+        \\class Derived extends Base { value() { return super.value() + 1; } }
+        \\console.log(new Derived().value(), _super);
+    );
+
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "_super$1") != null);
+
+    const node_result = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", result.output },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(node_result.stdout);
+    defer std.testing.allocator.free(node_result.stderr);
+
+    switch (node_result.term) {
+        .exited => |code| if (code != 0) {
+            std.debug.print("node stderr:\n{s}\n", .{node_result.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => {
+            std.debug.print("node stderr:\n{s}\n", .{node_result.stderr});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try std.testing.expectEqualStrings("42 outer\n", node_result.stdout);
+}
+
+test "Bundler: class super parameter does not capture direct eval" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "index.js",
+        \\class Base { value() { return 41; } }
+        \\class Derived extends Base {
+        \\  value() { return super.value() + ":" + eval("typeof _super"); }
+        \\}
+        \\console.log(new Derived().value());
+    );
+
+    const entry = try absPath(&tmp, "index.js");
+    defer std.testing.allocator.free(entry);
+    var bundler = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .unsupported = compat_mod.fromESTarget(.es5),
+    });
+    defer bundler.deinit();
+
+    const result = try bundler.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(!result.hasErrors());
+
+    const node_result = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", result.output },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(node_result.stdout);
+    defer std.testing.allocator.free(node_result.stderr);
+
+    switch (node_result.term) {
+        .exited => |code| if (code != 0) {
+            std.debug.print("node stderr:\n{s}\n", .{node_result.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => {
+            std.debug.print("node stderr:\n{s}\n", .{node_result.stderr});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try std.testing.expectEqualStrings("41:undefined\n", node_result.stdout);
+}
+
 test "Bundler: minified output" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
