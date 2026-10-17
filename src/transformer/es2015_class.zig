@@ -656,7 +656,16 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // experimentalDecorators
             if (self.options.experimental_decorators) {
-                try emitDecoratorsForLoweredClass(self, node, body_idx, outer_name_span, name_idx);
+                // Anonymous default classes have no source name node. The
+                // generated outer binding above already owns the export SID.
+                const decorator_class_name_binding = if (!name_idx.isNone()) name_idx else new_name;
+                try emitDecoratorsForLoweredClass(
+                    self,
+                    node,
+                    body_idx,
+                    outer_name_span,
+                    decorator_class_name_binding,
+                );
             }
 
             return .none;
@@ -1213,7 +1222,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             node: Node,
             body_idx: NodeIndex,
             name_span: Span,
-            class_name_old_idx: NodeIndex,
+            class_name_binding_idx: NodeIndex,
         ) Transformer.Error!void {
             const e = node.data.extra;
 
@@ -1306,7 +1315,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
             // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
             for (member_decos.items) |md| {
-                const call_stmt = try self.buildDecorateClassMemberCall(name_span, class_name_old_idx, md);
+                const call_stmt = try self.buildDecorateClassMemberCall(name_span, class_name_binding_idx, md);
                 try self.pending_nodes.append(self.allocator, call_stmt);
             }
 
@@ -1314,7 +1323,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (old_deco_len > 0 or ctor_param_decos.items.len > 0) {
                 const class_deco_stmt = try self.buildDecorateClassCall(
                     name_span,
-                    class_name_old_idx,
+                    class_name_binding_idx,
                     old_deco_start,
                     old_deco_len,
                     ctor_param_decos.items,

@@ -61,47 +61,49 @@ describe('legacy decorators with lowered private members (#5711)', () => {
     }
   }
 
-  test('anonymous default class decorator binds extracted static fields by exact SymbolId', async () => {
-    const created = await createFixture({
-      'entry.ts': [
-        'export const events: string[] = [];',
-        'function dec(value: any): any { events.push("decorated:" + value.value); return value; }',
-        '@dec',
-        'export default class { static value = 1; }',
-      ].join('\n'),
-      'consumer.mjs': [
-        'import Default, { events } from "./out.mjs";',
-        'console.log(events.join(","), Default.value);',
-      ].join('\n'),
+  for (const target of ['es2022', 'es5']) {
+    test(`anonymous default class decorator binds extracted static fields by exact SymbolId (${target})`, async () => {
+      const created = await createFixture({
+        'entry.ts': [
+          'export const events: string[] = [];',
+          'function dec(value: any): any { events.push("decorated:" + value.value); return value; }',
+          '@dec',
+          'export default class { static value = 1; }',
+        ].join('\n'),
+        'consumer.mjs': [
+          `import Default, { events } from "./out-${target}.mjs";`,
+          'console.log(events.join(","), Default.value);',
+        ].join('\n'),
+      });
+      cleanup = created.cleanup;
+      const result = await runZntc(
+        [
+          join(created.dir, 'entry.ts'),
+          `--target=${target}`,
+          '--experimental-decorators',
+          '--use-define-for-class-fields=false',
+          '--minify-identifiers',
+          '--format=esm',
+          '-o',
+          join(created.dir, `out-${target}.mjs`),
+        ],
+        { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+      );
+      expect(result.exitCode, result.stderr).toBe(0);
+
+      const identity = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(identity, result.stderr).toContain('unclassified_reference=0');
+      expect(identity, result.stderr).toContain('missing_reference=0');
+      const postMinify = result.stderr
+        .split(/\r?\n/)
+        .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
+      expect(postMinify, result.stderr).toContain('clean=1');
+
+      const actual = spawnSync('node', [join(created.dir, 'consumer.mjs')], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe('decorated:1 1\n');
     });
-    cleanup = created.cleanup;
-    const result = await runZntc(
-      [
-        join(created.dir, 'entry.ts'),
-        '--target=es2022',
-        '--experimental-decorators',
-        '--use-define-for-class-fields=false',
-        '--minify-identifiers',
-        '--format=esm',
-        '-o',
-        join(created.dir, 'out.mjs'),
-      ],
-      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
-    );
-    expect(result.exitCode, result.stderr).toBe(0);
-
-    const identity = result.stderr
-      .split(/\r?\n/)
-      .find((line) => line.startsWith('zntc: symbol-identity '));
-    expect(identity, result.stderr).toContain('unclassified_reference=0');
-    expect(identity, result.stderr).toContain('missing_reference=0');
-    const postMinify = result.stderr
-      .split(/\r?\n/)
-      .find((line) => line.startsWith('zntc: symbol-identity-post-minify '));
-    expect(postMinify, result.stderr).toContain('clean=1');
-
-    const actual = spawnSync('node', [join(created.dir, 'consumer.mjs')], { encoding: 'utf8' });
-    expect(actual.status, actual.stderr).toBe(0);
-    expect(actual.stdout).toBe('decorated:1 1\n');
-  });
+  }
 });
