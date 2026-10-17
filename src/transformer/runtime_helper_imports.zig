@@ -250,8 +250,29 @@ fn emitOne(
             .data = .{ .binary = .{ .left = imported_node, .right = local_node, .flags = 0 } },
         });
         if (self.semantic_edit_enabled) {
-            const symbol_id = callsite_symbol_id orelse
-                try self.declareRuntimeHelperImportId(local_node, local, anchor);
+            const symbol_id = callsite_symbol_id orelse blk: {
+                const import_symbol_id = try self.declareRuntimeHelperImportId(local_node, local, anchor);
+                if (self.runtime_helper_symbol_ids.get(base)) |existing| {
+                    if (existing != import_symbol_id)
+                        std.debug.panic("runtime helper import {s} changed SymbolId while registering its import", .{base});
+                    break :blk existing;
+                }
+
+                // A grouped import can include exports with no source callsite.
+                // Keep their exact declaration identity under the same canonical
+                // base key used by callsite-backed helpers, so later consumers do
+                // not have to rediscover it from the local spelling.
+                if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+                const stable_base = try self.name_arena.?.allocator().dupe(u8, base);
+                try self.runtime_helper_symbol_ids.put(self.allocator, stable_base, import_symbol_id);
+                break :blk import_symbol_id;
+            };
+            if (self.runtime_helper_symbol_ids.get(base)) |registered| {
+                if (registered != symbol_id)
+                    std.debug.panic("runtime helper import {s} disagrees with its registered SymbolId", .{base});
+            } else {
+                std.debug.panic("runtime helper import {s} was not registered by its canonical base", .{base});
+            }
             try self.bindRuntimeHelperImportById(local_node, local, symbol_id, anchor);
         } else {
             try self.bindRuntimeHelperImport(local_node, local, anchor);
