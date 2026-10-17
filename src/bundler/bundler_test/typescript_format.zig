@@ -65,8 +65,8 @@ test "#4819 namespace and enum IIFE parameters choose linked output names by Sym
         \\console.log(enumValue, dynamicEnumValue, Color, DynamicEnum, _classDecorators, classDecorators.value, dynamicNamespace.read(), _dynamicNamespace, nestedName(), marker);
     );
     try writeFile(tmp.dir, "colors.ts",
-        \\export enum Color { Red = 1, Green = 2 }
-        \\export const enumValue = Color.Red;
+        \\export enum Color { Red = 1, Green = Red + 1 }
+        \\export const enumValue = Color.Green;
         \\export function nestedName() { const Color$1 = 5; return Color$1; }
     );
     try writeFile(tmp.dir, "collision.ts",
@@ -79,6 +79,9 @@ test "#4819 namespace and enum IIFE parameters choose linked output names by Sym
     try writeFile(tmp.dir, "namespace.ts",
         \\export namespace classDecorators {
         \\  export const value = 2;
+        \\}
+        \\export namespace classDecorators {
+        \\  export const second = 3;
         \\}
     );
     try writeFile(tmp.dir, "dynamic.ts",

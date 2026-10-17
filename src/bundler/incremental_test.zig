@@ -713,6 +713,82 @@ test "IncrementalBundler: cache-hit 충돌 모듈의 rename 이 fresh 빌드와 
     try std.testing.expectEqualStrings(fresh_result.output, cached_result.output);
 }
 
+test "#4819 namespace and enum final names survive module-store cache reuse" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { enumValue, nestedName, namespaceValue } from './feature';
+        \\import { Color as otherColor, _classDecorators as otherNamespace, marker } from './collision';
+        \\console.log(enumValue, nestedName(), namespaceValue, otherColor, otherNamespace, marker);
+    );
+    try writeFile(tmp.dir, "feature.ts",
+        \\export enum Color { Red = 1, Green = Red + 1 }
+        \\export const enumValue = Color.Green;
+        \\export namespace classDecorators { export const first = 2; }
+        \\export namespace classDecorators { export const second = 3; }
+        \\export const namespaceValue = classDecorators.first + classDecorators.second;
+        \\export function nestedName() { const Color$1 = 5; return Color$1; }
+    );
+    try writeFile(tmp.dir, "collision.ts",
+        \\export const Color = 99;
+        \\export const _classDecorators = 98;
+        \\export const marker = 1;
+    );
+
+    const entry = try absPath(&tmp, "entry.ts");
+    defer std.testing.allocator.free(entry);
+    var store = module_store.PersistentModuleStore.init(std.testing.allocator);
+    defer store.deinit();
+
+    var cold = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .module_store = &store,
+    });
+    defer cold.deinit();
+    const cold_result = try cold.bundle(std.testing.io);
+    defer cold_result.deinit(std.testing.allocator);
+    try std.testing.expect(!cold_result.hasErrors());
+
+    std.testing.io.sleep(std.Io.Duration.fromMilliseconds(50), .awake) catch {};
+    try writeFile(tmp.dir, "entry.ts",
+        \\import { enumValue, nestedName, namespaceValue } from './feature';
+        \\import { Color as otherColor, _classDecorators as otherNamespace, marker } from './collision';
+        \\console.log(enumValue, nestedName(), namespaceValue, otherColor, otherNamespace, marker + 0);
+    );
+
+    var cached = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+        .module_store = &store,
+    });
+    defer cached.deinit();
+    const cached_result = try cached.bundle(std.testing.io);
+    defer cached_result.deinit(std.testing.allocator);
+    try std.testing.expect(!cached_result.hasErrors());
+    try std.testing.expect(cached_result.reparsed_paths != null);
+    var saw_entry = false;
+    for (cached_result.reparsed_paths.?) |path| {
+        if (std.mem.endsWith(u8, path, "feature.ts")) return error.FeatureModuleReparsed;
+        if (std.mem.endsWith(u8, path, "collision.ts")) return error.CollisionModuleReparsed;
+        if (std.mem.endsWith(u8, path, "entry.ts")) saw_entry = true;
+    }
+    try std.testing.expect(saw_entry);
+
+    var fresh = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .format = .iife,
+    });
+    defer fresh.deinit();
+    const fresh_result = try fresh.bundle(std.testing.io);
+    defer fresh_result.deinit(std.testing.allocator);
+    try std.testing.expect(!fresh_result.hasErrors());
+
+    try std.testing.expect(std.mem.indexOf(u8, cached_result.output, "Color$2[Color$2[\"Red\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cached_result.output, "_classDecorators$1") != null);
+    try std.testing.expectEqualStrings(fresh_result.output, cached_result.output);
+}
+
 // ============================================================
 // RFC #1672 Phase B3 — first-build cache reuse
 // ============================================================
