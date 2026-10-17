@@ -15602,6 +15602,103 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
     }
   });
 
+  test('bundler namespace·enum IIFE 이름은 reanalysis 뒤 exact SID를 유지한다', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-4819-iife-linker-'));
+    const entry = join(dir, 'entry.ts');
+    const output = join(dir, 'out.js');
+    writeFileSync(
+      entry,
+      [
+        "import { enumValue, nestedName } from './colors';",
+        "import { dynamicEnumValue } from './dynamic';",
+        "import { Color, DynamicEnum, _classDecorators, _dynamicNamespace, marker } from './collision';",
+        "import { classDecorators } from './namespace';",
+        "import { dynamicNamespace } from './dynamic';",
+        'console.log(enumValue, dynamicEnumValue.A === dynamicEnumValue, Color, DynamicEnum, _classDecorators, classDecorators.value, classDecorators.second, typeof dynamicNamespace.read(), _dynamicNamespace, nestedName(), marker);',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'colors.ts'),
+      [
+        'export enum Color { Red = 1, Green = Red + 1 }',
+        'export const enumValue = Color.Green;',
+        'export function nestedName() { const Color$1 = 5; return Color$1; }',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'collision.ts'),
+      [
+        'export const Color = 99;',
+        'export const DynamicEnum = 96;',
+        'export const _classDecorators = 98;',
+        'export const _dynamicNamespace = 97;',
+        'export const marker = 1;',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'namespace.ts'),
+      [
+        'export namespace classDecorators { export const value = 2; }',
+        'export namespace classDecorators { export const second = 3; }',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'dynamic.ts'),
+      [
+        'export namespace dynamicNamespace { export function read() { return eval("_dynamicNamespace"); } }',
+        'export enum DynamicEnum { A = eval("DynamicEnum") }',
+        'export const dynamicEnumValue = DynamicEnum;',
+      ].join('\n'),
+    );
+
+    try {
+      for (const minify of [[], ['--minify']]) {
+        const proc = spawnSync(
+          ZNTC_BIN,
+          ['--bundle', entry, '--format=iife', ...minify, '-o', output],
+          {
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(proc.status, proc.stderr).toBe(0);
+
+        const lines = (proc.stderr ?? '').split(/\r?\n/);
+        const identityFor = (name: string) =>
+          lines.find(
+            (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes(name),
+          );
+        const modeFor = (name: string) =>
+          lines.find(
+            (line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(name),
+          );
+        for (const file of ['colors.ts', 'dynamic.ts', 'namespace.ts']) {
+          const identity = identityFor(file);
+          expect(identity, `${file}: ${proc.stderr}`).toBeDefined();
+          for (const counter of EXACT_ZERO_COUNTERS) {
+            expect(
+              Number(identity?.match(new RegExp(`${counter}=(\\d+)`))?.[1] ?? -1),
+              identity,
+            ).toBe(0);
+          }
+          expect(identity).toMatch(/clean=1(?:\s|$)/);
+        }
+
+        expect(identityFor('colors.ts')).toMatch(/enum_iife_params=1(?:\s|$)/);
+        expect(identityFor('dynamic.ts')).toMatch(/namespace_iife_params=1(?:\s|$)/);
+        expect(identityFor('dynamic.ts')).toMatch(/enum_iife_params=1(?:\s|$)/);
+        expect(identityFor('namespace.ts')).toMatch(/namespace_iife_params=2(?:\s|$)/);
+        expect(modeFor('dynamic.ts')).toContain('semantic_graph=reanalyzed');
+
+        const actual = spawnSync('node', [output], { encoding: 'utf8' });
+        expect(actual.status, actual.stderr).toBe(0);
+        expect(actual.stdout).toBe('2 true 99 96 98 2 3 object 97 5 1\n');
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 namespace class export와 decorator binding도 exact SymbolId를 유지한다', () => {
     const file = join(FIXTURE_DIR, '4819-namespace-class-export.ts');
     const outDir = mkdtempSync(join(tmpdir(), 'zntc-namespace-class-export-'));
