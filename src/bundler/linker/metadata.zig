@@ -12,6 +12,7 @@ const Span = @import("../../lexer/token.zig").Span;
 const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
 const Ast = @import("../../parser/ast.zig").Ast;
 const semantic_symbol = @import("../../semantic/symbol.zig");
+const bundler_symbol = @import("../symbol.zig");
 const federation = @import("../federation.zig"); // PR-1 (#3459) mfRemoteGlobalName/matchesRemoteSpec 단일소스
 const linker_mod = @import("../linker.zig");
 const Linker = linker_mod.Linker;
@@ -1482,6 +1483,34 @@ pub fn buildMetadataForAst(
             }
         }
     }
+    // A generated runtime-helper import and its transformed call references
+    // share one exact SymbolId. The import/preamble emitter reads rename_table
+    // directly, while identifier codegen reads LinkingMetadata.renames; carry
+    // the selected spelling across that boundary so both consumers emit the
+    // same local name even when the helper collides with a source binding or
+    // identifier mangling changes it.
+    for (sem.symbols.items, 0..) |symbol, raw_symbol_id| {
+        if (symbol.synthetic_kind != .runtime_helper_import) continue;
+        if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
+            symbol.output_name_hint.len == 0 or
+            !std.mem.eql(u8, symbol.synthetic_name, symbol.output_name_hint))
+            return error.InvalidRuntimeHelperImportOutputBinding;
+
+        const symbol_id = bundler_symbol.SymbolID.make(
+            @enumFromInt(module_index),
+            @as(u32, @intCast(raw_symbol_id)),
+        );
+        const selected = self.rename_table.get(symbol_id) orelse continue;
+        if (std.mem.eql(u8, selected, symbol.synthetic_name)) continue;
+        try putOwnedRename(
+            self,
+            &renames,
+            &owned_nested_renames,
+            @intCast(raw_symbol_id),
+            selected,
+        );
+    }
+
     try synchronizeClassSelfNames(ast, &sem, &renames, self.allocator);
 
     // Side-effect-only import has no ImportBinding, so scope-hoisted modules that

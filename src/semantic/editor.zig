@@ -959,6 +959,7 @@ pub const SemanticEditor = struct {
             .declaration_span = declaration_span,
             .synthetic_kind = if (is_preamble) .runtime_helper_preamble else if (defer_import_name) .runtime_helper_import else null,
             .synthetic_name = name,
+            .output_name_hint = if (defer_import_name and !is_preamble) name else "",
         });
         errdefer _ = self.symbols.pop();
         try self.helper_scope_map.put(self.allocator, name, @intFromEnum(id));
