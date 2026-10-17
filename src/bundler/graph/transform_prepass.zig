@@ -6488,11 +6488,24 @@ fn captureWorkletFactoryLocalBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
-fn stage3OutputBaseName(kind: SemanticSyntheticKind) ?[]const u8 {
+fn isStage3OutputNameKind(kind: SemanticSyntheticKind) bool {
     return switch (kind) {
-        .stage3_class_this_binding => "_classThis",
-        .stage3_metadata_binding => "_metadata",
-        else => null,
+        .stage3_class_this_binding,
+        .stage3_metadata_binding,
+        .stage3_class_decorator_binding,
+        => true,
+        else => false,
+    };
+}
+
+fn isValidStage3OutputNameHint(kind: SemanticSyntheticKind, hint: []const u8) bool {
+    return switch (kind) {
+        .stage3_class_this_binding => std.mem.eql(u8, hint, "_classThis"),
+        .stage3_metadata_binding => std.mem.eql(u8, hint, "_metadata"),
+        .stage3_class_decorator_binding => std.mem.eql(u8, hint, "_classDecorators") or
+            std.mem.eql(u8, hint, "_classDescriptor") or
+            std.mem.eql(u8, hint, "_classExtraInitializers"),
+        else => false,
     };
 }
 
@@ -6518,8 +6531,9 @@ fn captureStage3OutputBindings(
         const raw_symbol_id = semantic.symbol_ids[raw] orelse continue;
         if (raw_symbol_id >= semantic.symbols.items.len) return error.InvalidStage3OutputSymbolId;
         const symbol = semantic.symbols.items[raw_symbol_id];
-        const expected_name = stage3OutputBaseName(symbol.synthetic_kind orelse continue) orelse continue;
-        if (!std.mem.eql(u8, symbol.output_name_hint, expected_name) or symbol.scope_id.isNone() or
+        const kind = symbol.synthetic_kind orelse continue;
+        if (!isStage3OutputNameKind(kind)) continue;
+        if (!isValidStage3OutputNameHint(kind, symbol.output_name_hint) or symbol.scope_id.isNone() or
             !isStage3VariableKind(symbol.kind))
             return error.InvalidStage3OutputBindingMetadata;
         if (try binding_nodes.fetchPut(allocator, raw_symbol_id, @intCast(raw)) != null)
@@ -6529,8 +6543,8 @@ fn captureStage3OutputBindings(
     var bindings: std.ArrayListUnmanaged(Stage3OutputBinding) = .empty;
     for (semantic.symbols.items, 0..) |symbol, raw_symbol_id| {
         const kind = symbol.synthetic_kind orelse continue;
-        const expected_name = stage3OutputBaseName(kind) orelse continue;
-        if (!std.mem.eql(u8, symbol.output_name_hint, expected_name) or symbol.scope_id.isNone() or
+        if (!isStage3OutputNameKind(kind)) continue;
+        if (!isValidStage3OutputNameHint(kind, symbol.output_name_hint) or symbol.scope_id.isNone() or
             !isStage3VariableKind(symbol.kind))
             return error.InvalidStage3OutputBindingMetadata;
         const raw = binding_nodes.get(@intCast(raw_symbol_id)) orelse return error.MissingStage3OutputBinding;
@@ -7515,10 +7529,7 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                     symbol.scope_id.isNone()) return error.InvalidStage3OutputBindingKind;
                 if (symbol.synthetic_kind != null and symbol.synthetic_kind != output_binding.synthetic_kind)
                     return error.Stage3OutputBindingKindConflict;
-                if (stage3OutputBaseName(output_binding.synthetic_kind)) |expected_name| {
-                    if (!std.mem.eql(u8, output_binding.output_name_hint, expected_name))
-                        return error.InvalidStage3OutputNameHint;
-                } else {
+                if (!isValidStage3OutputNameHint(output_binding.synthetic_kind, output_binding.output_name_hint)) {
                     return error.InvalidStage3OutputNameKind;
                 }
                 symbol.synthetic_kind = output_binding.synthetic_kind;

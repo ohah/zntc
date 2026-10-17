@@ -259,8 +259,9 @@ pub const SyntheticKind = enum(u8) {
     /// linker select its spelling from this exact SymbolId after generated
     /// names are known.
     stage3_class_this_binding,
-    /// Stage 3 class decorator locals. Standalone output selects their
-    /// spellings from exact SymbolIds after all generated names are known.
+    /// Stage 3 class decorator locals. Standalone output and the bundler
+    /// linker select their spellings from exact SymbolIds after generated
+    /// names are known.
     stage3_class_decorator_binding,
     /// Stage 3 member decorator locals. Standalone output selects their
     /// spellings from exact SymbolIds after all generated names are known.
