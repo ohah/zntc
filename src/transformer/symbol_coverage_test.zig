@@ -2318,6 +2318,74 @@ test "#4819 tracked temp names stay fixed when eval or with can observe them" {
     );
 }
 
+fn checkTlaResultTempLateName(source: []const u8, expected_late_name: bool) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const original_symbol_count = analyzer.symbols.items.len;
+    const program_scope = analyzer.scope_owner_map.get(@intFromEnum(root)) orelse
+        return error.MissingProgramScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = .{ .top_level_await = true },
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const stmt_idx = transformer.tla_iife_stmt orelse return error.MissingTlaPromiseStatement;
+    const stmt = transformer.ast.getNode(stmt_idx);
+    if (stmt.tag != .variable_declaration) return error.InvalidTlaPromiseStatement;
+    const extra = stmt.data.extra;
+    if (extra + 2 >= transformer.ast.extra_data.items.len) return error.InvalidTlaPromiseDeclaration;
+    const list_start = transformer.ast.extra_data.items[extra + 1];
+    const list_len = transformer.ast.extra_data.items[extra + 2];
+    if (list_len != 1 or list_start >= transformer.ast.extra_data.items.len)
+        return error.InvalidTlaPromiseDeclaration;
+    const decl_idx: AstNodeIndex = @enumFromInt(transformer.ast.extra_data.items[list_start]);
+    const decl = transformer.ast.getNode(decl_idx);
+    if (decl.tag != .variable_declarator or decl.data.extra >= transformer.ast.extra_data.items.len)
+        return error.InvalidTlaPromiseBinding;
+    const binding_idx: AstNodeIndex = @enumFromInt(transformer.ast.extra_data.items[decl.data.extra]);
+    const binding = transformer.ast.getNode(binding_idx);
+    if (binding.tag != .binding_identifier) return error.InvalidTlaPromiseBinding;
+    const raw_binding = @intFromEnum(binding_idx);
+    if (raw_binding >= edited.symbol_ids.len) return error.MissingTlaPromiseSymbolId;
+    const symbol_id = edited.symbol_ids[raw_binding] orelse return error.MissingTlaPromiseSymbolId;
+    if (symbol_id >= edited.symbols.items.len) return error.InvalidTlaPromiseSymbolId;
+    try std.testing.expect(symbol_id >= original_symbol_count);
+    for (edited.symbols.items[0..original_symbol_count]) |source_symbol| {
+        try std.testing.expect(source_symbol.synthetic_kind != .standalone_temp_binding);
+    }
+    const symbol = edited.symbols.items[symbol_id];
+    try std.testing.expectEqual(@as(u32, program_scope), @intFromEnum(symbol.scope_id));
+    try std.testing.expectEqual(expected_late_name, symbol.synthetic_kind == .standalone_temp_binding);
+    try std.testing.expectEqual(
+        @as(?usize, symbol_id),
+        edited.scope_maps[program_scope].get(symbol.synthetic_name),
+    );
+}
+
+test "#4819 TLA result temp late naming follows its exact SymbolId and dynamic-scope gate" {
+    try checkTlaResultTempLateName("const _a = 1; await Promise.resolve();", true);
+    try checkTlaResultTempLateName("eval(''); await Promise.resolve();", false);
+}
+
 test "#4819 lexical synthetic temps finalize only through their exact binding ID" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
