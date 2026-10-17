@@ -417,7 +417,7 @@ pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !
     const owner_raw = @intFromEnum(owner_id);
     if (owner_raw >= self.options.semantic_symbols.len) return error.InvalidEnumIifeMemberSymbol;
     const parameter = self.options.semantic_symbols[owner_raw];
-    if (parameter.synthetic_kind != .enum_iife_parameter or parameter.scope_id != member.scope_id)
+    if (parameter.kind != .parameter or parameter.synthetic_kind != .enum_iife_parameter or parameter.scope_id != member.scope_id)
         return error.InvalidEnumIifeMemberSymbol;
     const parameter_name = try generatedIifeParamNameFromSymbolId(self, owner_raw);
 
