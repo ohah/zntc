@@ -19,6 +19,7 @@ const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
+const SemanticSyntheticKind = @import("../../semantic/symbol.zig").SyntheticKind;
 const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
 const isTypeOnlyNode = @import("../../transformer/transformer/type_only.zig").isTypeOnlyNode;
 const define_mod = @import("../../transformer/transformer/define.zig");
@@ -6980,8 +6981,22 @@ fn remapRenamesByNodeIdentity(
 }
 
 /// Graph-level wrapper/runtime bindings have no AST declaration node to anchor
-/// their fresh SymbolIds. Their producer-owned identity is the typed synthetic
-/// kind plus declared name and scope, and it must be unique on both snapshots.
+/// their fresh SymbolIds. The module owns exactly one producer slot for the
+/// singleton kinds below, so their identity is the typed synthetic kind as
+/// long as each semantic snapshot contains exactly one matching row.
+fn isModuleOwnedSingletonGraphSynthetic(kind: SemanticSyntheticKind) bool {
+    return switch (kind) {
+        .cjs_exports,
+        .cjs_require,
+        .esm_init,
+        .cjs_wrapper_exports_parameter,
+        .cjs_wrapper_module_parameter,
+        .cjs_runtime_factory,
+        => true,
+        else => false,
+    };
+}
+
 fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
     const kind = symbol.synthetic_kind orelse return false;
     return switch (kind) {
@@ -7003,10 +7018,10 @@ fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
 
 fn sameGraphOwnedSyntheticIdentity(a: SemanticSymbol, b: SemanticSymbol) bool {
     if (!isGraphOwnedSyntheticRename(a) or !isGraphOwnedSyntheticRename(b)) return false;
-    return a.synthetic_kind == b.synthetic_kind and
-        a.kind == b.kind and
-        a.scope_id == b.scope_id and
-        std.mem.eql(u8, a.synthetic_name, b.synthetic_name);
+    const kind = a.synthetic_kind orelse return false;
+    if (kind != b.synthetic_kind or a.kind != b.kind) return false;
+    if (isModuleOwnedSingletonGraphSynthetic(kind)) return true;
+    return a.scope_id == b.scope_id and std.mem.eql(u8, a.synthetic_name, b.synthetic_name);
 }
 
 fn remapGraphOwnedSyntheticRenames(
@@ -7045,6 +7060,222 @@ fn remapGraphOwnedSyntheticRenames(
         }
         try rebuilt.put(allocator, new_id, rename);
     }
+}
+
+fn graphOwnedSyntheticRenameTestSymbol(
+    synthetic_kind: SemanticSyntheticKind,
+    kind: SemanticSymbolKind,
+    scope_raw: u32,
+    name: []const u8,
+) SemanticSymbol {
+    return .{
+        .name = Span.EMPTY,
+        .kind = kind,
+        .scope_id = @enumFromInt(scope_raw),
+        .declaration_span = Span.EMPTY,
+        .synthetic_kind = synthetic_kind,
+        .synthetic_name = name,
+    };
+}
+
+test "graph-owned singleton synthetic renames follow producer identity" {
+    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const expected_id = bundler_symbol.SymbolID.make(module_index, 1);
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    const singleton_kinds = [_]struct { synthetic: SemanticSyntheticKind, symbol: SemanticSymbolKind }{
+        .{ .synthetic = .cjs_exports, .symbol = .variable_var },
+        .{ .synthetic = .cjs_require, .symbol = .function_decl },
+        .{ .synthetic = .esm_init, .symbol = .function_decl },
+        .{ .synthetic = .cjs_wrapper_exports_parameter, .symbol = .parameter },
+        .{ .synthetic = .cjs_wrapper_module_parameter, .symbol = .parameter },
+        .{ .synthetic = .cjs_runtime_factory, .symbol = .variable_var },
+    };
+    const final_rename: [1]?[]const u8 = .{"module_owned_final"};
+    for (singleton_kinds) |singleton| {
+        const old_symbols = [_]SemanticSymbol{
+            graphOwnedSyntheticRenameTestSymbol(singleton.synthetic, singleton.symbol, 1, "producer_before"),
+        };
+        const new_symbols = [_]SemanticSymbol{
+            .{
+                .name = Span.EMPTY,
+                .kind = .variable_let,
+                .scope_id = @enumFromInt(0),
+                .declaration_span = Span.EMPTY,
+            },
+            graphOwnedSyntheticRenameTestSymbol(singleton.synthetic, singleton.symbol, 1, "producer_after"),
+        };
+
+        try remapGraphOwnedSyntheticRenames(
+            std.testing.allocator,
+            module_index,
+            &old_symbols,
+            &new_symbols,
+            &final_rename,
+            &rebuilt,
+        );
+
+        try std.testing.expectEqual(@as(u32, 1), rebuilt.count());
+        try std.testing.expectEqualStrings(
+            "module_owned_final",
+            rebuilt.get(expected_id) orelse return error.TestExpectedEqual,
+        );
+        try std.testing.expect(rebuilt.get(bundler_symbol.SymbolID.make(module_index, 0)) == null);
+        rebuilt.clear();
+    }
+
+    const old_symbols_scope_change = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 1, "exports_stable"),
+    };
+    const new_symbols_scope_change = [_]SemanticSymbol{
+        .{
+            .name = Span.EMPTY,
+            .kind = .variable_let,
+            .scope_id = @enumFromInt(0),
+            .declaration_span = Span.EMPTY,
+        },
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 5, "exports_stable"),
+    };
+    const scope_change_rename: [1]?[]const u8 = .{"exports_scope_final"};
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols_scope_change,
+        &new_symbols_scope_change,
+        &scope_change_rename,
+        &rebuilt,
+    );
+    try std.testing.expectEqualStrings(
+        "exports_scope_final",
+        rebuilt.get(expected_id) orelse return error.TestExpectedEqual,
+    );
+}
+
+test "graph-owned singleton synthetic renames reject ambiguous mappings" {
+    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 1, "exports_before_a"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 2, "exports_before_b"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 5, "exports_after"),
+    };
+    const old_renames: [2]?[]const u8 = .{ "exports_final_a", "exports_final_b" };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    rebuilt.clear();
+    const old_unique = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 1, "exports_before"),
+    };
+    const new_ambiguous = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 5, "exports_after_a"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 6, "exports_after_b"),
+    };
+    const one_old_rename: [1]?[]const u8 = .{"exports_final"};
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_unique,
+        &new_ambiguous,
+        &one_old_rename,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+}
+
+test "graph-owned synthetic renames preserve non-singleton and kind boundaries" {
+    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const old_helper = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__helper_before"),
+    };
+    const renamed_helper = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__helper_after"),
+    };
+    const old_rename: [1]?[]const u8 = .{"__helper_final"};
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_helper,
+        &renamed_helper,
+        &old_rename,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const old_exports = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 1, "exports"),
+    };
+    const wrong_synthetic_kind = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_require, .variable_var, 1, "exports"),
+    };
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_exports,
+        &wrong_synthetic_kind,
+        &old_rename,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const wrong_symbol_kind = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .function_decl, 1, "exports"),
+    };
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_exports,
+        &wrong_symbol_kind,
+        &old_rename,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+}
+
+test "graph-owned synthetic rename does not replace an existing exact mapping" {
+    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 1, "exports"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 5, "exports"),
+    };
+    const old_rename: [1]?[]const u8 = .{"from_previous_snapshot"};
+    const target_id = bundler_symbol.SymbolID.make(module_index, 0);
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+    try rebuilt.put(std.testing.allocator, target_id, "from_node_anchor");
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_rename,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 1), rebuilt.count());
+    try std.testing.expectEqualStrings(
+        "from_node_anchor",
+        rebuilt.get(target_id) orelse return error.TestExpectedEqual,
+    );
 }
 
 /// **RFC #3940 L.5a — carry-over 를 build-scope `rename_table` 기반으로 재설계**.
