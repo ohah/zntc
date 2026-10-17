@@ -71,6 +71,25 @@ const cases = [
     ].join('\n'),
     expected: 'field,member:method,class:1\n',
   },
+  {
+    name: 'ES5 class, member, property, and constructor parameter decorators',
+    target: 'es5',
+    source: [
+      'const events: string[] = [];',
+      'function classDec(value: any) { events.push(`class:${value.value}`); return value; }',
+      'function memberDec(_target: any, key: string) { events.push(`member:${key}`); }',
+      'function propertyDec(_target: any, key: string) { events.push(`property:${key}`); }',
+      'function parameterDec(_target: any, _key: string | undefined, index: number) { events.push(`parameter:${index}`); }',
+      '@classDec export default class {',
+      '  @memberDec method() {}',
+      '  @propertyDec value = 2;',
+      '  constructor(@parameterDec _value: string) {}',
+      "  static value = (events.push('field'), 1);",
+      '}',
+      "console.log(events.join(','));",
+    ].join('\n'),
+    expected: 'field,member:method,property:value,class:1,parameter:0\n',
+  },
 ] as const;
 
 describe('anonymous decorated default class scope identity (#4819)', () => {
