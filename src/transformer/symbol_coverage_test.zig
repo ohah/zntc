@@ -23,6 +23,7 @@ const TransformOptions = transformer_mod.TransformOptions;
 const es_helpers = @import("es_helpers.zig");
 const coverage = @import("symbol_coverage.zig");
 const SemanticEditor = @import("../semantic/editor.zig").SemanticEditor;
+const runtime_helper_imports = @import("runtime_helper_imports.zig");
 
 fn keepOriginalClassForSyntheticTempTest(
     _: *Transformer,
@@ -3558,6 +3559,90 @@ test "#4819 bundler runtime helper import consumes its callsite SymbolId" {
     }
     try std.testing.expect(reads >= 1);
     try std.testing.expectEqual(@as(u32, @intCast(reads)), edited.symbols.items[raw_helper_id].reference_count);
+}
+
+test "#4819 grouped bundler runtime helper imports register exact IDs without callsites" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "export {};");
+    scanner.is_module = true;
+    var parser = Parser.init(allocator, &scanner);
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .emit_runtime_helper_imports = true,
+        .minify_whitespace = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+
+    const bases = [_][]const u8{
+        "__assertThisInitialized",
+        "__assertThisUninitialized",
+        "__possibleConstructorReturn",
+    };
+    const callsite = try es_helpers.makeRuntimeHelperRef(&transformer, bases[0]);
+    const callsite_id = transformer.runtime_helper_symbol_ids.get(bases[0]) orelse return error.MissingCallsiteRuntimeHelperSymbolId;
+    try std.testing.expectEqual(@as(u32, @intFromEnum(callsite_id)), transformer.getSymbolIdAt(callsite).?);
+    for (bases[1..]) |base| try std.testing.expectEqual(@as(?SymbolId, null), transformer.runtime_helper_symbol_ids.get(base));
+
+    var imports: std.ArrayList(AstNodeIndex) = .empty;
+    try runtime_helper_imports.appendHelperImports(
+        &transformer,
+        .{ .derived_constructor = true },
+        parser.ast.getNode(root).span,
+        &imports,
+    );
+    try std.testing.expectEqual(@as(usize, 1), imports.items.len);
+
+    var seen = std.AutoHashMapUnmanaged(u32, void).empty;
+    for (bases) |base| {
+        const symbol_id = transformer.runtime_helper_symbol_ids.get(base) orelse return error.MissingGroupedRuntimeHelperSymbolId;
+        const raw_id = @intFromEnum(symbol_id);
+        const gop = try seen.getOrPut(allocator, raw_id);
+        try std.testing.expect(!gop.found_existing);
+
+        const editor = &transformer.semantic_editor.?;
+        const symbol = editor.symbols.items[raw_id];
+        try std.testing.expectEqual(SymbolKind.import_binding, symbol.kind);
+        try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+
+        const local_raw = transformer.runtime_helper_import_bindings.get(raw_id) orelse return error.MissingGroupedRuntimeHelperImportBinding;
+        const local: AstNodeIndex = @enumFromInt(local_raw);
+        try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(local));
+        const local_name = transformer.ast.identifierNameText(transformer.ast.getNode(local));
+        try std.testing.expectEqualStrings(local_name, symbol.synthetic_name);
+        try std.testing.expect(!std.mem.eql(u8, base, local_name));
+        try std.testing.expectEqual(@as(?usize, raw_id), editor.helper_scope_map.get(local_name));
+    }
+
+    _ = try transformer.prependStatementsToBody(root, imports.items);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    for (bases) |base| {
+        const symbol_id = transformer.runtime_helper_symbol_ids.get(base).?;
+        const raw_id = @intFromEnum(symbol_id);
+        const symbol = edited.symbols.items[raw_id];
+        try std.testing.expectEqual(SymbolKind.import_binding, symbol.kind);
+        try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+        const local_raw = transformer.runtime_helper_import_bindings.get(raw_id).?;
+        try std.testing.expectEqual(@as(?u32, raw_id), edited.symbol_ids[local_raw]);
+        try std.testing.expectEqualStrings(
+            transformer.ast.identifierNameText(transformer.ast.getNode(@enumFromInt(local_raw))),
+            symbol.synthetic_name,
+        );
+    }
 }
 
 test "#4819 private field runtime import keeps its producer-selected alias under a user collision" {
