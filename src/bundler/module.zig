@@ -265,8 +265,8 @@ pub const TransformCache = struct {
     /// Exact Reanimated class-factory bindings whose linker naming metadata
     /// must survive post-transform semantic reanalysis.
     worklet_factory_local_bindings: []const WorkletFactoryLocalBinding = &.{},
-    /// Exact Stage 3 `_classThis` and `_metadata` bindings whose deferred
-    /// output-name hints must be restored by binding NodeIndex after reanalysis.
+    /// Exact Stage 3 generated bindings whose deferred output-name hints must
+    /// be restored by binding NodeIndex after reanalysis.
     stage3_output_bindings: []const Stage3OutputBinding = &.{},
     /// #3267 N-step4 follow-up: prepass minify 의 cascade ref decrement 결과
     /// (`MinifyCtx.ref_deltas` snapshot, length == sem.symbols.len). emitter 의 minify

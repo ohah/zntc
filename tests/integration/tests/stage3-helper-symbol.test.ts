@@ -173,7 +173,7 @@ console.log(_metadata, _classThis, new Example().value, new Example().method());
           encoding: 'utf8',
         },
       );
-      expect(result.status, result.stderr).toBe(0);
+      expect(result.status, result.error?.message ?? result.stderr).toBe(0);
       expect(result.stderr).toContain(
         `semantic_graph=${target === 'esnext' ? 'retained' : 'reanalyzed'}`,
       );
@@ -187,6 +187,53 @@ console.log(_metadata, _classThis, new Example().value, new Example().method());
       const code = readFileSync(output, 'utf8');
       expect(code).toMatch(/value:\s*_classThis\$[0-9]+/);
       expect(code).toMatch(/metadata:\s*_metadata\$[0-9]+/);
+    });
+
+    test(`bundled class decorator locals are selected after graph analysis (${target})`, async () => {
+      const fixture = await createFixture({
+        'input.ts': `
+const _classDecorators = 31, _classDescriptor = 41, _classExtraInitializers = 51;
+function dec(value: any): any { return value; }
+@dec class Example {
+  method() { return [_classDecorators, _classDescriptor, _classExtraInitializers].map(String).join('|'); }
+}
+console.log(_classDecorators, _classDescriptor, _classExtraInitializers, new Example().method());
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.cjs');
+      const result = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'input.ts',
+          '--platform=node',
+          '--format=cjs',
+          `--target=${target}`,
+          '-o',
+          output,
+        ],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+      expect(result.stderr).toContain(
+        `semantic_graph=${target === 'esnext' ? 'retained' : 'reanalyzed'}`,
+      );
+      expect(result.stderr).toMatch(/symbol-identity-prepass .*unclassified_reference=0/);
+      expect(result.stderr).toMatch(/symbol-identity-prepass .*clean=1(?:\s|$)/);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('31 41 51 31|41|51\n');
+
+      const code = readFileSync(output, 'utf8');
+      expect(code).toMatch(/_classDecorators\$[0-9]+/);
+      expect(code).toMatch(/_classDescriptor\$[0-9]+/);
+      expect(code).toMatch(/_classExtraInitializers\$[0-9]+/);
     });
   }
 

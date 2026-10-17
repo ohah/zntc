@@ -1041,6 +1041,13 @@ pub const Linker = struct {
                             !std.mem.eql(u8, symbol.output_name_hint, "_metadata"))
                             return error.InvalidStage3MetadataOutputBinding;
                     },
+                    .stage3_class_decorator_binding => {
+                        const valid_hint = std.mem.eql(u8, symbol.output_name_hint, "_classDecorators") or
+                            std.mem.eql(u8, symbol.output_name_hint, "_classDescriptor") or
+                            std.mem.eql(u8, symbol.output_name_hint, "_classExtraInitializers");
+                        if (!is_variable_local or symbol.scope_id.isNone() or !valid_hint)
+                            return error.InvalidStage3ClassDecoratorOutputBinding;
+                    },
                     else => continue,
                 }
 
