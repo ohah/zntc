@@ -621,6 +621,18 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
         "mappedNamespace",
         try cg.namespacePrefixName(.{ .symbol_id = 1, .fallback_name = "stalePrefix" }),
     );
+    var malformed_symbols = symbols;
+    malformed_symbols[0].kind = .variable_const;
+    var malformed_cg = Codegen.initWithOptions(allocator, &ast, .{
+        .linking_metadata = &metadata,
+        .semantic_symbols = &malformed_symbols,
+        .semantic_symbol_name_overrides = &names,
+    });
+    defer malformed_cg.deinit();
+    try std.testing.expectError(
+        error.InvalidNamespacePrefixSymbol,
+        malformed_cg.namespacePrefixName(.{ .symbol_id = 0, .fallback_name = "stalePrefix" }),
+    );
     try std.testing.expectError(
         error.InvalidNamespacePrefixSymbol,
         cg.namespacePrefixName(.{ .symbol_id = 2, .fallback_name = "stalePrefix" }),
