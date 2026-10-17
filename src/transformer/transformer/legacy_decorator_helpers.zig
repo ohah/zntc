@@ -36,6 +36,7 @@ pub fn transformExperimentalDecorators(
     node: Node,
     new_name: NodeIndex,
     name_old_idx: NodeIndex,
+    anonymous_default_export_binding: NodeIndex,
     new_super: NodeIndex,
     new_body: NodeIndex,
     old_deco_start: u32,
@@ -85,7 +86,14 @@ pub fn transformExperimentalDecorators(
     if ((old_deco_len > 0 or ctor_param_decos.len > 0) and class_name_text != null) {
         // let Foo = class Foo {};
         const name_span = self.ast.getNode(new_name).data.string_ref;
-        const var_name = try self.makeUserBinding(name_span, name_old_idx);
+        const var_name = if (!anonymous_default_export_binding.isNone())
+            anonymous_default_export_binding
+        else
+            try self.makeUserBinding(name_span, name_old_idx);
+        const class_reference_origin = if (!anonymous_default_export_binding.isNone())
+            anonymous_default_export_binding
+        else
+            name_old_idx;
         // variable_declarator: extra = [name, type_ann, init_val]
         const declarator = try self.addExtraNode(.variable_declarator, node.span, &.{
             @intFromEnum(var_name),
@@ -103,7 +111,7 @@ pub fn transformExperimentalDecorators(
 
         // member decorator 호출: __decorateClass([dec], Foo.prototype, "name", kind)
         for (member_decos) |md| {
-            const call_stmt = try buildDecorateClassMemberCall(self, name_span, name_old_idx, md);
+            const call_stmt = try buildDecorateClassMemberCall(self, name_span, class_reference_origin, md);
             try self.pending_nodes.append(self.allocator, call_stmt);
         }
 
@@ -111,7 +119,7 @@ pub fn transformExperimentalDecorators(
         const class_deco_stmt = try buildDecorateClassCall(
             self,
             name_span,
-            name_old_idx,
+            class_reference_origin,
             old_deco_start,
             old_deco_len,
             ctor_param_decos,
