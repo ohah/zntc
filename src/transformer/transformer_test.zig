@@ -15,6 +15,43 @@ const Scope = @import("../semantic/scope.zig").Scope;
 const Span = @import("../lexer/token.zig").Span;
 const es_helpers = @import("es_helpers.zig");
 const ForOf = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
+const import_export_mod = @import("transformer/import_export.zig");
+
+test "#4819 anonymous default class binding lookup fails closed without semantic identity" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+
+    const source_class: NodeIndex = @enumFromInt(17);
+    const generated_binding: NodeIndex = @enumFromInt(23);
+    transformer.semantic_edit_enabled = true;
+    try std.testing.expectError(
+        error.MissingExactAnonymousDefaultClassBinding,
+        import_export_mod.resolveLoweredAnonymousDefaultClassBinding(&transformer, source_class),
+    );
+
+    transformer.semantic_edit_enabled = false;
+    try std.testing.expectEqual(
+        NodeIndex.none,
+        try import_export_mod.resolveLoweredAnonymousDefaultClassBinding(&transformer, source_class),
+    );
+
+    transformer.semantic_edit_enabled = true;
+    try transformer.lowered_anonymous_class_export_bindings.put(
+        transformer.allocator,
+        @intFromEnum(source_class),
+        @intFromEnum(generated_binding),
+    );
+    try std.testing.expectEqual(
+        generated_binding,
+        try import_export_mod.resolveLoweredAnonymousDefaultClassBinding(&transformer, source_class),
+    );
+    try std.testing.expectError(
+        error.MissingExactAnonymousDefaultClassBinding,
+        import_export_mod.resolveLoweredAnonymousDefaultClassBinding(&transformer, @enumFromInt(18)),
+    );
+}
 
 test "#4819 exact output reference identity overrides copied source identity" {
     var ast = Ast.init(std.testing.allocator, "");
