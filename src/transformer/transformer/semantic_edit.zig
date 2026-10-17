@@ -2925,8 +2925,8 @@ pub fn bindLexicalCapture(self: *Transformer, declaration: NodeIndex, kind: Lexi
     try bindLexicalCaptureWithSyntheticKind(self, declaration, kind, null);
 }
 
-/// Bind a lexical-capture declaration and optionally make its output spelling
-/// part of the standalone exact-SymbolId final-name pass.
+/// Bind a lexical-capture declaration and optionally defer its output spelling
+/// to an exact-SymbolId final-name pass.
 pub fn bindLexicalCaptureWithSyntheticKind(
     self: *Transformer,
     declaration: NodeIndex,
@@ -2943,21 +2943,40 @@ pub fn bindLexicalCaptureWithSyntheticKind(
     const binding = self.readNodeIdx(self.ast.getNode(item).data.extra, 0);
     const id = (try declareSyntheticInScope(self, binding, decl.span, .variable_var, self.capture_scope)).?;
     var effective_synthetic_kind = synthetic_kind;
+    const late_standalone = es_helpers.canUseLateStandaloneOutputName(self, self.capture_scope);
+    const late_graph = es_helpers.canUseLateGraphOutputName(self, self.capture_scope);
     if (effective_synthetic_kind == null and kind == .this_value and
-        es_helpers.canUseLateStandaloneOutputName(self, self.capture_scope))
+        (late_standalone or late_graph))
     {
         _ = try es_helpers.deferSyntheticOutputName(self, "_this");
         effective_synthetic_kind = .this_capture_binding;
     }
     if (effective_synthetic_kind == null and kind == .arguments_value and
-        es_helpers.canUseLateStandaloneOutputName(self, self.capture_scope))
+        (late_standalone or late_graph))
     {
         _ = try es_helpers.deferSyntheticOutputName(self, "_arguments");
         effective_synthetic_kind = .arguments_capture_binding;
     }
     if (effective_synthetic_kind) |synthetic| {
         const editor = try editorFor(self);
-        editor.symbols.items[@backingInt(id)].synthetic_kind = synthetic;
+        const symbol = &editor.symbols.items[@backingInt(id)];
+        if (symbol.synthetic_kind) |existing_kind| {
+            if (existing_kind != synthetic) std.debug.panic("lexical capture SymbolId has conflicting SyntheticKind", .{});
+        }
+        symbol.synthetic_kind = synthetic;
+        if (late_graph) {
+            const hint: []const u8 = switch (synthetic) {
+                .this_capture_binding => "_this",
+                .arguments_capture_binding => "_arguments",
+                .new_target_capture_binding => "_newTarget",
+                else => std.debug.panic("unsupported late graph lexical capture kind", .{}),
+            };
+            const staging = try es_helpers.deferSyntheticOutputName(self, hint);
+            const emitted_name = self.ast.getText(self.ast.getNode(binding).data.string_ref);
+            if (!std.mem.eql(u8, staging, emitted_name))
+                std.debug.panic("late graph lexical capture binding differs from its producer staging name", .{});
+            symbol.output_name_hint = hint;
+        }
     }
     const key = captureKey(self.capture_frame, kind);
     if (self.capture_binding_ids.contains(key)) std.debug.panic("duplicate lexical capture binding", .{});

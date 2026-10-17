@@ -502,7 +502,7 @@ fn wrapNativeParameterArrow(
     // shadow a source parameter such as `_newTarget` in the enclosing
     // parameter environment.
     const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled)
-        try es_helpers.resolveScopedSyntheticOutputName(self, "_newTarget", arrow_scope)
+        try es_helpers.resolveScopedSyntheticOutputNameWithGraph(self, "_newTarget", arrow_scope)
     else
         .{ .name = try es_helpers.resolveSyntheticName(self, "_newTarget"), .late = false };
     const name = output_name.name;
@@ -560,7 +560,13 @@ fn wrapNativeParameterArrow(
     const wrapper_symbol = try self.declareSyntheticInScope(binding, span, .parameter, wrapper_scope);
     if (output_name.late) {
         const symbol_id = wrapper_symbol orelse std.debug.panic("late native parameter _newTarget binding has no SymbolId", .{});
-        es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .new_target_capture_binding);
+        es_helpers.markScopedLateSyntheticSymbol(
+            self,
+            symbol_id,
+            arrow_scope,
+            .new_target_capture_binding,
+            "_newTarget",
+        );
     }
     try self.bindNativeParameterArrowRefs(source_owner, wrapper_symbol);
     try self.remapCopiedScopeOwner(source_owner, lowered_arrow);

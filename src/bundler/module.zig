@@ -234,9 +234,9 @@ pub const WorkletFactoryLocalBinding = struct {
     output_name_hint: []const u8,
 };
 
-/// Exact Stage 3 decorator bindings whose linker-selected names must survive
+/// Exact generated bindings whose linker-selected names must survive
 /// post-transform semantic reanalysis.
-pub const Stage3OutputBinding = struct {
+pub const PostGraphOutputBinding = struct {
     node_index: u32,
     output_name_hint: []const u8,
     synthetic_kind: semantic_symbol.SyntheticKind,
@@ -272,9 +272,9 @@ pub const TransformCache = struct {
     /// Exact Reanimated class-factory bindings whose linker naming metadata
     /// must survive post-transform semantic reanalysis.
     worklet_factory_local_bindings: []const WorkletFactoryLocalBinding = &.{},
-    /// Exact Stage 3 generated bindings whose deferred output-name hints must
-    /// be restored by binding NodeIndex after reanalysis.
-    stage3_output_bindings: []const Stage3OutputBinding = &.{},
+    /// Exact generated bindings whose deferred output-name hints must be
+    /// restored by binding NodeIndex after reanalysis.
+    post_graph_output_bindings: []const PostGraphOutputBinding = &.{},
     /// Exact generated JSX/runtime import locals whose deferred output names
     /// must be restored by NodeIndex after semantic reanalysis.
     runtime_helper_import_output_bindings: []const RuntimeHelperImportOutputBinding = &.{},
