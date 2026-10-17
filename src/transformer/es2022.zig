@@ -128,6 +128,7 @@ pub fn ES2022(comptime Transformer: type) type {
             body_idx: NodeIndex,
             new_body_out: *NodeIndex,
             static_key_memos_out: *std.ArrayList(NodeIndex),
+            static_key_memo_scope: ScopeId,
             static_block_iifes: *std.ArrayList(NodeIndex),
             class_name_span: ?Span,
             already_visited: bool,
@@ -186,6 +187,13 @@ pub fn ES2022(comptime Transformer: type) type {
                     if (key_node.tag != .computed_property_key) continue;
 
                     const memo = try es_helpers.memoizeComputedKey(self, key_node.data.unary.operand, member.span, member.tag == .property_definition);
+                    if (self.semantic_edit_enabled) {
+                        if (static_key_memo_scope.isNone())
+                            std.debug.panic("static computed-key memo has no output scope", .{});
+                        const id = (try self.declareSyntheticInScope(memo.binding, member.span, .variable_var, static_key_memo_scope)) orelse
+                            std.debug.panic("static computed-key memo has no direct SymbolId", .{});
+                        try self.addSyntheticRefInScope(memo.computed_ref, id, static_key_memo_scope, .{ .read = true });
+                    }
                     try static_key_memos_out.append(self.allocator, memo.decl);
                     try static_key_memos.append(self.allocator, .{ .raw_idx = raw_idx, .key_ref = memo.computed_key });
                 }

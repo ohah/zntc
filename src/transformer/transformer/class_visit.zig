@@ -114,11 +114,12 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         defer self.current_class_name_node = saved_class_name_node;
         defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
-        // Static private descriptor expressions are emitted after the class,
-        // inside the class-expression wrapper. Reserve that real output scope
-        // before building their exact class-self references.
+        // Static private descriptors and static-block key memos are emitted
+        // after/before the class inside the class-expression wrapper. Reserve
+        // that real output scope before registering their exact identities.
         if (self.semantic_edit_enabled and as_expression and prepared_wrapper_scope.isNone() and
-            classBodyHasLowerableMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre, false))
+            (classBodyHasLowerableMember(self, _anon_body_idx, _lower_pm_pre, _lower_pf_pre, false) or
+                (self.options.unsupported.class_static_block and classBodyHasStaticBlockComputedKey(self, _anon_body_idx))))
         {
             prepared_wrapper_scope = try prepareClassExprWrapperScope(self, source_idx);
         }
@@ -336,6 +337,17 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
             var static_block_iifes: std.ArrayList(NodeIndex) = .empty;
             defer static_block_iifes.deinit(self.allocator);
 
+            const static_key_memo_scope: ScopeId = if (!self.semantic_edit_enabled)
+                .none
+            else if (as_expression) blk: {
+                if (classBodyHasStaticBlockComputedKey(self, _anon_body_idx) and prepared_wrapper_scope.isNone())
+                    std.debug.panic("static-block computed-key class expression has no reserved wrapper scope", .{});
+                break :blk prepared_wrapper_scope;
+            } else blk: {
+                const class_scope = self.outputOwnedScope(source_idx) orelse
+                    std.debug.panic("static-block class has no source scope", .{});
+                break :blk self.outputScopeParent(class_scope);
+            };
             const class_name_span = self.getClassNameSpan(new_name);
             const already_visited = had_private_methods or had_private_fields;
             const had_static_blocks = try es2022.ES2022(Transformer).lowerStaticBlocks(
@@ -343,6 +355,7 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 current_body_idx,
                 &new_body,
                 &static_key_memos,
+                static_key_memo_scope,
                 &static_block_iifes,
                 class_name_span,
                 already_visited,
@@ -520,6 +533,42 @@ pub fn classBodyHasLowerableMember(
         }
     }
     return false;
+}
+
+/// Static-block lowering hoists computed element keys into its class-expression
+/// wrapper. Only those classes need that wrapper scope reserved before the
+/// lowering creates the memo binding and reference.
+pub fn classBodyHasStaticBlockComputedKey(self: *Transformer, body_idx: NodeIndex) bool {
+    if (body_idx.isNone()) return false;
+    const body_node = self.ast.getNode(body_idx);
+    if (body_node.tag != .class_body) return false;
+
+    const start = body_node.data.list.start;
+    const len = body_node.data.list.len;
+    if (start + len > self.ast.extra_data.items.len) return false;
+
+    var has_static_block = false;
+    var has_computed_key = false;
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const member = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[start + i])));
+        if (member.tag == .static_block) {
+            has_static_block = true;
+            continue;
+        }
+
+        const key: NodeIndex = switch (member.tag) {
+            .method_definition => self.readNodeIdx(member.data.extra, ast_mod.MethodExtra.key),
+            .property_definition => blk: {
+                const flags = self.readU32(member.data.extra, ast_mod.PropertyExtra.flags);
+                if ((flags & ast_mod.PropertyFlags.is_static) == 0) break :blk .none;
+                break :blk self.readNodeIdx(member.data.extra, ast_mod.PropertyExtra.key);
+            },
+            else => .none,
+        };
+        if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) has_computed_key = true;
+    }
+    return has_static_block and has_computed_key;
 }
 
 /// body 에 **낮춰야 할 public class field** 가 하나라도 있는지 (#4629).

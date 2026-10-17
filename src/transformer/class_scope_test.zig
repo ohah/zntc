@@ -505,6 +505,97 @@ test "#4819 class computed-key memo binds only its producer reference" {
     try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
 }
 
+test "#4819 static-block computed-key memo owns an exact producer identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(
+        allocator,
+        "const key = 'value'; class Box { static [key]() { return 1; } static { this.ready = true; } } const Expression = class Expression { static [key]() { return 2; } static { this.ready = true; } };",
+    );
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    defer allocator.free(reachable);
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    var expected_memo_scopes: std.ArrayList(@import("../semantic/scope.zig").ScopeId) = .empty;
+    defer expected_memo_scopes.deinit(allocator);
+    for (0..transformer.parser_node_count) |source_raw| {
+        const source_class = transformer.ast.nodes.items[source_raw];
+        if (source_class.tag != .class_declaration and source_class.tag != .class_expression) continue;
+        const body_idx = transformer.ast.readExtraNode(source_class.data.extra, @import("../parser/ast.zig").ClassExtra.body);
+        if (body_idx.isNone() or transformer.ast.getNode(body_idx).tag != .class_body) continue;
+        const body = transformer.ast.getNode(body_idx).data.list;
+        var has_static_block = false;
+        var has_computed_method = false;
+        for (transformer.ast.extra_data.items[body.start .. body.start + body.len]) |member_raw| {
+            const member = transformer.ast.getNode(@fromBackingInt(@intCast(member_raw)));
+            if (member.tag == .static_block) has_static_block = true;
+            if (member.tag == .method_definition) {
+                const key = transformer.ast.readExtraNode(member.data.extra, MethodExtra.key);
+                if (!key.isNone() and transformer.ast.getNode(key).tag == .computed_property_key) has_computed_method = true;
+            }
+        }
+        if (!has_static_block or !has_computed_method) continue;
+        const source_idx: NodeIndex = @fromBackingInt(@intCast(source_raw));
+        const class_scope = transformer.outputOwnedScope(source_idx) orelse return error.MissingOutputClassScope;
+        const emitted_scope = transformer.outputScopeParent(class_scope);
+        try expected_memo_scopes.append(allocator, transformer.nearestVarScope(emitted_scope));
+    }
+    try std.testing.expectEqual(@as(usize, 2), expected_memo_scopes.items.len);
+    var memos_found: usize = 0;
+    for (reachable) |raw| {
+        const declarator = transformer.ast.nodes.items[raw];
+        if (declarator.tag != .variable_declarator) continue;
+        const init = transformer.ast.readExtraNode(declarator.data.extra, 2);
+        if (init.isNone() or transformer.ast.getNode(init).tag != .identifier_reference) continue;
+        if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(init).data.string_ref), "key")) continue;
+        const memo_binding = transformer.ast.readExtraNode(declarator.data.extra, 0);
+        const memo_name = transformer.ast.getText(transformer.ast.getNode(memo_binding).data.string_ref);
+        const memo_id = transformer.getSymbolIdAt(memo_binding) orelse return error.MissingStaticBlockComputedKeyMemoSymbol;
+        const symbol = editor.symbols.items[memo_id];
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+        try std.testing.expect(!symbol.scope_id.isNone());
+        try std.testing.expectEqual(expected_memo_scopes.items[memos_found], symbol.scope_id);
+
+        var exact_key_refs: usize = 0;
+        for (reachable) |key_raw| {
+            const key = transformer.ast.nodes.items[key_raw];
+            if (key.tag != .computed_property_key) continue;
+            const ref = key.data.unary.operand;
+            if (ref.isNone() or transformer.ast.getNode(ref).tag != .identifier_reference) continue;
+            if (!std.mem.eql(u8, transformer.ast.getText(transformer.ast.getNode(ref).data.string_ref), memo_name)) continue;
+            try std.testing.expectEqual(@as(?u32, memo_id), transformer.getSymbolIdAt(ref));
+            const record = (try editor.referenceForNode(ref)) orelse return error.MissingStaticBlockComputedKeyReference;
+            try std.testing.expectEqual(memo_id, @backingInt(record.symbol_id));
+            try std.testing.expect(record.flags.read);
+            try std.testing.expect(!record.flags.write);
+            try std.testing.expectEqual(symbol.scope_id, transformer.nearestVarScope(record.scope_id));
+            exact_key_refs += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), exact_key_refs);
+        memos_found += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), memos_found);
+}
+
 test "#4819 anonymous private class wrapper owns its generated name exactly" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
