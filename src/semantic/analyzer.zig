@@ -3370,6 +3370,7 @@ pub const SemanticAnalyzer = struct {
         if (sid < before) std.debug.panic("namespace IIFE parameter collided with a prior binding", .{});
         self.symbols.items[sid].synthetic_kind = .namespace_iife_parameter;
         const stable_name = self.symbols.items[sid].synthetic_name;
+        self.symbols.items[sid].output_name_hint = stable_name;
         var stable_name_untracked = true;
         errdefer if (stable_name_untracked) self.allocator.free(stable_name);
         try self.namespace_iife_param_stable_names.append(self.allocator, stable_name);
@@ -3434,6 +3435,7 @@ pub const SemanticAnalyzer = struct {
         // the enum name (`enum Self { Self = 1 }`).
         const stable_name = try self.allocator.dupe(u8, candidate);
         self.symbols.items[sid].synthetic_name = stable_name;
+        self.symbols.items[sid].output_name_hint = stable_name;
         var stable_name_untracked = true;
         errdefer if (stable_name_untracked) self.allocator.free(stable_name);
         try self.enum_iife_param_stable_names.append(self.allocator, stable_name);

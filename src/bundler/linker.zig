@@ -38,6 +38,8 @@ const ExportBinding = @import("binding_scanner.zig").ExportBinding;
 const Span = @import("../lexer/token.zig").Span;
 const Ast = @import("../parser/ast.zig").Ast;
 const semantic_symbol = @import("../semantic/symbol.zig");
+const SemanticScope = @import("../semantic/scope.zig").Scope;
+const SemanticScopeId = @import("../semantic/scope.zig").ScopeId;
 const bundler_symbol = @import("symbol.zig");
 const rt = @import("runtime_helpers.zig");
 const unified_mangler = @import("../codegen/unified_mangler.zig");
@@ -1033,6 +1035,16 @@ pub const Linker = struct {
                     else => false,
                 };
                 switch (kind) {
+                    .namespace_iife_parameter => {
+                        if (symbol.kind != .parameter or symbol.scope_id.isNone() or symbol.output_name_hint.len == 0)
+                            return error.InvalidNamespaceIifeParameterOutputBinding;
+                        if (scopeChainBlocksOutputRenaming(semantic.scopes, symbol.scope_id)) continue;
+                    },
+                    .enum_iife_parameter => {
+                        if (symbol.kind != .parameter or symbol.scope_id.isNone() or symbol.output_name_hint.len == 0)
+                            return error.InvalidEnumIifeParameterOutputBinding;
+                        if (scopeChainBlocksOutputRenaming(semantic.scopes, symbol.scope_id)) continue;
+                    },
                     .runtime_helper_import => {
                         if (symbol.kind != .import_binding or symbol.scope_id.isNone() or
                             symbol.output_name_hint.len == 0 or
@@ -1104,6 +1116,20 @@ pub const Linker = struct {
                     try self.nonminify_nested_shadow_modules.put(self.allocator, module_index, {});
             }
         }
+    }
+
+    fn scopeChainBlocksOutputRenaming(scopes: []const SemanticScope, start: SemanticScopeId) bool {
+        var scope = start;
+        var hops: usize = 0;
+        while (!scope.isNone()) : (hops += 1) {
+            if (hops >= scopes.len) return true;
+            const raw = scope.toIndex();
+            if (raw >= scopes.len) return true;
+            const current = scopes[raw];
+            if (current.blocksMangling()) return true;
+            scope = current.parent;
+        }
+        return false;
     }
 
     fn postGraphLocalNameAvailable(
