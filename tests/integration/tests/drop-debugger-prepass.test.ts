@@ -12,20 +12,22 @@ describe('drop debugger graph pre-pass gate', () => {
     cleanup = undefined;
   });
 
-  async function bundle(source: string) {
-    const fixture = await createFixture({ 'input.js': source });
+  async function bundle(source: string, extraArgs: string[] = [], filename = 'input.js') {
+    const fixture = await createFixture({ [filename]: source });
     cleanup = fixture.cleanup;
     const output = join(fixture.dir, 'output.cjs');
+    const input = join(fixture.dir, filename);
     const result = spawnSync(
       ZNTC_BIN,
       [
         '--bundle',
-        join(fixture.dir, 'input.js'),
+        input,
         '-o',
         output,
         '--platform=node',
         '--format=cjs',
         '--drop=debugger',
+        ...extraArgs,
       ],
       {
         cwd: fixture.dir,
@@ -51,5 +53,35 @@ describe('drop debugger graph pre-pass gate', () => {
     expect(result.stderr).toContain('zntc: symbol-identity-prepass-mode ');
     expect(result.code).not.toContain('debugger');
     expect(result.stdout).toBe('42');
+  });
+
+  test('dropping debugger retains exact identities visible to direct eval', async () => {
+    const result = await bundle(
+      'function read() { const _a = 40; debugger; return eval("_a + 2"); } console.log(read());',
+      ['--minify-identifiers'],
+    );
+    expect(result.stderr).toContain('semantic_graph=retained');
+    expect(result.stderr).toMatch(/zntc: symbol-identity-prepass .* clean=1(?:\s|$)/);
+    expect(result.code).not.toContain('debugger');
+    expect(result.stdout).toBe('42');
+  });
+
+  test('class lowering still reanalyzes when direct eval can observe its binding', async () => {
+    const result = await bundle(
+      'class Counter { value() { return 40; } } debugger; process.stdout.write(String(eval("new Counter().value() + 2")));',
+      ['--target=es5', '--minify-identifiers'],
+    );
+    expect(result.stderr).toContain('semantic_graph=reanalyzed');
+    expect(result.stdout).toBe('42');
+  });
+
+  test('enum lowering still reanalyzes when direct eval can observe its binding', async () => {
+    const result = await bundle(
+      'enum Kind { A = 1 } const _a = 40; debugger; process.stdout.write(String(eval("_a + 2") + Kind.A));',
+      ['--minify-identifiers'],
+      'input.ts',
+    );
+    expect(result.stderr).toContain('semantic_graph=reanalyzed');
+    expect(result.stdout).toBe('43');
   });
 });

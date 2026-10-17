@@ -6190,8 +6190,9 @@ fn canKeepPrepassSemanticGraph(
     if (!hasStableRuntimeImports(ast, options)) return false;
 
     const safe_styled_components = options.styled_components;
+    // `drop_debugger` removes a statement with no binding or reference edges,
+    // so it does not make the semantic graph preflight a graph-changing pass.
     var found_transform = graph_editable_jsx or retained_stage3_decorators or safe_graph_subset or safe_styled_components or
-        options.drop_debugger or
         options.react_refresh or options.emotion or safe_builtin_worklet;
     var has_direct_eval = false;
     for (semantic.scopes) |scope| {
@@ -6324,6 +6325,8 @@ fn canKeepPrepassSemanticGraph(
     // Dynamic lookup is safe with the parser graph only when this module has
     // no graph-changing work. If any transform edits bindings or scopes, keep
     // the existing full semantic rescan as the recovery boundary.
+    // Removing a debugger statement changes no binding or reference edges, so
+    // it does not make an otherwise unchanged graph unsafe for direct eval.
     const safe_graph = if (has_direct_eval)
         !found_transform and unchanged_graph_is_safe
     else
