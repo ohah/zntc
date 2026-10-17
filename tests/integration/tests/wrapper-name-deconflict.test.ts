@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test';
 import { join } from 'node:path';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createFixture, runNode, runZntc } from './helpers';
 
 /**
@@ -904,6 +904,100 @@ describe('#4819: CJS wrapper parameter identity', () => {
       expect(result.exitCode, `빌드 실패:\n${result.stderr}`).toBe(0);
       const { stdout } = await runNode(out);
       expect(stdout).toBe('undefined');
+    } finally {
+      await cleanup();
+    }
+  });
+
+  test('CJS wrapper parameter identities survive chunk-local rename resets and transform reanalysis', async () => {
+    const { dir, cleanup } = await createFixture({
+      'first.cts':
+        'let exports = { answer: 40 };\n' +
+        'class Box { constructor(public value: number) {} }\n' +
+        "exports.answer += new Box(1).value;\nmodule.exports = exports;\nconsole.log('first', module.exports.answer);",
+      'second.cts':
+        'let module = { state: 11 };\n' +
+        'class Box { constructor(public value: number) {} }\n' +
+        "exports.answer = module.state + new Box(2).value;\nconsole.log('second', exports.answer, module.state);",
+      'entry.mjs':
+        "import first from './first.cts';\n" +
+        "console.log('first-default', first.answer);\n" +
+        "import('./second.cts').then(({ default: second }) => console.log('second-default', second.answer));",
+    });
+
+    try {
+      const expected = ['first 41', 'first-default 41', 'second 13 11', 'second-default 13'];
+      const cases = [
+        { name: 'splitting-plain', args: ['--splitting', '--target=esnext'], assertAliases: true },
+        {
+          name: 'splitting-whitespace-minify',
+          args: ['--splitting', '--target=esnext', '--minify-whitespace'],
+        },
+        { name: 'splitting-full-minify', args: ['--splitting', '--target=esnext', '--minify'] },
+        {
+          name: 'splitting-es5-reanalysis',
+          args: ['--splitting', '--target=es5'],
+          assertReanalysis: true,
+        },
+        {
+          name: 'preserve-modules',
+          args: ['--preserve-modules', `--preserve-modules-root=${dir}`, '--target=esnext'],
+          assertAliases: true,
+        },
+      ] as const;
+
+      for (const testCase of cases) {
+        const outDir = join(dir, `dist-${testCase.name}`);
+        const result = await runZntc(
+          [
+            '--bundle',
+            join(dir, 'entry.mjs'),
+            '--outdir',
+            outDir,
+            ...testCase.args,
+            '--format=esm',
+            '--platform=node',
+          ],
+          { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+        );
+        expect(result.exitCode, `${testCase.name} 빌드 실패:\n${result.stderr}`).toBe(0);
+
+        const jsFiles = readdirSync(outDir).filter((name) => name.endsWith('.js'));
+        expect(
+          jsFiles.length,
+          `${testCase.name}에서 분리된 출력 모듈이 생성되어야 한다`,
+        ).toBeGreaterThanOrEqual(2);
+        const emitted = jsFiles.map((name) => readFileSync(join(outDir, name), 'utf8')).join('\n');
+
+        if ('assertAliases' in testCase && testCase.assertAliases) {
+          // Per-chunk rename 초기화 뒤에도 exact callback SID의 alias를 다시 배정해야 한다.
+          expect(emitted).toMatch(/["']first\.cts["']\(\$e,\s*module\)\s*\{/);
+          expect(emitted).toMatch(/["']second\.cts["']\(exports,\s*\$m\)\s*\{/);
+        }
+
+        if ('assertReanalysis' in testCase && testCase.assertReanalysis) {
+          const lines = result.stderr.split(/\r?\n/);
+          for (const source of ['first.cts', 'second.cts']) {
+            const sourcePath = join(dir, source);
+            const mode = lines.find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes(sourcePath),
+            );
+            expect(mode, source).toContain('semantic_graph=reanalyzed');
+            const audit = lines.find(
+              (line) =>
+                line.startsWith('zntc: symbol-identity-prepass ') && line.includes(sourcePath),
+            );
+            expect(audit, source).toContain('clean=1');
+          }
+        }
+
+        writeFileSync(join(outDir, 'package.json'), JSON.stringify({ type: 'module' }));
+        const execution = await runNode(join(outDir, 'entry.js'));
+        expect(execution.stderr).not.toContain('SyntaxError');
+        expect(execution.stderr).not.toContain('TypeError');
+        expect(execution.stdout.trim().split(/\r?\n/), testCase.name).toEqual(expected);
+      }
     } finally {
       await cleanup();
     }
