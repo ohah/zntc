@@ -9,6 +9,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const ast_walk = @import("../../parser/ast_walk.zig");
 const Kind = @import("../../lexer/token.zig").Kind;
 const Span = @import("../../lexer/token.zig").Span;
 
@@ -43,6 +44,142 @@ pub fn foldNodeBufferCapabilityIfs(allocator: std.mem.Allocator, ast: *Ast) bool
         removeDeadFallbackSetupStatements(ast, &dead_fallback_names, &buffer_ctor_names);
     }
     return changed;
+}
+
+/// Fold only direct expression-statement branch shapes and return the complete pre-edit
+/// node set that becomes unreachable. The caller can retain semantic identities
+/// by removing references from these exact nodes. If any matching fold has a
+/// different statement shape, leave the AST untouched for full reanalysis.
+pub fn foldNodeBufferCapabilityIfsRetainingGraph(
+    allocator: std.mem.Allocator,
+    ast: *Ast,
+    removed_nodes: *std.ArrayListUnmanaged(NodeIndex),
+) !bool {
+    removed_nodes.clearRetainingCapacity();
+
+    var buffer_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer buffer_names.deinit(allocator);
+    try collectNodeBufferModuleObjectNames(allocator, ast, &buffer_names);
+    if (buffer_names.count() == 0) return false;
+
+    var buffer_ctor_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer buffer_ctor_names.deinit(allocator);
+    try collectNodeBufferCtorNames(allocator, ast, &buffer_names, &buffer_ctor_names);
+    if (buffer_ctor_names.count() == 0) return false;
+
+    var branches: std.ArrayListUnmanaged(BufferCapabilityFoldBranch) = .empty;
+    defer branches.deinit(allocator);
+    var dead_fallback_names: std.StringHashMapUnmanaged(void) = .empty;
+    defer dead_fallback_names.deinit(allocator);
+
+    for (ast.nodes.items, 0..) |node, i| {
+        if (node.tag != .if_statement) continue;
+        var caps: BufferCapabilitySet = .{};
+        if (!collectNodeBufferCapabilityCondition(ast, node.data.ternary.a, &buffer_ctor_names, &caps)) continue;
+        if (!caps.hasAll()) continue;
+
+        const kept = node.data.ternary.b;
+        if (kept.isNone() or @intFromEnum(kept) >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[@intFromEnum(kept)].tag != .expression_statement) return false;
+        const alternate = node.data.ternary.c;
+        if (!alternate.isNone()) {
+            if (@intFromEnum(alternate) >= ast.nodes.items.len) return false;
+            if (ast.nodes.items[@intFromEnum(alternate)].tag != .expression_statement) return false;
+            try collectDeadAlternateCjsExportIdentifiers(allocator, ast, alternate, &dead_fallback_names);
+        }
+        try branches.append(allocator, .{
+            .if_index = @enumFromInt(i),
+            .condition = node.data.ternary.a,
+            .kept = kept,
+            .alternate = alternate,
+        });
+    }
+    if (branches.items.len == 0) return false;
+
+    var seen = try std.DynamicBitSet.initEmpty(allocator, ast.nodes.items.len);
+    defer seen.deinit();
+    for (branches.items) |branch| {
+        try appendSingleNode(allocator, branch.if_index, &seen, removed_nodes, ast.nodes.items.len);
+        try appendSubtreeNodes(allocator, ast, branch.condition, &seen, removed_nodes);
+        try appendSubtreeNodes(allocator, ast, branch.alternate, &seen, removed_nodes);
+    }
+
+    var setup_statements: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer setup_statements.deinit(allocator);
+    if (dead_fallback_names.count() > 0) {
+        const root = programNode(ast) orelse return false;
+        const list = root.data.list;
+        if (list.start + list.len > ast.extra_data.items.len) return false;
+        for (ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
+            const stmt_idx: NodeIndex = @enumFromInt(raw_stmt);
+            if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= ast.nodes.items.len) continue;
+            const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+            if (!isDeadFallbackSetupStatement(ast, stmt, &dead_fallback_names, &buffer_ctor_names)) continue;
+            try setup_statements.append(allocator, stmt_idx);
+            try appendSubtreeNodes(allocator, ast, stmt_idx, &seen, removed_nodes);
+        }
+    }
+
+    // No AST write happens until all candidate node indexes are captured. This
+    // keeps allocation or shape failures on the existing full-analysis path.
+    for (branches.items) |branch| {
+        const kept_raw = @intFromEnum(branch.kept);
+        ast.nodes.items[@intFromEnum(branch.if_index)] = ast.nodes.items[kept_raw];
+    }
+    for (setup_statements.items) |stmt_idx| {
+        const stmt = ast.nodes.items[@intFromEnum(stmt_idx)];
+        ast.nodes.items[@intFromEnum(stmt_idx)] = .{
+            .tag = .empty_statement,
+            .span = stmt.span,
+            .data = .{ .none = 0 },
+        };
+    }
+    return true;
+}
+
+const BufferCapabilityFoldBranch = struct {
+    if_index: NodeIndex,
+    condition: NodeIndex,
+    kept: NodeIndex,
+    alternate: NodeIndex,
+};
+
+fn appendSingleNode(
+    allocator: std.mem.Allocator,
+    node_index: NodeIndex,
+    seen: *std.DynamicBitSet,
+    out: *std.ArrayListUnmanaged(NodeIndex),
+    node_count: usize,
+) !void {
+    if (node_index.isNone()) return error.InvalidRemovedNode;
+    const raw = @intFromEnum(node_index);
+    if (raw >= node_count) return error.InvalidRemovedNode;
+    if (seen.isSet(raw)) return;
+    seen.set(raw);
+    try out.append(allocator, node_index);
+}
+
+fn appendSubtreeNodes(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    root: NodeIndex,
+    seen: *std.DynamicBitSet,
+    out: *std.ArrayListUnmanaged(NodeIndex),
+) !void {
+    if (root.isNone()) return;
+    var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer stack.deinit(allocator);
+    try stack.append(allocator, root);
+    while (stack.pop()) |idx| {
+        if (idx.isNone()) continue;
+        const raw = @intFromEnum(idx);
+        if (raw >= ast.nodes.items.len) return error.InvalidRemovedNode;
+        if (seen.isSet(raw)) continue;
+        seen.set(raw);
+        try out.append(allocator, idx);
+        var children = ast_walk.children(ast, ast.nodes.items[raw]);
+        while (children.next()) |child| try stack.append(allocator, child);
+    }
 }
 
 const BufferCapabilitySet = struct {

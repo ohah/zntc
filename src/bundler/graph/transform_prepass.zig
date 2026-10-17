@@ -9,6 +9,7 @@ const binding_scanner_mod = @import("../binding_scanner.zig");
 const bundler_symbol = @import("../symbol.zig");
 const import_scanner = @import("../import_scanner.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
+const cjs_patterns = @import("../tree_shaker/cjs_patterns.zig");
 const purity = @import("../purity.zig");
 const profile = @import("../../profile.zig");
 const ast_mod = @import("../../parser/ast.zig");
@@ -7611,6 +7612,105 @@ pub fn resyncAfterConstMaterializationRetainingGraph(
     );
 }
 
+/// Retain the semantic graph after the narrow CJS Buffer fold. The caller gives
+/// the complete pre-mutation node set removed by the fold. Any declaration,
+/// scope owner, or graph-owned node in that set makes this transform ineligible
+/// and returns false so the caller can reanalyze the already-mutated AST.
+pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+    self: anytype,
+    module: *Module,
+    arena_alloc: std.mem.Allocator,
+    removed_nodes: []const ast_mod.NodeIndex,
+) !bool {
+    const ast = &(module.ast orelse return error.MissingAst);
+    const semantic = if (module.semantic) |*sem| sem else return error.MissingSemantic;
+    if (removed_nodes.len == 0) return false;
+
+    var removed = try std.DynamicBitSet.initEmpty(arena_alloc, ast.nodes.items.len);
+    var reference_nodes = try std.DynamicBitSet.initEmpty(arena_alloc, ast.nodes.items.len);
+    defer removed.deinit();
+    defer reference_nodes.deinit();
+
+    for (removed_nodes) |node_index| {
+        if (node_index.isNone()) return false;
+        const raw = @intFromEnum(node_index);
+        if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
+        if (removed.isSet(raw)) return false;
+        removed.set(raw);
+        if (semantic.scope_owner_map.contains(raw) or
+            semantic.class_self_symbol_map.contains(raw) or
+            semantic.namespace_member_owners.contains(raw) or
+            semantic.namespace_declaration_owners.contains(raw)) return false;
+    }
+
+    if (module.transform_cache) |cache| {
+        for (cache.helper_ref_nodes) |raw| {
+            if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
+        }
+        for (cache.explicit_global_ref_nodes) |raw| {
+            if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
+        }
+        for (cache.preserved_class_name_nodes) |raw| {
+            if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
+        }
+        for (cache.worklet_factory_local_bindings) |binding| {
+            if (binding.node_index < ast.nodes.items.len and removed.isSet(binding.node_index)) return false;
+        }
+        var destructuring_temps = cache.destructuring_temp_bindings.keyIterator();
+        while (destructuring_temps.next()) |raw| {
+            if (raw.* < ast.nodes.items.len and removed.isSet(raw.*)) return false;
+        }
+    }
+    if (module.tla_iife_stmt) |raw| {
+        if (raw < ast.nodes.items.len and removed.isSet(raw)) return false;
+    }
+    if (module.tla_promise_reference) |promise_ref| {
+        if (promise_ref.binding_node_index < ast.nodes.items.len and
+            removed.isSet(promise_ref.binding_node_index)) return false;
+    }
+
+    var references_to_remove: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer references_to_remove.deinit(arena_alloc);
+    for (semantic.references) |reference| {
+        if (!reference.declaration_node_index.isNone()) {
+            const declaration_raw = @intFromEnum(reference.declaration_node_index);
+            if (declaration_raw < ast.nodes.items.len and removed.isSet(declaration_raw)) return false;
+        }
+        if (reference.node_index.isNone()) continue;
+        const raw = @intFromEnum(reference.node_index);
+        if (raw >= ast.nodes.items.len) return false;
+        if (!removed.isSet(raw)) continue;
+        const node_symbol = semantic.symbol_ids[raw] orelse return false;
+        if (node_symbol != @intFromEnum(reference.symbol_id)) return false;
+        if (reference_nodes.isSet(raw)) return false;
+        reference_nodes.set(raw);
+        try references_to_remove.append(arena_alloc, reference.node_index);
+    }
+    for (removed_nodes) |node_index| {
+        const raw = @intFromEnum(node_index);
+        if (semantic.symbol_ids[raw] != null and !reference_nodes.isSet(raw)) return false;
+    }
+
+    var editor = try semantic.beginEdit(arena_alloc, ast);
+    defer editor.deinit();
+    try editor.removeReferences(references_to_remove.items);
+    semantic.applyEdit(try editor.finish());
+    if (module.transform_cache) |*cache| cache.symbol_ids = semantic.symbol_ids;
+
+    try resyncModuleGraphMetadataAfterAstMutation(self, module, arena_alloc);
+    module.prebuilt_stmt_info = try stmt_info_mod.buildFromSemantic(
+        arena_alloc,
+        ast,
+        semantic.symbols.items,
+        semantic.scopes,
+        semantic.references,
+        &semantic.unresolved_references,
+        false,
+        module.memberAugmentGate(self.transform_options_base.minify_syntax),
+    );
+    return true;
+}
+
 pub fn resyncAfterConstMaterialization(
     self: anytype,
     module: *Module,
@@ -8074,6 +8174,133 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
             try std.testing.expect(symbol_id != value_symbol.?);
         }
     }
+}
+
+test "direct Node Buffer capability fold retains SymbolIds and removes exact references" {
+    var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer test_arena.deinit();
+    const allocator = test_arena.allocator();
+    const source =
+        \\var buffer = require("buffer");
+        \\var Buffer = buffer.Buffer;
+        \\if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) module.exports = buffer;
+        \\else exports.Buffer = SafeBuffer;
+        \\function SafeBuffer() { return Buffer(1); }
+        \\SafeBuffer.from = 1;
+    ;
+
+    var scanner = try @import("../../lexer/scanner.zig").Scanner.init(allocator, source);
+    scanner.is_module = false;
+    var parser = @import("../../parser/parser.zig").Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".cjs");
+    parser.is_module = false;
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = false;
+    analyzer.is_strict_mode = false;
+    analyzer.enable_stmt_info = true;
+    try analyzer.analyze();
+
+    var buffer_binding: ?ast_mod.NodeIndex = null;
+    var buffer_symbol: ?u32 = null;
+    var fallback_symbol: ?u32 = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or raw >= analyzer.symbol_ids.items.len) continue;
+        const name = parser.ast.getText(node.span);
+        if (std.mem.eql(u8, name, "Buffer")) {
+            buffer_binding = @enumFromInt(raw);
+            buffer_symbol = analyzer.symbol_ids.items[raw];
+        } else if (std.mem.eql(u8, name, "SafeBuffer")) {
+            fallback_symbol = analyzer.symbol_ids.items[raw];
+        }
+    }
+    try std.testing.expect(buffer_binding != null);
+    try std.testing.expect(buffer_symbol != null);
+    try std.testing.expect(fallback_symbol != null);
+    const buffer_reference_count_before = analyzer.symbols.items[buffer_symbol.?].reference_count;
+    var buffer_refs_before: usize = 0;
+    var fallback_refs_before: usize = 0;
+    for (analyzer.references.items) |reference| {
+        if (reference.node_index.isNone()) continue;
+        if (@intFromEnum(reference.symbol_id) == buffer_symbol.?) buffer_refs_before += 1;
+        if (@intFromEnum(reference.symbol_id) == fallback_symbol.?) fallback_refs_before += 1;
+    }
+    try std.testing.expect(buffer_refs_before >= 4);
+    try std.testing.expect(fallback_refs_before > 0);
+
+    var module = Module.init(@enumFromInt(0), "test.cjs");
+    module.source = source;
+    module.ast = parser.ast;
+    module.parse_arena = &test_arena;
+    module.wrap_kind = .cjs;
+    module.exports_kind = .commonjs;
+    module.semantic = .{
+        .symbols = analyzer.symbols,
+        .scopes = analyzer.scopes.items,
+        .scope_maps = analyzer.scope_maps.items,
+        .scope_owner_map = analyzer.scope_owner_map,
+        .class_self_symbol_map = analyzer.class_self_symbol_map,
+        .namespace_member_owners = analyzer.namespace_member_owners,
+        .namespace_declaration_owners = analyzer.namespace_declaration_owners,
+        .exported_names = analyzer.exported_names,
+        .symbol_ids = analyzer.symbol_ids.items,
+        .unresolved_references = analyzer.unresolved_references,
+        .references = analyzer.references.items,
+        .numeric_const_texts = analyzer.numeric_const_texts,
+        .helper_scope_map = analyzer.helper_scope_map,
+    };
+    module.transform_cache = .{
+        .runtime_helpers = .{},
+        .symbol_ids = module.semantic.?.symbol_ids,
+    };
+
+    var removed_nodes: std.ArrayListUnmanaged(ast_mod.NodeIndex) = .empty;
+    defer removed_nodes.deinit(allocator);
+    try std.testing.expect(try cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
+        allocator,
+        &module.ast.?,
+        &removed_nodes,
+    ));
+    try std.testing.expect(removed_nodes.items.len > 0);
+
+    const test_context = .{
+        .allocator = allocator,
+        .defines = &[_]@import("../../parser/scan_results.zig").DefineEntry{},
+        .wrapper_symbols_registered = false,
+        .wrap_kinds_finalized = true,
+        .transform_options_base = .{ .minify_syntax = false },
+    };
+    try std.testing.expect(try resyncAfterNodeBufferCapabilityFoldRetainingGraph(
+        &test_context,
+        &module,
+        allocator,
+        removed_nodes.items,
+    ));
+
+    const semantic = &module.semantic.?;
+    const binding_raw = @intFromEnum(buffer_binding.?);
+    try std.testing.expectEqual(buffer_symbol.?, semantic.symbol_ids[binding_raw].?);
+    try std.testing.expectEqual(buffer_symbol.?, module.transform_cache.?.symbol_ids[binding_raw].?);
+    var buffer_refs_after: usize = 0;
+    var fallback_refs_after: usize = 0;
+    for (semantic.references) |reference| {
+        if (reference.node_index.isNone()) continue;
+        if (@intFromEnum(reference.symbol_id) == buffer_symbol.?) buffer_refs_after += 1;
+        if (@intFromEnum(reference.symbol_id) == fallback_symbol.?) fallback_refs_after += 1;
+    }
+    try std.testing.expectEqual(buffer_refs_before - 4, buffer_refs_after);
+    try std.testing.expectEqual(@as(usize, 0), fallback_refs_after);
+    try std.testing.expectEqual(
+        buffer_reference_count_before - 4,
+        semantic.symbols.items[buffer_symbol.?].reference_count,
+    );
+    for (removed_nodes.items) |node_index| {
+        const raw = @intFromEnum(node_index);
+        try std.testing.expect(semantic.symbol_ids[raw] == null);
+        try std.testing.expect(module.transform_cache.?.symbol_ids[raw] == null);
+    }
+    try std.testing.expect(module.prebuilt_stmt_info != null);
 }
 
 fn testRenameSymbol(kind: SemanticSymbolKind, is_default_export: bool) SemanticSymbol {

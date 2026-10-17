@@ -244,6 +244,10 @@ pub const TreeShaker = struct {
         self.graph.resyncModuleMetadataAfterAstMutation(m, m.parse_arena.?.allocator(), rt) catch {
             m.prebuilt_stmt_info = null;
         };
+        self.markAstMutated(m);
+    }
+
+    fn markAstMutated(self: *TreeShaker, m: *Module) void {
         self.ast_mutated_after_link = true;
         self.invalidateImportRecordStmtIndices(@intFromEnum(m.index));
         if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
@@ -2395,6 +2399,31 @@ pub const TreeShaker = struct {
             const m = self.moduleAtMut(@intCast(i)) orelse continue;
             if (m.wrap_kind != .cjs) continue;
             const ast = &(m.ast orelse continue);
+            var removed_nodes: std.ArrayListUnmanaged(NodeIndex) = .empty;
+            defer removed_nodes.deinit(self.allocator);
+            const retained_folded = cjs_patterns.foldNodeBufferCapabilityIfsRetainingGraph(
+                self.allocator,
+                ast,
+                &removed_nodes,
+            ) catch false;
+            if (retained_folded) {
+                const retained = if (m.parse_arena) |arena|
+                    self.graph.resyncModuleMetadataAfterNodeBufferCapabilityFoldRetainingGraph(
+                        m,
+                        arena.allocator(),
+                        removed_nodes.items,
+                    ) catch false
+                else
+                    false;
+                if (retained) {
+                    self.markAstMutated(m);
+                } else {
+                    self.markAstMutatedAndResync(m);
+                }
+                continue;
+            }
+
+            removed_nodes.clearRetainingCapacity();
             if (!cjs_patterns.foldNodeBufferCapabilityIfs(self.allocator, ast)) continue;
             self.markAstMutatedAndResync(m);
         }
@@ -2486,4 +2515,26 @@ pub const TreeShaker = struct {
 fn containsU32(slice: []const u32, target: u32) bool {
     for (slice) |v| if (v == target) return true;
     return false;
+}
+
+test "markAstMutated invalidates cached import-record statement indexes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const cached_stmt_indices = try allocator.dupe(?u32, &.{ 2, 5 });
+    const per_module = try allocator.alloc(?[]?u32, 1);
+    per_module[0] = cached_stmt_indices;
+
+    var module = Module.init(@enumFromInt(0), "test.cjs");
+    var shaker: TreeShaker = undefined;
+    shaker.allocator = allocator;
+    shaker.import_record_stmt_indices = per_module;
+    shaker.materialize_scratch = null;
+    shaker.ast_mutated_after_link = false;
+
+    shaker.markAstMutated(&module);
+
+    try std.testing.expect(shaker.ast_mutated_after_link);
+    try std.testing.expect(per_module[0] == null);
 }

@@ -51,6 +51,36 @@ test "TreeShaking CJS: node Buffer capability branch prunes safe-buffer fallback
     try std.testing.expect(std.mem.indexOf(u8, result.output, "allocUnsafeSlow") == null);
 }
 
+test "TreeShaking CJS: direct node Buffer capability branch keeps native exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.js", "import { Buffer } from './lib.js'; console.log(Buffer.alloc(4).length);");
+    try writeFile(tmp.dir, "lib.js",
+        \\var buffer = require("buffer");
+        \\var Buffer = buffer.Buffer;
+        \\if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) module.exports = buffer;
+        \\else exports.Buffer = SafeBuffer;
+        \\function SafeBuffer() { return "DIRECT_BUFFER_FALLBACK_MARKER"; }
+        \\SafeBuffer.from = "DIRECT_BUFFER_SETUP_MARKER";
+    );
+
+    const entry = try absPath(&tmp, "entry.js");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .platform = .node,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports = buffer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_BUFFER_FALLBACK_MARKER") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "DIRECT_BUFFER_SETUP_MARKER") == null);
+}
+
 test "TreeShaking CJS: unknown Buffer-like capability branch preserves fallback body" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
