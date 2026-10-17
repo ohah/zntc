@@ -313,7 +313,7 @@ pub const TransformOptions = struct {
     pub fn requiresGraphPrePass(self: *const TransformOptions, ast: *const Ast) bool {
         if (drop_scan.hasDroppedTransformStatement(ast, self.drop_console, self.drop_debugger, self.drop_labels)) return true;
         if (define_mod.astUsesDefine(ast, self.define)) return true;
-        if (astHasMappedImportSource(ast, self.module_specifier_map)) return true;
+        if (astHasMappedImportToSplit(ast, self.module_specifier_map)) return true;
         // Whitespace-only minification changes emission, not the AST or graph.
         // Any syntax that creates helper identities has its own pre-pass gate.
         if (self.minify_syntax) return true;
@@ -323,11 +323,11 @@ pub const TransformOptions = struct {
         return false;
     }
 
-    /// True when a static import source matches a configured cherry-pick map.
-    /// A map configured for another package does not change this module's AST
-    /// or import graph and should not force the graph pre-pass.
-    pub fn hasMappedImportSource(self: *const TransformOptions, ast: *const Ast) bool {
-        return astHasMappedImportSource(ast, self.module_specifier_map);
+    /// True when a static import matches a cherry-pick map and the transformer
+    /// will split its unaliased value specifiers. Configured maps on imports the
+    /// transformer leaves unchanged must not force semantic graph reanalysis.
+    pub fn hasMappedImportToSplit(self: *const TransformOptions, ast: *const Ast) bool {
+        return astHasMappedImportToSplit(ast, self.module_specifier_map);
     }
 
     fn unsupportedGraphPrePassFeatureUsed(self: *const TransformOptions, ast: *const Ast) bool {
@@ -778,7 +778,7 @@ pub const TransformOptions = struct {
         "a lexical-capturing arrow is emitted unchanged because a non-literal direct eval argument can observe generated capture bindings; the configured target may not support arrow syntax retained inside it.";
 };
 
-fn astHasMappedImportSource(ast: *const Ast, entries: []const ModuleSpecifierMapEntry) bool {
+fn astHasMappedImportToSplit(ast: *const Ast, entries: []const ModuleSpecifierMapEntry) bool {
     if (entries.len == 0) return false;
     const statements = ast_walk.topLevelStatementIndices(ast) orelse return true;
     for (statements) |raw_stmt| {
@@ -788,14 +788,37 @@ fn astHasMappedImportSource(ast: *const Ast, entries: []const ModuleSpecifierMap
         const extra = node.data.extra;
         if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return true;
         const import = module_parser.readImportDeclExtras(ast, extra);
+        if (import.is_type_only or import.attrs_len != 0 or import.phase != .none or import.specs_len == 0) continue;
         const source_idx = import.source;
         if (source_idx.isNone() or @intFromEnum(source_idx) >= ast.nodes.items.len) return true;
         const source = ast.getNode(source_idx);
         if (source.tag != .string_literal) continue;
         const module_name = Ast.stripStringQuotes(ast.getText(source.data.string_ref));
+        var source_is_mapped = false;
         for (entries) |entry| {
-            if (std.mem.eql(u8, module_name, entry.module)) return true;
+            if (std.mem.eql(u8, module_name, entry.module)) {
+                source_is_mapped = true;
+                break;
+            }
         }
+        if (!source_is_mapped) continue;
+
+        if (import.specs_start > ast.extra_data.items.len or
+            import.specs_len > ast.extra_data.items.len - import.specs_start) return true;
+
+        var can_split = true;
+        for (ast.extra_data.items[import.specs_start .. import.specs_start + import.specs_len]) |raw_spec| {
+            if (raw_spec >= ast.nodes.items.len) return true;
+            const spec = ast.getNode(@enumFromInt(raw_spec));
+            if (spec.tag != .import_specifier or
+                (spec.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0 or
+                spec.data.binary.left != spec.data.binary.right)
+            {
+                can_split = false;
+                break;
+            }
+        }
+        if (can_split) return true;
     }
     return false;
 }
@@ -1007,7 +1030,7 @@ test "lowered syntax discovers helpers and generated globals before linking" {
     }
 }
 
-test "module specifier maps require a graph pre-pass only for mapped imports" {
+test "module specifier maps require a graph pre-pass only for imports that split" {
     const Parser = @import("../parser/parser.zig").Parser;
     const map: []const ModuleSpecifierMapEntry = &.{
         .{ .module = "lodash", .template = "lodash/{name}" },
@@ -1015,6 +1038,16 @@ test "module specifier maps require a graph pre-pass only for mapped imports" {
     const options: TransformOptions = .{ .module_specifier_map = map };
     const fixtures = [_]struct { source: []const u8, needs_prepass: bool }{
         .{ .source = "import { map } from 'lodash';", .needs_prepass = true },
+        .{ .source = "import { map, filter } from 'lodash';", .needs_prepass = true },
+        .{ .source = "import { map as localMap } from 'lodash';", .needs_prepass = false },
+        .{ .source = "import map from 'lodash';", .needs_prepass = false },
+        .{ .source = "import * as lodash from 'lodash';", .needs_prepass = false },
+        .{ .source = "import 'lodash';", .needs_prepass = false },
+        .{ .source = "import {} from 'lodash';", .needs_prepass = false },
+        .{ .source = "import type { map } from 'lodash';", .needs_prepass = false },
+        .{ .source = "import { type map } from 'lodash';", .needs_prepass = false },
+        .{ .source = "import { map } from 'lodash' with { type: 'json' };", .needs_prepass = false },
+        .{ .source = "import defer { map } from 'lodash';", .needs_prepass = false },
         .{ .source = "import { map } from 'react';", .needs_prepass = false },
         .{ .source = "function f() { return 1; } import { map } from 'lodash';", .needs_prepass = true },
         .{ .source = "const packageName = 'lodash';", .needs_prepass = false },
@@ -1026,6 +1059,10 @@ test "module specifier maps require a graph pre-pass only for mapped imports" {
         var parser = Parser.init(arena.allocator(), &scanner);
         parser.configureFromExtension(".ts");
         _ = try parser.parse();
+        try std.testing.expectEqual(
+            fixture.needs_prepass,
+            options.hasMappedImportToSplit(&parser.ast),
+        );
         try std.testing.expectEqual(
             fixture.needs_prepass,
             options.requiresGraphPrePass(&parser.ast),
