@@ -498,15 +498,57 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                     std.debug.panic("static class field has no source class scope", .{});
                 break :blk self.outputScopeParent(class_scope);
             } else self.current_scope;
+            const is_anonymous_default_export = self.semantic_edit_enabled and
+                source_idx == self.default_export_operand and raw_name_idx.isNone() and !new_name.isNone();
+            const generated_export_scope = if (is_anonymous_default_export)
+                self.programScope()
+            else
+                static_field_ref_scope;
+            var anonymous_default_export_binding: NodeIndex = .none;
+            if (is_anonymous_default_export) {
+                const name_span = self.ast.getNode(new_name).data.string_ref;
+                const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, name_span);
+                const symbol_id = try self.declareSyntheticInScope(
+                    binding,
+                    node.span,
+                    .variable_let,
+                    generated_export_scope,
+                ) orelse std.debug.panic("anonymous default decorator wrapper has no direct SymbolId", .{});
+                if (es_helpers.canUseLateStandaloneOutputName(self, generated_export_scope))
+                    es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .anonymous_class_export_binding);
+                try self.lowered_anonymous_class_export_bindings.put(
+                    self.allocator,
+                    @intFromEnum(source_idx),
+                    @intFromEnum(binding),
+                );
+                anonymous_default_export_binding = binding;
+            }
             var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
             defer post.deinit(self.allocator);
-            try appendStaticStatements(self, &post, new_name, static_field_ref_scope, .{
-                .descriptors = assign_static_descriptors.items,
-                .descriptor_orders = static_descriptor_orders.items,
-                .fields = static_field_assignments.items,
-                .block_field_counts = static_block_field_counts.items,
-                .blocks = static_block_iifes.items,
-            });
+            {
+                const saved_static_reference_class_name = self.current_class_name_node;
+                const saved_static_reference_class_symbol = self.current_class_self_symbol_id;
+                defer self.current_class_name_node = saved_static_reference_class_name;
+                defer self.current_class_self_symbol_id = saved_static_reference_class_symbol;
+                if (!anonymous_default_export_binding.isNone()) {
+                    self.current_class_name_node = anonymous_default_export_binding;
+                    self.current_class_self_symbol_id = self.getSymbolIdAt(anonymous_default_export_binding) orelse
+                        std.debug.panic("anonymous default decorator wrapper has no exact class reference SymbolId", .{});
+                }
+                try appendStaticStatements(
+                    self,
+                    &post,
+                    if (!anonymous_default_export_binding.isNone()) anonymous_default_export_binding else new_name,
+                    generated_export_scope,
+                    .{
+                        .descriptors = assign_static_descriptors.items,
+                        .descriptor_orders = static_descriptor_orders.items,
+                        .fields = static_field_assignments.items,
+                        .block_field_counts = static_block_field_counts.items,
+                        .blocks = static_block_iifes.items,
+                    },
+                );
+            }
             // #3/#4: private weakset 선언은 `let Foo = class {...}` 분해 앞에 와야 한다.
             const pending_start = self.pending_nodes.items.len;
             for (priv_pre_stmts.items) |stmt| try self.pending_nodes.append(self.allocator, stmt);
@@ -515,6 +557,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 node,
                 new_name,
                 self.readNodeIdx(e, 0),
+                anonymous_default_export_binding,
                 new_super,
                 new_body,
                 old_deco_start,
