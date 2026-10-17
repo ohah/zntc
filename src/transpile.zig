@@ -2570,6 +2570,26 @@ test "#4819 native and downlevel using reuse the transform graph" {
     try std.testing.expectEqual(@as(usize, 0), output_analyzer.errors.items.len);
 }
 
+test "#4819 standalone using locals choose final spellings from their SymbolIds" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var result = try transpile(
+        allocator,
+        "var _stack = 1, _error = 2, _hasError = 3, _ = 4; " ++
+            "function run(resource) { using local = resource; return [_stack, _error, _hasError, _]; }",
+        "input.mjs",
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _stack2 = []") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_error2 = void 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_hasError2 = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "catch (_2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__callDispose(_stack2, _error2, _hasError2)") != null);
+}
+
 test "#4819 standalone mangling names namespace IIFE parameters from their SymbolIds" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
