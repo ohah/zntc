@@ -1353,7 +1353,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 static extra initializers binding has no SymbolId", .{});
-        markStandaloneLateStage3Symbol(self, late_standalone_output_names, static_extra_initializers_symbol, .stage3_member_decorator_binding);
+        markLateStage3OutputSymbol(
+            self,
+            late_standalone_output_names or late_graph_output_names,
+            late_graph_output_names,
+            static_extra_initializers_symbol,
+            .stage3_member_decorator_binding,
+            "_staticExtraInitializers",
+        );
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 static extra initializers has no output static block scope", .{});
         for (static_extra_initializer_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, static_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
@@ -1370,7 +1377,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 instance extra initializers binding has no SymbolId", .{});
-        markStandaloneLateStage3Symbol(self, late_standalone_output_names, instance_extra_initializers_symbol, .stage3_member_decorator_binding);
+        markLateStage3OutputSymbol(
+            self,
+            late_standalone_output_names or late_graph_output_names,
+            late_graph_output_names,
+            instance_extra_initializers_symbol,
+            .stage3_member_decorator_binding,
+            "_instanceExtraInitializers",
+        );
         if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 instance extra initializers has no output metadata block scope", .{});
         for (instance_extra_initializer_block_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, instance_extra_initializers_symbol, metadata_block_scope, .{ .read = true });
@@ -1398,7 +1412,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 member initializers binding has no SymbolId", .{});
-            markStandaloneLateStage3Symbol(self, late_standalone_output_names, initializers_symbol, .stage3_member_decorator_binding);
+            markLateStage3OutputSymbol(
+                self,
+                late_standalone_output_names or late_graph_output_names,
+                late_graph_output_names,
+                initializers_symbol,
+                .stage3_member_decorator_binding,
+                info.initializers_name orelse std.debug.panic("Stage 3 member initializers have no output name", .{}),
+            );
             if (info.initializers_decorate_ref.isNone() or metadata_block_scope.isNone())
                 std.debug.panic("Stage 3 member initializers has no exact decorator reference or output block scope", .{});
             try self.addSyntheticRefInScope(info.initializers_decorate_ref, initializers_symbol, metadata_block_scope, .{ .read = true });
@@ -1416,7 +1437,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 member extra initializers binding has no SymbolId", .{});
-            markStandaloneLateStage3Symbol(self, late_standalone_output_names, extra_initializers_symbol, .stage3_member_decorator_binding);
+            markLateStage3OutputSymbol(
+                self,
+                late_standalone_output_names or late_graph_output_names,
+                late_graph_output_names,
+                extra_initializers_symbol,
+                .stage3_member_decorator_binding,
+                info.extra_initializers_name orelse std.debug.panic("Stage 3 member extra initializers have no output name", .{}),
+            );
             if (info.extra_initializers_decorate_ref.isNone() or metadata_block_scope.isNone())
                 std.debug.panic("Stage 3 member extra initializers has no exact decorator reference or output block scope", .{});
             try self.addSyntheticRefInScope(info.extra_initializers_decorate_ref, extra_initializers_symbol, metadata_block_scope, .{ .read = true });
@@ -1448,7 +1476,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 member decorator binding has no SymbolId", .{});
-            markStandaloneLateStage3Symbol(self, late_standalone_output_names, decorator_symbol, .stage3_member_decorator_binding);
+            markLateStage3OutputSymbol(
+                self,
+                late_standalone_output_names or late_graph_output_names,
+                late_graph_output_names,
+                decorator_symbol,
+                .stage3_member_decorator_binding,
+                info.deco_var_name orelse std.debug.panic("Stage 3 member decorators have no output name", .{}),
+            );
             if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 member decorator has no output static block scope", .{});
             if (info.deco_assignment_ref.isNone() or info.deco_apply_ref.isNone())
                 std.debug.panic("Stage 3 member decorator has missing exact reference handle", .{});
@@ -1465,7 +1500,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                 .variable_let,
                 arrow_scope,
             )) orelse std.debug.panic("Stage 3 private descriptor binding has no SymbolId", .{});
-            markStandaloneLateStage3Symbol(self, late_standalone_output_names, descriptor_symbol, .stage3_member_decorator_binding);
+            markLateStage3OutputSymbol(
+                self,
+                late_standalone_output_names or late_graph_output_names,
+                late_graph_output_names,
+                descriptor_symbol,
+                .stage3_member_decorator_binding,
+                info.descriptor_name orelse std.debug.panic("Stage 3 private descriptor has no output name", .{}),
+            );
             if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 private descriptor has no output static block scope", .{});
             if (info.descriptor_assignment_ref.isNone() or info.descriptor_getter_ref.isNone() or info.descriptor_getter_scope.isNone())
                 std.debug.panic("Stage 3 private descriptor has missing exact reference or getter scope handle", .{});

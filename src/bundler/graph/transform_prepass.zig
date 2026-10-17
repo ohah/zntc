@@ -6493,6 +6493,7 @@ fn isStage3OutputNameKind(kind: SemanticSyntheticKind) bool {
         .stage3_class_this_binding,
         .stage3_metadata_binding,
         .stage3_class_decorator_binding,
+        .stage3_member_decorator_binding,
         => true,
         else => false,
     };
@@ -6505,6 +6506,7 @@ fn isValidStage3OutputNameHint(kind: SemanticSyntheticKind, hint: []const u8) bo
         .stage3_class_decorator_binding => std.mem.eql(u8, hint, "_classDecorators") or
             std.mem.eql(u8, hint, "_classDescriptor") or
             std.mem.eql(u8, hint, "_classExtraInitializers"),
+        .stage3_member_decorator_binding => hint.len > 0,
         else => false,
     };
 }

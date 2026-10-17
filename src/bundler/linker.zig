@@ -1048,6 +1048,10 @@ pub const Linker = struct {
                         if (!is_variable_local or symbol.scope_id.isNone() or !valid_hint)
                             return error.InvalidStage3ClassDecoratorOutputBinding;
                     },
+                    .stage3_member_decorator_binding => {
+                        if (!is_variable_local or symbol.scope_id.isNone() or symbol.output_name_hint.len == 0)
+                            return error.InvalidStage3MemberDecoratorOutputBinding;
+                    },
                     else => continue,
                 }
 
