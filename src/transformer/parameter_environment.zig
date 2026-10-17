@@ -920,7 +920,17 @@ pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.No
     // declared with the class (`var _a = k`) is an ordinary read.
     const ref = blk: {
         const hoisted = try es_helpers.makeIdentifierRefFromSpan(self, self.ast.getNode(temp).data.string_ref);
-        if (try es_helpers.trackKnownHoistedTempRef(self, hoisted, scope, .{ .read = true })) break :blk hoisted;
+        if (try es_helpers.trackKnownHoistedTempRef(self, hoisted, scope, .{ .read = true })) {
+            if (self.semantic_edit_enabled and !self.syntheticTempOutputScopeIsDeferred(scope)) {
+                const hoisted_symbol_id = self.getSymbolIdAt(hoisted) orelse
+                    std.debug.panic("runtime computed-key name reference has no producer SymbolId", .{});
+                if (self.getSymbolIdAt(temp)) |key_symbol_id| {
+                    if (key_symbol_id != hoisted_symbol_id)
+                        std.debug.panic("runtime computed-key name reference changed its producer SymbolId", .{});
+                }
+            }
+            break :blk hoisted;
+        }
         if (self.semantic_edit_enabled and self.getSymbolIdAt(temp) == null) return value;
         // The key position keeps the emitted node: read the binding afresh.
         break :blk try self.makeUserRefNamedAtScope(self.ast.getText(self.ast.getNode(temp).data.string_ref), temp, scope);
