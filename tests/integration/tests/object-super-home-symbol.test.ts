@@ -47,6 +47,231 @@ console.log(methods.read.call({ input: 41 }), _obj, _obj2);`,
     expect(actual.stdout).toBe(native.stdout);
   });
 
+  test('bundler finalizes object-super home parameters by SymbolId after semantic reanalysis', async () => {
+    const fixture = await createFixture({
+      'input.js': `var _obj = 'source-obj';
+var _obj$1 = 'source-obj-1';
+var _obj$2 = 'source-obj-2';
+var base = { read() { return this.input; } };
+var methods = { read() { return [super.read(), _obj, _obj$1, _obj$2].join(':'); } };
+Object.setPrototypeOf(methods, base);
+console.log(methods.read.call({ input: 'home' }), _obj, _obj$1, _obj$2);`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.cjs');
+    const native = spawnSync('node', [join(fixture.dir, 'input.js')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+    const transformed = spawnSync(
+      ZNTC_BIN,
+      [
+        '--bundle',
+        'input.js',
+        '--target=es5',
+        '--platform=node',
+        '--format=cjs',
+        '--minify-syntax',
+        '-o',
+        output,
+      ],
+      {
+        cwd: fixture.dir,
+        env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+        encoding: 'utf8',
+      },
+    );
+    expect(transformed.status, transformed.stderr).toBe(0);
+    const mode = transformed.stderr
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('input.js'));
+    expect(mode, transformed.stderr).toContain('semantic_graph=reanalyzed');
+    const report = transformed.stderr
+      .split(/\r?\n/)
+      .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('input.js'));
+    expect(report, transformed.stderr).toMatch(/clean=1(?:\s|$)/);
+    const code = readFileSync(output, 'utf8');
+    expect(code).toMatch(/function\s*\(_obj\$3\)\s*\{/);
+    expect(code).not.toContain('__zntc_object_home');
+
+    const actual = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+  });
+
+  test('bundler object-super home names survive ten hostile collision and scope inputs', async () => {
+    const cases = [
+      {
+        name: 'three consecutive module collisions',
+        files: {
+          'input.js': `var _obj='a', _obj$1='b', _obj$2='c';
+var base={read(){return this.x}};
+var methods={read(){return [super.read(),_obj,_obj$1,_obj$2].join(':')}};
+Object.setPrototypeOf(methods,base);
+console.log(methods.read.call({x:'v'}));`,
+        },
+        homeName: '_obj$3',
+        clean: true,
+      },
+      {
+        name: 'sparse module collisions leave the base name free',
+        files: {
+          'input.js': `var _obj$1='a', _obj$3='b';
+var base={read(){return this.x}};
+var methods={read(){return [super.read(),_obj$1,_obj$3].join(':')}};
+Object.setPrototypeOf(methods,base);
+console.log(methods.read.call({x:'v'}));`,
+        },
+        homeName: '_obj',
+        clean: true,
+      },
+      {
+        name: 'a single occupied suffix is skipped',
+        files: {
+          'input.js': `var _obj='a', _obj$2='b';
+var base={read(){return this.x}};
+var methods={read(){return [super.read(),_obj,_obj$2].join(':')}};
+Object.setPrototypeOf(methods,base);
+console.log(methods.read.call({x:'v'}));`,
+        },
+        homeName: '_obj$1',
+        clean: true,
+      },
+      {
+        name: 'two wrappers share a scope with a source collision',
+        files: {
+          'input.js': `var _obj='a';
+var base={read(){return this.x}};
+var methods={a(){return super.read()},b(){return super.read()+1}};
+Object.setPrototypeOf(methods,base);
+console.log(methods.a.call({x:4}),methods.b.call({x:4}),_obj);`,
+        },
+        homeName: '_obj$1',
+        clean: true,
+      },
+      {
+        name: 'nested function has its own occupied suffix',
+        files: {
+          'input.js': `var _obj='outer';
+var base={read(){return this.x}};
+function f(){var _obj$1='inner';var methods={read(){return [super.read(),_obj,_obj$1].join(':')}};Object.setPrototypeOf(methods,base);return methods.read.call({x:'v'});}
+console.log(f(),_obj);`,
+        },
+        homeName: '_obj$2',
+        clean: true,
+      },
+      {
+        name: 'generator state-machine callback scope',
+        files: {
+          'input.js': `var _obj='a',_obj$1='b',_obj$2='c';
+var base={read(){return this.x}};
+function* f(){var methods={read(){return [super.read(),_obj,_obj$1,_obj$2].join(':')}};Object.setPrototypeOf(methods,base);yield methods.read.call({x:'v'});}
+console.log(f().next().value);`,
+        },
+        homeName: '_obj$3',
+        clean: true,
+      },
+      {
+        name: 'computed object-method key',
+        files: {
+          'input.js': `var _obj='a',_obj$1='b';var key='read';
+var base={read(){return this.x}};
+var methods={[key](){return [super.read(),_obj,_obj$1].join(':')}};
+Object.setPrototypeOf(methods,base);
+console.log(methods.read.call({x:'v'}));`,
+        },
+        homeName: '_obj$2',
+        clean: true,
+      },
+      {
+        name: 'async function owner',
+        files: {
+          'input.js': `var _obj='a',_obj$1='b';
+var base={read(){return this.x}};
+async function f(){var methods={read(){return [super.read(),_obj,_obj$1].join(':')}};Object.setPrototypeOf(methods,base);return methods.read.call({x:'v'});}
+f().then(console.log);`,
+        },
+        homeName: '_obj$2',
+        clean: true,
+      },
+      {
+        name: 'imported module scope after graph linking',
+        files: {
+          'package.json': '{"type":"module"}',
+          'input.js': `import {run} from './dep.js';console.log(run());`,
+          'dep.js': `var _obj='a',_obj$1='b';var base={read(){return this.x}};var methods={read(){return [super.read(),_obj,_obj$1].join(':')}};Object.setPrototypeOf(methods,base);export function run(){return methods.read.call({x:'v'});}`,
+        },
+        homeName: '_obj$2',
+        clean: true,
+      },
+      {
+        name: 'direct eval stays on its early-name fallback',
+        files: {
+          'input.js': `var base={read(){return this.x}};
+function f(){eval("var _obj='dynamic'");var methods={read(){return [super.read(),_obj].join(':')}};Object.setPrototypeOf(methods,base);return methods.read.call({x:'v'});}
+console.log(f());`,
+        },
+        homeName: '_obj2',
+        clean: false,
+      },
+    ];
+
+    for (const item of cases) {
+      const fixture = await createFixture(item.files);
+      try {
+        const output = join(fixture.dir, 'out.cjs');
+        const native = spawnSync('node', [join(fixture.dir, 'input.js')], {
+          cwd: fixture.dir,
+          encoding: 'utf8',
+        });
+        expect(native.status, `${item.name}: ${native.stderr}`).toBe(0);
+        const transformed = spawnSync(
+          ZNTC_BIN,
+          [
+            '--bundle',
+            'input.js',
+            '--target=es5',
+            '--platform=node',
+            '--format=cjs',
+            '--minify-syntax',
+            '-o',
+            output,
+          ],
+          {
+            cwd: fixture.dir,
+            env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+            encoding: 'utf8',
+          },
+        );
+        expect(transformed.status, `${item.name}: ${transformed.stderr}`).toBe(0);
+        const mode = transformed.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode '));
+        expect(mode, `${item.name}: ${transformed.stderr}`).toContain('semantic_graph=reanalyzed');
+        const report = transformed.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity-prepass '));
+        expect(report, `${item.name}: ${transformed.stderr}`).toBeDefined();
+        if (item.clean) {
+          expect(report, item.name).toMatch(/clean=1(?:\s|$)/);
+          expect(report, item.name).toMatch(/unclassified_reference=0(?:\s|$)/);
+        } else {
+          // This source intentionally reaches the existing dynamic-scope debt;
+          // the generated home name and runtime behavior must still match main.
+          expect(report, item.name).toMatch(/unclassified_reference=1(?:\s|$)/);
+          expect(report, item.name).toMatch(/clean=0(?:\s|$)/);
+        }
+
+        const code = readFileSync(output, 'utf8');
+        expect(code, item.name).toContain(`Object.getPrototypeOf(${item.homeName})`);
+        expect(code, item.name).not.toContain('__zntc_object_home');
+        const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, item.name).toBe(native.stdout);
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+  });
+
   test('function-scoped home temps bind their writes and reads to one exact SymbolId', async () => {
     const fixture = await createFixture({
       'input.js': `var _a = 'outer-a';

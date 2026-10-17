@@ -1130,6 +1130,11 @@ pub const Linker = struct {
                             !std.mem.eql(u8, symbol.output_name_hint, "_arguments"))
                             return error.InvalidArgumentsCaptureOutputBinding;
                     },
+                    .object_super_home_binding => {
+                        if (symbol.kind != .parameter or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_obj"))
+                            return error.InvalidObjectSuperHomeOutputBinding;
+                    },
                     else => continue,
                 }
 

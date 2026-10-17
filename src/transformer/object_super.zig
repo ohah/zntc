@@ -200,7 +200,8 @@ fn allocHome(self: *Transformer, node: Node, allow_late_output_name: bool) Trans
     if (wrap != .assign) {
         // 함수 파라미터 — 함수 단위 temp 카운터를 쓰지 않는다(var 로 호이스팅되면 안 됨).
         const late_output_name = allow_late_output_name and
-            es_helpers.canUseLateStandaloneOutputName(self, self.current_scope);
+            (es_helpers.canUseLateStandaloneOutputName(self, self.current_scope) or
+                es_helpers.canUseLateGraphOutputName(self, self.current_scope));
         const prefix = if (late_output_name) "__zntc_object_home" else "_obj";
         while (true) {
             const name = if (late_output_name)
@@ -432,7 +433,19 @@ fn bindWrappedHomeParameter(
     if (wrapper_scope.isNone()) return;
     const id = (try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, .parameter, wrapper_scope)) orelse return;
     if (late_output_name) {
-        es_helpers.markStandaloneLateSyntheticOutputName(self, id, self.ast.getText(name_span), .object_super_home_binding, "_obj");
+        if (es_helpers.canUseLateGraphOutputName(self, wrapper_scope)) {
+            es_helpers.markLateGraphSyntheticSymbol(self, id, .object_super_home_binding, "_obj");
+        } else if (es_helpers.canUseLateStandaloneOutputName(self, wrapper_scope)) {
+            es_helpers.markStandaloneLateSyntheticOutputName(
+                self,
+                id,
+                self.ast.getText(name_span),
+                .object_super_home_binding,
+                "_obj",
+            );
+        } else {
+            std.debug.panic("late object-super home parameter lost its eligible scope", .{});
+        }
     }
     const write_ref = self.ast.getNode(assignment).data.binary.left;
     const name = self.ast.getText(name_span);
