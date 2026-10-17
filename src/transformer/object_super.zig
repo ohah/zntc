@@ -262,15 +262,21 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
         const parent_scope = homeObjectParentScope(self, obj, self.current_scope);
         if (self.semantic_edit_enabled) {
             if (parent_scope.isNone()) std.debug.panic("function-scoped object home temp has no output scope", .{});
-            const deferred_output_scope = self.syntheticTempOutputScopeIsDeferred(parent_scope);
+            const parameter_output_scope = self.loweredParameterEnvironmentOutputScope(parent_scope);
+            const output_scope = parameter_output_scope orelse parent_scope;
+            const deferred_output_scope = parameter_output_scope == null and
+                self.objectSuperTempOutputScopeIsDeferred(parent_scope);
             const callback_binding = if (deferred_output_scope and self.state_machine_depth > 0)
                 try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span)
             else
                 .none;
-            const symbol_id: ?SymbolId = if (deferred_output_scope)
+            const symbol_id: ?SymbolId = if (parameter_output_scope != null)
+                (try self.reserveSyntheticTempSymbolInScope(home.span, span, output_scope)) orelse
+                    std.debug.panic("lowered parameter object home temp has no SymbolId", .{})
+            else if (deferred_output_scope)
                 null
             else blk: {
-                const owner_scope = self.nearestVarScope(parent_scope);
+                const owner_scope = self.nearestVarScope(output_scope);
                 const binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, home.span);
                 break :blk (try self.declareSyntheticTempInScope(binding, span, owner_scope)) orelse
                     std.debug.panic("function-scoped object home temp has no SymbolId", .{});
@@ -280,9 +286,13 @@ pub fn wrapWithHome(self: *Transformer, home: Home, obj: NodeIndex, span: Span) 
                 obj,
                 self.ast.getNode(assign).data.binary.left,
                 home.span,
-                parent_scope,
+                output_scope,
                 symbol_id,
                 callback_binding,
+                if (parameter_output_scope != null and parameter_output_scope.? != parent_scope)
+                    parent_scope
+                else
+                    .none,
             );
         }
         return assign;
@@ -354,6 +364,7 @@ fn trackHoistedHomeReferences(
     root_scope: ScopeId,
     symbol_id: ?SymbolId,
     callback_binding: NodeIndex,
+    reparent_from_scope: ScopeId,
 ) Transformer.Error!void {
     if (!self.semantic_edit_enabled or root_scope.isNone()) return;
     if (symbol_id) |id|
@@ -378,6 +389,15 @@ fn trackHoistedHomeReferences(
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
         const scope = self.outputOwnedScope(work.node) orelse work.scope;
+        if (!reparent_from_scope.isNone() and !scope.isNone() and scope != root_scope and
+            self.outputScopeParent(scope) == reparent_from_scope)
+        {
+            // A lowered default initializer now runs in the function body.
+            // Its nested function/class scopes were parsed as siblings under
+            // the parameter environment, so move those roots under the exact
+            // body scope before attaching the home-temp references.
+            try self.reparentGeneratedScope(scope, root_scope);
+        }
         if (work.node != write_ref and
             (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
             std.mem.eql(u8, self.ast.getText(node.data.string_ref), name))

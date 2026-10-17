@@ -98,6 +98,56 @@ console.log(make.call({ input: 7 }), _a, _b);`,
     expect(actual.stdout).toBe('41 outer-a outer-b\n');
   });
 
+  test('lowered synchronous defaults bind object-super home temps in the emitted function scope', async () => {
+    const fixture = await createFixture({
+      'input.js': `var _a = 'outer-a';
+var _b = 'outer-b';
+function make(input = {
+  __proto__: this.base,
+  receiver: this,
+  method() { return super.value + 2; },
+}) {
+  return input.method.call(input.receiver);
+}
+console.log(make.call({ base: { value: 40 } }), _a, _b);`,
+    });
+    cleanup = fixture.cleanup;
+    const output = join(fixture.dir, 'out.js');
+    const native = spawnSync('node', [join(fixture.dir, 'input.js')], { encoding: 'utf8' });
+    expect(native.status, native.stderr).toBe(0);
+    const transformed = spawnSync(
+      ZNTC_BIN,
+      ['input.js', '--target=es5', '--minify-identifiers', '-o', output],
+      {
+        cwd: fixture.dir,
+        env: {
+          ...process.env,
+          ZNTC_DEBUG_SYMBOL_COVERAGE: '1',
+          ZNTC_DEBUG_SYNTHETIC_COVERAGE: '1',
+        },
+        encoding: 'utf8',
+      },
+    );
+    expect(transformed.status, transformed.stderr).toBe(0);
+
+    const lines = transformed.stderr.split(/\r?\n/);
+    const report = lines.find(
+      (line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'),
+    );
+    expect(report, transformed.stderr).toMatch(/generated_bindings=1(?:\s|$)/);
+    expect(report, transformed.stderr).toMatch(/clean=1(?:\s|$)/);
+    const strict = lines.find(
+      (line) => line.startsWith('zntc: synthetic-coverage ') && line.includes('input.js'),
+    );
+    expect(strict, transformed.stderr).toMatch(/orphan_symbols=0(?:\s|$)/);
+    expect(strict, transformed.stderr).toMatch(/symbol_identity_complete=1(?:\s|$)/);
+
+    const actual = spawnSync('node', [output], { encoding: 'utf8' });
+    expect(actual.status, actual.stderr).toBe(0);
+    expect(actual.stdout).toBe(native.stdout);
+    expect(actual.stdout).toBe('42 outer-a outer-b\n');
+  });
+
   test('async and generator home temps wait for their generated callback scopes', async () => {
     const fixture = await createFixture({
       'input.js': `var _a = 'outer-a';
