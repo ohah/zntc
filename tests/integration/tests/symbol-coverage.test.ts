@@ -748,6 +748,54 @@ describe('symbol identity coverage gate (#4819)', () => {
     }
   });
 
+  test('ES5 prehoisted computed field name reference reuses its key SymbolId', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'zntc-computed-field-name-symbol-'));
+    const input = join(dir, 'entry.js');
+    const output = join(dir, 'out.js');
+    writeFileSync(
+      input,
+      [
+        "var _a = 'outer-a';",
+        "var _b = 'outer-b';",
+        'var evaluations = [];',
+        "function fieldKey() { evaluations.push('field'); return 'value'; }",
+        "function methodKey() { evaluations.push('method'); return 'method'; }",
+        'class Box { #hidden = 2; [fieldKey()] = function () { return 5; }; [methodKey()]() { return this.#hidden; } }',
+        'var box = new Box();',
+        "console.log(box.value.name, box.value(), box.method(), evaluations.join(','), _a, _b);",
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'tsconfig.json'),
+      '{"compilerOptions":{"target":"ES5","useDefineForClassFields":true}}',
+    );
+
+    try {
+      const baseline = spawnSync('node', [input], { encoding: 'utf8' });
+      expect(baseline.status, baseline.stderr).toBe(0);
+      expect(baseline.stdout).toBe('value 5 2 field,method outer-a outer-b\n');
+
+      const { stderr, exitCode } = runCoverage(input, TARGETS[0], dir, true);
+      expect(exitCode, stderr).toBe(0);
+      expect(transformIdentityAuditProblems(stderr), stderr).toEqual([]);
+
+      const exact = stderr.split(/\r?\n/).find((line) => line.startsWith('zntc: symbol-identity '));
+      expect(exact, stderr).toBeDefined();
+      expect(
+        Number(exact?.match(/(?:^| )generated_bindings=(\d+)(?: |$)/)?.[1] ?? 0),
+      ).toBeGreaterThan(0);
+      expect(
+        Number(exact?.match(/(?:^| )generated_references=(\d+)(?: |$)/)?.[1] ?? 0),
+      ).toBeGreaterThan(0);
+
+      const actual = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(actual.status, actual.stderr).toBe(0);
+      expect(actual.stdout).toBe(baseline.stdout);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   test('ES5 private-field postfix temp keeps exact identity and the old value', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-private-field-postfix-symbol-'));
     const input = join(dir, 'entry.js');
