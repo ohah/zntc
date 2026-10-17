@@ -6500,6 +6500,7 @@ fn isPostGraphOutputNameKind(kind: SemanticSyntheticKind) bool {
         .new_target_capture_binding,
         .this_capture_binding,
         .arguments_capture_binding,
+        .object_super_home_binding,
         => true,
         else => false,
     };
@@ -6516,6 +6517,7 @@ fn isValidPostGraphOutputNameHint(kind: SemanticSyntheticKind, hint: []const u8)
         .new_target_capture_binding => std.mem.eql(u8, hint, "_newTarget"),
         .this_capture_binding => std.mem.eql(u8, hint, "_this"),
         .arguments_capture_binding => std.mem.eql(u8, hint, "_arguments"),
+        .object_super_home_binding => std.mem.eql(u8, hint, "_obj"),
         else => false,
     };
 }
@@ -6536,6 +6538,7 @@ fn isPostGraphOutputBindingKind(synthetic_kind: SemanticSyntheticKind, kind: Sem
             .variable_var, .variable_let, .variable_const => true,
             else => false,
         },
+        .object_super_home_binding => kind == .parameter,
         else => false,
     };
 }

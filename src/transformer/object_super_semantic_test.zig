@@ -104,3 +104,59 @@ test "#4819 lowered default object-super home temp reserves and reuses its funct
     }
     try std.testing.expectEqual(live_reference_count, reference_count);
 }
+
+test "#4819 object-super wrapper parameter carries its exact late-name identity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\var base = { read() { return this.input; } };
+        \\var methods = { read() { return super.read(); } };
+        \\Object.setPrototypeOf(methods, base);
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const source_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    var home_id: ?SymbolId = null;
+    for (editor.symbols.items[source_symbol_count..], source_symbol_count..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != .object_super_home_binding) continue;
+        try std.testing.expect(home_id == null);
+        home_id = @fromBackingInt(@intCast(@as(u32, @intCast(raw_id))));
+        try std.testing.expectEqual(SymbolKind.parameter, symbol.kind);
+        try std.testing.expectEqualStrings("_obj", symbol.output_name_hint);
+        try std.testing.expect(!symbol.scope_id.isNone());
+    }
+    const id = home_id orelse return error.MissingObjectSuperHomeOutputSymbol;
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var binding_count: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
+        if (edited.symbol_ids[raw] == @as(?u32, @intCast(@backingInt(id)))) binding_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), binding_count);
+}
