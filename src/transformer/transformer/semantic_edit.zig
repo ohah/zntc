@@ -142,6 +142,13 @@ pub fn nearestVarScope(self: *Transformer, scope: ScopeId) ScopeId {
 /// refs pending until the generated callback owner exists.
 pub fn syntheticTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bool {
     if (self.state_machine_depth > 0) return true;
+    return tempOutputScopeIsDeferredIgnoringStateMachine(self, start);
+}
+
+/// Whether a function scope exists and is stable even when called from inside
+/// a state-machine transformation. Used by producers that can register a temp
+/// in the known wrapper owner and relocate only its references later.
+pub fn tempOutputScopeIsDeferredIgnoringStateMachine(self: *Transformer, start: ScopeId) bool {
     if (start.isNone()) return false;
     const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     var current = start;
@@ -165,20 +172,7 @@ pub fn syntheticTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bo
 /// Other synthetic temps retain the conservative global state-machine rule.
 pub fn objectSuperTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) bool {
     if (self.state_machine_depth == 0) return syntheticTempOutputScopeIsDeferred(self, start);
-    if (start.isNone()) return true;
-    const scopes: []const Scope = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-    var current = start;
-    var hops: usize = 0;
-    while (!current.isNone() and hops < scopes.len) : (hops += 1) {
-        if (current.toIndex() >= scopes.len) return true;
-        if (scopes[current.toIndex()].kind == .function) {
-            const owner = scopeOwnerNode(self, current) orelse return true;
-            return self.ast.getNode(owner).tag == .formal_parameters or
-                ownerNeedsLoweredFunctionScope(self, owner);
-        }
-        current = scopes[current.toIndex()].parent;
-    }
-    return true;
+    return tempOutputScopeIsDeferredIgnoringStateMachine(self, start);
 }
 
 fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
