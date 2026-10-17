@@ -4,7 +4,7 @@ const std = @import("std");
 const Module = @import("../module.zig").Module;
 const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
 const WorkletFactoryLocalBinding = @import("../module.zig").WorkletFactoryLocalBinding;
-const Stage3OutputBinding = @import("../module.zig").Stage3OutputBinding;
+const PostGraphOutputBinding = @import("../module.zig").PostGraphOutputBinding;
 const RuntimeHelperImportOutputBinding = @import("../module.zig").RuntimeHelperImportOutputBinding;
 const AliasTable = @import("../module.zig").AliasTable;
 const binding_scanner_mod = @import("../binding_scanner.zig");
@@ -6491,18 +6491,21 @@ fn captureWorkletFactoryLocalBindings(
     return bindings.toOwnedSlice(allocator);
 }
 
-fn isStage3OutputNameKind(kind: SemanticSyntheticKind) bool {
+fn isPostGraphOutputNameKind(kind: SemanticSyntheticKind) bool {
     return switch (kind) {
         .stage3_class_this_binding,
         .stage3_metadata_binding,
         .stage3_class_decorator_binding,
         .stage3_member_decorator_binding,
+        .new_target_capture_binding,
+        .this_capture_binding,
+        .arguments_capture_binding,
         => true,
         else => false,
     };
 }
 
-fn isValidStage3OutputNameHint(kind: SemanticSyntheticKind, hint: []const u8) bool {
+fn isValidPostGraphOutputNameHint(kind: SemanticSyntheticKind, hint: []const u8) bool {
     return switch (kind) {
         .stage3_class_this_binding => std.mem.eql(u8, hint, "_classThis"),
         .stage3_metadata_binding => std.mem.eql(u8, hint, "_metadata"),
@@ -6510,49 +6513,65 @@ fn isValidStage3OutputNameHint(kind: SemanticSyntheticKind, hint: []const u8) bo
             std.mem.eql(u8, hint, "_classDescriptor") or
             std.mem.eql(u8, hint, "_classExtraInitializers"),
         .stage3_member_decorator_binding => hint.len > 0,
+        .new_target_capture_binding => std.mem.eql(u8, hint, "_newTarget"),
+        .this_capture_binding => std.mem.eql(u8, hint, "_this"),
+        .arguments_capture_binding => std.mem.eql(u8, hint, "_arguments"),
         else => false,
     };
 }
 
-fn isStage3VariableKind(kind: SemanticSymbolKind) bool {
-    return switch (kind) {
-        .variable_var, .variable_let, .variable_const => true,
+fn isPostGraphOutputBindingKind(synthetic_kind: SemanticSyntheticKind, kind: SemanticSymbolKind) bool {
+    return switch (synthetic_kind) {
+        .new_target_capture_binding => switch (kind) {
+            .variable_var, .variable_let, .variable_const, .parameter => true,
+            else => false,
+        },
+        .stage3_class_this_binding,
+        .stage3_metadata_binding,
+        .stage3_class_decorator_binding,
+        .stage3_member_decorator_binding,
+        .this_capture_binding,
+        .arguments_capture_binding,
+        => switch (kind) {
+            .variable_var, .variable_let, .variable_const => true,
+            else => false,
+        },
         else => false,
     };
 }
 
-/// Preserve the exact producer binding nodes for Stage 3 names selected by
+/// Preserve exact producer binding nodes for names selected by
 /// the linker after semantic reanalysis. Names are never recovered by text.
-fn captureStage3OutputBindings(
+fn capturePostGraphOutputBindings(
     allocator: std.mem.Allocator,
     ast: *const ast_mod.Ast,
     semantic: *const ModuleSemanticData,
-) ![]const Stage3OutputBinding {
+) ![]const PostGraphOutputBinding {
     var binding_nodes: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer binding_nodes.deinit(allocator);
 
     for (ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .binding_identifier or raw >= semantic.symbol_ids.len) continue;
         const raw_symbol_id = semantic.symbol_ids[raw] orelse continue;
-        if (raw_symbol_id >= semantic.symbols.items.len) return error.InvalidStage3OutputSymbolId;
+        if (raw_symbol_id >= semantic.symbols.items.len) return error.InvalidPostGraphOutputSymbolId;
         const symbol = semantic.symbols.items[raw_symbol_id];
         const kind = symbol.synthetic_kind orelse continue;
-        if (!isStage3OutputNameKind(kind)) continue;
-        if (!isValidStage3OutputNameHint(kind, symbol.output_name_hint) or symbol.scope_id.isNone() or
-            !isStage3VariableKind(symbol.kind))
-            return error.InvalidStage3OutputBindingMetadata;
+        if (!isPostGraphOutputNameKind(kind)) continue;
+        if (!isValidPostGraphOutputNameHint(kind, symbol.output_name_hint) or symbol.scope_id.isNone() or
+            !isPostGraphOutputBindingKind(kind, symbol.kind))
+            return error.InvalidPostGraphOutputBindingMetadata;
         if (try binding_nodes.fetchPut(allocator, raw_symbol_id, @intCast(raw)) != null)
-            return error.AmbiguousStage3OutputBinding;
+            return error.AmbiguousPostGraphOutputBinding;
     }
 
-    var bindings: std.ArrayListUnmanaged(Stage3OutputBinding) = .empty;
+    var bindings: std.ArrayListUnmanaged(PostGraphOutputBinding) = .empty;
     for (semantic.symbols.items, 0..) |symbol, raw_symbol_id| {
         const kind = symbol.synthetic_kind orelse continue;
-        if (!isStage3OutputNameKind(kind)) continue;
-        if (!isValidStage3OutputNameHint(kind, symbol.output_name_hint) or symbol.scope_id.isNone() or
-            !isStage3VariableKind(symbol.kind))
-            return error.InvalidStage3OutputBindingMetadata;
-        const raw = binding_nodes.get(@intCast(raw_symbol_id)) orelse return error.MissingStage3OutputBinding;
+        if (!isPostGraphOutputNameKind(kind)) continue;
+        if (!isValidPostGraphOutputNameHint(kind, symbol.output_name_hint) or symbol.scope_id.isNone() or
+            !isPostGraphOutputBindingKind(kind, symbol.kind))
+            return error.InvalidPostGraphOutputBindingMetadata;
+        const raw = binding_nodes.get(@intCast(raw_symbol_id)) orelse return error.MissingPostGraphOutputBinding;
         try bindings.append(allocator, .{
             .node_index = raw,
             .output_name_hint = symbol.output_name_hint,
@@ -6865,10 +6884,10 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         captureWorkletFactoryLocalBindings(arena_alloc, transformer.ast, semantic) catch return
     else
         &[_]WorkletFactoryLocalBinding{};
-    const owned_stage3_output_bindings = if (module.semantic) |*semantic|
-        captureStage3OutputBindings(arena_alloc, transformer.ast, semantic) catch return
+    const owned_post_graph_output_bindings = if (module.semantic) |*semantic|
+        capturePostGraphOutputBindings(arena_alloc, transformer.ast, semantic) catch return
     else
-        &[_]Stage3OutputBinding{};
+        &[_]PostGraphOutputBinding{};
     const owned_runtime_helper_import_output_bindings = if (module.semantic) |*semantic|
         captureRuntimeHelperImportOutputBindings(
             arena_alloc,
@@ -6901,7 +6920,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
         .destructuring_temp_bindings = transformer.destructuring_temp_bindings,
         .preserved_class_name_nodes = owned_preserved_class_names,
         .worklet_factory_local_bindings = owned_worklet_factory_local_bindings,
-        .stage3_output_bindings = owned_stage3_output_bindings,
+        .post_graph_output_bindings = owned_post_graph_output_bindings,
         .runtime_helper_import_output_bindings = owned_runtime_helper_import_output_bindings,
         .ref_deltas = prepass_ref_deltas,
     };
@@ -7568,20 +7587,21 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 symbol.synthetic_name = ast.getText(ast.nodes.items[raw].data.string_ref);
                 symbol.output_name_hint = factory_binding.output_name_hint;
             }
-            for (cache.stage3_output_bindings) |output_binding| {
+            for (cache.post_graph_output_bindings) |output_binding| {
                 const raw = output_binding.node_index;
                 if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len or
                     ast.nodes.items[raw].tag != .binding_identifier)
-                    return error.InvalidStage3OutputBindingProvenance;
-                const id = analyzer.symbol_ids.items[raw] orelse return error.MissingStage3OutputBindingSymbol;
-                if (id >= analyzer.symbols.items.len) return error.InvalidStage3OutputSymbolId;
+                    return error.InvalidPostGraphOutputBindingProvenance;
+                const id = analyzer.symbol_ids.items[raw] orelse return error.MissingPostGraphOutputBindingSymbol;
+                if (id >= analyzer.symbols.items.len) return error.InvalidPostGraphOutputSymbolId;
                 const symbol = &analyzer.symbols.items[id];
-                if (!isStage3VariableKind(output_binding.binding_kind) or !isStage3VariableKind(symbol.kind) or
-                    symbol.scope_id.isNone()) return error.InvalidStage3OutputBindingKind;
+                if (!isPostGraphOutputBindingKind(output_binding.synthetic_kind, output_binding.binding_kind) or
+                    !isPostGraphOutputBindingKind(output_binding.synthetic_kind, symbol.kind) or
+                    symbol.scope_id.isNone()) return error.InvalidPostGraphOutputBindingKind;
                 if (symbol.synthetic_kind != null and symbol.synthetic_kind != output_binding.synthetic_kind)
-                    return error.Stage3OutputBindingKindConflict;
-                if (!isValidStage3OutputNameHint(output_binding.synthetic_kind, output_binding.output_name_hint)) {
-                    return error.InvalidStage3OutputNameKind;
+                    return error.PostGraphOutputBindingKindConflict;
+                if (!isValidPostGraphOutputNameHint(output_binding.synthetic_kind, output_binding.output_name_hint)) {
+                    return error.InvalidPostGraphOutputNameKind;
                 }
                 symbol.synthetic_kind = output_binding.synthetic_kind;
                 symbol.synthetic_name = ast.getText(ast.nodes.items[raw].data.string_ref);
@@ -7836,7 +7856,7 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
         for (cache.worklet_factory_local_bindings) |binding| {
             if (binding.node_index < ast.nodes.items.len and removed.isSet(binding.node_index)) return false;
         }
-        for (cache.stage3_output_bindings) |binding| {
+        for (cache.post_graph_output_bindings) |binding| {
             if (binding.node_index < ast.nodes.items.len and removed.isSet(binding.node_index)) return false;
         }
         var destructuring_temps = cache.destructuring_temp_bindings.keyIterator();

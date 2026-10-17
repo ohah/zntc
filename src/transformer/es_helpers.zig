@@ -1137,7 +1137,7 @@ pub fn makeSyntheticRef(self: anytype, name: []const u8) !NodeIndex {
     const is_lexical_capture_alias = std.mem.eql(u8, name, "_this") or std.mem.eql(u8, name, "_arguments");
     const resolved = if (is_lexical_capture_alias and self.semantic_edit_enabled and
         self.capture_frame != 0 and !self.capture_scope.isNone())
-        try resolveSyntheticNameAvoidingDynamicEval(self, name, self.capture_scope)
+        (try resolveScopedSyntheticOutputNameWithGraph(self, name, self.capture_scope)).name
     else
         try resolveSyntheticName(self, name);
     return markSynthetic(self, try makeIdentifierRef(self, resolved));
@@ -1398,6 +1398,18 @@ pub fn resolveScopedSyntheticOutputName(self: anytype, name: []const u8, scope_i
     return .{ .name = resolved, .late = late };
 }
 
+/// Resolve a capture spelling that may be assigned by either the standalone
+/// final-name pass or the bundler's post-graph linker pass.
+pub fn resolveScopedSyntheticOutputNameWithGraph(self: anytype, name: []const u8, scope_id: ScopeId) !ScopedSyntheticOutputName {
+    const late = canUseLateStandaloneOutputName(self, scope_id) or
+        canUseLateGraphOutputName(self, scope_id);
+    const resolved = if (late)
+        try deferSyntheticOutputName(self, name)
+    else
+        try resolveSyntheticNameAvoidingDynamicEval(self, name, scope_id);
+    return .{ .name = resolved, .late = late };
+}
+
 /// Resolve a readable generated binding whose name can also look like a
 /// transformer temp (for example `_c` or `_s`). Those names must still avoid
 /// source bindings before the semantic editor registers their exact SymbolId.
@@ -1416,6 +1428,47 @@ pub fn markStandaloneLateSyntheticSymbol(self: anytype, symbol_id: symbol_mod.Sy
     const raw = @backingInt(symbol_id);
     if (raw >= editor.symbols.items.len) std.debug.panic("late synthetic output name has an invalid SymbolId", .{});
     editor.symbols.items[raw].synthetic_kind = kind;
+}
+
+/// Mark an exact generated binding for the bundler's post-graph output-name
+/// resolver. The hint is carried through semantic reanalysis by its binding
+/// NodeIndex, so linker naming never has to rediscover the producer by text.
+pub fn markLateGraphSyntheticSymbol(
+    self: anytype,
+    symbol_id: symbol_mod.SymbolId,
+    kind: symbol_mod.SyntheticKind,
+    output_name_hint: []const u8,
+) void {
+    const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late graph output name has no semantic editor", .{});
+    const raw = @backingInt(symbol_id);
+    if (raw >= editor.symbols.items.len) std.debug.panic("late graph output name has an invalid SymbolId", .{});
+    if (output_name_hint.len == 0) std.debug.panic("late graph output name has an empty hint", .{});
+    const symbol = &editor.symbols.items[raw];
+    if (symbol.scope_id.isNone()) std.debug.panic("late graph output name has no owner scope", .{});
+    if (symbol.synthetic_kind) |existing_kind| {
+        if (existing_kind != kind) std.debug.panic("late graph output name has a conflicting SyntheticKind", .{});
+    }
+    if (symbol.output_name_hint.len > 0 and !std.mem.eql(u8, symbol.output_name_hint, output_name_hint))
+        std.debug.panic("late graph output name has a conflicting hint", .{});
+    symbol.synthetic_kind = kind;
+    symbol.output_name_hint = output_name_hint;
+}
+
+/// Select the proper exact-ID marker for a scope that admitted late naming.
+pub fn markScopedLateSyntheticSymbol(
+    self: anytype,
+    symbol_id: symbol_mod.SymbolId,
+    scope_id: ScopeId,
+    kind: symbol_mod.SyntheticKind,
+    output_name_hint: []const u8,
+) void {
+    if (canUseLateGraphOutputName(self, scope_id)) {
+        markLateGraphSyntheticSymbol(self, symbol_id, kind, output_name_hint);
+    } else if (canUseLateStandaloneOutputName(self, scope_id)) {
+        markStandaloneLateSyntheticSymbol(self, symbol_id, kind);
+    } else {
+        std.debug.panic("late synthetic output name lost its eligible scope", .{});
+    }
 }
 
 /// Mark a generated temp for standalone SymbolId-based final naming when its
@@ -1524,7 +1577,12 @@ fn syntheticNameInUse(self: anytype, name: []const u8) !bool {
 /// span 판 — 이름이 바뀌면 새 span 을 돌려준다.
 fn resolveSyntheticSpan(self: anytype, name_span: Span) !Span {
     const text = self.ast.getText(name_span);
-    const resolved = try resolveSyntheticName(self, text);
+    const is_lexical_capture_alias = std.mem.eql(u8, text, "_this") or std.mem.eql(u8, text, "_arguments");
+    const resolved = if (is_lexical_capture_alias and self.semantic_edit_enabled and
+        self.capture_frame != 0 and !self.capture_scope.isNone())
+        (try resolveScopedSyntheticOutputNameWithGraph(self, text, self.capture_scope)).name
+    else
+        try resolveSyntheticName(self, text);
     if (std.mem.eql(u8, resolved, self.ast.getText(name_span))) return name_span;
     return self.ast.addString(resolved);
 }
@@ -3001,7 +3059,7 @@ pub fn buildNewTargetCapture(self: anytype, span: Span) !NodeIndex {
             .span = initializer_span,
             .data = .{ .none = 1 },
         });
-    const output_name = try resolveScopedSyntheticOutputName(self, "_newTarget", self.capture_scope);
+    const output_name = try resolveScopedSyntheticOutputNameWithGraph(self, "_newTarget", self.capture_scope);
     const binding = try makeExactSyntheticBinding(self, output_name.name);
     const declaration = try makeVarDeclaration(
         self,

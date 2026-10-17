@@ -116,4 +116,39 @@ console.log(new Outer('parameter').read().join(':'));
     expect(result.exitCode, result.runStderr).toBe(0);
     expect(result.runOutput).toBe('true:undefined:undefined');
   });
+
+  test('bundler reanalysis restores exact post-graph names for lexical capture bindings', async () => {
+    const result = await bundleAndRun(
+      {
+        'index.ts': `
+var _this = 'source-this';
+var _arguments = 'source-arguments';
+var _newTarget = 'source-new-target';
+function capture() {
+  return (() => [this.value, arguments[0], new.target === capture].join(':'))();
+}
+console.log(capture.call({ value: 42 }, 7, 8), _this, _arguments, _newTarget);
+`,
+      },
+      'index.ts',
+      ['--target=es5', '--platform=node', '--format=cjs', '--minify-syntax'],
+      { env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' } },
+    );
+    cleanup = result.cleanup;
+
+    expect(result.bundleStderr).toContain('semantic_graph=reanalyzed');
+    const identity = result.bundleStderr
+      .split(/\r?\n/)
+      .find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('index.ts'),
+      );
+    expect(identity, result.bundleStderr).toContain('clean=1');
+    expect(identity, result.bundleStderr).toMatch(/missing_binding=0(?:\s|$)/);
+    expect(identity, result.bundleStderr).toMatch(/missing_reference=0(?:\s|$)/);
+    expect(result.exitCode, result.runStderr).toBe(0);
+    expect(result.runOutput).toBe('42:7:false source-this source-arguments source-new-target');
+    expect(result.bundleOutput).toMatch(/var _this\$1 = this\b/);
+    expect(result.bundleOutput).toMatch(/_arguments\$1 = arguments\b/);
+    expect(result.bundleOutput).toMatch(/_newTarget\$1 = this instanceof/);
+  });
 });

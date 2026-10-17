@@ -273,7 +273,8 @@ pub const SyntheticKind = enum(u8) {
     /// spellings from exact SymbolIds after all generated names are known.
     class_super_parameter,
     /// ES5 class and lexical `new.target` capture bindings. Standalone output
-    /// selects their spellings from exact SymbolIds after generated names are known.
+    /// and the bundler linker select their spellings from exact SymbolIds after
+    /// generated names are known.
     new_target_capture_binding,
     /// ES5 class-self write helper bindings. Standalone output selects their
     /// spellings from exact SymbolIds after generated names are known.
@@ -303,11 +304,11 @@ pub const SyntheticKind = enum(u8) {
     /// Cached function binding generated for a downlevel tagged template.
     /// Standalone output selects its spelling from the exact SymbolId.
     tagged_template_function_binding,
-    /// ES5 lexical `this` capture. Standalone output selects its spelling from
-    /// this exact SymbolId after all generated bindings are known.
+    /// ES5 lexical `this` capture. Standalone output and the bundler linker
+    /// select its spelling from this exact SymbolId after generated bindings are known.
     this_capture_binding,
-    /// ES5 lexical `arguments` capture. Standalone output selects its spelling
-    /// from this exact SymbolId after all generated bindings are known.
+    /// ES5 lexical `arguments` capture. Standalone output and the bundler linker
+    /// select its spelling from this exact SymbolId after generated bindings are known.
     arguments_capture_binding,
     /// Lexical locals inside the raw ESM runtime factory template. The graph
     /// records one exact identity per helper binding and the emitter rewrites

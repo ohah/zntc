@@ -872,7 +872,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 // until then; semantic-less callers retain the old resolver.
                 const ref = if (self.semantic_edit_enabled) blk: {
                     const arrow_scope = self.outputOwnedScope(self.native_parameter_arrow_owner) orelse self.current_scope;
-                    const output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_newTarget", arrow_scope);
+                    const output_name = try es_helpers.resolveScopedSyntheticOutputNameWithGraph(self, "_newTarget", arrow_scope);
                     break :blk try es_helpers.makeExactSyntheticRef(self, output_name.name);
                 } else try es_helpers.makeSyntheticRef(self, "_newTarget");
                 try self.trackNativeParameterArrowRef(self.native_parameter_arrow_owner, ref);
@@ -884,7 +884,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (node.data.none == 1 and
                 ((self.options.unsupported.arrow and self.arrow_this_depth > 0) or self.in_extracted_fn_body))
             {
-                const output_name = try es_helpers.resolveScopedSyntheticOutputName(self, "_newTarget", self.capture_scope);
+                const output_name = try es_helpers.resolveScopedSyntheticOutputNameWithGraph(self, "_newTarget", self.capture_scope);
                 const ref = try es_helpers.makeExactSyntheticRef(self, output_name.name);
                 try self.trackLexicalCaptureRef(ref, idx, .new_target_value);
                 return ref;

@@ -1114,6 +1114,22 @@ pub const Linker = struct {
                             !std.mem.eql(u8, symbol.output_name_hint, "_state"))
                             return error.InvalidGeneratorStateOutputBinding;
                     },
+                    .new_target_capture_binding => {
+                        const valid_kind = is_variable_local or symbol.kind == .parameter;
+                        if (!valid_kind or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_newTarget"))
+                            return error.InvalidNewTargetCaptureOutputBinding;
+                    },
+                    .this_capture_binding => {
+                        if (!is_variable_local or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_this"))
+                            return error.InvalidThisCaptureOutputBinding;
+                    },
+                    .arguments_capture_binding => {
+                        if (!is_variable_local or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_arguments"))
+                            return error.InvalidArgumentsCaptureOutputBinding;
+                    },
                     else => continue,
                 }
 
