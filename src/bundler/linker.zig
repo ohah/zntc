@@ -1064,6 +1064,11 @@ pub const Linker = struct {
                         if (!is_variable_local or symbol.scope_id.isNone() or symbol.output_name_hint.len == 0)
                             return error.InvalidStage3MemberDecoratorOutputBinding;
                     },
+                    .optional_catch_binding => {
+                        if (symbol.kind != .catch_binding or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_unused"))
+                            return error.InvalidOptionalCatchOutputBinding;
+                    },
                     else => continue,
                 }
 
