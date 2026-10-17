@@ -57,7 +57,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
         };
 
         fn classSuperParameterName(self: *Transformer, output_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!ClassSuperParameterName {
-            const late = es_helpers.canUseLateStandaloneOutputName(self, output_scope);
+            const late = es_helpers.canUseLateStandaloneOutputName(self, output_scope) or
+                es_helpers.canUseLateGraphOutputName(self, output_scope);
             const name = if (late)
                 try es_helpers.deferSyntheticOutputName(self, "_super")
             else
@@ -69,7 +70,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late class super parameter has no semantic editor", .{});
             const raw = @intFromEnum(symbol_id);
             if (raw >= editor.symbols.items.len) std.debug.panic("late class super parameter has an invalid SymbolId", .{});
-            editor.symbols.items[raw].synthetic_kind = .class_super_parameter;
+            const symbol = &editor.symbols.items[raw];
+            symbol.synthetic_kind = .class_super_parameter;
+            if (self.options.emit_runtime_helper_imports) symbol.output_name_hint = "_super";
         }
 
         /// A source class-name use is identified by its inner SymbolId. The
