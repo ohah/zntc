@@ -966,6 +966,7 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
         }
     }
     const member_sid = enum_member_symbol orelse return error.MissingEnumIifeMemberSymbol;
+    const actual_owner_sid = @intFromEnum(analyzer.symbols.items[member_sid].synthetic_owner_id orelse return error.MissingEnumIifeOwnerSymbol);
     mutated_symbols[member_sid].synthetic_owner_id = null;
     var mutated_options = options;
     mutated_options.semantic_symbols = mutated_symbols;
@@ -989,6 +990,20 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
     var wrong_kind_cg = Codegen.initWithOptions(allocator, transformer.ast, mutated_options);
     defer wrong_kind_cg.deinit();
     try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, wrong_kind_cg.generate(root));
+
+    const fake_owner_sid = mutated_symbols.len;
+    const fake_owner_symbols = try allocator.alloc(Symbol, fake_owner_sid + 1);
+    @memcpy(fake_owner_symbols[0..fake_owner_sid], mutated_symbols);
+    // Keep scope resolution valid while corrupting only the member's direct owner identity.
+    fake_owner_symbols[fake_owner_sid] = analyzer.symbols.items[actual_owner_sid];
+    fake_owner_symbols[fake_owner_sid].kind = .variable_const;
+    fake_owner_symbols[fake_owner_sid].synthetic_name = "_StaleEnumOwner";
+    fake_owner_symbols[member_sid].synthetic_owner_id = @enumFromInt(fake_owner_sid);
+    var wrong_owner_binding_kind_options = mutated_options;
+    wrong_owner_binding_kind_options.semantic_symbols = fake_owner_symbols;
+    var wrong_owner_binding_kind_cg = Codegen.initWithOptions(allocator, transformer.ast, wrong_owner_binding_kind_options);
+    defer wrong_owner_binding_kind_cg.deinit();
+    try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, wrong_owner_binding_kind_cg.generate(root));
 }
 
 test "Codegen: const enum removed" {
