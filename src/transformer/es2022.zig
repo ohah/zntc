@@ -141,7 +141,7 @@ pub fn ES2022(comptime Transformer: type) type {
             {
                 const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
                 for (body_members) |raw_idx| {
-                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                     if (member.tag == .static_block) {
                         has_static_block = true;
                         break;
@@ -172,7 +172,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 var key_i: u32 = 0;
                 while (key_i < body_len) : (key_i += 1) {
                     const raw_idx = self.ast.extra_data.items[body_start + key_i];
-                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                     const key: NodeIndex = switch (member.tag) {
                         .method_definition => self.readNodeIdx(member.data.extra, ast_mod.MethodExtra.key),
                         .property_definition => if (isPublicStaticField(self, member))
@@ -195,7 +195,7 @@ pub fn ES2022(comptime Transformer: type) type {
             var j: u32 = 0;
             while (j < body_len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[body_start + j];
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (member.tag == .static_block) {
                     // static block → IIFE로 변환
                     const iife = try buildStaticBlockIIFE(self, member, class_name_span);
@@ -205,17 +205,17 @@ pub fn ES2022(comptime Transformer: type) type {
                     try static_block_iifes.append(self.allocator, static_assign);
                 } else if (member.tag == .method_definition) {
                     if (lookupKeyMemo(static_key_memos.items, raw_idx)) |memo_key| {
-                        try self.scratch.append(self.allocator, try es_helpers.replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key));
+                        try self.scratch.append(self.allocator, try es_helpers.replaceMethodDefinitionKey(self, @fromBackingInt(@intCast(raw_idx)), memo_key));
                     } else if (already_visited) {
-                        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+                        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
                     } else {
-                        const new_member = try self.visitNode(@enumFromInt(raw_idx));
+                        const new_member = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                         if (!new_member.isNone()) try self.scratch.append(self.allocator, new_member);
                     }
                 } else if (already_visited) {
-                    try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+                    try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
                 } else {
-                    const new_member = try self.visitNode(@enumFromInt(raw_idx));
+                    const new_member = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
 
                     // pending_nodes 드레인
                     if (self.pending_nodes.items.len > pending_top) {
@@ -326,7 +326,7 @@ pub fn ES2022(comptime Transformer: type) type {
             const saved_flags = extras[me + 3];
             const saved_deco_start = extras[me + 4];
             const saved_deco_len = extras[me + 5];
-            const body_idx: NodeIndex = @enumFromInt(extras[me + 2]);
+            const body_idx: NodeIndex = @fromBackingInt(@intCast(extras[me + 2]));
 
             // derived class면 private field/method init 이 반드시 super() 뒤에 와야 함 (#1495).
             // this 참조(WeakMap.set 의 첫 인자) 가 super() 호출 전에는 ReferenceError.
@@ -336,9 +336,9 @@ pub fn ES2022(comptime Transformer: type) type {
                 try self.prependStatementsToBody(body_idx, stmts);
 
             const new_me = try self.ast.addExtras(&.{
-                saved_key,              saved_params,
-                @intFromEnum(new_body), saved_flags,
-                saved_deco_start,       saved_deco_len,
+                saved_key,             saved_params,
+                @backingInt(new_body), saved_flags,
+                saved_deco_start,      saved_deco_len,
             });
             return self.ast.addNode(.{
                 .tag = .method_definition,
@@ -410,7 +410,7 @@ pub fn ES2022(comptime Transformer: type) type {
             {
                 const body_members = self.ast.extra_data.items[body_start .. body_start + body_len];
                 for (body_members) |raw_idx| {
-                    const member = self.ast.getNode(@enumFromInt(raw_idx));
+                    const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                     const static_order = static_seen;
                     if (member.tag == .static_block) {
                         static_seen.blocks_before += 1;
@@ -421,7 +421,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     if (lower_methods and member.tag == .method_definition) {
                         const me = member.data.extra;
                         const extras = self.ast.extra_data.items;
-                        const key: NodeIndex = @enumFromInt(extras[me + ast_mod.MethodExtra.key]);
+                        const key: NodeIndex = @fromBackingInt(@intCast(extras[me + ast_mod.MethodExtra.key]));
                         const flags = extras[me + ast_mod.MethodExtra.flags];
                         const is_static = (flags & ast_mod.MethodFlags.is_static) != 0;
                         if (key.isNone()) continue;
@@ -439,8 +439,8 @@ pub fn ES2022(comptime Transformer: type) type {
                             .original_name = orig_name,
                             .weakset_name = names.ws_name,
                             .func_name = names.fn_name,
-                            .member_idx = @enumFromInt(raw_idx),
-                            .source_member_idx = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx),
+                            .member_idx = @fromBackingInt(@intCast(raw_idx)),
+                            .source_member_idx = @fromBackingInt(@intCast(self.scope_owner_origins.get(raw_idx) orelse raw_idx)),
                             .kind = pm_kind,
                             .class_name = if (is_static) class_name_text else null,
                             .class_name_node = class_name_node,
@@ -490,7 +490,7 @@ pub fn ES2022(comptime Transformer: type) type {
                     const id = try self.declareSyntheticInScope(binding, span, .variable_var, private_helper_scope) orelse
                         std.debug.panic("private field helper has no direct SymbolId", .{});
                     mapping.binding_node = binding;
-                    mapping.symbol_id = @intFromEnum(id);
+                    mapping.symbol_id = @backingInt(id);
                 }
                 try es_helpers.reservePrivateMethodWeakSetSymbols(
                     self,
@@ -652,11 +652,11 @@ pub fn ES2022(comptime Transformer: type) type {
             var j: u32 = 0;
             while (j < body_len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[body_start + j];
-                const member_idx: NodeIndex = @enumFromInt(raw_idx);
+                const member_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                 const member = self.ast.getNode(member_idx);
 
                 if (method_mapping_idx < method_mappings.items.len and
-                    @intFromEnum(method_mappings.items[method_mapping_idx].member_idx) == raw_idx)
+                    @backingInt(method_mappings.items[method_mapping_idx].member_idx) == raw_idx)
                 {
                     const m = method_mappings.items[method_mapping_idx];
                     method_mapping_idx += 1;
@@ -722,7 +722,7 @@ pub fn ES2022(comptime Transformer: type) type {
                                     if (self.semantic_edit_enabled) {
                                         const id = (try self.declareSyntheticInScope(memo.binding, span, .variable_var, private_helper_scope)) orelse
                                             std.debug.panic("computed field key temp has no direct SymbolId", .{});
-                                        temp_symbol = @intFromEnum(id);
+                                        temp_symbol = @backingInt(id);
                                     }
                                     key_ref = try exactTempRef(self, temp_name, temp_symbol);
                                     // Define semantics name the value like `[k] = fn` does; an
@@ -753,7 +753,7 @@ pub fn ES2022(comptime Transformer: type) type {
                 if (ctor_pos == null) {
                     const new_node = self.ast.getNode(new_member);
                     if (new_node.tag == .method_definition) {
-                        const nkey: NodeIndex = @enumFromInt(self.ast.extra_data.items[new_node.data.extra]);
+                        const nkey: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[new_node.data.extra]));
                         if (es_helpers.isConstructorKey(self, nkey)) {
                             ctor_pos = body_nodes.items.len;
                         }
@@ -878,9 +878,9 @@ pub fn ES2022(comptime Transformer: type) type {
             // method_definition: [key(0), params(1), body(2), flags(3), deco_start(4), deco_len(5)]
             const ctor_params_node = try self.ast.addFormalParameters(params_list, span);
             const ctor_extra = try self.ast.addExtras(&.{
-                @intFromEnum(ctor_key),
-                @intFromEnum(ctor_params_node),
-                @intFromEnum(ctor_body),
+                @backingInt(ctor_key),
+                @backingInt(ctor_params_node),
+                @backingInt(ctor_body),
                 0, 0, 0, // flags, deco_start, deco_len
             });
             const constructor = try self.ast.addNode(.{
@@ -940,7 +940,7 @@ pub fn ES2022(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < args_len) : (i_loop += 1) {
                 const arg_raw = self.ast.extra_data.items[args_start + i_loop];
-                const new_arg = try self.visitNode(@enumFromInt(arg_raw));
+                const new_arg = try self.visitNode(@fromBackingInt(@intCast(arg_raw)));
                 if (!new_arg.isNone()) {
                     try self.scratch.append(self.allocator, new_arg);
                 }
@@ -1078,8 +1078,8 @@ pub fn ES2022(comptime Transformer: type) type {
             // arrow_function_expression: extra = [params, body, flags]
             // flags = 0 (non-async)
             const arrow_extra = try self.ast.addExtras(&.{
-                @intFromEnum(params),
-                @intFromEnum(new_body),
+                @backingInt(params),
+                @backingInt(new_body),
                 0, // flags
             });
             const arrow = try self.ast.addNode(.{
@@ -1104,7 +1104,7 @@ pub fn ES2022(comptime Transformer: type) type {
             // arrow 는 call-target(.postfix) 위치에서 codegen 이 자동 wrap 한다.
             const empty_args = try self.ast.addNodeList(&.{});
             const call = try self.ast.addExtras(&.{
-                @intFromEnum(arrow),
+                @backingInt(arrow),
                 empty_args.start,
                 empty_args.len,
                 0, // flags

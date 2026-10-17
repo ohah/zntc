@@ -40,7 +40,7 @@ pub fn dispatchFunctionPlugins(self: *Transformer, result: NodeIndex, func_info:
     }
     if (api.modified_body) |new_body_idx| {
         const result_extra = self.ast.getNode(result).data.extra;
-        self.ast.extra_data.items[result_extra + functionBodyOffset(func_info.node_tag)] = @intFromEnum(new_body_idx);
+        self.ast.extra_data.items[result_extra + functionBodyOffset(func_info.node_tag)] = @backingInt(new_body_idx);
     }
     return api.replaced_node;
 }

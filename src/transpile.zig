@@ -252,7 +252,7 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) error{OutOfMemor
         if (import_decl.is_type_only) continue;
         var i: u32 = 0;
         while (i < import_decl.specs_len) : (i += 1) {
-            const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[import_decl.specs_start + i]);
+            const spec_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[import_decl.specs_start + i]));
             if (spec_idx.isNone()) continue;
             const spec = ast.getNode(spec_idx);
             if (spec.tag != .import_specifier) continue;
@@ -271,7 +271,7 @@ fn hasUnsupportedNamedImportLocalBindingShadow(ast: *const Ast) error{OutOfMemor
 
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
-        return scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(raw_idx), names_buf[0..names_len], 0, false, null);
+        return scanForUnsupportedBindingLiteShadow(ast, @fromBackingInt(@intCast(raw_idx)), names_buf[0..names_len], 0, false, null);
     }
     return false;
 }
@@ -295,7 +295,7 @@ fn bindingPatternImportShadowOverflow(ast: *const Ast, idx: ast_mod.NodeIndex, n
 
 fn functionExpressionInnerName(ast: *const Ast, node: ast_mod.Node) ?[]const u8 {
     if (node.tag != .function_expression and node.tag != .function) return null;
-    const name_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+    const name_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
     if (name_idx.isNone()) return null;
     return ast.getText(ast.getNode(name_idx).span);
 }
@@ -328,7 +328,7 @@ fn walkFunctionVarBindingPatterns(
     defer child_buf.deinit(ast.allocator);
 
     while (stack.pop()) |cur| {
-        if (cur.isNone() or @intFromEnum(cur) >= ast.nodes.items.len) continue;
+        if (cur.isNone() or @backingInt(cur) >= ast.nodes.items.len) continue;
         const node = ast.getNode(cur);
         switch (node.tag) {
             // function/arrow scope 경계 — var 는 함수 밖으로 안 샘. prune(자식 안 봄).
@@ -342,11 +342,11 @@ fn walkFunctionVarBindingPatterns(
                 const list_len = ast.extra_data.items[node.data.extra + 2];
                 var i: u32 = 0;
                 while (i < list_len) : (i += 1) {
-                    const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+                    const decl_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list_start + i]));
                     if (decl_idx.isNone()) continue;
                     const decl = ast.getNode(decl_idx);
                     if (decl.tag != .variable_declarator) continue;
-                    if (try onBindingPattern(ctx, @enumFromInt(ast.extra_data.items[decl.data.extra]))) return true;
+                    if (try onBindingPattern(ctx, @fromBackingInt(@intCast(ast.extra_data.items[decl.data.extra])))) return true;
                 }
                 // var-decl 도 자식(init 등) 계속 descend — 아래 child push 로 (원본 fall-through).
             },
@@ -380,13 +380,13 @@ fn scanVariableDeclarationForUnsupportedBindingLiteShadow(
     const before = counter.*;
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
-        const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+        const decl_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list_start + i]));
         if (decl_idx.isNone()) continue;
         const decl = ast.getNode(decl_idx);
         if (decl.tag != .variable_declarator) continue;
-        const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
+        const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[decl.data.extra]));
         if (try bindingPatternImportShadowOverflow(ast, binding_idx, names, counter)) return true;
-        const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra + 2]);
+        const init_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[decl.data.extra + 2]));
         if (try scanForUnsupportedBindingLiteShadow(ast, init_idx, names, scope_depth, inside_function, fn_shadow_count)) return true;
     }
 
@@ -461,7 +461,7 @@ fn scanChildrenForUnsupportedBindingLiteShadow(
     try Push.go(ast, node, &stack, &child_buf); // seed: node 의 직계 자식 (원본 순회 대상)
 
     while (stack.pop()) |cur| {
-        if (cur.isNone() or @intFromEnum(cur) >= ast.nodes.items.len) continue;
+        if (cur.isNone() or @backingInt(cur) >= ast.nodes.items.len) continue;
         const cnode = ast.getNode(cur);
         if (isScopeOrSpecialForBindingLite(cnode.tag)) {
             if (try scanForUnsupportedBindingLiteShadow(ast, cur, names, child_scope_depth, inside_function, fn_shadow_count)) return true;
@@ -502,11 +502,11 @@ fn scanFunctionForUnsupportedBindingLiteShadow(
     // BindingLite collector (markBindingLiteFunctionScope) 가 모으는 set 과 동일 — overflow 시 fallback.
     var fn_shadow_count: usize = 0;
     if (is_function_expression and functionExpressionNameImportShadowOverflow(ast, node, names, &fn_shadow_count)) return true;
-    if (!is_function_expression and try scanForUnsupportedBindingLiteShadow(ast, @enumFromInt(ast.extra_data.items[e]), names, scope_depth, inside_function, null)) return true;
+    if (!is_function_expression and try scanForUnsupportedBindingLiteShadow(ast, @fromBackingInt(@intCast(ast.extra_data.items[e])), names, scope_depth, inside_function, null)) return true;
     return scanFunctionScopeParamsAndBody(
         ast,
-        @enumFromInt(ast.extra_data.items[e + 1]),
-        @enumFromInt(ast.extra_data.items[e + 2]),
+        @fromBackingInt(@intCast(ast.extra_data.items[e + 1])),
+        @fromBackingInt(@intCast(ast.extra_data.items[e + 2])),
         names,
         scope_depth,
         inside_function,
@@ -555,8 +555,8 @@ fn scanForUnsupportedBindingLiteShadow(
             var arrow_shadow_count: usize = 0;
             return scanFunctionScopeParamsAndBody(
                 ast,
-                @enumFromInt(ast.extra_data.items[e]),
-                @enumFromInt(ast.extra_data.items[e + 1]),
+                @fromBackingInt(@intCast(ast.extra_data.items[e])),
+                @fromBackingInt(@intCast(ast.extra_data.items[e + 1])),
                 names,
                 scope_depth,
                 inside_function,
@@ -807,7 +807,7 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
         if (import_decl.is_type_only) continue;
         var i: u32 = 0;
         while (i < import_decl.specs_len) : (i += 1) {
-            const spec_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[import_decl.specs_start + i]);
+            const spec_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[import_decl.specs_start + i]));
             if (spec_idx.isNone()) continue;
             const spec = ast.getNode(spec_idx);
             if (spec.tag != .import_specifier) continue;
@@ -825,7 +825,7 @@ fn collectBindingLite(allocator: std.mem.Allocator, ast: *const Ast) !BindingLit
     const no_shadowed_names: []const []const u8 = &.{};
     for (ast.nodes.items, 0..) |node, raw_idx| {
         if (node.tag != .program) continue;
-        try markBindingLiteValueUses(ast, @enumFromInt(raw_idx), &lite, true, no_shadowed_names);
+        try markBindingLiteValueUses(ast, @fromBackingInt(@intCast(raw_idx)), &lite, true, no_shadowed_names);
         break;
     }
     return lite;
@@ -868,11 +868,11 @@ fn collectBindingLiteVariableDeclarationShadows(ast: *const Ast, node: ast_mod.N
     const list_len = ast.extra_data.items[node.data.extra + 2];
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
-        const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start + i]);
+        const decl_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list_start + i]));
         if (decl_idx.isNone()) continue;
         const decl = ast.getNode(decl_idx);
         if (decl.tag != .variable_declarator) continue;
-        try collectBindingLitePatternShadows(ast, @enumFromInt(ast.extra_data.items[decl.data.extra]), lite, buf, len);
+        try collectBindingLitePatternShadows(ast, @fromBackingInt(@intCast(ast.extra_data.items[decl.data.extra])), lite, buf, len);
     }
 }
 
@@ -907,7 +907,7 @@ fn collectBindingLiteListLexicalShadows(ast: *const Ast, list: ast_mod.NodeList,
     if (list.start + list.len > ast.extra_data.items.len) return;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const child_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+        const child_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start + i]));
         if (child_idx.isNone()) continue;
         const child = ast.getNode(child_idx);
         if (child.tag == .variable_declaration and ast.variableDeclarationKind(child).isLexical()) {
@@ -959,7 +959,7 @@ fn markBindingLiteListValueUses(ast: *const Ast, list: ast_mod.NodeList, lite: *
     if (list.start + list.len > ast.extra_data.items.len) return;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[list.start + i]), lite, value_context, shadowed_names);
+        try markBindingLiteValueUses(ast, @fromBackingInt(@intCast(ast.extra_data.items[list.start + i])), lite, value_context, shadowed_names);
     }
 }
 
@@ -1025,7 +1025,7 @@ fn markBindingLiteValueUses(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *Bind
 fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *BindingLite, value_context: bool, shadowed_names: []const []const u8) error{OutOfMemory}!bool {
     // children() 는 extra_data 값을 그대로 yield 하므로(범위 검증 안 함) none 외에 out-of-range 도
     // 가능 → getNode 전 bounds 가드(true=처리됨 취급, wrapper 는 자식 push 안 함). scanChildren 동일.
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return true;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return true;
     const node = ast.getNode(idx);
 
     if (Transformer.isTypeOnlyNode(node.tag) or node.tag.isTypeOnlyDeclaration()) return true;
@@ -1081,8 +1081,8 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
             return true;
         },
         .variable_declarator => {
-            try markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, shadowed_names);
-            try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra + 2]), lite, true, shadowed_names);
+            try markBindingPatternDefaultValueUses(ast, @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra])), lite, shadowed_names);
+            try markBindingLiteValueUses(ast, @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra + 2])), lite, true, shadowed_names);
             return true;
         },
         .function_declaration,
@@ -1095,8 +1095,8 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
                 lite,
                 shadowed_names,
                 node,
-                @enumFromInt(ast.extra_data.items[e + 1]),
-                @enumFromInt(ast.extra_data.items[e + 2]),
+                @fromBackingInt(@intCast(ast.extra_data.items[e + 1])),
+                @fromBackingInt(@intCast(ast.extra_data.items[e + 2])),
             );
             return true;
         },
@@ -1107,8 +1107,8 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
                 lite,
                 shadowed_names,
                 node,
-                @enumFromInt(ast.extra_data.items[e]),
-                @enumFromInt(ast.extra_data.items[e + 1]),
+                @fromBackingInt(@intCast(ast.extra_data.items[e])),
+                @fromBackingInt(@intCast(ast.extra_data.items[e + 1])),
             );
             return true;
         },
@@ -1136,8 +1136,8 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
         },
         .formal_parameter => {
             const e = node.data.extra;
-            try markBindingPatternDefaultValueUses(ast, @enumFromInt(ast.extra_data.items[e]), lite, shadowed_names);
-            try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[e + 2]), lite, true, shadowed_names);
+            try markBindingPatternDefaultValueUses(ast, @fromBackingInt(@intCast(ast.extra_data.items[e])), lite, shadowed_names);
+            try markBindingLiteValueUses(ast, @fromBackingInt(@intCast(ast.extra_data.items[e + 2])), lite, true, shadowed_names);
             return true;
         },
         .object_property => {
@@ -1155,7 +1155,7 @@ fn markBindingLiteValueUsesNode(ast: *const Ast, idx: ast_mod.NodeIndex, lite: *
         .static_member_expression,
         .private_field_expression,
         => {
-            try markBindingLiteValueUses(ast, @enumFromInt(ast.extra_data.items[node.data.extra]), lite, true, shadowed_names);
+            try markBindingLiteValueUses(ast, @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra])), lite, true, shadowed_names);
             return true;
         },
         else => {},
@@ -1180,7 +1180,7 @@ const StandaloneRuntimeHelperNameResolver = struct {
         if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports) return local_name;
 
         const symbol_id = transformer.runtime_helper_symbol_ids.get(base_name) orelse return error.TransformError;
-        const raw_id = @intFromEnum(symbol_id);
+        const raw_id = @backingInt(symbol_id);
         if (raw_id >= transformer.symbols.len) return error.TransformError;
         const symbol = transformer.symbols[raw_id];
         if (symbol.kind != .import_binding or symbol.synthetic_kind != .runtime_helper_preamble or
@@ -1312,9 +1312,9 @@ fn enumIifeSourceSymbolId(transformer: *const Transformer, parameter: @import("s
             node.span.end != parameter.declaration_span.end) continue;
         const extra = node.data.extra;
         if (extra >= transformer.ast.extra_data.items.len) return null;
-        const name_idx: ast_mod.NodeIndex = @enumFromInt(transformer.ast.extra_data.items[extra]);
+        const name_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[extra]));
         if (name_idx.isNone()) return null;
-        const name_raw = @intFromEnum(name_idx);
+        const name_raw = @backingInt(name_idx);
         if (name_raw >= transformer.symbol_ids.items.len) return null;
         return transformer.symbol_ids.items[name_raw];
     }
@@ -2769,17 +2769,17 @@ test "#4819 Flow component and JSX lowering retain generated and source identiti
         if (node.tag != .call_expression) continue;
         const call_extra = node.data.extra;
         if (call_extra + 2 >= output_parser.ast.extra_data.items.len) continue;
-        const callee: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[call_extra]);
+        const callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(output_parser.ast.extra_data.items[call_extra]));
         if (callee.isNone() or output_parser.ast.getNode(callee).tag != .static_member_expression) continue;
         const member_extra = output_parser.ast.getNode(callee).data.extra;
         if (member_extra + 1 >= output_parser.ast.extra_data.items.len) continue;
-        const property: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[member_extra + 1]);
+        const property: ast_mod.NodeIndex = @fromBackingInt(@intCast(output_parser.ast.extra_data.items[member_extra + 1]));
         if (property.isNone() or !std.mem.eql(u8, output_parser.ast.getText(output_parser.ast.getNode(property).span), "forwardRef")) continue;
         const args_start = output_parser.ast.extra_data.items[call_extra + 1];
         const args_len = output_parser.ast.extra_data.items[call_extra + 2];
         if (args_len != 1 or args_start >= output_parser.ast.extra_data.items.len) continue;
-        const argument: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[args_start]);
-        const argument_raw = @intFromEnum(argument);
+        const argument: ast_mod.NodeIndex = @fromBackingInt(@intCast(output_parser.ast.extra_data.items[args_start]));
+        const argument_raw = @backingInt(argument);
         if (argument_raw < output_analyzer.symbol_ids.items.len)
             forward_ref_argument_symbol = output_analyzer.symbol_ids.items[argument_raw];
     }
@@ -2792,12 +2792,12 @@ test "#4819 Flow component and JSX lowering retain generated and source identiti
         if (node.tag != .variable_declarator) continue;
         const extra = node.data.extra;
         if (extra + 2 >= output_parser.ast.extra_data.items.len) continue;
-        const binding: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[extra]);
-        const initializer: ast_mod.NodeIndex = @enumFromInt(output_parser.ast.extra_data.items[extra + 2]);
+        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(output_parser.ast.extra_data.items[extra]));
+        const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(output_parser.ast.extra_data.items[extra + 2]));
         if (binding.isNone() or initializer.isNone()) continue;
         const value = output_parser.ast.getNode(initializer);
         if (value.tag != .numeric_literal or !std.mem.eql(u8, output_parser.ast.getText(value.span), "4")) continue;
-        const binding_raw = @intFromEnum(binding);
+        const binding_raw = @backingInt(binding);
         if (binding_raw < output_analyzer.symbol_ids.items.len)
             source_collision_symbol = output_analyzer.symbol_ids.items[binding_raw];
     }
@@ -2882,7 +2882,7 @@ test "#4819 Flow ref-component helper is finalized through its exact SymbolId" {
         if (edited.symbol_ids[raw_node] == helper) binding_count += 1;
     }
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != helper) continue;
+        if (@backingInt(reference.symbol_id) != helper) continue;
         reference_count += 1;
         if (reference.flags.read) read_count += 1;
     }
@@ -4668,7 +4668,7 @@ test "#4819 standalone namespace and enum IIFE parameters resolve late names by 
     transformer.semantic_edit_enabled = true;
     var scopes = [_]Scope{
         .{ .parent = .none, .kind = .module, .is_strict = true },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = true },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = true },
     };
     transformer.scopes = &scopes;
 
@@ -4686,7 +4686,7 @@ test "#4819 standalone namespace and enum IIFE parameters resolve late names by 
         },
         .{
             .name = namespace_staging,
-            .scope_id = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
             .kind = .parameter,
             .declaration_span = namespace_staging,
             .synthetic_kind = .namespace_iife_parameter,
@@ -4701,7 +4701,7 @@ test "#4819 standalone namespace and enum IIFE parameters resolve late names by 
         },
         .{
             .name = enum_staging,
-            .scope_id = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
             .kind = .parameter,
             .declaration_span = enum_staging,
             .synthetic_kind = .enum_iife_parameter,
@@ -4710,7 +4710,7 @@ test "#4819 standalone namespace and enum IIFE parameters resolve late names by 
         },
         .{
             .name = duplicate_staging,
-            .scope_id = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
             .kind = .parameter,
             .declaration_span = duplicate_staging,
             .synthetic_kind = .namespace_iife_parameter,
@@ -5339,7 +5339,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
         },
     };
     for (&helper_symbols) |*symbol| {
-        symbol.scope_id = @enumFromInt(0);
+        symbol.scope_id = @fromBackingInt(@intCast(0));
         symbol.synthetic_kind = .runtime_helper_preamble;
     }
     var helper_symbol_ids: std.StringHashMapUnmanaged(@import("semantic/symbol.zig").SymbolId) = .empty;
@@ -5350,7 +5350,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
             "__classPrivateFieldSet"
         else
             entry.key_ptr.*;
-        try helper_symbol_ids.put(allocator, base_name, @enumFromInt(raw_id));
+        try helper_symbol_ids.put(allocator, base_name, @fromBackingInt(@intCast(raw_id)));
     }
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     defer transformer.deinit();
@@ -5446,7 +5446,7 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     try std.testing.expectEqualStrings("__propKey2", prop_key_resolved);
 
     const extends_id = transformer.runtime_helper_symbol_ids.get("__extends") orelse return error.MissingExtendsSymbolId;
-    try transformer.runtime_helper_symbol_ids.put(allocator, "__extends", @enumFromInt(1));
+    try transformer.runtime_helper_symbol_ids.put(allocator, "__extends", @fromBackingInt(@intCast(1)));
     try std.testing.expectError(
         error.TransformError,
         standaloneRuntimeHelperSymbolName(&transformer, "__extends", false),
@@ -5462,16 +5462,16 @@ test "#4819 standalone helper preamble resolves its emitted name through SymbolI
     helper_symbols[0].synthetic_kind = original_kind;
 
     var final_renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
-    try final_renames.put(allocator, @intFromEnum(extends_id), "mangled_extends");
+    try final_renames.put(allocator, @backingInt(extends_id), "mangled_extends");
     var final_output_names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
-    try final_output_names.put(allocator, @intFromEnum(extends_id), "late_extends");
+    try final_output_names.put(allocator, @backingInt(extends_id), "late_extends");
     var name_resolver = StandaloneRuntimeHelperNameResolver{
         .transformer = &transformer,
         .final_renames = &final_renames,
         .final_output_names = &final_output_names,
     };
     try std.testing.expectEqualStrings("mangled_extends", try name_resolver.resolve("__extends", false));
-    _ = final_renames.remove(@intFromEnum(extends_id));
+    _ = final_renames.remove(@backingInt(extends_id));
     try std.testing.expectEqualStrings("late_extends", try name_resolver.resolve("__extends", false));
 
     var helper_aliases = runtime_aliases.iterator();
@@ -5535,7 +5535,7 @@ test "#4819 standalone preamble-only helper keeps its producer SymbolId" {
     transformer.helper_scope_map = edited.helper_scope_map;
     transformer.references = edited.references;
 
-    const raw_id = @intFromEnum(symbol_id);
+    const raw_id = @backingInt(symbol_id);
     try std.testing.expect(raw_id < transformer.symbols.len);
     const symbol = transformer.symbols[raw_id];
     try std.testing.expectEqual(@import("semantic/symbol.zig").SymbolKind.import_binding, symbol.kind);

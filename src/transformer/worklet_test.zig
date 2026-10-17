@@ -95,7 +95,7 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
         try std.testing.expect(!symbol.scope_id.isNone());
         const output_scope = edited.scopes[symbol.scope_id.toIndex()];
         try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, output_scope.kind);
-        const symbol_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(raw_symbol_id);
+        const symbol_id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(@intCast(raw_symbol_id));
         var reference_count: usize = 0;
         for (edited.references) |reference| {
             if (reference.symbol_id != symbol_id) continue;
@@ -386,7 +386,7 @@ fn checkWorkletClassFactoryExactCoverage(
     var source_self_iter = analyzer.class_self_symbol_map.iterator();
     while (source_self_iter.next()) |entry| {
         if (entry.key_ptr.* >= transformer.parser_node_count) continue;
-        if (parser.ast.getNode(@enumFromInt(entry.key_ptr.*)).tag != .class_declaration) continue;
+        if (parser.ast.getNode(@fromBackingInt(@intCast(entry.key_ptr.*))).tag != .class_declaration) continue;
         source_class_self = entry.value_ptr.*;
         break;
     }
@@ -396,7 +396,7 @@ fn checkWorkletClassFactoryExactCoverage(
     var generated_self_iter = transformer.class_self_symbol_map.iterator();
     while (generated_self_iter.next()) |entry| {
         if (entry.key_ptr.* < transformer.parser_node_count) continue;
-        if (transformer.ast.getNode(@enumFromInt(entry.key_ptr.*)).tag != .class_expression) continue;
+        if (transformer.ast.getNode(@fromBackingInt(@intCast(entry.key_ptr.*))).tag != .class_expression) continue;
         try std.testing.expect(generated_class_self == null);
         generated_class_self = entry.value_ptr.*;
     }
@@ -451,14 +451,14 @@ fn checkWorkletClassFactoryExactCoverage(
     var generated_self_refs: usize = 0;
     var outer_class_refs: usize = 0;
     for (edited.references) |reference| {
-        const reference_symbol = @intFromEnum(reference.symbol_id);
+        const reference_symbol = @backingInt(reference.symbol_id);
         if (reference_symbol == source_class_self.?) source_self_refs += 1;
         if (reference_symbol == generated_class_self.?) generated_self_refs += 1;
         if (reference_symbol == outer_class_binding.?) outer_class_refs += 1;
     }
     var analyzed_source_self_refs: usize = 0;
     for (analyzer.references.items) |reference|
-        if (@intFromEnum(reference.symbol_id) == source_class_self.?) {
+        if (@backingInt(reference.symbol_id) == source_class_self.?) {
             analyzed_source_self_refs += 1;
         };
     if (analyzed_source_self_refs > 0) {

@@ -475,7 +475,7 @@ test "populateSyntheticSymbols: 리터럴 default만 _default 등록 (로컬 var
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @fromBackingInt(@intCast(0)), r.export_bindings, &sem_syms, alloc, null, null);
     const idx = findDefaultSymbol(sem_syms.items) orelse return error.NotFound;
     try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
 }
@@ -493,7 +493,7 @@ test "populateSyntheticSymbols: `export default x`(x는 로컬)은 _default 미�
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @fromBackingInt(@intCast(0)), r.export_bindings, &sem_syms, alloc, null, null);
     try std.testing.expectEqual(@as(?usize, null), findDefaultSymbol(sem_syms.items));
 }
 
@@ -510,7 +510,7 @@ test "populateSyntheticSymbols: default 없으면 빈 테이블" {
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @fromBackingInt(@intCast(0)), r.export_bindings, &sem_syms, alloc, null, null);
     try std.testing.expectEqual(@as(u32, 0), table.count());
     try std.testing.expectEqual(@as(usize, 0), sem_syms.items.len);
 }
@@ -528,7 +528,7 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    const m: types.ModuleIndex = @enumFromInt(7);
+    const m: types.ModuleIndex = @fromBackingInt(@intCast(7));
     try binding_scanner.populateSyntheticSymbols(&table, m, r.export_bindings, &sem_syms, alloc, null, null);
 
     try std.testing.expect(r.export_bindings[0].symbol.isValid());
@@ -536,7 +536,7 @@ test "populateSyntheticSymbols Phase 2: ExportBinding.symbol 연결" {
     switch (r.export_bindings[0].symbol) {
         .alias => return error.UnexpectedSpace,
         .semantic => |s| {
-            const idx: u32 = @intFromEnum(s.symbol);
+            const idx: u32 = @backingInt(s.symbol);
             try std.testing.expectEqualStrings("_default", sem_syms.items[idx].synthetic_name);
             const sk = sem_syms.items[idx].synthetic_kind orelse return error.NoSyntheticKind;
             try std.testing.expectEqual(semantic_symbol.SyntheticKind.default_export, sk);
@@ -557,7 +557,7 @@ test "populateSyntheticSymbols Phase 2: 비-default export는 invalid 유지" {
     var sem_syms: std.ArrayList(semantic_symbol.Symbol) = .empty;
     defer sem_syms.deinit(alloc);
 
-    try binding_scanner.populateSyntheticSymbols(&table, @enumFromInt(0), r.export_bindings, &sem_syms, alloc, null, null);
+    try binding_scanner.populateSyntheticSymbols(&table, @fromBackingInt(@intCast(0)), r.export_bindings, &sem_syms, alloc, null, null);
 
     try std.testing.expect(!r.export_bindings[0].symbol.isValid());
 }
@@ -582,7 +582,7 @@ test "populateSyntheticSymbols: low-level caller without SymbolId map retains sc
 
     try binding_scanner.populateSyntheticSymbols(
         &table,
-        @enumFromInt(0),
+        @fromBackingInt(@intCast(0)),
         r.export_bindings,
         &sem_syms,
         allocator,
@@ -652,7 +652,7 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
             error.MissingDefaultExportFacadeNode,
             binding_scanner.populateSyntheticSymbols(
                 &alias_table,
-                @enumFromInt(0),
+                @fromBackingInt(@intCast(0)),
                 missing_node_bindings,
                 &analyzer.symbols,
                 arena_allocator,
@@ -666,7 +666,7 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
             error.MissingDefaultExportFacadeSymbol,
             binding_scanner.populateSyntheticSymbols(
                 &alias_table,
-                @enumFromInt(0),
+                @fromBackingInt(@intCast(0)),
                 export_bindings,
                 &analyzer.symbols,
                 arena_allocator,
@@ -680,7 +680,7 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
             error.InvalidDefaultExportFacadeSymbol,
             binding_scanner.populateSyntheticSymbols(
                 &alias_table,
-                @enumFromInt(0),
+                @fromBackingInt(@intCast(0)),
                 export_bindings,
                 &analyzer.symbols,
                 arena_allocator,
@@ -692,7 +692,7 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
     }
     try binding_scanner.populateSyntheticSymbols(
         &alias_table,
-        @enumFromInt(0),
+        @fromBackingInt(@intCast(0)),
         export_bindings,
         &analyzer.symbols,
         arena_allocator,
@@ -702,7 +702,7 @@ fn expectDefaultExportIdentity(source: []const u8, expects_facade: bool) !void {
 
     const actual_id = switch (export_bindings[0].symbol) {
         .alias => return error.UnexpectedAlias,
-        .semantic => |reference| @intFromEnum(reference.symbol),
+        .semantic => |reference| @backingInt(reference.symbol),
     };
     if (expects_facade) {
         const facade_id = export_node_id orelse return error.MissingExpectedFacade;
@@ -813,7 +813,7 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
     defer alias_table.deinit();
     try binding_scanner.populateSyntheticSymbols(
         &alias_table,
-        @enumFromInt(0),
+        @fromBackingInt(@intCast(0)),
         export_bindings,
         &analyzer.symbols,
         arena_allocator,
@@ -833,7 +833,7 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
         error.MissingLocalExportSymbolNode,
         binding_scanner.populateSyntheticSymbols(
             &alias_table,
-            @enumFromInt(0),
+            @fromBackingInt(@intCast(0)),
             missing_node,
             &analyzer.symbols,
             arena_allocator,
@@ -843,7 +843,7 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
     );
 
     const alias_node = export_bindings[alias_index].local_symbol_node.?;
-    const alias_node_index = @intFromEnum(alias_node);
+    const alias_node_index = @backingInt(alias_node);
     var missing_id_map = try allocator.dupe(?u32, analyzer.symbol_ids.items);
     defer allocator.free(missing_id_map);
     missing_id_map[alias_node_index] = null;
@@ -851,7 +851,7 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
         error.MissingLocalExportSymbol,
         binding_scanner.populateSyntheticSymbols(
             &alias_table,
-            @enumFromInt(0),
+            @fromBackingInt(@intCast(0)),
             export_bindings,
             &analyzer.symbols,
             arena_allocator,
@@ -865,7 +865,7 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
         error.InvalidLocalExportSymbol,
         binding_scanner.populateSyntheticSymbols(
             &alias_table,
-            @enumFromInt(0),
+            @fromBackingInt(@intCast(0)),
             export_bindings,
             &analyzer.symbols,
             arena_allocator,
@@ -878,6 +878,6 @@ test "#4819 local exports use their exact analyzer SymbolId instead of scope nam
 fn expectSemanticExportSymbol(export_binding: ExportBinding, expected_symbol: u32) !void {
     switch (export_binding.symbol) {
         .alias => return error.UnexpectedAliasSymbol,
-        .semantic => |semantic_ref| try std.testing.expectEqual(expected_symbol, @intFromEnum(semantic_ref.symbol)),
+        .semantic => |semantic_ref| try std.testing.expectEqual(expected_symbol, @backingInt(semantic_ref.symbol)),
     }
 }

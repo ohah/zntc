@@ -52,7 +52,7 @@ fn setup(allocator: std.mem.Allocator, source: []const u8) !TestCtx {
 }
 
 fn topLevelStmt(ctx: *const TestCtx, stmt_idx: usize) Node {
-    const root_ni = @intFromEnum(ctx.root);
+    const root_ni = @backingInt(ctx.root);
     const root_node = ctx.ast.nodes.items[root_ni];
     const stmts = root_node.data.list;
     const raw_stmt: u32 = ctx.ast.extra_data.items[stmts.start + stmt_idx];
@@ -68,7 +68,7 @@ fn initOfDecl(ctx: *const TestCtx, stmt_idx: usize) NodeIndex {
     const raw_decl: u32 = ctx.ast.extra_data.items[list_start];
     const decl = ctx.ast.nodes.items[raw_decl];
     // variable_declarator extra: [pattern(0), type_ann(1), init(2)]
-    return @enumFromInt(ctx.ast.extra_data.items[decl.data.extra + 2]);
+    return @fromBackingInt(@intCast(ctx.ast.extra_data.items[decl.data.extra + 2]));
 }
 
 test "pure builtin: new Set() with unresolved globals is pure" {
@@ -181,7 +181,7 @@ test "pure builtin: stmt-level classification for `const s = new Set();`" {
     var ctx = try setup(alloc, "const s = new Set();");
     defer ctx.deinit();
 
-    const root_ni = @intFromEnum(ctx.root);
+    const root_ni = @backingInt(ctx.root);
     const root_node = ctx.ast.nodes.items[root_ni];
     const stmts = root_node.data.list;
     const raw_stmt: u32 = ctx.ast.extra_data.items[stmts.start];
@@ -1028,7 +1028,7 @@ fn removalCtx(ctx: *const TestCtx) purity.StmtRemovalCtx {
 fn firstIdentRef(ctx: *const TestCtx, name: []const u8) !NodeIndex {
     for (ctx.ast.nodes.items, 0..) |node, i| {
         if (node.tag != .identifier_reference) continue;
-        if (std.mem.eql(u8, ctx.ast.getText(node.span), name)) return @enumFromInt(i);
+        if (std.mem.eql(u8, ctx.ast.getText(node.span), name)) return @fromBackingInt(@intCast(i));
     }
     return error.IdentNotFound;
 }
@@ -1036,7 +1036,7 @@ fn firstIdentRef(ctx: *const TestCtx, name: []const u8) !NodeIndex {
 /// 주어진 tag 의 첫 번째 노드.
 fn firstNodeOfTag(ctx: *const TestCtx, tag: NodeTag) !NodeIndex {
     for (ctx.ast.nodes.items, 0..) |node, i| {
-        if (node.tag == tag) return @enumFromInt(i);
+        if (node.tag == tag) return @fromBackingInt(@intCast(i));
     }
     return error.NodeNotFound;
 }

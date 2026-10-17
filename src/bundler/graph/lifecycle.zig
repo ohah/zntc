@@ -92,7 +92,7 @@ pub fn reset(self: *ModuleGraph) void {
 /// 실제로는 module.deinit 가 importers/dependencies 둘 다 해제하지만, init 후 caller
 /// 가 build flow 에서 importers 재기록함.
 pub fn invalidateModule(self: *ModuleGraph, idx: ModuleIndex) void {
-    const idx_usize = @intFromEnum(idx);
+    const idx_usize = @backingInt(idx);
     std.debug.assert(idx_usize < self.modules.count());
     const mod_ptr = self.modules.at(idx_usize);
     const saved_path = mod_ptr.path;

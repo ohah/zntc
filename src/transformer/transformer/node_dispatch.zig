@@ -102,7 +102,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 const top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(top);
                 for (self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len]) |raw| {
-                    try self.scratch.append(self.allocator, @as(NodeIndex, @enumFromInt(raw)));
+                    try self.scratch.append(self.allocator, @as(NodeIndex, @fromBackingInt(@intCast(raw))));
                 }
                 for (pending.items) |decl_idx| {
                     try self.scratch.append(self.allocator, decl_idx);
@@ -127,14 +127,14 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
                 var prefix_len: usize = 0;
                 while (prefix_len < old_list.len) : (prefix_len += 1) {
                     const raw = self.ast.extra_data.items[old_list.start + @as(u32, @intCast(prefix_len))];
-                    const child: NodeIndex = @enumFromInt(raw);
+                    const child: NodeIndex = @fromBackingInt(@intCast(raw));
                     const child_tag = self.ast.getNode(child).tag;
                     if (child_tag != .directive and child_tag != .hashbang) break;
                     try self.scratch.append(self.allocator, child);
                 }
                 try self.scratch.append(self.allocator, alias_import);
                 for (self.ast.extra_data.items[old_list.start + @as(u32, @intCast(prefix_len)) .. old_list.start + old_list.len]) |raw| {
-                    try self.scratch.append(self.allocator, @enumFromInt(raw));
+                    try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
                 }
                 const new_list = try self.ast.addNodeList(self.scratch.items[top..]);
                 output = try self.ast.addNode(.{
@@ -323,14 +323,14 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         => {
             // ES 다운레벨링: ** → Math.pow (target < es2016)
             if (self.options.unsupported.exponentiation and node.tag == .binary_expression) {
-                const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (op == .star2) {
                     return es2016.ES2016(Transformer).lowerExponentiation(self, node);
                 }
             }
             // ES 다운레벨링: ?? → ternary
             if (self.options.unsupported.nullish_coalescing and node.tag == .logical_expression) {
-                const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (op == .question2) {
                     return es2020.ES2020(Transformer).lowerNullishCoalescing(self, node);
                 }
@@ -340,7 +340,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             if (node.tag == .binary_expression and
                 (self.current_private_fields.len > 0 or self.current_private_methods.len > 0))
             {
-                const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (op == .kw_in) {
                     if (es2015_class.ES2015Class(Transformer).lowerPrivateIn(self, node)) |result| {
                         return result;
@@ -376,14 +376,14 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             }
             // ES 다운레벨링: **= → a = Math.pow(a, b) (es2016)
             if (self.options.unsupported.exponentiation) {
-                const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (op == .star2_eq) {
                     return es2016.ES2016(Transformer).lowerExponentiationAssignment(self, node);
                 }
             }
             // ES 다운레벨링: ??=, ||=, &&= (es2021)
             if (self.options.unsupported.logical_assignment) {
-                const op: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const op: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (op == .question2_eq) {
                     return es2021.ES2021(Transformer).lowerNullishAssignment(self, node);
                 } else if (op == .pipe2_eq) {
@@ -1102,7 +1102,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .identifier_reference => {
             if (self.generated_class_copy_depth > 0 and
                 self.generated_class_copy_source_self_symbol != null and
-                @intFromEnum(idx) < self.parser_node_count and
+                @backingInt(idx) < self.parser_node_count and
                 self.getSymbolIdAt(idx) == self.generated_class_copy_source_self_symbol)
             {
                 return self.cloneGeneratedClassSelfReference(idx);
@@ -1140,7 +1140,7 @@ pub fn visitNodeInner(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         .assignment_target_identifier => {
             if (self.generated_class_copy_depth > 0 and
                 self.generated_class_copy_source_self_symbol != null and
-                @intFromEnum(idx) < self.parser_node_count and
+                @backingInt(idx) < self.parser_node_count and
                 self.getSymbolIdAt(idx) == self.generated_class_copy_source_self_symbol)
             {
                 return self.cloneGeneratedClassSelfReference(idx);
@@ -1253,7 +1253,7 @@ fn moveLabelOntoLoopInBlock(self: *Transformer, label: NodeIndex, block_idx: Nod
     const block = self.ast.getNode(block_idx);
     if (block.tag != .block_statement or block.data.list.len == 0) return null;
     const last_pos = block.data.list.start + block.data.list.len - 1;
-    const last_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[last_pos]);
+    const last_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[last_pos]));
     const last_tag = self.ast.getNode(last_idx).tag;
     if (last_tag != .for_statement and last_tag != .for_in_statement and
         last_tag != .while_statement and last_tag != .do_while_statement) return null;
@@ -1267,7 +1267,7 @@ fn moveLabelOntoLoopInBlock(self: *Transformer, label: NodeIndex, block_idx: Nod
     defer items.deinit(self.allocator);
     var i: u32 = 0;
     while (i + 1 < block.data.list.len) : (i += 1) {
-        try items.append(self.allocator, @enumFromInt(self.ast.extra_data.items[block.data.list.start + i]));
+        try items.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[block.data.list.start + i])));
     }
     try items.append(self.allocator, labeled_loop);
     const list = try self.ast.addNodeList(items.items);

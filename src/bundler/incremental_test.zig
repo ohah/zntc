@@ -2212,7 +2212,7 @@ test "Phase B: 보존 경로가 requested_exports 를 reset — parse_arena dang
         try std.testing.expect(!r1.hasErrors());
     }
     const dep_idx = graph.path_to_module.get(dep_abs) orelse return error.DepNotFound;
-    const dep_key: u32 = @intFromEnum(dep_idx);
+    const dep_key: u32 = @backingInt(dep_idx);
 
     var round: usize = 0;
     while (round < 3) : (round += 1) {

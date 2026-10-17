@@ -80,7 +80,7 @@ pub fn afterMethodParams(ast: *const ast_mod.Ast, method: Node) ?u32 {
     const params = ast.functionParamsList(method);
     var pos: usize = undefined;
     if (params.len > 0) {
-        const last: NodeIndex = @enumFromInt(ast.extra_data.items[params.start + params.len - 1]);
+        const last: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[params.start + params.len - 1]));
         if (last.isNone()) return null;
         pos = ast.getNode(last).span.end;
     } else {
@@ -119,7 +119,7 @@ fn findTypeNodeAt(self: anytype, type_start: u32) ?NodeIndex {
     for (self.ast.nodes.items, 0..) |node, raw| {
         if (node.span.start != type_start or !type_only.isTypeOnlyNode(node.tag)) continue;
         if (node.span.end >= best_end) {
-            best = @enumFromInt(raw);
+            best = @fromBackingInt(@intCast(raw));
             best_end = node.span.end;
         }
     }
@@ -184,12 +184,12 @@ fn findTypeAnnotationForParam(self: anytype, param_idx: NodeIndex, type_start: u
         anchor = switch (node.tag) {
             .assignment_pattern => node.data.binary.left,
             .spread_element, .rest_element => node.data.unary.operand,
-            .formal_parameter => @enumFromInt(self.ast.extra_data.items[node.data.extra]),
+            .formal_parameter => @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra])),
             else => break,
         };
     }
     if (anchor.isNone()) return null;
-    const anchor_raw = @intFromEnum(anchor);
+    const anchor_raw = @backingInt(anchor);
     if (anchor_raw >= self.ast.nodes.items.len) return null;
 
     var best: ?NodeIndex = null;
@@ -199,7 +199,7 @@ fn findTypeAnnotationForParam(self: anytype, param_idx: NodeIndex, type_start: u
         const node = self.ast.nodes.items[raw];
         if (!type_only.isTypeOnlyNode(node.tag)) break;
         if (node.span.start == type_start and node.span.end >= best_end) {
-            best = @enumFromInt(raw);
+            best = @fromBackingInt(@intCast(raw));
             best_end = node.span.end;
         }
     }
@@ -238,7 +238,7 @@ fn makeTypeofGuardWithRef(self: anytype, name: []const u8, name_ref: NodeIndex) 
 
     // typeof X
     const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
-        @intFromEnum(name_ref), @intFromEnum(Kind.kw_typeof),
+        @backingInt(name_ref), @backingInt(Kind.kw_typeof),
     });
 
     // "undefined"
@@ -249,7 +249,7 @@ fn makeTypeofGuardWithRef(self: anytype, name: []const u8, name_ref: NodeIndex) 
     const eq_check = try self.ast.addNode(.{
         .tag = .binary_expression,
         .span = zero_span,
-        .data = .{ .binary = .{ .left = typeof_expr, .right = undef_str, .flags = @intFromEnum(Kind.eq3) } },
+        .data = .{ .binary = .{ .left = typeof_expr, .right = undef_str, .flags = @backingInt(Kind.eq3) } },
     });
 
     // Object
@@ -304,8 +304,8 @@ fn isTypeOnlyImportBinding(self: anytype, name: []const u8, symbol_id: u32) bool
             import.specs_len > self.ast.extra_data.items.len - import.specs_start) continue;
         var i: u32 = 0;
         while (i < import.specs_len) : (i += 1) {
-            const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[import.specs_start + i]);
-            if (spec_idx.isNone() or @intFromEnum(spec_idx) >= self.ast.nodes.items.len) continue;
+            const spec_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[import.specs_start + i]));
+            if (spec_idx.isNone() or @backingInt(spec_idx) >= self.ast.nodes.items.len) continue;
             const spec = self.ast.getNode(spec_idx);
             const local_idx = switch (spec.tag) {
                 .import_default_specifier, .import_namespace_specifier => spec_idx,
@@ -340,7 +340,7 @@ pub fn buildMetadataCall(self: anytype, key: []const u8, value_idx: NodeIndex) E
 
     const args = try self.ast.addNodeList(&.{ key_node, value_idx });
     return self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
 }
 
@@ -354,8 +354,8 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
     while (j < params.len) : (j += 1) {
         if (params.start + j >= self.ast.extra_data.items.len) break;
         const raw = self.ast.extra_data.items[params.start + j];
-        const p_idx: NodeIndex = @enumFromInt(raw);
-        if (p_idx.isNone() or @intFromEnum(p_idx) >= self.ast.nodes.items.len) {
+        const p_idx: NodeIndex = @fromBackingInt(@intCast(raw));
+        if (p_idx.isNone() or @backingInt(p_idx) >= self.ast.nodes.items.len) {
             try type_nodes.append(self.allocator, try makeMetadataNameRef(self, "Object"));
             continue;
         }
@@ -364,7 +364,7 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
             // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
             const pe = param.data.extra;
             const type_ann_idx: NodeIndex = if (pe + 1 < self.ast.extra_data.items.len)
-                @enumFromInt(self.ast.extra_data.items[pe + 1])
+                @fromBackingInt(@intCast(self.ast.extra_data.items[pe + 1]))
             else
                 .none;
             if (!type_ann_idx.isNone()) {
@@ -372,7 +372,7 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
             } else {
                 // A parameter property / decorated parameter keeps its type with
                 // the inner binding (`private s: Service`), as a plain one does.
-                const inner: NodeIndex = @enumFromInt(self.ast.extra_data.items[pe]);
+                const inner: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[pe]));
                 const type_val = if (inner.isNone())
                     try makeMetadataNameRef(self, "Object")
                 else
@@ -396,15 +396,15 @@ pub fn buildParamTypesArray(self: anytype, params: ast_mod.NodeList) Error!NodeI
 /// (`s: Service` / `s: ns.Service` → "Service" / "ns"), mirroring
 /// `buildParamTypesArray`. null when it has no annotation.
 pub fn metadataTypeRoot(ast: *const ast_mod.Ast, param_idx: NodeIndex) ?[]const u8 {
-    if (param_idx.isNone() or @intFromEnum(param_idx) >= ast.nodes.items.len) return null;
+    if (param_idx.isNone() or @backingInt(param_idx) >= ast.nodes.items.len) return null;
     const param = ast.getNode(param_idx);
     switch (param.tag) {
         .formal_parameter => {
             const pe = param.data.extra;
             if (pe + 1 >= ast.extra_data.items.len) return null;
-            const type_idx: NodeIndex = @enumFromInt(ast.extra_data.items[pe + 1]);
-            if (type_idx.isNone()) return metadataTypeRoot(ast, @enumFromInt(ast.extra_data.items[pe]));
-            if (@intFromEnum(type_idx) >= ast.nodes.items.len) return null;
+            const type_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[pe + 1]));
+            if (type_idx.isNone()) return metadataTypeRoot(ast, @fromBackingInt(@intCast(ast.extra_data.items[pe])));
+            if (@backingInt(type_idx) >= ast.nodes.items.len) return null;
             const type_node = ast.getNode(type_idx);
             const name = switch (type_node.tag) {
                 .ts_type_reference => qualified_type_name.typeReferenceName(ast, type_node) orelse ast.getText(type_node.span),
@@ -490,7 +490,7 @@ pub fn appendMemberMetadata(
     const param_types = try buildParamTypesArray(self, params);
     if ((flags & ast_mod.MethodFlags.is_setter) != 0) {
         const first = self.ast.getNode(param_types).data.list;
-        const type_val = if (first.len > 0) @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[first.start])) else try makeMetadataNameRef(self, "Object");
+        const type_val = if (first.len > 0) @as(NodeIndex, @fromBackingInt(@intCast(self.ast.extra_data.items[first.start]))) else try makeMetadataNameRef(self, "Object");
         // A separate array: one node cannot appear twice in the output.
         try deco_list.append(self.allocator, try buildMetadataCall(self, "design:type", type_val));
         try deco_list.append(self.allocator, try buildMetadataCall(self, "design:paramtypes", try buildParamTypesArray(self, params)));

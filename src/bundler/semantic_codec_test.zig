@@ -127,8 +127,8 @@ test "semantic_codec: merged namespace member owner IDs survive cache round-trip
     const helper_symbol_id = ana.symbols.items.len;
     try ana.symbols.append(alloc, .{
         .name = helper_name_span,
-        .scope_id = @enumFromInt(0),
-        .origin_scope = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
+        .origin_scope = @fromBackingInt(@intCast(0)),
         .kind = .import_binding,
         .decl_flags = @import("../semantic/symbol.zig").SymbolKind.import_binding.declFlags(),
         .declaration_span = Span.EMPTY,
@@ -448,8 +448,8 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
             s.synthetic_name = ""; // 슬라이스는 명시 세팅(poison ptr 미사용)
             s.output_name_hint = "";
             s.name = .{ .start = 1, .end = 2 };
-            s.scope_id = @enumFromInt(0);
-            s.origin_scope = @enumFromInt(0);
+            s.scope_id = @fromBackingInt(@intCast(0));
+            s.origin_scope = @fromBackingInt(@intCast(0));
             s.kind = .variable_const;
             s.decl_flags = .{ .block_scoped = true, .is_const = true };
             s.declaration_span = .{ .start = 1, .end = 2 };
@@ -462,7 +462,7 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
 
             const scopes = try a.alloc(Scope, 1);
             @memset(std.mem.asBytes(&scopes[0]), poison);
-            scopes[0].parent = @enumFromInt(std.math.maxInt(u32));
+            scopes[0].parent = @fromBackingInt(@intCast(std.math.maxInt(u32)));
             scopes[0].kind = .global;
             scopes[0].is_strict = true;
             scopes[0].subtree_has_direct_eval = false;
@@ -471,10 +471,10 @@ test "semantic_codec: struct padding poison 이 직렬화에 새지 않는다 (#
 
             const refs = try a.alloc(Reference, 1);
             @memset(std.mem.asBytes(&refs[0]), poison);
-            refs[0].node_index = @enumFromInt(3);
+            refs[0].node_index = @fromBackingInt(@intCast(3));
             refs[0].declaration_node_index = .none;
-            refs[0].scope_id = @enumFromInt(0);
-            refs[0].symbol_id = @enumFromInt(0);
+            refs[0].scope_id = @fromBackingInt(@intCast(0));
+            refs[0].symbol_id = @fromBackingInt(@intCast(0));
             refs[0].stmt_idx = 0;
             refs[0].scope_stmt_idx = 0;
             refs[0].flags = .{ .read = true };

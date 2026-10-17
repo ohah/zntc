@@ -131,7 +131,7 @@ pub fn tryParseGenericArrow(self: *Parser, is_async: bool) ParseError2!?NodeInde
     try self.advance(); // skip =>
     const body = try self.parseArrowBody(is_async, params_node);
     const flags: u32 = if (is_async) 0x01 else 0;
-    const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), flags });
+    const ae = try self.ast.addExtras(&.{ @backingInt(params_node), @backingInt(body), flags });
     return try self.ast.addNode(.{
         .tag = .arrow_function_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },

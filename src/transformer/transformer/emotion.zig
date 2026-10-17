@@ -134,7 +134,7 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {
         const spec_idx_raw = self.ast.extra_data.items[x.specs_start + i];
-        const spec_idx: NodeIndex = @enumFromInt(spec_idx_raw);
+        const spec_idx: NodeIndex = @fromBackingInt(@intCast(spec_idx_raw));
         if (spec_idx.isNone()) continue;
         const spec_node = self.ast.getNode(spec_idx);
         switch (spec_node.tag) {
@@ -165,7 +165,7 @@ pub fn detectEmotionImport(self: *Transformer, node: Node) Error!void {
                         if (std.mem.eql(u8, spec.field, "css_binding")) {
                             self.plugins.emotion.css_binding_node = local_idx;
                             self.plugins.emotion.css_import_source_node = x.source;
-                            self.plugins.emotion.css_import_phase_flags = @intFromEnum(x.phase);
+                            self.plugins.emotion.css_import_phase_flags = @backingInt(x.phase);
                             self.plugins.emotion.css_import_attrs_start = x.attrs_start;
                             self.plugins.emotion.css_import_attrs_len = x.attrs_len;
                         }
@@ -199,7 +199,7 @@ fn hasGeneratedCssPropCallsite(self: *Transformer) bool {
     for (self.ast.nodes.items) |node| {
         if (node.tag != .jsx_element or !self.ast.hasExtra(node.data.extra, 4)) continue;
         const extra = node.data.extra;
-        const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra]);
+        const tag_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra]));
         const attrs_start = self.ast.extra_data.items[extra + 1];
         const attrs_len = self.ast.extra_data.items[extra + 2];
         if (attrs_start > self.ast.extra_data.items.len or attrs_len > self.ast.extra_data.items.len - attrs_start) continue;
@@ -250,8 +250,8 @@ pub fn maybeTransformEmotionTemplate(
 
     const e = init_node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return init_idx;
-    const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-    const template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    const tag_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+    const template_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
     const flags = self.ast.extra_data.items[e + 2];
 
     if (!tagMatchesEmotion(self, tag_idx)) return init_idx;
@@ -276,8 +276,8 @@ pub fn maybeTransformEmotionTemplate(
     if (new_template == template_idx) return init_idx;
 
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(tag_idx),
-        @intFromEnum(new_template),
+        @backingInt(tag_idx),
+        @backingInt(new_template),
         flags,
     });
     return self.ast.addNode(.{
@@ -366,7 +366,7 @@ pub fn maybeApplyAutoLabelForJsxAttr(
 /// autoLabel 비활성 (.never / dev_only + production define) 이면 label 인자 생략.
 fn hasShadowingBindingName(self: *Transformer, name: []const u8, owner: NodeIndex) bool {
     for (self.ast.nodes.items, 0..) |node, raw| {
-        if (raw == @intFromEnum(owner) or node.tag != .binding_identifier) continue;
+        if (raw == @backingInt(owner) or node.tag != .binding_identifier) continue;
         if (cooked_name.eql(self.ast.getText(node.data.string_ref), name)) return true;
     }
     return false;
@@ -381,7 +381,7 @@ fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
         .{ .name = try es_helpers.resolveSyntheticName(self, "_emotionCss"), .late = false };
     const name = output_name.name;
     const binding = try es_helpers.makeExactSyntheticBinding(self, name);
-    const program_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
+    const program_idx: NodeIndex = @fromBackingInt(@intCast(self.parser_node_count - 1));
     const program_span = self.ast.getNode(program_idx).span;
     const anchor: Span = .{ .start = program_span.start, .end = program_span.start };
     const imported_source = self.plugins.emotion.css_import_source_node orelse
@@ -403,7 +403,7 @@ fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
     const import_extra = try self.ast.addExtras(&.{
         specs.start,
         specs.len,
-        @intFromEnum(imported_source),
+        @backingInt(imported_source),
         self.plugins.emotion.css_import_phase_flags,
         self.plugins.emotion.css_import_attrs_start,
         self.plugins.emotion.css_import_attrs_len,
@@ -444,7 +444,7 @@ fn wrapCssPropInCssCall(self: *Transformer, value_idx: NodeIndex, label: []const
 
     // Args: [value, optional label string]
     var args_buf: [2]u32 = undefined;
-    args_buf[0] = @intFromEnum(value_idx);
+    args_buf[0] = @backingInt(value_idx);
     var args_count: u32 = 1;
 
     if (labelEnabledNow(self) and label.len > 0) {
@@ -459,7 +459,7 @@ fn wrapCssPropInCssCall(self: *Transformer, value_idx: NodeIndex, label: []const
             .span = label_span,
             .data = .{ .string_ref = label_span },
         });
-        args_buf[1] = @intFromEnum(label_node);
+        args_buf[1] = @backingInt(label_node);
         args_count = 2;
     }
 
@@ -467,7 +467,7 @@ fn wrapCssPropInCssCall(self: *Transformer, value_idx: NodeIndex, label: []const
     const args_start = try self.ast.addExtras(args_buf[0..args_count]);
     const flags: u32 = ast_mod.CallFlags.is_pure;
     const call_extra = try self.ast.addExtras(&.{
-        @intFromEnum(callee),
+        @backingInt(callee),
         args_start,
         args_count,
         flags,
@@ -526,7 +526,7 @@ pub fn maybeEnterClassNamesScope(self: *Transformer, jsx_node: ast_mod.Node) Err
     // jsx_element extra: [tag_name, attrs_start, attrs_len, children_start, children_len]
     const e = jsx_node.data.extra;
     if (!self.ast.hasExtra(e, 4)) return false;
-    const tag_name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const tag_name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
     if (!jsxIdentifierEquals(self, tag_name_idx, binding)) return false;
 
     const children_start = self.ast.extra_data.items[e + 3];
@@ -563,7 +563,7 @@ fn findRenderPropFunction(self: *Transformer, children_start: u32, children_len:
     if (children_len == 0) return null;
     const indices = self.ast.extra_data.items[children_start .. children_start + children_len];
     for (indices) |raw_idx| {
-        const child_idx: NodeIndex = @enumFromInt(raw_idx);
+        const child_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         const child = self.ast.getNode(child_idx);
         if (child.tag != .jsx_expression_container) continue;
         const inner = child.data.unary.operand;
@@ -585,7 +585,7 @@ fn extractDestructuredCssLocal(self: *Transformer, fn_idx: NodeIndex) ?[]const u
     const fn_node = self.ast.getNode(fn_idx);
     const params = self.ast.functionParams(fn_node);
     if (params.len == 0) return null;
-    const first_param_idx: NodeIndex = @enumFromInt(params[0]);
+    const first_param_idx: NodeIndex = @fromBackingInt(@intCast(params[0]));
     const first_param = self.ast.getNode(first_param_idx);
     if (first_param.tag != .object_pattern) return null;
 
@@ -594,7 +594,7 @@ fn extractDestructuredCssLocal(self: *Transformer, fn_idx: NodeIndex) ?[]const u
     const props = self.ast.extra_data.items[list.start .. list.start + list.len];
 
     for (props) |raw_idx| {
-        const prop_idx: NodeIndex = @enumFromInt(raw_idx);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         const prop = self.ast.getNode(prop_idx);
         if (prop.tag != .binding_property) continue;
 
@@ -660,11 +660,11 @@ fn chainRootIsStyledBinding(self: *Transformer, tag_idx: NodeIndex) bool {
             },
             .static_member_expression => {
                 if (!self.ast.hasExtra(node.data.extra, 1)) return false;
-                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+                current = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
             },
             .call_expression => {
                 if (!self.ast.hasExtra(node.data.extra, 0)) return false;
-                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+                current = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
             },
             else => return false,
         }
@@ -735,17 +735,17 @@ fn transformInterpTemplate(
     if (list.len == 0) return template_idx;
     const items = self.ast.extra_data.items[list.start .. list.start + list.len];
 
-    const first_idx: NodeIndex = @enumFromInt(items[0]);
+    const first_idx: NodeIndex = @fromBackingInt(@intCast(items[0]));
     const first_node = self.ast.getNode(first_idx);
     if (first_node.tag != .template_element) return template_idx;
 
     // 마지막 template_element 위치 (children 중 가장 큰 i where items[i].tag == template_element).
     var last_te_pos: usize = 0;
     for (items, 0..) |raw_idx, i| {
-        const idx: NodeIndex = @enumFromInt(raw_idx);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (self.ast.getNode(idx).tag == .template_element) last_te_pos = i;
     }
-    const last_idx: NodeIndex = @enumFromInt(items[last_te_pos]);
+    const last_idx: NodeIndex = @fromBackingInt(@intCast(items[last_te_pos]));
 
     // label(첫 quasi)과 sourcemap(마지막 quasi) 재작성은 서로 독립적이다. 한쪽의
     // format-check 가 실패해도(예상치 못한 quasi 모양) 그 재작성만 건너뛰고 다른 쪽은
@@ -809,7 +809,7 @@ fn transformInterpTemplate(
         } else if (i == last_te_pos and new_last != last_idx) {
             try self.scratch.append(self.allocator, new_last);
         } else {
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+            try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
         }
     }
 

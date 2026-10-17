@@ -23,7 +23,7 @@ pub fn skipWrappers(self: anytype, idx: NodeIndex, comptime include_paren: bool)
     var cur = idx;
     var depth: u8 = 0;
     while (depth < 32) : (depth += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return cur;
+        if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) return cur;
         const n = self.ast.getNode(cur);
         const transparent = n.tag == .chain_expression or
             ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag) or
@@ -60,7 +60,7 @@ pub fn isOptionalChainExpr(self: anytype, idx: NodeIndex) bool {
 /// (sym_id 가 잡히므로) — 그쪽은 powLeftNeedsParen 이 constInlineValue 로 따로 본다.
 pub fn isUndefinedPeephole(self: anytype, idx: NodeIndex) bool {
     if (!self.options.minify_syntax) return false;
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
     const n = self.ast.getNode(idx);
     if (n.tag != .identifier_reference) return false;
     const sym_id = if (self.options.linking_metadata) |meta|
@@ -76,7 +76,7 @@ pub fn isUndefinedPeephole(self: anytype, idx: NodeIndex) bool {
 /// 동형. paren(function)(source IIFE)은 emitParen 이 보존하므로 *직접* 노드만 검사해
 /// 이중괄호를 피한다. arrow 는 .postfix(call-target) level 로 이미 wrap 돼 여기 불필요.
 fn calleeIsBareFunctionExpr(self: anytype, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
     return switch (self.ast.getNode(idx).tag) {
         .function_expression, .function => true,
         else => false,
@@ -132,7 +132,7 @@ pub fn emitCall(self: anytype, node: Node, level: Level, flags: ExprFlags) !void
 /// AST 수준 교체 — 문자열 후처리보다 안전 (minify, 문자열 리터럴 내 패턴에 영향 안 받음).
 fn tryEmitGlobObject(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, args_len: u32) !bool {
     if (!self.has_glob_records) return false;
-    if (callee.isNone() or @intFromEnum(callee) >= self.ast.nodes.items.len) return false;
+    if (callee.isNone() or @backingInt(callee) >= self.ast.nodes.items.len) return false;
 
     const callee_node = self.ast.getNode(callee);
     if (callee_node.tag != .static_member_expression) return false;
@@ -140,10 +140,10 @@ fn tryEmitGlobObject(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, 
     const extras = self.ast.extra_data.items;
     if (callee_node.data.extra + 2 >= extras.len) return false;
 
-    const obj_idx = @as(ast_mod.NodeIndex, @enumFromInt(extras[callee_node.data.extra]));
-    const prop_idx = @as(ast_mod.NodeIndex, @enumFromInt(extras[callee_node.data.extra + 1]));
+    const obj_idx = @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(extras[callee_node.data.extra])));
+    const prop_idx = @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(extras[callee_node.data.extra + 1])));
     if (obj_idx.isNone() or prop_idx.isNone()) return false;
-    if (@intFromEnum(obj_idx) >= self.ast.nodes.items.len or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
+    if (@backingInt(obj_idx) >= self.ast.nodes.items.len or @backingInt(prop_idx) >= self.ast.nodes.items.len) return false;
 
     const obj_node = self.ast.getNode(obj_idx);
     if (obj_node.tag != .meta_property or obj_node.data.none != 0) return false;
@@ -153,8 +153,8 @@ fn tryEmitGlobObject(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, 
     if (!std.mem.eql(u8, prop_name, "glob")) return false;
 
     if (args_len == 0 or args_start >= extras.len) return false;
-    const arg0_idx = @as(ast_mod.NodeIndex, @enumFromInt(extras[args_start]));
-    if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= self.ast.nodes.items.len) return false;
+    const arg0_idx = @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(extras[args_start])));
+    if (arg0_idx.isNone() or @backingInt(arg0_idx) >= self.ast.nodes.items.len) return false;
     const arg0_node = self.ast.getNode(arg0_idx);
     if (arg0_node.tag != .string_literal) return false;
     const raw = self.ast.getText(arg0_node.span);
@@ -398,7 +398,7 @@ fn tryRewriteRequire(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, 
     if (!std.mem.eql(u8, callee_text, "require")) return false;
 
     if (args_start >= self.ast.extra_data.items.len) return false;
-    const arg_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
+    const arg_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[args_start]));
 
     if (resolveRequireRewrite(self, arg_idx)) |req_var| {
         try emitRewriteValue(self, req_var);
@@ -463,16 +463,16 @@ pub fn writeImportMetaUrl(self: anytype) !void {
 
 /// 노드가 `import.meta.url` 인지 (scan.zig 의 worker 패턴 인식과 같은 판정).
 fn isImportMetaUrl(self: anytype, idx: ast_mod.NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
     const node = self.ast.getNode(idx);
     if (node.tag != .static_member_expression) return false;
     const e = node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return false;
     const obj_idx = self.ast.readExtraNode(e, 0);
-    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= self.ast.nodes.items.len) return false;
+    if (obj_idx.isNone() or @backingInt(obj_idx) >= self.ast.nodes.items.len) return false;
     if (self.ast.getNode(obj_idx).tag != .meta_property) return false;
     const prop_idx = self.ast.readExtraNode(e, 1);
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= self.ast.nodes.items.len) return false;
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= self.ast.nodes.items.len) return false;
     const prop = self.ast.getNode(prop_idx);
     return std.mem.eql(u8, self.ast.getText(prop.span), "url");
 }
@@ -494,11 +494,11 @@ fn tryEmitWorkerURL(self: anytype, callee: ast_mod.NodeIndex, args_start: u32, a
     // 뿐이라, 같은 문자열을 다른 base 로 쓴 무관한 `new URL("x.worker.js", "https://cdn/")`
     // 까지 worker 청크로 재작성돼 버린다 (scan 단계는 이 검사를 한다, #4483).
     if (args_len < 2 or args_start + 1 >= extras.len) return false;
-    const arg0_idx: ast_mod.NodeIndex = @enumFromInt(extras[args_start]);
-    if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= self.ast.nodes.items.len) return false;
+    const arg0_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[args_start]));
+    if (arg0_idx.isNone() or @backingInt(arg0_idx) >= self.ast.nodes.items.len) return false;
     const arg0_node = self.ast.getNode(arg0_idx);
     if (arg0_node.tag != .string_literal) return false;
-    const arg1_idx: ast_mod.NodeIndex = @enumFromInt(extras[args_start + 1]);
+    const arg1_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[args_start + 1]));
     if (!isImportMetaUrl(self, arg1_idx)) return false;
     const spec = Ast.stripStringQuotes(self.ast.getText(arg0_node.span));
 

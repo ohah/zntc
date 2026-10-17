@@ -605,7 +605,7 @@ pub fn planCssChunks(
         try ext_imports.appendTo(allocator, &buf);
         try prefix_decls.appendLayersTo(allocator, &buf);
 
-        const cidx: ChunkIndex = @enumFromInt(@as(u32, @intCast(chunk_idx)));
+        const cidx: ChunkIndex = @fromBackingInt(@intCast(@as(u32, @intCast(chunk_idx))));
 
         // url() 재작성이 출력 CSS 디렉토리 기준 상대경로를 만들어야 하는데, 최종
         // 경로는 내용 해시([hash])에 의존한다 → 순환. 디렉토리는 내용과 무관하므로
@@ -851,7 +851,7 @@ fn walkCssOwner(
 
     if (mod.module_type == .css) {
         if (mod.css_data == null) return;
-        const ci_u32 = @intFromEnum(ci);
+        const ci_u32 = @backingInt(ci);
         // 청크 단위 dedup — 같은 청크 안에서 여러 JS 모듈이 같은 CSS 도달해도 1회.
         const seen_gop = try chunk_seen.getOrPut(allocator, .{ .chunk = ci_u32, .css = idx });
         if (seen_gop.found_existing) return;
@@ -887,7 +887,7 @@ fn cssPathForChunk(
     if (chunk.filename) |f| return applyCssChunkNameWithDir(allocator, css_names, std.fs.path.stem(f), contents, dir);
     // "chunk" (5) + u32 십진 최대 10자리 = 15 < 16 → bufPrint 실패 불가.
     var idx_buf: [16]u8 = undefined;
-    const idx_name = std.fmt.bufPrint(&idx_buf, "chunk{d}", .{@intFromEnum(chunk.index)}) catch unreachable;
+    const idx_name = std.fmt.bufPrint(&idx_buf, "chunk{d}", .{@backingInt(chunk.index)}) catch unreachable;
     return applyCssChunkNameWithDir(allocator, css_names, idx_name, contents, dir);
 }
 
@@ -1294,7 +1294,7 @@ test "applyCssChunkName: '.css' literal 패턴 + 슬래시뿐인 stem → 'chunk
 test "cssPathForChunk: [name] → chunk.name.css (안정 파일명, 강제 hash 없음)" {
     const a = std.testing.allocator;
     const bits = try chunk_mod.BitSet.init(a, 1);
-    var ch = Chunk.init(@enumFromInt(0), .common, bits);
+    var ch = Chunk.init(@fromBackingInt(@intCast(0)), .common, bits);
     defer ch.deinit(a);
     ch.name = "vendor";
     const r = try cssPathForChunk(a, &ch, "[name]", ".v{}");
@@ -1305,7 +1305,7 @@ test "cssPathForChunk: [name] → chunk.name.css (안정 파일명, 강제 hash 
 test "cssPathForChunk: [name]-[hash] → chunk.name + content hash" {
     const a = std.testing.allocator;
     const bits = try chunk_mod.BitSet.init(a, 1);
-    var ch = Chunk.init(@enumFromInt(0), .common, bits);
+    var ch = Chunk.init(@fromBackingInt(@intCast(0)), .common, bits);
     defer ch.deinit(a);
     ch.name = "vendor";
     const h = wyhash.hashHex8(".v{}");
@@ -1319,7 +1319,7 @@ test "cssPathForChunk: [name]-[hash] → chunk.name + content hash" {
 test "cssPathForChunk: falls back to filename stem then chunk index" {
     const a = std.testing.allocator;
     const bits1 = try chunk_mod.BitSet.init(a, 1);
-    var ch1 = Chunk.init(@enumFromInt(0), .common, bits1);
+    var ch1 = Chunk.init(@fromBackingInt(@intCast(0)), .common, bits1);
     defer ch1.deinit(a);
     ch1.filename = "assets/route-a-9f8e.js";
     const r1 = try cssPathForChunk(a, &ch1, "[name]-[hash]", "c");
@@ -1328,7 +1328,7 @@ test "cssPathForChunk: falls back to filename stem then chunk index" {
     try std.testing.expect(std.mem.endsWith(u8, r1, ".css"));
 
     const bits2 = try chunk_mod.BitSet.init(a, 1);
-    var ch2 = Chunk.init(@enumFromInt(7), .common, bits2);
+    var ch2 = Chunk.init(@fromBackingInt(@intCast(7)), .common, bits2);
     defer ch2.deinit(a);
     const r2 = try cssPathForChunk(a, &ch2, "[name]-[hash]", "c");
     defer a.free(r2);

@@ -105,11 +105,11 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, 
     if ((flags & ast_mod.MethodFlags.is_async) != 0) fn_flags |= ast_mod.FunctionFlags.is_async;
     if ((flags & ast_mod.MethodFlags.is_generator) != 0) fn_flags |= ast_mod.FunctionFlags.is_generator;
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const fn_extra = try self.ast.addExtras(&.{
         none, // anonymous
-        @intFromEnum(params_idx),
-        @intFromEnum(body_idx),
+        @backingInt(params_idx),
+        @backingInt(body_idx),
         fn_flags,
         none,
     });
@@ -151,8 +151,8 @@ pub fn lowerAsyncOrGeneratorMethod(self: *Transformer, source_owner: NodeIndex, 
     const cleared = flags & ~(ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_generator);
 
     return self.addExtraNode(.method_definition, span, &.{
-        @intFromEnum(new_key),                           @intFromEnum(new_params),
-        @intFromEnum(new_body),                          cleared,
+        @backingInt(new_key),                            @backingInt(new_params),
+        @backingInt(new_body),                           cleared,
         self.readU32(e, ast_mod.MethodExtra.deco_start), self.readU32(e, ast_mod.MethodExtra.deco_len),
     });
 }
@@ -359,8 +359,8 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
     const old_body_idx = self.readNodeIdx(e, 2);
     const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
     const result = try self.addExtraNode(.method_definition, node.span, &.{
-        @intFromEnum(new_key), @intFromEnum(new_params_node), @intFromEnum(new_body),
-        self.readU32(e, 3),    new_decos.start,               new_decos.len,
+        @backingInt(new_key), @backingInt(new_params_node), @backingInt(new_body),
+        self.readU32(e, 3),   new_decos.start,              new_decos.len,
     });
 
     // Plugin dispatch: worklet 등 AST 플러그인 적용
@@ -424,8 +424,8 @@ pub fn visitPropertyDefinition(self: *Transformer, node: Node) Error!NodeIndex {
     else
         try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = self.readU32(e, 4) });
     return self.addExtraNode(.property_definition, node.span, &.{
-        @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
-        new_decos.start,       new_decos.len,
+        @backingInt(new_key), @backingInt(new_value), self.readU32(e, 2),
+        new_decos.start,      new_decos.len,
     });
 }
 
@@ -448,8 +448,8 @@ pub fn visitAccessorProperty(self: *Transformer, node: Node) Error!NodeIndex {
     }
     const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 3), .len = self.readU32(e, 4) });
     return self.addExtraNode(.accessor_property, node.span, &.{
-        @intFromEnum(new_key), @intFromEnum(new_value), self.readU32(e, 2),
-        new_decos.start,       new_decos.len,
+        @backingInt(new_key), @backingInt(new_value), self.readU32(e, 2),
+        new_decos.start,      new_decos.len,
     });
 }
 
@@ -581,10 +581,10 @@ pub fn visitFormalParameter(self: *Transformer, node: Node) Error!NodeIndex {
     const new_pattern = try self.visitNode(pattern_idx);
     const new_default = try self.visitNode(default_idx);
     const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, 4), .len = self.readU32(e, 5) });
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     return self.addExtraNode(.formal_parameter, node.span, &.{
-        @intFromEnum(new_pattern), none,            @intFromEnum(new_default), // type_ann 제거
-        0,                         new_decos.start, new_decos.len,
+        @backingInt(new_pattern), none,            @backingInt(new_default), // type_ann 제거
+        0,                        new_decos.start, new_decos.len,
     });
 }
 
@@ -623,7 +623,7 @@ pub fn visitParameterList(self: *Transformer, params: NodeList) Error!NodeList {
     var i: u32 = 0;
     while (i < params.len) : (i += 1) {
         const raw = self.ast.extra_data.items[params.start + i];
-        const visited = try self.visitParameterNode(@enumFromInt(raw));
+        const visited = try self.visitParameterNode(@fromBackingInt(@intCast(raw)));
         if (!visited.isNone()) try self.scratch.append(self.allocator, visited);
     }
     return self.ast.addNodeList(self.scratch.items[scratch_top..]);

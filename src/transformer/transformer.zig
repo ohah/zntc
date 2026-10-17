@@ -874,7 +874,7 @@ pub const Transformer = struct {
     pub fn visitNode(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
         if (idx.isNone()) return .none;
         if (self.class_key_super_contexts.count() != 0) {
-            if (self.class_key_super_contexts.get(@intFromEnum(idx))) |outer| {
+            if (self.class_key_super_contexts.get(@backingInt(idx))) |outer| {
                 const inner = self.saveSuperContext();
                 self.restoreSuperContext(outer);
                 defer self.restoreSuperContext(inner);
@@ -885,7 +885,7 @@ pub const Transformer = struct {
     }
 
     fn visitNodeWithSuperContext(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
-        const input_raw = @intFromEnum(idx);
+        const input_raw = @backingInt(idx);
         if (self.generated_class_copy_depth > 0 and input_raw < self.parser_node_count and
             !self.scope_owner_removed.contains(input_raw))
         {
@@ -915,15 +915,15 @@ pub const Transformer = struct {
         const owner_scope = if (self.scope_owner_removed.contains(raw_idx)) null else self.transformed_scope_owner_map.get(raw_idx) orelse
             self.scope_owner_map.get(raw_idx) orelse
             if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw_idx) else null;
-        if (owner_scope) |scope_id| self.current_scope = @enumFromInt(scope_id);
+        if (owner_scope) |scope_id| self.current_scope = @fromBackingInt(@intCast(scope_id));
         defer self.current_scope = saved_scope;
         const new_idx = try self.visitNodeInner(idx);
         if (owner_scope != null) try self.remapCopiedScopeOwner(idx, new_idx);
         // A later visit may copy a generated capture declaration while
         // building an outer async/generator state machine. Pass 2 must see
         // the same parameter-capture role on the final statement identity.
-        if (!new_idx.isNone() and self.parameter_capture_statements.contains(@intFromEnum(idx)))
-            try self.parameter_capture_statements.put(self.allocator, @intFromEnum(new_idx), {});
+        if (!new_idx.isNone() and self.parameter_capture_statements.contains(@backingInt(idx)))
+            try self.parameter_capture_statements.put(self.allocator, @backingInt(new_idx), {});
         // symbol_id 전파: 원본 node_idx → 새 node_idx
         try self.propagateSymbolId(idx, new_idx);
         // The naming call evaluates in the enclosing scope, not in the
@@ -956,7 +956,7 @@ pub const Transformer = struct {
     pub const makeLexicalScopeRefAtScope = node_helpers.makeLexicalScopeRefAtScope;
     pub fn markExplicitGlobalReference(self: *Transformer, node: NodeIndex) !void {
         if (self.synthetic_idents == null and !self.record_explicit_global_references) return;
-        try self.explicit_global_reference_nodes.put(self.allocator, @intFromEnum(node), {});
+        try self.explicit_global_reference_nodes.put(self.allocator, @backingInt(node), {});
     }
     pub const makeCurrentClassRef = node_helpers.makeCurrentClassRef;
     pub const makeCurrentClassRefAtScope = node_helpers.makeCurrentClassRefAtScope;

@@ -21,9 +21,9 @@ pub fn visitImportEqualsDeclaration(self: *Transformer, node: Node) Error!NodeIn
     const new_value = try self.visitNode(value_idx);
 
     const decl_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_name),
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(new_value),
+        @backingInt(new_name),
+        @backingInt(NodeIndex.none),
+        @backingInt(new_value),
     });
     const declarator = try self.ast.addNode(.{
         .tag = .variable_declarator,
@@ -36,7 +36,7 @@ pub fn visitImportEqualsDeclaration(self: *Transformer, node: Node) Error!NodeIn
 
     try self.scratch.append(self.allocator, declarator);
     const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-    const var_extra = try self.ast.addExtras(&.{ @intFromEnum(VariableDeclarationKind.@"const"), list.start, list.len });
+    const var_extra = try self.ast.addExtras(&.{ @backingInt(VariableDeclarationKind.@"const"), list.start, list.len });
     return self.ast.addNode(.{
         .tag = .variable_declaration,
         .span = node.span,
@@ -178,7 +178,7 @@ pub fn namespaceExportAccess(self: *Transformer, idx: NodeIndex) Error!?NodeInde
     const parameter_ref = try es_helpers.identifierRefNode(self, parameter_name_span, node.span);
     try self.addSyntheticRefInScope(
         parameter_ref,
-        @enumFromInt(sid),
+        @fromBackingInt(@intCast(sid)),
         self.current_scope,
         .{ .read = true },
     );
@@ -215,21 +215,21 @@ fn collectDirectNamespaceExportSymbols(
     body_idx: NodeIndex,
     exported_symbols: *std.AutoHashMapUnmanaged(u32, void),
 ) Error!void {
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= self.ast.nodes.items.len) return;
+    if (body_idx.isNone() or @backingInt(body_idx) >= self.ast.nodes.items.len) return;
     const body = self.ast.getNode(body_idx);
     if (body.tag != .block_statement and body.tag != .ts_module_block) return;
     const list = body.data.list;
     if (list.start > self.ast.extra_data.items.len or list.len > self.ast.extra_data.items.len - list.start) return;
 
     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw_stmt| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw_stmt);
-        if (stmt_idx.isNone() or @intFromEnum(stmt_idx) >= self.ast.nodes.items.len) continue;
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt));
+        if (stmt_idx.isNone() or @backingInt(stmt_idx) >= self.ast.nodes.items.len) continue;
         const stmt = self.ast.getNode(stmt_idx);
         if (stmt.tag != .export_named_declaration) continue;
         const extra = stmt.data.extra;
         if (extra >= self.ast.extra_data.items.len) continue;
-        const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra]);
-        if (decl_idx.isNone() or @intFromEnum(decl_idx) >= self.ast.nodes.items.len) continue;
+        const decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra]));
+        if (decl_idx.isNone() or @backingInt(decl_idx) >= self.ast.nodes.items.len) continue;
         const declaration = self.ast.getNode(decl_idx);
         if (declaration.tag != .variable_declaration) continue;
         const decl_extra: usize = declaration.data.extra;
@@ -238,14 +238,14 @@ fn collectDirectNamespaceExportSymbols(
         const len = self.ast.extra_data.items[decl_extra + 2];
         if (start > self.ast.extra_data.items.len or len > self.ast.extra_data.items.len - start) continue;
         for (self.ast.extra_data.items[start .. start + len]) |raw_declarator| {
-            const declarator_idx: NodeIndex = @enumFromInt(raw_declarator);
-            if (declarator_idx.isNone() or @intFromEnum(declarator_idx) >= self.ast.nodes.items.len) continue;
+            const declarator_idx: NodeIndex = @fromBackingInt(@intCast(raw_declarator));
+            if (declarator_idx.isNone() or @backingInt(declarator_idx) >= self.ast.nodes.items.len) continue;
             const declarator = self.ast.getNode(declarator_idx);
             if (declarator.tag != .variable_declarator) continue;
             const declarator_extra = declarator.data.extra;
             if (declarator_extra >= self.ast.extra_data.items.len) continue;
-            const binding_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator_extra]);
-            if (binding_idx.isNone() or @intFromEnum(binding_idx) >= self.ast.nodes.items.len or
+            const binding_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[declarator_extra]));
+            if (binding_idx.isNone() or @backingInt(binding_idx) >= self.ast.nodes.items.len or
                 self.ast.getNode(binding_idx).tag != .binding_identifier) continue;
             const sid = self.getSymbolIdAt(binding_idx) orelse continue;
             try exported_symbols.put(self.allocator, sid, {});
@@ -265,14 +265,14 @@ test "#4819 namespace transform requires one parameter SymbolId per owner scope"
     const symbols = [_]SemanticSymbol{
         .{
             .name = span,
-            .scope_id = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
             .kind = .parameter,
             .declaration_span = span,
             .synthetic_kind = .namespace_iife_parameter,
         },
     };
     transformer.symbols = &symbols;
-    switch (namespaceIifeParameterSymbolId(&transformer, @enumFromInt(0))) {
+    switch (namespaceIifeParameterSymbolId(&transformer, @fromBackingInt(@intCast(0)))) {
         .found => |sid| try std.testing.expectEqual(@as(u32, 0), sid),
         else => return error.ExpectedUniqueNamespaceIifeParameter,
     }
@@ -282,18 +282,18 @@ test "#4819 namespace transform requires one parameter SymbolId per owner scope"
     transformer.symbols = &wrong_kind;
     try std.testing.expectEqual(
         NamespaceIifeParameterLookup.invalid,
-        namespaceIifeParameterSymbolId(&transformer, @enumFromInt(0)),
+        namespaceIifeParameterSymbolId(&transformer, @fromBackingInt(@intCast(0))),
     );
 
     const ambiguous = [_]SemanticSymbol{ symbols[0], symbols[0] };
     transformer.symbols = &ambiguous;
     try std.testing.expectEqual(
         NamespaceIifeParameterLookup.invalid,
-        namespaceIifeParameterSymbolId(&transformer, @enumFromInt(0)),
+        namespaceIifeParameterSymbolId(&transformer, @fromBackingInt(@intCast(0))),
     );
 
     try std.testing.expectEqual(
         NamespaceIifeParameterLookup.missing,
-        namespaceIifeParameterSymbolId(&transformer, @enumFromInt(1)),
+        namespaceIifeParameterSymbolId(&transformer, @fromBackingInt(@intCast(1))),
     );
 }

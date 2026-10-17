@@ -162,7 +162,7 @@ fn findCodegenCall(ast: *const ast_mod.Ast, program_idx: NodeIndex) ?NodeIndex {
     const list = program.data.list;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const stmt: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + i]);
+        const stmt: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start + i]));
         const node = ast.getNode(stmt);
         if (unwrapToCallExpression(ast, stmt, node)) |call_idx| return call_idx;
     }
@@ -185,7 +185,7 @@ fn unwrapToCallExpression(ast: *const ast_mod.Ast, _: NodeIndex, node: ast_mod.N
 fn callIsCodegenMarker(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     const e = node.data.extra;
     if (e >= ast.extra_data.items.len) return false;
-    const callee_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
     const callee = ast.getNode(callee_idx);
     if (callee.tag != .identifier_reference) return false;
     return std.mem.eql(u8, ast.getText(callee.span), "codegenNativeComponent");
@@ -200,7 +200,7 @@ fn extractCallArg0String(ast: *const ast_mod.Ast, call_idx: NodeIndex) ?[]const 
     const args_start = ast.extra_data.items[e + 1];
     const args_len = ast.extra_data.items[e + 2];
     if (args_len == 0) return null;
-    const arg0_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    const arg0_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
     const arg0 = ast.getNode(arg0_idx);
     if (arg0.tag != .string_literal) return null;
     const raw = ast.getText(arg0.data.string_ref);
@@ -222,14 +222,14 @@ fn extractPaperComponentName(ast: *const ast_mod.Ast, call_idx: NodeIndex) ?[]co
     const args_start = ast.extra_data.items[e + 1];
     const args_len = ast.extra_data.items[e + 2];
     if (args_len < 2) return null;
-    const arg1_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start + 1]);
+    const arg1_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start + 1]));
     const arg1 = ast.getNode(arg1_idx);
     if (arg1.tag != .object_expression) return null;
 
     const props = arg1.data.list;
     var i: u32 = 0;
     while (i < props.len) : (i += 1) {
-        const prop_idx: NodeIndex = @enumFromInt(ast.extra_data.items[props.start + i]);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[props.start + i]));
         const prop = ast.getNode(prop_idx);
         if (prop.tag != .object_property) continue;
         const key_name = stmt_info.plainObjectKeyName(ast, prop.data.binary.left) orelse continue;

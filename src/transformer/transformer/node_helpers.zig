@@ -13,7 +13,7 @@ const Error = std.mem.Allocator.Error;
 
 fn reanchorCopiedBinding(self: anytype, node: NodeIndex, raw_symbol_id: u32) Error!void {
     if (self.semantic_editor) |*editor| {
-        editor.attachExistingBinding(node, @enumFromInt(raw_symbol_id)) catch |err| {
+        editor.attachExistingBinding(node, @fromBackingInt(@intCast(raw_symbol_id))) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             std.debug.panic("copied binding lost exact declaration identity: {s}", .{@errorName(err)});
         };
@@ -64,7 +64,7 @@ pub fn tryRenameIdentifierLike(
 /// 심볼 표(`block_rename_map`)만 본 새 이름 — 이름 스택으로 떨어지지 않는다.
 pub fn tableRenameOf(self: anytype, idx: NodeIndex) ?[]const u8 {
     const m = if (self.block_rename_map) |*mm| mm else return null;
-    const i = @intFromEnum(idx);
+    const i = @backingInt(idx);
     if (i >= self.symbol_ids.items.len) return null;
     const sid = self.symbol_ids.items[i] orelse return null;
     return m.get(sid);
@@ -194,7 +194,7 @@ fn ensureSymbolIds(self: anytype, target_idx: usize) Error!void {
 fn inheritSynthetic(self: anytype, from: NodeIndex, to: NodeIndex) Error!void {
     const set = if (self.synthetic_idents) |*s| s else return;
     if (from.isNone() or to.isNone()) return;
-    if (set.contains(@intFromEnum(from))) try set.put(self.allocator, @intFromEnum(to), {});
+    if (set.contains(@backingInt(from))) try set.put(self.allocator, @backingInt(to), {});
 }
 
 fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Error!void {
@@ -205,7 +205,7 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     const clone_is_ref = clone_tag == .identifier_reference or clone_tag == .assignment_target_identifier;
     if (!source_is_ref or !clone_is_ref) return;
     const has_symbol = self.getSymbolIdAt(source) != null;
-    const source_raw = @intFromEnum(source);
+    const source_raw = @backingInt(source);
     const origin = self.reference_origin_map.get(source_raw) orelse source_raw;
     const explicit_globals = &self.explicit_global_reference_nodes;
     const unresolved = self.unresolved_reference_nodes;
@@ -214,7 +214,7 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
     const tracked_helper = self.tracked_runtime_helper_ref_index.get(source_raw);
     const has_capture_origin = self.capture_ref_by_origin.contains(source_raw);
     if (!has_symbol and !has_external_origin and tracked_helper == null and !has_capture_origin and self.synthetic_idents == null) return;
-    const key = @intFromEnum(clone);
+    const key = @backingInt(clone);
     // A replaced user reference can become a generated capture reference in
     // visitNodeInner. Its exact capture origin was recorded at construction;
     // the source user's Reference must not overwrite that new identity.
@@ -229,7 +229,7 @@ fn recordReferenceOrigin(self: anytype, source: NodeIndex, clone: NodeIndex) Err
             std.debug.panic("runtime helper clone lost its exact source record", .{});
         const symbol_id = self.tracked_runtime_helper_refs.items[tracked_index].symbol_id;
         try self.markRuntimeHelperRef(clone);
-        try self.trackRuntimeHelperRefWithId(clone, @enumFromInt(symbol_id));
+        try self.trackRuntimeHelperRefWithId(clone, @fromBackingInt(@intCast(symbol_id)));
     }
 }
 
@@ -240,8 +240,8 @@ pub fn propagateSymbolId(self: anytype, old_idx: NodeIndex, new_idx: NodeIndex) 
     if (self.symbol_ids.items.len == 0) return; // 전파 비활성
     if (old_idx.isNone() or new_idx.isNone()) return;
 
-    const old_i = @intFromEnum(old_idx);
-    const new_i = @intFromEnum(new_idx);
+    const old_i = @backingInt(old_idx);
+    const new_i = @backingInt(new_idx);
 
     // The visitor intentionally replaced this user reference with a fresh
     // lexical-capture use. Its symbol is bound from the capture declaration,
@@ -292,8 +292,8 @@ pub fn copySymbolId(self: anytype, src_idx: NodeIndex, dst_idx: NodeIndex) Error
     if (self.symbol_ids.items.len == 0) return;
     if (src_idx.isNone() or dst_idx.isNone()) return;
 
-    const src_i = @intFromEnum(src_idx);
-    const dst_i = @intFromEnum(dst_idx);
+    const src_i = @backingInt(src_idx);
+    const dst_i = @backingInt(dst_idx);
 
     try ensureSymbolIds(self, dst_i);
 
@@ -387,11 +387,11 @@ pub fn makeLexicalScopeRefAtScope(
         // makeGlobalRef marks a no-binding fallback before this lookup.
         // Once this exact lexical binding is found, remove that external
         // provenance so a later analyzer refresh resolves the local read.
-        _ = self.explicit_global_reference_nodes.remove(@intFromEnum(ref));
+        _ = self.explicit_global_reference_nodes.remove(@backingInt(ref));
         if (self.semantic_edit_enabled) {
-            try self.addSyntheticRefInScope(ref, @enumFromInt(symbol_id), scope, .{ .read = true });
+            try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(symbol_id)), scope, .{ .read = true });
         } else {
-            const raw_node = @intFromEnum(ref);
+            const raw_node = @backingInt(ref);
             if (self.symbol_ids.items.len <= raw_node)
                 try self.symbol_ids.appendNTimes(self.allocator, null, raw_node + 1 - self.symbol_ids.items.len);
             if (self.symbol_ids.items[raw_node]) |existing| {
@@ -432,7 +432,7 @@ pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import
         const visible = if (!self.semantic_edit_enabled)
             true
         else if (self.semantic_editor) |*editor|
-            editor.symbolVisibleFrom(@enumFromInt(raw_id), scope)
+            editor.symbolVisibleFrom(@fromBackingInt(@intCast(raw_id)), scope)
         else blk: {
             if (raw_id >= self.symbols.len or scope.isNone() or scope.toIndex() >= self.scopes.len) break :blk false;
             var cursor = scope;
@@ -446,12 +446,12 @@ pub fn makeCurrentClassRefAtScope(self: anytype, name_span: Span, scope: @import
         if (visible) {
             const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
             if (self.semantic_edit_enabled) {
-                self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), scope, .{ .read = true }) catch |err| {
+                self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(raw_id)), scope, .{ .read = true }) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
                     std.debug.panic("generated class-self read lost semantic evidence: {s}", .{@errorName(err)});
                 };
             } else {
-                const slot = @intFromEnum(ref);
+                const slot = @backingInt(ref);
                 if (self.symbol_ids.items.len <= slot)
                     try self.symbol_ids.appendNTimes(self.allocator, null, slot + 1 - self.symbol_ids.items.len);
                 if (self.symbol_ids.items[slot]) |existing| {
@@ -597,7 +597,7 @@ pub fn attachRootScopeSymbolByName(self: anytype, node_idx: NodeIndex, name: []c
         if (sym.scope_id.toIndex() != 0) continue;
         const sym_name = sym.nameText(self.ast.source);
         if (std.mem.eql(u8, sym_name, name)) {
-            const ni = @intFromEnum(node_idx);
+            const ni = @backingInt(node_idx);
             try ensureSymbolIds(self, ni);
             if (ni < self.symbol_ids.items.len) {
                 self.symbol_ids.items[ni] = @intCast(i);
@@ -629,7 +629,7 @@ pub fn visitUnaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
                     self.ast.getNode(inner_idx).tag == .private_field_expression)
                 {
                     old_operand = try addExtraNode(self, .update_expression, opn.span, &.{
-                        @intFromEnum(inner_idx),
+                        @backingInt(inner_idx),
                         op_flags & ~ast_mod.UnaryFlags.postfix,
                     });
                 }
@@ -653,10 +653,10 @@ pub fn visitUnaryNode(self: anytype, idx: NodeIndex) Error!NodeIndex {
 /// `#x in`)를 제외 — 그 노드들은 평탄화로 건너뛰면 안 되고 visitNode 로 재-dispatch 되어
 /// lowering 돼야 하므로 스파인 경계가 된다. (#4123 좌 스파인 평탄화용.)
 fn binarySpineContinues(self: anytype, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
     const n = self.ast.getNode(idx);
     if (n.tag != .binary_expression and n.tag != .logical_expression) return false;
-    const op: token_mod.Kind = @enumFromInt(n.data.binary.flags);
+    const op: token_mod.Kind = @fromBackingInt(@intCast(n.data.binary.flags));
     if (n.tag == .binary_expression and op == .star2 and self.options.unsupported.exponentiation) return false;
     if (n.tag == .logical_expression and op == .question2 and self.options.unsupported.nullish_coalescing) return false;
     if (n.tag == .binary_expression and op == .kw_in and
@@ -757,7 +757,7 @@ pub fn visitUnaryExtra(self: anytype, node: Node) Error!NodeIndex {
     // `delete (cond ? void 0 : _a.b)` 는 ConditionalExpression이라 Reference가 아니어서 실제 삭제 안 됨.
     // -> `cond ? true : delete _a.b` 형태로 별도 lowering.
     if (node.tag == .unary_expression and self.options.unsupported.optional_chaining and
-        (op_flags & 0xff) == @intFromEnum(token_mod.Kind.kw_delete))
+        (op_flags & 0xff) == @backingInt(token_mod.Kind.kw_delete))
     {
         const operand = self.ast.getNode(operand_idx);
         if (es2020.ES2020(Transformer).findOptionalChainBase(self, operand)) |base_idx| {
@@ -766,7 +766,7 @@ pub fn visitUnaryExtra(self: anytype, node: Node) Error!NodeIndex {
     }
 
     const new_operand = try self.visitNode(operand_idx);
-    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_operand), op_flags });
+    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_operand), op_flags });
     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
 }
 
@@ -788,7 +788,7 @@ pub fn visitMemberExpression(self: anytype, node: Node) Error!NodeIndex {
         try self.visitNode(right_idx)
     else
         right_idx;
-    const new_extra = try self.ast.addExtras(&.{ @intFromEnum(new_left), @intFromEnum(new_right), flags });
+    const new_extra = try self.ast.addExtras(&.{ @backingInt(new_left), @backingInt(new_right), flags });
     return self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
 }
 
@@ -807,14 +807,14 @@ pub fn visitTernaryNode(self: anytype, node: Node) Error!NodeIndex {
 /// 노드의 symbol_id 조회 (없으면 null).
 pub fn getSymbolIdAt(self: anytype, idx: NodeIndex) ?u32 {
     if (idx.isNone()) return null;
-    const i = @intFromEnum(idx);
+    const i = @backingInt(idx);
     if (i >= self.symbol_ids.items.len) return null;
     return self.symbol_ids.items[i];
 }
 
 /// extra 인덱스로 NodeIndex 읽기.
 pub fn readNodeIdx(self: anytype, extra_start: u32, offset: u32) NodeIndex {
-    return @enumFromInt(self.ast.extra_data.items[extra_start + offset]);
+    return @fromBackingInt(@intCast(self.ast.extra_data.items[extra_start + offset]));
 }
 
 /// extra 인덱스로 u32 읽기.

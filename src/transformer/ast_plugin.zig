@@ -224,7 +224,7 @@ pub const AstTransformCtx = struct {
         var si: u32 = 0;
         while (si < list.len) : (si += 1) {
             const stmt_raw = parser_ptr.ast.extra_data.items[list.start + si];
-            const stmt_idx: NodeIndex = @enumFromInt(stmt_raw);
+            const stmt_idx: NodeIndex = @fromBackingInt(@intCast(stmt_raw));
             if (stmt_idx.isNone()) continue;
 
             // 파싱된 AST의 노드를 transformer AST에 복사
@@ -243,7 +243,7 @@ pub const AstTransformCtx = struct {
     /// 파싱된 AST에서 노드를 재귀적으로 transformer AST에 복사한다.
     fn copyNodeFromParsedAst(self: *AstTransformCtx, src_ast: *const Ast, src_idx: NodeIndex) Error!NodeIndex {
         if (src_idx.isNone()) return .none;
-        const src_node = src_ast.nodes.items[@intFromEnum(src_idx)];
+        const src_node = src_ast.nodes.items[@backingInt(src_idx)];
 
         // 소스 텍스트 참조 → string_table로 복사 (span이 src_ast.source를 참조하므로)
         var new_span = src_node.span;
@@ -308,7 +308,7 @@ pub const AstTransformCtx = struct {
                 var i: u32 = 0;
                 while (i < src_list.len) : (i += 1) {
                     const elem_raw = src_ast.extra_data.items[src_list.start + i];
-                    const copied = try self.copyNodeFromParsedAst(src_ast, @enumFromInt(elem_raw));
+                    const copied = try self.copyNodeFromParsedAst(src_ast, @fromBackingInt(@intCast(elem_raw)));
                     try self.transformer.scratch.append(self.transformer.allocator, copied);
                 }
                 const new_list = try self.transformer.ast.addNodeList(
@@ -325,11 +325,11 @@ pub const AstTransformCtx = struct {
             // extra_data를 복사하되, 자식 노드 인덱스는 재귀 복사
             .static_member_expression => blk: {
                 const e = src_node.data.extra;
-                const obj = try self.copyNodeFromParsedAst(src_ast, @enumFromInt(src_ast.extra_data.items[e]));
-                const prop = try self.copyNodeFromParsedAst(src_ast, @enumFromInt(src_ast.extra_data.items[e + 1]));
+                const obj = try self.copyNodeFromParsedAst(src_ast, @fromBackingInt(@intCast(src_ast.extra_data.items[e])));
+                const prop = try self.copyNodeFromParsedAst(src_ast, @fromBackingInt(@intCast(src_ast.extra_data.items[e + 1])));
                 const flags = src_ast.extra_data.items[e + 2];
                 break :blk self.addExtraNode(.static_member_expression, new_span, &.{
-                    @intFromEnum(obj), @intFromEnum(prop), flags,
+                    @backingInt(obj), @backingInt(prop), flags,
                 });
             },
 

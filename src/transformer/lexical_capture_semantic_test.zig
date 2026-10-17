@@ -38,9 +38,9 @@ fn checkCaptureSymbolsWithUnsupported(
         var methods = analyzer.scope_owner_map.iterator();
         while (methods.next()) |owner| {
             if (parser.ast.nodes.items[owner.key_ptr.*].tag != .method_definition) continue;
-            var cursor: @import("../semantic/scope.zig").ScopeId = @enumFromInt(extracted);
+            var cursor: @import("../semantic/scope.zig").ScopeId = @fromBackingInt(@intCast(extracted));
             while (!cursor.isNone()) {
-                if (@intFromEnum(cursor) == owner.value_ptr.*) {
+                if (@backingInt(cursor) == owner.value_ptr.*) {
                     outer_scope = owner.value_ptr.*;
                     break;
                 }
@@ -78,7 +78,7 @@ fn checkCaptureSymbolsWithUnsupported(
         const is_arguments = std.mem.startsWith(u8, symbol.synthetic_name, "_arguments");
         if (!is_this and !is_arguments) continue;
         if (is_this) this_count += 1 else arguments_count += 1;
-        try std.testing.expectEqual(enclosing, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(enclosing, @backingInt(symbol.scope_id));
         const id: u32 = @intCast(index);
         var binding_count: usize = 0;
         for (reachable) |raw| {
@@ -88,8 +88,8 @@ fn checkCaptureSymbolsWithUnsupported(
         try std.testing.expectEqual(@as(usize, 1), binding_count);
         var ref_count: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != index or ref.node_index.isNone()) continue;
-            try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
+            if (@backingInt(ref.symbol_id) != index or ref.node_index.isNone()) continue;
+            try std.testing.expect(live.contains(@backingInt(ref.node_index)));
             const reference_node = transformer.ast.getNode(ref.node_index);
             try std.testing.expectEqual(@import("../parser/ast.zig").Node.Tag.identifier_reference, reference_node.tag);
             // Balanced reference counts can hide a `this`/`arguments` ID swap
@@ -188,7 +188,7 @@ fn checkNativeParameterNewTargetSymbols(source: []const u8, expected_name: []con
         while (owners.next()) |owner| {
             const owner_node = transformer.ast.nodes.items[owner.key_ptr.*];
             if (owner_node.tag != .function_expression) continue;
-            const owner_scope: ScopeId = @enumFromInt(owner.value_ptr.*);
+            const owner_scope: ScopeId = @fromBackingInt(@intCast(owner.value_ptr.*));
             if (owner_scope == symbol.scope_id or owner_scope.isNone()) continue;
             if (edited.scopes[owner_scope.toIndex()].parent == symbol.scope_id) {
                 returned_arrow_scope_is_child = true;
@@ -209,10 +209,10 @@ fn checkNativeParameterNewTargetSymbols(source: []const u8, expected_name: []con
 
         var references: usize = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != symbol_index or reference.node_index.isNone()) continue;
+            if (@backingInt(reference.symbol_id) != symbol_index or reference.node_index.isNone()) continue;
             if (!reference.flags.read and !reference.flags.write) continue;
-            try std.testing.expect(live.contains(@intFromEnum(reference.node_index)));
-            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@intFromEnum(reference.node_index)]);
+            try std.testing.expect(live.contains(@backingInt(reference.node_index)));
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@backingInt(reference.node_index)]);
             var scope = reference.scope_id;
             var resolves = false;
             while (!scope.isNone()) {
@@ -413,7 +413,7 @@ test "#4819 class field arrows share their exact constructor capture binding" {
             try std.testing.expectEqual(@as(usize, 1), bindings);
             var reads: u32 = 0;
             for (edited.references) |ref| {
-                if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone() or !live.contains(@intFromEnum(ref.node_index))) continue;
+                if (@backingInt(ref.symbol_id) != id or ref.node_index.isNone() or !live.contains(@backingInt(ref.node_index))) continue;
                 var scope = ref.scope_id;
                 var visible = false;
                 while (!scope.isNone()) {
@@ -483,20 +483,20 @@ test "#4819 explicit arguments binding moves to the exact capture initializer" {
     for (edited.symbols.items[old_count..], old_count..) |symbol, id| {
         if (!std.mem.startsWith(u8, symbol.synthetic_name, "_arguments")) continue;
         try std.testing.expect(capture_id == null);
-        try std.testing.expectEqual(outer, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(outer, @backingInt(symbol.scope_id));
         capture_id = @intCast(id);
     }
     const alias = capture_id orelse return error.TestUnexpectedResult;
     var source_reads: usize = 0;
     var alias_reads: usize = 0;
     for (edited.references) |ref| {
-        if (ref.node_index.isNone() or !live.contains(@intFromEnum(ref.node_index))) continue;
-        if (@intFromEnum(ref.symbol_id) == parameter_id) {
-            try std.testing.expectEqual(outer, @intFromEnum(ref.scope_id));
+        if (ref.node_index.isNone() or !live.contains(@backingInt(ref.node_index))) continue;
+        if (@backingInt(ref.symbol_id) == parameter_id) {
+            try std.testing.expectEqual(outer, @backingInt(ref.scope_id));
             source_reads += 1;
         }
-        if (@intFromEnum(ref.symbol_id) == alias) {
-            try std.testing.expectEqual(arrow, @intFromEnum(ref.scope_id));
+        if (@backingInt(ref.symbol_id) == alias) {
+            try std.testing.expectEqual(arrow, @backingInt(ref.scope_id));
             alias_reads += 1;
         }
     }
@@ -557,7 +557,7 @@ test "#4819 nested source functions keep distinct capture symbol IDs and scopes"
     var counts: [2][2]usize = .{ .{ 0, 0 }, .{ 0, 0 } };
     for (edited.symbols.items[old_symbols..], old_symbols..) |symbol, id| {
         const kind: usize = if (std.mem.startsWith(u8, symbol.synthetic_name, "_this")) 0 else if (std.mem.startsWith(u8, symbol.synthetic_name, "_arguments")) 1 else continue;
-        const scope_index: usize = if (@intFromEnum(symbol.scope_id) == function_scopes[0]) 0 else if (@intFromEnum(symbol.scope_id) == function_scopes[1]) 1 else return error.TestUnexpectedResult;
+        const scope_index: usize = if (@backingInt(symbol.scope_id) == function_scopes[0]) 0 else if (@backingInt(symbol.scope_id) == function_scopes[1]) 1 else return error.TestUnexpectedResult;
         counts[scope_index][kind] += 1;
         var bindings: usize = 0;
         for (reachable) |raw| {
@@ -567,8 +567,8 @@ test "#4819 nested source functions keep distinct capture symbol IDs and scopes"
         try std.testing.expectEqual(@as(usize, 1), bindings);
         var reads: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone()) continue;
-            try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
+            if (@backingInt(ref.symbol_id) != id or ref.node_index.isNone()) continue;
+            try std.testing.expect(live.contains(@backingInt(ref.node_index)));
             var scope = ref.scope_id;
             var sees_owner = false;
             while (!scope.isNone()) {
@@ -638,9 +638,9 @@ test "#4819 extracted async generator loop retains source lexical capture owner"
         const is_arguments = std.mem.startsWith(u8, symbol.synthetic_name, "_arguments");
         if (!is_this and !is_arguments) continue;
         if (is_this) this_count += 1 else arguments_count += 1;
-        const owner_scope = @intFromEnum(symbol.scope_id);
+        const owner_scope = @backingInt(symbol.scope_id);
         if (common_scope) |existing| try std.testing.expectEqual(existing, owner_scope) else common_scope = owner_scope;
-        try std.testing.expectEqual(source_scope, @intFromEnum(edited.scopes[owner_scope].parent));
+        try std.testing.expectEqual(source_scope, @backingInt(edited.scopes[owner_scope].parent));
 
         var binding_count: usize = 0;
         for (reachable) |raw| {
@@ -651,8 +651,8 @@ test "#4819 extracted async generator loop retains source lexical capture owner"
 
         var read_count: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != id or ref.node_index.isNone()) continue;
-            try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
+            if (@backingInt(ref.symbol_id) != id or ref.node_index.isNone()) continue;
+            try std.testing.expect(live.contains(@backingInt(ref.node_index)));
             var cursor = ref.scope_id;
             var sees_capture = false;
             while (!cursor.isNone()) {

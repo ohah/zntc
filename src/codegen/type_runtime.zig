@@ -29,7 +29,7 @@ fn emitNamespaceEnumIIFE(self: anytype, node: Node, enum_idx: NodeIndex, namespa
 fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_param: ?NamespacePrefix) !void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
-    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
     const members_start = self.ast.extra_data.items[e + 1];
     const members_len = self.ast.extra_data.items[e + 2];
     // extras[3]: bit0=const, bit1=ambient. 둘 다 transformer에서 제거되므로
@@ -54,7 +54,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
         var auto_value: i64 = 0;
         var auto_valid = true;
         for (member_indices) |raw_idx| {
-            const member = self.ast.getNode(@enumFromInt(raw_idx));
+            const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             const member_name = self.ast.getNode(member.data.binary.left);
             const raw_text = self.ast.getText(member_name.span);
             const mt = Ast.stripStringQuotes(raw_text);
@@ -137,7 +137,7 @@ fn emitEnumIIFEInner(self: anytype, node: Node, enum_idx: NodeIndex, namespace_p
     // 2차 패스: 각 멤버 출력
     var auto_value: i64 = 0;
     for (member_indices) |raw_idx| {
-        const member = self.ast.getNode(@enumFromInt(raw_idx));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         // ts_enum_member: binary = { left=name, right=init_val }
         const member_name_idx = member.data.binary.left;
         const member_init_idx = member.data.binary.right;
@@ -264,17 +264,17 @@ const EnumMemberValue = union(enum) {
 pub fn emitFlowEnum(self: anytype, node: Node) Error!void {
     try self.addSourceMapping(node.span);
     const e = node.data.extra;
-    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
     const members_start = self.ast.extra_data.items[e + 1];
     const members_len = self.ast.extra_data.items[e + 2];
     const base_type_raw = self.ast.extra_data.items[e + 3];
-    const base_type: FlowEnumBaseType = @enumFromInt(base_type_raw);
+    const base_type: FlowEnumBaseType = @fromBackingInt(@intCast(base_type_raw));
 
     const members = self.ast.extra_data.items[members_start .. members_start + members_len];
 
     // Mirrored 케이스: string body + 첫 멤버 init 없음 (= all defaulted 가정 — reference 동일).
     const is_mirrored = base_type == .string and (members.len == 0 or
-        self.ast.getNode(@enumFromInt(members[0])).data.binary.right == .none);
+        self.ast.getNode(@fromBackingInt(@intCast(members[0]))).data.binary.right == .none);
 
     try self.write("const ");
     // The enum binding is a source SymbolId. Route its declaration through
@@ -292,7 +292,7 @@ pub fn emitFlowEnum(self: anytype, node: Node) Error!void {
         try self.write(".Mirrored([");
         var emitted: u32 = 0;
         for (members) |raw_idx| {
-            const member = self.ast.getNode(@enumFromInt(raw_idx));
+            const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             // 키 없는(무효) 멤버 — member.binary.left 무조건 getNode 하므로
             // .none 이면 OOB. 무효 입력에서만 발생, skip 으로 견고화.
             if (member.data.binary.left.isNone()) continue;
@@ -312,7 +312,7 @@ pub fn emitFlowEnum(self: anytype, node: Node) Error!void {
     var auto_idx: u32 = 0;
     var emitted: u32 = 0;
     for (members) |raw_idx| {
-        const member = self.ast.getNode(@enumFromInt(raw_idx));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         if (member.data.binary.left.isNone()) continue; // 무효 멤버 방어 (위와 동일)
         if (emitted > 0) try self.writeByte(',');
         emitted += 1;
@@ -333,7 +333,7 @@ pub fn emitFlowEnum(self: anytype, node: Node) Error!void {
 }
 
 fn emitFlowEnumDefaultValue(self: anytype, base_type: u32, member_name: []const u8, auto_idx: u32) std.mem.Allocator.Error!void {
-    const kind: FlowEnumBaseType = @enumFromInt(base_type);
+    const kind: FlowEnumBaseType = @fromBackingInt(@intCast(base_type));
     switch (kind) {
         .none, .symbol => {
             try self.write("Symbol(\"");
@@ -414,7 +414,7 @@ fn enumIifeParamName(self: anytype, enum_idx: NodeIndex) !?[]const u8 {
 pub fn emitEnumIifeMemberReference(self: anytype, node: Node, member: anytype) !bool {
     if (member.synthetic_kind != .enum_iife_member) return false;
     const owner_id = member.synthetic_owner_id orelse return error.InvalidEnumIifeMemberSymbol;
-    const owner_raw = @intFromEnum(owner_id);
+    const owner_raw = @backingInt(owner_id);
     if (owner_raw >= self.options.semantic_symbols.len) return error.InvalidEnumIifeMemberSymbol;
     const parameter = self.options.semantic_symbols[owner_raw];
     if (parameter.kind != .parameter or parameter.synthetic_kind != .enum_iife_parameter or parameter.scope_id != member.scope_id)
@@ -443,7 +443,7 @@ fn generatedIifeParamNameFromSymbolId(self: anytype, raw_id: u32) ![]const u8 {
 
 fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind: SyntheticKind) ?u32 {
     const owners = self.options.generated_iife_scope_owner_map orelse return null;
-    const scope = owners.get(@intFromEnum(owner_idx)) orelse return null;
+    const scope = owners.get(@backingInt(owner_idx)) orelse return null;
     if (scope >= self.options.semantic_scope_maps.len) return null;
     var selected: ?u32 = null;
     var scope_bindings = self.options.semantic_scope_maps[scope].iterator();
@@ -451,7 +451,7 @@ fn generatedIifeParamSymbolId(self: anytype, owner_idx: NodeIndex, expected_kind
         const raw_id = binding.value_ptr.*;
         if (raw_id >= self.options.semantic_symbols.len) continue;
         const symbol = self.options.semantic_symbols[raw_id];
-        if (symbol.synthetic_kind != expected_kind or @intFromEnum(symbol.scope_id) != scope) continue;
+        if (symbol.synthetic_kind != expected_kind or @backingInt(symbol.scope_id) != scope) continue;
         if (symbol.kind != .parameter) return null;
         if (selected != null) return null;
         selected = @intCast(raw_id);
@@ -542,10 +542,10 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         const list = body_node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            const stmt_node = self.ast.getNode(@enumFromInt(raw_idx));
+            const stmt_node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (stmt_node.tag == .export_named_declaration) {
                 const e = stmt_node.data.extra;
-                const decl_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                 if (!decl_idx.isNone()) {
                     collectExportNames(self, &ns_export_map, decl_idx) catch {};
                 }
@@ -599,13 +599,13 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
         const list = body_node.data.list;
         const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
         for (indices) |raw_idx| {
-            const stmt_node = self.ast.getNode(@enumFromInt(raw_idx));
+            const stmt_node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             switch (stmt_node.tag) {
                 .export_named_declaration => {
                     const e = stmt_node.data.extra;
                     const extras = self.ast.extra_data.items[e .. e + 4];
-                    const decl_idx: NodeIndex = @enumFromInt(extras[0]);
-                    if (decl_idx.isNone() and extras[2] > 0 and @as(NodeIndex, @enumFromInt(extras[3])).isNone()) {
+                    const decl_idx: NodeIndex = @fromBackingInt(@intCast(extras[0]));
+                    if (decl_idx.isNone() and extras[2] > 0 and @as(NodeIndex, @fromBackingInt(@intCast(extras[3]))).isNone()) {
                         // Some declaration transforms replace an exported class
                         // with a local declaration plus `export { Local as Name }`.
                         // Inside a TS namespace that specifier is the namespace
@@ -646,9 +646,9 @@ fn emitNamespaceIIFEInner(self: anytype, node: Node, namespace_idx: NodeIndex, p
                     try self.writeByte(';');
                 },
                 .ts_module_declaration => {
-                    try emitNamespaceIIFEInner(self, stmt_node, @enumFromInt(raw_idx), .local);
+                    try emitNamespaceIIFEInner(self, stmt_node, @fromBackingInt(@intCast(raw_idx)), .local);
                 },
-                else => try self.emitNode(@enumFromInt(raw_idx)),
+                else => try self.emitNode(@fromBackingInt(@intCast(raw_idx))),
             }
         }
     }
@@ -701,7 +701,7 @@ fn emitNamespaceExportSpecifiers(self: anytype, ns_prefix: NamespacePrefix, spec
     const ns_name = try self.namespacePrefixName(ns_prefix);
     const spec_indices = self.ast.extra_data.items[specs_start .. specs_start + specs_len];
     for (spec_indices) |raw_idx| {
-        const spec = self.ast.getNode(@enumFromInt(raw_idx));
+        const spec = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         if (spec.tag != .export_specifier) continue;
         const local_idx = spec.data.binary.left;
         const exported_idx = spec.data.binary.right;
@@ -744,17 +744,17 @@ fn emitNamespaceExport(self: anytype, ns_prefix: NamespacePrefix, decl_idx: Node
             const list_len = extras[2];
             const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
             for (declarators) |raw_idx| {
-                const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+                const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const de = declarator.data.extra;
                 const d_extras = self.ast.extra_data.items[de .. de + 3];
-                const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(d_extras[0]));
                 try emitNamespaceBindingExport(self, ns_prefix, name_idx);
             }
         },
         .function_declaration, .class_declaration, .ts_enum_declaration => {
             // function foo() {} → Foo.foo = foo;
             const e = decl.data.extra;
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
             if (!name_idx.isNone()) {
                 const fn_name_node = self.ast.getNode(name_idx);
                 const fn_name = self.ast.getText(fn_name_node.span);
@@ -795,7 +795,7 @@ fn emitNamespaceBindingExport(self: anytype, ns_prefix: NamespacePrefix, name_id
         .array_pattern => {
             const split = self.ast.nodeListSplitRest(node.data.list);
             for (split.elements) |raw_idx| {
-                try emitNamespaceBindingExport(self, ns_prefix, @enumFromInt(raw_idx));
+                try emitNamespaceBindingExport(self, ns_prefix, @fromBackingInt(@intCast(raw_idx)));
             }
             if (split.rest_operand) |op| {
                 try emitNamespaceBindingExport(self, ns_prefix, op);
@@ -804,7 +804,7 @@ fn emitNamespaceBindingExport(self: anytype, ns_prefix: NamespacePrefix, name_id
         .object_pattern => {
             const split = self.ast.nodeListSplitRest(node.data.list);
             for (split.elements) |raw_idx| {
-                const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                const prop = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 // property_property: binary.right = value (binding pattern)
                 try emitNamespaceBindingExport(self, ns_prefix, prop.data.binary.right);
             }
@@ -831,9 +831,9 @@ fn isSimpleVarDeclaration(self: anytype, decl_idx: NodeIndex) bool {
     const list_len = extras[2];
     const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
     for (declarators) |raw_idx| {
-        const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+        const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         const de = declarator.data.extra;
-        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[de]));
         const name_node = self.ast.getNode(name_idx);
         if (name_node.tag != .binding_identifier) return false;
     }
@@ -853,11 +853,11 @@ fn emitNamespaceVarDirectAssign(self: anytype, ns_prefix: NamespacePrefix, decl_
     const list_len = extras[2];
     const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
     for (declarators) |raw_idx| {
-        const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+        const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         const de = declarator.data.extra;
         const d_extras = self.ast.extra_data.items[de .. de + 3];
-        const name_idx: NodeIndex = @enumFromInt(d_extras[0]);
-        const init_idx: NodeIndex = @enumFromInt(d_extras[2]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(d_extras[0]));
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(d_extras[2]));
         // init이 없으면 할당할 값이 없으므로 스킵 (esbuild 호환)
         if (init_idx.isNone()) continue;
         const var_name_node = self.ast.getNode(name_idx);
@@ -897,10 +897,10 @@ fn emitNamespaceVarMixed(self: anytype, ns_prefix: NamespacePrefix, decl_idx: No
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
         const raw_idx = self.ast.extra_data.items[list_start + i];
-        const declarator = self.ast.getNode(@enumFromInt(raw_idx));
+        const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         const de = declarator.data.extra;
-        const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de]);
-        const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[de + 2]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[de]));
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[de + 2]));
         const name_node = self.ast.getNode(name_idx);
         if (name_node.tag == .binding_identifier) {
             // init 이 없으면 할당할 값이 없다 (emitNamespaceVarDirectAssign 과 같음).
@@ -923,7 +923,7 @@ fn emitNamespaceVarMixed(self: anytype, ns_prefix: NamespacePrefix, decl_idx: No
             try self.writeByte(';');
         } else {
             try self.write(keyword);
-            try self.emitNode(@enumFromInt(raw_idx));
+            try self.emitNode(@fromBackingInt(@intCast(raw_idx)));
             try self.writeByte(';');
             try emitNamespaceBindingExport(self, ns_prefix, name_idx);
         }
@@ -940,8 +940,8 @@ fn collectExportNames(self: anytype, map: *std.StringHashMapUnmanaged(void), dec
             const list_len = self.ast.extra_data.items[e + 2];
             const declarators = self.ast.extra_data.items[list_start .. list_start + list_len];
             for (declarators) |raw_idx| {
-                const declarator = self.ast.getNode(@enumFromInt(raw_idx));
-                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator.data.extra]);
+                const declarator = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[declarator.data.extra]));
                 if (isDestructuringTempBinding(self, name_idx)) continue;
                 const name_node = self.ast.getNode(name_idx);
                 const name = self.ast.getText(name_node.span);
@@ -950,7 +950,7 @@ fn collectExportNames(self: anytype, map: *std.StringHashMapUnmanaged(void), dec
         },
         .function_declaration, .class_declaration, .ts_enum_declaration => {
             const e = decl.data.extra;
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
             if (!name_idx.isNone()) {
                 const name_node = self.ast.getNode(name_idx);
                 const name = self.ast.getText(name_node.span);
@@ -963,7 +963,7 @@ fn collectExportNames(self: anytype, map: *std.StringHashMapUnmanaged(void), dec
 
 fn isDestructuringTempBinding(self: anytype, idx: NodeIndex) bool {
     if (self.options.destructuring_temp_bindings) |bindings_map| {
-        return bindings_map.contains(@intFromEnum(idx));
+        return bindings_map.contains(@backingInt(idx));
     }
     return false;
 }
@@ -1003,7 +1003,7 @@ fn generatedIifeParamReserved(
         if (!std.mem.eql(u8, self.ast.identifierNameText(node), candidate)) continue;
         if (namespace_context) |context| {
             if (node.tag != .binding_identifier) return true;
-            const binding_idx: NodeIndex = @enumFromInt(ni);
+            const binding_idx: NodeIndex = @fromBackingInt(@intCast(ni));
             if (binding_idx == context.name_idx) continue;
             // Separate merged declarations get separate IIFEs, so their
             // namespace names do not share this parameter's lexical scope.
@@ -1036,12 +1036,12 @@ fn isDirectNamespaceNameInBody(self: anytype, body_idx: NodeIndex, name_idx: Nod
     const list = body.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     for (indices) |raw_idx| {
-        const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+        const stmt = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         const decl_idx: NodeIndex = if (stmt.tag == .export_named_declaration) blk: {
             const extra_idx = stmt.data.extra;
             if (extra_idx >= self.ast.extra_data.items.len) continue;
-            break :blk @enumFromInt(self.ast.extra_data.items[extra_idx]);
-        } else @enumFromInt(raw_idx);
+            break :blk @fromBackingInt(@intCast(self.ast.extra_data.items[extra_idx]));
+        } else @fromBackingInt(@intCast(raw_idx));
         if (decl_idx.isNone()) continue;
         const decl = self.ast.getNode(decl_idx);
         if (decl.tag == .ts_module_declaration and decl.data.binary.left == name_idx) return true;
@@ -1096,7 +1096,7 @@ test "#4819 generated IIFE parameter names require an exact final-name result" {
     const symbols = [_]Symbol{
         .{
             .name = span,
-            .scope_id = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
             .kind = .parameter,
             .declaration_span = span,
             .synthetic_kind = .namespace_iife_parameter,
@@ -1104,7 +1104,7 @@ test "#4819 generated IIFE parameter names require an exact final-name result" {
         },
         .{
             .name = span,
-            .scope_id = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
             .kind = .parameter,
             .declaration_span = span,
             .synthetic_kind = .enum_iife_parameter,
@@ -1144,30 +1144,30 @@ test "#4819 generated IIFE parameter names require an exact final-name result" {
     } };
     try std.testing.expectError(
         error.MissingGeneratedIifeParameterFinalName,
-        namespaceIifeParameter(&cg, @enumFromInt(0)),
+        namespaceIifeParameter(&cg, @fromBackingInt(@intCast(0))),
     );
     try std.testing.expectEqual(@as(?u32, 0), cg.last_symbol_id);
 
     try std.testing.expectError(
         error.MissingGeneratedIifeParameterFinalName,
-        enumIifeParamName(&cg, @enumFromInt(1)),
+        enumIifeParamName(&cg, @fromBackingInt(@intCast(1))),
     );
     try std.testing.expectEqual(@as(?u32, 1), cg.last_symbol_id);
 
     cg.final_names[0] = "";
     try std.testing.expectError(
         error.MissingGeneratedIifeParameterFinalName,
-        namespaceIifeParameter(&cg, @enumFromInt(0)),
+        namespaceIifeParameter(&cg, @fromBackingInt(@intCast(0))),
     );
     try std.testing.expectEqual(@as(?u32, 0), cg.last_symbol_id);
 
     cg.final_names[0] = "renamedNamespace";
-    const namespace_parameter = (try namespaceIifeParameter(&cg, @enumFromInt(0))) orelse return error.MissingNamespaceParameter;
+    const namespace_parameter = (try namespaceIifeParameter(&cg, @fromBackingInt(@intCast(0)))) orelse return error.MissingNamespaceParameter;
     try std.testing.expectEqualStrings("renamedNamespace", namespace_parameter.name);
     try std.testing.expectEqual(@as(?u32, 0), cg.last_symbol_id);
 
     cg.final_names[1] = "renamedEnum";
-    const enum_parameter = (try enumIifeParamName(&cg, @enumFromInt(1))) orelse return error.MissingEnumParameter;
+    const enum_parameter = (try enumIifeParamName(&cg, @fromBackingInt(@intCast(1)))) orelse return error.MissingEnumParameter;
     try std.testing.expectEqualStrings("renamedEnum", enum_parameter);
     try std.testing.expectEqual(@as(?u32, 1), cg.last_symbol_id);
 }
@@ -1180,7 +1180,7 @@ test "#4819 generated IIFE parameter identity requires a parameter declaration" 
     const corrupted_symbols = [_]Symbol{
         .{
             .name = span,
-            .scope_id = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
             .kind = .variable_const,
             .declaration_span = span,
             .synthetic_kind = .namespace_iife_parameter,
@@ -1188,7 +1188,7 @@ test "#4819 generated IIFE parameter identity requires a parameter declaration" 
         },
         .{
             .name = span,
-            .scope_id = @enumFromInt(1),
+            .scope_id = @fromBackingInt(@intCast(1)),
             .kind = .catch_binding,
             .declaration_span = span,
             .synthetic_kind = .enum_iife_parameter,
@@ -1217,22 +1217,22 @@ test "#4819 generated IIFE parameter identity requires a parameter declaration" 
         .generated_iife_scope_owner_map = &owners,
     } };
 
-    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @enumFromInt(10), .namespace_iife_parameter));
-    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @enumFromInt(11), .enum_iife_parameter));
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @fromBackingInt(@intCast(10)), .namespace_iife_parameter));
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @fromBackingInt(@intCast(11)), .enum_iife_parameter));
 
     var valid_symbols = corrupted_symbols;
     valid_symbols[0].kind = .parameter;
     valid_symbols[1].kind = .parameter;
     probe.options.semantic_symbols = &valid_symbols;
-    try std.testing.expectEqual(@as(?u32, 0), generatedIifeParamSymbolId(&probe, @enumFromInt(10), .namespace_iife_parameter));
-    try std.testing.expectEqual(@as(?u32, 1), generatedIifeParamSymbolId(&probe, @enumFromInt(11), .enum_iife_parameter));
+    try std.testing.expectEqual(@as(?u32, 0), generatedIifeParamSymbolId(&probe, @fromBackingInt(@intCast(10)), .namespace_iife_parameter));
+    try std.testing.expectEqual(@as(?u32, 1), generatedIifeParamSymbolId(&probe, @fromBackingInt(@intCast(11)), .enum_iife_parameter));
 
     const corrupted_and_valid_symbols = [_]Symbol{
         corrupted_symbols[0],
         corrupted_symbols[1],
         .{
             .name = span,
-            .scope_id = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
             .kind = .parameter,
             .declaration_span = span,
             .synthetic_kind = .namespace_iife_parameter,
@@ -1241,5 +1241,5 @@ test "#4819 generated IIFE parameter identity requires a parameter declaration" 
     };
     try scope_maps[0].put(allocator, "_NamespaceDuplicate", 2);
     probe.options.semantic_symbols = &corrupted_and_valid_symbols;
-    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @enumFromInt(10), .namespace_iife_parameter));
+    try std.testing.expectEqual(@as(?u32, null), generatedIifeParamSymbolId(&probe, @fromBackingInt(@intCast(10)), .namespace_iife_parameter));
 }

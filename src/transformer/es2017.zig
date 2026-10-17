@@ -32,7 +32,7 @@ pub fn ES2017(comptime Transformer: type) type {
             const start = extra[base + start_offset];
             const len = extra[base + len_offset];
             if (start > extra.len or len > extra.len - start) return;
-            for (extra[start .. start + len]) |raw| try stack.append(self.allocator, @enumFromInt(raw));
+            for (extra[start .. start + len]) |raw| try stack.append(self.allocator, @fromBackingInt(@intCast(raw)));
         }
 
         /// The async generator's body moves into a generated inner function,
@@ -51,16 +51,16 @@ pub fn ES2017(comptime Transformer: type) type {
             defer stack.deinit(self.allocator);
             try stack.append(self.allocator, body);
             while (stack.pop()) |idx| {
-                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
-                const raw = @intFromEnum(idx);
+                if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
+                const raw = @backingInt(idx);
                 if (seen.contains(raw)) continue;
                 try seen.put(self.allocator, raw, {});
                 const owner = self.transformed_scope_owner_map.get(raw) orelse
                     editor.scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw);
                 if (owner) |scope_raw| {
-                    if (scope_raw != @intFromEnum(source)) {
+                    if (scope_raw != @backingInt(source)) {
                         if (scope_raw >= editor.scopes.items.len) std.debug.panic("invalid async generator body scope", .{});
-                        var cursor: ScopeId = @enumFromInt(scope_raw);
+                        var cursor: ScopeId = @fromBackingInt(@intCast(scope_raw));
                         var steps: usize = 0;
                         while (!cursor.isNone() and cursor != source and steps < editor.scopes.items.len) : (steps += 1) {
                             const parent = editor.scopes.items[cursor.toIndex()].parent;
@@ -94,7 +94,7 @@ pub fn ES2017(comptime Transformer: type) type {
                         const e = node.data.extra;
                         const extra = self.ast.extra_data.items;
                         if (e < extra.len and extra.len - e >= 3) {
-                            try stack.append(self.allocator, @enumFromInt(extra[e]));
+                            try stack.append(self.allocator, @fromBackingInt(@intCast(extra[e])));
                             try appendBodyExtraList(self, &stack, e, 1, 2);
                         }
                     },
@@ -103,7 +103,7 @@ pub fn ES2017(comptime Transformer: type) type {
             }
             var roots = frontier.keyIterator();
             while (roots.next()) |raw| {
-                editor.reparentScope(@enumFromInt(raw.*), inner) catch |err| {
+                editor.reparentScope(@fromBackingInt(@intCast(raw.*)), inner) catch |err| {
                     if (err == error.OutOfMemory) return error.OutOfMemory;
                     std.debug.panic("invalid async generator body scope frontier: {s}", .{@errorName(err)});
                 };
@@ -166,7 +166,7 @@ pub fn ES2017(comptime Transformer: type) type {
                 // pre 프레임: children() 는 extra_data 값을 그대로 yield 하므로(범위 검증 안 함)
                 // none 외에 out-of-range 도 가능 → getNode 전 bounds 가드(post 프레임 idx 는 이미
                 // 검증된 await 노드라 안전). walkPreorderIterative/scanChildren 동일.
-                if (frame.idx.isNone() or @intFromEnum(frame.idx) >= self.ast.nodes.items.len) continue;
+                if (frame.idx.isNone() or @backingInt(frame.idx) >= self.ast.nodes.items.len) continue;
                 const node = self.ast.getNode(frame.idx);
                 switch (node.tag) {
                     .await_expression => {
@@ -197,7 +197,7 @@ pub fn ES2017(comptime Transformer: type) type {
                         var i = node.data.list.len;
                         while (i > 0) {
                             i -= 1;
-                            try stack.append(self.allocator, .{ .idx = @enumFromInt(self.ast.extra_data.items[node.data.list.start + i]), .post = false });
+                            try stack.append(self.allocator, .{ .idx = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.list.start + i])), .post = false });
                         }
                     },
                     .method_definition, .property_definition, .accessor_property => {
@@ -238,7 +238,7 @@ pub fn ES2017(comptime Transformer: type) type {
 
             try stack.append(self.allocator, node_idx);
             while (stack.pop()) |idx| {
-                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
                 const node = self.ast.getNode(idx);
                 switch (node.tag) {
                     .function_declaration,
@@ -363,11 +363,11 @@ pub fn ES2017(comptime Transformer: type) type {
             // invoked with the original arguments only for `arguments` itself.
             const inner_flags = (flags & ~@as(u32, ast_mod.FunctionFlags.is_async)) | @as(u32, ast_mod.FunctionFlags.is_generator);
             const inner_params_node = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const inner_extra = try self.ast.addExtras(&.{
                 none, // anonymous
-                @intFromEnum(inner_params_node),
-                @intFromEnum(body_idx),
+                @backingInt(inner_params_node),
+                @backingInt(body_idx),
                 inner_flags,
                 none,
             });
@@ -415,7 +415,7 @@ pub fn ES2017(comptime Transformer: type) type {
             // 주의 — visit 은 body 를 **새 노드로 교체**하므로 원래 `body_idx` 가 아니라
             // 낮아진 결과의 body 를 봐야 한다. generator 가 state machine 으로 접힌 타겟
             // (es5)에선 함수 형태가 아니거나 남은 await 가 없어 no-op.
-            if (!lowered_inner.isNone() and @intFromEnum(lowered_inner) < self.ast.nodes.items.len) {
+            if (!lowered_inner.isNone() and @backingInt(lowered_inner) < self.ast.nodes.items.len) {
                 const li = self.ast.getNode(lowered_inner);
                 switch (li.tag) {
                     .function_expression, .function, .function_declaration => {
@@ -469,9 +469,9 @@ pub fn ES2017(comptime Transformer: type) type {
             const outer_params_node = try self.ast.addFormalParameters(new_params, span);
             const outer_flags = flags & ~(@as(u32, ast_mod.FunctionFlags.is_async) | @as(u32, ast_mod.FunctionFlags.is_generator));
             const outer_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_name),
-                @intFromEnum(outer_params_node),
-                @intFromEnum(outer_body),
+                @backingInt(new_name),
+                @backingInt(outer_params_node),
+                @backingInt(outer_body),
                 outer_flags,
                 none,
             });
@@ -529,7 +529,7 @@ pub fn ES2017(comptime Transformer: type) type {
             defer body_temps.deinit(self.allocator);
             const gen_body = try self.hoistTempVarsRecording(new_body, saved_temp_counter, node.span, &body_temps);
             self.temp_var_counter = saved_temp_counter;
-            self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @intFromEnum(gen_body);
+            self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @backingInt(gen_body);
             try self.bindGeneratedFunctionTemps(source_scope, gen_scope, gen_body, body_temps.items, node.span);
             try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, gen_body);
 
@@ -569,11 +569,11 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_flags = flags & ~ast_mod.FunctionFlags.is_async;
             const new_params_node = try self.ast.addFormalParameters(new_params, node.span);
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_name),
-                @intFromEnum(new_params_node),
-                @intFromEnum(wrapper_body),
+                @backingInt(new_name),
+                @backingInt(new_params_node),
+                @backingInt(wrapper_body),
                 new_flags,
-                @intFromEnum(NodeIndex.none),
+                @backingInt(NodeIndex.none),
             });
             const result = try self.ast.addNode(.{
                 .tag = node.tag,
@@ -648,7 +648,7 @@ pub fn ES2017(comptime Transformer: type) type {
             defer body_temps.deinit(self.allocator);
             const hoisted_body = try self.hoistTempVarsRecording(gen_body, saved_temp_counter, node.span, &body_temps);
             self.temp_var_counter = saved_temp_counter;
-            self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @intFromEnum(hoisted_body);
+            self.ast.extra_data.items[self.ast.getNode(gen_func).data.extra + 2] = @backingInt(hoisted_body);
             try self.bindGeneratedFunctionTemps(source_scope, gen_scope, hoisted_body, body_temps.items, node.span);
             try self.moveGeneratedFunctionBodyBindings(source_scope, gen_scope, hoisted_body);
             const async_call = try es_helpers.buildAsyncHelperCall(self, gen_func, node.span);
@@ -679,8 +679,8 @@ pub fn ES2017(comptime Transformer: type) type {
 
             const new_flags = flags & ~@as(u32, ast_mod.ArrowFlags.is_async);
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_params),
-                @intFromEnum(arrow_body),
+                @backingInt(new_params),
+                @backingInt(arrow_body),
                 new_flags,
             });
             return self.ast.addNode(.{
@@ -825,11 +825,11 @@ pub fn ES2017(comptime Transformer: type) type {
             const new_flags = flags & ~(ast_mod.FunctionFlags.is_async | @as(u32, ast_mod.FunctionFlags.is_generator));
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_name),
-                @intFromEnum(new_params_node),
-                @intFromEnum(wrapper_body),
+                @backingInt(new_name),
+                @backingInt(new_params_node),
+                @backingInt(wrapper_body),
                 new_flags,
-                @intFromEnum(NodeIndex.none),
+                @backingInt(NodeIndex.none),
             });
             const result = try self.ast.addNode(.{
                 .tag = node.tag,
@@ -957,12 +957,12 @@ pub fn ES2017(comptime Transformer: type) type {
                 );
             };
 
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const params_node = try self.ast.addFormalParameters(params_list, span);
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
-                @intFromEnum(params_node),
-                @intFromEnum(func_body),
+                @backingInt(params_node),
+                @backingInt(func_body),
                 0, // flags (not async, not generator)
                 none, // return_type
             });

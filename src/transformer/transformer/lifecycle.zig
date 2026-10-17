@@ -243,7 +243,7 @@ pub fn initSymbolIds(self: *Transformer, analyzer_symbol_ids: []const ?u32) Erro
 
 /// #2869 helper marker 등록. caller 는 새로 만든 NodeIndex 를 넘긴다.
 pub fn markRuntimeHelperRef(self: *Transformer, idx: ast_mod.NodeIndex) Error!void {
-    const raw = @intFromEnum(idx);
+    const raw = @backingInt(idx);
     if (self.runtime_helper_ref_index.contains(raw)) return;
     try self.helper_ref_nodes.append(self.allocator, raw);
     try self.runtime_helper_ref_index.put(self.allocator, raw, {});

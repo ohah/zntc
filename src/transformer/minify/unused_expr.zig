@@ -23,7 +23,7 @@ inline fn replaceNode(ast: *Ast, idx: u32, new_node: Node, changed: *bool) void 
 
 /// `inner_idx` 를 감싸는 새 `parenthesized_expression` 노드를 append 하고 그 NodeIndex 반환.
 fn wrapInParen(ast: *Ast, inner_idx: NodeIndex) !NodeIndex {
-    const inner_ni = @intFromEnum(inner_idx);
+    const inner_ni = @backingInt(inner_idx);
     const span = if (inner_ni < ast.nodes.items.len)
         ast.nodes.items[inner_ni].span
     else
@@ -34,7 +34,7 @@ fn wrapInParen(ast: *Ast, inner_idx: NodeIndex) !NodeIndex {
         .span = span,
         .data = .{ .unary = .{ .operand = inner_idx, .flags = 0 } },
     });
-    return @enumFromInt(new_ni);
+    return @fromBackingInt(@intCast(new_ni));
 }
 
 /// sequence_expression (comma operator) 축약. #1644 PR1.5 확장.
@@ -66,7 +66,7 @@ pub fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, ch
     // → 캡처된 raw-slice invalid (#2422/#2426 동일 패턴). 마지막 원소를 제외한 prefix 만 순회.
     var iter = ast.iterateExtraList(.{ .start = list.start, .len = list.len - 1 });
     while (iter.next()) |idx| {
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (raw >= ast.nodes.items.len) return;
         // 내부 부분 rewrite 도 동시에 수행 (`a ? b : c` → `a || c` 등).
         // rewriter 가 내부 제거분은 이미 감산함 — 최종 removable 로 판정되면 호출자가 raw 전체 감산.
@@ -82,7 +82,7 @@ pub fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, ch
     // Phase 2 (commit): 모든 allocation 성공 확인 후 mutation.
     if (kept_buf.items.len == 0) {
         // 마지막 하나만 남음 → sequence 를 해당 노드로 교체. list rewrite 불필요.
-        for (removed_buf.items) |raw| minify_mod.decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
+        for (removed_buf.items) |raw| minify_mod.decrementRefsInExpr(ast, ctx, @fromBackingInt(@intCast(raw)));
         minify_mod.replaceNodeFromChild(ast, ctx, node_idx, last_raw, ast.nodes.items[last_raw], changed);
         return;
     }
@@ -93,7 +93,7 @@ pub fn simplifySequence(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: Node, ch
     ast.extra_data.appendSlice(ast.allocator, kept_buf.items) catch return;
 
     // 이 지점부터는 allocation 실패 없음 — 안전하게 decrement + rewrite.
-    for (removed_buf.items) |raw| minify_mod.decrementRefsInExpr(ast, ctx, @enumFromInt(raw));
+    for (removed_buf.items) |raw| minify_mod.decrementRefsInExpr(ast, ctx, @fromBackingInt(@intCast(raw)));
     ast.nodes.items[node_idx].data = .{
         .list = .{ .start = new_start, .len = @intCast(kept_buf.items.len) },
     };
@@ -138,7 +138,7 @@ pub fn simplifyUnusedExprStmt(ast: *Ast, ctx: MinifyCtx, node_idx: u32, node: No
 /// `isSafeStmtLead` 가 leading operand 를 재귀로 따라 최상위 dangerous tag 를 탐지.
 fn unwrapRedundantStmtParen(ast: *Ast, stmt_idx: u32, changed: *bool) void {
     const stmt = ast.nodes.items[stmt_idx];
-    const op_ni = @intFromEnum(stmt.data.unary.operand);
+    const op_ni = @backingInt(stmt.data.unary.operand);
     if (op_ni >= ast.nodes.items.len) return;
     const op_node = ast.nodes.items[op_ni];
     if (op_node.tag != .parenthesized_expression) return;
@@ -159,7 +159,7 @@ const max_stmt_lead_depth: u32 = 64;
 /// sequence 의 첫 원소, tagged_template 의 tag, assignment 의 left 등 leading 따라 내려감.
 fn isSafeStmtLead(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
     if (depth >= max_stmt_lead_depth) return false;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[ni];
     const d = depth + 1;
@@ -185,7 +185,7 @@ fn isSafeStmtLead(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
         .call_expression, .new_expression => blk: {
             const e = node.data.extra;
             if (!ast.hasExtra(e, 0)) break :blk false;
-            break :blk isSafeStmtLead(ast, @enumFromInt(ast.readExtra(e, 0)), d);
+            break :blk isSafeStmtLead(ast, @fromBackingInt(@intCast(ast.readExtra(e, 0))), d);
         },
         .static_member_expression,
         .computed_member_expression,
@@ -193,19 +193,19 @@ fn isSafeStmtLead(ast: *const Ast, idx: NodeIndex, depth: u32) bool {
         => blk: {
             const e = node.data.extra;
             if (!ast.hasExtra(e, 0)) break :blk false;
-            break :blk isSafeStmtLead(ast, @enumFromInt(ast.readExtra(e, 0)), d);
+            break :blk isSafeStmtLead(ast, @fromBackingInt(@intCast(ast.readExtra(e, 0))), d);
         },
         .tagged_template_expression => blk: {
             const e = node.data.extra;
             if (!ast.hasExtra(e, 0)) break :blk false;
-            break :blk isSafeStmtLead(ast, @enumFromInt(ast.readExtra(e, 0)), d);
+            break :blk isSafeStmtLead(ast, @fromBackingInt(@intCast(ast.readExtra(e, 0))), d);
         },
         .binary_expression, .logical_expression => isSafeStmtLead(ast, node.data.binary.left, d),
         .conditional_expression => isSafeStmtLead(ast, node.data.ternary.a, d),
         .sequence_expression => blk: {
             const list = node.data.list;
             if (list.len == 0 or list.start >= ast.extra_data.items.len) break :blk false;
-            break :blk isSafeStmtLead(ast, @enumFromInt(ast.extra_data.items[list.start]), d);
+            break :blk isSafeStmtLead(ast, @fromBackingInt(@intCast(ast.extra_data.items[list.start])), d);
         },
         .parenthesized_expression => true, // 이미 paren — 벗겨도 새 paren 이 생기지 않음
         // unary / update / literal / identifier / this / template 등은 leading 이
@@ -242,7 +242,7 @@ const max_unused_simplify_depth: u32 = purity.max_stmt_removable_depth;
 fn simplifyUnusedInPlace(ast: *Ast, ctx: MinifyCtx, idx: NodeIndex, changed: *bool, depth: u32) bool {
     if (depth >= max_unused_simplify_depth) return false;
     if (idx.isNone()) return true;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[ni];
 
@@ -274,7 +274,7 @@ fn simplifyUnusedInPlace(ast: *Ast, ctx: MinifyCtx, idx: NodeIndex, changed: *bo
 /// 이 술어는 `purity.isRemovableAtStmtPos` 의 `.binary_expression` arm(`===`/`!==` 만 허용)
 /// 과 **같은 규칙**이어야 한다. 여기서만 느슨하면 그 arm 이 무의미해진다.
 fn rewriteBinaryUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: *bool, depth: u32) bool {
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
     const coercion_free = switch (op) {
         .eq3, .neq2 => true,
         else => false,
@@ -292,7 +292,7 @@ fn rewriteBinaryUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
 
     if (left_rem) {
         // `pure == impure` → `impure`
-        const right_ni = @intFromEnum(right_idx);
+        const right_ni = @backingInt(right_idx);
         if (right_ni >= ast.nodes.items.len) return false;
         minify_mod.decrementRefsInExpr(ast, ctx, left_idx);
         minify_mod.replaceNodeFromChild(ast, ctx, ni, right_ni, ast.nodes.items[right_ni], changed);
@@ -300,7 +300,7 @@ fn rewriteBinaryUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
     }
     if (right_rem) {
         // `impure == pure` → `impure`
-        const left_ni = @intFromEnum(left_idx);
+        const left_ni = @backingInt(left_idx);
         if (left_ni >= ast.nodes.items.len) return false;
         minify_mod.decrementRefsInExpr(ast, ctx, right_idx);
         minify_mod.replaceNodeFromChild(ast, ctx, ni, left_ni, ast.nodes.items[left_ni], changed);
@@ -326,7 +326,7 @@ fn rewriteLogicalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed:
     if (left_rem) return true;
 
     // right drop, left 만 남김
-    const left_ni = @intFromEnum(left_idx);
+    const left_ni = @backingInt(left_idx);
     if (left_ni >= ast.nodes.items.len) return false;
     minify_mod.decrementRefsInExpr(ast, ctx, right_idx);
     minify_mod.replaceNodeFromChild(ast, ctx, ni, left_ni, ast.nodes.items[left_ni], changed);
@@ -353,7 +353,7 @@ fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, chan
     const alt_rem = isStmtRemovableDepth(ast, alt_idx, ctx, d);
 
     if (cons_rem and alt_rem) {
-        const test_ni = @intFromEnum(test_idx);
+        const test_ni = @backingInt(test_idx);
         if (test_ni >= ast.nodes.items.len) return false;
         minify_mod.decrementRefsInExpr(ast, ctx, cons_idx);
         minify_mod.decrementRefsInExpr(ast, ctx, alt_idx);
@@ -368,7 +368,7 @@ fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, chan
         ast.nodes.items[ni] = .{
             .tag = .logical_expression,
             .span = node.span,
-            .data = .{ .binary = .{ .left = test_idx, .right = right_idx, .flags = @intFromEnum(Kind.pipe2) } },
+            .data = .{ .binary = .{ .left = test_idx, .right = right_idx, .flags = @backingInt(Kind.pipe2) } },
         };
         changed.* = true;
         return false;
@@ -381,7 +381,7 @@ fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, chan
         ast.nodes.items[ni] = .{
             .tag = .logical_expression,
             .span = node.span,
-            .data = .{ .binary = .{ .left = test_idx, .right = right_idx, .flags = @intFromEnum(Kind.amp2) } },
+            .data = .{ .binary = .{ .left = test_idx, .right = right_idx, .flags = @backingInt(Kind.amp2) } },
         };
         changed.* = true;
         return false;
@@ -394,7 +394,7 @@ fn rewriteConditionalUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, chan
 /// `assignment_expression` / `sequence_expression` 은 JS grammar 상 paren 필수 (LogicalOR
 /// 자리에 직접 못 옴) — `wrapInParen` 으로 감싼다. 그 외는 그대로 반환.
 fn ensureLogicalOperand(ast: *Ast, idx: NodeIndex) !NodeIndex {
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return idx;
     return switch (ast.nodes.items[ni].tag) {
         .assignment_expression, .sequence_expression => try wrapInParen(ast, idx),
@@ -429,7 +429,7 @@ fn reduceToSequenceExpr(
 ) !bool {
     if (kept.len == 0) return true;
     if (kept.len == 1) {
-        const single_ni = @intFromEnum(kept[0]);
+        const single_ni = @backingInt(kept[0]);
         if (single_ni >= ast.nodes.items.len) return false;
         minify_mod.replaceNodeFromChild(ast, ctx, ni, single_ni, ast.nodes.items[single_ni], changed);
         return false;
@@ -437,7 +437,7 @@ fn reduceToSequenceExpr(
     // kept >= 2: sequence_expression 생성
     const new_start: u32 = @intCast(ast.extra_data.items.len);
     try ast.extra_data.ensureUnusedCapacity(ast.allocator, kept.len);
-    for (kept) |idx| ast.extra_data.appendAssumeCapacity(@intFromEnum(idx));
+    for (kept) |idx| ast.extra_data.appendAssumeCapacity(@backingInt(idx));
     ast.nodes.items[ni] = .{
         .tag = .sequence_expression,
         .span = span,
@@ -496,7 +496,7 @@ fn rewriteCallOrNewUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, change
 
     // purity 는 전체 expression 단위. pure 가 아니면 args drop 자체도 안전하지 않음.
     // (callee 가 impure 면 인자 evaluate 순서/횟수 관측 가능).
-    if (!purity.isExprPure(ast, @enumFromInt(ni), ctx.unresolved_globals)) return false;
+    if (!purity.isExprPure(ast, @fromBackingInt(@intCast(ni)), ctx.unresolved_globals)) return false;
 
     const args_start = ast.extra_data.items[e + 1];
     const args_len = ast.extra_data.items[e + 2];
@@ -534,7 +534,7 @@ fn anyComputedKey(ast: *Ast, props: []const u32) bool {
         if (raw >= ast.nodes.items.len) return true; // 알 수 없으면 보수적으로 "있다"
         const prop = ast.nodes.items[raw];
         const key_ni: u32 = switch (prop.tag) {
-            .object_property => @intFromEnum(prop.data.binary.left),
+            .object_property => @backingInt(prop.data.binary.left),
             .method_definition => blk: {
                 const me = prop.data.extra;
                 if (me + @as(u32, ast_mod.MethodExtra.key) >= ast.extra_data.items.len) return true;
@@ -590,7 +590,7 @@ fn rewriteObjectUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, changed: 
     // realloc-safe 순회 — simplifyUnusedInPlace 재귀가 extra_data grow 가능 (#2426).
     var iter = ast.iterateExtraList(list);
     while (iter.next()) |prop_idx| {
-        const prop_ni = @intFromEnum(prop_idx);
+        const prop_ni = @backingInt(prop_idx);
         const prop = ast.nodes.items[prop_ni];
 
         switch (prop.tag) {
@@ -649,7 +649,7 @@ fn rewriteTemplateLiteralUnused(ast: *Ast, ctx: MinifyCtx, ni: u32, node: Node, 
         const child = ast.nodes.items[raw];
         if (child.tag == .template_element) continue;
 
-        const idx: NodeIndex = @enumFromInt(raw);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (purity.canBeSymbol(ast, idx)) {
             pending.append(ast.allocator, idx) catch return false;
             continue;
@@ -701,7 +701,7 @@ fn buildTemplateLiteral(ast: *Ast, exprs: []const NodeIndex, span: Span) !NodeIn
     ast.extra_data.appendAssumeCapacity(appendTemplateElement(ast, try ast.addString("`${")));
 
     for (exprs, 0..) |expr, i| {
-        ast.extra_data.appendAssumeCapacity(@intFromEnum(expr));
+        ast.extra_data.appendAssumeCapacity(@backingInt(expr));
         const elem_text = if (i == n - 1) "}`" else "}${";
         ast.extra_data.appendAssumeCapacity(appendTemplateElement(ast, try ast.addString(elem_text)));
     }
@@ -712,7 +712,7 @@ fn buildTemplateLiteral(ast: *Ast, exprs: []const NodeIndex, span: Span) !NodeIn
         .span = span,
         .data = .{ .list = .{ .start = new_start, .len = @intCast(total_items) } },
     });
-    return @enumFromInt(tmpl_ni);
+    return @fromBackingInt(@intCast(tmpl_ni));
 }
 
 /// 호출자 `buildTemplateLiteral` 이 `ensureUnusedCapacity` 로 미리 확보 — assume capacity 안전.

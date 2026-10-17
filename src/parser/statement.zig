@@ -554,7 +554,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
         if (kind == .@"const" and !decl.isNone() and !self.for_loop_init and !self.ctx.in_ambient) {
             const decl_node = self.ast.getNode(decl);
             if (decl_node.tag == .variable_declarator) {
-                const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl_node.data.extra + 2]);
+                const init_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[decl_node.data.extra + 2]));
                 if (init_idx.isNone()) {
                     try self.addErrorCode(decl_node.span, "Const declarations must be initialized", .const_not_initialized);
                 }
@@ -576,7 +576,7 @@ fn parseVariableDeclaration(self: *Parser) ParseError2!NodeIndex {
     const list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
     // extra_data: [kind_flags, list.start, list.len]
-    const extra_start = try self.ast.addExtra(@intFromEnum(kind));
+    const extra_start = try self.ast.addExtra(@backingInt(kind));
     _ = try self.ast.addExtra(list.start);
     _ = try self.ast.addExtra(list.len);
 
@@ -625,9 +625,9 @@ fn parseVariableDeclarator(self: *Parser) ParseError2!NodeIndex {
     }
 
     // name, type_ann, init_expr → extra_data
-    const extra_start = try self.ast.addExtra(@intFromEnum(name));
-    _ = try self.ast.addExtra(@intFromEnum(type_ann));
-    _ = try self.ast.addExtra(@intFromEnum(init_expr));
+    const extra_start = try self.ast.addExtra(@backingInt(name));
+    _ = try self.ast.addExtra(@backingInt(type_ann));
+    _ = try self.ast.addExtra(@backingInt(init_expr));
 
     return try self.ast.addNode(.{
         .tag = .variable_declarator,
@@ -852,12 +852,12 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
     if (decl_len == 0) return;
 
     // 첫 번째 declarator의 initializer 체크
-    const first_decl: NodeIndex = @enumFromInt(extras[list_start]);
+    const first_decl: NodeIndex = @fromBackingInt(@intCast(extras[list_start]));
     if (first_decl.isNone()) return;
     const decl_node = self.ast.getNode(first_decl);
     if (decl_node.tag != .variable_declarator) return;
 
-    const decl_init: NodeIndex = @enumFromInt(extras[decl_node.data.extra + 2]);
+    const decl_init: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra + 2]));
     if (decl_init.isNone()) return;
 
     // initializer가 있으면 에러 (예외: sloppy var + for-in + BindingIdentifier만)
@@ -873,7 +873,7 @@ fn validateForInOfDeclaration(self: *Parser, init_expr: NodeIndex) ParseError2!v
 
         if (!self.is_strict_mode) {
             // BindingIdentifier인지 확인 — destructuring이면 허용 불가
-            const binding_name: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
+            const binding_name: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra]));
             if (!binding_name.isNone()) {
                 const binding_node = self.ast.getNode(binding_name);
                 if (binding_node.tag == .binding_identifier) return; // Annex B.3.5 허용
@@ -899,10 +899,10 @@ fn parseForRest(self: *Parser, start: u32, init_expr: NodeIndex) ParseError2!Nod
     rescanStatementBodyLeadingSlash(self);
     const body = try self.parseLoopBody();
 
-    const extra_start = try self.ast.addExtra(@intFromEnum(init_expr));
-    _ = try self.ast.addExtra(@intFromEnum(test_expr));
-    _ = try self.ast.addExtra(@intFromEnum(update_expr));
-    _ = try self.ast.addExtra(@intFromEnum(body));
+    const extra_start = try self.ast.addExtra(@backingInt(init_expr));
+    _ = try self.ast.addExtra(@backingInt(test_expr));
+    _ = try self.ast.addExtra(@backingInt(update_expr));
+    _ = try self.ast.addExtra(@backingInt(body));
 
     return try self.ast.addNode(.{
         .tag = .for_statement,
@@ -1027,7 +1027,7 @@ fn parseSwitchStatement(self: *Parser) ParseError2!NodeIndex {
 
     const cases = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     self.restoreScratch(scratch_top);
-    const extra_start = try self.ast.addExtra(@intFromEnum(discriminant));
+    const extra_start = try self.ast.addExtra(@backingInt(discriminant));
     _ = try self.ast.addExtra(cases.start);
     _ = try self.ast.addExtra(cases.len);
 
@@ -1069,7 +1069,7 @@ fn parseSwitchCase(self: *Parser) ParseError2!NodeIndex {
 
     const body = try self.ast.addNodeList(self.scratch.items[body_top..]);
     self.restoreScratch(body_top);
-    const extra_start = try self.ast.addExtra(@intFromEnum(test_expr));
+    const extra_start = try self.ast.addExtra(@backingInt(test_expr));
     _ = try self.ast.addExtra(body.start);
     _ = try self.ast.addExtra(body.len);
 

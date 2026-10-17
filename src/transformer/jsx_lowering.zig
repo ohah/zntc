@@ -522,7 +522,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             var j: u32 = 0;
             while (j < attrs_len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[attrs_start + j];
-                const attr = self.ast.getNode(@enumFromInt(raw_idx));
+                const attr = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const prop = try lowerAttribute(self, attr, span, element_tag_idx);
                 if (!prop.isNone()) {
                     try self.scratch.append(self.allocator, prop);
@@ -569,7 +569,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
                 while (j < attrs_len) : (j += 1) {
                     if (key_idx != null and j == key_idx.?) continue;
                     const raw_idx = self.ast.extra_data.items[attrs_start + j];
-                    const attr = self.ast.getNode(@enumFromInt(raw_idx));
+                    const attr = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                     const prop = try lowerAttribute(self, attr, span, element_tag_idx);
                     if (!prop.isNone()) {
                         try self.scratch.append(self.allocator, prop);
@@ -709,7 +709,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             var j: u32 = 0;
             while (j < len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[start + j];
-                const child_idx: NodeIndex = @enumFromInt(raw_idx);
+                const child_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                 const child = self.ast.getNode(child_idx);
 
                 switch (child.tag) {
@@ -759,7 +759,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             var j: u32 = 0;
             while (j < len) : (j += 1) {
                 const raw_idx = self.ast.extra_data.items[start + j];
-                const child_idx: NodeIndex = @enumFromInt(raw_idx);
+                const child_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                 const child = self.ast.getNode(child_idx);
 
                 switch (child.tag) {
@@ -793,7 +793,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             var count: u32 = 0;
             const indices = self.ast.extra_data.items[start .. start + len];
             for (indices) |raw_idx| {
-                const child = self.ast.getNode(@enumFromInt(raw_idx));
+                const child = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (child.tag == .jsx_text) {
                     const text = self.ast.getText(child.span);
                     const trimmed = std.mem.trim(u8, text, " \t\n\r");
@@ -817,7 +817,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             var single_spread = false;
             const indices = self.ast.extra_data.items[start .. start + len];
             for (indices) |raw_idx| {
-                const child = self.ast.getNode(@enumFromInt(raw_idx));
+                const child = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (child.tag == .jsx_text) {
                     const trimmed = std.mem.trim(u8, self.ast.getText(child.span), " \t\n\r");
                     if (trimmed.len == 0) continue;
@@ -845,7 +845,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             var seen_spread = false;
             const attr_indices = self.ast.extra_data.items[attrs_start .. attrs_start + attrs_len];
             for (attr_indices, 0..) |raw_idx, i| {
-                const attr = self.ast.getNode(@enumFromInt(raw_idx));
+                const attr = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (attr.tag == .jsx_spread_attribute) {
                     seen_spread = true;
                 } else if (attr.tag == .jsx_attribute) {
@@ -861,7 +861,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
 
         /// key attribute의 value 노드를 방문하여 반환
         fn getKeyValue(self: *Transformer, attrs_start: u32, key_idx: u32) Transformer.Error!NodeIndex {
-            const attr_node_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[attrs_start + key_idx]);
+            const attr_node_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[attrs_start + key_idx]));
             const attr = self.ast.getNode(attr_node_idx);
             const value_idx = attr.data.binary.right;
             // 값 없는 key 속성(`<div key>`)은 다른 모든 속성과 동일하게 boolean true 로
@@ -1178,7 +1178,7 @@ pub fn JsxLowering(comptime Transformer: type) type {
             const args_list = try self.ast.addNodeList(args);
             const flags: u32 = if (pure and !self.options.jsx_side_effects) CallFlags.is_pure else 0;
             return self.addExtraNode(.call_expression, span, &.{
-                @intFromEnum(callee),
+                @backingInt(callee),
                 args_list.start,
                 args_list.len,
                 flags,

@@ -16,6 +16,6 @@ test "ScopeId.none" {
     const id = ScopeId.none;
     try std.testing.expect(id.isNone());
 
-    const valid: ScopeId = @enumFromInt(0);
+    const valid: ScopeId = @fromBackingInt(@intCast(0));
     try std.testing.expect(!valid.isNone());
 }

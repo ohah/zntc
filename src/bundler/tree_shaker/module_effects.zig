@@ -34,9 +34,9 @@ pub fn isModulePure(ast: *const Ast, unresolved_globals: ?*const purity.GlobalRe
 
     const stmt_indices = ast.extra_data.items[stmts.start .. stmts.start + stmts.len];
     for (stmt_indices) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-        const stmt = ast.nodes.items[@intFromEnum(idx)];
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
+        const stmt = ast.nodes.items[@backingInt(idx)];
         if (!isStatementPure(ast, stmt, unresolved_globals)) return false;
     }
     return true;
@@ -52,15 +52,15 @@ fn isStatementPure(ast: *const Ast, stmt: Node, unresolved_globals: ?*const puri
             if (!ast.hasExtra(stmt.data.extra, 0)) return true;
             const decl_idx = ast.readExtraNode(stmt.data.extra, 0);
             if (decl_idx.isNone()) return true;
-            if (@intFromEnum(decl_idx) >= ast.nodes.items.len) return true;
-            const decl = ast.nodes.items[@intFromEnum(decl_idx)];
+            if (@backingInt(decl_idx) >= ast.nodes.items.len) return true;
+            const decl = ast.nodes.items[@backingInt(decl_idx)];
             return isStatementPure(ast, decl, unresolved_globals);
         },
 
         .export_default_declaration => {
             const inner_idx = stmt.data.unary.operand;
-            if (inner_idx.isNone() or @intFromEnum(inner_idx) >= ast.nodes.items.len) return false;
-            const inner = ast.nodes.items[@intFromEnum(inner_idx)];
+            if (inner_idx.isNone() or @backingInt(inner_idx) >= ast.nodes.items.len) return false;
+            const inner = ast.nodes.items[@backingInt(inner_idx)];
             return switch (inner.tag) {
                 .function_declaration => true,
                 .class_declaration => !purity.classHasSideEffects(ast, inner, unresolved_globals),

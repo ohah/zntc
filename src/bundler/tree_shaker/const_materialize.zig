@@ -56,11 +56,11 @@ fn materializableReferenceNodes(
         {
             continue;
         }
-        const raw = @intFromEnum(reference.node_index);
+        const raw = @backingInt(reference.node_index);
         if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) continue;
         if (ast.nodes.items[raw].tag != .identifier_reference) continue;
         const symbol_id = semantic.symbol_ids[raw] orelse continue;
-        if (symbol_id != @intFromEnum(reference.symbol_id)) continue;
+        if (symbol_id != @backingInt(reference.symbol_id)) continue;
         nodes.set(raw);
     }
     return nodes;
@@ -132,7 +132,7 @@ fn anyReachableNode(
     self.numeric_dfs_stack.append(self.allocator, root) catch return false;
     while (self.numeric_dfs_stack.pop()) |idx| {
         if (idx.isNone()) continue;
-        const raw: u32 = @intFromEnum(idx);
+        const raw: u32 = @backingInt(idx);
         if (raw >= ast.nodes.items.len) continue;
         const node = ast.nodes.items[raw];
         if (visit_fn(ctx, ast, raw, node)) return true;
@@ -156,10 +156,10 @@ fn anyExportedConstInit(
         if (node.tag != .variable_declarator) continue;
         const extra = node.data.extra;
         if (extra + 2 >= ast.extra_data.items.len) continue;
-        const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-        const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + 2]));
         if (name_idx.isNone() or init_idx.isNone()) continue;
-        const name_raw: u32 = @intFromEnum(name_idx);
+        const name_raw: u32 = @backingInt(name_idx);
         if (name_raw >= sem.symbol_ids.len) continue;
         const sym_id = sem.symbol_ids[name_raw] orelse continue;
         if (sym_id >= sem.symbols.items.len) continue;
@@ -235,10 +235,10 @@ fn foldNumericExportSeeds(_: *TreeShaker, m: *Module, ast: *Ast) !bool {
         if (node.tag != .variable_declarator) continue;
         const extra = node.data.extra;
         if (extra + 2 >= ast.extra_data.items.len) continue;
-        const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-        const init_idx: NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+        const init_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + 2]));
         if (name_idx.isNone() or init_idx.isNone()) continue;
-        const name_raw: u32 = @intFromEnum(name_idx);
+        const name_raw: u32 = @backingInt(name_idx);
         if (name_raw >= sem.symbol_ids.len) continue;
         const sym_id = sem.symbol_ids[name_raw] orelse continue;
         if (sym_id >= sem.symbols.items.len) continue;
@@ -549,7 +549,7 @@ fn enqueueNumericPostPassImporters(
 ) !void {
     const m = getModule(self, idx) orelse return;
     for (m.importers.items) |imp| {
-        try enqueueNumericPostPassModule(self, queue, queued, @intCast(@intFromEnum(imp)), mod_count);
+        try enqueueNumericPostPassModule(self, queue, queued, @intCast(@backingInt(imp)), mod_count);
     }
 }
 
@@ -610,7 +610,7 @@ fn enqueueStaticImporters(
 ) !void {
     const m = getModule(self, idx) orelse return;
     for (m.importers.items) |imp| {
-        const ii = @intFromEnum(imp);
+        const ii = @backingInt(imp);
         if (ii >= mod_count) continue;
         if (queued.isSet(ii)) continue;
         try queue.append(self.allocator, @intCast(ii));

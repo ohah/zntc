@@ -169,7 +169,7 @@ test "mergeImportRecords keeps previous resolved state for unchanged record" {
         .specifier = "./dep",
         .kind = .static_import,
         .span = span,
-        .resolved = @enumFromInt(7),
+        .resolved = @fromBackingInt(@intCast(7)),
     }};
     const transformed = [_]ImportRecord{.{
         .specifier = "./dep",
@@ -180,7 +180,7 @@ test "mergeImportRecords keeps previous resolved state for unchanged record" {
     defer std.testing.allocator.free(merged);
 
     try std.testing.expectEqual(@as(usize, 1), merged.len);
-    try std.testing.expectEqual(@as(u32, 7), @intFromEnum(merged[0].resolved));
+    try std.testing.expectEqual(@as(u32, 7), @backingInt(merged[0].resolved));
 }
 
 test "mergeImportRecords: index 경로(>64 records) — dedup + previous 보존 + synthetic 보존" {
@@ -190,7 +190,7 @@ test "mergeImportRecords: index 경로(>64 records) — dedup + previous 보존 
     var trans_buf: [N + 1]ImportRecord = undefined;
     for (0..N) |i| {
         const s = Span{ .start = @intCast(i + 1), .end = @intCast(i + 1) }; // start!=0 → non-synthetic, 유니크 identity
-        prev_buf[i] = .{ .specifier = "./dep", .kind = .static_import, .span = s, .resolved = @enumFromInt(@as(u32, @intCast(i + 100))) };
+        prev_buf[i] = .{ .specifier = "./dep", .kind = .static_import, .span = s, .resolved = @fromBackingInt(@intCast(@as(u32, @intCast(i + 100)))) };
         trans_buf[i] = .{ .specifier = "./dep", .kind = .static_import, .span = s };
     }
     prev_buf[N] = .{ .specifier = "\x00synth", .kind = .require, .span = Span.EMPTY }; // synthetic, transformed 에 없음 → 보존
@@ -203,7 +203,7 @@ test "mergeImportRecords: index 경로(>64 records) — dedup + previous 보존 
     try std.testing.expectEqual(@as(usize, N + 1), merged.len);
     // 매칭된 transformed 는 previous 의 resolved 를 보존 (index 경로 = linear 경로 등가)
     for (0..N) |i| {
-        try std.testing.expectEqual(@as(u32, @intCast(i + 100)), @intFromEnum(merged[i].resolved));
+        try std.testing.expectEqual(@as(u32, @intCast(i + 100)), @backingInt(merged[i].resolved));
     }
     try std.testing.expectEqualStrings("\x00synth", merged[N].specifier);
 }

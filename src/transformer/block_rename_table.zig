@@ -79,7 +79,7 @@ pub fn build(allocator: std.mem.Allocator, in: Input) std.mem.Allocator.Error!Ta
     defer deinitSets(allocator, &outside_refs);
     for (in.references) |ref| {
         if (ref.symbol_id.isNone()) continue;
-        const sym_i = @intFromEnum(ref.symbol_id);
+        const sym_i = @backingInt(ref.symbol_id);
         if (sym_i >= in.symbols.len) continue;
         const decl_scope = in.symbols[sym_i].scope_id;
         const name = in.nameOf(in.ctx, in.symbols[sym_i]);
@@ -101,7 +101,7 @@ pub fn build(allocator: std.mem.Allocator, in: Input) std.mem.Allocator.Error!Ta
     defer captured.deinit();
     for (in.references) |ref| {
         if (ref.symbol_id.isNone()) continue;
-        const sym_i = @intFromEnum(ref.symbol_id);
+        const sym_i = @backingInt(ref.symbol_id);
         if (sym_i >= in.symbols.len) continue;
         if (nearestVarScope(in.scopes, ref.scope_id) != nearestVarScope(in.scopes, in.symbols[sym_i].scope_id)) captured.set(sym_i);
     }

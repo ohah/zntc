@@ -34,8 +34,8 @@ fn makeStateCallback(transformer: *Transformer) !StateCallback {
     });
     const params_list = try transformer.ast.addNodeList(&.{parameter});
     const params = try transformer.ast.addFormalParameters(params_list, .EMPTY);
-    const none = @intFromEnum(ast_mod.NodeIndex.none);
-    const extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(body), 0, none });
+    const none = @backingInt(ast_mod.NodeIndex.none);
+    const extra = try transformer.ast.addExtras(&.{ none, @backingInt(params), @backingInt(body), 0, none });
     const callback = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -50,8 +50,8 @@ fn scopeHasAncestor(scopes: []const @import("../semantic/scope.zig").Scope, desc
     while (current < scopes.len and hops < scopes.len) : (hops += 1) {
         const parent = scopes[current].parent;
         if (parent.isNone()) return false;
-        if (@intFromEnum(parent) == ancestor) return true;
-        current = @intFromEnum(parent);
+        if (@backingInt(parent) == ancestor) return true;
+        current = @backingInt(parent);
     }
     return false;
 }
@@ -124,7 +124,7 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
         var callback_owners: usize = 0;
         var owners = edited.scope_owner_map.iterator();
         while (owners.next()) |entry| {
-            if (entry.value_ptr.* != @intFromEnum(callback_scope)) continue;
+            if (entry.value_ptr.* != @backingInt(callback_scope)) continue;
             try std.testing.expect(reachable.contains(entry.key_ptr.*));
             try std.testing.expectEqual(ast_mod.Node.Tag.function_expression, transformer.ast.nodes.items[entry.key_ptr.*].tag);
             callback_owners += 1;
@@ -133,20 +133,20 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
 
         const parent = edited.scopes[callback_scope.toIndex()].parent;
         if (wrapped) {
-            try std.testing.expect(!source_scopes.contains(@intFromEnum(parent)));
-            try std.testing.expect(source_scopes.contains(@intFromEnum(edited.scopes[parent.toIndex()].parent)));
-        } else if (expected_deferred_loops > 0 and !source_scopes.contains(@intFromEnum(parent))) {
+            try std.testing.expect(!source_scopes.contains(@backingInt(parent)));
+            try std.testing.expect(source_scopes.contains(@backingInt(edited.scopes[parent.toIndex()].parent)));
+        } else if (expected_deferred_loops > 0 and !source_scopes.contains(@backingInt(parent))) {
             // An extracted generator loop owns its own state callback. The
             // callback's immediate parent is the synthetic loop function;
             // that function is then nested beneath the source callback.
-            try std.testing.expect(!source_scopes.contains(@intFromEnum(parent)));
+            try std.testing.expect(!source_scopes.contains(@backingInt(parent)));
             try std.testing.expect(parent.toIndex() >= analyzer.scopes.items.len);
             try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[parent.toIndex()].kind);
             var ancestor = edited.scopes[parent.toIndex()].parent;
             var found_source_ancestor = false;
             for (0..edited.scopes.len) |_| {
                 if (ancestor.isNone() or ancestor.toIndex() >= edited.scopes.len) break;
-                if (source_scopes.contains(@intFromEnum(ancestor))) {
+                if (source_scopes.contains(@backingInt(ancestor))) {
                     found_source_ancestor = true;
                     break;
                 }
@@ -158,7 +158,7 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
             var parent_owners: usize = 0;
             var parent_owners_iter = edited.scope_owner_map.iterator();
             while (parent_owners_iter.next()) |entry| {
-                if (entry.value_ptr.* != @intFromEnum(parent)) continue;
+                if (entry.value_ptr.* != @backingInt(parent)) continue;
                 try std.testing.expect(reachable.contains(entry.key_ptr.*));
                 const owner_tag = transformer.ast.nodes.items[entry.key_ptr.*].tag;
                 try std.testing.expect(owner_tag == .function_expression or owner_tag == .function_declaration);
@@ -166,7 +166,7 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
             }
             try std.testing.expectEqual(@as(usize, 1), parent_owners);
         } else {
-            try std.testing.expect(source_scopes.contains(@intFromEnum(parent)));
+            try std.testing.expect(source_scopes.contains(@backingInt(parent)));
         }
 
         var bindings: usize = 0;
@@ -178,20 +178,20 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
 
         var reads: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
-            try std.testing.expect(reachable.contains(@intFromEnum(ref.node_index)));
+            if (@backingInt(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
+            try std.testing.expect(reachable.contains(@backingInt(ref.node_index)));
             const expected_scope = output_scope.expectedScope(
                 transformer.ast,
                 root,
                 &output_parents,
                 &edited.scope_owner_map,
-                @intFromEnum(ref.node_index),
+                @backingInt(ref.node_index),
             ) orelse return error.TestUnexpectedResult;
             try std.testing.expectEqual(expected_scope, ref.scope_id);
             try std.testing.expect(ref.flags.read and !ref.flags.write and !ref.flags.declare);
             try std.testing.expectEqual(Reference.NO_STMT, ref.stmt_idx);
             try std.testing.expectEqual(Reference.NO_STMT, ref.scope_stmt_idx);
-            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[@backingInt(ref.node_index)]);
             reads += 1;
         }
         try std.testing.expect(reads >= 2);
@@ -203,9 +203,9 @@ fn checkStateScopesAtTarget(source: []const u8, expected_states: usize, wrapped:
         const helper_id = edited.helper_scope_map.get("__generator").?;
         var helper_refs_in_parent: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) == helper_id and ref.scope_id == parent and ref.flags.read) {
-                try std.testing.expect(reachable.contains(@intFromEnum(ref.node_index)));
-                try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@intFromEnum(ref.node_index)]);
+            if (@backingInt(ref.symbol_id) == helper_id and ref.scope_id == parent and ref.flags.read) {
+                try std.testing.expect(reachable.contains(@backingInt(ref.node_index)));
+                try std.testing.expectEqual(@as(?u32, @intCast(helper_id)), edited.symbol_ids[@backingInt(ref.node_index)]);
                 helper_refs_in_parent += 1;
             }
         }
@@ -295,8 +295,8 @@ test "#4819 generated function names require producer SymbolIds in exact output 
         .span = .EMPTY,
         .data = .{ .list = empty_list },
     });
-    const none = @intFromEnum(ast_mod.NodeIndex.none);
-    const extra = try transformer.ast.addExtras(&.{ @intFromEnum(name), @intFromEnum(params), @intFromEnum(body), 0, none });
+    const none = @backingInt(ast_mod.NodeIndex.none);
+    const extra = try transformer.ast.addExtras(&.{ @backingInt(name), @backingInt(params), @backingInt(body), 0, none });
     const generated_function = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -316,7 +316,7 @@ test "#4819 generated function names require producer SymbolIds in exact output 
         .data = .{ .list = declaration_empty_list },
     });
     const declaration_extra = try transformer.ast.addExtras(&.{
-        @intFromEnum(declaration_name), @intFromEnum(declaration_params), @intFromEnum(declaration_body), 0, none,
+        @backingInt(declaration_name), @backingInt(declaration_params), @backingInt(declaration_body), 0, none,
     });
     const generated_declaration = try transformer.ast.addNode(.{
         .tag = .function_declaration,
@@ -335,17 +335,17 @@ test "#4819 generated function names require producer SymbolIds in exact output 
     try transformer.completeGeneratedStateSymbols(generated_declaration, transformer.programScope());
     const owner = transformer.outputOwnedScope(generated_function) orelse return error.TestUnexpectedResult;
     const editor = &transformer.semantic_editor.?;
-    const symbol = editor.symbols.items[@intFromEnum(id)];
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(name));
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(declaration_id)), transformer.getSymbolIdAt(declaration_name));
+    const symbol = editor.symbols.items[@backingInt(id)];
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(name));
+    try std.testing.expectEqual(@as(?u32, @backingInt(declaration_id)), transformer.getSymbolIdAt(declaration_name));
     try std.testing.expectEqual(function_scope, owner);
     try std.testing.expectEqual(declaration_scope, transformer.outputOwnedScope(generated_declaration).?);
     try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.function_decl, symbol.kind);
     try std.testing.expectEqual(owner, symbol.scope_id);
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, editor.scopes.items[owner.toIndex()].kind);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(id)), editor.scope_maps.items[owner.toIndex()].get("_generatedFunction"));
-    try std.testing.expectEqual(transformer.programScope(), editor.symbols.items[@intFromEnum(declaration_id)].scope_id);
-    try std.testing.expectEqual(@as(?usize, @intFromEnum(declaration_id)), editor.scope_maps.items[transformer.programScope().toIndex()].get("_generatedDeclaration"));
+    try std.testing.expectEqual(@as(?usize, @backingInt(id)), editor.scope_maps.items[owner.toIndex()].get("_generatedFunction"));
+    try std.testing.expectEqual(transformer.programScope(), editor.symbols.items[@backingInt(declaration_id)].scope_id);
+    try std.testing.expectEqual(@as(?usize, @backingInt(declaration_id)), editor.scope_maps.items[transformer.programScope().toIndex()].get("_generatedDeclaration"));
 }
 
 test "#4819 async function state callback and helper use real wrapper scope" {
@@ -458,9 +458,9 @@ test "#4819 extracted generator loop binding and call share exact identity" {
     for (reachable) |raw| {
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .call_expression) continue;
-        const callee: ast_mod.NodeIndex = @enumFromInt(transformer.ast.extra_data.items[node.data.extra]);
+        const callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[node.data.extra]));
         if (transformer.ast.getNode(callee).tag != .identifier_reference) continue;
-        const maybe_id = if (@intFromEnum(callee) < edited.symbol_ids.len) edited.symbol_ids[@intFromEnum(callee)] else null;
+        const maybe_id = if (@backingInt(callee) < edited.symbol_ids.len) edited.symbol_ids[@backingInt(callee)] else null;
         const id = maybe_id orelse continue;
         if (id < original_symbol_count) continue;
         const name = transformer.ast.getText(transformer.ast.getNode(callee).data.string_ref);
@@ -499,11 +499,11 @@ test "#4819 extracted generator loop binding and call share exact identity" {
                 ) orelse return error.TestUnexpectedResult;
                 try std.testing.expectEqual(scope, binding_scope);
             } else if (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) {
-                if (raw == @intFromEnum(loop_call)) call_count += 1;
+                if (raw == @backingInt(loop_call)) call_count += 1;
                 var has_reference = false;
                 for (edited.references) |reference| {
-                    if (@intFromEnum(reference.node_index) != raw) continue;
-                    try std.testing.expectEqual(id_raw, @intFromEnum(reference.symbol_id));
+                    if (@backingInt(reference.node_index) != raw) continue;
+                    try std.testing.expectEqual(id_raw, @backingInt(reference.symbol_id));
                     const expected_scope = output_scope.expectedScope(
                         transformer.ast,
                         root,
@@ -514,7 +514,7 @@ test "#4819 extracted generator loop binding and call share exact identity" {
                     try std.testing.expectEqual(expected_scope, reference.scope_id);
                     try std.testing.expect(reference.flags.read or reference.flags.write);
                     try std.testing.expect(!reference.flags.declare);
-                    if (raw == @intFromEnum(loop_call))
+                    if (raw == @backingInt(loop_call))
                         try std.testing.expect(reference.flags.read and !reference.flags.write);
                     if (reference.flags.write) write_count += 1;
                     var cursor = reference.scope_id;
@@ -691,9 +691,9 @@ test "#4819 extracted generator control-flow temps reuse their exact ret names" 
         var read_count: u32 = 0;
         var write_count: u32 = 0;
         for (edited.references) |reference| {
-            if (@intFromEnum(reference.symbol_id) != symbol_index or reference.flags.declare) continue;
+            if (@backingInt(reference.symbol_id) != symbol_index or reference.flags.declare) continue;
             try std.testing.expect(!reference.node_index.isNone());
-            const raw = @intFromEnum(reference.node_index);
+            const raw = @backingInt(reference.node_index);
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
             try std.testing.expectEqual(@as(?u32, @intCast(symbol_index)), edited.symbol_ids[raw]);
             const expected_scope = output_scope.expectedScope(
@@ -774,7 +774,7 @@ test "#4819 generator object super home temp reuses its exact callback binding" 
             !std.mem.eql(u8, transformer.ast.getText(object_node.data.string_ref), "Object")) continue;
         if (transformer.readU32(call.data.extra, 2) == 0) continue;
         const first_arg_raw = transformer.ast.extra_data.items[transformer.readU32(call.data.extra, 1)];
-        const first_arg: ast_mod.NodeIndex = @enumFromInt(first_arg_raw);
+        const first_arg: ast_mod.NodeIndex = @fromBackingInt(@intCast(first_arg_raw));
         if (transformer.ast.getNode(first_arg).tag != .identifier_reference) continue;
         try std.testing.expect(home_ref == null);
         home_ref = first_arg;
@@ -805,10 +805,10 @@ test "#4819 generator object super home temp reuses its exact callback binding" 
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 
     const edited = (try transformer.finishSemanticEdit()).?;
-    const home_id = edited.symbol_ids[@intFromEnum(exact_home_ref)] orelse return error.MissingObjectHomeSymbol;
+    const home_id = edited.symbol_ids[@backingInt(exact_home_ref)] orelse return error.MissingObjectHomeSymbol;
     try std.testing.expect(home_id >= original_symbol_count);
-    try std.testing.expectEqual(@as(?u32, home_id), edited.symbol_ids[@intFromEnum(exact_producer_binding)]);
-    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(exact_producer_binding)) != null);
+    try std.testing.expectEqual(@as(?u32, home_id), edited.symbol_ids[@backingInt(exact_producer_binding)]);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(exact_producer_binding)) != null);
 
     var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
     defer output_parents.deinit(allocator);
@@ -817,9 +817,9 @@ test "#4819 generator object super home temp reuses its exact callback binding" 
     var reference_count: u32 = 0;
     var write_count: u32 = 0;
     for (edited.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != home_id or reference.flags.declare) continue;
+        if (@backingInt(reference.symbol_id) != home_id or reference.flags.declare) continue;
         try std.testing.expect(!reference.node_index.isNone());
-        const raw = @intFromEnum(reference.node_index);
+        const raw = @backingInt(reference.node_index);
         try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
         try std.testing.expectEqual(@as(?u32, home_id), edited.symbol_ids[raw]);
         const expected_scope = output_scope.expectedScope(
@@ -846,10 +846,10 @@ test "#4819 generator object super home temp reuses its exact callback binding" 
         ) orelse return error.TestUnexpectedResult;
         try std.testing.expect(scopeHasAncestor(
             edited.scopes,
-            @intFromEnum(binding_scope),
-            @intFromEnum(symbol.scope_id),
+            @backingInt(binding_scope),
+            @backingInt(symbol.scope_id),
         ));
-        try std.testing.expectEqual(exact_producer_binding, @as(ast_mod.NodeIndex, @enumFromInt(raw)));
+        try std.testing.expectEqual(exact_producer_binding, @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(raw))));
     }
     try std.testing.expectEqual(@as(usize, 1), binding_count);
     try std.testing.expectEqual(symbol.reference_count, reference_count);
@@ -1011,7 +1011,7 @@ test "#4819 async generator moves body scope frontier under inner function and k
                 source_scope = scope;
                 if (parser.ast.hasExtra(node.data.extra, 1)) {
                     const params: ast_mod.NodeIndex = parser.ast.readExtraNode(node.data.extra, 1);
-                    parameter_scope = analyzer.scope_owner_map.get(@intFromEnum(params));
+                    parameter_scope = analyzer.scope_owner_map.get(@backingInt(params));
                 }
             },
             .for_await_of_statement => body_scope = scope,
@@ -1030,8 +1030,8 @@ test "#4819 async generator moves body scope frontier under inner function and k
     const body = body_scope orelse return error.TestUnexpectedResult;
     const param = default_scope orelse return error.TestUnexpectedResult;
     const decorator = decorator_scope orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(parameters, @intFromEnum(analyzer.scopes.items[param].parent));
-    try std.testing.expectEqual(outer, @intFromEnum(analyzer.scopes.items[decorator].parent));
+    try std.testing.expectEqual(parameters, @backingInt(analyzer.scopes.items[param].parent));
+    try std.testing.expectEqual(outer, @backingInt(analyzer.scopes.items[decorator].parent));
 
     var transformer = try Transformer.init(allocator, &parser.ast, .{
         .unsupported = TransformOptions.compat.fromESTarget(.es5),
@@ -1052,12 +1052,12 @@ test "#4819 async generator moves body scope frontier under inner function and k
     while (!inner.isNone() and edited.scopes[inner.toIndex()].kind != .function) {
         inner = edited.scopes[inner.toIndex()].parent;
     }
-    try std.testing.expect(inner != .none and @intFromEnum(inner) != outer);
+    try std.testing.expect(inner != .none and @backingInt(inner) != outer);
     // The downlevel for-await try/finally introduces a block between the
     // generated async callback and its source function.
-    try std.testing.expect(scopeHasAncestor(edited.scopes, @intFromEnum(inner), outer));
+    try std.testing.expect(scopeHasAncestor(edited.scopes, @backingInt(inner), outer));
     try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, edited.scopes[inner.toIndex()].kind);
-    try std.testing.expectEqual(outer, @intFromEnum(edited.scopes[param].parent));
+    try std.testing.expectEqual(outer, @backingInt(edited.scopes[param].parent));
     try std.testing.expect(scopeHasAncestor(edited.scopes, decorator, inner.toIndex()));
     try std.testing.expectEqual(edited.scopes[outer].is_strict, edited.scopes[inner.toIndex()].is_strict);
 }
@@ -1105,7 +1105,7 @@ test "#4819 extracted private method functions own their exact source scopes" {
     var source_owners: std.ArrayList(struct { node: u32, scope: u32 }) = .empty;
     for (parser.ast.nodes.items, 0..) |node, index| {
         if (node.tag != .method_definition) continue;
-        const key_idx: ast_mod.NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra + ast_mod.MethodExtra.key]);
+        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[node.data.extra + ast_mod.MethodExtra.key]));
         if (parser.ast.getNode(key_idx).tag != .private_identifier) continue;
         const owner = @as(u32, @intCast(index));
         try source_owners.append(allocator, .{ .node = owner, .scope = analyzer.scope_owner_map.get(owner).? });
@@ -1245,8 +1245,8 @@ test "#4819 state symbols bind only recorded references inside their exact callb
     const second_scope = transformer.outputOwnedScope(second.callback).?;
     const first_reference = (try editor.referenceForNode(first.reference)).?;
     const second_reference = (try editor.referenceForNode(second.reference)).?;
-    try std.testing.expectEqual(first_id, @intFromEnum(first_reference.symbol_id));
-    try std.testing.expectEqual(second_id, @intFromEnum(second_reference.symbol_id));
+    try std.testing.expectEqual(first_id, @backingInt(first_reference.symbol_id));
+    try std.testing.expectEqual(second_id, @backingInt(second_reference.symbol_id));
     try std.testing.expectEqual(first_scope, first_reference.scope_id);
     try std.testing.expectEqual(second_scope, second_reference.scope_id);
 }

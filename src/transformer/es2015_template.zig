@@ -71,7 +71,7 @@ pub fn ES2015Template(comptime Transformer: type) type {
             const tl_len = node.data.list.len;
             if (tl_len == 0) return NodeIndex.none;
 
-            const first_elem = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[tl_start]));
+            const first_elem = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[tl_start])));
             const head_text = getTemplateElementText(self.ast.source, first_elem.span);
 
             if (tl_len == 1) {
@@ -85,7 +85,7 @@ pub fn ES2015Template(comptime Transformer: type) type {
             var i: u32 = 1;
             while (i < tl_len) : (i += 1) {
                 const raw_idx = self.ast.extra_data.items[tl_start + i];
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (member.tag == .template_element) {
                     const text = getTemplateElementText(self.ast.source, member.span);
                     if (text.len > 0) {
@@ -93,7 +93,7 @@ pub fn ES2015Template(comptime Transformer: type) type {
                         result = try buildBinaryPlus(self, result, str_node, span);
                     }
                 } else {
-                    var visited = try self.visitNode(@enumFromInt(raw_idx));
+                    var visited = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                     if (!visited.isNone()) {
                         // 보간 표현식이 + 연산자 right에 올 때 우선순위 문제 방지.
                         // 예: `${1+2}` → "" + (1 + 2), `${x ? "a" : "b"}` → "" + (x ? "a" : "b")
@@ -355,7 +355,7 @@ fn buildBinaryPlus(self: anytype, left: NodeIndex, right: NodeIndex, span: Span)
         .data = .{ .binary = .{
             .left = left,
             .right = right,
-            .flags = @intFromEnum(token_mod.Kind.plus),
+            .flags = @backingInt(token_mod.Kind.plus),
         } },
     });
 }

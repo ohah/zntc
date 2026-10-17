@@ -647,7 +647,7 @@ test "manualChunks meta.getModuleInfo: isEntry / importers / imported_ids 수집
 
 test "getModuleInfo / getModulePathByIndex: null graph / invalid id 안전하게 null" {
     try std.testing.expect(types.getModuleInfo(null, "anything") == null);
-    try std.testing.expect(types.getModulePathByIndex(null, @enumFromInt(0)) == null);
+    try std.testing.expect(types.getModulePathByIndex(null, @fromBackingInt(@intCast(0))) == null);
 }
 
 // resolver 안에서 graph 가 valid 한 동안 missing path / invalid idx 조회 테스트.
@@ -662,7 +662,7 @@ fn resolverNullChecks(ctx: ?*anyopaque, _: []const u8, graph: ?*const anyopaque)
     if (types.getModuleInfo(graph, "/totally/does-not-exist.ts") == null) {
         checks.missing_id_null = true;
     }
-    if (types.getModulePathByIndex(graph, @enumFromInt(999_999)) == null) {
+    if (types.getModulePathByIndex(graph, @fromBackingInt(@intCast(999_999))) == null) {
         checks.invalid_idx_null = true;
     }
     return null;

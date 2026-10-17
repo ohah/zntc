@@ -15,7 +15,7 @@ pub fn dfs(self: anytype, start_idx: ModuleIndex, visited: *std.DynamicBitSet, i
     var stack: std.ArrayList(DfsEntry) = .empty;
     defer stack.deinit(self.allocator);
 
-    const start = @intFromEnum(start_idx);
+    const start = @backingInt(start_idx);
     if (start >= self.modules.count()) return;
     if (visited.isSet(start)) return;
 
@@ -65,7 +65,7 @@ pub fn dfs(self: anytype, start_idx: ModuleIndex, visited: *std.DynamicBitSet, i
         var j: usize = deps.len;
         while (j > 0) {
             j -= 1;
-            const dep = @intFromEnum(deps[j]);
+            const dep = @backingInt(deps[j]);
             if (dep < self.modules.count() and !visited.isSet(dep)) {
                 try stack.append(self.allocator, .{ .idx = dep, .post = false });
             }
@@ -92,7 +92,7 @@ pub fn markViaDynamic(self: anytype, entry_indices: []const ModuleIndex) !void {
     defer stack.deinit(self.allocator);
 
     for (entry_indices) |entry_idx| {
-        const start = @intFromEnum(entry_idx);
+        const start = @backingInt(entry_idx);
         if (start >= count) continue;
         if (visited.isSet(start)) continue;
         try stack.append(self.allocator, .{ .idx = start, .post = false });
@@ -135,7 +135,7 @@ pub fn markViaDynamic(self: anytype, entry_indices: []const ModuleIndex) !void {
                 var j: usize = group.len;
                 while (j > 0) {
                     j -= 1;
-                    const dep = @intFromEnum(group[j]);
+                    const dep = @backingInt(group[j]);
                     if (dep < count and !visited.isSet(dep)) {
                         try stack.append(self.allocator, .{ .idx = dep, .post = false });
                     }

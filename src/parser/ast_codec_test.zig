@@ -87,7 +87,7 @@ test "ast_codec: 노드 padding/union 꼬리 poison 이 직렬화에 새지 않�
             @memset(std.mem.asBytes(&n2), poison);
             n2.tag = .return_statement;
             n2.span = .{ .start = 0, .end = 1 };
-            n2.data = .{ .unary = .{ .operand = @enumFromInt(0), .flags = 3 } };
+            n2.data = .{ .unary = .{ .operand = @fromBackingInt(@intCast(0)), .flags = 3 } };
             try ast.nodes.append(a, n2);
 
             var n3: Node = undefined; // extra(4) — u32 인덱스, 꼬리 8B

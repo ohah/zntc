@@ -48,8 +48,8 @@ pub fn collectIdentifierReferences(
 
     while (stack.pop()) |edge| {
         const idx = edge.idx;
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-        const raw: u32 = @intFromEnum(idx);
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
+        const raw: u32 = @backingInt(idx);
         const bit: u8 = if (edge.context == .value) 1 else 2;
         const gop = try states.getOrPut(allocator, raw);
         if (!gop.found_existing) gop.value_ptr.* = 0;
@@ -180,12 +180,12 @@ pub fn isTypeOnly(tag: Node.Tag) bool {
 }
 
 fn isComputed(ast: *const Ast, idx: NodeIndex) bool {
-    return !idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len and
+    return !idx.isNone() and @backingInt(idx) < ast.nodes.items.len and
         ast.getNode(idx).tag == .computed_property_key;
 }
 
 fn acceptChild(ast: *const Ast, parent: Node, slot: u32, child: NodeIndex) bool {
-    if (child.isNone() or @intFromEnum(child) >= ast.nodes.items.len) return false;
+    if (child.isNone() or @backingInt(child) >= ast.nodes.items.len) return false;
     return switch (parent.tag) {
         .object_property => slot != 0 or parent.data.binary.right.isNone() or isComputed(ast, child),
         .binding_property, .assignment_target_property_property, .flow_match_object_prop => slot != 0 or isComputed(ast, child),
@@ -221,7 +221,7 @@ fn appendExtraList(
     const start = extra[e + start_off];
     const len = extra[e + len_off];
     if (start > extra.len or len > extra.len - start) return;
-    for (extra[start .. start + len]) |raw| try out.append(allocator, .{ .idx = @enumFromInt(raw), .context = context });
+    for (extra[start .. start + len]) |raw| try out.append(allocator, .{ .idx = @fromBackingInt(@intCast(raw)), .context = context });
 }
 
 fn appendExtraEdges(
@@ -237,7 +237,7 @@ fn appendExtraEdges(
             // Re-exports have no local reference position. `children` omits
             // the specifier list, so add it only for `export {local}`.
             if (e < extra.len and extra.len - e >= 4 and
-                @as(NodeIndex, @enumFromInt(extra[e + 3])).isNone())
+                @as(NodeIndex, @fromBackingInt(@intCast(extra[e + 3]))).isNone())
             {
                 try appendExtraList(ast, e, 1, 2, .value, out, allocator);
             }
@@ -250,7 +250,7 @@ fn appendExtraEdges(
             const e = node.data.extra;
             const extra = ast.extra_data.items;
             if (e < extra.len and extra.len - e >= 3) {
-                try out.append(allocator, .{ .idx = @enumFromInt(extra[e]), .context = .value });
+                try out.append(allocator, .{ .idx = @fromBackingInt(@intCast(extra[e])), .context = .value });
                 try appendExtraList(ast, e, 1, 2, .value, out, allocator);
             }
         },
@@ -267,7 +267,7 @@ test "#4819 reference walk: allocation failures propagate without leaks" {
     var parser = Parser.init(std.testing.allocator, &scanner);
     defer parser.deinit();
     _ = try parser.parse();
-    const root: NodeIndex = @enumFromInt(@as(u32, @intCast(parser.ast.nodes.items.len - 1)));
+    const root: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(parser.ast.nodes.items.len - 1))));
     const Check = struct {
         fn run(allocator: std.mem.Allocator, ast: *const Ast, subtree: NodeIndex) !void {
             const refs = try collectIdentifierReferences(allocator, ast, subtree);
@@ -290,7 +290,7 @@ fn expectNamesWithMode(source: []const u8, expected: []const []const u8, flow: b
     _ = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
     const ast = &parser.ast;
-    const root = ast.transformed_root orelse @as(NodeIndex, @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+    const root = ast.transformed_root orelse @as(NodeIndex, @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))));
     const refs = try collectIdentifierReferences(std.testing.allocator, ast, root);
     defer std.testing.allocator.free(refs);
     try std.testing.expectEqual(expected.len, refs.len);
@@ -337,7 +337,7 @@ test "#4819 reference walk: shorthand, static and shared key/value" {
         }
     }
     const ast = &parser.ast;
-    const root: NodeIndex = @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+    const root: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1))));
     const refs = try collectIdentifierReferences(std.testing.allocator, ast, root);
     defer std.testing.allocator.free(refs);
     try std.testing.expectEqual(@as(usize, 1), refs.len);
@@ -355,7 +355,7 @@ test "#4819 reference walk: shorthand, static and shared key/value" {
             break;
         }
     }
-    const root2: NodeIndex = @enumFromInt(@as(u32, @intCast(parser2.ast.nodes.items.len - 1)));
+    const root2: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(parser2.ast.nodes.items.len - 1))));
     const repeated = try collectIdentifierReferences(std.testing.allocator, &parser2.ast, root2);
     defer std.testing.allocator.free(repeated);
     try std.testing.expectEqual(@as(usize, 1), repeated.len);
@@ -374,7 +374,7 @@ test "#4819 reference walk: computed keys and assignment writes" {
     defer parser.deinit();
     _ = try parser.parse();
     const ast = &parser.ast;
-    const root: NodeIndex = @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+    const root: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1))));
     const refs = try collectIdentifierReferences(std.testing.allocator, ast, root);
     defer std.testing.allocator.free(refs);
     var saw_write = false;
@@ -465,7 +465,7 @@ test "#4819 reference walk: original Flow match bindings are positions only wher
         }
     }
     const ast = &parser.ast;
-    const root: NodeIndex = @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+    const root: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1))));
     const refs = try collectIdentifierReferences(std.testing.allocator, ast, root);
     defer std.testing.allocator.free(refs);
     try std.testing.expectEqual(@as(usize, 2), refs.len);
@@ -495,20 +495,20 @@ test "#4819 reference walk: value Reference node set matches analyzer on resolve
     try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
 
     const ast = &parser.ast;
-    const root: NodeIndex = @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1)));
+    const root: NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1))));
     const positions = try collectIdentifierReferences(allocator, ast, root);
     defer allocator.free(positions);
 
     var walked: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer walked.deinit(allocator);
-    for (positions) |idx| try walked.put(allocator, @intFromEnum(idx), {});
+    for (positions) |idx| try walked.put(allocator, @backingInt(idx), {});
     try std.testing.expect(walked.count() >= 9);
 
     var analyzed: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer analyzed.deinit(allocator);
     for (analyzer.references.items) |ref| {
         if (!ref.isValueUse() or ref.node_index.isNone()) continue;
-        const raw: u32 = @intFromEnum(ref.node_index);
+        const raw: u32 = @backingInt(ref.node_index);
         if (raw >= ast.nodes.items.len) continue;
         const tag = ast.nodes.items[raw].tag;
         if (tag != .identifier_reference and tag != .assignment_target_identifier) continue;

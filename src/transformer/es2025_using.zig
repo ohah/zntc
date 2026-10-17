@@ -71,7 +71,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             var i: u32 = 0;
             while (i < len) : (i += 1) {
                 const raw_idx = self.ast.extra_data.items[start + i];
-                const node = self.ast.getNode(@enumFromInt(raw_idx));
+                const node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (node.tag == .variable_declaration) {
                     const e = node.data.extra;
                     if (self.ast.hasExtra(e, 3)) {
@@ -156,7 +156,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             {
                 var i: u32 = 0;
                 while (i < len) : (i += 1) {
-                    const node = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+                    const node = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[start + i])));
                     if (node.tag == .variable_declaration and self.ast.hasExtra(node.data.extra, 3) and
                         self.ast.variableDeclarationKind(node) == .await_using) has_await_using = true;
                 }
@@ -187,7 +187,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             var i: u32 = 0;
             var in_prologue = true;
             while (i < len) : (i += 1) {
-                const stmt: NodeIndex = @enumFromInt(self.ast.extra_data.items[start + i]);
+                const stmt: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[start + i]));
                 const node = self.ast.getNode(stmt);
                 if (in_prologue and isDirective(node)) {
                     try push(self, &head, stmt);
@@ -270,7 +270,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
                                         const raw_id = self.getSymbolIdAt(stmt) orelse std.debug.panic("default export facade has no SymbolId", .{});
                                         try self.setGeneratedSymbolId(binding, raw_id);
                                         try self.ensureSymbolDeclarationAtNode(raw_id, self.programScope(), binding);
-                                        break :blk @enumFromInt(raw_id);
+                                        break :blk @fromBackingInt(@intCast(raw_id));
                                     }
                                     break :blk try self.declareSyntheticInScope(binding, node.span, .variable_var, self.programScope());
                                 } else null;
@@ -309,7 +309,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             try head.appendSlice(self.allocator, tail.items);
             if (export_specs.items.len > 0) {
                 const specs = try self.ast.addNodeList(export_specs.items);
-                const none = @intFromEnum(NodeIndex.none);
+                const none = @backingInt(NodeIndex.none);
                 try head.append(self.allocator, try self.addExtraNode(.export_named_declaration, zero_span, &.{ none, specs.start, specs.len, none, 0, 0 }));
             }
             return self.ast.addNodeList(head.items);
@@ -331,7 +331,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const vkind = self.ast.variableDeclarationKind(ln);
             if (!vkind.isUsing()) return false;
             if (self.readU32(ln.data.extra, 2) != 1) return false;
-            const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)]));
+            const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[self.readU32(ln.data.extra, 1)])));
             const binding = self.readNodeIdx(d.data.extra, 0);
 
             const tmp_name = try uniqueSynthName(self, "_using", &self.using_head_counter);
@@ -361,15 +361,15 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const new_body = try self.ast.addNode(.{ .tag = .block_statement, .span = node.span, .data = .{
                 .list = try self.ast.addNodeList(&.{ using_decl, node.data.ternary.c }),
             } });
-            self.ast.nodes.items[@intFromEnum(idx)].data.ternary.a = new_left;
-            self.ast.nodes.items[@intFromEnum(idx)].data.ternary.c = new_body;
+            self.ast.nodes.items[@backingInt(idx)].data.ternary.a = new_left;
+            self.ast.nodes.items[@backingInt(idx)].data.ternary.c = new_body;
             return true;
         }
 
         /// `let`/`const` 선언을 같은 declarator 들의 `var` 선언으로 (모듈 최상위 전용).
         fn asVarDeclaration(self: *Transformer, decl: Node) Transformer.Error!NodeIndex {
             return self.addExtraNode(.variable_declaration, decl.span, &.{
-                @intFromEnum(VariableDeclarationKind.@"var"),
+                @backingInt(VariableDeclarationKind.@"var"),
                 self.readU32(decl.data.extra, 1),
                 self.readU32(decl.data.extra, 2),
             });
@@ -382,11 +382,11 @@ pub fn ES2025Using(comptime Transformer: type) type {
             // binding and its immutable self binding. The copied expression
             // must retain the class-owner mapping so ES5 lowering moves the
             // self binding, rather than the outer declaration, into its IIFE.
-            if (self.class_self_symbol_map.get(@intFromEnum(source_idx))) |self_symbol| {
+            if (self.class_self_symbol_map.get(@backingInt(source_idx))) |self_symbol| {
                 const class_name = self.readNodeIdx(decl.data.extra, ast_mod.ClassExtra.name);
                 if (!class_name.isNone() and self.getSymbolIdAt(class_name) != self_symbol)
                     try self.rebindOutputBinding(class_name, self_symbol);
-                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(expression), self_symbol);
+                try self.class_self_symbol_map.put(self.allocator, @backingInt(expression), self_symbol);
             }
             return expression;
         }
@@ -405,7 +405,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             const dl = self.readU32(decl.data.extra, 2);
             var j: u32 = 0;
             while (j < dl) : (j += 1) {
-                const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[ds + j])));
                 if (d.tag != .variable_declarator) continue;
                 var bindings: std.ArrayList(NodeIndex) = .empty;
                 defer bindings.deinit(self.allocator);
@@ -468,7 +468,7 @@ pub fn ES2025Using(comptime Transformer: type) type {
             var j: u32 = 0;
             while (j < decl_len) : (j += 1) {
                 const raw = self.ast.extra_data.items[decl_start + j];
-                const decl = self.ast.getNode(@enumFromInt(raw));
+                const decl = self.ast.getNode(@fromBackingInt(@intCast(raw)));
                 if (decl.tag != .variable_declarator) continue;
 
                 const de = decl.data.extra;
@@ -491,9 +491,9 @@ pub fn ES2025Using(comptime Transformer: type) type {
                 else
                     try es_helpers.makeCallExpr(self, using_ref, &.{ stack_ref, new_init }, span);
 
-                const none = @intFromEnum(NodeIndex.none);
+                const none = @backingInt(NodeIndex.none);
                 const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{
-                    @intFromEnum(new_name), none, @intFromEnum(using_call),
+                    @backingInt(new_name), none, @backingInt(using_call),
                 });
                 try out.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{new_decl}, decl_kind, span));
             }
@@ -604,7 +604,7 @@ test "#4819 generator using refs retain their producer SymbolId" {
     transformer.scope_owner_map = analyzer.scope_owner_map;
     transformer.semantic_edit_enabled = true;
 
-    const none = @intFromEnum(ast_mod.NodeIndex.none);
+    const none = @backingInt(ast_mod.NodeIndex.none);
     const empty_list = try transformer.ast.addNodeList(&.{});
     const owner_params = try transformer.ast.addFormalParameters(empty_list, .EMPTY);
     const owner_body = try transformer.ast.addNode(.{
@@ -612,7 +612,7 @@ test "#4819 generator using refs retain their producer SymbolId" {
         .span = .EMPTY,
         .data = .{ .list = empty_list },
     });
-    const owner_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(owner_params), @intFromEnum(owner_body), 0, none });
+    const owner_extra = try transformer.ast.addExtras(&.{ none, @backingInt(owner_params), @backingInt(owner_body), 0, none });
     const owner = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -631,8 +631,8 @@ test "#4819 generator using refs retain their producer SymbolId" {
     try registerUsingRef(&transformer, reference, id, owner_scope, .{ .read = true });
 
     try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_semantic_refs.items.len);
-    try std.testing.expectEqual(@as(u32, @intFromEnum(id)), transformer.generator_state_semantic_refs.items[0].symbol_id);
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(reference));
+    try std.testing.expectEqual(@as(u32, @backingInt(id)), transformer.generator_state_semantic_refs.items[0].symbol_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(reference));
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 
@@ -651,7 +651,7 @@ test "#4819 generator using refs retain their producer SymbolId" {
     const state_parameter = try es_helpers.makeSyntheticBinding(&transformer, state_name);
     const callback_params_list = try transformer.ast.addNodeList(&.{state_parameter});
     const callback_params = try transformer.ast.addFormalParameters(callback_params_list, .EMPTY);
-    const callback_extra = try transformer.ast.addExtras(&.{ none, @intFromEnum(callback_params), @intFromEnum(callback_body), 0, none });
+    const callback_extra = try transformer.ast.addExtras(&.{ none, @backingInt(callback_params), @backingInt(callback_body), 0, none });
     const callback = try transformer.ast.addNode(.{
         .tag = .function_expression,
         .span = .EMPTY,
@@ -661,11 +661,11 @@ test "#4819 generator using refs retain their producer SymbolId" {
 
     try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_semantic_refs.items.len);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
-    try std.testing.expectEqual(@as(?u32, @intFromEnum(id)), transformer.getSymbolIdAt(reference));
+    try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(reference));
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;
     const reference_record = (try editor.referenceForNode(reference)) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(id, reference_record.symbol_id);
-    try std.testing.expectEqual(editor.scope_owner_map.get(@intFromEnum(callback)).?, @intFromEnum(reference_record.scope_id));
+    try std.testing.expectEqual(editor.scope_owner_map.get(@backingInt(callback)).?, @backingInt(reference_record.scope_id));
 }
 
 // readU32 헬퍼: Transformer에 이미 정의된 것을 사용 (mixin 패턴)

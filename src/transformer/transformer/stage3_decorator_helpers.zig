@@ -130,7 +130,7 @@ pub fn collectStage3Decorators(self: anytype, deco_start: u32, deco_len: u32) Er
     var i: u32 = 0;
     while (i < deco_len) : (i += 1) {
         const raw = self.ast.extra_data.items[deco_start + i];
-        const deco_idx: NodeIndex = @enumFromInt(raw);
+        const deco_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (deco_idx.isNone()) continue;
         const deco_node = self.ast.getNode(deco_idx);
         // decorator 노드의 operand가 실제 식
@@ -174,7 +174,7 @@ pub fn buildEsDecorateCall(
             const setfn_callee = try es_helpers.makeRuntimeHelperRef(self, "__setFunctionName");
             const setfn_args = try self.ast.addNodeList(&.{ info.accessor_fns[i], info.accessor_fn_names[i], try wrapInStringLiteral(self, prefix) });
             const setfn_call = try self.addExtraNode(.call_expression, zero_span, &.{
-                @intFromEnum(setfn_callee), setfn_args.start, setfn_args.len, 0,
+                @backingInt(setfn_callee), setfn_args.start, setfn_args.len, 0,
             });
             props[i] = try makeObjProp(self, try es_helpers.makePropertyName(self, prefix), setfn_call);
         }
@@ -194,16 +194,16 @@ pub fn buildEsDecorateCall(
         // function expression with original body
         const fn_params_node = try self.ast.addFormalParameters(info.method_params, zero_span);
         const fn_expr = try self.addExtraNode(.function_expression, zero_span, &.{
-            @intFromEnum(NodeIndex.none), // name (anonymous)
-            @intFromEnum(fn_params_node),
-            @intFromEnum(info.method_body),
+            @backingInt(NodeIndex.none), // name (anonymous)
+            @backingInt(fn_params_node),
+            @backingInt(info.method_body),
             0, // flags
-            @intFromEnum(NodeIndex.none), // ret_type
+            @backingInt(NodeIndex.none), // ret_type
         });
         const name_str = info.name; // "#method" as string_literal
         const setfn_args = try self.ast.addNodeList(&.{ fn_expr, name_str });
         const setfn_call = try self.addExtraNode(.call_expression, zero_span, &.{
-            @intFromEnum(setfn_callee), setfn_args.start, setfn_args.len, 0,
+            @backingInt(setfn_callee), setfn_args.start, setfn_args.len, 0,
         });
 
         // { value: __setFunctionName(...) }
@@ -258,7 +258,7 @@ pub fn buildEsDecorateCall(
 
     const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
     return self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
 }
 
@@ -312,7 +312,7 @@ pub fn buildClassEsDecorateCall(
     try class_this_read_refs.append(self.allocator, classThis_ref2);
     const name_prop_key = try es_helpers.makePropertyName(self, "name");
     const classThis_name = try self.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(classThis_ref2), @intFromEnum(name_prop_key), 0,
+        @backingInt(classThis_ref2), @backingInt(name_prop_key), 0,
     });
     const name_prop = try makeObjProp(self, name_key, classThis_name);
 
@@ -332,7 +332,7 @@ pub fn buildClassEsDecorateCall(
 
     const args = try self.ast.addNodeList(&.{ arg1, arg2, arg3, arg4, arg5, arg6 });
     return self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
 }
 
@@ -420,7 +420,7 @@ fn accessKey(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
 
 pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     var access_props: std.ArrayList(NodeIndex) = .empty;
     defer access_props.deinit(self.allocator);
 
@@ -487,11 +487,11 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const in_expr = try self.ast.addNode(.{
             .tag = .binary_expression,
             .span = zero_span,
-            .data = .{ .binary = .{ .left = in_left, .right = obj_ref, .flags = @intFromEnum(Kind.kw_in) } },
+            .data = .{ .binary = .{ .left = in_left, .right = obj_ref, .flags = @backingInt(Kind.kw_in) } },
         });
 
         const has_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
-            @intFromEnum(obj_param), @intFromEnum(in_expr), 0,
+            @backingInt(obj_param), @backingInt(in_expr), 0,
         });
         try bindAccessParameters(self, has_arrow, &.{obj_param}, &.{obj_ref}, if (info.is_private) null else info.name_temp, in_left);
         try access_props.append(self.allocator, try makeObjProp(self, has_key, has_arrow));
@@ -526,14 +526,14 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
                 // Private lowering dispatches on this tag; a generic member
                 // expression can leave raw `obj.#name` syntax in ES5 output.
                 break :blk try self.addExtraNode(.private_field_expression, zero_span, &.{
-                    @intFromEnum(obj_ref), @intFromEnum(member_key_node), 0,
+                    @backingInt(obj_ref), @backingInt(member_key_node), 0,
                 });
             }
             break :blk try es_helpers.makeStaticMember(self, obj_ref, member_key_node, zero_span);
         };
 
         const get_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
-            @intFromEnum(obj_param), @intFromEnum(obj_member), 0,
+            @backingInt(obj_param), @backingInt(obj_member), 0,
         });
         try bindAccessParameters(self, get_arrow, &.{obj_param}, &.{obj_ref}, info.name_temp, get_temp_read);
         try access_props.append(self.allocator, try makeObjProp(self, get_key, get_arrow));
@@ -573,7 +573,7 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
             if (info.is_private) {
                 // Keep private writes visible to the same downleveling path.
                 break :blk try self.addExtraNode(.private_field_expression, zero_span, &.{
-                    @intFromEnum(obj_ref), @intFromEnum(set_key_node), 0,
+                    @backingInt(obj_ref), @backingInt(set_key_node), 0,
                 });
             }
             break :blk try es_helpers.makeStaticMember(self, obj_ref, set_key_node, zero_span);
@@ -599,8 +599,8 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const set_fn_params_node = try self.ast.addFormalParameters(fn_params, zero_span);
         const set_fn = try self.addExtraNode(.function_expression, zero_span, &.{
             none, // name (anonymous)
-            @intFromEnum(set_fn_params_node),
-            @intFromEnum(fn_body),
+            @backingInt(set_fn_params_node),
+            @backingInt(fn_body),
             0, // flags
             none, // ret_type
         });
@@ -615,45 +615,45 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
 /// const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
 pub fn buildMetadataDecl(self: anytype, metadata_name: []const u8) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     // typeof Symbol === "function"
     const symbol_ref = try es_helpers.makeGlobalRef(self, "Symbol");
     const typeof_expr = try self.addExtraNode(.unary_expression, zero_span, &.{
-        @intFromEnum(symbol_ref), @intFromEnum(Kind.kw_typeof),
+        @backingInt(symbol_ref), @backingInt(Kind.kw_typeof),
     });
     const func_str_span = try self.ast.addString("\"function\"");
     const func_str = try self.ast.addNode(.{ .tag = .string_literal, .span = func_str_span, .data = .{ .string_ref = func_str_span } });
     const typeof_check = try self.ast.addNode(.{
         .tag = .binary_expression,
         .span = zero_span,
-        .data = .{ .binary = .{ .left = typeof_expr, .right = func_str, .flags = @intFromEnum(Kind.eq3) } },
+        .data = .{ .binary = .{ .left = typeof_expr, .right = func_str, .flags = @backingInt(Kind.eq3) } },
     });
 
     // Symbol.metadata
     const symbol_ref2 = try es_helpers.makeGlobalRef(self, "Symbol");
     const metadata_prop = try es_helpers.makePropertyName(self, "metadata");
     const symbol_metadata = try self.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(symbol_ref2), @intFromEnum(metadata_prop), 0,
+        @backingInt(symbol_ref2), @backingInt(metadata_prop), 0,
     });
 
     // typeof Symbol === "function" && Symbol.metadata
     const and_expr = try self.ast.addNode(.{
         .tag = .binary_expression,
         .span = zero_span,
-        .data = .{ .binary = .{ .left = typeof_check, .right = symbol_metadata, .flags = @intFromEnum(Kind.amp2) } },
+        .data = .{ .binary = .{ .left = typeof_check, .right = symbol_metadata, .flags = @backingInt(Kind.amp2) } },
     });
 
     // Object.create(null)
     const object_ref = try es_helpers.makeGlobalRef(self, "Object");
     const create_key = try es_helpers.makePropertyName(self, "create");
     const obj_create = try self.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(object_ref), @intFromEnum(create_key), 0,
+        @backingInt(object_ref), @backingInt(create_key), 0,
     });
     const null_arg = try es_helpers.makeNullLiteral(self);
     const null_args = try self.ast.addNodeList(&.{null_arg});
     const obj_create_call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(obj_create), null_args.start, null_args.len, 0,
+        @backingInt(obj_create), null_args.start, null_args.len, 0,
     });
 
     // void 0
@@ -670,7 +670,7 @@ pub fn buildMetadataDecl(self: anytype, metadata_name: []const u8) Error!NodeInd
     const metadata_span = try self.ast.addString(metadata_name);
     const metadata_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, metadata_span);
     const declarator = try self.addExtraNode(.variable_declarator, zero_span, &.{
-        @intFromEnum(metadata_binding), none, @intFromEnum(ternary),
+        @backingInt(metadata_binding), none, @backingInt(ternary),
     });
     const decl_list = try self.ast.addNodeList(&.{declarator});
     return self.addExtraNode(.variable_declaration, zero_span, &.{
@@ -696,7 +696,7 @@ pub fn buildClassReassign(
     try class_descriptor_read_refs.append(self.allocator, desc_ref);
     const value_key = try es_helpers.makePropertyName(self, "value");
     const desc_value = try self.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(desc_ref), @intFromEnum(value_key), 0,
+        @backingInt(desc_ref), @backingInt(value_key), 0,
     });
 
     // _classThis = _classDescriptor.value
@@ -744,7 +744,7 @@ pub fn buildRunInitializersCall(
     try init_refs.append(self.allocator, init_ref);
     const args = try self.ast.addNodeList(&.{ target, init_ref });
     return self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
 }
 
@@ -757,7 +757,7 @@ pub fn buildRunInitializersCall2(self: anytype, target_node: NodeIndex, init_nam
     init_ref_out.* = init_ref;
     const args = try self.ast.addNodeList(&.{ target_node, init_ref });
     return self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee), args.start, args.len, 0,
+        @backingInt(callee), args.start, args.len, 0,
     });
 }
 
@@ -779,7 +779,7 @@ pub fn buildStage3LetDeclarations(
     instance_extra_initializers_binding: *NodeIndex,
 ) Error![]NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     var stmts: std.ArrayList(NodeIndex) = .empty;
     defer stmts.deinit(self.allocator);
 
@@ -885,7 +885,7 @@ fn makeLetWithBinding(self: anytype, span: Span, name: []const u8, init: NodeInd
     const name_span = try self.ast.addString(name);
     const binding = try es_helpers.makeSyntheticBinding(self, name_span);
     const declarator = try self.addExtraNode(.variable_declarator, span, &.{
-        @intFromEnum(binding), @intFromEnum(NodeIndex.none), @intFromEnum(init),
+        @backingInt(binding), @backingInt(NodeIndex.none), @backingInt(init),
     });
     const decl_list = try self.ast.addNodeList(&.{declarator});
     const declaration = try self.addExtraNode(.variable_declaration, span, &.{
@@ -963,7 +963,7 @@ pub fn buildMetadataDefineProperty(
 
     const call_args = try self.ast.addNodeList(&.{ ct_ref, sym_meta, desc_obj });
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(obj_defprop), call_args.start, call_args.len, 0,
+        @backingInt(obj_defprop), call_args.start, call_args.len, 0,
     });
 
     // if (_metadata) call;
@@ -1006,9 +1006,9 @@ pub fn buildGetterMethod(self: anytype, key: NodeIndex, return_expr: NodeIndex, 
     const empty_decos = try self.ast.addNodeList(&.{});
     const getter_flags: u32 = 0x02 | (if (is_static) @as(u32, 0x01) else 0);
     return self.addExtraNode(.method_definition, span, &.{
-        @intFromEnum(key),
-        @intFromEnum(empty_params_node),
-        @intFromEnum(getter_body),
+        @backingInt(key),
+        @backingInt(empty_params_node),
+        @backingInt(getter_body),
         getter_flags,
         empty_decos.start,
         empty_decos.len,
@@ -1056,9 +1056,9 @@ pub fn buildSetterMethodWithHandles(self: anytype, key: NodeIndex, assign_target
     const setter_flags: u32 = 0x04 | (if (is_static) @as(u32, 0x01) else 0);
     return .{
         .method = try self.addExtraNode(.method_definition, span, &.{
-            @intFromEnum(key),
-            @intFromEnum(params_node),
-            @intFromEnum(body),
+            @backingInt(key),
+            @backingInt(params_node),
+            @backingInt(body),
             setter_flags,
             empty_decos.start,
             empty_decos.len,

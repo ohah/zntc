@@ -53,7 +53,7 @@ fn checkArrowBodyTemp(source: []const u8, target: ESTarget) !void {
     for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, symbol_index| {
         if (symbol.kind != .variable_var or !std.mem.eql(u8, symbol.synthetic_name, "_a")) continue;
         temp_count += 1;
-        try std.testing.expectEqual(expected_scope, @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(expected_scope, @backingInt(symbol.scope_id));
         try std.testing.expectEqual(@as(u32, @intCast(symbol_index)), edited.scope_maps[expected_scope].get("_a").?);
 
         var bindings: usize = 0;
@@ -65,9 +65,9 @@ fn checkArrowBodyTemp(source: []const u8, target: ESTarget) !void {
 
         var refs: usize = 0;
         for (edited.references) |ref| {
-            if (@intFromEnum(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
-            try std.testing.expect(live.contains(@intFromEnum(ref.node_index)));
-            try std.testing.expectEqual(expected_scope, @intFromEnum(ref.scope_id));
+            if (@backingInt(ref.symbol_id) != symbol_index or ref.node_index.isNone()) continue;
+            try std.testing.expect(live.contains(@backingInt(ref.node_index)));
+            try std.testing.expectEqual(expected_scope, @backingInt(ref.scope_id));
             try std.testing.expect(ref.flags.read or ref.flags.write);
             refs += 1;
         }

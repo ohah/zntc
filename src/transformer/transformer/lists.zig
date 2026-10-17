@@ -101,7 +101,7 @@ pub fn visitExtraList(self: *Transformer, list: NodeList) Error!NodeList {
     while (i < list.len) : (i += 1) {
         // 매 반복마다 extra_data에서 직접 읽기 (재할당 안전)
         const raw_idx = self.ast.extra_data.items[list.start + i];
-        const new_child = try self.visitNode(@enumFromInt(raw_idx));
+        const new_child = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
 
         // pending_nodes 드레인: visitNode가 추가한 보류 노드를 먼저 삽입
         if (self.pending_nodes.items.len > pending_top) {
@@ -127,7 +127,7 @@ pub fn visitExtraList(self: *Transformer, list: NodeList) Error!NodeList {
     if (scratch_slice.len == list.len) {
         var identical = true;
         for (scratch_slice, 0..) |new_idx, j| {
-            if (@intFromEnum(new_idx) != self.ast.extra_data.items[list.start + j]) {
+            if (@backingInt(new_idx) != self.ast.extra_data.items[list.start + j]) {
                 identical = false;
                 break;
             }
@@ -198,14 +198,14 @@ pub fn buildVarDecl(self: *Transformer, name: []const u8, init_value: NodeIndex,
     const name_span = try self.ast.addString(name);
     const binding = try es_helpers.makeSyntheticBinding(self, name_span);
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const declarator = try self.addExtraNode(.variable_declarator, span, &.{
-        @intFromEnum(binding), none, @intFromEnum(init_value),
+        @backingInt(binding), none, @backingInt(init_value),
     });
 
     const decl_list = try self.ast.addNodeList(&.{declarator});
     return self.addExtraNode(.variable_declaration, span, &.{
-        @intFromEnum(VariableDeclarationKind.@"var"),
+        @backingInt(VariableDeclarationKind.@"var"),
         decl_list.start,
         decl_list.len,
     });
@@ -227,7 +227,7 @@ fn generatedCallbackTempBinding(self: *Transformer, name_span: Span) ?NodeIndex 
     var found: ?NodeIndex = null;
     for (self.generator_state_temp_refs.items) |pending| {
         const binding = pending.binding;
-        if (binding.isNone() or @intFromEnum(binding) >= self.ast.nodes.items.len) continue;
+        if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len) continue;
         const node = self.ast.getNode(binding);
         if (node.tag != .binding_identifier or node.data.string_ref.start != name_span.start or
             node.data.string_ref.end != name_span.end) continue;
@@ -397,9 +397,9 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
         } else if (function_scope) |scope_id| {
             try self.bindHoistedTemp(binding, name_span, span, scope_id);
         }
-        const none = @intFromEnum(NodeIndex.none);
+        const none = @backingInt(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{
-            @intFromEnum(binding), none, none,
+            @backingInt(binding), none, none,
         });
         try self.scratch.append(self.allocator, declarator);
     }
@@ -408,7 +408,7 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
 
     const decl_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     const var_decl = try self.addExtraNode(.variable_declaration, span, &.{
-        @intFromEnum(VariableDeclarationKind.@"var"),
+        @backingInt(VariableDeclarationKind.@"var"),
         decl_list.start,
         decl_list.len,
     });
@@ -431,7 +431,7 @@ fn bodyHasTopLevelVarBinding(self: *const Transformer, body: Node, name: []const
     const list = body.data.list;
     const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
     for (stmts) |raw_idx| {
-        var stmt = self.ast.getNode(@enumFromInt(raw_idx));
+        var stmt = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         if (stmt.tag == .export_named_declaration) {
             const decl_idx = self.readNodeIdx(stmt.data.extra, 0); // ExportNamedExtras.decl
             if (decl_idx.isNone()) continue;
@@ -445,9 +445,9 @@ fn bodyHasTopLevelVarBinding(self: *const Transformer, body: Node, name: []const
         var di: u32 = 0;
         while (di < dl_len) : (di += 1) {
             const draw_idx = self.ast.extra_data.items[dl_start + di];
-            const decl = self.ast.getNode(@enumFromInt(draw_idx));
+            const decl = self.ast.getNode(@fromBackingInt(@intCast(draw_idx)));
             if (decl.tag != .variable_declarator) continue;
-            const binding_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+            const binding_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[decl.data.extra]));
             if (binding_idx.isNone()) continue;
             const binding = self.ast.getNode(binding_idx);
             if (binding.tag != .binding_identifier) continue;

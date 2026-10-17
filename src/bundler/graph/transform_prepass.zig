@@ -54,7 +54,7 @@ fn tlaPromiseReference(
     semantic: *const ModuleSemanticData,
     stmt_idx: ast_mod.NodeIndex,
 ) ?Module.TlaPromiseReference {
-    const stmt_raw = @intFromEnum(stmt_idx);
+    const stmt_raw = @backingInt(stmt_idx);
     if (stmt_idx.isNone() or stmt_raw >= ast.nodes.items.len) return null;
     const stmt = ast.nodes.items[stmt_raw];
     if (stmt.tag != .variable_declaration) return null;
@@ -65,15 +65,15 @@ fn tlaPromiseReference(
     const list_len = ast.extra_data.items[extra + 2];
     if (list_len != 1 or list_start >= ast.extra_data.items.len) return null;
 
-    const decl_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[list_start]);
-    if (decl_idx.isNone() or @intFromEnum(decl_idx) >= ast.nodes.items.len) return null;
-    const decl = ast.nodes.items[@intFromEnum(decl_idx)];
+    const decl_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list_start]));
+    if (decl_idx.isNone() or @backingInt(decl_idx) >= ast.nodes.items.len) return null;
+    const decl = ast.nodes.items[@backingInt(decl_idx)];
     if (decl.tag != .variable_declarator or decl.data.extra >= ast.extra_data.items.len) return null;
-    const binding_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[decl.data.extra]);
-    if (binding_idx.isNone() or @intFromEnum(binding_idx) >= ast.nodes.items.len) return null;
-    if (ast.nodes.items[@intFromEnum(binding_idx)].tag != .binding_identifier) return null;
+    const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[decl.data.extra]));
+    if (binding_idx.isNone() or @backingInt(binding_idx) >= ast.nodes.items.len) return null;
+    if (ast.nodes.items[@backingInt(binding_idx)].tag != .binding_identifier) return null;
 
-    const binding_raw = @intFromEnum(binding_idx);
+    const binding_raw = @backingInt(binding_idx);
     if (binding_raw >= semantic.symbol_ids.len) return null;
     const symbol_raw = semantic.symbol_ids[binding_raw] orelse return null;
     if (symbol_raw >= semantic.symbols.items.len) return null;
@@ -82,7 +82,7 @@ fn tlaPromiseReference(
 
     return .{
         .binding_node_index = binding_raw,
-        .symbol_id = @enumFromInt(symbol_raw),
+        .symbol_id = @fromBackingInt(@intCast(symbol_raw)),
         .scope_id = symbol.scope_id,
     };
 }
@@ -92,7 +92,7 @@ fn refreshTlaPromiseReference(module: *Module) void {
     const stmt_raw = module.tla_iife_stmt orelse return;
     const ast = &(module.ast orelse return);
     const semantic = &(module.semantic orelse return);
-    module.tla_promise_reference = tlaPromiseReference(ast, semantic, @enumFromInt(stmt_raw));
+    module.tla_promise_reference = tlaPromiseReference(ast, semantic, @fromBackingInt(@intCast(stmt_raw)));
 }
 
 /// 보수적 graph pre-pass 게이트.
@@ -172,7 +172,7 @@ fn hasConfiguredStylePluginImport(self: anytype, ast: *const ast_mod.Ast) bool {
         if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 6) return true;
         const x = module_parser.readImportDeclExtras(ast, extra);
         if (module_parser.isDeclarationTypeOnly(x) or x.source.isNone()) continue;
-        if (@intFromEnum(x.source) >= ast.nodes.items.len) return true;
+        if (@backingInt(x.source) >= ast.nodes.items.len) return true;
         const source_node = ast.getNode(x.source);
         if (source_node.tag != .string_literal) continue;
         const source = import_scanner.stripQuotes(ast.getText(source_node.span)) orelse continue;
@@ -210,7 +210,7 @@ fn flowMatchGeneratedGlobals(ast: *const ast_mod.Ast) FlowMatchGeneratedGlobals 
                 const list = node.data.list;
                 for (0..list.len) |i| {
                     const child_raw = ast.extra_data.items[list.start + i];
-                    const child = ast.getNode(@enumFromInt(child_raw));
+                    const child = ast.getNode(@fromBackingInt(@intCast(child_raw)));
                     if (child.tag == .flow_match_rest and child.data.none == 1) {
                         globals.object = true;
                         break;
@@ -297,13 +297,13 @@ fn isSupportedLocalImportEquals(ast: *const ast_mod.Ast, node: ast_mod.Node) boo
     if (node.tag != .ts_import_equals_declaration) return false;
     var value_idx = node.data.binary.right;
     while (!value_idx.isNone()) {
-        if (@intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+        if (@backingInt(value_idx) >= ast.nodes.items.len) return false;
         const value = ast.getNode(value_idx);
         switch (value.tag) {
             .identifier_reference => return true,
             .static_member_expression => {
                 if (value.data.extra >= ast.extra_data.items.len) return false;
-                value_idx = @enumFromInt(ast.extra_data.items[value.data.extra]);
+                value_idx = @fromBackingInt(@intCast(ast.extra_data.items[value.data.extra]));
             },
             else => return false,
         }
@@ -317,13 +317,13 @@ fn isSupportedLocalImportEquals(ast: *const ast_mod.Ast, node: ast_mod.Node) boo
 fn isSupportedExternalRequireImportEquals(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     if (node.tag != .ts_import_equals_declaration) return false;
     const value_idx = node.data.binary.right;
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     if (value.tag != .call_expression) return false;
     if (!ast.hasExtra(value.data.extra, 2)) return false;
 
     const callee_idx = ast.readExtraNode(value.data.extra, 0);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
     const callee_name = ast.getText(callee.span);
     const arg_count = ast.readExtra(value.data.extra, 2);
@@ -332,8 +332,8 @@ fn isSupportedExternalRequireImportEquals(ast: *const ast_mod.Ast, node: ast_mod
 
     const args_start = ast.readExtra(value.data.extra, 1);
     if (args_start >= ast.extra_data.items.len) return false;
-    const arg_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
-    return !arg_idx.isNone() and @intFromEnum(arg_idx) < ast.nodes.items.len and
+    const arg_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
+    return !arg_idx.isNone() and @backingInt(arg_idx) < ast.nodes.items.len and
         ast.getNode(arg_idx).tag == .string_literal;
 }
 
@@ -345,14 +345,14 @@ fn isSupportedPlainExportAll(
     node_idx: ast_mod.NodeIndex,
     top_level_statements: *const std.DynamicBitSet,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.getNode(node_idx);
     if (node.tag != .export_all_declaration) return false;
-    if (!top_level_statements.isSet(@intFromEnum(node_idx))) return false;
+    if (!top_level_statements.isSet(@backingInt(node_idx))) return false;
 
     const export_all = module_parser.readExportAllExtras(ast, node.data.extra);
     if (!export_all.exported_name.isNone() or export_all.attrs_len != 0) return false;
-    if (export_all.source.isNone() or @intFromEnum(export_all.source) >= ast.nodes.items.len) return false;
+    if (export_all.source.isNone() or @backingInt(export_all.source) >= ast.nodes.items.len) return false;
     return ast.getNode(export_all.source).tag == .string_literal;
 }
 
@@ -401,7 +401,7 @@ fn hasDroppedLabeledStatement(ast: *const ast_mod.Ast, labels: []const []const u
     for (ast.nodes.items) |node| {
         if (node.tag != .labeled_statement) continue;
         const label_idx = node.data.binary.left;
-        if (label_idx.isNone() or @intFromEnum(label_idx) >= ast.nodes.items.len) return true;
+        if (label_idx.isNone() or @backingInt(label_idx) >= ast.nodes.items.len) return true;
         const label_name = ast.getText(ast.getNode(label_idx).span);
         for (labels) |dropped| {
             if (std.mem.eql(u8, label_name, dropped)) return true;
@@ -423,7 +423,7 @@ fn hasDroppedConsoleStatement(ast: *const ast_mod.Ast) bool {
 /// the source module for side effects after TypeScript erasure.
 fn isSupportedStaticNamedReExport(ast: *const ast_mod.Ast, export_decl: module_parser.ExportNamedExtras) bool {
     if (!export_decl.decl.isNone() or export_decl.source.isNone() or export_decl.attrs_len != 0) return false;
-    if (@intFromEnum(export_decl.source) >= ast.nodes.items.len or
+    if (@backingInt(export_decl.source) >= ast.nodes.items.len or
         ast.getNode(export_decl.source).tag != .string_literal) return false;
     if (export_decl.specs_start > ast.extra_data.items.len or
         export_decl.specs_len > ast.extra_data.items.len - export_decl.specs_start) return false;
@@ -433,12 +433,12 @@ fn isSupportedStaticNamedReExport(ast: *const ast_mod.Ast, export_decl: module_p
         const specifier = ast.nodes.items[raw_spec_idx];
         if (specifier.tag != .export_specifier) return false;
         const local_idx = specifier.data.binary.left;
-        if (local_idx.isNone() or @intFromEnum(local_idx) >= ast.nodes.items.len or
+        if (local_idx.isNone() or @backingInt(local_idx) >= ast.nodes.items.len or
             ast.getNode(local_idx).tag != .identifier_reference) return false;
 
         const exported_idx = specifier.data.binary.right;
         if (!exported_idx.isNone() and
-            (@intFromEnum(exported_idx) >= ast.nodes.items.len or
+            (@backingInt(exported_idx) >= ast.nodes.items.len or
                 ast.getNode(exported_idx).tag != .identifier_reference)) return false;
     }
     return true;
@@ -459,9 +459,9 @@ fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
 
     const root_idx = ast.transformed_root orelse @as(
         ast_mod.NodeIndex,
-        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
     );
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return false;
+    if (root_idx.isNone() or @backingInt(root_idx) >= ast.nodes.items.len) return false;
     const root = ast.getNode(root_idx);
     if (root.tag != .program) return false;
 
@@ -472,7 +472,7 @@ fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
     var safe_specifier_count: usize = 0;
     for (extras[statements.start .. statements.start + statements.len]) |raw_stmt_idx| {
         if (raw_stmt_idx >= ast.nodes.items.len) return false;
-        const statement = ast.getNode(@enumFromInt(raw_stmt_idx));
+        const statement = ast.getNode(@fromBackingInt(@intCast(raw_stmt_idx)));
         if (statement.tag != .export_named_declaration) continue;
 
         const extra_start = statement.data.extra;
@@ -497,7 +497,7 @@ fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
 
         for (extras[export_decl.specs_start .. export_decl.specs_start + export_decl.specs_len]) |raw_spec_idx| {
             if (raw_spec_idx >= ast.nodes.items.len) return false;
-            const specifier = ast.getNode(@enumFromInt(raw_spec_idx));
+            const specifier = ast.getNode(@fromBackingInt(@intCast(raw_spec_idx)));
             if (specifier.tag != .export_specifier) return false;
             if ((specifier.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) != 0) {
                 safe_specifier_count += 1;
@@ -505,10 +505,10 @@ fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
             }
 
             const local_idx = specifier.data.binary.left;
-            if (local_idx.isNone() or @intFromEnum(local_idx) >= ast.nodes.items.len) return false;
+            if (local_idx.isNone() or @backingInt(local_idx) >= ast.nodes.items.len) return false;
             if (ast.getNode(local_idx).tag != .identifier_reference) return false;
 
-            const local_raw = @intFromEnum(local_idx);
+            const local_raw = @backingInt(local_idx);
             if (local_raw >= semantic.symbol_ids.len) return false;
             const symbol_id = semantic.symbol_ids[local_raw] orelse return false;
             if (symbol_id >= semantic.symbols.items.len) return false;
@@ -527,7 +527,7 @@ fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
 
             const exported_idx = specifier.data.binary.right;
             if (!exported_idx.isNone()) {
-                if (@intFromEnum(exported_idx) >= ast.nodes.items.len) return false;
+                if (@backingInt(exported_idx) >= ast.nodes.items.len) return false;
                 if (ast.getNode(exported_idx).tag != .identifier_reference) return false;
             }
             safe_specifier_count += 1;
@@ -540,8 +540,8 @@ fn hasSupportedTopLevelExportDeclarations(module: *const Module) bool {
 fn hasDirectSpreadElement(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     var children = ast_walk.children(ast, node);
     while (children.next()) |child_idx| {
-        if (child_idx.isNone() or @intFromEnum(child_idx) >= ast.nodes.items.len) continue;
-        if (ast.nodes.items[@intFromEnum(child_idx)].tag == .spread_element) return true;
+        if (child_idx.isNone() or @backingInt(child_idx) >= ast.nodes.items.len) continue;
+        if (ast.nodes.items[@backingInt(child_idx)].tag == .spread_element) return true;
     }
     return false;
 }
@@ -559,9 +559,9 @@ fn hasOnlyRetainableSpreadOperands(
         .call_expression, .new_expression => blk: {
             const extra = node.data.extra;
             if (extra > extras.len or extras.len - extra <= 3) return false;
-            const callee: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-            if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len) return false;
-            const callee_node = ast.nodes.items[@intFromEnum(callee)];
+            const callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+            if (callee.isNone() or @backingInt(callee) >= ast.nodes.items.len) return false;
+            const callee_node = ast.nodes.items[@backingInt(callee)];
             if (callee_node.tag == .identifier_reference) {
                 direct_identifier_callee = callee;
             } else if (node.tag == .call_expression and
@@ -575,13 +575,13 @@ fn hasOnlyRetainableSpreadOperands(
                 const member_extra = callee_node.data.extra;
                 if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0)
                     return false;
-                const receiver: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
-                const property: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
-                if (receiver.isNone() or @intFromEnum(receiver) >= ast.nodes.items.len or
-                    ast.nodes.items[@intFromEnum(receiver)].tag != .identifier_reference or
+                const receiver: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra]));
+                const property: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra + 1]));
+                if (receiver.isNone() or @backingInt(receiver) >= ast.nodes.items.len or
+                    ast.nodes.items[@backingInt(receiver)].tag != .identifier_reference or
                     !isBoundSourceIdentifierReference(ast, semantic, receiver) or
-                    property.isNone() or @intFromEnum(property) >= ast.nodes.items.len) return false;
-                const property_node = ast.nodes.items[@intFromEnum(property)];
+                    property.isNone() or @backingInt(property) >= ast.nodes.items.len) return false;
+                const property_node = ast.nodes.items[@backingInt(property)];
                 const safe_property = switch (callee_node.tag) {
                     .static_member_expression => property_node.tag == .identifier_reference,
                     .computed_member_expression => switch (property_node.tag) {
@@ -617,8 +617,8 @@ fn hasOnlyRetainableSpreadOperands(
         const element = ast.nodes.items[raw_idx];
         if (element.tag != .spread_element) continue;
         const operand = element.data.unary.operand;
-        if (operand.isNone() or @intFromEnum(operand) >= ast.nodes.items.len) return false;
-        const operand_node = ast.nodes.items[@intFromEnum(operand)];
+        if (operand.isNone() or @backingInt(operand) >= ast.nodes.items.len) return false;
+        const operand_node = ast.nodes.items[@backingInt(operand)];
         if (operand_node.tag == .identifier_reference) {
             // Array literals need only the exact helper reference. Direct,
             // simple-member, and constructor calls also need bound source
@@ -664,9 +664,9 @@ fn hasReachableExponentiation(ast: *const ast_mod.Ast) ?bool {
     for (reachable_nodes) |raw_idx| {
         const node = ast.nodes.items[raw_idx];
         const is_binary_exponentiation = node.tag == .binary_expression and
-            node.data.binary.flags == @intFromEnum(token_mod.Kind.star2);
+            node.data.binary.flags == @backingInt(token_mod.Kind.star2);
         const is_exponentiation_assignment = node.tag == .assignment_expression and
-            node.data.binary.flags == @intFromEnum(token_mod.Kind.star2_eq);
+            node.data.binary.flags == @backingInt(token_mod.Kind.star2_eq);
         if (is_binary_exponentiation or is_exponentiation_assignment) return true;
     }
     return false;
@@ -680,11 +680,11 @@ fn methodHasSuperExpression(ast: *const ast_mod.Ast, method: ast_mod.Node) bool 
     if (extra > ast.extra_data.items.len or
         ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return true;
     const roots = [_]ast_mod.NodeIndex{
-        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]),
-        @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]),
+        @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.params])),
+        @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.body])),
     };
     for (roots) |root| {
-        if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) return true;
+        if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return true;
         const descendants = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root) catch return true;
         defer ast.allocator.free(descendants);
         for (descendants) |raw_idx| {
@@ -703,10 +703,10 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
     const extra = method.data.extra;
     if (extra > ast.extra_data.items.len or
         ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return false;
-    const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]);
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
-    if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len or
-        body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.params]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.body]));
+    if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len or
+        body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return false;
 
     const params_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, params_idx) catch return false;
     defer ast.allocator.free(params_nodes);
@@ -722,8 +722,8 @@ fn methodSuperUsesOnlyDirectMethodBody(ast: *const ast_mod.Ast, method: ast_mod.
     stack.append(ast.allocator, .{ .node = body_idx, .nested_function = false }) catch return false;
     var found_super = false;
     while (stack.pop()) |work| {
-        if (work.node.isNone() or @intFromEnum(work.node) >= ast.nodes.items.len) return false;
-        const raw_idx = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= ast.nodes.items.len) return false;
+        const raw_idx = @backingInt(work.node);
         if (seen.contains(raw_idx)) continue;
         seen.put(ast.allocator, raw_idx, {}) catch return false;
         const node = ast.nodes.items[raw_idx];
@@ -769,10 +769,10 @@ fn methodSuperUsesOnlyArrowScopes(
     const extra = method.data.extra;
     if (extra > ast.extra_data.items.len or
         ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return false;
-    const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]);
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
-    if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len or
-        body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.params]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.body]));
+    if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len or
+        body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return false;
 
     const params_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, params_idx) catch return false;
     defer ast.allocator.free(params_nodes);
@@ -795,8 +795,8 @@ fn methodSuperUsesOnlyArrowScopes(
     var super_arrow_owner: ?u32 = null;
     var observed_super_arrow_depth: ?u8 = null;
     while (stack.pop()) |work| {
-        if (work.node.isNone() or @intFromEnum(work.node) >= ast.nodes.items.len) return false;
-        const raw_idx = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= ast.nodes.items.len) return false;
+        const raw_idx = @backingInt(work.node);
         if (seen.contains(raw_idx)) continue;
         seen.put(ast.allocator, raw_idx, {}) catch return false;
         const node = ast.nodes.items[raw_idx];
@@ -806,11 +806,11 @@ fn methodSuperUsesOnlyArrowScopes(
             if (arrow_extra > ast.extra_data.items.len or
                 ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.params or
                 ast.extra_data.items.len - arrow_extra <= ast_mod.ArrowExtra.flags) return false;
-            const arrow_params: ast_mod.NodeIndex = @enumFromInt(
+            const arrow_params: ast_mod.NodeIndex = @fromBackingInt(@intCast(
                 ast.extra_data.items[arrow_extra + ast_mod.ArrowExtra.params],
-            );
+            ));
             if (!arrow_params.isNone()) {
-                if (@intFromEnum(arrow_params) >= ast.nodes.items.len) return false;
+                if (@backingInt(arrow_params) >= ast.nodes.items.len) return false;
                 const arrow_params_nodes = ast_walk.collectReachableNodeIndicesFrom(
                     ast.allocator,
                     ast,
@@ -916,14 +916,14 @@ fn hasValidSourceSymbol(
     node_idx: ast_mod.NodeIndex,
     expected_tag: NodeTag,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len or
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len or
         ast.getNode(node_idx).tag != expected_tag) return false;
-    const raw_idx = @intFromEnum(node_idx);
+    const raw_idx = @backingInt(node_idx);
     if (raw_idx >= semantic.symbol_ids.len) return false;
     const symbol_raw = semantic.symbol_ids[raw_idx] orelse return false;
     if (symbol_raw >= semantic.symbols.items.len) return false;
     const scope_id = semantic.symbols.items[symbol_raw].scope_id;
-    return !scope_id.isNone() and @intFromEnum(scope_id) < semantic.scopes.len;
+    return !scope_id.isNone() and @backingInt(scope_id) < semantic.scopes.len;
 }
 
 fn isBoundSourceIdentifierReference(
@@ -942,8 +942,8 @@ fn isUnresolvedSourceIdentifierReference(
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
-    const raw_idx = @intFromEnum(node_idx);
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
+    const raw_idx = @backingInt(node_idx);
     const node = ast.nodes.items[raw_idx];
     if (node.tag != .identifier_reference or raw_idx >= semantic.symbol_ids.len or
         semantic.symbol_ids[raw_idx] != null) return false;
@@ -968,7 +968,7 @@ fn isInitializedSourceIdentifierReference(
     node_idx: ast_mod.NodeIndex,
 ) bool {
     if (!hasValidSourceSymbol(ast, semantic, node_idx, .identifier_reference)) return false;
-    const raw_idx = @intFromEnum(node_idx);
+    const raw_idx = @backingInt(node_idx);
     const symbol_raw = semantic.symbol_ids[raw_idx] orelse return false;
     const kind = semantic.symbols.items[symbol_raw].kind;
     return kind == .variable_var or kind == .function_decl;
@@ -984,7 +984,7 @@ fn isDiscardedSynchronousFunctionExpression(
     var current_idx = node_idx;
     var hops: usize = 0;
     while (hops <= ast.nodes.items.len) : (hops += 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const node = ast.getNode(current_idx);
         if (node.tag == .parenthesized_expression) {
             current_idx = node.data.unary.operand;
@@ -1024,7 +1024,7 @@ fn isRetainableBoundSourceCallCalleeChain(
 ) bool {
     var current = callee_idx;
     while (true) {
-        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        if (current.isNone() or @backingInt(current) >= ast.nodes.items.len) return false;
         const callee = ast.getNode(current);
         if (callee.tag == .identifier_reference)
             return isBoundSourceIdentifierReference(ast, semantic, current);
@@ -1032,7 +1032,7 @@ fn isRetainableBoundSourceCallCalleeChain(
         const extra = callee.data.extra;
         if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
         if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
-        current = @enumFromInt(ast.extra_data.items[extra]);
+        current = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     }
 }
 
@@ -1049,7 +1049,7 @@ fn isRetainableOptionalMemberReceiver(
     if (ast.has_jsx) return false;
     var current = receiver_idx;
     while (true) {
-        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        if (current.isNone() or @backingInt(current) >= ast.nodes.items.len) return false;
         const receiver = ast.getNode(current);
         switch (receiver.tag) {
             .identifier_reference => return isBoundSourceIdentifierReference(ast, semantic, current) or
@@ -1060,7 +1060,7 @@ fn isRetainableOptionalMemberReceiver(
                     return false;
                 if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0)
                     return false;
-                current = @enumFromInt(ast.extra_data.items[extra]);
+                current = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
             },
             .call_expression => {
                 const extra = receiver.data.extra;
@@ -1068,7 +1068,7 @@ fn isRetainableOptionalMemberReceiver(
                     return false;
                 if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
                     return isRetainableOptionalCall(ast, semantic, current);
-                const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+                const callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
                 return isRetainableBoundSourceCallCalleeChain(ast, semantic, callee);
             },
             else => return false,
@@ -1082,13 +1082,13 @@ fn isRetainableOptionalMemberAccess(
     node_idx: ast_mod.NodeIndex,
     allow_unresolved_root: bool,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.getNode(node_idx);
     if (node.tag != .static_member_expression and node.tag != .computed_member_expression) return false;
     const extra = node.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
     if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) == 0) return false;
-    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    const receiver: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     // The optional-chain transform captures this receiver into an exact temp.
     return isRetainableOptionalMemberReceiver(ast, semantic, receiver, allow_unresolved_root);
 }
@@ -1103,14 +1103,14 @@ fn isRetainableOptionalMemberChainTail(
 ) bool {
     var current = node_idx;
     while (true) {
-        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        if (current.isNone() or @backingInt(current) >= ast.nodes.items.len) return false;
         const node = ast.getNode(current);
         switch (node.tag) {
             .static_member_expression, .computed_member_expression => {
                 const extra = node.data.extra;
                 if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2)
                     return false;
-                const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+                const receiver: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
                 const optional = (ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0;
                 if (optional) return isRetainableOptionalMemberReceiver(ast, semantic, receiver, true);
                 current = receiver;
@@ -1126,7 +1126,7 @@ fn isRetainableOptionalMemberChainTail(
                     // identity gate used by standalone optional calls.
                     return isRetainableOptionalCall(ast, semantic, current);
                 }
-                current = @enumFromInt(ast.extra_data.items[extra]);
+                current = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
             },
             else => return false,
         }
@@ -1138,12 +1138,12 @@ fn isRetainableOptionalChainMemberAccess(
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const node = ast.getNode(node_idx);
     if (node.tag != .static_member_expression and node.tag != .computed_member_expression) return false;
     const extra = node.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
-    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    const receiver: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     if ((ast.extra_data.items[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0)
         return isRetainableOptionalMemberReceiver(ast, semantic, receiver, true);
     return isRetainableOptionalMemberChainTail(ast, semantic, receiver);
@@ -1159,12 +1159,12 @@ fn isRetainableOptionalCallResultTail(
 ) bool {
     var current = call_idx;
     while (true) {
-        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
+        if (current.isNone() or @backingInt(current) >= ast.nodes.items.len) return false;
         const call = ast.getNode(current);
         if (call.tag != .call_expression) return false;
         const extra = call.data.extra;
         if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
-        const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+        const callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
         if ((ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0)
             return isRetainableOptionalCall(ast, semantic, current);
         current = callee;
@@ -1176,14 +1176,14 @@ fn isRetainableOptionalCall(
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(node_idx);
     if (call.tag != .call_expression) return false;
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 3) return false;
     const optional_call = (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
-    const callee: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len) return false;
+    const callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+    if (callee.isNone() or @backingInt(callee) >= ast.nodes.items.len) return false;
     const member = ast.getNode(callee);
     if (member.tag == .identifier_reference) {
         return optional_call and isBoundSourceIdentifierReference(ast, semantic, callee);
@@ -1204,7 +1204,7 @@ fn isRetainableOptionalCall(
     if (member.tag != .static_member_expression and member.tag != .computed_member_expression) return false;
     const member_extra = member.data.extra;
     if (member_extra > ast.extra_data.items.len or ast.extra_data.items.len - member_extra <= 2) return false;
-    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
+    const receiver: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[member_extra]));
     if ((ast.extra_data.items[member_extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) {
         // An unresolved root is admitted for `root?.method()`, where only the
         // receiver is optional. Keep `root?.method?.()` on the stricter path.
@@ -1222,7 +1222,7 @@ fn isRetainableAssignmentTarget(
     semantic: *const ModuleSemanticData,
     node_idx: ast_mod.NodeIndex,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const target = ast.getNode(node_idx);
     if (target.tag == .assignment_target_identifier)
         return isBoundSourceIdentifierAssignmentTarget(ast, semantic, node_idx);
@@ -1235,8 +1235,8 @@ fn isRetainableAssignmentTarget(
     defer visited.deinit(ast.allocator);
     pending.append(ast.allocator, node_idx) catch return false;
     while (pending.pop()) |current| {
-        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
-        const raw = @intFromEnum(current);
+        if (current.isNone() or @backingInt(current) >= ast.nodes.items.len) return false;
+        const raw = @backingInt(current);
         if (visited.contains(raw)) continue;
         visited.put(ast.allocator, raw, {}) catch return false;
         const node = ast.nodes.items[raw];
@@ -1259,28 +1259,28 @@ fn isRetainableDirectSuperPropertyAccess(
     node_idx: ast_mod.NodeIndex,
     allow_optional_computed_key: bool,
 ) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) return false;
     const target = ast.getNode(node_idx);
     if (target.tag != .static_member_expression and target.tag != .computed_member_expression) return false;
     if (ast_mod.spineHasOptionalChain(ast, node_idx)) return false;
 
     const extra = target.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= 2) return false;
-    const receiver: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    if (receiver.isNone() or @intFromEnum(receiver) >= ast.nodes.items.len or
+    const receiver: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+    if (receiver.isNone() or @backingInt(receiver) >= ast.nodes.items.len or
         ast.getNode(receiver).tag != .super_expression) return false;
     if (target.tag == .static_member_expression) return true;
 
-    const property: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + 1]);
-    if (property.isNone() or @intFromEnum(property) >= ast.nodes.items.len) return false;
+    const property: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + 1]));
+    if (property.isNone() or @backingInt(property) >= ast.nodes.items.len) return false;
     var pending: std.ArrayList(ast_mod.NodeIndex) = .empty;
     defer pending.deinit(ast.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(ast.allocator);
     pending.append(ast.allocator, property) catch return false;
     while (pending.pop()) |current| {
-        if (current.isNone() or @intFromEnum(current) >= ast.nodes.items.len) return false;
-        const raw = @intFromEnum(current);
+        if (current.isNone() or @backingInt(current) >= ast.nodes.items.len) return false;
+        const raw = @backingInt(current);
         if (seen.contains(raw)) continue;
         seen.put(ast.allocator, raw, {}) catch return false;
         const node = ast.getNode(current);
@@ -1354,10 +1354,10 @@ fn isSafeConstructorValue(
     semantic: *const ModuleSemanticData,
     value_idx: ast_mod.NodeIndex,
 ) bool {
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     if (value.tag == .binary_expression) {
-        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
         return isSafeConstructorBinaryOperator(operator) and
             isSafeConstructorValue(ast, semantic, value.data.binary.left) and
             isSafeConstructorValue(ast, semantic, value.data.binary.right);
@@ -1366,13 +1366,13 @@ fn isSafeConstructorValue(
         const extras = ast.extra_data.items;
         const extra = value.data.extra;
         if (extra > extras.len or extras.len - extra < 2) return false;
-        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
-        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
         return isSafeConstructorUnaryOperator(operator) and
             isSafeConstructorValue(ast, semantic, operand_idx);
     }
     if (value.tag == .logical_expression) {
-        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
         return isSafeConstructorLogicalOperator(operator) and
             isSafeConstructorValue(ast, semantic, value.data.binary.left) and
             isSafeConstructorValue(ast, semantic, value.data.binary.right);
@@ -1421,13 +1421,13 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
     member_idx: ast_mod.NodeIndex,
     pending: *std.ArrayList(RetainableStaticFieldExpressionWorkItem),
 ) bool {
-    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+    if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
     var current_idx = member_idx;
     var saw_member = false;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.getNode(current_idx);
         if (current.tag == .identifier_reference)
             return saw_member and (isBoundSourceIdentifierReference(ast, semantic, current_idx) or
@@ -1436,10 +1436,10 @@ fn enqueueRetainableStaticFieldMemberKeyCalls(
 
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
-        const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-        if (object_idx.isNone() or @intFromEnum(object_idx) >= ast.nodes.items.len or
-            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+        const object_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+        if (object_idx.isNone() or @backingInt(object_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return false;
         if (current.tag == .static_member_expression) {
             if (ast.getNode(property_idx).tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx) and
@@ -1478,7 +1478,7 @@ fn isRetainableStaticFieldOptionalMemberChain(
     var saw_optional = false;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(current_idx);
         if (member.tag == .identifier_reference)
             return saw_optional and (isBoundSourceIdentifierReference(ast, semantic, current_idx) or
@@ -1489,7 +1489,7 @@ fn isRetainableStaticFieldOptionalMemberChain(
             const call_extra = member.data.extra;
             if (call_extra > extras.len or extras.len - call_extra < 4 or
                 (extras[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
-            const call_callee: ast_mod.NodeIndex = @enumFromInt(extras[call_extra]);
+            const call_callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[call_extra]));
             return isRetainableBoundSourceCallCalleeChain(ast, semantic, call_callee) and
                 isRetainableStaticFieldCall(allocator, ast, semantic, current_idx, false, false, false);
         }
@@ -1506,10 +1506,10 @@ fn isRetainableStaticFieldOptionalMemberChain(
         } else if (flags != 0) {
             return false;
         }
-        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-        if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
-            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len)
+        const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+        if (receiver_idx.isNone() or @backingInt(receiver_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len)
         {
             return false;
         }
@@ -1573,17 +1573,17 @@ fn hasBoundStaticFieldDotCallCalleeRoot(
     var current_idx = callee_idx;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.getNode(current_idx);
         if (current.tag == .identifier_reference)
             return isBoundSourceIdentifierReference(ast, semantic, current_idx);
         if (current.tag != .static_member_expression) return false;
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
-        const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-        if (object_idx.isNone() or @intFromEnum(object_idx) >= ast.nodes.items.len or
-            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+        const object_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+        if (object_idx.isNone() or @backingInt(object_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len or
             ast.getNode(property_idx).tag != .identifier_reference) return false;
         current_idx = object_idx;
     }
@@ -1604,7 +1604,7 @@ fn isRetainableBoundStaticFieldEffectCall(
     // explicitly admits one exact-bound key call.
     computed_member_key_call_mode: ComputedMemberKeyCallMode,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
     if (call.tag != .call_expression) return false;
     const extras = ast.extra_data.items;
@@ -1612,8 +1612,8 @@ fn isRetainableBoundStaticFieldEffectCall(
     if (extra > extras.len or extras.len - extra < 4) return false;
     const optional_call = (extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
     if (!allow_optional_call and optional_call) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
     const bound_callee = switch (callee.tag) {
         .identifier_reference => isBoundSourceIdentifierReference(ast, semantic, callee_idx),
@@ -1633,7 +1633,7 @@ fn isRetainableBoundStaticFieldEffectCall(
     if (args_start > extras.len or args_len > extras.len - args_start) return false;
     for (extras[args_start .. args_start + args_len]) |raw_arg| {
         if (raw_arg >= ast.nodes.items.len) return false;
-        const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
+        const argument_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_arg));
         if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
         const nested_argument_depth: BoundCallArgumentDepth = switch (bound_call_argument_depth) {
             .none => return false,
@@ -1674,16 +1674,16 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     member_read_key_call_mode: ComputedMemberKeyCallMode,
     allow_bound_call_last_value: bool,
 ) bool {
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     var current_idx = expression_idx;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const expression = ast.getNode(current_idx);
         if (expression.tag != .parenthesized_expression) break;
         current_idx = expression.data.unary.operand;
     }
-    if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+    if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
     const expression = ast.getNode(current_idx);
     if (expression.tag != .sequence_expression) return false;
     const list = expression.data.list;
@@ -1694,7 +1694,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
             !isRetainableBoundStaticFieldEffectCall(
                 ast,
                 semantic,
-                @enumFromInt(raw_item),
+                @fromBackingInt(@intCast(raw_item)),
                 false,
                 false,
                 .none,
@@ -1703,7 +1703,7 @@ fn isRetainableBoundStaticFieldSequenceExpression(
     }
     const last_raw = extras[list.start + list.len - 1];
     if (last_raw >= ast.nodes.items.len) return false;
-    const last_idx: ast_mod.NodeIndex = @enumFromInt(last_raw);
+    const last_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(last_raw));
     return isSafeConstructorValue(ast, semantic, last_idx) or
         (allow_bound_member_read_last_value and
             isRetainableBoundStaticFieldMemberRead(ast, semantic, last_idx, member_read_key_call_mode)) or
@@ -1733,14 +1733,14 @@ fn isRetainableBoundStaticFieldMemberRead(
     member_idx: ast_mod.NodeIndex,
     key_call_mode: ComputedMemberKeyCallMode,
 ) bool {
-    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len or
+    if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len or
         key_call_mode == .sequence_argument_member_read_optional_nested_call) return false;
     const extras = ast.extra_data.items;
     var current_idx = member_idx;
     var saw_member = false;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.getNode(current_idx);
         if (current.tag == .identifier_reference)
             return saw_member and isBoundSourceIdentifierReference(ast, semantic, current_idx);
@@ -1748,10 +1748,10 @@ fn isRetainableBoundStaticFieldMemberRead(
             return false;
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
-        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-        if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
-            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+        const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+        if (receiver_idx.isNone() or @backingInt(receiver_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return false;
         if (current.tag == .static_member_expression) {
             if (ast.getNode(property_idx).tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx)) {
@@ -1800,13 +1800,13 @@ fn isRetainableUnresolvedOptionalStaticFieldCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
     if (call.tag != .call_expression) return false;
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
         (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) == 0) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx);
 }
 
@@ -1816,14 +1816,14 @@ fn isRetainableUnresolvedOptionalStaticFieldMemberInvocation(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
     if (call.tag != .call_expression) return false;
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
         (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) == 0) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
     if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return false;
     const member_extra = callee.data.extra;
@@ -1832,7 +1832,7 @@ fn isRetainableUnresolvedOptionalStaticFieldMemberInvocation(
     if (member_flags == ast_mod.MemberFlags.optional_chain) {
         if (!hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, callee_idx)) return false;
     } else if (member_flags == 0) {
-        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member_extra]);
+        const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[member_extra]));
         if (!isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, receiver_idx)) return false;
     } else {
         return false;
@@ -1849,13 +1849,13 @@ fn isRetainableBoundStaticFieldOptionalMemberCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
     if (call.tag != .call_expression) return false;
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
         (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     return isRetainableStaticFieldOptionalMemberChain(
         allocator,
         ast,
@@ -1872,13 +1872,13 @@ fn isRetainableStaticFieldOptionalMemberCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
     if (call.tag != .call_expression) return false;
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
         (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) == 0) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     return isRetainableStaticFieldOptionalMemberInvocation(allocator, ast, semantic, callee_idx);
 }
 
@@ -1887,7 +1887,7 @@ fn isRetainableStaticFieldDirectOptionalCall(
     semantic: *const ModuleSemanticData,
     callee_idx: ast_mod.NodeIndex,
 ) bool {
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len or
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len or
         ast.getNode(callee_idx).tag != .identifier_reference) return false;
     return isBoundSourceIdentifierReference(ast, semantic, callee_idx) or
         isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, callee_idx);
@@ -1899,12 +1899,12 @@ fn isRetainableStaticFieldOptionalMemberInvocation(
     semantic: *const ModuleSemanticData,
     callee_idx: ast_mod.NodeIndex,
 ) bool {
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
     if (callee.tag != .static_member_expression and callee.tag != .computed_member_expression) return false;
     const extra = callee.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 3) return false;
-    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     const member_flags = ast.extra_data.items[extra + 2];
     if (member_flags == ast_mod.MemberFlags.optional_chain) {
         return isRetainableStaticFieldOptionalMemberChain(
@@ -1917,7 +1917,7 @@ fn isRetainableStaticFieldOptionalMemberInvocation(
         );
     }
     if (member_flags != 0) return false;
-    if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len) return false;
+    if (receiver_idx.isNone() or @backingInt(receiver_idx) >= ast.nodes.items.len) return false;
     if (ast.getNode(receiver_idx).tag == .identifier_reference and
         (isBoundSourceIdentifierReference(ast, semantic, receiver_idx) or
             isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, receiver_idx)))
@@ -1935,20 +1935,20 @@ fn isRetainableStaticFieldCallResultMemberAccess(
     semantic: *const ModuleSemanticData,
     member_idx: ast_mod.NodeIndex,
 ) bool {
-    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+    if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
     var current_idx = member_idx;
     var saw_member = false;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.getNode(current_idx);
         if (current.tag == .call_expression) {
             if (!saw_member) return false;
             const call_extra = current.data.extra;
             if (call_extra > extras.len or extras.len - call_extra < 4 or
                 (extras[call_extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
-            const call_callee: ast_mod.NodeIndex = @enumFromInt(extras[call_extra]);
+            const call_callee: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[call_extra]));
             return isRetainableBoundSourceCallCalleeChain(ast, semantic, call_callee) and
                 isRetainableStaticFieldCall(allocator, ast, semantic, current_idx, false, false, true);
         }
@@ -1956,10 +1956,10 @@ fn isRetainableStaticFieldCallResultMemberAccess(
             return false;
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3 or extras[extra + 2] != 0) return false;
-        const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-        if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
-            property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len) return false;
+        const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+        if (receiver_idx.isNone() or @backingInt(receiver_idx) >= ast.nodes.items.len or
+            property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len) return false;
         if (current.tag == .static_member_expression) {
             if (ast.getNode(property_idx).tag != .identifier_reference) return false;
         } else if (!isSafeConstructorValue(ast, semantic, property_idx) and
@@ -1983,7 +1983,7 @@ fn hasUnresolvedStaticFieldMemberChainRoot(
     var current_idx = member_idx;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.getNode(current_idx);
         if (current.tag == .identifier_reference)
             return isRetainableUnresolvedStaticFieldCallCallee(ast, semantic, current_idx);
@@ -1991,7 +1991,7 @@ fn hasUnresolvedStaticFieldMemberChainRoot(
             return false;
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3) return false;
-        current_idx = @enumFromInt(extras[extra]);
+        current_idx = @fromBackingInt(@intCast(extras[extra]));
     }
     return false;
 }
@@ -2005,7 +2005,7 @@ fn hasBoundStaticFieldMemberChainRoot(
     var current_idx = member_idx;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const current = ast.getNode(current_idx);
         if (current.tag == .identifier_reference)
             return isBoundSourceIdentifierReference(ast, semantic, current_idx);
@@ -2013,7 +2013,7 @@ fn hasBoundStaticFieldMemberChainRoot(
             return false;
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 3) return false;
-        current_idx = @enumFromInt(extras[extra]);
+        current_idx = @fromBackingInt(@intCast(extras[extra]));
     }
     return false;
 }
@@ -2028,13 +2028,13 @@ fn isRetainableUnresolvedStaticFieldOptionalMemberCall(
     semantic: *const ModuleSemanticData,
     call_idx: ast_mod.NodeIndex,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
     if (call.tag != .call_expression) return false;
     const extra = call.data.extra;
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4 or
         (ast.extra_data.items[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
     return hasUnresolvedStaticFieldMemberChainRoot(ast, semantic, callee_idx) and
         isRetainableStaticFieldOptionalMemberChain(
             allocator,
@@ -2061,23 +2061,23 @@ fn collectRetainableStaticFieldOptionalInvocations(
         const extra = property.data.extra;
         if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.PropertyExtra.init)
             return false;
-        const init_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.PropertyExtra.init]);
-        if (init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) return false;
+        const init_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.PropertyExtra.init]));
+        if (init_idx.isNone() or @backingInt(init_idx) >= ast.nodes.items.len) return false;
         const initializer_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, init_idx) catch return false;
         defer ast.allocator.free(initializer_nodes);
         for (initializer_nodes) |call_raw_idx| {
-            const call_idx: ast_mod.NodeIndex = @enumFromInt(call_raw_idx);
+            const call_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(call_raw_idx));
             if (isRetainableBoundStaticFieldOptionalMemberCall(allocator, ast, semantic, call_idx) or
                 isRetainableUnresolvedStaticFieldOptionalMemberCall(allocator, ast, semantic, call_idx) or
                 isRetainableStaticFieldOptionalMemberCall(allocator, ast, semantic, call_idx))
             {
                 allowed_nodes.put(ast.allocator, call_raw_idx, {}) catch return false;
                 const call_extra = ast.getNode(call_idx).data.extra;
-                var member_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[call_extra]);
+                var member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[call_extra]));
                 var remaining_nodes = ast.nodes.items.len;
                 var reached_root = false;
                 while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-                    if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+                    if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
                     const member = ast.getNode(member_idx);
                     if (member.tag != .static_member_expression and member.tag != .computed_member_expression) {
                         reached_root = true;
@@ -2087,8 +2087,8 @@ fn collectRetainableStaticFieldOptionalInvocations(
                     if (member_extra > ast.extra_data.items.len or
                         ast.extra_data.items.len - member_extra < 3) return false;
                     if (ast_mod.spineHasOptionalChain(ast, member_idx))
-                        allowed_nodes.put(ast.allocator, @intFromEnum(member_idx), {}) catch return false;
-                    member_idx = @enumFromInt(ast.extra_data.items[member_extra]);
+                        allowed_nodes.put(ast.allocator, @backingInt(member_idx), {}) catch return false;
+                    member_idx = @fromBackingInt(@intCast(ast.extra_data.items[member_extra]));
                 }
                 if (!reached_root) return false;
                 continue;
@@ -2115,7 +2115,7 @@ fn isRetainableStaticFieldExpression(
     allow_optional_invocations: bool,
     allow_nested_call_callees: bool,
 ) bool {
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     const extras = ast.extra_data.items;
     var pending: std.ArrayList(RetainableStaticFieldExpressionWorkItem) = .empty;
     defer pending.deinit(allocator);
@@ -2131,9 +2131,9 @@ fn isRetainableStaticFieldExpression(
     while (pending.pop()) |work_item| {
         const current_idx = work_item.expression_idx;
         if (remaining_nodes == 0 or current_idx.isNone() or
-            @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+            @backingInt(current_idx) >= ast.nodes.items.len) return false;
         remaining_nodes -= 1;
-        const raw_current = @intFromEnum(current_idx);
+        const raw_current = @backingInt(current_idx);
         if (visited.contains(raw_current)) return false;
         visited.put(allocator, raw_current, {}) catch return false;
 
@@ -2145,8 +2145,8 @@ fn isRetainableStaticFieldExpression(
                 if (extra > extras.len or extras.len - extra < 4) return false;
                 const optional_call = (extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0;
 
-                const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-                if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+                const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+                if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
                 const callee = ast.getNode(callee_idx);
                 const retained_optional_member_invocation = optional_call and
                     isRetainableStaticFieldOptionalMemberInvocation(
@@ -2227,7 +2227,7 @@ fn isRetainableStaticFieldExpression(
                     );
                 for (extras[args_start .. args_start + args_len]) |raw_arg| {
                     if (raw_arg >= ast.nodes.items.len) return false;
-                    const argument_idx: ast_mod.NodeIndex = @enumFromInt(raw_arg);
+                    const argument_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_arg));
                     if (isSafeConstructorValue(ast, semantic, argument_idx)) continue;
                     const retainable_sequence_argument = allow_optional_member_chain_sequence_arguments and
                         isRetainableBoundStaticFieldSequenceExpression(
@@ -2292,7 +2292,7 @@ fn isRetainableStaticFieldCall(
     allow_optional_invocations: bool,
     allow_nested_call_callees: bool,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len or
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len or
         ast.getNode(call_idx).tag != .call_expression) return false;
     return isRetainableStaticFieldExpression(
         allocator,
@@ -2326,9 +2326,9 @@ fn isSafeConstructorVarDeclaration(
         if (declarator.tag != .variable_declarator) return false;
         const declarator_extra = declarator.data.extra;
         if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-        const binding_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
-        const type_annotation_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
-        const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+        const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+        const type_annotation_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+        const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
         if (!type_annotation_idx.isNone() or
             !isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
             (!initializer_idx.isNone() and !isSafeConstructorValue(ast, semantic, initializer_idx))) return false;
@@ -2341,7 +2341,7 @@ fn isSafeConstructorForEachHead(
     semantic: *const ModuleSemanticData,
     head_idx: ast_mod.NodeIndex,
 ) bool {
-    if (head_idx.isNone() or @intFromEnum(head_idx) >= ast.nodes.items.len) return false;
+    if (head_idx.isNone() or @backingInt(head_idx) >= ast.nodes.items.len) return false;
     const head = ast.getNode(head_idx);
     return switch (head.tag) {
         .variable_declaration => switch (ast.variableDeclarationKind(head)) {
@@ -2371,15 +2371,15 @@ fn isSafeRetainedLexicalForEachHead(
     if (declarators_len != 1 or declarators_start > extras.len or
         declarators_len > extras.len - declarators_start) return false;
 
-    const declarator_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarators_start]);
-    if (declarator_idx.isNone() or @intFromEnum(declarator_idx) >= ast.nodes.items.len) return false;
+    const declarator_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarators_start]));
+    if (declarator_idx.isNone() or @backingInt(declarator_idx) >= ast.nodes.items.len) return false;
     const declarator = ast.getNode(declarator_idx);
     if (declarator.tag != .variable_declarator) return false;
     const declarator_extra = declarator.data.extra;
     if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-    const binding_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
-    const type_annotation_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
-    const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+    const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+    const type_annotation_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+    const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
     if (!type_annotation_idx.isNone() or !initializer_idx.isNone() or
         !isBoundSourceIdentifierBinding(ast, semantic, binding_idx)) return false;
 
@@ -2392,16 +2392,16 @@ fn isSafeConstructorLocalAssignment(
     assignment: ast_mod.Node,
 ) bool {
     if (assignment.tag != .assignment_expression) return false;
-    const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
+    const operator: token_mod.Kind = @fromBackingInt(@intCast(assignment.data.binary.flags));
     if (operator != .eq and !isSafeConstructorNativeCompoundAssignmentOperator(operator)) return false;
     const target_idx = assignment.data.binary.left;
-    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
+    if (target_idx.isNone() or @backingInt(target_idx) >= ast.nodes.items.len or
         !isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx)) return false;
     return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
 }
 
 fn isSafeConstructorThisPropertyTarget(ast: *const ast_mod.Ast, target_idx: ast_mod.NodeIndex) bool {
-    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len) return false;
+    if (target_idx.isNone() or @backingInt(target_idx) >= ast.nodes.items.len) return false;
     const target = ast.getNode(target_idx);
     if (target.tag != .static_member_expression) return false;
     const extras = ast.extra_data.items;
@@ -2409,11 +2409,11 @@ fn isSafeConstructorThisPropertyTarget(ast: *const ast_mod.Ast, target_idx: ast_
     if (member_extra > extras.len or extras.len - member_extra < 3 or extras[member_extra + 2] != 0)
         return false;
 
-    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra]);
-    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[member_extra + 1]);
-    if (receiver_idx.isNone() or @intFromEnum(receiver_idx) >= ast.nodes.items.len or
+    const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra]));
+    const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[member_extra + 1]));
+    if (receiver_idx.isNone() or @backingInt(receiver_idx) >= ast.nodes.items.len or
         ast.getNode(receiver_idx).tag != .this_expression or
-        property_idx.isNone() or @intFromEnum(property_idx) >= ast.nodes.items.len or
+        property_idx.isNone() or @backingInt(property_idx) >= ast.nodes.items.len or
         ast.getNode(property_idx).tag != .identifier_reference) return false;
     return std.mem.indexOfScalar(u8, ast.getText(ast.getNode(property_idx).span), '\\') == null;
 }
@@ -2424,7 +2424,7 @@ fn isSafeConstructorThisPropertyAssignment(
     assignment: ast_mod.Node,
 ) bool {
     if (assignment.tag != .assignment_expression) return false;
-    const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
+    const operator: token_mod.Kind = @fromBackingInt(@intCast(assignment.data.binary.flags));
     if (!isSafeConstructorNativeCompoundAssignmentOperator(operator) or
         !isSafeConstructorThisPropertyTarget(ast, assignment.data.binary.left)) return false;
     return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
@@ -2435,9 +2435,9 @@ fn isSafeConstructorThisPropertyUpdate(ast: *const ast_mod.Ast, update: ast_mod.
     const extras = ast.extra_data.items;
     const extra = update.data.extra;
     if (extra > extras.len or extras.len - extra < 2) return false;
-    const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+    const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
     if (operator != .plus2 and operator != .minus2) return false;
-    const target_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const target_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
     return isSafeConstructorThisPropertyTarget(ast, target_idx);
 }
 
@@ -2450,9 +2450,9 @@ fn isSafeConstructorLocalUpdate(
     const extras = ast.extra_data.items;
     const extra = update.data.extra;
     if (extra > extras.len or extras.len - extra < 2) return false;
-    const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+    const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
     if (operator != .plus2 and operator != .minus2) return false;
-    const target_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const target_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
     return isBoundSourceIdentifierAssignmentTarget(ast, semantic, target_idx);
 }
 
@@ -2482,9 +2482,9 @@ fn hasSelfOrForwardReferenceToLexicalForHeadBinding(
             if (declarator.tag != .variable_declarator) return true;
             const extra = declarator.data.extra;
             if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 1) return true;
-            const binding: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-            if (binding.isNone() or @intFromEnum(binding) >= semantic.symbol_ids.len) return true;
-            const binding_symbol = semantic.symbol_ids[@intFromEnum(binding)] orelse return true;
+            const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+            if (binding.isNone() or @backingInt(binding) >= semantic.symbol_ids.len) return true;
+            const binding_symbol = semantic.symbol_ids[@backingInt(binding)] orelse return true;
             if (reference_symbol == binding_symbol) return true;
         }
     }
@@ -2497,10 +2497,10 @@ fn hasOnlyReadReferencesToBinding(
     binding_idx: ast_mod.NodeIndex,
 ) bool {
     if (!isBoundSourceIdentifierBinding(ast, semantic, binding_idx)) return false;
-    const symbol_raw = semantic.symbol_ids[@intFromEnum(binding_idx)] orelse return false;
+    const symbol_raw = semantic.symbol_ids[@backingInt(binding_idx)] orelse return false;
     var declaration_found = false;
     for (semantic.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) != symbol_raw) continue;
+        if (@backingInt(reference.symbol_id) != symbol_raw) continue;
         if (reference.flags.declare) {
             if (reference.declaration_node_index == binding_idx) declaration_found = true;
             continue;
@@ -2533,9 +2533,9 @@ fn isSafeRetainedLexicalForHead(
         if (declarator.tag != .variable_declarator) return false;
         const declarator_extra = declarator.data.extra;
         if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-        const binding: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
-        const type_annotation: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
-        const initializer: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+        const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+        const type_annotation: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+        const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
         if (!type_annotation.isNone() or
             !isBoundSourceIdentifierBinding(ast, semantic, binding) or
             (declaration_kind == .@"const" and
@@ -2558,22 +2558,22 @@ fn isSafeConstructorExpression(
     semantic: *const ModuleSemanticData,
     expression_idx: ast_mod.NodeIndex,
 ) bool {
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     const assignment = ast.getNode(expression_idx);
     if (assignment.tag == .update_expression) {
         return isSafeConstructorLocalUpdate(ast, semantic, assignment) or
             isSafeConstructorThisPropertyUpdate(ast, assignment);
     }
     if (assignment.tag != .assignment_expression) return false;
-    if (assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) {
+    if (assignment.data.binary.flags != @backingInt(token_mod.Kind.eq)) {
         return isSafeConstructorLocalAssignment(ast, semantic, assignment) or
             isSafeConstructorThisPropertyAssignment(ast, semantic, assignment);
     }
 
     const target_idx = assignment.data.binary.left;
     const value_idx = assignment.data.binary.right;
-    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len or
-        value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (target_idx.isNone() or @backingInt(target_idx) >= ast.nodes.items.len or
+        value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     if (ast.getNode(target_idx).tag == .static_member_expression) {
         return isSafeConstructorThisPropertyTarget(ast, target_idx) and
             isSafeConstructorValue(ast, semantic, value_idx);
@@ -2595,20 +2595,20 @@ fn isSafeConstructorSwitchCase(
     semantic: *const ModuleSemanticData,
     case_idx: ast_mod.NodeIndex,
 ) bool {
-    if (case_idx.isNone() or @intFromEnum(case_idx) >= ast.nodes.items.len) return false;
+    if (case_idx.isNone() or @backingInt(case_idx) >= ast.nodes.items.len) return false;
     const switch_case = ast.getNode(case_idx);
     if (switch_case.tag != .switch_case) return false;
     const extras = ast.extra_data.items;
     const extra = switch_case.data.extra;
     if (extra > extras.len or extras.len - extra < 3) return false;
-    const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const test_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
     const statements_start = extras[extra + 1];
     const statements_len = extras[extra + 2];
     if ((!test_idx.isNone() and !isSafeConstructorValue(ast, semantic, test_idx)) or
         statements_start > extras.len or statements_len > extras.len - statements_start) return false;
     for (extras[statements_start .. statements_start + statements_len]) |raw_statement_idx| {
         if (raw_statement_idx >= ast.nodes.items.len or
-            !isSafeConstructorBodyStatement(ast, semantic, @enumFromInt(raw_statement_idx))) return false;
+            !isSafeConstructorBodyStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) return false;
     }
     return true;
 }
@@ -2622,11 +2622,11 @@ fn isSafeRetainedLexicalForStatement(
     const extras = ast.extra_data.items;
     const extra = statement.data.extra;
     if (extra > extras.len or extras.len - extra < 4) return false;
-    const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-    const update_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 2]);
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 3]);
-    if (initializer_idx.isNone() or @intFromEnum(initializer_idx) >= ast.nodes.items.len or
+    const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    const test_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+    const update_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 2]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 3]));
+    if (initializer_idx.isNone() or @backingInt(initializer_idx) >= ast.nodes.items.len or
         ast.getNode(initializer_idx).tag != .variable_declaration or
         !isSafeRetainedLexicalForHead(ast, semantic, ast.getNode(initializer_idx))) return false;
     return (test_idx.isNone() or isSafeConstructorValue(ast, semantic, test_idx)) and
@@ -2639,19 +2639,19 @@ fn isSafeConstructorCatchClause(
     semantic: *const ModuleSemanticData,
     catch_idx: ast_mod.NodeIndex,
 ) bool {
-    if (catch_idx.isNone() or @intFromEnum(catch_idx) >= ast.nodes.items.len) return false;
+    if (catch_idx.isNone() or @backingInt(catch_idx) >= ast.nodes.items.len) return false;
     const catch_clause = ast.getNode(catch_idx);
     if (catch_clause.tag != .catch_clause) return false;
     const parameter_idx = catch_clause.data.binary.left;
     if (!parameter_idx.isNone() and !isBoundSourceIdentifierBinding(ast, semantic, parameter_idx)) return false;
     const body_idx = catch_clause.data.binary.right;
-    return !body_idx.isNone() and @intFromEnum(body_idx) < ast.nodes.items.len and
+    return !body_idx.isNone() and @backingInt(body_idx) < ast.nodes.items.len and
         ast.getNode(body_idx).tag == .block_statement and
         isSafeConstructorBodyStatement(ast, semantic, body_idx);
 }
 
 fn isSafeConstructorLabelIdentifier(ast: *const ast_mod.Ast, label_idx: ast_mod.NodeIndex) bool {
-    if (label_idx.isNone() or @intFromEnum(label_idx) >= ast.nodes.items.len) return false;
+    if (label_idx.isNone() or @backingInt(label_idx) >= ast.nodes.items.len) return false;
     const label = ast.getNode(label_idx);
     return label.tag == .identifier_reference and
         std.mem.indexOfScalar(u8, ast.getText(label.span), '\\') == null;
@@ -2662,7 +2662,7 @@ fn isSafeConstructorBodyStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     switch (statement.tag) {
         .empty_statement => return true,
@@ -2684,7 +2684,7 @@ fn isSafeConstructorBodyStatement(
             if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
             for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len or
-                    !isSafeConstructorBodyStatement(ast, semantic, @enumFromInt(raw_statement_idx))) return false;
+                    !isSafeConstructorBodyStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) return false;
             }
             return true;
         },
@@ -2703,24 +2703,24 @@ fn isSafeConstructorBodyStatement(
             const extras = ast.extra_data.items;
             const extra = statement.data.extra;
             if (extra > extras.len or extras.len - extra < 3) return false;
-            const discriminant_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            const discriminant_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
             const cases_start = extras[extra + 1];
             const cases_len = extras[extra + 2];
             if (!isSafeConstructorValue(ast, semantic, discriminant_idx) or
                 cases_start > extras.len or cases_len > extras.len - cases_start) return false;
             for (extras[cases_start .. cases_start + cases_len]) |raw_case_idx| {
                 if (raw_case_idx >= ast.nodes.items.len or
-                    !isSafeConstructorSwitchCase(ast, semantic, @enumFromInt(raw_case_idx))) return false;
+                    !isSafeConstructorSwitchCase(ast, semantic, @fromBackingInt(@intCast(raw_case_idx)))) return false;
             }
             return true;
         },
         .try_statement => {
             const clauses = statement.data.ternary;
             if ((clauses.b.isNone() and clauses.c.isNone()) or clauses.a.isNone() or
-                @intFromEnum(clauses.a) >= ast.nodes.items.len or
+                @backingInt(clauses.a) >= ast.nodes.items.len or
                 ast.getNode(clauses.a).tag != .block_statement) return false;
             if (!clauses.c.isNone() and
-                (@intFromEnum(clauses.c) >= ast.nodes.items.len or ast.getNode(clauses.c).tag != .block_statement))
+                (@backingInt(clauses.c) >= ast.nodes.items.len or ast.getNode(clauses.c).tag != .block_statement))
             {
                 return false;
             }
@@ -2732,18 +2732,18 @@ fn isSafeConstructorBodyStatement(
             const extras = ast.extra_data.items;
             const extra = statement.data.extra;
             if (extra > extras.len or extras.len - extra < 4) return false;
-            const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-            const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-            const update_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 2]);
-            const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 3]);
-            if (!initializer_idx.isNone() and @intFromEnum(initializer_idx) < ast.nodes.items.len and
+            const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+            const test_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+            const update_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 2]));
+            const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 3]));
+            if (!initializer_idx.isNone() and @backingInt(initializer_idx) < ast.nodes.items.len and
                 ast.getNode(initializer_idx).tag == .variable_declaration and
                 ast.variableDeclarationKind(ast.getNode(initializer_idx)).isLexical())
             {
                 return isSafeRetainedLexicalForStatement(ast, semantic, statement);
             }
             const safe_initializer = initializer_idx.isNone() or
-                (if (@intFromEnum(initializer_idx) < ast.nodes.items.len and
+                (if (@backingInt(initializer_idx) < ast.nodes.items.len and
                     ast.getNode(initializer_idx).tag == .variable_declaration)
                     isSafeConstructorVarDeclaration(ast, semantic, ast.getNode(initializer_idx))
                 else
@@ -2778,10 +2778,10 @@ fn isEarlierConstructorParameterReference(
     if (!hasValidSourceSymbol(ast, semantic, reference_idx, .identifier_reference) or
         parameter_index > params.len or params.start > ast.extra_data.items.len or
         params.len > ast.extra_data.items.len - params.start) return false;
-    const reference_symbol = semantic.symbol_ids[@intFromEnum(reference_idx)] orelse return false;
+    const reference_symbol = semantic.symbol_ids[@backingInt(reference_idx)] orelse return false;
     for (ast.extra_data.items[params.start .. params.start + parameter_index]) |raw_parameter_idx| {
         if (raw_parameter_idx >= ast.nodes.items.len) return false;
-        const parameter_idx: ast_mod.NodeIndex = @enumFromInt(raw_parameter_idx);
+        const parameter_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_parameter_idx));
         const parameter = ast.getNode(parameter_idx);
         const binding_idx = switch (parameter.tag) {
             .binding_identifier => parameter_idx,
@@ -2789,7 +2789,7 @@ fn isEarlierConstructorParameterReference(
             else => return false,
         };
         if (!hasValidSourceSymbol(ast, semantic, binding_idx, .binding_identifier)) return false;
-        if (semantic.symbol_ids[@intFromEnum(binding_idx)] == reference_symbol) return true;
+        if (semantic.symbol_ids[@backingInt(binding_idx)] == reference_symbol) return true;
     }
     return false;
 }
@@ -2801,10 +2801,10 @@ fn isSafeConstructorParameterDefaultValue(
     params: ast_mod.NodeList,
     parameter_index: u32,
 ) bool {
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     if (value.tag == .binary_expression) {
-        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
         return isSafeConstructorBinaryOperator(operator) and
             isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.left, params, parameter_index) and
             isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.right, params, parameter_index);
@@ -2813,13 +2813,13 @@ fn isSafeConstructorParameterDefaultValue(
         const extras = ast.extra_data.items;
         const extra = value.data.extra;
         if (extra > extras.len or extras.len - extra < 2) return false;
-        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
-        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
         return isSafeConstructorUnaryOperator(operator) and
             isSafeConstructorParameterDefaultValue(ast, semantic, operand_idx, params, parameter_index);
     }
     if (value.tag == .logical_expression) {
-        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
         return isSafeConstructorLogicalOperator(operator) and
             isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.left, params, parameter_index) and
             isSafeConstructorParameterDefaultValue(ast, semantic, value.data.binary.right, params, parameter_index);
@@ -2849,7 +2849,7 @@ fn isSimpleConstructorParameterGraphSafe(
     params: ast_mod.NodeList,
     parameter_index: u32,
 ) bool {
-    if (parameter_idx.isNone() or @intFromEnum(parameter_idx) >= ast.nodes.items.len) return false;
+    if (parameter_idx.isNone() or @backingInt(parameter_idx) >= ast.nodes.items.len) return false;
     const parameter = ast.getNode(parameter_idx);
     if (parameter.tag == .binding_identifier)
         return isBoundSourceIdentifierBinding(ast, semantic, parameter_idx);
@@ -2861,7 +2861,7 @@ fn isSimpleConstructorParameterGraphSafe(
     const binding_idx = parameter.data.binary.left;
     const default_idx = parameter.data.binary.right;
     if (!isBoundSourceIdentifierBinding(ast, semantic, binding_idx) or
-        default_idx.isNone() or @intFromEnum(default_idx) >= ast.nodes.items.len) return false;
+        default_idx.isNone() or @backingInt(default_idx) >= ast.nodes.items.len) return false;
     return isSafeConstructorParameterDefaultValue(ast, semantic, default_idx, params, parameter_index);
 }
 
@@ -2877,25 +2877,25 @@ fn isSafeSuperConstructorStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .expression_statement) return false;
     const expression_idx = statement.data.unary.operand;
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(expression_idx);
     if (call.tag != .call_expression) return false;
     const extras = ast.extra_data.items;
     const extra = call.data.extra;
     if (extra > extras.len or extras.len - extra < 4 or extras[extra + 3] != 0) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len or
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len or
         ast.getNode(callee_idx).tag != .super_expression) return false;
     const args_start = extras[extra + 1];
     const args_len = extras[extra + 2];
     if (args_start > extras.len or args_len > extras.len - args_start) return false;
     for (extras[args_start .. args_start + args_len]) |raw_argument_idx| {
         if (raw_argument_idx >= ast.nodes.items.len or
-            !isSafeConstructorValue(ast, semantic, @enumFromInt(raw_argument_idx))) return false;
+            !isSafeConstructorValue(ast, semantic, @fromBackingInt(@intCast(raw_argument_idx)))) return false;
     }
     return true;
 }
@@ -2905,14 +2905,14 @@ fn isSafeConstructorThisPropertyAssignmentStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .expression_statement) return false;
     const expression_idx = statement.data.unary.operand;
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     const assignment = ast.getNode(expression_idx);
     if (assignment.tag != .assignment_expression or
-        assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq) or
+        assignment.data.binary.flags != @backingInt(token_mod.Kind.eq) or
         !isSafeConstructorThisPropertyTarget(ast, assignment.data.binary.left)) return false;
     return isSafeConstructorValue(ast, semantic, assignment.data.binary.right);
 }
@@ -2922,7 +2922,7 @@ fn isSafePostSuperDerivedConstructorReturnStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .return_statement) return false;
     const value_idx = statement.data.unary.operand;
@@ -2934,11 +2934,11 @@ fn isSafePostSuperDerivedConstructorThrowStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .throw_statement) return false;
     const value_idx = statement.data.unary.operand;
-    return !value_idx.isNone() and @intFromEnum(value_idx) < ast.nodes.items.len and
+    return !value_idx.isNone() and @backingInt(value_idx) < ast.nodes.items.len and
         isSafePostSuperInitializerValue(ast, semantic, value_idx);
 }
 
@@ -2947,7 +2947,7 @@ fn isSafePostSuperConditionalBranch(
     semantic: *const ModuleSemanticData,
     branch_idx: ast_mod.NodeIndex,
 ) bool {
-    if (branch_idx.isNone() or @intFromEnum(branch_idx) >= ast.nodes.items.len) return false;
+    if (branch_idx.isNone() or @backingInt(branch_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(branch_idx);
     if (statement.tag == .block_statement) {
         const statements = statement.data.list;
@@ -2956,26 +2956,26 @@ fn isSafePostSuperConditionalBranch(
         for (extras[statements.start .. statements.start + statements.len], 0..) |raw_statement_idx, index| {
             if (raw_statement_idx >= ast.nodes.items.len) return false;
             if (index + 1 == statements.len) {
-                const final_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
+                const final_statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement_idx));
                 if (isSafePostSuperDerivedConstructorReturnStatement(ast, semantic, final_statement) or
                     isSafePostSuperDerivedConstructorThrowStatement(ast, semantic, final_statement)) return true;
             }
-            const nested_statement = ast.getNode(@enumFromInt(raw_statement_idx));
+            const nested_statement = ast.getNode(@fromBackingInt(@intCast(raw_statement_idx)));
             if (nested_statement.tag == .empty_statement or nested_statement.tag == .debugger_statement) continue;
             // Strict block functions bind to this branch block. Their bodies
             // are deferred and remain covered by the graph and identity gates.
             if (nested_statement.tag == .function_declaration) continue;
             if (isSafeConstructorVarDeclaration(ast, semantic, nested_statement) or
-                isSafePostSuperExpressionStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
+                isSafePostSuperExpressionStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) continue;
             if (isSafePostSuperNonCompletingBlockOrLabelStatement(
                 ast,
                 semantic,
-                @enumFromInt(raw_statement_idx),
+                @fromBackingInt(@intCast(raw_statement_idx)),
             )) continue;
-            if (isSafePostSuperConditionalStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
-            if (isSafePostSuperLoopStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
-            if (isSafePostSuperSwitchStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
-            if (isSafePostSuperTryStatement(ast, semantic, @enumFromInt(raw_statement_idx))) continue;
+            if (isSafePostSuperConditionalStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) continue;
+            if (isSafePostSuperLoopStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) continue;
+            if (isSafePostSuperSwitchStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) continue;
+            if (isSafePostSuperTryStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) continue;
             return false;
         }
         return true;
@@ -2997,16 +2997,16 @@ fn isSafePostSuperCondition(
     if (isSafeConstructorValue(ast, semantic, condition_idx) or
         isSafePostSuperThisPropertyRead(ast, semantic, condition_idx) or
         isSafePostSuperPropertyRead(ast, semantic, condition_idx)) return true;
-    if (condition_idx.isNone() or @intFromEnum(condition_idx) >= ast.nodes.items.len) return false;
+    if (condition_idx.isNone() or @backingInt(condition_idx) >= ast.nodes.items.len) return false;
     const condition = ast.getNode(condition_idx);
     if (condition.tag == .binary_expression) {
-        const operator: token_mod.Kind = @enumFromInt(condition.data.binary.flags);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(condition.data.binary.flags));
         return isSafeConstructorBinaryOperator(operator) and
             isSafePostSuperCondition(ast, semantic, condition.data.binary.left) and
             isSafePostSuperCondition(ast, semantic, condition.data.binary.right);
     }
     if (condition.tag == .logical_expression) {
-        const operator: token_mod.Kind = @enumFromInt(condition.data.binary.flags);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(condition.data.binary.flags));
         return isSafeConstructorLogicalOperator(operator) and
             isSafePostSuperCondition(ast, semantic, condition.data.binary.left) and
             isSafePostSuperCondition(ast, semantic, condition.data.binary.right);
@@ -3015,8 +3015,8 @@ fn isSafePostSuperCondition(
         const extras = ast.extra_data.items;
         const extra = condition.data.extra;
         if (extra > extras.len or extras.len - extra < 2) return false;
-        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
-        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
         return isSafeConstructorUnaryOperator(operator) and
             isSafePostSuperCondition(ast, semantic, operand_idx);
     }
@@ -3034,14 +3034,14 @@ fn isSafePostSuperCallExpression(
     call_idx: ast_mod.NodeIndex,
     allow_this_receiver: bool,
 ) bool {
-    if (call_idx.isNone() or @intFromEnum(call_idx) >= ast.nodes.items.len) return false;
+    if (call_idx.isNone() or @backingInt(call_idx) >= ast.nodes.items.len) return false;
     const call = ast.getNode(call_idx);
     if (call.tag != .call_expression) return false;
     const extras = ast.extra_data.items;
     const extra = call.data.extra;
     if (extra > extras.len or extras.len - extra < 4 or extras[extra + 3] != 0) return false;
-    const callee_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return false;
+    const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return false;
     const callee = ast.getNode(callee_idx);
     if (callee.tag == .identifier_reference) {
         const name = ast.getText(callee.span);
@@ -3054,7 +3054,7 @@ fn isSafePostSuperCallExpression(
     if (args_start > extras.len or args_len > extras.len - args_start) return false;
     for (extras[args_start .. args_start + args_len]) |raw_arg_idx| {
         if (raw_arg_idx >= ast.nodes.items.len or
-            !isSafeConstructorValue(ast, semantic, @enumFromInt(raw_arg_idx))) return false;
+            !isSafeConstructorValue(ast, semantic, @fromBackingInt(@intCast(raw_arg_idx)))) return false;
     }
     return true;
 }
@@ -3064,7 +3064,7 @@ fn isSafePostSuperExpressionStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .expression_statement) return false;
     const expression_idx = statement.data.unary.operand;
@@ -3085,7 +3085,7 @@ fn isSafePostSuperPropertyRead(
     if (!isRetainableDirectSuperPropertyAccess(ast, expression_idx, false)) return false;
     const member = ast.getNode(expression_idx);
     if (member.tag == .computed_member_expression) {
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[member.data.extra + 1]);
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[member.data.extra + 1]));
         return isSafeConstructorValue(ast, semantic, property_idx);
     }
     return true;
@@ -3097,16 +3097,16 @@ fn isSafePostSuperThisPropertyRead(
     expression_idx: ast_mod.NodeIndex,
 ) bool {
     if (isSafeConstructorThisPropertyTarget(ast, expression_idx)) return true;
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len or
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len or
         ast_mod.spineHasOptionalChain(ast, expression_idx)) return false;
     const member = ast.getNode(expression_idx);
     if (member.tag != .computed_member_expression) return false;
     const extras = ast.extra_data.items;
     const extra = member.data.extra;
     if (extra > extras.len or extras.len - extra < 3) return false;
-    const receiver_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-    const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
-    return !receiver_idx.isNone() and @intFromEnum(receiver_idx) < ast.nodes.items.len and
+    const receiver_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+    const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
+    return !receiver_idx.isNone() and @backingInt(receiver_idx) < ast.nodes.items.len and
         ast.getNode(receiver_idx).tag == .this_expression and
         isSafeConstructorValue(ast, semantic, property_idx);
 }
@@ -3124,10 +3124,10 @@ fn isSafePostSuperInitializerValue(
     if (isSafeConstructorValue(ast, semantic, value_idx) or
         isSafePostSuperThisPropertyRead(ast, semantic, value_idx) or
         isSafePostSuperPropertyRead(ast, semantic, value_idx)) return true;
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     if (value.tag == .logical_expression) {
-        const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
         return isSafeConstructorLogicalOperator(operator) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.binary.left) and
             isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
@@ -3136,8 +3136,8 @@ fn isSafePostSuperInitializerValue(
         const extras = ast.extra_data.items;
         const extra = value.data.extra;
         if (extra > extras.len or extras.len - extra < 2) return false;
-        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
-        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
         return isSafeConstructorUnaryOperator(operator) and
             isSafePostSuperInitializerValue(ast, semantic, operand_idx);
     }
@@ -3147,7 +3147,7 @@ fn isSafePostSuperInitializerValue(
             isSafePostSuperInitializerValue(ast, semantic, value.data.ternary.c);
     }
     if (value.tag != .binary_expression) return false;
-    const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+    const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
     return isSafeConstructorBinaryOperator(operator) and
         isSafePostSuperInitializerValue(ast, semantic, value.data.binary.left) and
         isSafePostSuperInitializerValue(ast, semantic, value.data.binary.right);
@@ -3178,9 +3178,9 @@ fn isSafePostSuperVarDeclaration(
     if (declarator.tag != .variable_declarator) return false;
     const declarator_extra = declarator.data.extra;
     if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-    const binding_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra]);
-    const type_annotation_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 1]);
-    const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+    const binding_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra]));
+    const type_annotation_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 1]));
+    const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
     return type_annotation_idx.isNone() and
         isBoundSourceIdentifierBinding(ast, semantic, binding_idx) and
         isSafePostSuperInitializerValue(ast, semantic, initializer_idx);
@@ -3196,10 +3196,10 @@ fn isSafePostSuperPropertyAssignment(
     semantic: *const ModuleSemanticData,
     expression_idx: ast_mod.NodeIndex,
 ) bool {
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     const assignment = ast.getNode(expression_idx);
     if (assignment.tag != .assignment_expression) return false;
-    const operator: token_mod.Kind = @enumFromInt(assignment.data.binary.flags);
+    const operator: token_mod.Kind = @fromBackingInt(@intCast(assignment.data.binary.flags));
     switch (operator) {
         .eq, .question2_eq, .pipe2_eq, .amp2_eq, .star2_eq => {},
         else => return false,
@@ -3212,7 +3212,7 @@ fn isSafePostSuperPropertyAssignment(
 
     const target = ast.getNode(target_idx);
     if (target.tag == .computed_member_expression) {
-        const property_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[target.data.extra + 1]);
+        const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[target.data.extra + 1]));
         if (!isSafeConstructorValue(ast, semantic, property_idx)) return false;
     }
     return true;
@@ -3223,12 +3223,12 @@ fn isSafePostSuperSwitchExpressionStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .expression_statement) return false;
     const expression_idx = statement.data.unary.operand;
     if (isSafePostSuperCallExpression(ast, semantic, expression_idx, false)) return true;
-    if (expression_idx.isNone() or @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+    if (expression_idx.isNone() or @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     const expression = ast.getNode(expression_idx);
     if (expression.tag == .update_expression)
         return isSafeConstructorLocalUpdate(ast, semantic, expression);
@@ -3242,7 +3242,7 @@ fn isSafePostSuperConditionalStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len or
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len or
         ast.getNode(statement_idx).tag != .if_statement) return false;
 
     // An `else if` is represented as an if statement in the prior if's
@@ -3251,7 +3251,7 @@ fn isSafePostSuperConditionalStatement(
     var current_idx = statement_idx;
     var remaining_nodes = ast.nodes.items.len;
     while (remaining_nodes > 0) : (remaining_nodes -= 1) {
-        if (current_idx.isNone() or @intFromEnum(current_idx) >= ast.nodes.items.len) return false;
+        if (current_idx.isNone() or @backingInt(current_idx) >= ast.nodes.items.len) return false;
         const statement = ast.getNode(current_idx);
         if (statement.tag != .if_statement) return false;
         const branches = statement.data.ternary;
@@ -3259,7 +3259,7 @@ fn isSafePostSuperConditionalStatement(
             !isSafePostSuperConditionalBranch(ast, semantic, branches.b)) return false;
 
         if (branches.c.isNone()) return true;
-        if (@intFromEnum(branches.c) >= ast.nodes.items.len) return false;
+        if (@backingInt(branches.c) >= ast.nodes.items.len) return false;
         if (ast.getNode(branches.c).tag == .if_statement) {
             current_idx = branches.c;
             continue;
@@ -3274,7 +3274,7 @@ fn isSafeStrictSwitchBlockFunctionDeclaration(
     semantic: *const ModuleSemanticData,
     declaration_idx: ast_mod.NodeIndex,
 ) bool {
-    if (declaration_idx.isNone() or @intFromEnum(declaration_idx) >= ast.nodes.items.len) return false;
+    if (declaration_idx.isNone() or @backingInt(declaration_idx) >= ast.nodes.items.len) return false;
     const declaration = ast.getNode(declaration_idx);
     if (declaration.tag != .function_declaration) return false;
 
@@ -3283,17 +3283,17 @@ fn isSafeStrictSwitchBlockFunctionDeclaration(
     if (extra > extras.len or extras.len - extra <= ast_mod.FunctionExtra.flags) return false;
     const flags = extras[extra + ast_mod.FunctionExtra.flags];
     if ((flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator)) != 0) return false;
-    const name_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.FunctionExtra.name]);
+    const name_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.FunctionExtra.name]));
     if (!isBoundSourceIdentifierBinding(ast, semantic, name_idx)) return false;
 
-    const name_raw = @intFromEnum(name_idx);
+    const name_raw = @backingInt(name_idx);
     if (name_raw >= semantic.symbol_ids.len) return false;
     const symbol_raw = semantic.symbol_ids[name_raw] orelse return false;
     if (symbol_raw >= semantic.symbols.items.len) return false;
     const symbol = semantic.symbols.items[symbol_raw];
     if (!symbol.kind.isFunctionLike() or symbol.scope_id.isNone() or
-        symbol.scope_id != symbol.origin_scope or @intFromEnum(symbol.scope_id) >= semantic.scopes.len) return false;
-    const scope = semantic.scopes[@intFromEnum(symbol.scope_id)];
+        symbol.scope_id != symbol.origin_scope or @backingInt(symbol.scope_id) >= semantic.scopes.len) return false;
+    const scope = semantic.scopes[@backingInt(symbol.scope_id)];
     if (scope.kind != .switch_block or !scope.is_strict) return false;
 
     const name = ast.getNode(name_idx);
@@ -3307,13 +3307,13 @@ fn isSafePostSuperSwitchCase(
     semantic: *const ModuleSemanticData,
     case_idx: ast_mod.NodeIndex,
 ) bool {
-    if (case_idx.isNone() or @intFromEnum(case_idx) >= ast.nodes.items.len) return false;
+    if (case_idx.isNone() or @backingInt(case_idx) >= ast.nodes.items.len) return false;
     const switch_case = ast.getNode(case_idx);
     if (switch_case.tag != .switch_case) return false;
     const extras = ast.extra_data.items;
     const extra = switch_case.data.extra;
     if (extra > extras.len or extras.len - extra < 3) return false;
-    const test_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const test_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
     const statements_start = extras[extra + 1];
     const statements_len = extras[extra + 2];
     if ((!test_idx.isNone() and !isSafeConstructorValue(ast, semantic, test_idx)) or
@@ -3321,7 +3321,7 @@ fn isSafePostSuperSwitchCase(
 
     for (extras[statements_start .. statements_start + statements_len], 0..) |raw_statement_idx, index| {
         if (raw_statement_idx >= ast.nodes.items.len) return false;
-        const case_statement_idx: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
+        const case_statement_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement_idx));
         const case_statement = ast.getNode(case_statement_idx);
         if (index + 1 == statements_len) {
             if (isSafePostSuperDerivedConstructorReturnStatement(ast, semantic, case_statement_idx) or
@@ -3341,20 +3341,20 @@ fn isSafePostSuperSwitchStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     if (statement.tag != .switch_statement) return false;
     const extras = ast.extra_data.items;
     const extra = statement.data.extra;
     if (extra > extras.len or extras.len - extra < 3) return false;
-    const discriminant_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+    const discriminant_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
     const cases_start = extras[extra + 1];
     const cases_len = extras[extra + 2];
     if (!isSafeConstructorValue(ast, semantic, discriminant_idx) or
         cases_start > extras.len or cases_len > extras.len - cases_start) return false;
     for (extras[cases_start .. cases_start + cases_len]) |raw_case_idx| {
         if (raw_case_idx >= ast.nodes.items.len or
-            !isSafePostSuperSwitchCase(ast, semantic, @enumFromInt(raw_case_idx))) return false;
+            !isSafePostSuperSwitchCase(ast, semantic, @fromBackingInt(@intCast(raw_case_idx)))) return false;
     }
     return true;
 }
@@ -3364,7 +3364,7 @@ fn isSafePostSuperTryStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len or
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len or
         ast.getNode(statement_idx).tag != .try_statement or
         !isSafeConstructorBodyStatement(ast, semantic, statement_idx)) return false;
 
@@ -3392,7 +3392,7 @@ fn areSafePostSuperNestedScopes(
     defer ast.allocator.free(descendants);
     for (descendants) |raw_idx| {
         if (raw_idx >= ast.nodes.items.len) return false;
-        const descendant_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
+        const descendant_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_idx));
         const descendant = ast.nodes.items[raw_idx];
         switch (descendant.tag) {
             .switch_statement => if (!isSafePostSuperSwitchStatement(ast, semantic, descendant_idx)) return false,
@@ -3408,7 +3408,7 @@ fn isSafePostSuperLoopStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     const statement = ast.getNode(statement_idx);
     switch (statement.tag) {
         .for_statement, .while_statement, .do_while_statement, .for_in_statement, .for_of_statement => {},
@@ -3426,7 +3426,7 @@ fn isSafePostSuperBlockOrLabelStatement(
     semantic: *const ModuleSemanticData,
     statement_idx: ast_mod.NodeIndex,
 ) bool {
-    if (statement_idx.isNone() or @intFromEnum(statement_idx) >= ast.nodes.items.len) return false;
+    if (statement_idx.isNone() or @backingInt(statement_idx) >= ast.nodes.items.len) return false;
     switch (ast.getNode(statement_idx).tag) {
         .block_statement, .labeled_statement => {},
         else => return false,
@@ -3466,8 +3466,8 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     const extras = ast.extra_data.items;
     if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.body) return false;
 
-    const params_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.params]);
-    if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len) return false;
+    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[method_extra + ast_mod.MethodExtra.params]));
+    if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len) return false;
     const params = ast.getNode(params_idx);
     if (params.tag != .formal_parameters or params.data.list.start > extras.len or
         params.data.list.len > extras.len - params.data.list.start) return false;
@@ -3475,20 +3475,20 @@ fn isSimpleParamsConstructorBodyGraphSafe(
         if (!isSimpleConstructorParameterGraphSafe(
             ast,
             semantic,
-            @enumFromInt(raw_parameter_idx),
+            @fromBackingInt(@intCast(raw_parameter_idx)),
             params.data.list,
             @intCast(parameter_offset),
         )) return false;
     }
 
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.body]);
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[method_extra + ast_mod.MethodExtra.body]));
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return false;
     const body = ast.getNode(body_idx);
     if (body.tag != .block_statement) return false;
     const statements = body.data.list;
     if (statements.start > extras.len or statements.len > extras.len - statements.start) return false;
     if (statements.len > 0) {
-        const super_statement: ast_mod.NodeIndex = @enumFromInt(extras[statements.start]);
+        const super_statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[statements.start]));
         if (isSafeSuperConstructorStatement(ast, semantic, super_statement)) {
             // Keep the initialization boundary explicit: simple `var`
             // declarations, direct `super` property reads and assignments,
@@ -3497,7 +3497,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
             var completion_seen = false;
             for (extras[statements.start + 1 .. statements.start + statements.len]) |raw_statement_idx| {
                 if (raw_statement_idx >= ast.nodes.items.len) return false;
-                const following_statement: ast_mod.NodeIndex = @enumFromInt(raw_statement_idx);
+                const following_statement: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_statement_idx));
                 if (!completion_seen and isSafePostSuperVarDeclaration(
                     ast,
                     semantic,
@@ -3549,7 +3549,7 @@ fn isSimpleParamsConstructorBodyGraphSafe(
     }
     for (extras[statements.start .. statements.start + statements.len]) |raw_statement_idx| {
         if (raw_statement_idx >= ast.nodes.items.len or
-            !isSafeConstructorBodyStatement(ast, semantic, @enumFromInt(raw_statement_idx))) return false;
+            !isSafeConstructorBodyStatement(ast, semantic, @fromBackingInt(@intCast(raw_statement_idx)))) return false;
     }
     return true;
 }
@@ -3603,16 +3603,16 @@ fn isRetainableSimpleStaticClassField(
         (flags & unsupported_flags) != 0 or (flags & ~allowed_flags) != 0 or
         extras[extra + ast_mod.PropertyExtra.deco_len] != 0) return false;
 
-    const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.key]);
-    const init_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.init]);
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len or
-        init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) return false;
+    const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.PropertyExtra.key]));
+    const init_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.PropertyExtra.init]));
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len or
+        init_idx.isNone() or @backingInt(init_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
     switch (key.tag) {
         .identifier_reference => if (std.mem.eql(u8, ast.getText(key.span), "__proto__")) return false,
         .computed_property_key => {
             const key_value_idx = key.data.unary.operand;
-            if (key_value_idx.isNone() or @intFromEnum(key_value_idx) >= ast.nodes.items.len or
+            if (key_value_idx.isNone() or @backingInt(key_value_idx) >= ast.nodes.items.len or
                 hasClassSelfReference(ast, semantic, key_value_idx) or
                 (!isSafeConstructorValue(ast, semantic, key_value_idx) and
                     !isUnresolvedSourceIdentifierReference(ast, semantic, key_value_idx) and
@@ -3639,9 +3639,9 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
     if (ast.nodes.items.len == 0) return false;
     const root_idx = ast.transformed_root orelse @as(
         ast_mod.NodeIndex,
-        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
     );
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return null;
+    if (root_idx.isNone() or @backingInt(root_idx) >= ast.nodes.items.len) return null;
     const reachable = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return null;
     defer ast.allocator.free(reachable);
     for (reachable) |raw| {
@@ -3654,11 +3654,11 @@ fn hasReachableStaticPublicClassField(ast: *const ast_mod.Ast) ?bool {
         const flags = extras[extra + ast_mod.PropertyExtra.flags];
         if ((flags & ast_mod.PropertyFlags.is_static) == 0 or
             extras.len - extra <= ast_mod.PropertyExtra.init) continue;
-        const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.key]);
-        const init_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.PropertyExtra.init]);
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len or
-            ast.nodes.items[@intFromEnum(key_idx)].tag == .private_identifier or
-            init_idx.isNone() or @intFromEnum(init_idx) >= ast.nodes.items.len) continue;
+        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.PropertyExtra.key]));
+        const init_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.PropertyExtra.init]));
+        if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len or
+            ast.nodes.items[@backingInt(key_idx)].tag == .private_identifier or
+            init_idx.isNone() or @backingInt(init_idx) >= ast.nodes.items.len) continue;
         return true;
     }
     return false;
@@ -3700,18 +3700,18 @@ fn isSimpleClass(
     const extras = ast.extra_data.items;
     if (extra > extras.len or extras.len - extra <= ast_mod.ClassExtra.body) return false;
 
-    const name: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.name]);
-    const super: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.super]);
-    const body: ast_mod.NodeIndex = @enumFromInt(extras[extra + ast_mod.ClassExtra.body]);
-    if ((!name.isNone() and (@intFromEnum(name) >= ast.nodes.items.len or
+    const name: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.ClassExtra.name]));
+    const super: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.ClassExtra.super]));
+    const body: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + ast_mod.ClassExtra.body]));
+    if ((!name.isNone() and (@backingInt(name) >= ast.nodes.items.len or
         ast.getNode(name).tag != .binding_identifier)) or
         (name.isNone() and node.tag != .class_expression) or
         (!super.isNone() and !isBoundSourceIdentifierReference(ast, semantic, super)) or
-        body.isNone() or @intFromEnum(body) >= ast.nodes.items.len) return false;
+        body.isNone() or @backingInt(body) >= ast.nodes.items.len) return false;
     if (!name.isNone() and !super.isNone()) {
         if (!isBoundSourceIdentifierBinding(ast, semantic, name)) return false;
-        const name_symbol = semantic.symbol_ids[@intFromEnum(name)] orelse return false;
-        const super_symbol = semantic.symbol_ids[@intFromEnum(super)] orelse return false;
+        const name_symbol = semantic.symbol_ids[@backingInt(name)] orelse return false;
+        const super_symbol = semantic.symbol_ids[@backingInt(super)] orelse return false;
         const class_self_symbol = semantic.class_self_symbol_map.get(@intCast(raw_node));
         // A declaration can resolve its own name in the heritage clause while
         // that lexical binding is still in the TDZ. Lowering it through the
@@ -3732,15 +3732,15 @@ fn isSimpleClass(
     var accessors_started = false;
     var has_empty_explicit_constructor = false;
     for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
-        const member_idx: ast_mod.NodeIndex = @enumFromInt(raw_member_idx);
-        if (member_idx.isNone() or @intFromEnum(member_idx) >= ast.nodes.items.len) return false;
+        const member_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_member_idx));
+        if (member_idx.isNone() or @backingInt(member_idx) >= ast.nodes.items.len) return false;
         const member = ast.getNode(member_idx);
         if (isRetainableSimpleStaticClassField(allocator, ast, semantic, member)) continue;
         if (member.tag != .method_definition) return false;
         const method_extra = member.data.extra;
         if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
-        const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[method_extra + ast_mod.MethodExtra.key]));
+        if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
         const flags = extras[method_extra + ast_mod.MethodExtra.flags];
         const is_es5_async_instance_method = flags == ast_mod.MethodFlags.is_async;
@@ -3811,7 +3811,7 @@ fn isSimpleClass(
         // accessor descriptor. Keep that duplicate-definition order on resync.
         const accessor_is_static = (accessor.flags & ast_mod.MethodFlags.is_static) != 0;
         for (extras[members.start .. members.start + members.len]) |raw_member_idx| {
-            const member = ast.getNode(@enumFromInt(raw_member_idx));
+            const member = ast.getNode(@fromBackingInt(@intCast(raw_member_idx)));
             if (member.tag != .method_definition) continue;
             const method_extra = member.data.extra;
             const flags = extras[method_extra + ast_mod.MethodExtra.flags];
@@ -3820,7 +3820,7 @@ fn isSimpleClass(
                     (flags == ast_mod.MethodFlags.is_async or
                         flags == (ast_mod.MethodFlags.is_async | ast_mod.MethodFlags.is_static)));
             if (!is_plain_method or ((flags & ast_mod.MethodFlags.is_static) != 0) != accessor_is_static) continue;
-            const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
+            const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[method_extra + ast_mod.MethodExtra.key]));
             const key_text = ast.getText(ast.getNode(key_idx).span);
             if (std.mem.eql(u8, accessor.key_text, key_text)) return false;
         }
@@ -3850,9 +3850,9 @@ fn collectDirectVarClassExpressions(
             if (declarator.tag != .variable_declarator) return false;
             const declarator_extra = declarator.data.extra;
             if (declarator_extra > extras.len or extras.len - declarator_extra < 3) return false;
-            const initializer_idx: ast_mod.NodeIndex = @enumFromInt(extras[declarator_extra + 2]);
+            const initializer_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[declarator_extra + 2]));
             if (initializer_idx.isNone()) continue;
-            const initializer_raw = @intFromEnum(initializer_idx);
+            const initializer_raw = @backingInt(initializer_idx);
             if (initializer_raw >= ast.nodes.items.len) return false;
             if (ast.nodes.items[initializer_raw].tag != .class_expression) continue;
             class_expressions.put(ast.allocator, initializer_raw, {}) catch return false;
@@ -3870,7 +3870,7 @@ fn collectDirectFunctionBodyClassDeclarations(
         if (raw_function >= ast.nodes.items.len) return false;
         const function = ast.nodes.items[raw_function];
         const body_idx = ast.functionBodyBlock(function) orelse continue;
-        if (@intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+        if (@backingInt(body_idx) >= ast.nodes.items.len) return false;
         const body = ast.getNode(body_idx);
         if (body.tag != .block_statement and body.tag != .function_body) continue;
         const statements = body.data.list;
@@ -3925,9 +3925,9 @@ fn registerRetainableEs5AsyncClassMethods(
     const class_extra = class_node.data.extra;
     if (class_extra > ast.extra_data.items.len or
         ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.body) return false;
-    const super_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]);
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]);
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len or
+    const super_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]));
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len or
         ast.getNode(body_idx).tag != .class_body) return false;
     const members = ast.getNode(body_idx).data.list;
     if (members.start > ast.extra_data.items.len or
@@ -3965,9 +3965,9 @@ fn registerRetainableSyncClassSuperMethods(
     const class_extra = class_node.data.extra;
     if (class_extra > ast.extra_data.items.len or
         ast.extra_data.items.len - class_extra <= ast_mod.ClassExtra.body) return false;
-    const super_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]);
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]);
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len or
+    const super_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.super]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[class_extra + ast_mod.ClassExtra.body]));
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len or
         ast.getNode(body_idx).tag != .class_body) return false;
     const members = ast.getNode(body_idx).data.list;
     if (members.start > ast.extra_data.items.len or
@@ -3995,8 +3995,8 @@ fn collectSimpleConstructorDefaultParameterNodes(
     const extras = ast.extra_data.items;
     const class_extra = class_node.data.extra;
     if (class_extra > extras.len or extras.len - class_extra <= ast_mod.ClassExtra.body) return false;
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(extras[class_extra + ast_mod.ClassExtra.body]);
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len or
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[class_extra + ast_mod.ClassExtra.body]));
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len or
         ast.getNode(body_idx).tag != .class_body) return false;
     const members = ast.getNode(body_idx).data.list;
     if (members.start > extras.len or members.len > extras.len - members.start) return false;
@@ -4006,14 +4006,14 @@ fn collectSimpleConstructorDefaultParameterNodes(
         if (member.tag != .method_definition) continue;
         const method_extra = member.data.extra;
         if (method_extra > extras.len or extras.len - method_extra <= ast_mod.MethodExtra.flags) return false;
-        const key_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.key]);
-        if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[method_extra + ast_mod.MethodExtra.key]));
+        if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
         const key = ast.getNode(key_idx);
         if (key.tag != .identifier_reference or !std.mem.eql(u8, ast.getText(key.span), "constructor")) continue;
         if (extras[method_extra + ast_mod.MethodExtra.flags] != 0 or
             extras.len - method_extra <= ast_mod.MethodExtra.params) return false;
-        const params_idx: ast_mod.NodeIndex = @enumFromInt(extras[method_extra + ast_mod.MethodExtra.params]);
-        if (params_idx.isNone() or @intFromEnum(params_idx) >= ast.nodes.items.len or
+        const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[method_extra + ast_mod.MethodExtra.params]));
+        if (params_idx.isNone() or @backingInt(params_idx) >= ast.nodes.items.len or
             ast.getNode(params_idx).tag != .formal_parameters) return false;
         const params = ast.getNode(params_idx).data.list;
         if (params.start > extras.len or params.len > extras.len - params.start) return false;
@@ -4034,7 +4034,7 @@ fn collectRetainedPreflightParents(
 ) bool {
     const VisitState = enum { visiting, visited };
     const Frame = struct { node: ast_mod.NodeIndex, parent: ?u32 = null, exit: bool = false };
-    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) return false;
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return false;
 
     var states: std.AutoHashMapUnmanaged(u32, VisitState) = .empty;
     defer states.deinit(allocator);
@@ -4043,8 +4043,8 @@ fn collectRetainedPreflightParents(
     stack.append(allocator, .{ .node = root }) catch return false;
 
     while (stack.pop()) |frame| {
-        if (frame.node.isNone() or @intFromEnum(frame.node) >= ast.nodes.items.len) return false;
-        const raw = @intFromEnum(frame.node);
+        if (frame.node.isNone() or @backingInt(frame.node) >= ast.nodes.items.len) return false;
+        const raw = @backingInt(frame.node);
         if (frame.exit) {
             states.put(allocator, raw, .visited) catch return false;
             continue;
@@ -4064,7 +4064,7 @@ fn collectRetainedPreflightParents(
         var children = ast_walk.children(ast, ast.getNode(frame.node));
         while (children.next()) |child| {
             if (child.isNone()) continue;
-            if (@intFromEnum(child) >= ast.nodes.items.len) return false;
+            if (@backingInt(child) >= ast.nodes.items.len) return false;
             stack.append(allocator, .{ .node = child, .parent = raw }) catch return false;
         }
     }
@@ -4139,15 +4139,15 @@ fn isPureLiteralUnaryObjectMethodKey(
         found_unary = true;
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 2) return false;
-        const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
+        const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
         switch (operator) {
             .plus => plus_before_type_change = true,
             .minus, .tilde => {},
             .bang, .kw_delete, .kw_typeof, .kw_void => plus_before_type_change = false,
             else => return false,
         }
-        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-        if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        if (operand_idx.isNone() or @backingInt(operand_idx) >= ast.nodes.items.len) return false;
         current = ast.getNode(operand_idx);
     }
 
@@ -4169,8 +4169,8 @@ fn isUnaryObjectMethodKeyEndingInPrimitiveLiteral(
         found_unary = true;
         const extra = current.data.extra;
         if (extra > extras.len or extras.len - extra < 2) return false;
-        const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-        if (operand_idx.isNone() or @intFromEnum(operand_idx) >= ast.nodes.items.len) return false;
+        const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+        if (operand_idx.isNone() or @backingInt(operand_idx) >= ast.nodes.items.len) return false;
         current = ast.getNode(operand_idx);
     }
     return found_unary and switch (current.tag) {
@@ -4180,11 +4180,11 @@ fn isUnaryObjectMethodKeyEndingInPrimitiveLiteral(
 }
 
 fn isStaticLiteralObjectMethodKey(ast: *const ast_mod.Ast, key_idx: ast_mod.NodeIndex) bool {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
     const is_computed = key.tag == .computed_property_key;
     const value_idx = if (is_computed) key.data.unary.operand else key_idx;
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     const is_pure_literal_unary_key = is_computed and value.tag == .unary_expression and
         isPureLiteralUnaryObjectMethodKey(ast, value, false);
@@ -4202,7 +4202,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
     traversal_depth: u8,
 ) bool {
     if (traversal_depth >= 64 or expression_idx.isNone() or
-        @intFromEnum(expression_idx) >= ast.nodes.items.len) return false;
+        @backingInt(expression_idx) >= ast.nodes.items.len) return false;
     if (isSafeConstructorValue(ast, semantic, expression_idx)) return true;
     const value = ast.getNode(expression_idx);
     return switch (value.tag) {
@@ -4218,7 +4218,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 if (raw_child >= ast.nodes.items.len or !isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
                     semantic,
-                    @enumFromInt(raw_child),
+                    @fromBackingInt(@intCast(raw_child)),
                     traversal_depth + 1,
                 )) break :blk false;
             }
@@ -4226,7 +4226,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
         },
         .identifier_reference => isUnresolvedGlobalUndefinedReference(ast, semantic, expression_idx),
         .binary_expression => blk: {
-            const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+            const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
             break :blk isSafeConstructorBinaryOperator(operator) and
                 isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
@@ -4247,8 +4247,8 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             const extras = ast.extra_data.items;
             const extra = value.data.extra;
             if (extra > extras.len or extras.len - extra < 2) break :blk false;
-            const operator: token_mod.Kind = @enumFromInt(@as(u8, @truncate(extras[extra + 1])));
-            const operand_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            const operator: token_mod.Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra + 1]))));
+            const operand_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
             if (operator == .kw_typeof and
                 isUnresolvedSourceIdentifierReference(ast, semantic, operand_idx)) break :blk true;
             if ((operator == .kw_typeof or operator == .kw_void) and
@@ -4274,7 +4274,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             const extra = value.data.extra;
             if (extra > extras.len or extras.len - extra < 3 or
                 (extras[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) break :blk false;
-            const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
+            const object_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
             break :blk isRetainableAsyncObjectMethodTemplateExpression(
                 ast,
                 semantic,
@@ -4287,8 +4287,8 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             const extra = value.data.extra;
             if (extra > extras.len or extras.len - extra < 3 or
                 (extras[extra + 2] & ast_mod.MemberFlags.optional_chain) != 0) break :blk false;
-            const object_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra]);
-            const property_idx: ast_mod.NodeIndex = @enumFromInt(extras[extra + 1]);
+            const object_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra]));
+            const property_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(extras[extra + 1]));
             break :blk isRetainableAsyncObjectMethodTemplateExpression(
                 ast,
                 semantic,
@@ -4312,7 +4312,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
             traversal_depth + 1,
         ),
         .logical_expression => blk: {
-            const operator: token_mod.Kind = @enumFromInt(value.data.binary.flags);
+            const operator: token_mod.Kind = @fromBackingInt(@intCast(value.data.binary.flags));
             break :blk isSafeConstructorLogicalOperator(operator) and
                 isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
@@ -4354,7 +4354,7 @@ fn isRetainableAsyncObjectMethodTemplateExpression(
                 if (raw_child >= ast.nodes.items.len or !isRetainableAsyncObjectMethodTemplateExpression(
                     ast,
                     semantic,
-                    @enumFromInt(raw_child),
+                    @fromBackingInt(@intCast(raw_child)),
                     traversal_depth + 1,
                 )) break :blk false;
             }
@@ -4370,12 +4370,12 @@ fn isRetainableAsyncObjectMethodKey(
     semantic: *const ModuleSemanticData,
     key_idx: ast_mod.NodeIndex,
 ) bool {
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
     const key = ast.getNode(key_idx);
     if (key.tag == .identifier_reference or isStaticLiteralObjectMethodKey(ast, key_idx)) return true;
     if (key.tag != .computed_property_key) return false;
     const value_idx = key.data.unary.operand;
-    if (value_idx.isNone() or @intFromEnum(value_idx) >= ast.nodes.items.len) return false;
+    if (value_idx.isNone() or @backingInt(value_idx) >= ast.nodes.items.len) return false;
     const value = ast.getNode(value_idx);
     if (value.tag == .template_literal) {
         return isRetainableAsyncObjectMethodTemplateExpression(ast, semantic, value_idx, 0);
@@ -4391,7 +4391,7 @@ fn isRetainableEs5AsyncObjectMethodNode(
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
 ) bool {
     if (!options.unsupported.async_await or !options.unsupported.generator or
-        method_idx.isNone() or @intFromEnum(method_idx) >= ast.nodes.items.len) return false;
+        method_idx.isNone() or @backingInt(method_idx) >= ast.nodes.items.len) return false;
     const method = ast.getNode(method_idx);
     if (method.tag != .method_definition) return false;
     const extra = method.data.extra;
@@ -4401,14 +4401,14 @@ fn isRetainableEs5AsyncObjectMethodNode(
         ast.extra_data.items.len - extra <= ast_mod.MethodExtra.body) return false;
     const flags = ast.extra_data.items[extra + ast_mod.MethodExtra.flags];
     if (flags != ast_mod.MethodFlags.is_async) return false;
-    const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.key]);
-    if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+    const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.key]));
+    if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
     if (!isRetainableAsyncObjectMethodKey(ast, semantic, key_idx)) return false;
 
-    const owner_raw = parents.get(@intFromEnum(method_idx)) orelse return false;
+    const owner_raw = parents.get(@backingInt(method_idx)) orelse return false;
     if (owner_raw >= ast.nodes.items.len or ast.nodes.items[owner_raw].tag != .object_expression) return false;
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
-    if (body_idx.isNone() or @intFromEnum(body_idx) >= ast.nodes.items.len) return false;
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.body]));
+    if (body_idx.isNone() or @backingInt(body_idx) >= ast.nodes.items.len) return false;
     const body_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, body_idx) catch return false;
     defer ast.allocator.free(body_nodes);
     for (body_nodes) |raw_idx| {
@@ -4417,9 +4417,9 @@ fn isRetainableEs5AsyncObjectMethodNode(
         var current = raw_idx;
         var lexical_arrow_depth: usize = 0;
         var hops: usize = 0;
-        while (current != @intFromEnum(method_idx) and hops < ast.nodes.items.len) : (hops += 1) {
+        while (current != @backingInt(method_idx) and hops < ast.nodes.items.len) : (hops += 1) {
             current = parents.get(current) orelse return false;
-            if (current == @intFromEnum(method_idx)) break;
+            if (current == @backingInt(method_idx)) break;
             switch (ast.nodes.items[current].tag) {
                 .function_declaration,
                 .function_expression,
@@ -4441,7 +4441,7 @@ fn isRetainableEs5AsyncObjectMethodNode(
                 else => {},
             }
         }
-        if (current != @intFromEnum(method_idx)) return false;
+        if (current != @backingInt(method_idx)) return false;
     }
     return true;
 }
@@ -4508,7 +4508,7 @@ fn isRetainableAsyncArrowNode(
     options: TransformOptions,
 ) bool {
     if (!options.unsupported.async_await or options.unsupported.generator or
-        arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+        arrow_idx.isNone() or @backingInt(arrow_idx) >= ast.nodes.items.len) return false;
     const node = ast.getNode(arrow_idx);
     if (node.tag != .arrow_function_expression) return false;
     const flags_at = node.data.extra + ast_mod.ArrowExtra.flags;
@@ -4538,7 +4538,7 @@ fn es5AsyncArrowLexicalCaptures(
     ast: *const ast_mod.Ast,
     arrow_idx: ast_mod.NodeIndex,
 ) ?Es5AsyncArrowLexicalCaptures {
-    if (arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return null;
+    if (arrow_idx.isNone() or @backingInt(arrow_idx) >= ast.nodes.items.len) return null;
     const arrow = ast.getNode(arrow_idx);
     if (arrow.tag != .arrow_function_expression) return null;
     const extra = arrow.data.extra;
@@ -4550,16 +4550,16 @@ fn es5AsyncArrowLexicalCaptures(
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(ast.allocator);
     for ([_]ast_mod.NodeIndex{
-        @enumFromInt(ast.extra_data.items[extra + ast_mod.ArrowExtra.params]),
-        @enumFromInt(ast.extra_data.items[extra + ast_mod.ArrowExtra.body]),
+        @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.ArrowExtra.params])),
+        @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.ArrowExtra.body])),
     }) |root| {
         if (!root.isNone()) stack.append(ast.allocator, root) catch return null;
     }
 
     var captures: Es5AsyncArrowLexicalCaptures = .{};
     while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
-        const raw_idx = @intFromEnum(idx);
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
+        const raw_idx = @backingInt(idx);
         if (seen.contains(raw_idx)) continue;
         seen.put(ast.allocator, raw_idx, {}) catch return null;
         const node = ast.getNode(idx);
@@ -4615,8 +4615,8 @@ fn methodSuperUsesInAsyncArrowScopesOrDirectBody(
     defer stack.deinit(ast.allocator);
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(ast.allocator);
-    const params_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.params]);
-    const body_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.MethodExtra.body]);
+    const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.params]));
+    const body_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.MethodExtra.body]));
     if (!params_idx.isNone()) stack.append(ast.allocator, .{
         .node = params_idx,
         .in_method_body = false,
@@ -4628,8 +4628,8 @@ fn methodSuperUsesInAsyncArrowScopesOrDirectBody(
 
     var found_async_arrow_super = false;
     while (stack.pop()) |work| {
-        if (work.node.isNone() or @intFromEnum(work.node) >= ast.nodes.items.len) return false;
-        const raw_idx = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= ast.nodes.items.len) return false;
+        const raw_idx = @backingInt(work.node);
         if (seen.contains(raw_idx)) continue;
         seen.put(ast.allocator, raw_idx, {}) catch return false;
         const node = ast.getNode(work.node);
@@ -4679,7 +4679,7 @@ fn isRetainableEs5AsyncArrowSuper(
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
 ) bool {
     if (!options.unsupported.async_await or !options.unsupported.generator or
-        arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+        arrow_idx.isNone() or @backingInt(arrow_idx) >= ast.nodes.items.len) return false;
     const arrow = ast.getNode(arrow_idx);
     const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
     if (arrow.tag != .arrow_function_expression or !captures.super_value) return false;
@@ -4687,7 +4687,7 @@ fn isRetainableEs5AsyncArrowSuper(
     if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.flags or
         (ast.extra_data.items[extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) == 0) return false;
 
-    var current = parents.get(@intFromEnum(arrow_idx)) orelse return false;
+    var current = parents.get(@backingInt(arrow_idx)) orelse return false;
     var hops: usize = 0;
     while (hops < ast.nodes.items.len) : (hops += 1) {
         if (current >= ast.nodes.items.len) return false;
@@ -4710,8 +4710,8 @@ fn isRetainableEs5AsyncArrowSuper(
                 method_owner.tag == .class_body;
             if (flags != 0 and flags != ast_mod.MethodFlags.is_static and
                 !is_async_object_method and !is_async_class_method) return false;
-            const key_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]);
-            if (key_idx.isNone() or @intFromEnum(key_idx) >= ast.nodes.items.len) return false;
+            const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]));
+            if (key_idx.isNone() or @backingInt(key_idx) >= ast.nodes.items.len) return false;
             const key = ast.getNode(key_idx);
             if (method_owner.tag == .object_expression) {
                 if (!isRetainableAsyncObjectMethodKey(ast, semantic, key_idx)) return false;
@@ -4720,7 +4720,7 @@ fn isRetainableEs5AsyncArrowSuper(
                 ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.body) return false;
             const body_raw = ast.extra_data.items[method_extra + ast_mod.MethodExtra.body];
             if (body_raw >= ast.nodes.items.len) return false;
-            var child_raw = @intFromEnum(arrow_idx);
+            var child_raw = @backingInt(arrow_idx);
             var inside_method_body = false;
             while (child_raw != current) {
                 child_raw = parents.get(child_raw) orelse return false;
@@ -4734,7 +4734,7 @@ fn isRetainableEs5AsyncArrowSuper(
                 if (is_async_object_method and !isRetainableEs5AsyncObjectMethodNode(
                     ast,
                     semantic,
-                    @enumFromInt(current),
+                    @fromBackingInt(@intCast(current)),
                     options,
                     parents,
                 )) return false;
@@ -4771,7 +4771,7 @@ fn isRetainableEs5AsyncArrowStateMachine(
     parents: *const std.AutoHashMapUnmanaged(u32, u32),
 ) bool {
     if (!options.unsupported.async_await or !options.unsupported.generator or
-        arrow_idx.isNone() or @intFromEnum(arrow_idx) >= ast.nodes.items.len) return false;
+        arrow_idx.isNone() or @backingInt(arrow_idx) >= ast.nodes.items.len) return false;
     const arrow = ast.getNode(arrow_idx);
     if (arrow.tag != .arrow_function_expression) return false;
     const flags_at = arrow.data.extra + ast_mod.ArrowExtra.flags;
@@ -4783,7 +4783,7 @@ fn isRetainableEs5AsyncArrowStateMachine(
         return isRetainableEs5AsyncArrowSuper(ast, semantic, arrow_idx, options, parents);
 
     // Parameter initializers run before the async arrow's body wrapper exists.
-    var current = parents.get(@intFromEnum(arrow_idx)) orelse return false;
+    var current = parents.get(@backingInt(arrow_idx)) orelse return false;
     var hops: usize = 0;
     while (hops < ast.nodes.items.len) : (hops += 1) {
         if (current >= ast.nodes.items.len) return false;
@@ -4846,9 +4846,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
     if (ast.nodes.items.len == 0) return false;
     const root_idx = ast.transformed_root orelse @as(
         ast_mod.NodeIndex,
-        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
     );
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len or
+    if (root_idx.isNone() or @backingInt(root_idx) >= ast.nodes.items.len or
         ast.getNode(root_idx).tag != .program) return false;
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
@@ -4885,7 +4885,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
     if (options.unsupported.async_await) {
         for (reachable_nodes) |raw_idx| {
             const node = ast.nodes.items[raw_idx];
-            const arrow_idx: ast_mod.NodeIndex = @enumFromInt(raw_idx);
+            const arrow_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(raw_idx));
             var retainable = false;
             if (options.unsupported.generator) {
                 if (node.tag == .arrow_function_expression) {
@@ -4954,24 +4954,24 @@ fn canRetainGraphForAuditedSyntaxSubset(
             if (node.tag == .for_statement) {
                 const extra = node.data.extra;
                 if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4) return false;
-                const initializer: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-                if (!initializer.isNone() and @intFromEnum(initializer) < ast.nodes.items.len and
-                    ast.nodes.items[@intFromEnum(initializer)].tag == .variable_declaration and
-                    ast.variableDeclarationKind(ast.nodes.items[@intFromEnum(initializer)]).isLexical())
+                const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+                if (!initializer.isNone() and @backingInt(initializer) < ast.nodes.items.len and
+                    ast.nodes.items[@backingInt(initializer)].tag == .variable_declaration and
+                    ast.variableDeclarationKind(ast.nodes.items[@backingInt(initializer)]).isLexical())
                 {
                     if (!isSafeRetainedLexicalForStatement(ast, semantic, node)) return false;
-                    lowered_classic_for_heads.put(ast.allocator, @intFromEnum(initializer), {}) catch return false;
+                    lowered_classic_for_heads.put(ast.allocator, @backingInt(initializer), {}) catch return false;
                 }
             }
             if (node.tag != .for_in_statement and
                 !(node.tag == .for_of_statement and options.unsupported.for_of)) continue;
             const head = node.data.ternary.a;
-            if (head.isNone() or @intFromEnum(head) >= ast.nodes.items.len) return false;
-            const head_node = ast.nodes.items[@intFromEnum(head)];
+            if (head.isNone() or @backingInt(head) >= ast.nodes.items.len) return false;
+            const head_node = ast.nodes.items[@backingInt(head)];
             if (head_node.tag == .variable_declaration and
                 ast.variableDeclarationKind(head_node) != .@"var")
             {
-                const head_raw = @intFromEnum(head);
+                const head_raw = @backingInt(head);
                 const lowered_heads = if (node.tag == .for_in_statement)
                     &lowered_for_in_heads
                 else
@@ -4993,9 +4993,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
         if (node.tag != .for_in_statement and node.tag != .for_of_statement and
             node.tag != .for_await_of_statement) continue;
         const head = node.data.ternary.a;
-        if (head.isNone() or @intFromEnum(head) >= ast.nodes.items.len) return false;
-        if (ast.nodes.items[@intFromEnum(head)].tag == .variable_declaration) {
-            destructuring_loop_heads.put(ast.allocator, @intFromEnum(head), {}) catch return false;
+        if (head.isNone() or @backingInt(head) >= ast.nodes.items.len) return false;
+        if (ast.nodes.items[@backingInt(head)].tag == .variable_declaration) {
+            destructuring_loop_heads.put(ast.allocator, @backingInt(head), {}) catch return false;
         }
     }
 
@@ -5034,7 +5034,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const pattern_nodes = ast_walk.collectReachableNodeIndicesFrom(
                     ast.allocator,
                     ast,
-                    @enumFromInt(binding_raw),
+                    @fromBackingInt(@intCast(binding_raw)),
                 ) catch return false;
                 defer ast.allocator.free(pattern_nodes);
                 for (pattern_nodes) |pattern_raw| {
@@ -5046,10 +5046,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
         for (reachable_nodes) |raw_idx| {
             const assignment = ast.nodes.items[raw_idx];
             if (assignment.tag != .assignment_expression or
-                assignment.data.binary.flags != @intFromEnum(token_mod.Kind.eq)) continue;
+                assignment.data.binary.flags != @backingInt(token_mod.Kind.eq)) continue;
             const target = assignment.data.binary.left;
-            if (target.isNone() or @intFromEnum(target) >= ast.nodes.items.len) return false;
-            const target_tag = ast.nodes.items[@intFromEnum(target)].tag;
+            if (target.isNone() or @backingInt(target) >= ast.nodes.items.len) return false;
+            const target_tag = ast.nodes.items[@backingInt(target)].tag;
             if (target_tag != .array_assignment_target and target_tag != .object_assignment_target) continue;
             const target_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, target) catch return false;
             defer ast.allocator.free(target_nodes);
@@ -5071,15 +5071,15 @@ fn canRetainGraphForAuditedSyntaxSubset(
             const pattern_raw = extras[extra + ast_mod.FormalParameterExtra.pattern];
             const default_raw = extras[extra + ast_mod.FormalParameterExtra.default];
             if (pattern_raw >= ast.nodes.items.len) return false;
-            const default_idx: ast_mod.NodeIndex = @enumFromInt(default_raw);
-            if (!default_idx.isNone() and @intFromEnum(default_idx) >= ast.nodes.items.len) return false;
+            const default_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(default_raw));
+            if (!default_idx.isNone() and @backingInt(default_idx) >= ast.nodes.items.len) return false;
             const pattern_tag = ast.nodes.items[pattern_raw].tag;
             if ((pattern_tag != .array_pattern and pattern_tag != .object_pattern) or
                 !default_idx.isNone()) continue;
             const pattern_nodes = ast_walk.collectReachableNodeIndicesFrom(
                 ast.allocator,
                 ast,
-                @enumFromInt(pattern_raw),
+                @fromBackingInt(@intCast(pattern_raw)),
             ) catch return false;
             defer ast.allocator.free(pattern_nodes);
             var simple_pattern = true;
@@ -5112,7 +5112,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 const pattern_nodes = ast_walk.collectReachableNodeIndicesFrom(
                     ast.allocator,
                     ast,
-                    @enumFromInt(parameter_raw),
+                    @fromBackingInt(@intCast(parameter_raw)),
                 ) catch return false;
                 defer ast.allocator.free(pattern_nodes);
                 var simple_pattern = true;
@@ -5149,11 +5149,11 @@ fn canRetainGraphForAuditedSyntaxSubset(
             if (owner_node.tag == .property_definition) {
                 const key_at = owner_node.data.extra + ast_mod.PropertyExtra.key;
                 if (key_at >= ast.extra_data.items.len) return false;
-                const key: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[key_at]);
-                if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len or
-                    ast.nodes.items[@intFromEnum(key)].tag != .computed_property_key or
+                const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[key_at]));
+                if (key.isNone() or @backingInt(key) >= ast.nodes.items.len or
+                    ast.nodes.items[@backingInt(key)].tag != .computed_property_key or
                     !isRetainableSimpleStaticClassField(allocator, ast, semantic, owner_node)) continue;
-                computed_object_keys.put(ast.allocator, @intFromEnum(key), .static_class_field) catch return false;
+                computed_object_keys.put(ast.allocator, @backingInt(key), .static_class_field) catch return false;
                 continue;
             }
             if (owner_node.tag != .object_expression) continue;
@@ -5175,23 +5175,23 @@ fn canRetainGraphForAuditedSyntaxSubset(
                         const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
                         if ((flags & ast_mod.MethodFlags.is_generator) != 0) break :blk null;
                         const is_async = (flags & ast_mod.MethodFlags.is_async) != 0;
-                        const key_idx: ast_mod.NodeIndex = @enumFromInt(
+                        const key_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(
                             ast.extra_data.items[method_extra + ast_mod.MethodExtra.key],
-                        );
+                        ));
                         if (is_async and !isRetainableAsyncObjectMethodKey(ast, semantic, key_idx)) break :blk null;
                         const is_accessor = (flags & (ast_mod.MethodFlags.is_getter | ast_mod.MethodFlags.is_setter)) != 0;
                         break :blk .{
-                            .node = @enumFromInt(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key]),
+                            .node = @fromBackingInt(@intCast(ast.extra_data.items[method_extra + ast_mod.MethodExtra.key])),
                             .owner = if (is_accessor) .accessor else .method,
                         };
                     },
                     else => null,
                 };
                 const computed = candidate orelse continue;
-                if (computed.node.isNone() or @intFromEnum(computed.node) >= ast.nodes.items.len) return false;
-                if (ast.nodes.items[@intFromEnum(computed.node)].tag != .computed_property_key) continue;
+                if (computed.node.isNone() or @backingInt(computed.node) >= ast.nodes.items.len) return false;
+                if (ast.nodes.items[@backingInt(computed.node)].tag != .computed_property_key) continue;
                 if (computed.owner == .accessor and methodHasSuperExpression(ast, member)) continue;
-                computed_object_keys.put(ast.allocator, @intFromEnum(computed.node), computed.owner) catch return false;
+                computed_object_keys.put(ast.allocator, @backingInt(computed.node), computed.owner) catch return false;
             }
         }
     }
@@ -5348,17 +5348,17 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .variable_declarator => {
                 if (node.data.extra >= ast.extra_data.items.len) return false;
-                const binding: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-                if (binding.isNone() or @intFromEnum(binding) >= ast.nodes.items.len) return false;
-                const binding_tag = ast.nodes.items[@intFromEnum(binding)].tag;
+                const binding: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
+                if (binding.isNone() or @backingInt(binding) >= ast.nodes.items.len) return false;
+                const binding_tag = ast.nodes.items[@backingInt(binding)].tag;
                 if (binding_tag == .binding_identifier) continue;
                 if (binding_tag != .array_pattern and binding_tag != .object_pattern) return false;
                 if (options.unsupported.destructuring) {
                     if (lowered_var_destructuring_declarators.contains(raw_idx) and
-                        lowered_var_destructuring_nodes.contains(@intFromEnum(binding)))
+                        lowered_var_destructuring_nodes.contains(@backingInt(binding)))
                     {
                         found_lowered_var_destructuring = true;
-                    } else if (lowered_parameter_destructuring_nodes.contains(@intFromEnum(binding))) {
+                    } else if (lowered_parameter_destructuring_nodes.contains(@backingInt(binding))) {
                         found_lowered_parameter_destructuring = true;
                     } else return false;
                 }
@@ -5366,20 +5366,20 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .formal_parameter => {
                 const extra = node.data.extra;
                 if (extra + 2 >= ast.extra_data.items.len) return false;
-                const pattern: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-                const default_value: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + 2]);
-                if (pattern.isNone() or @intFromEnum(pattern) >= ast.nodes.items.len or
+                const pattern: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+                const default_value: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + 2]));
+                if (pattern.isNone() or @backingInt(pattern) >= ast.nodes.items.len or
                     (!default_value.isNone() and options.unsupported.default_params)) return false;
-                const pattern_tag = ast.nodes.items[@intFromEnum(pattern)].tag;
+                const pattern_tag = ast.nodes.items[@backingInt(pattern)].tag;
                 if (pattern_tag != .binding_identifier) {
                     if (pattern_tag != .array_pattern and pattern_tag != .object_pattern) return false;
                     if (options.unsupported.destructuring) {
-                        if (lowered_parameter_destructuring_nodes.contains(@intFromEnum(pattern))) {
+                        if (lowered_parameter_destructuring_nodes.contains(@backingInt(pattern))) {
                             found_lowered_parameter_destructuring = true;
                         } else return false;
                     }
                     if (pattern_tag == .object_pattern and options.unsupported.object_spread and
-                        ast.nodeListSplitRest(ast.nodes.items[@intFromEnum(pattern)].data.list).rest_operand != null)
+                        ast.nodeListSplitRest(ast.nodes.items[@backingInt(pattern)].data.list).rest_operand != null)
                     {
                         found_lowered_object_rest = true;
                     } else {
@@ -5497,7 +5497,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 if (node.data.binary.right.isNone()) found_object_shorthand = true;
             },
             .assignment_expression => {
-                const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const operator: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (options.unsupported.exponentiation and operator == .star2_eq) {
                     // Ordinary member temps and direct super-property temps
                     // are registered by their respective semantic editors.
@@ -5518,7 +5518,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
                 }
             },
             .binary_expression, .logical_expression => {
-                const operator: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const operator: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (node.tag == .binary_expression and options.unsupported.exponentiation and
                     operator == .star2)
                 {
@@ -5540,10 +5540,10 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .array_expression, .call_expression, .new_expression => {
                 if (options.unsupported.optional_chaining and
-                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
+                    ast_mod.spineHasOptionalChain(ast, @fromBackingInt(@intCast(raw_idx))))
                 {
                     if (node.tag != .call_expression or
-                        (!isRetainableOptionalCall(ast, semantic, @enumFromInt(raw_idx)) and
+                        (!isRetainableOptionalCall(ast, semantic, @fromBackingInt(@intCast(raw_idx))) and
                             !retained_static_field_optional_nodes.contains(raw_idx)))
                         return false;
                     found_lowered_optional_chaining = true;
@@ -5555,12 +5555,12 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .static_member_expression, .computed_member_expression => {
                 if (options.unsupported.optional_chaining and
-                    ast_mod.spineHasOptionalChain(ast, @enumFromInt(raw_idx)))
+                    ast_mod.spineHasOptionalChain(ast, @fromBackingInt(@intCast(raw_idx))))
                 {
                     // Optional member lowering evaluates this property once
                     // inside the null-checked branch. Audited ordinary member
                     // and call tails can follow; optional calls retain resync.
-                    if (!isRetainableOptionalChainMemberAccess(ast, semantic, @enumFromInt(raw_idx)) and
+                    if (!isRetainableOptionalChainMemberAccess(ast, semantic, @fromBackingInt(@intCast(raw_idx))) and
                         !retained_static_field_optional_nodes.contains(raw_idx))
                         return false;
                     found_lowered_optional_chaining = true;
@@ -5659,7 +5659,7 @@ fn canRetainGraphForAuditedSyntaxSubset(
             },
             .for_in_statement => {
                 const head = node.data.ternary.a;
-                if (!head.isNone() and lowered_for_in_heads.contains(@intFromEnum(head))) {
+                if (!head.isNone() and lowered_for_in_heads.contains(@backingInt(head))) {
                     found_lowered_for_in = true;
                 } else {
                     found_native_for_in = true;
@@ -5668,8 +5668,8 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .for_statement => {
                 const extra = node.data.extra;
                 if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra < 4) return false;
-                const initializer: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-                if (!initializer.isNone() and lowered_classic_for_heads.contains(@intFromEnum(initializer)))
+                const initializer: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+                if (!initializer.isNone() and lowered_classic_for_heads.contains(@backingInt(initializer)))
                     found_lowered_classic_for = true;
             },
             .for_await_of_statement => {
@@ -5696,9 +5696,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .property_definition => {
                 const key_at = node.data.extra + ast_mod.PropertyExtra.key;
                 if (key_at >= ast.extra_data.items.len) return false;
-                const key: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[key_at]);
-                if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len) return false;
-                if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier) {
+                const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[key_at]));
+                if (key.isNone() or @backingInt(key) >= ast.nodes.items.len) return false;
+                if (ast.nodes.items[@backingInt(key)].tag == .private_identifier) {
                     if (options.unsupported.class_private_field) return false;
                 } else if (options.unsupported.class_field or options.unsupported.class) {
                     if (!isRetainableSimpleStaticClassField(allocator, ast, semantic, node)) return false;
@@ -5729,9 +5729,9 @@ fn canRetainGraphForAuditedSyntaxSubset(
             .method_definition => {
                 const key_at = node.data.extra + ast_mod.MethodExtra.key;
                 if (key_at >= ast.extra_data.items.len) return false;
-                const key: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[key_at]);
-                if (key.isNone() or @intFromEnum(key) >= ast.nodes.items.len) return false;
-                if (ast.nodes.items[@intFromEnum(key)].tag == .private_identifier and
+                const key: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[key_at]));
+                if (key.isNone() or @backingInt(key) >= ast.nodes.items.len) return false;
+                if (ast.nodes.items[@backingInt(key)].tag == .private_identifier and
                     options.unsupported.class_private_method) return false;
                 const flags_at = node.data.extra + ast_mod.MethodExtra.flags;
                 if (flags_at >= ast.extra_data.items.len) return false;
@@ -5917,9 +5917,9 @@ fn hasReachableDerivedClass(ast: *const ast_mod.Ast) bool {
     if (ast.nodes.items.len == 0) return false;
     const root_idx = ast.transformed_root orelse @as(
         ast_mod.NodeIndex,
-        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
     );
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len or
+    if (root_idx.isNone() or @backingInt(root_idx) >= ast.nodes.items.len or
         ast.getNode(root_idx).tag != .program) return false;
     const reachable_nodes = ast_walk.collectReachableNodeIndicesFrom(ast.allocator, ast, root_idx) catch return false;
     defer ast.allocator.free(reachable_nodes);
@@ -5930,7 +5930,7 @@ fn hasReachableDerivedClass(ast: *const ast_mod.Ast) bool {
         const extra = node.data.extra;
         if (extra > ast.extra_data.items.len or
             ast.extra_data.items.len - extra <= ast_mod.ClassExtra.super) return false;
-        const super_idx: ast_mod.NodeIndex = @enumFromInt(ast.extra_data.items[extra + ast_mod.ClassExtra.super]);
+        const super_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra + ast_mod.ClassExtra.super]));
         if (!super_idx.isNone()) return true;
     }
     return false;
@@ -6039,9 +6039,9 @@ fn hasFileWorkletDirective(ast: *const ast_mod.Ast) bool {
     if (ast.nodes.items.len == 0) return false;
     const root_idx = ast.transformed_root orelse @as(
         ast_mod.NodeIndex,
-        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
     );
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return true;
+    if (root_idx.isNone() or @backingInt(root_idx) >= ast.nodes.items.len) return true;
     const root = ast.getNode(root_idx);
     if (root.tag != .program) return true;
 
@@ -6051,7 +6051,7 @@ fn hasFileWorkletDirective(ast: *const ast_mod.Ast) bool {
     while (i < list.len) : (i += 1) {
         const raw_stmt = ast.extra_data.items[list.start + i];
         if (raw_stmt >= ast.nodes.items.len) return true;
-        const text = worklet_mod.directiveText(ast, @enumFromInt(raw_stmt)) orelse return false;
+        const text = worklet_mod.directiveText(ast, @fromBackingInt(@intCast(raw_stmt))) orelse return false;
         if (std.mem.eql(u8, text, "worklet")) return true;
     }
     return false;
@@ -6079,7 +6079,7 @@ fn workletCallCalleeName(ast: *const ast_mod.Ast, node: ast_mod.Node) ?[]const u
 
 fn functionHasWorkletDirective(ast: *const ast_mod.Ast, node: ast_mod.Node) bool {
     const body_idx = ast.functionBodyBlock(node) orelse return false;
-    const body_raw = @intFromEnum(body_idx);
+    const body_raw = @backingInt(body_idx);
     if (body_raw >= ast.nodes.items.len) return true;
     const body = ast.nodes.items[body_raw];
     if (body.tag != .block_statement and body.tag != .function_body) return true;
@@ -6090,7 +6090,7 @@ fn functionHasWorkletDirective(ast: *const ast_mod.Ast, node: ast_mod.Node) bool
     while (i < scan_len) : (i += 1) {
         const raw_stmt = ast.extra_data.items[list.start + i];
         if (raw_stmt >= ast.nodes.items.len) return true;
-        const text = worklet_mod.directiveText(ast, @enumFromInt(raw_stmt)) orelse continue;
+        const text = worklet_mod.directiveText(ast, @fromBackingInt(@intCast(raw_stmt))) orelse continue;
         if (std.mem.eql(u8, text, "worklet")) return true;
     }
     return false;
@@ -6240,7 +6240,7 @@ fn canKeepPrepassSemanticGraph(
                 found_transform = true;
             },
             .export_all_declaration => {
-                const node_idx: ast_mod.NodeIndex = @enumFromInt(@as(u32, @intCast(raw_node_idx)));
+                const node_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(@as(u32, @intCast(raw_node_idx))));
                 if (top_level_statements == null) {
                     top_level_statements = ast_walk.topLevelStatementMask(ast) catch return false;
                 }
@@ -6307,7 +6307,7 @@ fn canKeepPrepassSemanticGraph(
                     if (isBoundSourceIdentifierReference(
                         ast,
                         semantic,
-                        @enumFromInt(@as(u32, @intCast(raw_node_idx))),
+                        @fromBackingInt(@intCast(@as(u32, @intCast(raw_node_idx)))),
                     )) continue;
                     // Unbound escaped references can leave source-name keyed
                     // external-name reservations ambiguous. A raw or decoded name
@@ -6752,7 +6752,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     if (debug_symbol_coverage and ast_ptr.transformed_root == null and parser_node_count > 0) {
         if (module.semantic) |*sem| {
             const coverage = @import("../../transformer/symbol_coverage.zig");
-            const source_root: ast_mod.NodeIndex = @enumFromInt(parser_node_count - 1);
+            const source_root: ast_mod.NodeIndex = @fromBackingInt(@intCast(parser_node_count - 1));
             const source_scope_owner_audit = coverage.checkExactWithDeclarationAnchors(
                 arena_alloc,
                 ast_ptr,
@@ -6780,7 +6780,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     if (opts.tla_chunk_wrapped and opts.unsupported.top_level_await) {
         const es2022_tla_mod = @import("../../transformer/es2022_tla.zig");
         if (ast_ptr.nodes.items.len > 0) {
-            const root_idx: @import("../../parser/ast.zig").NodeIndex = @enumFromInt(ast_ptr.nodes.items.len - 1);
+            const root_idx: @import("../../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(ast_ptr.nodes.items.len - 1));
             module.tla_delegated_to_chunk = es2022_tla_mod.hasTopLevelAwait(ast_ptr, root_idx) catch false;
         }
     }
@@ -6799,7 +6799,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     // #4598: `lowerProgram` 이 만든 async IIFE statement 를 module 로 넘긴다 —
     // emitter 가 `__esm` factory 안에서 그 문장만 `return <expr>;` 로 방출한다.
     if (transformer.tla_iife_stmt) |ix| {
-        module.tla_iife_stmt = @intFromEnum(ix);
+        module.tla_iife_stmt = @backingInt(ix);
         module.tla_promise_reference = null;
     }
     // #4210: 다운레벨 못한 ES2025 inline modifier 가 출력에 보존됨 → loud 진단
@@ -7209,7 +7209,7 @@ fn graphOwnedSyntheticRenameTestSymbol(
     return .{
         .name = Span.EMPTY,
         .kind = kind,
-        .scope_id = @enumFromInt(scope_raw),
+        .scope_id = @fromBackingInt(@intCast(scope_raw)),
         .declaration_span = Span.EMPTY,
         .synthetic_kind = synthetic_kind,
         .synthetic_name = name,
@@ -7217,7 +7217,7 @@ fn graphOwnedSyntheticRenameTestSymbol(
 }
 
 test "graph-owned singleton synthetic renames follow producer identity" {
-    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
     const expected_id = bundler_symbol.SymbolID.make(module_index, 1);
     var rebuilt: bundler_symbol.RenameTable = .{};
     defer rebuilt.deinit(std.testing.allocator);
@@ -7239,7 +7239,7 @@ test "graph-owned singleton synthetic renames follow producer identity" {
             .{
                 .name = Span.EMPTY,
                 .kind = .variable_let,
-                .scope_id = @enumFromInt(0),
+                .scope_id = @fromBackingInt(@intCast(0)),
                 .declaration_span = Span.EMPTY,
             },
             graphOwnedSyntheticRenameTestSymbol(singleton.synthetic, singleton.symbol, 1, "producer_after"),
@@ -7270,7 +7270,7 @@ test "graph-owned singleton synthetic renames follow producer identity" {
         .{
             .name = Span.EMPTY,
             .kind = .variable_let,
-            .scope_id = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
             .declaration_span = Span.EMPTY,
         },
         graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 5, "exports_stable"),
@@ -7291,7 +7291,7 @@ test "graph-owned singleton synthetic renames follow producer identity" {
 }
 
 test "graph-owned singleton synthetic renames reject ambiguous mappings" {
-    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
     const old_symbols = [_]SemanticSymbol{
         graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 1, "exports_before_a"),
         graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 2, "exports_before_b"),
@@ -7335,7 +7335,7 @@ test "graph-owned singleton synthetic renames reject ambiguous mappings" {
 }
 
 test "graph-owned synthetic renames preserve non-singleton and kind boundaries" {
-    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
     const old_helper = [_]SemanticSymbol{
         graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__helper_before"),
     };
@@ -7387,7 +7387,7 @@ test "graph-owned synthetic renames preserve non-singleton and kind boundaries" 
 }
 
 test "graph-owned synthetic rename does not replace an existing exact mapping" {
-    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(7);
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
     const old_symbols = [_]SemanticSymbol{
         graphOwnedSyntheticRenameTestSymbol(.cjs_exports, .variable_var, 1, "exports"),
     };
@@ -7756,10 +7756,10 @@ pub fn resyncAfterConstMaterializationRetainingGraph(
 
     if (materialized_nodes.len == 0) return error.MaterializedReferenceMissing;
     for (materialized_nodes) |node_index| {
-        if (node_index.isNone() or @intFromEnum(node_index) >= ast.nodes.items.len) {
+        if (node_index.isNone() or @backingInt(node_index) >= ast.nodes.items.len) {
             return error.InvalidMaterializedNode;
         }
-        if (!isMaterializedPrimitiveLiteral(ast.nodes.items[@intFromEnum(node_index)].tag)) {
+        if (!isMaterializedPrimitiveLiteral(ast.nodes.items[@backingInt(node_index)].tag)) {
             return error.InvalidMaterializedNode;
         }
     }
@@ -7810,7 +7810,7 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
 
     for (removed_nodes) |node_index| {
         if (node_index.isNone()) return false;
-        const raw = @intFromEnum(node_index);
+        const raw = @backingInt(node_index);
         if (raw >= ast.nodes.items.len or raw >= semantic.symbol_ids.len) return false;
         if (removed.isSet(raw)) return false;
         removed.set(raw);
@@ -7853,21 +7853,21 @@ pub fn resyncAfterNodeBufferCapabilityFoldRetainingGraph(
     defer references_to_remove.deinit(arena_alloc);
     for (semantic.references) |reference| {
         if (!reference.declaration_node_index.isNone()) {
-            const declaration_raw = @intFromEnum(reference.declaration_node_index);
+            const declaration_raw = @backingInt(reference.declaration_node_index);
             if (declaration_raw < ast.nodes.items.len and removed.isSet(declaration_raw)) return false;
         }
         if (reference.node_index.isNone()) continue;
-        const raw = @intFromEnum(reference.node_index);
+        const raw = @backingInt(reference.node_index);
         if (raw >= ast.nodes.items.len) return false;
         if (!removed.isSet(raw)) continue;
         const node_symbol = semantic.symbol_ids[raw] orelse return false;
-        if (node_symbol != @intFromEnum(reference.symbol_id)) return false;
+        if (node_symbol != @backingInt(reference.symbol_id)) return false;
         if (reference_nodes.isSet(raw)) return false;
         reference_nodes.set(raw);
         try references_to_remove.append(arena_alloc, reference.node_index);
     }
     for (removed_nodes) |node_index| {
-        const raw = @intFromEnum(node_index);
+        const raw = @backingInt(node_index);
         if (semantic.symbol_ids[raw] != null and !reference_nodes.isSet(raw)) return false;
     }
 
@@ -8147,7 +8147,7 @@ test "rename carry-over follows same-node SymbolID lineage and drops ambiguity" 
     var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer test_arena.deinit();
     const allocator = test_arena.allocator();
-    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(0);
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(0));
     const node_tags = [_]NodeTag{
         .binding_identifier,
         .identifier_reference,
@@ -8202,7 +8202,7 @@ test "rename carry-over drops many-to-one node lineage" {
     var test_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer test_arena.deinit();
     const allocator = test_arena.allocator();
-    const module_index: bundler_symbol.ModuleIndex = @enumFromInt(0);
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(0));
     const node_tags = [_]NodeTag{ .binding_identifier, .binding_identifier };
     const old_ids = [_]?u32{ 1, 2 };
     const new_ids = [_]?u32{ 4, 4 };
@@ -8267,8 +8267,8 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
     for (parser.ast.nodes.items, 0..) |node, node_index| {
         if (node.tag != .binding_identifier or node_index >= analyzer.symbol_ids.items.len) continue;
         const symbol_id = analyzer.symbol_ids.items[node_index] orelse continue;
-        if (symbol_id == value_symbol.?) value_binding_node = @enumFromInt(node_index);
-        if (symbol_id == shadow_parameter_symbol.?) shadow_parameter_node = @enumFromInt(node_index);
+        if (symbol_id == value_symbol.?) value_binding_node = @fromBackingInt(@intCast(node_index));
+        if (symbol_id == shadow_parameter_symbol.?) shadow_parameter_node = @fromBackingInt(@intCast(node_index));
     }
     try std.testing.expect(!value_binding_node.isNone());
     try std.testing.expect(!shadow_parameter_node.isNone());
@@ -8276,8 +8276,8 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
     var materialized_nodes: [2]ast_mod.NodeIndex = undefined;
     var materialized_count: usize = 0;
     for (analyzer.references.items) |reference| {
-        if (@intFromEnum(reference.symbol_id) != value_symbol.? or reference.node_index.isNone()) continue;
-        const node_index = @intFromEnum(reference.node_index);
+        if (@backingInt(reference.symbol_id) != value_symbol.? or reference.node_index.isNone()) continue;
+        const node_index = @backingInt(reference.node_index);
         try std.testing.expectEqual(NodeTag.identifier_reference, parser.ast.nodes.items[node_index].tag);
         const span = try parser.ast.addString("7");
         parser.ast.nodes.items[node_index] = .{
@@ -8291,7 +8291,7 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
     }
     try std.testing.expectEqual(@as(usize, 2), materialized_count);
 
-    var module = Module.init(@enumFromInt(0), "test.js");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "test.js");
     module.source = source;
     module.ast = parser.ast;
     module.parse_arena = &test_arena;
@@ -8326,13 +8326,13 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
     );
 
     const semantic = &module.semantic.?;
-    try std.testing.expectEqual(value_symbol.?, semantic.symbol_ids[@intFromEnum(value_binding_node)].?);
+    try std.testing.expectEqual(value_symbol.?, semantic.symbol_ids[@backingInt(value_binding_node)].?);
     try std.testing.expectEqual(
         shadow_parameter_symbol.?,
-        semantic.symbol_ids[@intFromEnum(shadow_parameter_node)].?,
+        semantic.symbol_ids[@backingInt(shadow_parameter_node)].?,
     );
     for (materialized_nodes[0..materialized_count]) |node_index| {
-        const raw = @intFromEnum(node_index);
+        const raw = @backingInt(node_index);
         try std.testing.expect(semantic.symbol_ids[raw] == null);
         try std.testing.expect(module.transform_cache.?.symbol_ids[raw] == null);
     }
@@ -8340,8 +8340,8 @@ test "const materialization keeps surviving SymbolIds and removes exact referenc
     var value_reference_count: usize = 0;
     var shadow_parameter_reference_count: usize = 0;
     for (semantic.references) |reference| {
-        if (@intFromEnum(reference.symbol_id) == value_symbol.?) value_reference_count += 1;
-        if (@intFromEnum(reference.symbol_id) == shadow_parameter_symbol.?) shadow_parameter_reference_count += 1;
+        if (@backingInt(reference.symbol_id) == value_symbol.?) value_reference_count += 1;
+        if (@backingInt(reference.symbol_id) == shadow_parameter_symbol.?) shadow_parameter_reference_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 0), value_reference_count);
     try std.testing.expectEqual(@as(usize, 1), shadow_parameter_reference_count);
@@ -8389,7 +8389,7 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         if (node.tag != .binding_identifier or raw >= analyzer.symbol_ids.items.len) continue;
         const name = parser.ast.getText(node.span);
         if (std.mem.eql(u8, name, "Buffer")) {
-            buffer_binding = @enumFromInt(raw);
+            buffer_binding = @fromBackingInt(@intCast(raw));
             buffer_symbol = analyzer.symbol_ids.items[raw];
         } else if (std.mem.eql(u8, name, "SafeBuffer")) {
             fallback_symbol = analyzer.symbol_ids.items[raw];
@@ -8403,13 +8403,13 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     var fallback_refs_before: usize = 0;
     for (analyzer.references.items) |reference| {
         if (reference.node_index.isNone()) continue;
-        if (@intFromEnum(reference.symbol_id) == buffer_symbol.?) buffer_refs_before += 1;
-        if (@intFromEnum(reference.symbol_id) == fallback_symbol.?) fallback_refs_before += 1;
+        if (@backingInt(reference.symbol_id) == buffer_symbol.?) buffer_refs_before += 1;
+        if (@backingInt(reference.symbol_id) == fallback_symbol.?) fallback_refs_before += 1;
     }
     try std.testing.expect(buffer_refs_before >= 4);
     try std.testing.expect(fallback_refs_before > 0);
 
-    var module = Module.init(@enumFromInt(0), "test.cjs");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "test.cjs");
     module.source = source;
     module.ast = parser.ast;
     module.parse_arena = &test_arena;
@@ -8459,15 +8459,15 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
     ));
 
     const semantic = &module.semantic.?;
-    const binding_raw = @intFromEnum(buffer_binding.?);
+    const binding_raw = @backingInt(buffer_binding.?);
     try std.testing.expectEqual(buffer_symbol.?, semantic.symbol_ids[binding_raw].?);
     try std.testing.expectEqual(buffer_symbol.?, module.transform_cache.?.symbol_ids[binding_raw].?);
     var buffer_refs_after: usize = 0;
     var fallback_refs_after: usize = 0;
     for (semantic.references) |reference| {
         if (reference.node_index.isNone()) continue;
-        if (@intFromEnum(reference.symbol_id) == buffer_symbol.?) buffer_refs_after += 1;
-        if (@intFromEnum(reference.symbol_id) == fallback_symbol.?) fallback_refs_after += 1;
+        if (@backingInt(reference.symbol_id) == buffer_symbol.?) buffer_refs_after += 1;
+        if (@backingInt(reference.symbol_id) == fallback_symbol.?) fallback_refs_after += 1;
     }
     try std.testing.expectEqual(buffer_refs_before - 4, buffer_refs_after);
     try std.testing.expectEqual(@as(usize, 0), fallback_refs_after);
@@ -8476,7 +8476,7 @@ test "direct Node Buffer capability fold retains SymbolIds and removes exact ref
         semantic.symbols.items[buffer_symbol.?].reference_count,
     );
     for (removed_nodes.items) |node_index| {
-        const raw = @intFromEnum(node_index);
+        const raw = @backingInt(node_index);
         try std.testing.expect(semantic.symbol_ids[raw] == null);
         try std.testing.expect(module.transform_cache.?.symbol_ids[raw] == null);
     }

@@ -25,7 +25,7 @@ pub fn visitFlowEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
     const new_members = try self.visitExtraList(.{ .start = self.readU32(e, 1), .len = self.readU32(e, 2) });
     const base_type = self.readU32(e, 3);
     return self.addExtraNode(.flow_enum_declaration, node.span, &.{
-        @intFromEnum(new_name), new_members.start, new_members.len, base_type,
+        @backingInt(new_name), new_members.start, new_members.len, base_type,
     });
 }
 
@@ -53,7 +53,7 @@ pub fn visitEnumDeclaration(self: *Transformer, node: Node) Error!NodeIndex {
     const new_name = try self.visitNode(self.readNodeIdx(e, 0));
     const new_members = try visitEnumMembers(self, node);
     return self.addExtraNode(.ts_enum_declaration, node.span, &.{
-        @intFromEnum(new_name), new_members.start, new_members.len, flags & ~@as(u32, 1),
+        @backingInt(new_name), new_members.start, new_members.len, flags & ~@as(u32, 1),
     });
 }
 
@@ -78,7 +78,7 @@ fn visitEnumMembers(self: *Transformer, node: Node) Error!ast_mod.NodeList {
     var codegen_counts = true;
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
-        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const member_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         const member = self.ast.getNode(member_idx);
         const value = ev.values.items[i];
         if (member.tag != .ts_enum_member) {
@@ -234,7 +234,7 @@ fn evaluateEnum(self: *Transformer, node: Node, prior: []const ConstEnumMember) 
     var prev_number: ?f64 = if (prior.len == 0) -1 else null;
     var i: u32 = 0;
     while (i < members_len) : (i += 1) {
-        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[members_start + i]);
+        const member_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[members_start + i]));
         const member_node = self.ast.getNode(member_idx);
         const member_name_src = if (member_node.tag == .ts_enum_member) enumMemberKeyName(self, member_node.data.binary.left) else null;
         const init_idx = if (member_node.tag == .ts_enum_member) member_node.data.binary.right else NodeIndex.none;
@@ -409,7 +409,7 @@ fn evalConstEnumExpr(
             const ue = node.data.extra;
             if (ue + 1 >= self.ast.extra_data.items.len) return null;
             const operand_idx = self.readNodeIdx(ue, 0);
-            const op = @as(token_mod.Kind, @enumFromInt(self.readU32(ue, 1) & 0xff));
+            const op = @as(token_mod.Kind, @fromBackingInt(@intCast(self.readU32(ue, 1) & 0xff)));
             const v = (try evalConstEnumExpr(self, operand_idx, ctx)) orelse return null;
             if (v != .number) return null;
             const n = v.number;
@@ -424,7 +424,7 @@ fn evalConstEnumExpr(
         .binary_expression => {
             const lv = (try evalConstEnumExpr(self, node.data.binary.left, ctx)) orelse return null;
             const rv = (try evalConstEnumExpr(self, node.data.binary.right, ctx)) orelse return null;
-            const op = @as(token_mod.Kind, @enumFromInt(node.data.binary.flags));
+            const op = @as(token_mod.Kind, @fromBackingInt(@intCast(node.data.binary.flags)));
             // 문자열 + 문자열은 concatenation (TS 가 허용).
             if (lv == .string and rv == .string and op == .plus) {
                 const concat = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ lv.string, rv.string });

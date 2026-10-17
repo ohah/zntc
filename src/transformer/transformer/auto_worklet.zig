@@ -27,7 +27,7 @@ pub fn matchAutoWorkletCallee(self: *Transformer, callee_idx: NodeIndex) ?AutoWo
         .static_member_expression => blk: {
             const me = callee_node.data.extra;
             if (me + 1 >= self.ast.extra_data.items.len) break :blk "";
-            const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+            const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + 1]));
             if (prop_idx.isNone()) break :blk "";
             const prop = self.ast.getNode(prop_idx);
             break :blk self.ast.getText(prop.span);
@@ -44,13 +44,13 @@ pub fn matchAutoWorkletCallee(self: *Transformer, callee_idx: NodeIndex) ?AutoWo
             // receiver_kind 검증: layout_animation은 수신자가 알려진 LA 클래스여야 함.
             if (entry.receiver_kind == .layout_animation) {
                 const me = callee_node.data.extra;
-                const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+                const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
                 if (!isLayoutAnimationReceiver(self, obj_idx)) continue;
             }
             // receiver_kind 검증: gesture_object는 수신자가 `Gesture.Foo()` 체인이어야 함.
             if (entry.receiver_kind == .gesture_object) {
                 const me = callee_node.data.extra;
-                const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+                const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
                 if (!isGestureObjectReceiver(self, obj_idx)) continue;
             }
             return entry;
@@ -80,18 +80,18 @@ fn isLayoutAnimationReceiver(self: *Transformer, node_idx: NodeIndex) bool {
     // new LAClass(...)
     if (node.tag == .new_expression) {
         const ne = node.data.extra;
-        const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ne]);
+        const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[ne]));
         return isLayoutAnimationReceiver(self, callee_idx);
     }
 
     // LAChain.chainMethod(): 체이닝 메서드 호출
     if (node.tag == .call_expression) {
         const ce = node.data.extra;
-        const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
+        const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[ce]));
         const callee_node = self.ast.getNode(callee_idx);
         if (callee_node.tag != .static_member_expression) return false;
         const me = callee_node.data.extra;
-        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + 1]));
         if (prop_idx.isNone()) return false;
         const prop = self.ast.getNode(prop_idx);
         const prop_name = self.ast.getText(prop.span);
@@ -103,7 +103,7 @@ fn isLayoutAnimationReceiver(self: *Transformer, node_idx: NodeIndex) bool {
             }
         }
         if (!chainable) return false;
-        const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+        const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
         return isLayoutAnimationReceiver(self, obj_idx);
     }
 
@@ -121,19 +121,19 @@ fn isGestureObjectReceiver(self: *Transformer, node_idx: NodeIndex) bool {
     if (node.tag != .call_expression) return false;
 
     const ce = node.data.extra;
-    const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[ce]);
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[ce]));
     const callee = self.ast.getNode(callee_idx);
     if (callee.tag != .static_member_expression) return false;
 
     const me = callee.data.extra;
-    const obj_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
     const obj_node = self.ast.getNode(obj_idx);
 
     // 직접: `Gesture.Foo()` - object가 `Gesture` identifier + property가 gesture object 이름
     if (obj_node.tag == .identifier_reference) {
         const obj_name = self.ast.getText(obj_node.span);
         if (!std.mem.eql(u8, obj_name, "Gesture")) return false;
-        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me + 1]);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me + 1]));
         if (prop_idx.isNone()) return false;
         const prop = self.ast.getNode(prop_idx);
         const prop_name = self.ast.getText(prop.span);
@@ -160,7 +160,7 @@ fn visitObjectExpressionAutoWorklet(self: *Transformer, obj_idx: NodeIndex) Erro
     var i: u32 = 0;
     while (i < list.len) : (i += 1) {
         const raw = self.ast.extra_data.items[list.start + i];
-        const prop_idx: NodeIndex = @enumFromInt(raw);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (prop_idx.isNone()) continue;
         const prop = self.ast.getNode(prop_idx);
 
@@ -236,7 +236,7 @@ pub fn visitCallArgsWithAutoWorklet(self: *Transformer, args_start: u32, args_le
     var i: u32 = 0;
     while (i < args_len) : (i += 1) {
         const raw_idx = self.ast.extra_data.items[args_start + i];
-        const arg_idx: NodeIndex = @enumFromInt(raw_idx);
+        const arg_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
 
         // 이 인자가 auto-worklet 대상인지 확인
         const should_auto = blk: {

@@ -79,11 +79,11 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
             const inner = try parseBindingPattern(self);
             // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
             // type_ann과 default는 inner에 이미 포함 (binding_identifier + tryWrapDefaultValue)
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const span_start = if (deco_start_pos != 0) deco_start_pos else modifier_span.start;
             const extra_start = try self.ast.addExtras(&.{
-                @intFromEnum(inner), none,             none,
-                modifier_flags,      decorators.start, decorators.len,
+                @backingInt(inner), none,             none,
+                modifier_flags,     decorators.start, decorators.len,
             });
             return try self.ast.addNode(.{
                 .tag = .formal_parameter,
@@ -96,10 +96,10 @@ pub fn parseBindingPattern(self: *Parser) ParseError2!NodeIndex {
     // decorator만 있고 modifier가 없는 경우: formal_parameter로 감싸서 decorator 보존
     if (decorators.len > 0) {
         const inner = try parseBindingPatternInner(self);
-        const none = @intFromEnum(NodeIndex.none);
+        const none = @backingInt(NodeIndex.none);
         const extra_start = try self.ast.addExtras(&.{
-            @intFromEnum(inner), none,             none,
-            0,                   decorators.start, decorators.len,
+            @backingInt(inner), none,             none,
+            0,                  decorators.start, decorators.len,
         });
         return try self.ast.addNode(.{
             .tag = .formal_parameter,

@@ -15,8 +15,8 @@ test "#4819 declaration merge ignores orphan parents sharing live declarations" 
     const original = try parser.parse();
     const ast = &parser.ast;
     const list = ast.getNode(original).data.list;
-    const kept: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 1]);
-    const use: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 2]);
+    const kept: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start + 1]));
+    const use: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start + 2]));
     const root = try ast.addNode(.{
         .tag = .program,
         .span = ast.getNode(original).span,
@@ -40,9 +40,9 @@ test "#4819 declaration merge preserves declarations shared by live parents" {
     const original = try parser.parse();
     const ast = &parser.ast;
     const list = ast.getNode(original).data.list;
-    const first: NodeIndex = @enumFromInt(ast.extra_data.items[list.start]);
-    const shared: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 1]);
-    const last: NodeIndex = @enumFromInt(ast.extra_data.items[list.start + 2]);
+    const first: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start]));
+    const shared: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start + 1]));
+    const last: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[list.start + 2]));
     const span = ast.getNode(original).span;
     const left = try ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try ast.addNodeList(&.{ first, shared }) } });
     const right = try ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try ast.addNodeList(&.{ shared, last }) } });

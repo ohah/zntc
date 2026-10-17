@@ -49,14 +49,14 @@ pub const Level = enum(u8) {
     /// `leftLevel`/`rightLevel = entry.lower()` 로 쓴다. `lowest` 는 0 에서
     /// 멈춰 underflow 를 막는다(0 아래로 내려갈 일은 없다).
     pub fn lower(self: Level) Level {
-        const v = @intFromEnum(self);
-        return @enumFromInt(if (v == 0) 0 else v - 1);
+        const v = @backingInt(self);
+        return @fromBackingInt(@intCast(if (v == 0) 0 else v - 1));
     }
 
     /// `self >= other` (자기 결합 강도가 부모가 요구한 최소 강도 이상인가).
     /// codegen 의 `wrap := level >= entry.Level` 한 줄에 대응한다.
     pub fn gte(self: Level, other: Level) bool {
-        return @intFromEnum(self) >= @intFromEnum(other);
+        return @backingInt(self) >= @backingInt(other);
     }
 };
 

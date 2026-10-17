@@ -17,7 +17,7 @@ test "precedence: Level enum 순서가 esbuild L 과 동일 (lowest=0 .. member=
     };
     try std.testing.expectEqual(@as(usize, 23), order.len);
     for (order, 0..) |lvl, i| {
-        try std.testing.expectEqual(@as(u8, @intCast(i)), @intFromEnum(lvl));
+        try std.testing.expectEqual(@as(u8, @intCast(i)), @backingInt(lvl));
     }
 }
 
@@ -62,7 +62,7 @@ test "precedence: 비-이항 Kind 는 null" {
 test "precedence: 이항 상대 순서 (** > * > + > << > < > == > & > ^ > | > && > || > ??)" {
     const gt = struct {
         fn f(a: Kind, b: Kind) bool {
-            return @intFromEnum(p.binaryOpLevel(a).?) > @intFromEnum(p.binaryOpLevel(b).?);
+            return @backingInt(p.binaryOpLevel(a).?) > @backingInt(p.binaryOpLevel(b).?);
         }
     }.f;
     try std.testing.expect(gt(.star2, .star)); // ** > *

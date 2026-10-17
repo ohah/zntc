@@ -77,7 +77,7 @@ pub inline fn refreshEnabled(self: *const Transformer) bool {
 fn getFunctionNameIndex(self: *Transformer, func_node: Node) ?NodeIndex {
     const e = func_node.data.extra;
     if (e >= self.ast.extra_data.items.len) return null;
-    const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
     if (name_idx.isNone()) return null;
     const name_node = self.ast.getNode(name_idx);
     if (name_node.tag != .binding_identifier and name_node.tag != .identifier_reference) return null;
@@ -146,7 +146,7 @@ fn appendRefreshRegistration(self: *Transformer, name: []const u8, component_idx
     try self.plugins.refresh.registrations.append(self.allocator, .{
         .handle_span = handle_span,
         .handle_binding_node = handle_binding_node,
-        .handle_symbol_id = if (handle_symbol) |id| @intFromEnum(id) else null,
+        .handle_symbol_id = if (handle_symbol) |id| @backingInt(id) else null,
         .component_idx = component_idx,
         .name = name,
     });
@@ -181,7 +181,7 @@ pub fn appendRefreshRegistrations(self: *Transformer, root: NodeIndex) Error!Nod
 
     // 기존 문장 복사
     for (old_stmts) |raw_idx| {
-        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
     }
 
     // _c = App; _c2 = Helper; 할당문 (함수 선언 뒤에 실행)
@@ -251,7 +251,7 @@ fn makeRefreshHandleRef(
     flags: ReferenceFlags,
 ) Error!NodeIndex {
     const ref = try es_helpers.makeExactSyntheticRef(self, self.ast.getText(handle_span));
-    const symbol_id: ?SymbolId = if (raw_symbol_id) |raw| @enumFromInt(raw) else null;
+    const symbol_id: ?SymbolId = if (raw_symbol_id) |raw| @fromBackingInt(@intCast(raw)) else null;
     try self.addSyntheticRefInScope(ref, symbol_id, scope, flags);
     return ref;
 }
@@ -260,14 +260,14 @@ fn makeRefreshHandleRef(
 pub fn buildRefreshVarDeclaration(self: *Transformer) Error!NodeIndex {
     const scratch_top = self.scratch.items.len;
     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     for (self.plugins.refresh.registrations.items) |reg| {
         const binding = reg.handle_binding_node;
 
         // variable_declarator: extra = [name, type_ann(none), init(none)]
         const declarator = try self.addExtraNode(.variable_declarator, reg.handle_span, &.{
-            @intFromEnum(binding),
+            @backingInt(binding),
             none, // type annotation
             none, // initializer
         });
@@ -305,7 +305,7 @@ pub fn buildRefreshRegCall(self: *Transformer, reg: RefreshRegistration, refresh
 
     const args = try self.ast.addNodeList(&.{ handle_ref, name_str });
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee),
+        @backingInt(callee),
         args.start,
         args.len,
         0,
@@ -321,13 +321,13 @@ pub fn buildRefreshRegCall(self: *Transformer, reg: RefreshRegistration, refresh
 /// var _s = $RefreshSig$(); 선언 생성
 pub fn buildRefreshSigDeclaration(self: *Transformer, sig: RefreshSignature, refresh_sig_span: Span) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     // $RefreshSig$() 호출
     const callee = try es_helpers.makeGlobalRefFromSpan(self, refresh_sig_span);
     const empty_args = try self.ast.addNodeList(&.{});
     const init_call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee),
+        @backingInt(callee),
         empty_args.start,
         empty_args.len,
         0,
@@ -336,9 +336,9 @@ pub fn buildRefreshSigDeclaration(self: *Transformer, sig: RefreshSignature, ref
     // var _s = $RefreshSig$();
     const binding = sig.handle_binding_node;
     const declarator = try self.addExtraNode(.variable_declarator, sig.handle_span, &.{
-        @intFromEnum(binding),
+        @backingInt(binding),
         none, // type annotation
-        @intFromEnum(init_call),
+        @backingInt(init_call),
     });
 
     const decl_list = try self.ast.addNodeList(&.{declarator});
@@ -379,7 +379,7 @@ pub fn buildRefreshSigCall(self: *Transformer, sig: RefreshSignature) Error!Node
     // _s(Component, "signature")
     const args = try self.ast.addNodeList(&.{ comp_ref, sig_str });
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee),
+        @backingInt(callee),
         args.start,
         args.len,
         0,
@@ -422,7 +422,7 @@ pub fn scanHookSignature(self: *Transformer, func_body_idx: NodeIndex) Error!?[]
     const stmts = self.ast.extra_data.items[list.start .. list.start + list.len];
 
     for (stmts) |raw_stmt_idx| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw_stmt_idx);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_stmt_idx));
         // 재귀적으로 Hook 호출 검색
         try self.findHookCallsInNode(stmt_idx, &sig_buf, null);
     }
@@ -440,7 +440,7 @@ pub fn findHookCallsInNode(self: *Transformer, idx: NodeIndex, sig_buf: *std.Arr
 
 pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *std.ArrayList(u8), binding_ctx: ?[]const u8, depth: u32) Error!void {
     if (idx.isNone()) return;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return;
+    if (@backingInt(idx) >= self.ast.nodes.items.len) return;
     // 깊이 제한: 함수 body는 보통 수십 단계. 50 이상이면 stale 인덱스 순환.
     if (depth > 50) return;
     const node = self.ast.getNode(idx);
@@ -455,8 +455,8 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
     if (node.tag == .call_expression) {
         const e = node.data.extra;
         if (self.ast.hasExtra(e, 1)) {
-            const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-            if (!callee_idx.isNone() and @intFromEnum(callee_idx) < self.ast.nodes.items.len) {
+            const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+            if (!callee_idx.isNone() and @backingInt(callee_idx) < self.ast.nodes.items.len) {
                 const callee = self.ast.getNode(callee_idx);
                 var hook_name: ?[]const u8 = null;
 
@@ -465,7 +465,7 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
                     if (isHookCall(name)) hook_name = name;
                 } else if (callee.tag == .static_member_expression) {
                     const me = callee.data.binary;
-                    if (!me.right.isNone() and @intFromEnum(me.right) < self.ast.nodes.items.len) {
+                    if (!me.right.isNone() and @backingInt(me.right) < self.ast.nodes.items.len) {
                         const prop = self.ast.getNode(me.right);
                         if (prop.tag == .identifier_reference) {
                             const name = self.ast.getText(prop.data.string_ref);
@@ -489,8 +489,8 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
                         const args_start = self.ast.extra_data.items[e + 1];
                         const args_len = self.ast.extra_data.items[e + 2];
                         if (args_len > 0 and args_start < self.ast.extra_data.items.len) {
-                            const first_arg_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
-                            if (!first_arg_idx.isNone() and @intFromEnum(first_arg_idx) < self.ast.nodes.items.len) {
+                            const first_arg_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[args_start]));
+                            if (!first_arg_idx.isNone() and @backingInt(first_arg_idx) < self.ast.nodes.items.len) {
                                 const first_arg = self.ast.getNode(first_arg_idx);
                                 if (first_arg.span.start < first_arg.span.end and
                                     first_arg.span.start & Ast.STRING_TABLE_BIT == 0)
@@ -524,7 +524,7 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
             if (list_start + list_len <= self.ast.extra_data.items.len) {
                 const items = self.ast.extra_data.items[list_start .. list_start + list_len];
                 for (items) |raw| {
-                    try self.findHookCallsInNodeDepth(@enumFromInt(raw), sig_buf, null, depth + 1);
+                    try self.findHookCallsInNodeDepth(@fromBackingInt(@intCast(raw)), sig_buf, null, depth + 1);
                 }
             }
         }
@@ -536,16 +536,16 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
         const e = node.data.extra;
         if (self.ast.hasExtra(e, 3)) {
             // LHS 바인딩 텍스트 추출 (binding_identifier 또는 array/object pattern)
-            const lhs_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+            const lhs_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
             var lhs_text: ?[]const u8 = null;
-            if (!lhs_idx.isNone() and @intFromEnum(lhs_idx) < self.ast.nodes.items.len) {
+            if (!lhs_idx.isNone() and @backingInt(lhs_idx) < self.ast.nodes.items.len) {
                 const lhs = self.ast.getNode(lhs_idx);
                 if (lhs.span.start < lhs.span.end and lhs.span.start & Ast.STRING_TABLE_BIT == 0) {
                     lhs_text = self.ast.getText(lhs.span);
                 }
             }
 
-            const init_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 2]);
+            const init_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 2]));
             try self.findHookCallsInNodeDepth(init_idx, sig_buf, lhs_text, depth + 1);
         }
         return;
@@ -557,7 +557,7 @@ pub fn findHookCallsInNodeDepth(self: *Transformer, idx: NodeIndex, sig_buf: *st
         if (l.len > 0 and l.start + l.len <= self.ast.extra_data.items.len) {
             const items = self.ast.extra_data.items[l.start .. l.start + l.len];
             for (items) |raw| {
-                try self.findHookCallsInNodeDepth(@enumFromInt(raw), sig_buf, null, depth + 1);
+                try self.findHookCallsInNodeDepth(@fromBackingInt(@intCast(raw)), sig_buf, null, depth + 1);
             }
         }
     }
@@ -601,7 +601,7 @@ pub fn maybeRegisterRefreshSignature(
     try self.plugins.refresh.signatures.append(self.allocator, .{
         .handle_span = handle_span,
         .handle_binding_node = handle_binding_node,
-        .handle_symbol_id = if (handle_symbol) |id| @intFromEnum(id) else null,
+        .handle_symbol_id = if (handle_symbol) |id| @backingInt(id) else null,
         .component_name = name,
         .component_idx = component_idx,
         .signature = signature,
@@ -611,7 +611,7 @@ pub fn maybeRegisterRefreshSignature(
     new_body.* = try self.insertSigCallAtBodyStart(
         new_body.*,
         handle_span,
-        if (handle_symbol) |id| @intFromEnum(id) else null,
+        if (handle_symbol) |id| @backingInt(id) else null,
         self.current_scope,
     );
 }
@@ -639,7 +639,7 @@ pub fn insertSigCallAtBodyStart(
     const callee = try makeRefreshHandleRef(self, handle_span, handle_symbol_id, scope, .{ .read = true });
     const empty_args = try self.ast.addNodeList(&.{});
     const call = try self.addExtraNode(.call_expression, zero_span, &.{
-        @intFromEnum(callee),
+        @backingInt(callee),
         empty_args.start,
         empty_args.len,
         0,
@@ -656,7 +656,7 @@ pub fn insertSigCallAtBodyStart(
         var i_s: u32 = 0;
         while (i_s < old_stmts_len) : (i_s += 1) {
             const raw_idx = self.ast.extra_data.items[old_stmts_start + i_s];
-            try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+            try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
         }
     }
 
@@ -802,8 +802,8 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
                 binding_count += 1;
         }
         for (edited.references) |ref| {
-            if (ref.node_index.isNone() or @intFromEnum(ref.symbol_id) != raw_id) continue;
-            const raw_node = @intFromEnum(ref.node_index);
+            if (ref.node_index.isNone() or @backingInt(ref.symbol_id) != raw_id) continue;
+            const raw_node = @backingInt(ref.node_index);
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw_node) != null);
             try std.testing.expectEqual(
                 output_scope.expectedScope(transformer.ast, root, &output_parents, &edited.scope_owner_map, raw_node) orelse return error.TestUnexpectedResult,
@@ -840,8 +840,8 @@ test "#4819 React Refresh handles keep exact root symbols through nested visitat
                 binding_count += 1;
         }
         for (edited.references) |ref| {
-            if (ref.node_index.isNone() or @intFromEnum(ref.symbol_id) != raw_id) continue;
-            const raw_node = @intFromEnum(ref.node_index);
+            if (ref.node_index.isNone() or @backingInt(ref.symbol_id) != raw_id) continue;
+            const raw_node = @backingInt(ref.node_index);
             try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw_node) != null);
             try std.testing.expect(ref.flags.read);
             try std.testing.expect(!ref.flags.write);

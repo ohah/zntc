@@ -68,7 +68,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
 
         fn markLateClassSuperParameter(self: *Transformer, symbol_id: @import("../semantic/symbol.zig").SymbolId) void {
             const editor = if (self.semantic_editor) |*existing| existing else std.debug.panic("late class super parameter has no semantic editor", .{});
-            const raw = @intFromEnum(symbol_id);
+            const raw = @backingInt(symbol_id);
             if (raw >= editor.symbols.items.len) std.debug.panic("late class super parameter has an invalid SymbolId", .{});
             const symbol = &editor.symbols.items[raw];
             symbol.synthetic_kind = .class_super_parameter;
@@ -97,7 +97,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (!self.class_self_written_symbols_built) {
                 for (self.references) |ref| {
                     if (ref.flags.write and ref.isValueUse())
-                        try self.class_self_written_symbols.put(self.allocator, @intFromEnum(ref.symbol_id), {});
+                        try self.class_self_written_symbols.put(self.allocator, @backingInt(ref.symbol_id), {});
                 }
                 self.class_self_written_symbols_built = true;
             }
@@ -125,12 +125,12 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const getter_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{read}) } });
             const getter_params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
             const getter_key = try es_helpers.makePropertyName(self, "value");
-            const getter_extra = try self.ast.addExtras(&.{ @intFromEnum(getter_key), @intFromEnum(getter_params), @intFromEnum(getter_body), ast_mod.MethodFlags.is_getter, 0, 0 });
+            const getter_extra = try self.ast.addExtras(&.{ @backingInt(getter_key), @backingInt(getter_params), @backingInt(getter_body), ast_mod.MethodFlags.is_getter, 0, 0 });
             const getter = try self.ast.addNode(.{ .tag = .method_definition, .span = span, .data = .{ .extra = getter_extra } });
             if (self.semantic_edit_enabled) try self.bindReservedFunctionOwner(getter_scope, getter);
             if (self.semantic_edit_enabled) {
                 const storage_raw = self.getSymbolIdAt(storage_binding) orelse std.debug.panic("class self storage has no SymbolId", .{});
-                try self.addSyntheticRefInScope(storage_ref, @enumFromInt(storage_raw), getter_scope, .{ .read = true });
+                try self.addSyntheticRefInScope(storage_ref, @fromBackingInt(@intCast(storage_raw)), getter_scope, .{ .read = true });
             } else try self.propagateSymbolId(storage_binding, storage_ref);
             // A named function expression has an immutable self binding. An
             // assignment to that binding in strict code raises the intrinsic
@@ -150,13 +150,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (self.semantic_edit_enabled)
                 try self.addSyntheticRefInScope(setter_ref, setter_id, setter_scope, .{ .write = true });
             const zero = try es_helpers.makeNumericLiteral(self, 0);
-            const assignment = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = setter_ref, .right = zero, .flags = @intFromEnum(token_mod.Kind.eq) } } });
+            const assignment = try self.ast.addNode(.{ .tag = .assignment_expression, .span = span, .data = .{ .binary = .{ .left = setter_ref, .right = zero, .flags = @backingInt(token_mod.Kind.eq) } } });
             const directive_span = try self.ast.addString("\"use strict\"");
             const directive = try self.ast.addNode(.{ .tag = .directive, .span = directive_span, .data = .{ .none = 0 } });
             const body_stmt = try es_helpers.makeExprStmt(self, assignment, span);
             const setter_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ directive, body_stmt }) } });
             const setter_params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
-            const setter_extra = try self.ast.addExtras(&.{ @intFromEnum(setter_binding), @intFromEnum(setter_params), @intFromEnum(setter_body), 0, @intFromEnum(NodeIndex.none) });
+            const setter_extra = try self.ast.addExtras(&.{ @backingInt(setter_binding), @backingInt(setter_params), @backingInt(setter_body), 0, @backingInt(NodeIndex.none) });
             const thrower = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = setter_extra } });
             if (self.semantic_edit_enabled) try self.bindReservedFunctionOwner(setter_scope, thrower);
             const call_thrower = try es_helpers.makeCallExpr(self, thrower, &.{}, span);
@@ -172,7 +172,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 es_helpers.markStandaloneLateSyntheticSymbol(self, setter_param_id orelse std.debug.panic("late class-self setter parameter has no SymbolId", .{}), .class_self_write_binding);
             }
             const accessor_key = try es_helpers.makePropertyName(self, "value");
-            const accessor_extra = try self.ast.addExtras(&.{ @intFromEnum(accessor_key), @intFromEnum(accessor_params), @intFromEnum(accessor_body), ast_mod.MethodFlags.is_setter, 0, 0 });
+            const accessor_extra = try self.ast.addExtras(&.{ @backingInt(accessor_key), @backingInt(accessor_params), @backingInt(accessor_body), ast_mod.MethodFlags.is_setter, 0, 0 });
             const setter = try self.ast.addNode(.{ .tag = .method_definition, .span = span, .data = .{ .extra = accessor_extra } });
             if (self.semantic_edit_enabled) try self.bindReservedFunctionOwner(accessor_scope, setter);
             const init = try self.ast.addNode(.{ .tag = .object_expression, .span = span, .data = .{ .list = try self.ast.addNodeList(&.{ getter, setter }) } });
@@ -184,8 +184,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
         fn originalConstructorOwner(self: *Transformer, ctor: ?NodeIndex) ?NodeIndex {
             const idx = ctor orelse return null;
             if (!self.semantic_edit_enabled) return idx;
-            const raw = @intFromEnum(idx);
-            const original: NodeIndex = @enumFromInt(self.scope_owner_origins.get(raw) orelse raw);
+            const raw = @backingInt(idx);
+            const original: NodeIndex = @fromBackingInt(@intCast(self.scope_owner_origins.get(raw) orelse raw));
             if (self.outputOwnedScope(original) != null) return original;
             if (raw < self.parser_node_count)
                 std.debug.panic("source ES5 constructor lost its scope owner", .{});
@@ -262,8 +262,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
                         std.debug.panic("anonymous default class export binding has no direct SymbolId", .{});
                     try self.lowered_anonymous_class_export_bindings.put(
                         self.allocator,
-                        @intFromEnum(source_idx),
-                        @intFromEnum(new_name),
+                        @backingInt(source_idx),
+                        @backingInt(new_name),
                     );
                     if (output_name.late) {
                         es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .anonymous_class_export_binding);
@@ -277,7 +277,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const saved_class_name_node = self.current_class_name_node;
             const saved_class_self_symbol_id = self.current_class_self_symbol_id;
             self.current_class_name_node = if (!name_idx.isNone()) name_idx else new_name;
-            self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx));
+            self.current_class_self_symbol_id = self.class_self_symbol_map.get(@backingInt(source_idx));
             defer self.current_class_name_node = saved_class_name_node;
             defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
@@ -381,8 +381,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             defer cm.deinit(self.allocator);
             try es_helpers.reservePrivateMethodWeakSetSymbols(self, cm.private_methods.items, iife_scope, span);
             try bindComputedKeyTemps(self, &cm, iife_scope, span);
-            const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
-            const inner = self.class_self_symbol_map.get(@intFromEnum(source_idx)) orelse
+            const source_origin = self.scope_owner_origins.get(@backingInt(source_idx)) orelse @backingInt(source_idx);
+            const inner = self.class_self_symbol_map.get(@backingInt(source_idx)) orelse
                 self.class_self_symbol_map.get(source_origin);
             const previous_write_target = self.active_class_self_write_target;
             defer self.active_class_self_write_target = previous_write_target;
@@ -420,7 +420,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (self.semantic_edit_enabled and name_idx.isNone()) {
                 const class_self_id = try self.declareSyntheticInScope(fresh_name, span, .function_decl, iife_scope) orelse
                     std.debug.panic("anonymous ES5 class declaration has no exact class-self SymbolId", .{});
-                self.current_class_self_symbol_id = @intFromEnum(class_self_id);
+                self.current_class_self_symbol_id = @backingInt(class_self_id);
                 // The inner constructor shares the deferred `_Class` spelling of
                 // the outer export binding; it needs its own late-name identity
                 // like the class-expression path, or the final-name pass rejects
@@ -431,7 +431,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 }
             }
             if (inner != null and (write_binding != null or has_self_alias or renamed_outer))
-                try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(fresh_name));
+                try self.preserved_simple_class_names.append(self.allocator, @backingInt(fresh_name));
 
             // 매핑은 모든 private field (regular + accessor backing) 가 모인 뒤 단일 지점에서 build.
             // 이후 deferred visit (static block / instance init) 가 이 매핑으로 lowering.
@@ -546,7 +546,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const self_ref = if (self.semantic_edit_enabled) blk: {
                     const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                     const self_raw = self.getSymbolIdAt(fresh_name) orelse std.debug.panic("class IIFE self alias has no source SymbolId", .{});
-                    const self_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(self_raw);
+                    const self_id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(@intCast(self_raw));
                     try self.addSyntheticRefInScope(ref, self_id, iife_scope, .{ .read = true });
                     break :blk ref;
                 } else try self.makeIdentifierRefWithSymbol(name_span, fresh_name);
@@ -626,7 +626,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const iife_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = body_list } });
 
             // function(_super) { ... } 또는 function() { ... }
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const wrapper_params = if (!super_param_binding.isNone())
                 try self.ast.addNodeList(&.{super_param_binding})
             else
@@ -634,8 +634,8 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const wrapper_params_node = try self.ast.addFormalParameters(wrapper_params, span);
             // function_expression: [name(0), params(1), body(2), flags(3), ret_type(4)]
             const wrapper_extra = try self.ast.addExtras(&.{
-                none,                    @intFromEnum(wrapper_params_node),
-                @intFromEnum(iife_body), 0,
+                none,                   @backingInt(wrapper_params_node),
+                @backingInt(iife_body), 0,
                 none,
             });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
@@ -720,7 +720,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             self.current_class_name_node = name_node;
             // Named class expressions already carry their class-self SymbolId
             // on the source name node. Inferred names use the separate map.
-            self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx)) orelse
+            self.current_class_self_symbol_id = self.class_self_symbol_map.get(@backingInt(source_idx)) orelse
                 if (!new_name.isNone()) self.getSymbolIdAt(new_name) else null;
             defer self.current_class_name_node = saved_class_name_node;
             defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
@@ -817,7 +817,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 (has_super and super_span != null);
             // A simple named class needs a private alias for the generated
             // class-call check when a constructor parameter shadows its name.
-            const source_origin = self.scope_owner_origins.get(@intFromEnum(source_idx)) orelse @intFromEnum(source_idx);
+            const source_origin = self.scope_owner_origins.get(@backingInt(source_idx)) orelse @backingInt(source_idx);
             const inner = if (!name_idx.isNone()) self.class_self_symbol_map.get(source_origin) else null;
             const has_source_self = inner != null;
             const wrap_self_alias = !has_extra and has_source_self;
@@ -869,7 +869,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (self.semantic_edit_enabled and name_idx.isNone() and has_extra and !class_self_storage_bound and generated_class_name_id == null)
                 std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
             if (generated_class_name_id) |id| {
-                self.current_class_self_symbol_id = @intFromEnum(id);
+                self.current_class_self_symbol_id = @backingInt(id);
                 if (generated_class_output_name) |output_name| {
                     if (output_name.late)
                         es_helpers.markStandaloneLateSyntheticSymbol(self, id, .anonymous_class_expression_binding);
@@ -914,7 +914,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             // getText로 얻은 slice를 쥐고 있다가 이후 addString realloc에 freed 메모리 참조
             // → UTF-8 corrupted identifier 출력 (#1481).
             if (inner != null and (write_binding != null or has_self_alias))
-                try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(func_name));
+                try self.preserved_simple_class_names.append(self.allocator, @backingInt(func_name));
             if (has_extra and (name_idx.isNone() or !class_self_storage_bound))
                 try self.propagateSymbolId(name_node, func_name);
 
@@ -931,7 +931,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             if (self.semantic_edit_enabled and name_idx.isNone() and !has_extra and !class_self_storage_bound) {
                 const id = try self.declareSyntheticInScope(func_name, span, .function_decl, ctor_scope) orelse
                     std.debug.panic("anonymous ES5 class name has no direct SymbolId", .{});
-                self.current_class_self_symbol_id = @intFromEnum(id);
+                self.current_class_self_symbol_id = @backingInt(id);
                 if (generated_class_output_name) |output_name| {
                     if (output_name.late)
                         es_helpers.markStandaloneLateSyntheticSymbol(self, id, .anonymous_class_expression_binding);
@@ -1015,9 +1015,9 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 else
                     try self.ast.addNodeList(&.{ alias_decl, write_decl, alias_return });
                 const wrapper_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = wrapper_list } });
-                const none = @intFromEnum(NodeIndex.none);
+                const none = @backingInt(NodeIndex.none);
                 const params = try self.ast.addFormalParameters(try self.ast.addNodeList(&.{}), span);
-                const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(params), @intFromEnum(wrapper_body), 0, none });
+                const wrapper_extra = try self.ast.addExtras(&.{ none, @backingInt(params), @backingInt(wrapper_body), 0, none });
                 const wrapper = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
                 try self.bindReservedFunctionOwner(iife_scope, wrapper);
                 return es_helpers.makeCallExpr(self, wrapper, &.{}, span);
@@ -1059,7 +1059,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                 const self_ref = if (self.semantic_edit_enabled) blk: {
                     const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
                     const self_raw = self.getSymbolIdAt(func_name) orelse std.debug.panic("class IIFE self alias has no source SymbolId", .{});
-                    const self_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(self_raw);
+                    const self_id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(@intCast(self_raw));
                     try self.addSyntheticRefInScope(ref, self_id, iife_scope, .{ .read = true });
                     break :blk ref;
                 } else try self.makeIdentifierRefWithSymbol(name_span, func_name);
@@ -1122,13 +1122,13 @@ pub fn ES2015Class(comptime Transformer: type) type {
             const iife_body = try self.ast.addNode(.{ .tag = .block_statement, .span = span, .data = .{ .list = body_list } });
 
             // function(_super) { ... } 또는 function() { ... }
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const wrapper_params = if (!expr_super_param_binding.isNone())
                 try self.ast.addNodeList(&.{expr_super_param_binding})
             else
                 try self.ast.addNodeList(&.{});
             const wrapper_params_node2 = try self.ast.addFormalParameters(wrapper_params, span);
-            const wrapper_extra = try self.ast.addExtras(&.{ none, @intFromEnum(wrapper_params_node2), @intFromEnum(iife_body), 0, none });
+            const wrapper_extra = try self.ast.addExtras(&.{ none, @backingInt(wrapper_params_node2), @backingInt(iife_body), 0, none });
             const wrapper_fn = try self.ast.addNode(.{ .tag = .function_expression, .span = span, .data = .{ .extra = wrapper_extra } });
             try self.bindReservedFunctionOwner(iife_scope, wrapper_fn);
             try trackClassPrivateSymbols(self, wrapper_fn, cm, iife_scope);
@@ -1253,7 +1253,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
             var m_loop: u32 = 0;
             while (m_loop < members_len) : (m_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + m_loop];
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (member.tag == .method_definition) {
                     const me = member.data.extra;
                     const flags = self.readU32(me, MethodExtra.flags);
@@ -1283,7 +1283,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             is_static,
                             1,
                             params_list_m,
-                            @enumFromInt(raw_idx),
+                            @fromBackingInt(@intCast(raw_idx)),
                         );
                     }
                 } else if (member.tag == .property_definition) {
@@ -1307,7 +1307,7 @@ pub fn ES2015Class(comptime Transformer: type) type {
                             is_static,
                             2,
                             empty,
-                            @enumFromInt(raw_idx),
+                            @fromBackingInt(@intCast(raw_idx)),
                         );
                     }
                 }

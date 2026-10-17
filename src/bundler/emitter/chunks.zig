@@ -84,7 +84,7 @@ fn emitChunkModuleRange(
     var i = lo;
     while (i < hi) : (i += 1) {
         const mod_idx = sorted_mods[i];
-        const mi = @intFromEnum(mod_idx);
+        const mi = @backingInt(mod_idx);
         if (mi >= graph.moduleCount()) continue;
         const module = graph.getModule(mod_idx) orelse continue;
         const is_entry = if (entry_mod_idx) |ei| mi == ei else false;
@@ -139,7 +139,7 @@ fn crossChunkBindingName(linker: ?*Linker, sym: chunk_mod.CrossChunkSym) []const
         if (l.getCrossChunkGlobalName(sym.canonical_module, sym.name)) |g| return g;
         if (Linker.isReservedName(sym.name)) {
             return l.resolveToLocalName(.{
-                .module_index = @enumFromInt(sym.canonical_module),
+                .module_index = @fromBackingInt(@intCast(sym.canonical_module)),
                 .export_name = sym.name,
             });
         }
@@ -346,7 +346,7 @@ fn moduleHasAnyNamedExport(
             if (rec_idx >= m.import_records.len) return true;
             const src_idx = m.import_records[rec_idx].resolved;
             if (src_idx.isNone()) return true; // external → flatten 불가, 보수적 named
-            const gop = seen.getOrPut(allocator, @intFromEnum(src_idx)) catch return true;
+            const gop = seen.getOrPut(allocator, @backingInt(src_idx)) catch return true;
             if (gop.found_existing) continue; // 순환 방지
             const src = graph.getModule(src_idx) orelse return true;
             if (moduleHasAnyNamedExport(allocator, graph, src, seen)) return true;
@@ -427,7 +427,7 @@ fn emitHoistedFnExports(
     out: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
 ) !void {
-    const m = graph.getModule(@enumFromInt(mod_idx)) orelse return;
+    const m = graph.getModule(@fromBackingInt(@intCast(mod_idx))) orelse return;
     for (m.export_bindings) |eb| {
         if (!exportBindingIsHoistableFn(m, eb)) continue;
         const local = l.getCanonicalForExport(eb, mod_idx);
@@ -454,7 +454,7 @@ fn cjsDepDefaultOnly(allocator: std.mem.Allocator, graph: *const ModuleGraph, de
     if (!has_default) return false;
     var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer seen.deinit(allocator);
-    seen.put(allocator, @intFromEnum(mod_idx), {}) catch return false;
+    seen.put(allocator, @backingInt(mod_idx), {}) catch return false;
     return !moduleHasAnyNamedExport(allocator, graph, m, &seen);
 }
 
@@ -930,7 +930,7 @@ fn emitChunksImpl(
         var used_locals: std.StringHashMapUnmanaged(void) = .empty;
         defer used_locals.deinit(allocator);
         for (chunk.cross_chunk_imports.items) |dep_chunk_idx| {
-            const dep_ci = @intFromEnum(dep_chunk_idx);
+            const dep_ci = @backingInt(dep_chunk_idx);
             const syms = chunk.imports_from.get(dep_ci) orelse continue;
             for (syms.items) |sym| {
                 const b = crossChunkBindingName(linker, sym);
@@ -977,7 +977,7 @@ fn emitChunksImpl(
             (options.output_exports == .auto or options.output_exports == .named) and
             preserveModulesWrapperChunk(chunk, graph, options) == null)
             (switch (chunk.kind) {
-                .entry_point => |info| @intFromEnum(info.module),
+                .entry_point => |info| @backingInt(info.module),
                 .common, .manual => null,
             })
         else
@@ -988,11 +988,11 @@ fn emitChunksImpl(
             const dep_chunk = chunk_graph.getChunk(dep_chunk_idx);
             try chunkPlaceholderStem(dep_chunk, &dep_buf, allocator, options);
             const dep_stem = dep_buf.items;
-            const dep_ci = @intFromEnum(dep_chunk_idx);
+            const dep_ci = @backingInt(dep_chunk_idx);
 
             // IIFE splitting: 청크 경계는 레지스트리 — 경로 대신 dep 청크의
             // 레지스트리 ID 로 `__zntc_require("<id>")`. resolved_path 불필요.
-            const dep_id = if (reg_split) reg_ids[@intFromEnum(dep_chunk_idx)] else "";
+            const dep_id = if (reg_split) reg_ids[@backingInt(dep_chunk_idx)] else "";
 
             // import 경로 결정: preserve-modules면 상대 경로, 아니면 "./{stem}{ext}"
             // PR7-2d: 명시 fileName 은 preserve-modules 보다 우선 — 출력 파일명(verbatim)과 import
@@ -1233,7 +1233,7 @@ fn emitChunksImpl(
                             try chunk_output.appendSlice(allocator, bind_arg);
                             try chunk_output.appendSlice(allocator, if (min) "\");" else "\");\n");
                             for (wlist.items) |wm| {
-                                const tmod = graph.getModule(@enumFromInt(wm)) orelse continue;
+                                const tmod = graph.getModule(@fromBackingInt(@intCast(wm))) orelse continue;
                                 const wn = try wrapperNamesFor(allocator, tmod, null);
                                 defer wn.deinit(allocator);
                                 try chunk_output.appendSlice(allocator, "const ");
@@ -1248,7 +1248,7 @@ fn emitChunksImpl(
                             // esm: live binding 이라 named import 로 충분(순환도 안전).
                             try chunk_output.appendSlice(allocator, if (min) "import{" else "import { ");
                             for (wlist.items, 0..) |wm, wi| {
-                                const tmod = graph.getModule(@enumFromInt(wm)) orelse continue;
+                                const tmod = graph.getModule(@fromBackingInt(@intCast(wm))) orelse continue;
                                 const wn = try wrapperNamesFor(allocator, tmod, null);
                                 defer wn.deinit(allocator);
                                 try chunk_output.appendSlice(allocator, wn.a);
@@ -1279,7 +1279,7 @@ fn emitChunksImpl(
                 // pm_cjs 라 lazy(reg_split/cjs_split=!preserve_modules)는 여기 안 옴 → has_global 만 고정.
                 const has_global = if (linker) |l| l.getCrossChunkGlobalName(sym.canonical_module, sym.name) != null else false;
                 const consumer_module_index = if (options.preserve_modules and chunk.modules.items.len == 1)
-                    @as(?u32, @intFromEnum(chunk.modules.items[0]))
+                    @as(?u32, @backingInt(chunk.modules.items[0]))
                 else
                     null;
                 const local = try deconflictedConsumerLocal(linker, sym, binding, has_global, consumer_module_index, allocator, &used_locals, &natural_bindings, &alias_strs);
@@ -1364,7 +1364,7 @@ fn emitChunksImpl(
                     // (#4572/#4576) 선언 로컬은 항상 binding. has_global/lazy 는 고정, 그 외 유일 발급 +
                     // deconflict 시 body 정합(deconflictedConsumerLocal, #4580 전체바인딩 site 와 공용).
                     const consumer_module_index = if (options.preserve_modules and chunk.modules.items.len == 1)
-                        @as(?u32, @intFromEnum(chunk.modules.items[0]))
+                        @as(?u32, @backingInt(chunk.modules.items[0]))
                     else
                         null;
                     const local = try deconflictedConsumerLocal(linker, sym, binding, lazy_local_keys or has_global, consumer_module_index, allocator, &used_locals, &natural_bindings, &alias_strs);
@@ -1479,7 +1479,7 @@ fn emitChunksImpl(
             // 이름만 바뀜). CJS owner 는 대개 소수라 wrap_kind 로 먼저 걸러 스캔을 줄인다.
             if (linker) |l| {
                 for (sorted_mods) |mod_idx| {
-                    const mi = @intFromEnum(mod_idx);
+                    const mi = @backingInt(mod_idx);
                     if (mi >= module_count) continue;
                     const owner = graph.getModule(mod_idx) orelse continue;
                     if (owner.wrap_kind != .cjs) continue;
@@ -1546,7 +1546,7 @@ fn emitChunksImpl(
             defer chunk_targets.deinit(allocator);
             try chunk_targets.ensureTotalCapacity(allocator, @intCast(chunk.modules.items.len));
             for (chunk.modules.items) |mod_idx| {
-                chunk_targets.putAssumeCapacity(@intFromEnum(mod_idx), {});
+                chunk_targets.putAssumeCapacity(@backingInt(mod_idx), {});
             }
             // appendSharedNamespacePreambleFiltered 는 linker 의 allocator 로 append 하므로
             // deinit 도 같은 allocator 로 (기존엔 chunk_output 에 직접 append 했었다).
@@ -1560,7 +1560,7 @@ fn emitChunksImpl(
 
         // 엔트리 모듈 인덱스 (final exports용). manual/common 은 엔트리 모듈 없음.
         const entry_mod_idx: ?u32 = switch (chunk.kind) {
-            .entry_point => |info| @intFromEnum(info.module),
+            .entry_point => |info| @backingInt(info.module),
             .common, .manual => null,
         };
         const emit_top_level_rbm = chunk_is_user_entry and options.run_before_main.len > 0;
@@ -1592,7 +1592,7 @@ fn emitChunksImpl(
             var in_chunk = try std.DynamicBitSet.initEmpty(allocator, module_count);
             defer in_chunk.deinit();
             for (sorted_mods) |mod_idx| {
-                const mi = @intFromEnum(mod_idx);
+                const mi = @backingInt(mod_idx);
                 if (mi < module_count) in_chunk.set(mi);
             }
             for (sorted_mods) |mod_idx| {
@@ -1678,7 +1678,7 @@ fn emitChunksImpl(
 
             for (batch_mods, 0..) |mod_idx, batch_pos| {
                 const sorted_pos = batch_start + batch_pos;
-                const mi = @intFromEnum(mod_idx);
+                const mi = @backingInt(mod_idx);
                 if (mi >= module_count) continue;
                 const m = graph.getModule(mod_idx) orelse continue;
 
@@ -1809,7 +1809,7 @@ fn emitChunksImpl(
         // __esm memoize=중복 무해.
         if (dev_split_chunk) {
             for (sorted_mods) |mod_idx| {
-                const mi = @intFromEnum(mod_idx);
+                const mi = @backingInt(mod_idx);
                 if (mi >= module_count) continue;
                 // user-entry 청크: entry 모듈 자체는 skip(1015 블록/bootstrap 이 init).
                 if (chunk_is_user_entry) {
@@ -2107,7 +2107,7 @@ fn emitChunksImpl(
             if (linker) |l| {
                 for (export_names.items) |name| {
                     for (sorted_mods) |mod_idx| {
-                        const mi = @intFromEnum(mod_idx);
+                        const mi = @backingInt(mod_idx);
                         if (mi >= module_count) continue;
                         const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
                         const owner = graph.getModule(mod_idx) orelse continue;
@@ -2148,7 +2148,7 @@ fn emitChunksImpl(
                 if (linker) |l| {
                     var first_in_group = true;
                     for (sorted_mods) |mod_idx| {
-                        const mi = @intFromEnum(mod_idx);
+                        const mi = @backingInt(mod_idx);
                         if (mi >= module_count) continue;
                         const global = l.getCrossChunkGlobalName(@intCast(mi), name) orelse continue;
                         // resolveOwnerLocal 이 못 찾으면(예약어 local 무-canonical, 예: `export
@@ -2182,7 +2182,7 @@ fn emitChunksImpl(
                 if (!emitted_any) {
                     const local_name = if (linker) |l| blk: {
                         for (sorted_mods) |mod_idx| {
-                            const mi = @intFromEnum(mod_idx);
+                            const mi = @backingInt(mod_idx);
                             if (mi >= module_count) continue;
                             if (resolveOwnerLocal(l, graph, mod_idx, @intCast(mi), name)) |lo| break :blk lo;
                         }
@@ -2226,7 +2226,7 @@ fn emitChunksImpl(
             while (wit.next()) |k| try wids.append(allocator, k.*);
             std.mem.sort(u32, wids.items, {}, comptime std.sort.asc(u32));
             for (wids.items) |wm| {
-                const tmod = graph.getModule(@enumFromInt(wm)) orelse continue;
+                const tmod = graph.getModule(@fromBackingInt(@intCast(wm))) orelse continue;
                 // ⚠️ 공개명(canonical, 소비자 import 키)과 provider 청크의 **실제 로컬명**을 분리한다.
                 // --minify 는 provider 본문의 `var require_X = __commonJS(...)` 선언을 mangle(`r`)하는데
                 // (rename_table 은 청크별), 소비자는 canonical `require_X` 로 import·호출한다. 따라서
@@ -2263,7 +2263,7 @@ fn emitChunksImpl(
         // init 을 호출하면 정확히 1회 실행(__commonJS/__esm 가 memoize).
         if (reg_split and chunk_is_user_entry) {
             if (entry_mod_idx) |ei| {
-                if (graph.getModule(@enumFromInt(ei))) |em| {
+                if (graph.getModule(@fromBackingInt(@intCast(ei)))) |em| {
                     // TLA(.esm + top-level await) entry 는 appendModuleCall 이 `await init_X()`
                     // 를 내는데, reg_split 청크 factory 는 비-async `function(...)` 이라 top-level
                     // await = SyntaxError. TLA+reg_split entry 는 이 PR 이전에도 미실행이었으므로
@@ -2628,7 +2628,7 @@ fn emitRunBeforeMainCrossImports(
     for (imports) |imp| {
         // reg_split 은 레지스트리 id, 그 외는 상대 경로.
         const bind_arg: []const u8 = if (reg_split)
-            reg_ids[@intFromEnum(imp.source_chunk)]
+            reg_ids[@backingInt(imp.source_chunk)]
         else blk_path: {
             const dep_chunk = chunk_graph.getChunk(imp.source_chunk);
             // explicit_file_name(plugin emitFile verbatim)을 preserve_modules 보다 **먼저** — 메인
@@ -3057,7 +3057,7 @@ fn rewriteDynamicImports(
         // 캐시가 상태 보존(스파이크 검증). RFC §4.3 + PR3 결정(<script>).
         const reg_split = emit_options.format.isWrappedFormat() and !emit_options.preserve_modules;
         if (reg_split) {
-            const target_id = reg_ids[@intFromEnum(target_chunk_idx)]; // borrow
+            const target_id = reg_ids[@backingInt(target_chunk_idx)]; // borrow
             const chunkfile = try std.fmt.allocPrint(allocator, "{s}{s}", .{ stem, out_ext });
             defer allocator.free(chunkfile);
             const wrapper = try std.fmt.allocPrint(allocator, "__zntc_load_chunk(\"{s}\").then(function(){{return __zntc_require(\"{s}\"){s}}})", .{ chunkfile, target_id, unwrap });
@@ -3755,7 +3755,7 @@ fn resolveContentHashes(
             imps.deinit(allocator);
         }
         for (chunk.cross_chunk_imports.items) |dep_ci| {
-            const dep_out = chunk_to_out[@intFromEnum(dep_ci)] orelse continue;
+            const dep_out = chunk_to_out[@backingInt(dep_ci)] orelse continue;
             try imps.append(allocator, try allocator.dupe(u8, outputs[dep_out].path));
         }
         outputs[oi].imports = try imps.toOwnedSlice(allocator);
@@ -3870,7 +3870,7 @@ fn emitLazyEntryExportAll(
     var locals: std.ArrayListUnmanaged([]const u8) = .empty;
     defer locals.deinit(allocator);
     for (sorted_mods) |mod_idx| {
-        const mi = @intFromEnum(mod_idx);
+        const mi = @backingInt(mod_idx);
         if (mi >= module_count or mi == entry_mod_idx) continue;
         const m = graph.getModule(mod_idx) orelse continue;
         for (m.export_bindings) |eb| {
@@ -4022,7 +4022,7 @@ fn chunkIndexHash(chunk: *const Chunk) u64 {
     var sort_buf: [256]u32 = undefined;
     const mod_count = @min(chunk.modules.items.len, 256);
     for (chunk.modules.items[0..mod_count], sort_buf[0..mod_count]) |mod_idx, *sb| {
-        sb.* = @intFromEnum(mod_idx);
+        sb.* = @backingInt(mod_idx);
     }
     std.mem.sort(u32, sort_buf[0..mod_count], {}, std.sort.asc(u32));
     for (sort_buf[0..mod_count]) |idx| {
@@ -4292,7 +4292,7 @@ pub fn computeAllUsedNames(
             if (rec_idx >= importer.import_records.len) continue;
             const target = importer.import_records[rec_idx].resolved;
             if (target == .none) continue;
-            const target_i: u32 = @intFromEnum(target);
+            const target_i: u32 = @backingInt(target);
             const gop = try reverse_map.getOrPut(allocator, target_i);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             const ieb_local = importer.exportBindingLocalName(ieb);
@@ -4314,7 +4314,7 @@ pub fn computeAllUsedNames(
             if (ib.import_record_index >= importer.import_records.len) continue;
             const target = importer.import_records[ib.import_record_index].resolved;
             if (target == .none) continue;
-            const target_i: u32 = @intFromEnum(target);
+            const target_i: u32 = @backingInt(target);
             const gop = try reverse_map.getOrPut(allocator, target_i);
             if (!gop.found_existing) gop.value_ptr.* = .empty;
             try gop.value_ptr.append(allocator, .{

@@ -109,7 +109,7 @@ pub fn detectStyledImport(self: *Transformer, node: Node) Error!void {
     var i: u32 = 0;
     while (i < x.specs_len) : (i += 1) {
         const spec_idx_raw = self.ast.extra_data.items[x.specs_start + i];
-        const spec_idx: NodeIndex = @enumFromInt(spec_idx_raw);
+        const spec_idx: NodeIndex = @fromBackingInt(@intCast(spec_idx_raw));
         if (spec_idx.isNone()) continue;
         const spec_node = self.ast.getNode(spec_idx);
         switch (spec_node.tag) {
@@ -165,8 +165,8 @@ pub fn maybeMinifyHelperTemplate(self: *Transformer, init_idx: NodeIndex) Error!
 
     const e = init_node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return init_idx;
-    const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-    const template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    const tag_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+    const template_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
     const flags = self.ast.extra_data.items[e + 2];
 
     if (!tagMatchesStyledHelper(self, tag_idx)) return init_idx;
@@ -176,8 +176,8 @@ pub fn maybeMinifyHelperTemplate(self: *Transformer, init_idx: NodeIndex) Error!
     if (new_template == template_idx and final_flags == flags) return init_idx;
 
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(tag_idx),
-        @intFromEnum(new_template),
+        @backingInt(tag_idx),
+        @backingInt(new_template),
         final_flags,
     });
     return self.ast.addNode(.{
@@ -228,17 +228,17 @@ fn analyzeTagChain(self: *Transformer, tag_idx: NodeIndex) ChainAnalysis {
             },
             .static_member_expression => {
                 if (!self.ast.hasExtra(node.data.extra, 1)) return result_no_match;
-                current = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+                current = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
             },
             .call_expression => {
                 if (!self.ast.hasExtra(node.data.extra, 0)) return result_no_match;
                 // Check if this call is `<X>.withConfig(...)` — capture outermost (= first encountered).
                 const callee_raw = self.ast.extra_data.items[node.data.extra];
-                const callee_idx: NodeIndex = @enumFromInt(callee_raw);
+                const callee_idx: NodeIndex = @fromBackingInt(@intCast(callee_raw));
                 if (user_with_config.isNone() and !callee_idx.isNone()) {
                     const callee_node = self.ast.getNode(callee_idx);
                     if (callee_node.tag == .static_member_expression and self.ast.hasExtra(callee_node.data.extra, 1)) {
-                        const prop_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[callee_node.data.extra + 1]);
+                        const prop_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[callee_node.data.extra + 1]));
                         if (!prop_idx.isNone()) {
                             const prop_node = self.ast.getNode(prop_idx);
                             if (prop_node.tag == .identifier_reference and
@@ -379,7 +379,7 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
     const call_node = self.ast.getNode(call_idx);
     // call extra = [callee, args_start, args_len, flags]
     if (!self.ast.hasExtra(call_node.data.extra, 2)) return call_idx;
-    const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[call_node.data.extra]);
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[call_node.data.extra]));
     if (callee_idx.isNone()) return call_idx;
 
     // 다중 paren `((() => X))()` 도 처리 — while 로 unwrap.
@@ -394,7 +394,7 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
 
     // arrow extra = [params(0), body(1), flags(2)]
     if (!self.ast.hasExtra(arrow_node.data.extra, 1)) return call_idx;
-    const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[arrow_node.data.extra + 1]);
+    const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[arrow_node.data.extra + 1]));
     if (body_idx.isNone()) return call_idx;
 
     // expression body 또는 block body 분기.
@@ -413,7 +413,7 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
         0;
     const new_arrow = try self.addExtraNode(.arrow_function_expression, arrow_node.span, &.{
         params_idx_raw,
-        @intFromEnum(new_body),
+        @backingInt(new_body),
         arrow_flags,
     });
 
@@ -440,7 +440,7 @@ fn wrapStyledInIife(self: *Transformer, call_idx: NodeIndex, var_name: []const u
     else
         0;
     return try self.addExtraNode(.call_expression, call_node.span, &.{
-        @intFromEnum(new_callee),
+        @backingInt(new_callee),
         args_start,
         args_len,
         call_flags,
@@ -524,14 +524,14 @@ fn wrapStyledInStmt(self: *Transformer, stmt_idx: NodeIndex, var_name: []const u
         .for_statement => {
             // extra = [init, test, update, body]. body 만 walk.
             if (!self.ast.hasExtra(node.data.extra, 3)) return stmt_idx;
-            const old_body: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra + 3]);
+            const old_body: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra + 3]));
             const new_body = try wrapStyledInStmt(self, old_body, var_name);
             if (new_body == old_body) return stmt_idx;
             return try self.addExtraNode(.for_statement, node.span, &.{
                 self.ast.extra_data.items[node.data.extra],
                 self.ast.extra_data.items[node.data.extra + 1],
                 self.ast.extra_data.items[node.data.extra + 2],
-                @intFromEnum(new_body),
+                @backingInt(new_body),
             });
         },
         .for_in_statement, .for_of_statement, .for_await_of_statement => {
@@ -578,7 +578,7 @@ fn walkStmtList(self: *Transformer, list_start: u32, list_len: u32, var_name: []
     var changed = false;
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
-        const item_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i]);
+        const item_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start + i]));
         const new_item = try wrapStyledInStmt(self, item_idx, var_name);
         if (new_item != item_idx) changed = true;
         try self.scratch.append(self.allocator, new_item);
@@ -659,7 +659,7 @@ fn withConfigCallArgsObj(self: *Transformer, call_idx: NodeIndex) ?NodeIndex {
     const args_start = self.ast.extra_data.items[node.data.extra + 1];
     const args_len = self.ast.extra_data.items[node.data.extra + 2];
     if (args_len < 1) return null;
-    const arg0_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[args_start]);
+    const arg0_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[args_start]));
     if (arg0_idx.isNone()) return null;
     if (self.ast.getNode(arg0_idx).tag != .object_expression) return null;
     return arg0_idx;
@@ -681,7 +681,7 @@ fn rewriteChainAt(
         .static_member_expression => {
             if (!self.ast.hasExtra(node.data.extra, 1)) return current_idx;
             const obj_raw = self.ast.extra_data.items[node.data.extra];
-            const obj_idx: NodeIndex = @enumFromInt(obj_raw);
+            const obj_idx: NodeIndex = @fromBackingInt(@intCast(obj_raw));
             const new_obj = try rewriteChainAt(self, obj_idx, target_call_idx, new_call_idx);
             if (new_obj == obj_idx) return current_idx;
             const prop_raw = self.ast.extra_data.items[node.data.extra + 1];
@@ -689,12 +689,12 @@ fn rewriteChainAt(
                 self.ast.extra_data.items[node.data.extra + 2]
             else
                 0;
-            return try self.addExtraNode(.static_member_expression, node.span, &.{ @intFromEnum(new_obj), prop_raw, flags });
+            return try self.addExtraNode(.static_member_expression, node.span, &.{ @backingInt(new_obj), prop_raw, flags });
         },
         .call_expression => {
             if (!self.ast.hasExtra(node.data.extra, 2)) return current_idx;
             const callee_raw = self.ast.extra_data.items[node.data.extra];
-            const callee_idx: NodeIndex = @enumFromInt(callee_raw);
+            const callee_idx: NodeIndex = @fromBackingInt(@intCast(callee_raw));
             const new_callee = try rewriteChainAt(self, callee_idx, target_call_idx, new_call_idx);
             if (new_callee == callee_idx) return current_idx;
             const args_start = self.ast.extra_data.items[node.data.extra + 1];
@@ -703,7 +703,7 @@ fn rewriteChainAt(
                 self.ast.extra_data.items[node.data.extra + 3]
             else
                 0;
-            return try self.addExtraNode(.call_expression, node.span, &.{ @intFromEnum(new_callee), args_start, args_len, flags });
+            return try self.addExtraNode(.call_expression, node.span, &.{ @backingInt(new_callee), args_start, args_len, flags });
         },
         else => return current_idx,
     }
@@ -724,7 +724,7 @@ fn scanObjectKeys(self: *Transformer, obj_idx: NodeIndex) ObjectKeyScan {
     const list = obj_node.data.list;
     const props = self.ast.extra_data.items[list.start .. list.start + list.len];
     for (props) |raw| {
-        const prop_idx: NodeIndex = @enumFromInt(raw);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (prop_idx.isNone()) continue;
         const prop_node = self.ast.getNode(prop_idx);
         if (prop_node.tag == .spread_element) {
@@ -792,7 +792,7 @@ fn minifyInterpTemplate(self: *Transformer, template_idx: NodeIndex, node: ast_m
 
     var changed = false;
     for (items) |raw_idx| {
-        const child_idx: NodeIndex = @enumFromInt(raw_idx);
+        const child_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         const child = self.ast.getNode(child_idx);
         if (child.tag != .template_element) {
             // expression — 그대로.
@@ -909,8 +909,8 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
     // tagged_template extra = [tag, template, flags]
     const e = init_node.data.extra;
     if (!self.ast.hasExtra(e, 2)) return init_idx;
-    const tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-    const template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+    const tag_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+    const template_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
     const flags = self.ast.extra_data.items[e + 2];
 
     const chain = analyzeTagChain(self, tag_idx);
@@ -929,8 +929,8 @@ fn wrapStyledTag(self: *Transformer, init_idx: NodeIndex, var_name: []const u8) 
     else
         template_idx;
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_tag),
-        @intFromEnum(final_template),
+        @backingInt(new_tag),
+        @backingInt(final_template),
         applyPureFlag(self, flags),
     });
     return self.ast.addNode(.{
@@ -993,7 +993,7 @@ fn mergeIntoUserWithConfig(
         const component_id_property = try buildKeyStringProperty(self, component_id_key, component_id_value_span);
         try self.scratch.append(self.allocator, component_id_property);
     }
-    for (old_props) |raw| try self.scratch.append(self.allocator, @enumFromInt(raw));
+    for (old_props) |raw| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw)));
 
     const new_obj_list = try self.ast.addNodeList(self.scratch.items[props_top..]);
     const new_obj = try self.ast.addNode(.{
@@ -1017,7 +1017,7 @@ fn mergeIntoUserWithConfig(
     try self.scratch.append(self.allocator, new_obj);
     var i: u32 = 1;
     while (i < args_len) : (i += 1) {
-        try self.scratch.append(self.allocator, @enumFromInt(self.ast.extra_data.items[args_start + i]));
+        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(self.ast.extra_data.items[args_start + i])));
     }
     const new_args_list = try self.ast.addNodeList(self.scratch.items[args_top..]);
 
@@ -1037,8 +1037,8 @@ fn mergeIntoUserWithConfig(
     else
         template_idx;
     const new_tt_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_tag),
-        @intFromEnum(final_template),
+        @backingInt(new_tag),
+        @backingInt(final_template),
         applyPureFlag(self, template_flags),
     });
     return self.ast.addNode(.{
@@ -1073,8 +1073,8 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
     const with_config_ref = try es_helpers.makePropertyNameFromSpan(self, with_config_span);
     // extra = [object, property, flags]
     const member = try self.addExtraNode(.static_member_expression, zero, &.{
-        @intFromEnum(tag_idx),
-        @intFromEnum(with_config_ref),
+        @backingInt(tag_idx),
+        @backingInt(with_config_ref),
         0,
     });
 
@@ -1098,7 +1098,7 @@ fn buildWithConfigCall(self: *Transformer, tag_idx: NodeIndex, var_name: []const
     // call_expression: extra = [callee, args_start, args_len, flags]
     const args = try self.ast.addNodeList(&.{obj});
     return self.addExtraNode(.call_expression, zero, &.{
-        @intFromEnum(member),
+        @backingInt(member),
         args.start,
         args.len,
         0,
@@ -1239,8 +1239,8 @@ fn jsxTagToExpr(self: *Transformer, idx: NodeIndex) Error!NodeIndex {
             const prop_ref = try es_helpers.makePropertyName(self, self.ast.getText(prop_node.span));
             const zero = Span{ .start = 0, .end = 0 };
             return self.addExtraNode(.static_member_expression, zero, &.{
-                @intFromEnum(obj_expr),
-                @intFromEnum(prop_ref),
+                @backingInt(obj_expr),
+                @backingInt(prop_ref),
                 0,
             });
         },
@@ -1269,8 +1269,8 @@ fn extractCssTemplateIdx(self: *Transformer, css_value_idx: NodeIndex) ?NodeInde
     if (node.tag == .tagged_template_expression) {
         const e = node.data.extra;
         if (!self.ast.hasExtra(e, 1)) return null;
-        const inner_tag_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
-        const inner_template_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[e + 1]);
+        const inner_tag_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
+        const inner_template_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e + 1]));
         if (inner_tag_idx.isNone() or inner_template_idx.isNone()) return null;
         const inner_tag_node = self.ast.getNode(inner_tag_idx);
         if (inner_tag_node.tag != .identifier_reference) return null;
@@ -1313,7 +1313,7 @@ fn forwardObjectInterpolations(
     var changed = false;
 
     for (items) |raw| {
-        const prop_idx: NodeIndex = @enumFromInt(raw);
+        const prop_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         const prop = self.ast.getNode(prop_idx);
         if (prop.tag != .object_property) {
             try self.scratch.append(self.allocator, prop_idx);
@@ -1355,8 +1355,8 @@ fn forwardObjectInterpolations(
         try callback_refs.append(self.allocator, p_ref);
         const member_prop_ref = try es_helpers.makePropertyName(self, prop_name);
         const member = try self.addExtraNode(.static_member_expression, zero, &.{
-            @intFromEnum(p_ref),
-            @intFromEnum(member_prop_ref),
+            @backingInt(p_ref),
+            @backingInt(member_prop_ref),
             0,
         });
         const new_prop = try self.ast.addNode(.{
@@ -1404,7 +1404,7 @@ fn forwardTemplateInterpolations(
     const zero = Span{ .start = 0, .end = 0 };
 
     for (items) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
         const node = self.ast.getNode(idx);
         if (node.tag == .template_element) {
             try self.scratch.append(self.allocator, idx);
@@ -1438,13 +1438,13 @@ fn forwardTemplateInterpolations(
         const p_ref = try es_helpers.makeSyntheticRefFromSpan(self, p_span);
         const prop_member_ref = try es_helpers.makePropertyName(self, prop_name);
         const member = try self.addExtraNode(.static_member_expression, zero, &.{
-            @intFromEnum(p_ref),
-            @intFromEnum(prop_member_ref),
+            @backingInt(p_ref),
+            @backingInt(prop_member_ref),
             0,
         });
         const arrow = try self.addExtraNode(.arrow_function_expression, zero, &.{
-            @intFromEnum(params),
-            @intFromEnum(member),
+            @backingInt(params),
+            @backingInt(member),
             0,
         });
         try bindCssPropCallbackSymbols(self, arrow, p_param_binding, &.{p_ref});
@@ -1496,7 +1496,7 @@ fn collectModuleLevelBindingsFallback(
     if (program.tag != .program) return;
     const list = program.data.list;
     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-        try collectBindingsFromStatement(self, @enumFromInt(raw), sink);
+        try collectBindingsFromStatement(self, @fromBackingInt(@intCast(raw)), sink);
     }
 }
 
@@ -1513,7 +1513,7 @@ fn collectBindingsFromStatement(
             if (x.is_type_only) return; // type-only import 는 runtime binding 등록 안 함
             var i: u32 = 0;
             while (i < x.specs_len) : (i += 1) {
-                const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[x.specs_start + i]);
+                const spec_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[x.specs_start + i]));
                 if (spec_idx.isNone()) continue;
                 const spec = self.ast.getNode(spec_idx);
                 switch (spec.tag) {
@@ -1535,11 +1535,11 @@ fn collectBindingsFromStatement(
             const list_start = self.ast.extra_data.items[e + 1];
             const list_len = self.ast.extra_data.items[e + 2];
             for (self.ast.extra_data.items[list_start .. list_start + list_len]) |raw| {
-                const decl_idx: NodeIndex = @enumFromInt(raw);
+                const decl_idx: NodeIndex = @fromBackingInt(@intCast(raw));
                 if (decl_idx.isNone()) continue;
                 const decl = self.ast.getNode(decl_idx);
                 if (decl.tag != .variable_declarator) continue;
-                const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[decl.data.extra]);
+                const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[decl.data.extra]));
                 if (name_idx.isNone()) continue;
                 const name_node = self.ast.getNode(name_idx);
                 if (name_node.tag == .binding_identifier) {
@@ -1548,7 +1548,7 @@ fn collectBindingsFromStatement(
             }
         },
         .function_declaration, .class_declaration => {
-            const name_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
             if (!name_idx.isNone()) {
                 try sink.put(self.allocator, self.ast.getText(self.ast.getNode(name_idx).span), {});
             }
@@ -1557,7 +1557,7 @@ fn collectBindingsFromStatement(
             // extras[0] 자리의 inner declaration 재귀 (`export const x = ...` 등)
             const e = node.data.extra;
             if (self.ast.hasExtra(e, 0)) {
-                const inner: NodeIndex = @enumFromInt(self.ast.extra_data.items[e]);
+                const inner: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[e]));
                 if (!inner.isNone()) try collectBindingsFromStatement(self, inner, sink);
             }
         },
@@ -1591,7 +1591,7 @@ fn resolveStyledInjectName(self: *Transformer) Error![]const u8 {
             try bindings.put(self.allocator, sym.nameText(self.ast.source), {});
         }
     } else {
-        const root_idx: NodeIndex = @enumFromInt(self.parser_node_count - 1);
+        const root_idx: NodeIndex = @fromBackingInt(@intCast(self.parser_node_count - 1));
         try collectModuleLevelBindingsFallback(self, root_idx, &bindings);
     }
 
@@ -1664,7 +1664,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     var i: u32 = 0;
     while (i < attrs_len) : (i += 1) {
         const attr_idx_raw = self.ast.extra_data.items[attrs_start + i];
-        const attr_idx: NodeIndex = @enumFromInt(attr_idx_raw);
+        const attr_idx: NodeIndex = @fromBackingInt(@intCast(attr_idx_raw));
         if (attr_idx.isNone()) continue;
         const attr_node = self.ast.getNode(attr_idx);
         if (attr_node.tag != .jsx_attribute) continue;
@@ -1752,8 +1752,8 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     const styled_tag = if (is_intrinsic) blk: {
         const tag_prop = try es_helpers.makePropertyName(self, self.ast.getText(tag_name_node.span));
         break :blk try self.addExtraNode(.static_member_expression, zero, &.{
-            @intFromEnum(styled_ref),
-            @intFromEnum(tag_prop),
+            @backingInt(styled_ref),
+            @backingInt(tag_prop),
             0,
         });
     } else blk: {
@@ -1761,7 +1761,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         const args_list = try self.ast.addNodeList(&.{tag_expr});
         // call_expression: extra = [callee, args_start, args_len, flags]
         break :blk try self.addExtraNode(.call_expression, zero, &.{
-            @intFromEnum(styled_ref),
+            @backingInt(styled_ref),
             args_list.start,
             args_list.len,
             0,
@@ -1791,8 +1791,8 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
                 .data = .{ .unary = .{ .operand = final_object_idx, .flags = 0 } },
             });
             const callback = try self.addExtraNode(.arrow_function_expression, zero, &.{
-                @intFromEnum(params),
-                @intFromEnum(paren),
+                @backingInt(params),
+                @backingInt(paren),
                 0,
             });
             try bindCssPropCallbackSymbols(self, callback, p_param, object_callback_refs.items);
@@ -1800,14 +1800,14 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         } else final_object_idx;
         const args_list = try self.ast.addNodeList(&.{obj_arg});
         break :blk try self.addExtraNode(.call_expression, zero, &.{
-            @intFromEnum(styled_tag),
+            @backingInt(styled_tag),
             args_list.start,
             args_list.len,
             0,
         });
     } else try self.addExtraNode(.tagged_template_expression, zero, &.{
-        @intFromEnum(styled_tag),
-        @intFromEnum(final_template_idx),
+        @backingInt(styled_tag),
+        @backingInt(final_template_idx),
         0,
     });
 
@@ -1816,16 +1816,16 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         try self.declareSyntheticInScope(binding_id, jsx_node.span, SymbolKind.variable_const, self.programScope())
     else
         null;
-    const none_idx = @intFromEnum(NodeIndex.none);
+    const none_idx = @backingInt(NodeIndex.none);
     const declarator = try self.addExtraNode(.variable_declarator, zero, &.{
-        @intFromEnum(binding_id),
+        @backingInt(binding_id),
         none_idx,
-        @intFromEnum(init_expr),
+        @backingInt(init_expr),
     });
 
     const decl_list = try self.ast.addNodeList(&.{declarator});
     const var_decl = try self.addExtraNode(.variable_declaration, zero, &.{
-        @intFromEnum(ast_mod.VariableDeclarationKind.@"const"),
+        @backingInt(ast_mod.VariableDeclarationKind.@"const"),
         decl_list.start,
         decl_list.len,
     });
@@ -1839,7 +1839,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     var j: u32 = 0;
     while (j < attrs_len) : (j += 1) {
         if (j == css_attr_pos.?) continue;
-        const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[attrs_start + j]);
+        const idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[attrs_start + j]));
         try self.scratch.append(self.allocator, idx);
     }
     // template interpolation forwarding 으로 생성된 prop attr 들 추가 (`_css0={expr0}` 등).
@@ -1850,7 +1850,7 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
     try self.addSyntheticRefInScope(new_tag, binding_symbol, self.current_scope, .{ .read = true });
 
     const new_extra = try self.ast.addExtras(&.{
-        @intFromEnum(new_tag),
+        @backingInt(new_tag),
         new_attrs_list.start,
         new_attrs_list.len,
         children_start,

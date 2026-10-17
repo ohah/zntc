@@ -43,7 +43,7 @@ fn scopeOwnersOf(self: anytype) *const std.AutoHashMapUnmanaged(u32, u32) {
 /// the analyzer propagates body flags to the parameter scope's ancestors.
 pub fn parameterListHasDynamicLookup(self: anytype, params: ast_mod.NodeList) std.mem.Allocator.Error!bool {
     for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
-        if (try nodeHasDynamicLookup(self, @enumFromInt(raw_param))) return true;
+        if (try nodeHasDynamicLookup(self, @fromBackingInt(@intCast(raw_param)))) return true;
     }
     return false;
 }
@@ -52,7 +52,7 @@ pub fn parameterListHasDynamicLookup(self: anytype, params: ast_mod.NodeList) st
 /// also used to fail closed in semantic-less transformer entry points, where a
 /// moved parameter initializer cannot be isolated from body `var` bindings.
 pub fn nodeHasDynamicLookup(self: anytype, root: ast_mod.NodeIndex) std.mem.Allocator.Error!bool {
-    if (root.isNone() or @intFromEnum(root) >= self.ast.nodes.items.len) return false;
+    if (root.isNone() or @backingInt(root) >= self.ast.nodes.items.len) return false;
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(self.allocator, self.ast, root);
     defer self.allocator.free(reachable);
     for (reachable) |raw| {
@@ -61,7 +61,7 @@ pub fn nodeHasDynamicLookup(self: anytype, root: ast_mod.NodeIndex) std.mem.Allo
         if (node.tag == .with_statement) return true;
         if (node.tag != .call_expression) continue;
         var callee_idx = self.ast.readExtraNode(node.data.extra, 0);
-        while (!callee_idx.isNone() and @intFromEnum(callee_idx) < self.ast.nodes.items.len) {
+        while (!callee_idx.isNone() and @backingInt(callee_idx) < self.ast.nodes.items.len) {
             const callee = self.ast.getNode(callee_idx);
             if (callee.tag == .parenthesized_expression) {
                 callee_idx = callee.data.unary.operand;
@@ -100,7 +100,7 @@ fn functionParamsNode(self: anytype, function_raw: u32) ?u32 {
     };
     if (!self.ast.hasExtra(function.data.extra, slot)) return null;
     const raw = self.ast.extra_data.items[function.data.extra + slot];
-    if (raw == @intFromEnum(ast_mod.NodeIndex.none) or raw >= self.ast.nodes.items.len) return null;
+    if (raw == @backingInt(ast_mod.NodeIndex.none) or raw >= self.ast.nodes.items.len) return null;
     return raw;
 }
 
@@ -167,7 +167,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
             (try Params.firstObjectRestParamIndex(self, params)) == null) continue;
         const scope_raw = self.scope_owner_map.get(@intCast(function_raw)) orelse continue;
         if (scope_raw >= scopes.len) continue;
-        const function_scope: ScopeId = @enumFromInt(scope_raw);
+        const function_scope: ScopeId = @fromBackingInt(@intCast(scope_raw));
         const scope = scopes[scope_raw];
         if (scope.kind != .function) continue;
 
@@ -205,11 +205,11 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
             const len = self.ast.extra_data.items[extra + 2];
             if (start > self.ast.extra_data.items.len or len > self.ast.extra_data.items.len - start) continue;
             for (self.ast.extra_data.items[start .. start + len]) |raw_declarator| {
-                const declarator: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_declarator);
-                if (declarator.isNone() or @intFromEnum(declarator) >= self.ast.nodes.items.len) continue;
+                const declarator: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw_declarator));
+                if (declarator.isNone() or @backingInt(declarator) >= self.ast.nodes.items.len) continue;
                 const declarator_node = self.ast.getNode(declarator);
                 if (declarator_node.tag != .variable_declarator or declarator_node.data.extra >= self.ast.extra_data.items.len) continue;
-                const pattern: @import("../parser/ast.zig").NodeIndex = @enumFromInt(self.ast.extra_data.items[declarator_node.data.extra]);
+                const pattern: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[declarator_node.data.extra]));
                 if (pattern.isNone()) continue;
                 var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, pattern, .{});
                 defer bindings.deinit();
@@ -230,7 +230,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         var referenced_shared_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer referenced_shared_ids.deinit(self.allocator);
         for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
-            const param: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_param);
+            const param: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw_param));
             const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, param);
             defer self.allocator.free(refs);
             for (refs) |reference| {
@@ -247,7 +247,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         var split_by_source: std.AutoHashMapUnmanaged(u32, u32) = .empty;
         defer split_by_source.deinit(self.allocator);
         for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
-            const param: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_param);
+            const param: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw_param));
             var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{});
             defer bindings.deinit();
             while (try bindings.next()) |binding| {
@@ -264,12 +264,12 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
                     body_var_span,
                 );
                 const parameter_id = maybe_parameter_id orelse continue;
-                try split_by_source.put(self.allocator, source_id, @intFromEnum(parameter_id));
-                try split_parameters.put(self.allocator, @intFromEnum(parameter_id), {});
+                try split_by_source.put(self.allocator, source_id, @backingInt(parameter_id));
+                try split_parameters.put(self.allocator, @backingInt(parameter_id), {});
                 try self.parameter_body_var_copies.append(self.allocator, .{
                     .function_scope = function_scope,
                     .body_var_symbol_id = source_id,
-                    .parameter_symbol_id = @intFromEnum(parameter_id),
+                    .parameter_symbol_id = @backingInt(parameter_id),
                     .source_span = body_var_span,
                 });
             }
@@ -278,7 +278,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
         var split_iter = split_by_source.iterator();
         while (split_iter.next()) |entry| {
             const source_id = entry.key_ptr.*;
-            const parameter_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(entry.value_ptr.*);
+            const parameter_id: @import("../semantic/symbol.zig").SymbolId = @fromBackingInt(@intCast(entry.value_ptr.*));
             for (parameter_refs.items) |reference| {
                 if (self.getSymbolIdAt(reference) != source_id) continue;
                 try semantic_edit.rebindParameterBodyVarReference(self, reference, parameter_id);
@@ -293,7 +293,7 @@ pub fn splitMergedParameterBodyVars(self: anytype) std.mem.Allocator.Error!Table
             const current_symbols = symbolsOf(self);
             const current_scope_maps = scopeMapsOf(self);
             for (self.ast.extra_data.items[params.start .. params.start + params.len]) |raw_param| {
-                const param: @import("../parser/ast.zig").NodeIndex = @enumFromInt(raw_param);
+                const param: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw_param));
                 var bindings = try @import("../parser/ast_walk.zig").bindingIdentifiers(self.allocator, self.ast, param, .{});
                 defer bindings.deinit();
                 while (try bindings.next()) |binding| {
@@ -381,7 +381,7 @@ pub fn collectFieldCaptureRenames(self: anytype) std.mem.Allocator.Error!Table {
             switch (member.tag) {
                 .method_definition => {
                     const key = self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key);
-                    if (@import("es_helpers.zig").isConstructorKey(self, key)) constructor = @intFromEnum(member_idx);
+                    if (@import("es_helpers.zig").isConstructorKey(self, key)) constructor = @backingInt(member_idx);
                 },
                 .property_definition => {
                     const flags = self.ast.readExtra(member.data.extra, ast_mod.PropertyExtra.flags);
@@ -447,13 +447,13 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
         if (scope_raw >= scopes.len or scope_raw >= scope_maps.len) continue;
         const scope = scopes[scope_raw];
         if (scope.kind != .function or scope.blocksMangling()) continue;
-        const scope_id: ScopeId = @enumFromInt(scope_raw);
+        const scope_id: ScopeId = @fromBackingInt(@intCast(scope_raw));
         const parameter_scope_raw = if (functionParamsNode(self, @intCast(raw))) |params_raw|
             scope_owners.get(params_raw) orelse scope_raw
         else
             scope_raw;
         if (parameter_scope_raw >= scopes.len or parameter_scope_raw >= scope_maps.len) continue;
-        const parameter_scope: ScopeId = @enumFromInt(parameter_scope_raw);
+        const parameter_scope: ScopeId = @fromBackingInt(@intCast(parameter_scope_raw));
         const parameter_dynamic_lookup = lower_object_rest_only and
             (scopes[parameter_scope_raw].subtree_has_direct_eval or scopes[parameter_scope_raw].subtree_has_with);
         if (scopes[parameter_scope_raw].blocksMangling() and !parameter_dynamic_lookup) continue;
@@ -481,7 +481,7 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
         }
         const affected_params = self.ast.extra_data.items[params.start + first_affected_param .. params.start + params.len];
         for (affected_params) |param| {
-            var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, @enumFromInt(param), .{});
+            var bindings = try ast_walk.bindingIdentifiers(self.allocator, self.ast, @fromBackingInt(@intCast(param)), .{});
             defer bindings.deinit();
             while (try bindings.next()) |binding| {
                 const parameter_id = self.getSymbolIdAt(binding) orelse continue;
@@ -498,7 +498,7 @@ pub fn collectRenames(self: anytype) std.mem.Allocator.Error!Table {
             // labels and binding keys also carry identifier tags but do not
             // read a binding. Debug-only unresolved-node sets are insufficient
             // for production standalone and bundler transforms.
-            const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, @enumFromInt(param));
+            const refs = try @import("../semantic/reference_walk.zig").collectIdentifierReferences(self.allocator, self.ast, @fromBackingInt(@intCast(param)));
             defer self.allocator.free(refs);
             for (refs) |ref| {
                 const sid = self.getSymbolIdAt(ref);
@@ -545,8 +545,8 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
     for (self.ast.nodes.items) |node| {
         const pair: [2]ast_mod.NodeIndex = switch (node.tag) {
             .variable_declarator, .formal_parameter => .{
-                @enumFromInt(self.ast.extra_data.items[node.data.extra]),
-                @enumFromInt(self.ast.extra_data.items[node.data.extra + 2]),
+                @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra])),
+                @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra + 2])),
             },
             .assignment_pattern, .assignment_target_with_default => .{ node.data.binary.left, node.data.binary.right },
             // `({ x = () => {} } = o)`: right is the default only in shorthand form.
@@ -555,7 +555,7 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
             else
                 continue,
             .assignment_expression => blk: {
-                const op: @import("../lexer/token.zig").Kind = @enumFromInt(node.data.binary.flags);
+                const op: @import("../lexer/token.zig").Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (op != .eq and op != .question2_eq and op != .amp2_eq and op != .pipe2_eq) continue;
                 break :blk .{ node.data.binary.left, node.data.binary.right };
             },
@@ -598,7 +598,7 @@ pub fn collectInferredNames(self: anytype, renames: *const Table) std.mem.Alloca
             // Class static initialization must see NamedEvaluation first.
             // Its lowering consumes this exact class node inside the IIFE.
             const root = if (value.tag == .class_expression and self.options.unsupported.class) value_root else pair[1];
-            if (id < symbols.len) try self.parameter_inferred_names.put(self.allocator, @intFromEnum(root), symbols[id].name);
+            if (id < symbols.len) try self.parameter_inferred_names.put(self.allocator, @backingInt(root), symbols[id].name);
         }
     }
 }
@@ -628,7 +628,7 @@ pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
             else
                 continue,
             .assignment_expression => blk: {
-                const op: @import("../lexer/token.zig").Kind = @enumFromInt(node.data.binary.flags);
+                const op: @import("../lexer/token.zig").Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 if (node.data.binary.flags != 0 and op != .eq and op != .question2_eq and op != .amp2_eq and op != .pipe2_eq) continue;
                 break :blk .{ bindingName(self, node.data.binary.left), node.data.binary.right };
             },
@@ -654,7 +654,7 @@ pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
     i = 0;
     while (i < nodes_len) : (i += 1) {
         if (self.ast.nodes.items[i].tag != .class_expression) continue;
-        const class_raw = anonymousClassRoot(self, @enumFromInt(i)) orelse continue;
+        const class_raw = anonymousClassRoot(self, @fromBackingInt(@intCast(i))) orelse continue;
         const entry = try self.class_inferred_names.getOrPut(self.allocator, class_raw);
         if (!entry.found_existing) entry.value_ptr.* = .{ .start = 0, .end = 0 };
     }
@@ -673,12 +673,12 @@ pub fn collectClassInferredNames(self: anytype) std.mem.Allocator.Error!void {
 /// An anonymous function or arrow (through parentheses).
 fn functionRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
     var current = value;
-    while (!current.isNone() and @intFromEnum(current) < self.ast.nodes.items.len) {
+    while (!current.isNone() and @backingInt(current) < self.ast.nodes.items.len) {
         const node = self.ast.getNode(current);
         switch (node.tag) {
             .parenthesized_expression => current = node.data.unary.operand,
-            .arrow_function_expression => return @intFromEnum(current),
-            .function_expression => return if (self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name).isNone()) @intFromEnum(current) else null,
+            .arrow_function_expression => return @backingInt(current),
+            .function_expression => return if (self.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name).isNone()) @backingInt(current) else null,
             else => return null,
         }
     }
@@ -687,7 +687,7 @@ fn functionRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
 
 fn anonymousClassRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
     var current = value;
-    while (!current.isNone() and @intFromEnum(current) < self.ast.nodes.items.len) {
+    while (!current.isNone() and @backingInt(current) < self.ast.nodes.items.len) {
         const node = self.ast.getNode(current);
         if (node.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) {
             current = node.data.unary.operand;
@@ -695,7 +695,7 @@ fn anonymousClassRoot(self: anytype, value: ast_mod.NodeIndex) ?u32 {
         }
         if (node.tag != .class_expression and node.tag != .class_declaration) return null;
         if (!self.ast.readExtraNode(node.data.extra, ast_mod.ClassExtra.name).isNone()) return null;
-        return @intFromEnum(current);
+        return @backingInt(current);
     }
     return null;
 }
@@ -775,7 +775,7 @@ fn bigintString(buf: []u8, text: []const u8) ?[]const u8 {
 /// The inferred name of an anonymous class lowered under a generated binding,
 /// consumed so no outer wrapper names the class again.
 pub fn takeAnonymousClassName(self: anytype, source: ast_mod.NodeIndex) ?@import("../lexer/token.zig").Span {
-    const raw = @intFromEnum(source);
+    const raw = @backingInt(source);
     const key = if (self.class_inferred_names.contains(raw)) raw else self.scope_owner_origins.get(raw) orelse return null;
     const name = self.class_inferred_names.get(key) orelse return null;
     _ = self.class_inferred_names.remove(key);
@@ -804,8 +804,8 @@ pub fn nameInFirstStaticBlock(self: anytype, source: ast_mod.NodeIndex, members:
         var statements: std.ArrayList(ast_mod.NodeIndex) = .empty;
         defer statements.deinit(self.allocator);
         try statements.append(self.allocator, statement);
-        for (self.ast.extra_data.items[old.start .. old.start + old.len]) |raw| try statements.append(self.allocator, @enumFromInt(raw));
-        self.ast.nodes.items[@intFromEnum(block_idx)].data.list = try self.ast.addNodeList(statements.items);
+        for (self.ast.extra_data.items[old.start .. old.start + old.len]) |raw| try statements.append(self.allocator, @fromBackingInt(@intCast(raw)));
+        self.ast.nodes.items[@backingInt(block_idx)].data.list = try self.ast.addNodeList(statements.items);
         return;
     }
 }
@@ -858,7 +858,7 @@ fn nameFunctionExpression(self: anytype, func: ast_mod.NodeIndex, name: []const 
             .property_definition => self.ast.readExtraNode(n.data.extra, ast_mod.PropertyExtra.key),
             else => continue,
         };
-        if (!key.isNone()) try property_names.put(self.allocator, @intFromEnum(key), {});
+        if (!key.isNone()) try property_names.put(self.allocator, @backingInt(key), {});
     }
     for (reachable) |raw| {
         const n = self.ast.nodes.items[raw];
@@ -877,11 +877,11 @@ fn nameFunctionExpression(self: anytype, func: ast_mod.NodeIndex, name: []const 
         const id = (try self.declareSyntheticInScope(binding, node.span, .function_decl, name_scope)) orelse return false;
         // `.name` is observable even though nothing reads the binding: minify
         // must neither mangle nor drop it (a native method keeps its name).
-        if (self.semantic_editor) |*editor| editor.symbols.items[@intFromEnum(id)].decl_flags.preserve_class_name = true;
+        if (self.semantic_editor) |*editor| editor.symbols.items[@backingInt(id)].decl_flags.preserve_class_name = true;
     }
     // Reanalysis restores the flag from this list.
-    try self.preserved_simple_class_names.append(self.allocator, @intFromEnum(binding));
-    self.ast.extra_data.items[node.data.extra + ast_mod.FunctionExtra.name] = @intFromEnum(binding);
+    try self.preserved_simple_class_names.append(self.allocator, @backingInt(binding));
+    self.ast.extra_data.items[node.data.extra + ast_mod.FunctionExtra.name] = @backingInt(binding);
     return true;
 }
 
@@ -976,7 +976,7 @@ pub fn needsRuntimeKeyName(self: anytype, key: ast_mod.NodeIndex, source_value: 
     if (key.isNone() or source_value.isNone()) return false;
     if (self.ast.getNode(key).tag != .computed_property_key) return false;
     // A literal key hoisted into a temp is already named statically.
-    if (self.parameter_inferred_names.contains(@intFromEnum(source_value))) return false;
+    if (self.parameter_inferred_names.contains(@backingInt(source_value))) return false;
     if (functionRoot(self, source_value) == null) return false;
     return (try keyName(self, key, false)) == null;
 }
@@ -1002,7 +1002,7 @@ fn definesStaticName(self: anytype, class_idx: ast_mod.NodeIndex) std.mem.Alloca
     if (body.isNone()) return false;
     const list = self.ast.getNode(body).data.list;
     for (self.ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-        const member = self.ast.getNode(@enumFromInt(raw));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(raw)));
         const key: ast_mod.NodeIndex, const is_static: bool = switch (member.tag) {
             .method_definition => .{
                 self.ast.readExtraNode(member.data.extra, ast_mod.MethodExtra.key),
@@ -1045,7 +1045,7 @@ pub fn finishRuntimeKeyClass(self: anytype, bound: ?u32, source_value: ast_mod.N
         if (native_named or output.isNone() or self.ast.getNode(output).tag != .class_expression) return output;
         const class_raw = anonymousClassRoot(self, source_value) orelse return output;
         const name = self.class_inferred_names.get(class_raw) orelse return output;
-        if (name.end == name.start or try definesStaticName(self, @enumFromInt(class_raw))) return output;
+        if (name.end == name.start or try definesStaticName(self, @fromBackingInt(@intCast(class_raw)))) return output;
         _ = self.class_inferred_names.remove(class_raw);
         return nameValue(self, output, name, span);
     };
@@ -1059,7 +1059,7 @@ pub fn finishRuntimeKeyClass(self: anytype, bound: ?u32, source_value: ast_mod.N
     if (entry.value.named or output.isNone()) return output;
     if (native_named and self.ast.getNode(output).tag == .class_expression) return output;
     // An own static `name` member is defined after NamedEvaluation and wins.
-    if (try definesStaticName(self, @enumFromInt(entry.value.class_raw))) return output;
+    if (try definesStaticName(self, @fromBackingInt(@intCast(entry.value.class_raw)))) return output;
     return nameByRuntimeKey(self, output, entry.value.key, null, scope, span);
 }
 
@@ -1087,7 +1087,7 @@ pub fn classNameStatement(self: anytype, ref: ast_mod.NodeIndex, name: @import("
 /// functions/classes that lowered to a capture-factory call or class IIFE.
 pub fn preserveInferredName(self: anytype, source: ast_mod.NodeIndex, output: ast_mod.NodeIndex) std.mem.Allocator.Error!ast_mod.NodeIndex {
     if (output.isNone()) return output;
-    const name = self.parameter_inferred_names.get(@intFromEnum(source)) orelse return output;
+    const name = self.parameter_inferred_names.get(@backingInt(source)) orelse return output;
     // A lowered class that became `function f() {}` already has the name.
     const out = self.ast.getNode(output);
     if (out.tag == .function_expression or out.tag == .class_expression) {
@@ -1112,7 +1112,7 @@ fn nameValue(self: anytype, value: ast_mod.NodeIndex, name: @import("../lexer/to
 /// elements execute. Consuming the hint prevents an outer wrapper from
 /// overwriting a user-defined static `name` field/getter/block afterwards.
 pub fn takeClassNameStatement(self: anytype, source: ast_mod.NodeIndex, binding: ast_mod.NodeIndex, constructor: ast_mod.NodeIndex, scope: ScopeId) std.mem.Allocator.Error!?ast_mod.NodeIndex {
-    const raw = @intFromEnum(source);
+    const raw = @backingInt(source);
     const key = if (self.parameter_inferred_names.contains(raw)) raw else self.scope_owner_origins.get(raw);
     const hinted = if (key) |k| self.parameter_inferred_names.get(k) else null;
     if (key) |k| _ = self.parameter_inferred_names.remove(k);
@@ -1164,7 +1164,7 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         by_container.deinit(self.allocator);
     }
     for (reachable) |raw| {
-        const container = self.ast.getNode(@enumFromInt(raw));
+        const container = self.ast.getNode(@fromBackingInt(@intCast(raw)));
         const statements = switch (container.tag) {
             .block_statement => self.ast.extra_data.items[container.data.list.start .. container.data.list.start + container.data.list.len],
             .switch_case => blk: {
@@ -1181,7 +1181,7 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         for (statements) |stmt| try container_of.put(self.allocator, stmt, raw);
     }
     for (reachable) |raw| {
-        const function = self.ast.getNode(@enumFromInt(raw));
+        const function = self.ast.getNode(@fromBackingInt(@intCast(raw)));
         switch (function.tag) {
             .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition => {},
             else => continue,
@@ -1200,7 +1200,7 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         }
     }
     for (reachable) |raw| {
-        const declaration = self.ast.getNode(@enumFromInt(raw));
+        const declaration = self.ast.getNode(@fromBackingInt(@intCast(raw)));
         if (declaration.tag != .function_declaration) continue;
         const block_container: ?u32 = if (body_level.contains(raw)) null else container_of.get(raw) orelse continue;
         const binding = self.ast.readExtraNode(declaration.data.extra, 0);
@@ -1219,7 +1219,7 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
             var targets: std.ArrayList(u32) = .empty;
             defer targets.deinit(self.allocator);
             if (switch_of.get(container)) |switch_raw| {
-                const extra = self.ast.getNode(@enumFromInt(switch_raw)).data.extra;
+                const extra = self.ast.getNode(@fromBackingInt(@intCast(switch_raw))).data.extra;
                 const start = self.ast.extra_data.items[extra + 1];
                 try targets.appendSlice(self.allocator, self.ast.extra_data.items[start .. start + self.ast.extra_data.items[extra + 2]]);
             } else try targets.append(self.allocator, container);
@@ -1232,14 +1232,14 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
             continue;
         }
         const call = try nameValue(self, try self.makeUserRefNamed(alias, binding), symbols[id].name, span);
-        const entry = try by_scope.getOrPut(self.allocator, @intFromEnum(scope));
+        const entry = try by_scope.getOrPut(self.allocator, @backingInt(scope));
         if (!entry.found_existing) entry.value_ptr.* = .empty;
         try entry.value_ptr.append(self.allocator, try es_helpers.makeExprStmt(self, call, span));
     }
     var containers = by_container.iterator();
     while (containers.next()) |entry| {
         const container_raw = entry.key_ptr.*;
-        const container = self.ast.getNode(@enumFromInt(container_raw));
+        const container = self.ast.getNode(@fromBackingInt(@intCast(container_raw)));
         const old_list: ast_mod.NodeList = switch (container.tag) {
             .block_statement => container.data.list,
             .switch_case => .{
@@ -1251,7 +1251,7 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         var statements: std.ArrayList(ast_mod.NodeIndex) = .empty;
         defer statements.deinit(self.allocator);
         try statements.appendSlice(self.allocator, entry.value_ptr.items);
-        for (self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len]) |stmt| try statements.append(self.allocator, @enumFromInt(stmt));
+        for (self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len]) |stmt| try statements.append(self.allocator, @fromBackingInt(@intCast(stmt)));
         const new_list = try self.ast.addNodeList(statements.items);
         switch (container.tag) {
             .block_statement => self.ast.nodes.items[container_raw].data.list = new_list,
@@ -1263,15 +1263,15 @@ pub fn prependBodyFunctionNames(self: anytype, root: ast_mod.NodeIndex) std.mem.
         }
     }
     for (reachable) |raw| {
-        const function = self.ast.getNode(@enumFromInt(raw));
-        const scope = self.outputOwnedScope(@enumFromInt(raw)) orelse continue;
-        const statements = by_scope.get(@intFromEnum(scope)) orelse continue;
+        const function = self.ast.getNode(@fromBackingInt(@intCast(raw)));
+        const scope = self.outputOwnedScope(@fromBackingInt(@intCast(raw))) orelse continue;
+        const statements = by_scope.get(@backingInt(scope)) orelse continue;
         const body = self.ast.functionBodyBlock(function) orelse continue;
         const body_node = self.ast.getNode(body);
         if (body_node.tag != .block_statement and body_node.tag != .function_body) continue;
         const named_body = try self.prependStatementsToBody(body, statements.items);
         const body_slot: u32 = if (function.tag == .arrow_function_expression) 1 else 2;
-        self.ast.extra_data.items[function.data.extra + body_slot] = @intFromEnum(named_body);
+        self.ast.extra_data.items[function.data.extra + body_slot] = @backingInt(named_body);
     }
 }
 

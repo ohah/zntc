@@ -31,7 +31,7 @@ fn collectChildren(allocator: std.mem.Allocator, ast: *const ast_mod.Ast, idx: N
 
 fn findFirstTag(ast: *const ast_mod.Ast, tag: Node.Tag) ?NodeIndex {
     for (ast.nodes.items, 0..) |n, i| {
-        if (n.tag == tag) return @enumFromInt(i);
+        if (n.tag == tag) return @fromBackingInt(@intCast(i));
     }
     return null;
 }
@@ -145,12 +145,12 @@ test "ChildIterator: runtime enum reaches member initializers" {
 
     const self_object_start = std.mem.indexOf(u8, source, "Next = Self") orelse return error.NotFound;
     const expected_start: u32 = @intCast(self_object_start + "Next = ".len);
-    const root: NodeIndex = @enumFromInt(parser.ast.nodes.items.len - 1);
+    const root: NodeIndex = @fromBackingInt(@intCast(parser.ast.nodes.items.len - 1));
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(a, &parser.ast, root);
     defer a.free(reachable);
     var found_initializer_reference = false;
     for (reachable) |raw| {
-        const candidate: NodeIndex = @enumFromInt(raw);
+        const candidate: NodeIndex = @fromBackingInt(@intCast(raw));
         const node = parser.ast.getNode(candidate);
         if (node.tag == .identifier_reference and node.span.start == expected_start) {
             found_initializer_reference = true;

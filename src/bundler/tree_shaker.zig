@@ -249,8 +249,8 @@ pub const TreeShaker = struct {
 
     fn markAstMutated(self: *TreeShaker, m: *Module) void {
         self.ast_mutated_after_link = true;
-        self.invalidateImportRecordStmtIndices(@intFromEnum(m.index));
-        if (self.materialize_scratch) |*s| s.invalidate(@intFromEnum(m.index));
+        self.invalidateImportRecordStmtIndices(@backingInt(m.index));
+        if (self.materialize_scratch) |*s| s.invalidate(@backingInt(m.index));
     }
 
     fn invalidateImportRecordStmtIndices(self: *TreeShaker, idx: usize) void {
@@ -305,7 +305,7 @@ pub const TreeShaker = struct {
                     if (rec_idx >= m.import_records.len) continue;
                     const src = m.import_records[rec_idx].resolved;
                     if (src == .none) continue;
-                    re_star_targets.set(@intFromEnum(src));
+                    re_star_targets.set(@backingInt(src));
                 }
                 for (m.import_records) |rec| {
                     if (rec.kind == .require) {
@@ -440,7 +440,7 @@ pub const TreeShaker = struct {
                 for (m.dependencies.items) |dep_idx| {
                     const dep = self.graph.getModule(dep_idx) orelse continue;
                     if (module_effects.hasEvaluationEffect(dep)) {
-                        self.included.set(@intFromEnum(dep_idx));
+                        self.included.set(@backingInt(dep_idx));
                     }
                 }
             }
@@ -458,7 +458,7 @@ pub const TreeShaker = struct {
             while (dyn_it.next()) |m| {
                 for (m.import_records) |rec| {
                     if (rec.kind != .dynamic_import or rec.resolved.isNone()) continue;
-                    const target = @intFromEnum(rec.resolved);
+                    const target = @backingInt(rec.resolved);
                     if (target < mod_count) {
                         dyn_import_targets.set(target);
                         // dynamic import는 runtime에 임의 export에 접근할 수 있으므로
@@ -616,7 +616,7 @@ pub const TreeShaker = struct {
                     const live_idx: ?u32 = if (m.wrap_kind == .esm) null else @intCast(i);
                     for (m.import_records, 0..) |rec, rec_i| {
                         if (rec.resolved.isNone()) continue;
-                        const target = @intFromEnum(rec.resolved);
+                        const target = @backingInt(rec.resolved);
                         const tmod = self.graph.getModule(rec.resolved) orelse continue;
 
                         // #2683 PR β-2: lazy require 가 RN core `module.exports = { get X() {} }`
@@ -746,7 +746,7 @@ pub const TreeShaker = struct {
             for (m.import_records) |rec| {
                 if (rec.resolved.isNone()) continue;
                 if (!rec.kind.isEagerEvalDependency() and rec.kind != .require) continue;
-                const target = @intFromEnum(rec.resolved);
+                const target = @backingInt(rec.resolved);
                 if (target >= mod_count or target == i) continue;
                 try importers[target].append(self.allocator, @intCast(i));
             }
@@ -788,7 +788,7 @@ pub const TreeShaker = struct {
                     const rec_idx = eb.import_record_index orelse continue;
                     if (rec_idx >= m.import_records.len) continue;
                     const src_idx = m.import_records[rec_idx].resolved;
-                    const src = @intFromEnum(src_idx);
+                    const src = @backingInt(src_idx);
                     if (self.graph.getModule(src_idx) == null) continue;
 
                     if (!self.included.isSet(src)) self.included.set(src);
@@ -894,7 +894,7 @@ pub const TreeShaker = struct {
             const prop = ast.nodes.items[prop_n];
             if (prop.tag != .method_definition) continue;
             const body_idx = ast.functionBodyBlock(prop) orelse continue;
-            if (@intFromEnum(body_idx) >= ast.nodes.items.len) continue;
+            if (@backingInt(body_idx) >= ast.nodes.items.len) continue;
             const body_span = ast.getNode(body_idx).span;
             if (!body_span.contains(rec_span)) continue;
             return self.isExportUsed(mod_idx, fact.export_name);
@@ -1143,7 +1143,7 @@ pub const TreeShaker = struct {
                             if (rec.kind != .require) continue;
                             if (rec.resolved.isNone()) continue;
                             if (!try import_records.importRecordBelongsToStmt(self, @intCast(item.mod), infos, @intCast(item.stmt), @intCast(rec_i))) continue;
-                            const target_mod_idx = @intFromEnum(rec.resolved);
+                            const target_mod_idx = @backingInt(rec.resolved);
                             const target_module = self.graph.getModule(rec.resolved) orelse continue;
                             if (target_module.wrap_kind == .cjs) {
                                 if (!self.isExportUsed(item.mod, ALL_EXPORTS_SENTINEL) and
@@ -1282,7 +1282,7 @@ pub const TreeShaker = struct {
                 const resolved = target_module.import_records[rec_idx].resolved;
                 if (self.graph.getModule(resolved) == null) continue;
                 const entry = try map.getOrPut(self.allocator, eb.exported_name);
-                if (!entry.found_existing) entry.value_ptr.* = @intFromEnum(resolved);
+                if (!entry.found_existing) entry.value_ptr.* = @backingInt(resolved);
             }
             self.re_export_namespace_sources[mod_idx] = map;
         }
@@ -1309,7 +1309,7 @@ pub const TreeShaker = struct {
         if (ib.import_record_index >= m.import_records.len) return;
         const rec = m.import_records[ib.import_record_index];
         if (rec.resolved.isNone()) return;
-        const target = @intFromEnum(rec.resolved);
+        const target = @backingInt(rec.resolved);
         const target_module_for_import = self.graph.getModule(rec.resolved) orelse return;
 
         if (ib.kind == .namespace) {
@@ -1392,7 +1392,7 @@ pub const TreeShaker = struct {
         reachable_stmts: []?std.DynamicBitSet,
     ) std.mem.Allocator.Error!bool {
         const target_u32: u32 = @intCast(target_mod);
-        const target_idx: types.ModuleIndex = @enumFromInt(target_u32);
+        const target_idx: types.ModuleIndex = @fromBackingInt(@intCast(target_u32));
         const target_module = self.graph.getModule(target_idx) orelse return false;
         if (target_module.wrap_kind == .cjs) return false;
         // Import-backed local exports (`import { x }; export { x }`, namespace barrels)
@@ -1413,7 +1413,7 @@ pub const TreeShaker = struct {
         const direct_sym: u32 = switch (binding.symbol) {
             .semantic => |sym| blk: {
                 if (sym.module != target_idx or sym.symbol.isNone()) return false;
-                const sym_idx = @intFromEnum(sym.symbol);
+                const sym_idx = @backingInt(sym.symbol);
                 if (sym_idx >= target_sem.symbols.items.len) return false;
                 break :blk sym_idx;
             },
@@ -1465,7 +1465,7 @@ pub const TreeShaker = struct {
             // #3664 P2: synthetic_named_exports 는 resolveExportChain 이 canonical(target export, 보통
             // default)로 직접 해석하므로 별도 분기 없이 그 export(및 객체 모듈)가 여기서 seed 되어
             // tree-shaking 생존한다. codegen 의 `_default.foo` 가 dead `_default` 를 참조하지 않도록.
-            break :blk self.linker.resolveExportChain(@enumFromInt(@as(u32, @intCast(target_mod))), imported_name, 0) orelse return;
+            break :blk self.linker.resolveExportChain(@fromBackingInt(@intCast(@as(u32, @intCast(target_mod)))), imported_name, 0) orelse return;
         };
         const canon_mod = canonical.module_index.toU32();
         const canon_m = self.graph.getModule(canonical.module_index) orelse return;
@@ -1516,7 +1516,7 @@ pub const TreeShaker = struct {
                     if (cib.import_record_index < canon_m.import_records.len) {
                         const ns_src_idx = canon_m.import_records[cib.import_record_index].resolved;
                         if (self.graph.getModule(ns_src_idx) != null) {
-                            const ns_src = @intFromEnum(ns_src_idx);
+                            const ns_src = @backingInt(ns_src_idx);
                             try self.markAllExportsUsed(@intCast(ns_src));
                             self.included.set(ns_src);
                             try self.seedAllStmts(@intCast(ns_src), queue, module_stmt_infos, reachable_stmts);
@@ -1685,8 +1685,8 @@ pub const TreeShaker = struct {
         for (infos.stmts, 0..) |stmt, si| {
             const stmt_ni: usize = stmt.node_idx;
             if (stmt_ni >= ast.nodes.items.len) continue;
-            const target = cjs_patterns.moduleExportsRequireTargetAt(m, ast, @enumFromInt(stmt_ni)) orelse continue;
-            const target_idx: u32 = @intFromEnum(target);
+            const target = cjs_patterns.moduleExportsRequireTargetAt(m, ast, @fromBackingInt(@intCast(stmt_ni))) orelse continue;
+            const target_idx: u32 = @backingInt(target);
             if (target_idx == mod_idx) continue;
 
             if (reachable_stmts[mod_idx] == null) {
@@ -1813,7 +1813,7 @@ pub const TreeShaker = struct {
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
-            const target = @intFromEnum(rec.resolved);
+            const target = @backingInt(rec.resolved);
             const target_module = self.graph.getModule(rec.resolved) orelse continue;
 
             if (target_module.wrap_kind == .cjs) {
@@ -1871,7 +1871,7 @@ pub const TreeShaker = struct {
                 if (rec_idx < m.import_records.len) {
                     const src_idx = m.import_records[rec_idx].resolved;
                     if (self.graph.getModule(src_idx) == null) continue;
-                    const src = @intFromEnum(src_idx);
+                    const src = @backingInt(src_idx);
                     if (eb.kind == .re_export_star) {
                         if (self.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL)) {
                             try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
@@ -1924,7 +1924,7 @@ pub const TreeShaker = struct {
             if (rec_idx >= m.import_records.len) continue;
             const src_idx = m.import_records[rec_idx].resolved;
             if (self.graph.getModule(src_idx) == null) continue;
-            const src = @intFromEnum(src_idx);
+            const src = @backingInt(src_idx);
             if (eb.kind == .re_export_star) {
                 if (self.isExportUsed(mod_idx, ALL_EXPORTS_SENTINEL)) {
                     self.included.set(src);
@@ -1947,7 +1947,7 @@ pub const TreeShaker = struct {
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
-            const target = @intFromEnum(rec.resolved);
+            const target = @backingInt(rec.resolved);
             if (self.graph.getModule(rec.resolved) == null) continue;
             self.included.set(target);
             try self.seedAllStmts(@intCast(target), queue, module_stmt_infos, reachable_stmts);
@@ -2021,7 +2021,7 @@ pub const TreeShaker = struct {
             if (rec_idx >= m.import_records.len) continue;
             const src_idx = m.import_records[rec_idx].resolved;
             const src_module = self.graph.getModule(src_idx) orelse continue;
-            const src = @intFromEnum(src_idx);
+            const src = @backingInt(src_idx);
             if (eb.kind.isReExportAll()) {
                 try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
             } else if (src_module.wrap_kind == .cjs) {
@@ -2040,7 +2040,7 @@ pub const TreeShaker = struct {
         for (m.import_records) |rec| {
             if (rec.kind != .re_export) continue;
             if (rec.resolved.isNone()) continue;
-            const src = @intFromEnum(rec.resolved);
+            const src = @backingInt(rec.resolved);
             if (self.graph.getModule(rec.resolved) == null) continue;
             try self.markAndSeedAllStmts(@intCast(src), queue, module_stmt_infos, reachable_stmts);
         }
@@ -2060,8 +2060,8 @@ pub const TreeShaker = struct {
         for (target_infos.stmts) |stmt| {
             const stmt_ni = stmt.node_idx;
             if (stmt_ni >= ast.nodes.items.len) continue;
-            const target = cjs_patterns.moduleExportsRequireTargetAt(m, ast, @enumFromInt(stmt_ni)) orelse continue;
-            const target_idx: u32 = @intFromEnum(target);
+            const target = cjs_patterns.moduleExportsRequireTargetAt(m, ast, @fromBackingInt(@intCast(stmt_ni))) orelse continue;
+            const target_idx: u32 = @backingInt(target);
             if (target_idx == mod_idx) continue;
             if (self.isExportUsed(target_idx, ALL_EXPORTS_SENTINEL)) continue;
             try self.markAndSeedAllStmts(target_idx, queue, module_stmt_infos, reachable_stmts);
@@ -2100,8 +2100,8 @@ pub const TreeShaker = struct {
         defer names.deinit(self.allocator);
         if (names.items.len == 0) return;
 
-        const reexport_idx: ModuleIndex = @enumFromInt(reexport_mod);
-        const src_idx: ModuleIndex = @enumFromInt(src_mod);
+        const reexport_idx: ModuleIndex = @fromBackingInt(@intCast(reexport_mod));
+        const src_idx: ModuleIndex = @fromBackingInt(@intCast(src_mod));
         if (self.getModule(src_mod)) |src_module| {
             if (src_module.wrap_kind == .cjs) {
                 try self.markAndSeedAllStmts(src_mod, queue, module_stmt_infos, reachable_stmts);
@@ -2145,7 +2145,7 @@ pub const TreeShaker = struct {
                 if (rec_idx >= m.import_records.len) continue;
                 const src_idx = m.import_records[rec_idx].resolved;
                 const src_module = self.graph.getModule(src_idx) orelse continue;
-                const src = @intFromEnum(src_idx);
+                const src = @backingInt(src_idx);
                 const all_exports_used = self.isExportUsed(@intCast(i), ALL_EXPORTS_SENTINEL);
                 // 평가 부수효과가 없는 source 는 사용된 export 가 있을 때만 끌어옴.
                 // `export *` 의 named import 는 seedExport 가 canonical source 로 직접 시드하므로,
@@ -2220,11 +2220,11 @@ pub const TreeShaker = struct {
     ) !void {
         const reexporter = self.getModule(reexport_mod) orelse return;
         for (reexporter.importers.items) |consumer_idx| {
-            const consumer = self.getModule(@intFromEnum(consumer_idx)) orelse continue;
+            const consumer = self.getModule(@backingInt(consumer_idx)) orelse continue;
             for (consumer.import_bindings) |ib| {
                 if (ib.import_record_index >= consumer.import_records.len) continue;
                 const resolved = consumer.import_records[ib.import_record_index].resolved;
-                if (resolved == .none or @intFromEnum(resolved) != reexport_mod) continue;
+                if (resolved == .none or @backingInt(resolved) != reexport_mod) continue;
 
                 switch (ib.kind) {
                     .named => {
@@ -2293,7 +2293,7 @@ pub const TreeShaker = struct {
             if (ib.import_record_index >= m.import_records.len) continue;
             const rec = m.import_records[ib.import_record_index];
             if (rec.resolved.isNone()) continue;
-            const target_mod = @intFromEnum(rec.resolved);
+            const target_mod = @backingInt(rec.resolved);
             const target_module = self.graph.getModule(rec.resolved) orelse continue;
 
             if (live_mod_idx) |idx| {
@@ -2452,7 +2452,7 @@ pub const TreeShaker = struct {
                     if (rec_idx < m.import_records.len) {
                         const source_idx = m.import_records[rec_idx].resolved;
                         if (self.graph.getModule(source_idx) != null) {
-                            const source_mod = @intFromEnum(source_idx);
+                            const source_mod = @backingInt(source_idx);
                             if (!self.included.isSet(source_mod)) self.included.set(source_mod);
                             if (eb.kind.isReExportAll()) {
                                 try self.markAllExportsUsed(@intCast(source_mod));
@@ -2526,7 +2526,7 @@ test "markAstMutated invalidates cached import-record statement indexes" {
     const per_module = try allocator.alloc(?[]?u32, 1);
     per_module[0] = cached_stmt_indices;
 
-    var module = Module.init(@enumFromInt(0), "test.cjs");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "test.cjs");
     var shaker: TreeShaker = undefined;
     shaker.allocator = allocator;
     shaker.import_record_stmt_indices = per_module;

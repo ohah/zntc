@@ -171,7 +171,7 @@ fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
 
         // 항상 5 fields: [tag, attrs_start, attrs_len, children_start, children_len]
         // self-closing은 children_len=0으로 통일하여 transformer에서 heuristic 불필요
-        const extra_start = try self.ast.addExtra(@intFromEnum(tag_name));
+        const extra_start = try self.ast.addExtra(@backingInt(tag_name));
         _ = try self.ast.addExtra(attrs.start);
         _ = try self.ast.addExtra(attrs.len);
         _ = try self.ast.addExtra(0); // children_start (unused)
@@ -205,7 +205,7 @@ fn parseJSXElementImpl(self: *Parser, as_child: bool) ParseError2!NodeIndex {
     }
     try advanceAfterJSXClose(self, as_child);
 
-    const extra_start = try self.ast.addExtra(@intFromEnum(tag_name));
+    const extra_start = try self.ast.addExtra(@backingInt(tag_name));
     _ = try self.ast.addExtra(attrs.start);
     _ = try self.ast.addExtra(attrs.len);
     _ = try self.ast.addExtra(children.start);

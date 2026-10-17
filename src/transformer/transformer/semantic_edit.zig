@@ -57,24 +57,24 @@ fn editorFor(self: *Transformer) Transformer.Error!*SemanticEditor {
 }
 
 fn setSymbolId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Error!void {
-    const index = @intFromEnum(node);
+    const index = @backingInt(node);
     if (self.symbol_ids.items.len <= index)
         try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
     if (self.symbol_ids.items[index] != null) std.debug.panic("generated identifier already has a symbol", .{});
     if (self.semantic_editor) |*editor| {
         if (self.ast.getNode(node).tag == .binding_identifier) {
             editor.attachExistingBinding(node, id) catch |err| return editError(err);
-            self.symbol_ids.items[index] = @intFromEnum(id);
+            self.symbol_ids.items[index] = @backingInt(id);
             return;
         }
     }
-    self.symbol_ids.items[index] = @intFromEnum(id);
+    self.symbol_ids.items[index] = @backingInt(id);
 }
 
 fn outputSymbolIdAt(self: *Transformer, editor: *SemanticEditor, node: NodeIndex) ?u32 {
     if (self.getSymbolIdAt(node)) |id| return id;
-    if (node.isNone() or @intFromEnum(node) >= editor.symbol_ids.items.len) return null;
-    return editor.symbol_ids.items[@intFromEnum(node)];
+    if (node.isNone() or @backingInt(node) >= editor.symbol_ids.items.len) return null;
+    return editor.symbol_ids.items[@backingInt(node)];
 }
 
 /// Bind the generated ES5 constructor to the source class's exact inner name.
@@ -86,7 +86,7 @@ pub fn bindClassSelfStorage(self: *Transformer, source_class: NodeIndex, binding
         if (self.semantic_edit_enabled) std.debug.panic("class self edit has no semantic input", .{});
         return false;
     }
-    const raw = @intFromEnum(source_class);
+    const raw = @backingInt(source_class);
     if (self.generated_class_self_relocated_to_wrapper.contains(raw)) return false;
     if (self.generated_class_without_source_anchor.contains(raw) and !self.class_self_symbol_map.contains(raw)) {
         if (self.semantic_edit_enabled)
@@ -99,12 +99,12 @@ pub fn bindClassSelfStorage(self: *Transformer, source_class: NodeIndex, binding
     // as its scope-owner origin. Prefer that exact output-node identity, then
     // fall back to the canonical source owner for ordinary copied classes.
     const inner_raw = self.class_self_symbol_map.get(raw) orelse self.class_self_symbol_map.get(origin) orelse {
-        const source_node = self.ast.getNode(@enumFromInt(origin));
+        const source_node = self.ast.getNode(@fromBackingInt(@intCast(origin)));
         const source_name = self.ast.extra_data.items[source_node.data.extra + @import("../../parser/ast.zig").ClassExtra.name];
-        if (source_name == @intFromEnum(NodeIndex.none)) return false;
+        if (source_name == @backingInt(NodeIndex.none)) return false;
         std.debug.panic("named source class has no inner self SymbolId", .{});
     };
-    const inner: SymbolId = @enumFromInt(inner_raw);
+    const inner: SymbolId = @fromBackingInt(@intCast(inner_raw));
     if (self.getSymbolIdAt(binding)) |existing| {
         if (existing != inner_raw) std.debug.panic("generated class self binding changed SymbolId", .{});
     }
@@ -120,8 +120,8 @@ pub fn bindClassSelfStorage(self: *Transformer, source_class: NodeIndex, binding
 }
 
 pub fn programScope(self: *Transformer) ScopeId {
-    return @enumFromInt(self.scope_owner_map.get(self.parser_node_count - 1) orelse
-        std.debug.panic("missing program scope for generated declaration", .{}));
+    return @fromBackingInt(@intCast(self.scope_owner_map.get(self.parser_node_count - 1) orelse
+        std.debug.panic("missing program scope for generated declaration", .{})));
 }
 
 pub fn nearestVarScope(self: *Transformer, scope: ScopeId) ScopeId {
@@ -182,16 +182,16 @@ pub fn objectSuperTempOutputScopeIsDeferred(self: *Transformer, start: ScopeId) 
 }
 
 fn scopeOwnerNode(self: *Transformer, scope: ScopeId) ?NodeIndex {
-    const raw_scope = @intFromEnum(scope);
+    const raw_scope = @backingInt(scope);
     var transformed = self.transformed_scope_owner_map.iterator();
     while (transformed.next()) |entry| {
         if (entry.value_ptr.* == raw_scope and entry.key_ptr.* < self.ast.nodes.items.len)
-            return @enumFromInt(entry.key_ptr.*);
+            return @fromBackingInt(@intCast(entry.key_ptr.*));
     }
     var original = self.scope_owner_map.iterator();
     while (original.next()) |entry| {
         if (entry.value_ptr.* == raw_scope and entry.key_ptr.* < self.ast.nodes.items.len)
-            return @enumFromInt(entry.key_ptr.*);
+            return @fromBackingInt(@intCast(entry.key_ptr.*));
     }
     return null;
 }
@@ -242,11 +242,11 @@ fn loweredDefaultParameterOutputScope(self: *Transformer, start_scope: ScopeId) 
             break :blk exact_async_function or exact_async_generator;
         };
         if (!exact_async_arrow_state_machine and !exact_async_function_wrapper) return null;
-        const owner_raw = @intFromEnum(output_owner);
+        const owner_raw = @backingInt(output_owner);
         const output_scope_raw = self.transformed_scope_owner_map.get(owner_raw) orelse
             self.scope_owner_map.get(owner_raw) orelse return null;
         if (output_scope_raw >= scopes.len or scopes[output_scope_raw].kind != .function) return null;
-        const output_scope: ScopeId = @enumFromInt(output_scope_raw);
+        const output_scope: ScopeId = @fromBackingInt(@intCast(output_scope_raw));
 
         // The async arrow/function/method wrapper keeps the source owner's
         // function ScopeId. Its parameter temp can use that exact owner while
@@ -328,13 +328,13 @@ fn parameterScopeHasLoweredOwner(self: *Transformer, parameter_owner: NodeIndex)
     var transformed = self.transformed_scope_owner_map.iterator();
     while (transformed.next()) |entry| {
         if (entry.key_ptr.* >= self.ast.nodes.items.len) continue;
-        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         if (functionParametersNode(self, owner) == parameter_owner and functionHasLoweredParameterList(self, owner)) return true;
     }
     var original = self.scope_owner_map.iterator();
     while (original.next()) |entry| {
         if (entry.key_ptr.* >= self.ast.nodes.items.len) continue;
-        const owner: NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         if (functionParametersNode(self, owner) == parameter_owner and functionHasLoweredParameterList(self, owner)) return true;
     }
     return false;
@@ -351,13 +351,13 @@ fn recordParameterOutputScopeCandidate(
     ambiguous: *bool,
 ) void {
     if (owner_raw >= self.ast.nodes.items.len) return;
-    const owner: NodeIndex = @enumFromInt(owner_raw);
+    const owner: NodeIndex = @fromBackingInt(@intCast(owner_raw));
     if (functionParametersNode(self, owner) != parameter_owner) return;
     if (ownerNeedsLoweredFunctionScope(self, owner) or scope_raw >= scopes.len) {
         ambiguous.* = true;
         return;
     }
-    const scope: ScopeId = @enumFromInt(scope_raw);
+    const scope: ScopeId = @fromBackingInt(@intCast(scope_raw));
     if (scope == parameter_scope or scopes[scope_raw].kind != .function or
         scopes[scope_raw].parent != parameter_scope)
     {
@@ -370,7 +370,7 @@ fn recordParameterOutputScopeCandidate(
 }
 
 fn functionParametersNode(self: *Transformer, owner: NodeIndex) ?NodeIndex {
-    if (owner.isNone() or @intFromEnum(owner) >= self.ast.nodes.items.len) return null;
+    if (owner.isNone() or @backingInt(owner) >= self.ast.nodes.items.len) return null;
     const node = self.ast.getNode(owner);
     const slot: u32 = switch (node.tag) {
         .function_declaration, .function_expression, .function => ast_mod.FunctionExtra.params,
@@ -382,8 +382,8 @@ fn functionParametersNode(self: *Transformer, owner: NodeIndex) ?NodeIndex {
     const slot_index: usize = @intCast(slot);
     if (extra + slot_index >= self.ast.extra_data.items.len) return null;
     const raw = self.ast.extra_data.items[extra + slot_index];
-    if (raw == @intFromEnum(NodeIndex.none) or raw >= self.ast.nodes.items.len) return null;
-    return @enumFromInt(raw);
+    if (raw == @backingInt(NodeIndex.none) or raw >= self.ast.nodes.items.len) return null;
+    return @fromBackingInt(@intCast(raw));
 }
 
 fn functionHasLoweredParameterList(self: *Transformer, owner: NodeIndex) bool {
@@ -423,12 +423,12 @@ fn ownerNeedsLoweredFunctionScope(self: *Transformer, owner: NodeIndex) bool {
 /// determines where a state machine's generated functions live.
 pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
     if (!self.semantic_edit_enabled) return .none;
-    const raw = @intFromEnum(owner);
+    const raw = @backingInt(owner);
     if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |scope| {
         const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
         if (scope >= scopes.len or scopes[scope].kind != .function)
             std.debug.panic("state machine owner {d} has no function scope", .{raw});
-        return @enumFromInt(scope);
+        return @fromBackingInt(@intCast(scope));
     }
     // This exact owner was produced by generator loop extraction before the
     // enclosing state-machine callback exists. Its complete function/parameter
@@ -437,7 +437,7 @@ pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
     if (self.deferred_generator_loop_owners.get(raw)) |deferred_owner| {
         const function_scope = deferred_owner.function_scope orelse
             std.debug.panic("deferred generator loop owner has no exact function ScopeId", .{});
-        const migration = self.deferred_generator_loop_migrations.get(@intFromEnum(function_scope)) orelse
+        const migration = self.deferred_generator_loop_migrations.get(@backingInt(function_scope)) orelse
             std.debug.panic("deferred generator loop owner has no exact migration", .{});
         if (migration.loop_function != owner)
             std.debug.panic("deferred generator loop owner and migration disagree", .{});
@@ -451,17 +451,17 @@ pub fn originalFunctionScope(self: *Transformer, owner: NodeIndex) ScopeId {
 /// even while their insertion parent awaits the enclosing state callback.
 pub fn stateMachineOwnerScope(self: *Transformer, owner: NodeIndex) ScopeId {
     if (!self.semantic_edit_enabled) return .none;
-    const raw = @intFromEnum(owner);
+    const raw = @backingInt(owner);
     if (self.transformed_scope_owner_map.get(raw) orelse self.scope_owner_map.get(raw)) |scope| {
         const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
         if (scope >= scopes.len or scopes[scope].kind != .function)
             std.debug.panic("state machine owner {d} has no function scope", .{raw});
-        return @enumFromInt(scope);
+        return @fromBackingInt(@intCast(scope));
     }
     if (self.deferred_generator_loop_owners.get(raw)) |deferred_owner| {
         const function_scope = deferred_owner.function_scope orelse
             std.debug.panic("deferred generator loop owner has no exact function ScopeId", .{});
-        const migration = self.deferred_generator_loop_migrations.get(@intFromEnum(function_scope)) orelse
+        const migration = self.deferred_generator_loop_migrations.get(@backingInt(function_scope)) orelse
             std.debug.panic("deferred generator loop owner has no exact migration", .{});
         if (migration.loop_function != owner)
             std.debug.panic("deferred generator loop owner and migration disagree", .{});
@@ -486,7 +486,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         if (es_helpers.canUseLateStandaloneOutputName(self, scope) or
             es_helpers.canUseLateGraphOutputName(self, scope))
         {
-            const state_symbol = &editor.symbols.items[@intFromEnum(symbol)];
+            const state_symbol = &editor.symbols.items[@backingInt(symbol)];
             state_symbol.synthetic_kind = .generator_state_parameter;
             if (self.options.emit_runtime_helper_imports) state_symbol.output_name_hint = "_state";
         }
@@ -495,15 +495,15 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         // Only references actually contained in this callback count as uses.
         var pending: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer pending.deinit(self.allocator);
-        for (self.generator_state_refs.items[ref_start..]) |ref| try pending.put(self.allocator, @intFromEnum(ref), {});
+        for (self.generator_state_refs.items[ref_start..]) |ref| try pending.put(self.allocator, @backingInt(ref), {});
         var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
         defer seen.deinit(self.allocator);
         var stack: std.ArrayList(NodeIndex) = .empty;
         defer stack.deinit(self.allocator);
         try stack.append(self.allocator, callback);
         while (stack.pop()) |node| {
-            if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
-            const raw = @intFromEnum(node);
+            if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) continue;
+            const raw = @backingInt(node);
             if (seen.contains(raw)) continue;
             try seen.put(self.allocator, raw, {});
             if (pending.contains(raw)) try addSyntheticRefInScope(self, node, symbol, scope, .{ .read = true });
@@ -549,7 +549,7 @@ pub fn bindGeneratedState(self: *Transformer, parent: ScopeId, source_scope: Sco
         var migrations = self.deferred_generator_loop_migrations.iterator();
         while (migrations.next()) |entry| {
             const migration = entry.value_ptr;
-            if (entry.key_ptr.* != @intFromEnum(source_scope)) continue;
+            if (entry.key_ptr.* != @backingInt(source_scope)) continue;
             if (!migration.state_callback.isNone()) std.debug.panic("generator loop state callback registered twice", .{});
             migration.state_callback = callback;
             migration.state_callback_scope = scope;
@@ -575,7 +575,7 @@ fn reparentDeferredGeneratorLoops(self: *Transformer, source_scope: ScopeId, cal
     }
     for (ready.items) |function_scope_raw| {
         const migration = self.deferred_generator_loop_migrations.getPtr(function_scope_raw) orelse continue;
-        const function_scope: ScopeId = @enumFromInt(function_scope_raw);
+        const function_scope: ScopeId = @fromBackingInt(@intCast(function_scope_raw));
         if (!scopeWithin(editor.scopes.items, function_scope, callback_scope))
             editor.reparentScope(function_scope, callback_scope) catch |err| return editError(err);
         migration.function_reparented = true;
@@ -590,7 +590,7 @@ fn migrateDeferredGeneratorLoopBodies(self: *Transformer, source_scope: ScopeId)
     var entries = self.deferred_generator_loop_migrations.iterator();
     while (entries.next()) |entry| {
         const migration = entry.value_ptr.*;
-        if (entry.key_ptr.* != @intFromEnum(source_scope) or migration.state_callback.isNone() or migration.body_migrated) continue;
+        if (entry.key_ptr.* != @backingInt(source_scope) or migration.state_callback.isNone() or migration.body_migrated) continue;
         try ready.append(self.allocator, entry.key_ptr.*);
     }
 
@@ -601,7 +601,7 @@ fn migrateDeferredGeneratorLoopBodies(self: *Transformer, source_scope: ScopeId)
             self,
             migration.body,
             migration.state_callback,
-            @enumFromInt(function_scope_raw),
+            @fromBackingInt(@intCast(function_scope_raw)),
             migration.state_callback_scope,
             migration.call_scope,
             migration.header_symbol_ids,
@@ -615,9 +615,9 @@ fn migrateDeferredGeneratorLoopBodies(self: *Transformer, source_scope: ScopeId)
 fn discardCompletedGeneratorLoopMigration(self: *Transformer, function_scope_raw: u32) Transformer.Error!void {
     const migration = self.deferred_generator_loop_migrations.get(function_scope_raw) orelse return;
     if (!migration.function_reparented or !migration.body_migrated) return;
-    const owner = self.deferred_generator_loop_owners.getPtr(@intFromEnum(migration.loop_function)) orelse
+    const owner = self.deferred_generator_loop_owners.getPtr(@backingInt(migration.loop_function)) orelse
         std.debug.panic("completed generator loop migration has no deferred owner", .{});
-    if (owner.function_scope == null or @intFromEnum(owner.function_scope.?) != function_scope_raw or owner.migration_complete)
+    if (owner.function_scope == null or @backingInt(owner.function_scope.?) != function_scope_raw or owner.migration_complete)
         std.debug.panic("completed generator loop migration changed exact owner", .{});
     owner.migration_complete = true;
     const removed = self.deferred_generator_loop_migrations.fetchRemove(function_scope_raw) orelse return;
@@ -661,7 +661,7 @@ const OutputBindingGroup = struct {
 fn outputBindingCandidateLessThan(_: void, lhs: OutputBindingCandidate, rhs: OutputBindingCandidate) bool {
     if (lhs.raw_id != rhs.raw_id) return lhs.raw_id < rhs.raw_id;
     if (lhs.target_scope != rhs.target_scope) return lhs.target_scope.toIndex() < rhs.target_scope.toIndex();
-    if (lhs.kind != rhs.kind) return @intFromEnum(lhs.kind) < @intFromEnum(rhs.kind);
+    if (lhs.kind != rhs.kind) return @backingInt(lhs.kind) < @backingInt(rhs.kind);
     return std.mem.lessThan(u8, lhs.name, rhs.name);
 }
 
@@ -733,7 +733,7 @@ fn childSkipsOutputScope(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u3
 fn isNamespaceDeclarationNameBinding(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u32) bool {
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
-    return parent.tag == .ts_module_declaration and parent.data.binary.left == @as(NodeIndex, @enumFromInt(child_raw));
+    return parent.tag == .ts_module_declaration and parent.data.binary.left == @as(NodeIndex, @fromBackingInt(@intCast(child_raw)));
 }
 
 fn isEnumDeclarationNameBinding(ast: *const ast_mod.Ast, parent_raw: u32, child_raw: u32) bool {
@@ -766,7 +766,7 @@ fn collectOutputNonSimpleParameterScopes(
     var owned: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer owned.deinit(self.allocator);
     for (reachable) |raw| {
-        if (self.outputOwnedScope(@enumFromInt(raw))) |scope| try owned.put(self.allocator, scope.toIndex(), {});
+        if (self.outputOwnedScope(@fromBackingInt(@intCast(raw)))) |scope| try owned.put(self.allocator, scope.toIndex(), {});
     }
     for (reachable) |raw| {
         if (raw >= self.ast.nodes.items.len) continue;
@@ -780,7 +780,7 @@ fn collectOutputNonSimpleParameterScopes(
             => {},
             else => continue,
         }
-        const function_scope = self.outputOwnedScope(@enumFromInt(raw)) orelse continue;
+        const function_scope = self.outputOwnedScope(@fromBackingInt(@intCast(raw))) orelse continue;
         if (function_scope.isNone() or function_scope.toIndex() >= editor.scopes.items.len) continue;
         const parameter_scope = editor.scopes.items[function_scope.toIndex()].parent;
         if (parameter_scope.isNone() or parameter_scope.toIndex() >= editor.scopes.items.len) continue;
@@ -799,7 +799,7 @@ fn collectOutputNonSimpleParameterScopes(
         // constructor's function scope can sit directly under its class body.
         if (editor.scopes.items[parameter_scope.toIndex()].kind != .function) continue;
         if (owned.contains(parameter_scope.toIndex())) continue;
-        try editor.scope_owner_map.put(self.allocator, @intFromEnum(params_idx), parameter_scope.toIndex());
+        try editor.scope_owner_map.put(self.allocator, @backingInt(params_idx), parameter_scope.toIndex());
         try owned.put(self.allocator, parameter_scope.toIndex(), {});
     }
 }
@@ -897,7 +897,7 @@ fn bridgeOutputParentToSourceParent(
 pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_scope: ScopeId) Transformer.Error!void {
     const editor = try editorFor(self);
     if (self.outputOwnedScope(root) == null) {
-        try editor.scope_owner_map.put(self.allocator, @intFromEnum(root), @intFromEnum(root_scope));
+        try editor.scope_owner_map.put(self.allocator, @backingInt(root), @backingInt(root_scope));
     }
     var non_simple_parameter_scopes: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer non_simple_parameter_scopes.deinit(self.allocator);
@@ -912,8 +912,8 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
     defer output_bindings.deinit(self.allocator);
     try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
     while (stack.pop()) |work| {
-        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(work.node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
@@ -939,7 +939,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         }
         if (node.tag == .catch_clause) {
             const param = node.data.binary.left;
-            if (!param.isNone() and @intFromEnum(param) >= self.parser_node_count and self.ast.getNode(param).tag == .binding_identifier) {
+            if (!param.isNone() and @backingInt(param) >= self.parser_node_count and self.ast.getNode(param).tag == .binding_identifier) {
                 // A generated catch binding must arrive with its producer-owned
                 // identity. Finalization must not repair missing identities.
                 if (self.getSymbolIdAt(param) == null)
@@ -976,8 +976,8 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         // merge those two identities and collide with an exported member of
         // the same name.
         if (node.tag == .binding_identifier and
-            !isNamespaceDeclarationNameBinding(self.ast, @intFromEnum(work.parent), raw) and
-            !isEnumDeclarationNameBinding(self.ast, @intFromEnum(work.parent), raw))
+            !isNamespaceDeclarationNameBinding(self.ast, @backingInt(work.parent), raw) and
+            !isEnumDeclarationNameBinding(self.ast, @backingInt(work.parent), raw))
         {
             if (self.generated_body_binding_moves.fetchRemove(raw)) |move| {
                 const id = outputSymbolIdAt(self, editor, work.node) orelse std.debug.panic("moved source binding lost its SymbolId", .{});
@@ -997,7 +997,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                     outputBindingTargetScope(self, editor, &non_simple_parameter_scopes, scope, symbol, is_declaration_name, output_var);
                 if (target_scope.isNone()) std.debug.panic("moved source binding has no emitted scope", .{});
                 if (symbol.scope_id != target_scope)
-                    editor.relocateSymbolAs(@enumFromInt(id), target_scope, work.node) catch |err| return editError(err);
+                    editor.relocateSymbolAs(@fromBackingInt(@intCast(id)), target_scope, work.node) catch |err| return editError(err);
             }
             if (outputSymbolIdAt(self, editor, work.node)) |id| {
                 if (id < editor.symbols.items.len) {
@@ -1044,7 +1044,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                 var raw_id = outputSymbolIdAt(self, editor, work.node);
                 if (raw_id == null) {
                     if (editor.referenceForNode(work.node) catch |err| return editError(err)) |reference| {
-                        raw_id = @intFromEnum(reference.symbol_id);
+                        raw_id = @backingInt(reference.symbol_id);
                     }
                 }
                 if (raw_id) |id| {
@@ -1057,19 +1057,19 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         if (node.tag == .switch_statement) {
             const extra = node.data.extra;
             if (extra + 2 >= self.ast.extra_data.items.len) continue;
-            const discriminant: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra]);
+            const discriminant: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra]));
             if (!discriminant.isNone()) try stack.append(self.allocator, .{ .node = discriminant, .scope = work.scope, .parent = work.node, .grandparent = work.parent });
             const cases_start = self.ast.extra_data.items[extra + 1];
             const cases_len = self.ast.extra_data.items[extra + 2];
             if (cases_start > self.ast.extra_data.items.len or cases_len > self.ast.extra_data.items.len - cases_start) continue;
             for (self.ast.extra_data.items[cases_start .. cases_start + cases_len]) |raw_case| {
-                try stack.append(self.allocator, .{ .node = @enumFromInt(raw_case), .scope = scope, .parent = work.node, .grandparent = work.parent });
+                try stack.append(self.allocator, .{ .node = @fromBackingInt(@intCast(raw_case)), .scope = scope, .parent = work.node, .grandparent = work.parent });
             }
             continue;
         }
         var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
         while (it.next()) |child| {
-            const child_scope = if (childSkipsOutputScope(self.ast, raw, @intFromEnum(child))) work.scope else scope;
+            const child_scope = if (childSkipsOutputScope(self.ast, raw, @backingInt(child))) work.scope else scope;
             try stack.append(self.allocator, .{ .node = child, .scope = child_scope, .parent = work.node, .grandparent = work.parent });
         }
     }
@@ -1167,7 +1167,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             (editor.symbols.items[raw_id].scope_id != primary_binding.target_scope or
                 !std.mem.eql(u8, original_name, primary_binding.name)))
         {
-            editor.relocateSymbolAs(@enumFromInt(raw_id), primary_binding.target_scope, primary_binding.first_node) catch |err| return editError(err);
+            editor.relocateSymbolAs(@fromBackingInt(@intCast(raw_id)), primary_binding.target_scope, primary_binding.first_node) catch |err| return editError(err);
         }
         for (group_cursor..group_end) |index| {
             if (index == primary) continue;
@@ -1176,20 +1176,20 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
             if (binding_id != raw_id) std.debug.panic("split synthetic binding changed SymbolId", .{});
             const new_id = editor.splitBindingIdentity(
                 group.first_node,
-                @enumFromInt(raw_id),
+                @fromBackingInt(@intCast(raw_id)),
                 group.lexical_scope,
                 group.kind,
                 self.ast.getNode(group.first_node).span,
             ) catch |err| return editError(err);
-            const first_index = @intFromEnum(group.first_node);
+            const first_index = @backingInt(group.first_node);
             if (self.symbol_ids.items.len <= first_index)
                 try self.symbol_ids.appendNTimes(self.allocator, null, first_index + 1 - self.symbol_ids.items.len);
-            self.symbol_ids.items[first_index] = @intFromEnum(new_id);
-            binding_groups.items[index].resolved_id = @intFromEnum(new_id);
+            self.symbol_ids.items[first_index] = @backingInt(new_id);
+            binding_groups.items[index].resolved_id = @backingInt(new_id);
             for (output_bindings.items[group.candidate_start + 1 .. group.candidate_end]) |binding| {
                 if (outputSymbolIdAt(self, editor, binding.node) != @as(?u32, raw_id))
                     std.debug.panic("synthetic binding alias changed before split", .{});
-                try self.rebindOutputBinding(binding.node, @intFromEnum(new_id));
+                try self.rebindOutputBinding(binding.node, @backingInt(new_id));
             }
         }
         group_cursor = group_end;
@@ -1200,7 +1200,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         if (reference.exact) {
             if (!scopeVisibleFrom(editor.scopes.items, editor.symbols.items[reference.raw_id].scope_id, reference.scope))
                 std.debug.panic("exact generated SymbolId is not visible from its output scope", .{});
-            const symbol: SymbolId = @enumFromInt(reference.raw_id);
+            const symbol: SymbolId = @fromBackingInt(@intCast(reference.raw_id));
             const maybe_reference = editor.referenceForNode(reference.node) catch |err| return editError(err);
             if (maybe_reference != null) {
                 editor.relocateReference(
@@ -1212,7 +1212,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                 ) catch |err| return editError(err);
                 editor.updateReferenceFlags(reference.node, reference.flags) catch |err| return editError(err);
             } else {
-                const raw = @intFromEnum(reference.node);
+                const raw = @backingInt(reference.node);
                 if (raw < editor.symbol_ids.items.len and editor.symbol_ids.items[raw] != null and
                     editor.symbol_ids.items[raw] != reference.raw_id)
                 {
@@ -1238,7 +1238,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
                     ) catch |err| return editError(err);
                 }
             }
-            const raw = @intFromEnum(reference.node);
+            const raw = @backingInt(reference.node);
             if (self.symbol_ids.items.len <= raw)
                 try self.symbol_ids.appendNTimes(self.allocator, null, raw + 1 - self.symbol_ids.items.len);
             self.symbol_ids.items[raw] = reference.raw_id;
@@ -1271,7 +1271,7 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         const output_name = outputReferenceName(self.ast, reference.node);
         const is_virtual_enum_member = editor.symbols.items[reference.raw_id].synthetic_kind == .enum_iife_member;
         const lexical_id = if (output_name) |name|
-            if (self.runtime_helper_ref_index.contains(@intFromEnum(reference.node)) or is_virtual_enum_member)
+            if (self.runtime_helper_ref_index.contains(@backingInt(reference.node)) or is_virtual_enum_member)
                 null
             else
                 nearestOutputSymbolAtScope(editor, name, reference.scope)
@@ -1295,13 +1295,13 @@ pub fn bindOutputScopesAndReferences(self: *Transformer, root: NodeIndex, root_s
         editor.relocateReference(
             reference.node,
             reference.scope,
-            @enumFromInt(resolved_id),
+            @fromBackingInt(@intCast(resolved_id)),
             Reference.NO_STMT,
             Reference.NO_STMT,
         ) catch |err| {
             if (err != error.ReferenceNotFound) return editError(err);
         };
-        const raw = @intFromEnum(reference.node);
+        const raw = @backingInt(reference.node);
         if (self.symbol_ids.items.len <= raw)
             try self.symbol_ids.appendNTimes(self.allocator, null, raw + 1 - self.symbol_ids.items.len);
         self.symbol_ids.items[raw] = resolved_id;
@@ -1329,11 +1329,11 @@ pub fn bindNativeParameterArrowRefs(self: *Transformer, owner: NodeIndex, symbol
             index += 1;
             continue;
         }
-        const raw = @intFromEnum(pending.node);
+        const raw = @backingInt(pending.node);
         if (self.exact_output_ref_symbol_ids.get(raw)) |existing| {
-            if (existing != @intFromEnum(id)) std.debug.panic("native parameter reference was assigned to two wrapper symbols", .{});
+            if (existing != @backingInt(id)) std.debug.panic("native parameter reference was assigned to two wrapper symbols", .{});
         } else {
-            try self.exact_output_ref_symbol_ids.put(self.allocator, raw, @intFromEnum(id));
+            try self.exact_output_ref_symbol_ids.put(self.allocator, raw, @backingInt(id));
         }
         _ = self.native_parameter_arrow_refs.swapRemove(index);
     }
@@ -1352,7 +1352,7 @@ fn scopeVisibleFrom(scopes: []const @import("../../semantic/scope.zig").Scope, d
 }
 
 fn outputReferenceName(ast: *const ast_mod.Ast, node: NodeIndex) ?[]const u8 {
-    if (node.isNone() or @intFromEnum(node) >= ast.nodes.items.len) return null;
+    if (node.isNone() or @backingInt(node) >= ast.nodes.items.len) return null;
     const output_node = ast.getNode(node);
     return switch (output_node.tag) {
         .identifier_reference, .assignment_target_identifier, .jsx_identifier => ast.getText(output_node.data.string_ref),
@@ -1433,7 +1433,7 @@ fn detachInvisibleOutputReferenceAsExternal(
     node: NodeIndex,
     has_reference: bool,
 ) Transformer.Error!void {
-    const raw = @intFromEnum(node);
+    const raw = @backingInt(node);
     if (has_reference) {
         editor.removeReference(node) catch |err| {
             if (err != error.ReferenceNotFound) return editError(err);
@@ -1496,8 +1496,8 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, .{ .node = root, .incoming = root_scope });
     while (stack.pop()) |visit| {
-        if (visit.node.isNone() or @intFromEnum(visit.node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(visit.node);
+        if (visit.node.isNone() or @backingInt(visit.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(visit.node);
         var scope = visit.incoming;
         const owner_scope = if (self.scope_owner_removed.contains(raw)) null else self.transformed_scope_owner_map.get(raw) orelse
             self.scope_owner_map.get(raw) orelse
@@ -1505,7 +1505,7 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
         if (owner_scope) |owner_scope_id| {
             if (owner_scope_id >= (if (self.semantic_editor) |*editor| editor.scopes.items.len else self.scopes.len))
                 std.debug.panic("generated reference scope owner is invalid", .{});
-            scope = @enumFromInt(owner_scope_id);
+            scope = @fromBackingInt(@intCast(owner_scope_id));
         }
         const trace = try traces.getOrPut(self.allocator, raw);
         if (trace.found_existing) {
@@ -1515,7 +1515,7 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
         } else {
             trace.value_ptr.* = .{ .scope = scope, .flags = visit.flags };
         }
-        const key: GeneratedNodeVisitKey = .{ .node = raw, .scope = @intFromEnum(scope) };
+        const key: GeneratedNodeVisitKey = .{ .node = raw, .scope = @backingInt(scope) };
         const prior = try visited.getOrPut(self.allocator, key);
         if (prior.found_existing) continue;
         const parent = self.ast.getNode(visit.node);
@@ -1524,7 +1524,7 @@ fn collectGeneratedNodeTraces(self: *Transformer, root: NodeIndex, root_scope: S
         const declaration_name = functionDeclarationName(self, parent);
         var children = ast_walk.children(self.ast, parent);
         while (children.next()) |child| {
-            if (child.isNone() or @intFromEnum(child) >= self.ast.nodes.items.len) continue;
+            if (child.isNone() or @backingInt(child) >= self.ast.nodes.items.len) continue;
             const child_node = self.ast.getNode(child);
             const flags = if (child_node.tag == .identifier_reference or child_node.tag == .assignment_target_identifier)
                 generatedReferenceFlags(parent, child, child_node.tag)
@@ -1541,7 +1541,7 @@ fn functionDeclarationName(self: *Transformer, node: Node) NodeIndex {
     if (node.tag != .function_declaration) return .none;
     const slot = node.data.extra + ast_mod.FunctionExtra.name;
     if (slot >= self.ast.extra_data.items.len) return .none;
-    return @enumFromInt(self.ast.extra_data.items[slot]);
+    return @fromBackingInt(@intCast(self.ast.extra_data.items[slot]));
 }
 
 const GeneratedLoopNodeSet = std.AutoHashMapUnmanaged(u32, void);
@@ -1552,7 +1552,7 @@ fn appendGeneratedLoopExtraList(self: *Transformer, stack: *std.ArrayList(NodeIn
     const start = extra[extra_base + start_off];
     const len = extra[extra_base + len_off];
     if (start > extra.len or len > extra.len - start) return;
-    for (extra[start .. start + len]) |raw| try stack.append(self.allocator, @enumFromInt(raw));
+    for (extra[start .. start + len]) |raw| try stack.append(self.allocator, @fromBackingInt(@intCast(raw)));
 }
 
 fn collectGeneratedLoopNodes(self: *Transformer, root: NodeIndex) Transformer.Error!GeneratedLoopNodeSet {
@@ -1562,8 +1562,8 @@ fn collectGeneratedLoopNodes(self: *Transformer, root: NodeIndex) Transformer.Er
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, root);
     while (stack.pop()) |node| {
-        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node);
+        if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node);
         if (nodes.contains(raw)) continue;
         try nodes.put(self.allocator, raw, {});
         const parent = self.ast.getNode(node);
@@ -1577,7 +1577,7 @@ fn collectGeneratedLoopNodes(self: *Transformer, root: NodeIndex) Transformer.Er
             .ts_enum_declaration, .flow_enum_declaration => try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, 1, 2),
             .flow_match_expression => {
                 const extra = self.ast.extra_data.items;
-                if (parent.data.extra < extra.len) try stack.append(self.allocator, @enumFromInt(extra[parent.data.extra]));
+                if (parent.data.extra < extra.len) try stack.append(self.allocator, @fromBackingInt(@intCast(extra[parent.data.extra])));
                 try appendGeneratedLoopExtraList(self, &stack, parent.data.extra, 1, 2);
             },
             else => {},
@@ -1595,7 +1595,7 @@ fn reparentGeneratedLoopScopeFrontiers(self: *Transformer, nodes: *const Generat
         const origin = self.scope_owner_origins.get(raw.*) orelse raw.*;
         if (!source_nodes.contains(origin)) continue;
         const owner_scope = self.transformed_scope_owner_map.get(raw.*) orelse editor.scope_owner_map.get(raw.*) orelse self.scope_owner_map.get(raw.*) orelse continue;
-        const scope: ScopeId = @enumFromInt(owner_scope);
+        const scope: ScopeId = @fromBackingInt(@intCast(owner_scope));
         if (scope == new_parent or scopeWithin(editor.scopes.items, scope, new_parent)) continue;
         if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len) std.debug.panic("generated loop scope owner is invalid", .{});
         try candidates.put(self.allocator, scope.toIndex(), {});
@@ -1615,7 +1615,7 @@ fn reparentGeneratedLoopScopeFrontiers(self: *Transformer, nodes: *const Generat
         }
         if (has_candidate_ancestor) continue;
         try frontiers.put(self.allocator, raw.*, {});
-        editor.reparentScope(@enumFromInt(raw.*), new_parent) catch |err| return editError(err);
+        editor.reparentScope(@fromBackingInt(@intCast(raw.*)), new_parent) catch |err| return editError(err);
     }
     return frontiers;
 }
@@ -1639,7 +1639,7 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
     defer source_binding_ids.deinit(self.allocator);
     var source_binding_nodes = source_nodes.keyIterator();
     while (source_binding_nodes.next()) |raw| {
-        const node: NodeIndex = @enumFromInt(raw.*);
+        const node: NodeIndex = @fromBackingInt(@intCast(raw.*));
         if (self.ast.getNode(node).tag != .binding_identifier) continue;
         if (self.getSymbolIdAt(node)) |id| try source_binding_ids.put(self.allocator, id, {});
     }
@@ -1655,7 +1655,7 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
     var live_symbol_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer live_symbol_ids.deinit(self.allocator);
     for (runtime_refs) |node| {
-        const raw = @intFromEnum(node);
+        const raw = @backingInt(node);
         const origin = self.reference_origin_map.get(raw) orelse raw;
         const id = self.getSymbolIdAt(node) orelse continue;
         if (!source_nodes.contains(origin) and !source_binding_ids.contains(id)) continue;
@@ -1679,7 +1679,7 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
         for (runtime_refs) |node| {
             const current_id = self.getSymbolIdAt(node) orelse continue;
             if (current_id != raw_id.*) continue;
-            const raw = @intFromEnum(node);
+            const raw = @backingInt(node);
             const origin = self.reference_origin_map.get(raw) orelse raw;
             if (!source_nodes.contains(origin) and !source_binding_ids.contains(raw_id.*)) continue;
             const trace = traces.get(raw) orelse std.debug.panic("generator loop reference has no final scope trace", .{});
@@ -1692,20 +1692,20 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
         var binding_node: ?NodeIndex = null;
         for (self.symbol_ids.items, 0..) |maybe_id, node_raw| {
             if (maybe_id == null or maybe_id.? != raw_id.* or node_raw >= self.ast.nodes.items.len) continue;
-            const candidate: NodeIndex = @enumFromInt(node_raw);
+            const candidate: NodeIndex = @fromBackingInt(@intCast(node_raw));
             if (self.ast.getNode(candidate).tag != .binding_identifier) continue;
             binding_node = candidate;
             if (final_nodes.contains(@intCast(node_raw))) break;
         }
         const binding = binding_node orelse std.debug.panic("live extracted loop temp has no output binding node", .{});
-        editor.relocateSymbolAs(@enumFromInt(raw_id.*), output_function_scope, binding) catch |err| return editError(err);
+        editor.relocateSymbolAs(@fromBackingInt(@intCast(raw_id.*)), output_function_scope, binding) catch |err| return editError(err);
     }
 
     var moved_bindings: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer moved_bindings.deinit(self.allocator);
     var source_nodes_it = source_nodes.keyIterator();
     while (source_nodes_it.next()) |raw| {
-        const node: NodeIndex = @enumFromInt(raw.*);
+        const node: NodeIndex = @fromBackingInt(@intCast(raw.*));
         if (self.ast.getNode(node).tag != .binding_identifier) continue;
         const id_raw = self.getSymbolIdAt(node) orelse continue;
         if (id_raw >= editor.symbols.items.len) std.debug.panic("generator loop binding has an invalid SymbolId", .{});
@@ -1725,12 +1725,12 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
         else
             traced_binding_scope;
         if (moved_bindings.get(id_raw)) |prior_scope| {
-            if (prior_scope != @intFromEnum(binding_scope))
+            if (prior_scope != @backingInt(binding_scope))
                 std.debug.panic("one generator loop binding has multiple output scopes", .{});
             continue;
         }
-        try moved_bindings.put(self.allocator, id_raw, @intFromEnum(binding_scope));
-        const id: SymbolId = @enumFromInt(id_raw);
+        try moved_bindings.put(self.allocator, id_raw, @backingInt(binding_scope));
+        const id: SymbolId = @fromBackingInt(@intCast(id_raw));
         if (editor.symbols.items[id_raw].scope_id != binding_scope)
             editor.relocateSymbolAs(id, binding_scope, node) catch |err| return editError(err);
     }
@@ -1738,13 +1738,13 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
     defer original_references.deinit(self.allocator);
     for (self.references) |reference| {
         if (reference.node_index.isNone()) continue;
-        try original_references.put(self.allocator, @intFromEnum(reference.node_index), reference);
+        try original_references.put(self.allocator, @backingInt(reference.node_index), reference);
     }
 
     var live_refs: GeneratedLoopNodeSet = .empty;
     defer live_refs.deinit(self.allocator);
     for (runtime_refs) |node| {
-        const raw = @intFromEnum(node);
+        const raw = @backingInt(node);
         const origin = self.reference_origin_map.get(raw) orelse raw;
         const current_id = self.getSymbolIdAt(node) orelse continue;
         if (!source_nodes.contains(origin) and !source_binding_ids.contains(current_id)) continue;
@@ -1760,7 +1760,7 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
         const trace = traces.get(raw) orelse std.debug.panic("generator loop reference has no final scope trace", .{});
         if (trace.ambiguous_scope) std.debug.panic("generator loop reference has ambiguous output scopes", .{});
         const output_scope = trace.scope;
-        const target: SymbolId = @enumFromInt(target_id);
+        const target: SymbolId = @fromBackingInt(@intCast(target_id));
         const maybe_reference = editor.referenceForNode(node) catch |err| return editError(err);
         if (maybe_reference) |reference| {
             // The source Reference can still carry a pre-extraction scope that
@@ -1790,7 +1790,7 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
     var old_nodes = source_nodes.keyIterator();
     while (old_nodes.next()) |raw| {
         if (live_refs.contains(raw.*)) continue;
-        const node: NodeIndex = @enumFromInt(raw.*);
+        const node: NodeIndex = @fromBackingInt(@intCast(raw.*));
         const reference = editor.referenceForNode(node) catch |err| return editError(err);
         if (reference == null) continue;
         editor.removeReference(node) catch |err| return editError(err);
@@ -1814,7 +1814,7 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
         var binding_node_is_in_source = false;
         for (self.symbol_ids.items, 0..) |maybe_id, node_raw| {
             if (maybe_id == null or maybe_id.? != raw_id.* or node_raw >= self.ast.nodes.items.len) continue;
-            const candidate: NodeIndex = @enumFromInt(node_raw);
+            const candidate: NodeIndex = @fromBackingInt(@intCast(node_raw));
             if (self.ast.getNode(candidate).tag == .binding_identifier) {
                 binding_node = candidate;
                 binding_node_is_in_source = source_nodes.contains(@intCast(node_raw));
@@ -1823,14 +1823,14 @@ pub fn migrateGeneratorLoopBody(self: *Transformer, original_body: NodeIndex, fi
         }
         if (binding_node_is_in_source and !is_call_scope_binding) continue;
         const binding = binding_node orelse std.debug.panic("live extracted loop binding has no output binding node", .{});
-        editor.relocateSymbolAs(@enumFromInt(raw_id.*), output_function_scope, binding) catch |err| return editError(err);
+        editor.relocateSymbolAs(@fromBackingInt(@intCast(raw_id.*)), output_function_scope, binding) catch |err| return editError(err);
     }
 }
 
 fn generatedReferenceFlags(parent: Node, child: NodeIndex, child_tag: Node.Tag) ReferenceFlags {
     if (child_tag == .assignment_target_identifier) return .{ .write = true };
     if (parent.tag == .assignment_expression and parent.data.binary.left == child) {
-        const op: token_mod.Kind = @enumFromInt(parent.data.binary.flags);
+        const op: token_mod.Kind = @fromBackingInt(@intCast(parent.data.binary.flags));
         return if (op.isCompoundAssignment()) .{ .read = true, .write = true } else .{ .write = true };
     }
     if (parent.tag == .update_expression) return .{ .read = true, .write = true };
@@ -1861,11 +1861,11 @@ fn bindGeneratorStateReferences(self: *Transformer, source_scope: ScopeId, callb
         if (!ids.contains(self.symbol_ids.items[raw] orelse continue)) continue;
         const trace = entry.value_ptr.*;
         if (trace.ambiguous_scope) std.debug.panic("generated state reference has ambiguous output scopes", .{});
-        const node: NodeIndex = @enumFromInt(raw);
+        const node: NodeIndex = @fromBackingInt(@intCast(raw));
         const node_tag = self.ast.getNode(node).tag;
         if (node_tag != .identifier_reference and node_tag != .assignment_target_identifier) continue;
         if (!trace.flags.read and !trace.flags.write) std.debug.panic("generated state reference has no access mode", .{});
-        const id: SymbolId = @enumFromInt(self.symbol_ids.items[raw].?);
+        const id: SymbolId = @fromBackingInt(@intCast(self.symbol_ids.items[raw].?));
         const maybe_reference = editor.referenceForNode(node) catch |err| return editError(err);
         if (maybe_reference) |reference| {
             editor.relocateReference(node, trace.scope, id, reference.stmt_idx, reference.scope_stmt_idx) catch |err| return editError(err);
@@ -1909,8 +1909,8 @@ pub fn registerGeneratedFunctionScopes(self: *Transformer, root: NodeIndex, root
     defer seen.deinit(self.allocator);
     try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
     while (stack.pop()) |work| {
-        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(work.node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
@@ -1920,7 +1920,7 @@ pub fn registerGeneratedFunctionScopes(self: *Transformer, root: NodeIndex, root
         }
         var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
         while (it.next()) |child| {
-            const child_scope = if (childSkipsOutputScope(self.ast, raw, @intFromEnum(child))) work.scope else scope;
+            const child_scope = if (childSkipsOutputScope(self.ast, raw, @backingInt(child))) work.scope else scope;
             try stack.append(self.allocator, .{ .node = child, .scope = child_scope });
         }
     }
@@ -1935,8 +1935,8 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
     defer seen.deinit(self.allocator);
     try stack.append(self.allocator, .{ .node = root, .scope = root_scope });
     while (stack.pop()) |work| {
-        if (work.node.isNone() or @intFromEnum(work.node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(work.node);
+        if (work.node.isNone() or @backingInt(work.node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(work.node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const node = self.ast.getNode(work.node);
@@ -1948,8 +1948,8 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
             if (node.tag == .function_expression or node.tag == .function_declaration) {
                 const extra = node.data.extra;
                 if (extra + 3 < self.ast.extra_data.items.len) {
-                    const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[extra]);
-                    if (!name.isNone() and @intFromEnum(name) >= self.parser_node_count and
+                    const name: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[extra]));
+                    if (!name.isNone() and @backingInt(name) >= self.parser_node_count and
                         self.ast.getNode(name).tag == .binding_identifier and self.getSymbolIdAt(name) == null)
                         std.debug.panic("generated function name has no producer SymbolId", .{});
                 }
@@ -1960,7 +1960,7 @@ pub fn completeGeneratedStateSymbols(self: *Transformer, root: NodeIndex, root_s
         }
         var it = @import("../../parser/ast_walk.zig").children(self.ast, node);
         while (it.next()) |child| {
-            const child_scope = if (childSkipsOutputScope(self.ast, raw, @intFromEnum(child))) work.scope else scope;
+            const child_scope = if (childSkipsOutputScope(self.ast, raw, @backingInt(child))) work.scope else scope;
             try stack.append(self.allocator, .{ .node = child, .scope = child_scope });
         }
     }
@@ -1979,7 +1979,7 @@ fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope
     if (old_scope == source_scope) return target_scope;
     if (scopeWithin(editor.scopes.items, old_scope, target_scope)) return old_scope;
     if (!scopeWithin(editor.scopes.items, old_scope, source_scope)) {
-        if (self.deferred_generator_loop_migrations.get(@intFromEnum(old_scope))) |migration| {
+        if (self.deferred_generator_loop_migrations.get(@backingInt(old_scope))) |migration| {
             if (!migration.function_reparented) return target_scope;
         }
         // Some generated statements in a relocated body retain a reference
@@ -2003,7 +2003,7 @@ fn generatedTempRefScope(self: *Transformer, source_scope: ScopeId, target_scope
     var frontier: ScopeId = .none;
     var has_live_scope = false;
     while (cursor != source_scope) {
-        has_live_scope = has_live_scope or live_scopes.contains(@intFromEnum(cursor));
+        has_live_scope = has_live_scope or live_scopes.contains(@backingInt(cursor));
         frontier = cursor;
         cursor = editor.scopes.items[cursor.toIndex()].parent;
     }
@@ -2054,7 +2054,7 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
             std.debug.panic("state temp allocation registry points to an unrelated symbol", .{});
     }
     const id: SymbolId = if (exact_id) |raw_id| blk: {
-        const existing: SymbolId = @enumFromInt(raw_id);
+        const existing: SymbolId = @fromBackingInt(@intCast(raw_id));
         editor.relocateSymbolAs(existing, binding_scope, temp.binding) catch |err| return editError(err);
         break :blk existing;
     } else blk: {
@@ -2067,10 +2067,10 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     // the transform's parallel table in sync as well; later output and
     // coverage passes read that table directly.
     if (self.getSymbolIdAt(temp.binding)) |existing| {
-        if (existing != @intFromEnum(id)) std.debug.panic("state callback temp binding changed SymbolId", .{});
+        if (existing != @backingInt(id)) std.debug.panic("state callback temp binding changed SymbolId", .{});
     } else try setSymbolId(self, temp.binding, id);
     for (self.generator_state_temp_refs.items) |pending| {
-        if (pending.binding != temp.binding or !live.contains(@intFromEnum(pending.reference))) continue;
+        if (pending.binding != temp.binding or !live.contains(@backingInt(pending.reference))) continue;
         const reference_scope = try generatedTempRefScope(self, source_scope, callback_scope, pending.scope, live_scopes);
         if (editor.referenceForNode(pending.reference) catch |err| return editError(err)) |existing| {
             if (existing.symbol_id != id or existing.scope_id != reference_scope or
@@ -2090,7 +2090,7 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
         while (nodes.next()) |entry| {
             const raw_node = entry.key_ptr.*;
             if (raw_node >= self.symbol_ids.items.len or self.symbol_ids.items[raw_node] != raw_id) continue;
-            const node: NodeIndex = @enumFromInt(raw_node);
+            const node: NodeIndex = @fromBackingInt(@intCast(raw_node));
             switch (self.ast.getNode(node).tag) {
                 .identifier_reference, .assignment_target_identifier => {},
                 else => continue,
@@ -2110,13 +2110,13 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
         std.debug.assert(ref.name_start == temp.name_span.start);
-        if (live.contains(@intFromEnum(ref.node))) {
-            const trace = traces.get(@intFromEnum(ref.node)) orelse std.debug.panic("generated temp reference has no final scope trace", .{});
+        if (live.contains(@backingInt(ref.node))) {
+            const trace = traces.get(@backingInt(ref.node)) orelse std.debug.panic("generated temp reference has no final scope trace", .{});
             if (trace.ambiguous_scope) std.debug.panic("generated temp reference has ambiguous output scopes", .{});
             const scope = try stateTempOutputScope(self, source_scope, callback_scope, binding_scope, ref.scope, trace.scope, live_scopes);
             editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
             if (self.getSymbolIdAt(ref.node)) |existing| {
-                if (existing != @intFromEnum(id)) std.debug.panic("generated temp reference changed its producer SymbolId", .{});
+                if (existing != @backingInt(id)) std.debug.panic("generated temp reference changed its producer SymbolId", .{});
             } else try setSymbolId(self, ref.node, id);
         }
         i = ref.next;
@@ -2129,7 +2129,7 @@ fn reparentLiveSourceScopes(self: *Transformer, source_scope: ScopeId, target_sc
     const editor = try editorFor(self);
     var it = live_scopes.iterator();
     while (it.next()) |entry| {
-        const old_scope: ScopeId = @enumFromInt(entry.key_ptr.*);
+        const old_scope: ScopeId = @fromBackingInt(@intCast(entry.key_ptr.*));
         if (old_scope == source_scope or scopeWithin(editor.scopes.items, old_scope, target_scope)) continue;
         if (!scopeWithin(editor.scopes.items, old_scope, source_scope)) continue;
         var cursor = old_scope;
@@ -2154,8 +2154,8 @@ pub fn reparentGeneratedBodyScopes(self: *Transformer, source_scope: ScopeId, ta
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, body);
     while (stack.pop()) |node| {
-        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node);
+        if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node);
         if (live.contains(raw)) continue;
         try live.put(self.allocator, raw, {});
         var children = ast_walk.children(self.ast, self.ast.getNode(node));
@@ -2179,7 +2179,7 @@ pub fn bindGeneratedTempByIdentity(
 ) EditorError!SymbolId {
     if (symbol_id) |raw_id| {
         if (raw_id >= editor.symbols.items.len) return error.InvalidSymbol;
-        const id: SymbolId = @enumFromInt(raw_id);
+        const id: SymbolId = @fromBackingInt(@intCast(raw_id));
         const symbol = editor.symbols.items[raw_id];
         if (symbol.scope_id != owner_scope or symbol.kind != .variable_var or
             symbol.name.start != name_span.start or symbol.name.end != name_span.end or
@@ -2225,18 +2225,18 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
         known_id,
     ) catch |err| return editError(err);
     const bound = try self.bound_temp_symbols.getOrPut(self.allocator, temp_key);
-    if (bound.found_existing and bound.value_ptr.* != @intFromEnum(id))
+    if (bound.found_existing and bound.value_ptr.* != @backingInt(id))
         std.debug.panic("callback temp allocation changed its exact SymbolId", .{});
-    bound.value_ptr.* = @intFromEnum(id);
+    bound.value_ptr.* = @backingInt(id);
     es_helpers.markStandaloneLateSyntheticTemp(self, id, callback_scope);
-    const temp_slot = @intFromEnum(temp.binding);
+    const temp_slot = @backingInt(temp.binding);
     if (temp_slot < self.symbol_ids.items.len) {
         if (self.symbol_ids.items[temp_slot]) |existing| {
-            if (existing != @intFromEnum(id)) std.debug.panic("callback temp binding already has a different symbol", .{});
+            if (existing != @backingInt(id)) std.debug.panic("callback temp binding already has a different symbol", .{});
         } else try setSymbolId(self, temp.binding, id);
     } else try setSymbolId(self, temp.binding, id);
     for (self.generator_state_temp_refs.items) |pending| {
-        if (pending.binding != temp.binding or !live.contains(@intFromEnum(pending.reference))) continue;
+        if (pending.binding != temp.binding or !live.contains(@backingInt(pending.reference))) continue;
         const scope = try generatedTempRefScope(self, source_scope, callback_scope, pending.scope, live_scopes);
         if (editor.referenceForNode(pending.reference) catch |err| return editError(err)) |existing| {
             if (existing.symbol_id != id or existing.scope_id != scope or
@@ -2256,11 +2256,11 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
     while (live_iter.next()) |entry| {
         const raw = entry.key_ptr.*;
         if (raw >= self.ast.nodes.items.len or self.ast.nodes.items[raw].tag != .binding_identifier) continue;
-        const binding_idx: NodeIndex = @enumFromInt(raw);
+        const binding_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (binding_idx == temp.binding) continue;
         const binding = self.ast.getNode(binding_idx);
         if (binding.data.string_ref.start != temp.name_span.start or binding.data.string_ref.end != temp.name_span.end) continue;
-        const slot = @intFromEnum(binding_idx);
+        const slot = @backingInt(binding_idx);
         if (slot < self.symbol_ids.items.len) {
             if (self.symbol_ids.items[slot]) |existing_id| {
                 if (existing_id >= editor.symbols.items.len) std.debug.panic("state callback temp alias symbol is out of range", .{});
@@ -2268,17 +2268,17 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
                 // callback temp inside its catch clause; it is a distinct
                 // lexical binding even when both originated from one temp Span.
                 if (editor.symbols.items[existing_id].kind != .variable_var) continue;
-                if (existing_id == @intFromEnum(id)) continue;
+                if (existing_id == @backingInt(id)) continue;
                 const old_symbol = editor.symbols.items[existing_id];
                 if (old_symbol.synthetic_name.len == 0 or
                     !std.mem.eql(u8, old_symbol.synthetic_name, temp_name))
                     std.debug.panic("callback temp Span resolves to an unrelated var binding", .{});
-                try self.setGeneratedSymbolId(binding_idx, @intFromEnum(id));
+                try self.setGeneratedSymbolId(binding_idx, @backingInt(id));
                 var reference_iter = live.iterator();
                 while (reference_iter.next()) |reference_entry| {
                     const reference_raw = reference_entry.key_ptr.*;
                     if (reference_raw >= self.ast.nodes.items.len) continue;
-                    const reference_node: NodeIndex = @enumFromInt(reference_raw);
+                    const reference_node: NodeIndex = @fromBackingInt(@intCast(reference_raw));
                     const reference_ast_node = self.ast.getNode(reference_node);
                     if (reference_ast_node.tag != .identifier_reference and
                         reference_ast_node.tag != .assignment_target_identifier) continue;
@@ -2287,7 +2287,7 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
                         self.getSymbolIdAt(reference_node) != @as(?u32, existing_id)) continue;
                     const maybe_reference = editor.referenceForNode(reference_node) catch |err| return editError(err);
                     const reference = maybe_reference orelse continue;
-                    if (reference.symbol_id != @as(SymbolId, @enumFromInt(existing_id)))
+                    if (reference.symbol_id != @as(SymbolId, @fromBackingInt(@intCast(existing_id))))
                         std.debug.panic("callback temp alias reference changed SymbolId", .{});
                     const reference_scope = try generatedTempRefScope(
                         self,
@@ -2303,7 +2303,7 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
                         reference.stmt_idx,
                         reference.scope_stmt_idx,
                     ) catch |err| return editError(err);
-                    try self.setGeneratedSymbolId(reference_node, @intFromEnum(id));
+                    try self.setGeneratedSymbolId(reference_node, @backingInt(id));
                 }
             }
         }
@@ -2315,7 +2315,7 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
         std.debug.assert(ref.name_start == temp.name_span.start);
-        if (live.contains(@intFromEnum(ref.node))) {
+        if (live.contains(@backingInt(ref.node))) {
             const scope = try generatedTempRefScope(self, source_scope, callback_scope, ref.scope, live_scopes);
             editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
             try setSymbolId(self, ref.node, id);
@@ -2337,8 +2337,8 @@ pub fn moveGeneratedFunctionBodyBindings(self: *Transformer, source_scope: Scope
     try work_stack.append(self.allocator, .{ .node = body });
     while (work_stack.pop()) |work| {
         const node = work.node;
-        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node);
+        if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         const ast_node = self.ast.getNode(node);
@@ -2369,8 +2369,8 @@ pub fn bindGeneratedFunctionTemps(self: *Transformer, source_scope: ScopeId, fun
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, body);
     while (stack.pop()) |node| {
-        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node);
+        if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node);
         if (live.contains(raw)) continue;
         try live.put(self.allocator, raw, {});
         var it = @import("../../parser/ast_walk.zig").children(self.ast, self.ast.getNode(node));
@@ -2389,8 +2389,8 @@ pub fn addGeneratedFunctionScope(self: *Transformer, parent: ScopeId, owner: Nod
     if (!self.semantic_edit_enabled) return .none;
     const editor = try editorFor(self);
     const scope = editor.addScope(parent, owner, .function, false) catch |err| return editError(err);
-    const key = @intFromEnum(owner);
-    try self.transformed_scope_owner_map.put(self.allocator, key, @intFromEnum(scope));
+    const key = @backingInt(owner);
+    try self.transformed_scope_owner_map.put(self.allocator, key, @backingInt(scope));
     try self.scope_owner_origins.put(self.allocator, key, key);
     return scope;
 }
@@ -2399,8 +2399,8 @@ pub fn addGeneratedScope(self: *Transformer, parent: ScopeId, owner: NodeIndex, 
     if (!self.semantic_edit_enabled) return .none;
     const editor = try editorFor(self);
     const scope = editor.addScope(parent, owner, kind, false) catch |err| return editError(err);
-    const key = @intFromEnum(owner);
-    try self.transformed_scope_owner_map.put(self.allocator, key, @intFromEnum(scope));
+    const key = @backingInt(owner);
+    try self.transformed_scope_owner_map.put(self.allocator, key, @backingInt(scope));
     try self.scope_owner_origins.put(self.allocator, key, key);
     return scope;
 }
@@ -2425,15 +2425,15 @@ pub fn bindReservedFunctionOwner(self: *Transformer, scope: ScopeId, owner: Node
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
     if (scope.isNone() or scope.toIndex() >= editor.scopes.items.len or owner.isNone() or
-        @intFromEnum(owner) >= self.ast.nodes.items.len or
+        @backingInt(owner) >= self.ast.nodes.items.len or
         (self.ast.getNode(owner).tag != .function_expression and self.ast.getNode(owner).tag != .function_declaration and
             self.ast.getNode(owner).tag != .method_definition and self.ast.getNode(owner).tag != .arrow_function_expression))
         std.debug.panic("invalid reserved function scope owner", .{});
-    const raw = @intFromEnum(owner);
+    const raw = @backingInt(owner);
     if (editor.scope_owner_map.contains(raw) or self.transformed_scope_owner_map.contains(raw))
         std.debug.panic("reserved function scope owner already bound", .{});
-    try editor.scope_owner_map.put(self.allocator, raw, @intFromEnum(scope));
-    try self.transformed_scope_owner_map.put(self.allocator, raw, @intFromEnum(scope));
+    try editor.scope_owner_map.put(self.allocator, raw, @backingInt(scope));
+    try self.transformed_scope_owner_map.put(self.allocator, raw, @backingInt(scope));
     try self.scope_owner_origins.put(self.allocator, raw, raw);
 }
 
@@ -2487,8 +2487,8 @@ pub fn reparentMovedStaticInitializerScopes(
     defer seen.deinit(self.allocator);
     try stack.append(self.allocator, root);
     while (stack.pop()) |node| {
-        if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node);
+        if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len) continue;
+        const raw = @backingInt(node);
         if (seen.contains(raw)) continue;
         try seen.put(self.allocator, raw, {});
         if (self.outputOwnedScope(node)) |scope| {
@@ -2506,11 +2506,11 @@ pub fn reparentMovedStaticInitializerScopes(
 /// Generated class expressions can lack an analyzer-owned class scope. Return
 /// the exact owner only when the input node establishes that boundary.
 pub fn outputOwnedScope(self: *Transformer, owner: NodeIndex) ?ScopeId {
-    const raw = @intFromEnum(owner);
+    const raw = @backingInt(owner);
     const id = self.transformed_scope_owner_map.get(raw) orelse
         self.scope_owner_map.get(raw) orelse
         if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw) else null;
-    return if (id) |value| @enumFromInt(value) else null;
+    return if (id) |value| @fromBackingInt(@intCast(value)) else null;
 }
 
 /// Track all copies of a lexical boundary. A source node can be revisited on
@@ -2527,8 +2527,8 @@ pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex)
         !(old_tag == .class_declaration and new_tag == .class_expression) and
         !(old_tag == .function_declaration and new_tag == .function_expression) and
         !(old_tag == .method_definition and (new_tag == .function_declaration or new_tag == .function_expression))) return;
-    const old_key = @intFromEnum(old);
-    const new_key = @intFromEnum(new);
+    const old_key = @backingInt(old);
+    const new_key = @backingInt(new);
     const scope = self.transformed_scope_owner_map.get(old_key) orelse self.scope_owner_map.get(old_key) orelse return;
     if (self.transformed_scope_owner_map.get(new_key) orelse self.scope_owner_map.get(new_key)) |existing| {
         if (existing != scope) std.debug.panic("copied scope owner has conflicting scopes", .{});
@@ -2578,7 +2578,7 @@ fn resolveReachableScopeOwners(self: *Transformer) Transformer.Error!void {
 /// the reused node index from final owner resolution and visitor scope entry.
 pub fn removeInPlaceScopeOwner(self: *Transformer, node: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled or node.isNone()) return;
-    const raw = @intFromEnum(node);
+    const raw = @backingInt(node);
     try self.scope_owner_removed.put(self.allocator, raw, {});
 }
 
@@ -2595,7 +2595,7 @@ fn variableScope(self: *Transformer, start: ScopeId) ScopeId {
 }
 
 fn syntheticTempSymbolKey(name_span: Span, scope: ScopeId) u64 {
-    return (@as(u64, @intFromEnum(scope)) << 32) | name_span.start;
+    return (@as(u64, @backingInt(scope)) << 32) | name_span.start;
 }
 
 pub fn declareSyntheticInScope(self: *Transformer, binding: NodeIndex, declaration_span: Span, kind: SymbolKind, scope: ScopeId) Transformer.Error!?SymbolId {
@@ -2642,7 +2642,7 @@ pub fn reserveSyntheticTempSymbolInScope(
     const key = syntheticTempSymbolKey(name_span, owner_scope);
     if (self.synthetic_temp_symbol_ids.get(key)) |raw_id| {
         if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
-        const id: SymbolId = @enumFromInt(raw_id);
+        const id: SymbolId = @fromBackingInt(@intCast(raw_id));
         const symbol = editor.symbols.items[raw_id];
         // State-machine construction can reparent the source var scope before
         // its final callback scope exists. bindStateCallbackTemp validates the
@@ -2655,7 +2655,7 @@ pub fn reserveSyntheticTempSymbolInScope(
         return id;
     }
     const id = editor.reserveSyntheticTempSymbol(name_span, declaration_span, lexical_scope) catch |err| return editError(err);
-    try self.synthetic_temp_symbol_ids.put(self.allocator, key, @intFromEnum(id));
+    try self.synthetic_temp_symbol_ids.put(self.allocator, key, @backingInt(id));
     return id;
 }
 
@@ -2666,7 +2666,7 @@ pub fn lookupSyntheticTempSymbol(self: *Transformer, name_span: Span, scope: Sco
     if (!self.semantic_edit_enabled or scope.isNone()) return null;
     const key = syntheticTempSymbolKey(name_span, variableScope(self, scope));
     const raw_id = self.synthetic_temp_symbol_ids.get(key) orelse return null;
-    return @enumFromInt(raw_id);
+    return @fromBackingInt(@intCast(raw_id));
 }
 
 /// Create a generated `var` temp and register its semantic identity at the
@@ -2695,10 +2695,10 @@ pub fn recordGeneratorStateTempSymbol(self: *Transformer, name_span: Span, symbo
     const id = symbol orelse return;
     const gop = try self.generator_state_temp_symbols.getOrPut(self.allocator, name_span.start);
     if (gop.found_existing) {
-        if (gop.value_ptr.* != @intFromEnum(id)) std.debug.panic("generator temp Span was assigned multiple symbols", .{});
+        if (gop.value_ptr.* != @backingInt(id)) std.debug.panic("generator temp Span was assigned multiple symbols", .{});
         return;
     }
-    gop.value_ptr.* = @intFromEnum(id);
+    gop.value_ptr.* = @backingInt(id);
 }
 
 pub fn registerGeneratedWrapperTemp(self: *Transformer, binding: NodeIndex, name_span: Span, declaration_span: Span, owner_scope: ScopeId) Transformer.Error!?SymbolId {
@@ -2711,14 +2711,14 @@ pub fn registerGeneratedWrapperTemp(self: *Transformer, binding: NodeIndex, name
     for (self.generator_state_bindings.items) |existing| {
         if (existing.binding != binding) continue;
         if (existing.name_span.start != name_span.start or existing.name_span.end != name_span.end or
-            existing.symbol_id != @intFromEnum(id) or existing.owner_scope != owner_scope or existing.callback_local)
+            existing.symbol_id != @backingInt(id) or existing.owner_scope != owner_scope or existing.callback_local)
             std.debug.panic("generated wrapper temp was registered with conflicting identity", .{});
         return id;
     }
     try self.generator_state_bindings.append(self.allocator, .{
         .binding = binding,
         .name_span = name_span,
-        .symbol_id = @intFromEnum(id),
+        .symbol_id = @backingInt(id),
         .callback_local = false,
         .owner_scope = owner_scope,
     });
@@ -2745,7 +2745,7 @@ pub fn declareSyntheticCatch(
     if (late_output_name) {
         const symbol_id = id orelse std.debug.panic("late-named catch binding has no SymbolId", .{});
         const editor = try editorFor(self);
-        const symbol = &editor.symbols.items[@intFromEnum(symbol_id)];
+        const symbol = &editor.symbols.items[@backingInt(symbol_id)];
         symbol.synthetic_kind = .optional_catch_binding;
         if (self.options.emit_runtime_helper_imports) {
             symbol.output_name_hint = "_unused";
@@ -2764,7 +2764,7 @@ pub fn addSyntheticRef(self: *Transformer, node: NodeIndex, id: ?SymbolId) Trans
 pub fn makeSyntheticRefForSymbol(self: *Transformer, id: SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!NodeIndex {
     if (!self.semantic_edit_enabled) std.debug.panic("exact synthetic reference has no semantic editor", .{});
     const editor = try editorFor(self);
-    const raw_id = @intFromEnum(id);
+    const raw_id = @backingInt(id);
     if (raw_id >= editor.symbols.items.len) std.debug.panic("exact synthetic reference has an invalid SymbolId", .{});
     const node = try es_helpers.makeExactSyntheticRefFromSpan(self, editor.symbols.items[raw_id].name);
     try addSyntheticRefInScope(self, node, id, scope, flags);
@@ -2792,7 +2792,7 @@ pub fn addSyntheticRefInScope(self: *Transformer, node: NodeIndex, id: ?SymbolId
 pub fn recordPendingExactSymbolRef(self: *Transformer, node: NodeIndex, raw_symbol_id: u32) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
-    if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len or raw_symbol_id >= editor.symbols.items.len)
+    if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len or raw_symbol_id >= editor.symbols.items.len)
         std.debug.panic("pending exact SymbolId reference has invalid node or identity", .{});
     const tag = self.ast.getNode(node).tag;
     if (tag != .identifier_reference and tag != .assignment_target_identifier)
@@ -2816,19 +2816,19 @@ pub fn removeSemanticReference(self: *Transformer, node: NodeIndex) Transformer.
         try removeReference(self, editor, node);
         return;
     }
-    const raw = @intFromEnum(node);
+    const raw = @backingInt(node);
     if (raw < editor.symbol_ids.items.len) editor.symbol_ids.items[raw] = null;
     if (raw < self.symbol_ids.items.len) self.symbol_ids.items[raw] = null;
 }
 
 fn removeReference(self: *Transformer, editor: *SemanticEditor, node: NodeIndex) Transformer.Error!void {
     editor.removeReference(node) catch |err| return editError(err);
-    const raw = @intFromEnum(node);
+    const raw = @backingInt(node);
     if (raw < self.symbol_ids.items.len) self.symbol_ids.items[raw] = null;
 }
 
 fn captureKey(frame: u32, kind: LexicalCaptureKind) u64 {
-    return (@as(u64, frame) << 2) | @intFromEnum(kind);
+    return (@as(u64, frame) << 2) | @backingInt(kind);
 }
 
 pub fn hasLexicalCapture(self: *const Transformer, frame: u32, kind: LexicalCaptureKind) bool {
@@ -2916,7 +2916,7 @@ pub fn trackLexicalCaptureRef(self: *Transformer, node: NodeIndex, source: NodeI
         .frame = self.capture_frame,
         .kind = kind,
     });
-    const raw = @intFromEnum(node);
+    const raw = @backingInt(node);
     if (self.capture_ref_by_origin.contains(raw)) std.debug.panic("lexical capture node tracked twice", .{});
     try self.lexical_capture_uses.append(self.allocator, .{ .frame = self.capture_frame, .kind = kind, .span = source_span });
     try self.capture_ref_by_origin.put(self.allocator, raw, index);
@@ -2945,7 +2945,7 @@ pub fn bindLexicalCaptureWithSyntheticKind(
     const start = self.readU32(decl.data.extra, 1);
     const len = self.readU32(decl.data.extra, 2);
     if (len != 1) std.debug.panic("lexical capture has multiple declarators", .{});
-    const item: NodeIndex = @enumFromInt(self.ast.extra_data.items[start]);
+    const item: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[start]));
     const binding = self.readNodeIdx(self.ast.getNode(item).data.extra, 0);
     const id = (try declareSyntheticInScope(self, binding, decl.span, .variable_var, self.capture_scope)).?;
     var effective_synthetic_kind = synthetic_kind;
@@ -2963,11 +2963,11 @@ pub fn bindLexicalCaptureWithSyntheticKind(
     }
     if (effective_synthetic_kind) |synthetic| {
         const editor = try editorFor(self);
-        editor.symbols.items[@intFromEnum(id)].synthetic_kind = synthetic;
+        editor.symbols.items[@backingInt(id)].synthetic_kind = synthetic;
     }
     const key = captureKey(self.capture_frame, kind);
     if (self.capture_binding_ids.contains(key)) std.debug.panic("duplicate lexical capture binding", .{});
-    try self.capture_binding_ids.put(self.allocator, key, @intFromEnum(id));
+    try self.capture_binding_ids.put(self.allocator, key, @backingInt(id));
 }
 
 /// Bind a lexical-capture frame to a SymbolId that its owning producer has
@@ -2977,10 +2977,10 @@ pub fn bindLexicalCaptureToExistingSymbol(self: *Transformer, kind: LexicalCaptu
     if (!self.semantic_edit_enabled or self.capture_frame == 0) return;
     const key = captureKey(self.capture_frame, kind);
     if (self.capture_binding_ids.get(key)) |existing| {
-        if (existing != @intFromEnum(id)) std.debug.panic("lexical capture frame was assigned conflicting SymbolIds", .{});
+        if (existing != @backingInt(id)) std.debug.panic("lexical capture frame was assigned conflicting SymbolIds", .{});
         return;
     }
-    try self.capture_binding_ids.put(self.allocator, key, @intFromEnum(id));
+    try self.capture_binding_ids.put(self.allocator, key, @backingInt(id));
 }
 
 fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
@@ -3001,7 +3001,7 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
         const pending = self.capture_refs.items[index];
         const id = self.capture_binding_ids.get(captureKey(pending.frame, pending.kind)) orelse
             std.debug.panic("live lexical capture has no declaration", .{});
-        const ref_node: NodeIndex = @enumFromInt(raw);
+        const ref_node: NodeIndex = @fromBackingInt(@intCast(raw));
         const trace = traces.get(raw) orelse std.debug.panic("live lexical capture has no output scope trace: node={d}", .{raw});
         if (trace.ambiguous_scope) std.debug.panic("live lexical capture has ambiguous output scope: node={d}", .{raw});
         const output_scope = trace.scope;
@@ -3009,25 +3009,25 @@ fn bindReachableLexicalCaptures(self: *Transformer) Transformer.Error!void {
             if (existing != id) {
                 const maybe_reference = editor.referenceForNode(ref_node) catch |err| return editError(err);
                 const reference = maybe_reference orelse std.debug.panic("rebound lexical capture has no reference record: node={d} existing={d} expected={d}", .{ raw, existing, id });
-                editor.relocateReference(ref_node, output_scope, @enumFromInt(id), reference.stmt_idx, reference.scope_stmt_idx) catch |err| return editError(err);
+                editor.relocateReference(ref_node, output_scope, @fromBackingInt(@intCast(id)), reference.stmt_idx, reference.scope_stmt_idx) catch |err| return editError(err);
                 self.symbol_ids.items[raw] = id;
             }
             const reference_index = editor.reference_index.get(raw) orelse
                 std.debug.panic("bound lexical capture has no reference record: node={d} name={s} symbol={d} frame={d} kind={s}", .{ raw, self.ast.getText(self.ast.getNode(ref_node).data.string_ref), existing, pending.frame, @tagName(pending.kind) });
             const reference = editor.references.items[reference_index];
-            if (@intFromEnum(reference.symbol_id) != id or !reference.flags.read) {
-                std.debug.panic("bound lexical capture reference has inconsistent identity: node={d} name={s} ref_symbol={d} expected_symbol={d} ref_scope={d} output_scope={d} read={any} write={any} frame={d} kind={s}", .{ raw, self.ast.getText(self.ast.getNode(ref_node).data.string_ref), @intFromEnum(reference.symbol_id), id, reference.scope_id.toIndex(), output_scope.toIndex(), reference.flags.read, reference.flags.write, pending.frame, @tagName(pending.kind) });
+            if (@backingInt(reference.symbol_id) != id or !reference.flags.read) {
+                std.debug.panic("bound lexical capture reference has inconsistent identity: node={d} name={s} ref_symbol={d} expected_symbol={d} ref_scope={d} output_scope={d} read={any} write={any} frame={d} kind={s}", .{ raw, self.ast.getText(self.ast.getNode(ref_node).data.string_ref), @backingInt(reference.symbol_id), id, reference.scope_id.toIndex(), output_scope.toIndex(), reference.flags.read, reference.flags.write, pending.frame, @tagName(pending.kind) });
             }
             if (reference.scope_id != output_scope) {
                 editor.moveReference(ref_node, output_scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
             }
             continue;
         }
-        try addSyntheticRefInScope(self, @enumFromInt(raw), @enumFromInt(id), output_scope, .{ .read = true });
+        try addSyntheticRefInScope(self, @fromBackingInt(@intCast(raw)), @fromBackingInt(@intCast(id)), output_scope, .{ .read = true });
     }
 
     for (self.capture_refs.items) |pending| {
-        if (pending.source.isNone() or live.contains(@intFromEnum(pending.source))) continue;
+        if (pending.source.isNone() or live.contains(@backingInt(pending.source))) continue;
         if (self.getSymbolIdAt(pending.source) == null) continue;
         try removeReference(self, editor, pending.source);
     }
@@ -3055,7 +3055,7 @@ pub fn ensureStandaloneRuntimeHelperPreambleSymbol(
     const local_name = es_helpers.resolveRuntimeHelperName(self, helper_name) catch return error.OutOfMemory;
     const editor = try editorFor(self);
     if (self.runtime_helper_symbol_ids.get(base_name)) |symbol_id| {
-        const raw_id = @intFromEnum(symbol_id);
+        const raw_id = @backingInt(symbol_id);
         if (raw_id >= editor.symbols.items.len) std.debug.panic("standalone runtime helper preamble has an out-of-range SymbolId", .{});
         const symbol = editor.symbols.items[raw_id];
         if (symbol.scope_id != self.programScope() or symbol.kind != .import_binding or
@@ -3093,7 +3093,7 @@ pub fn trackJsxRuntimeImportRef(self: *Transformer, node: NodeIndex, local_name:
 fn trackRuntimeHelperRefKind(self: *Transformer, node: NodeIndex, local_name: []const u8, is_import: bool, defer_import_name: bool) Transformer.Error!?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     if (self.current_scope.isNone()) std.debug.panic("runtime helper {s} created without scope", .{local_name});
-    if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len)
+    if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len)
         std.debug.panic("runtime helper reference has an invalid node", .{});
     const helper_node = self.ast.getNode(node);
     if (helper_node.tag != .identifier_reference and helper_node.tag != .assignment_target_identifier and helper_node.tag != .jsx_identifier)
@@ -3117,20 +3117,20 @@ pub fn trackRuntimeHelperRefWithId(self: *Transformer, node: NodeIndex, id: Symb
     if (!self.semantic_edit_enabled) return;
     if (self.current_scope.isNone()) std.debug.panic("runtime helper reference created without scope", .{});
     const editor = try editorFor(self);
-    if (@intFromEnum(id) >= editor.symbols.items.len) std.debug.panic("runtime helper SymbolId is out of range", .{});
-    const symbol = editor.symbols.items[@intFromEnum(id)];
+    if (@backingInt(id) >= editor.symbols.items.len) std.debug.panic("runtime helper SymbolId is out of range", .{});
+    const symbol = editor.symbols.items[@backingInt(id)];
     if (symbol.kind != .import_binding or symbol.scope_id != self.programScope())
         std.debug.panic("runtime helper SymbolId has an invalid owner or kind", .{});
-    if (node.isNone() or @intFromEnum(node) >= self.ast.nodes.items.len)
+    if (node.isNone() or @backingInt(node) >= self.ast.nodes.items.len)
         std.debug.panic("runtime helper reference has an invalid node", .{});
     const node_name = self.ast.getText(self.ast.getNode(node).data.string_ref);
     if (!std.mem.eql(u8, symbol.synthetic_name, node_name) or
-        editor.helper_scope_map.get(node_name) != @as(?usize, @intFromEnum(id)))
+        editor.helper_scope_map.get(node_name) != @as(?usize, @backingInt(id)))
         std.debug.panic("runtime helper reference does not match its exact helper SymbolId", .{});
-    const raw = @intFromEnum(node);
+    const raw = @backingInt(node);
     if (self.tracked_runtime_helper_ref_index.get(raw)) |existing_index| {
         if (existing_index >= self.tracked_runtime_helper_refs.items.len or
-            self.tracked_runtime_helper_refs.items[existing_index].symbol_id != @intFromEnum(id))
+            self.tracked_runtime_helper_refs.items[existing_index].symbol_id != @backingInt(id))
             std.debug.panic("runtime helper reference was tracked with a different SymbolId", .{});
         return;
     }
@@ -3141,7 +3141,7 @@ pub fn trackRuntimeHelperRefWithId(self: *Transformer, node: NodeIndex, id: Symb
     try self.tracked_runtime_helper_refs.append(self.allocator, .{
         .node = node,
         .scope = self.current_scope,
-        .symbol_id = @intFromEnum(id),
+        .symbol_id = @backingInt(id),
     });
     try self.tracked_runtime_helper_ref_index.put(self.allocator, raw, index);
 }
@@ -3151,7 +3151,7 @@ pub fn trackRuntimeHelperRefWithId(self: *Transformer, node: NodeIndex, id: Symb
 pub fn relocateRuntimeHelperRef(self: *Transformer, node: NodeIndex, scope: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     if (scope.isNone()) std.debug.panic("runtime helper relocation has no scope", .{});
-    if (self.tracked_runtime_helper_ref_index.get(@intFromEnum(node))) |index| {
+    if (self.tracked_runtime_helper_ref_index.get(@backingInt(node))) |index| {
         const editor = try editorFor(self);
         editor.moveReference(node, scope, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
         self.tracked_runtime_helper_refs.items[index].scope = scope;
@@ -3179,8 +3179,8 @@ pub fn bindRuntimeHelperImport(self: *Transformer, local: NodeIndex, local_name:
     const raw_id: u32 = if (editor.helper_scope_map.get(local_name)) |mapped|
         @intCast(mapped)
     else
-        @intFromEnum(editor.declareHelperImport(local, local_span, declaration_span, self.programScope()) catch |err| return editError(err));
-    return bindRuntimeHelperImportWithId(self, editor, local, @enumFromInt(raw_id), declaration_span);
+        @backingInt(editor.declareHelperImport(local, local_span, declaration_span, self.programScope()) catch |err| return editError(err));
+    return bindRuntimeHelperImportWithId(self, editor, local, @fromBackingInt(@intCast(raw_id)), declaration_span);
 }
 
 /// Create and attach an import-only helper symbol when the import has no
@@ -3225,7 +3225,7 @@ pub fn bindRuntimeHelperImportById(
     };
     if (!std.mem.eql(u8, self.ast.getText(local_span), local_name))
         std.debug.panic("runtime helper import local name disagrees with its binding node", .{});
-    const raw_id = @intFromEnum(symbol_id);
+    const raw_id = @backingInt(symbol_id);
     if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
     const symbol = editor.symbols.items[raw_id];
     if (symbol.kind != .import_binding or symbol.scope_id != self.programScope() or
@@ -3241,9 +3241,9 @@ fn bindRuntimeHelperImportWithId(
     id: SymbolId,
     declaration_span: Span,
 ) Transformer.Error!void {
-    const raw_id = @intFromEnum(id);
+    const raw_id = @backingInt(id);
     if (self.runtime_helper_import_bindings.contains(raw_id)) return editError(error.DuplicateBinding);
-    const local_raw = @intFromEnum(local);
+    const local_raw = @backingInt(local);
     const editor_local_id = if (local_raw < editor.symbol_ids.items.len) editor.symbol_ids.items[local_raw] else null;
     if (editor_local_id == null) {
         editor.attachRuntimeHelperImport(local, id, declaration_span) catch |err| return editError(err);
@@ -3251,7 +3251,7 @@ fn bindRuntimeHelperImportWithId(
         return editError(error.InvalidSymbol);
     }
     if (self.getSymbolIdAt(local) == null) try setSymbolId(self, local, id);
-    try self.runtime_helper_import_bindings.put(self.allocator, raw_id, @intFromEnum(local));
+    try self.runtime_helper_import_bindings.put(self.allocator, raw_id, @backingInt(local));
 }
 
 /// Generator lowering already knows a producer's SymbolId. Keep that identity
@@ -3259,19 +3259,19 @@ fn bindRuntimeHelperImportWithId(
 pub fn trackGeneratorStateReference(self: *Transformer, node: NodeIndex, id: ?SymbolId, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
     if (!self.semantic_edit_enabled or !self.options.unsupported.generator) return;
     const symbol = id orelse return;
-    const raw_node = @intFromEnum(node);
+    const raw_node = @backingInt(node);
     if (node.isNone() or raw_node >= self.ast.nodes.items.len)
         std.debug.panic("generator state reference has an invalid producer node", .{});
     const tag = self.ast.getNode(node).tag;
     if (tag != .identifier_reference and tag != .assignment_target_identifier)
         std.debug.panic("generator state reference producer is not an identifier reference", .{});
     if (self.getSymbolIdAt(node)) |existing| {
-        if (existing != @intFromEnum(symbol))
+        if (existing != @backingInt(symbol))
             std.debug.panic("generator state reference disagrees with its producer SymbolId", .{});
     } else try setSymbolId(self, node, symbol);
     try self.generator_state_semantic_refs.append(self.allocator, .{
         .node = node,
-        .symbol_id = @intFromEnum(symbol),
+        .symbol_id = @backingInt(symbol),
         .scope = scope,
         .flags = flags,
     });
@@ -3289,7 +3289,7 @@ pub fn trackGeneratedCallbackTempReference(
     if (!self.semantic_edit_enabled) return;
     if (self.state_machine_depth == 0 or binding.isNone() or reference.isNone() or scope.isNone())
         std.debug.panic("generated callback temp reference has no exact producer context", .{});
-    if (@intFromEnum(binding) >= self.ast.nodes.items.len or @intFromEnum(reference) >= self.ast.nodes.items.len)
+    if (@backingInt(binding) >= self.ast.nodes.items.len or @backingInt(reference) >= self.ast.nodes.items.len)
         std.debug.panic("generated callback temp reference has an invalid node", .{});
     const binding_node = self.ast.getNode(binding);
     const reference_node = self.ast.getNode(reference);
@@ -3439,7 +3439,7 @@ fn visibleSyntheticTempCandidate(
     raw_id: u32,
 ) ?SymbolId {
     if (raw_id >= editor.symbols.items.len) return null;
-    const id: SymbolId = @enumFromInt(raw_id);
+    const id: SymbolId = @fromBackingInt(@intCast(raw_id));
     const symbol = editor.symbols.items[raw_id];
     if (symbol.name.start != name_span.start or symbol.name.end != name_span.end) return null;
     return if (editor.symbolVisibleFrom(id, reference_scope)) id else null;
@@ -3467,9 +3467,9 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
     }
     const chain = self.pending_temp_ref_chains.fetchRemove(name_span.start);
     const target_scope = if (binding_scope.isNone())
-        @as(@import("../../semantic/scope.zig").ScopeId, @enumFromInt(
+        @as(@import("../../semantic/scope.zig").ScopeId, @fromBackingInt(@intCast(
             self.scope_owner_map.get(self.parser_node_count - 1) orelse std.debug.panic("missing program scope for hoisted temp", .{}),
-        ))
+        )))
     else
         binding_scope;
     const editor = try editorFor(self);
@@ -3490,11 +3490,11 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
         known_temp_id orelse bound_temp_id,
     ) catch |err| return editError(err);
     const bound = try self.bound_temp_symbols.getOrPut(self.allocator, temp_key);
-    if (bound.found_existing and bound.value_ptr.* != @intFromEnum(id))
+    if (bound.found_existing and bound.value_ptr.* != @backingInt(id))
         std.debug.panic("hoisted temp allocation changed its exact SymbolId", .{});
-    bound.value_ptr.* = @intFromEnum(id);
+    bound.value_ptr.* = @backingInt(id);
     if (self.getSymbolIdAt(binding)) |existing| {
-        if (existing != @intFromEnum(id)) std.debug.panic("hoisted temp binding changed its exact SymbolId", .{});
+        if (existing != @backingInt(id)) std.debug.panic("hoisted temp binding changed its exact SymbolId", .{});
     } else try setSymbolId(self, binding, id);
     es_helpers.markStandaloneLateSyntheticTemp(self, id, expected_scope);
     if (chain) |found| {
@@ -3554,7 +3554,7 @@ pub fn bindSyntheticTempInScope(
 /// 있으므로, 변환 후 null 검사에 실제로 남는 노드에서 분기 읽기를 복제한다.
 pub fn trackNullishIdentifierCopies(self: *Transformer, test_ref: NodeIndex, value_ref: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
-    const test_i = @intFromEnum(test_ref);
+    const test_i = @backingInt(test_ref);
     if (test_i >= self.symbol_ids.items.len or self.symbol_ids.items[test_i] == null) return;
     const editor = try editorFor(self);
     editor.cloneReferenceAtSameLocation(test_ref, value_ref) catch |err| return editError(err);
@@ -3605,7 +3605,7 @@ pub fn splitCompoundAssignmentIdentifierReference(
     if (source_reference.flags.declare or !source_reference.flags.read or !source_reference.flags.write)
         return editError(error.InvalidNode);
 
-    const symbol: SymbolId = @enumFromInt(raw_id);
+    const symbol: SymbolId = @fromBackingInt(@intCast(raw_id));
     editor.addCopiedReference(
         value_read,
         symbol,
@@ -3639,7 +3639,7 @@ pub fn splitLogicalAssignmentIdentifierReferences(
     if (source_reference.flags.declare or !source_reference.flags.read or !source_reference.flags.write)
         return editError(error.InvalidNode);
 
-    const symbol: SymbolId = @enumFromInt(raw_id);
+    const symbol: SymbolId = @fromBackingInt(@intCast(raw_id));
     if (value_read) |read| {
         editor.addCopiedReference(
             read,
@@ -3683,7 +3683,7 @@ pub fn cloneGeneratedClassSelfReference(self: *Transformer, source: NodeIndex) T
     const clone = try self.ast.addNode(source_node);
     editor.addCopiedReference(
         clone,
-        @enumFromInt(target_id),
+        @fromBackingInt(@intCast(target_id)),
         self.current_scope,
         source_reference.flags,
         source_reference.stmt_idx,
@@ -3702,13 +3702,13 @@ pub fn trackUserArgumentFromBinding(self: *Transformer, argument: NodeIndex, bin
     const editor = try editorFor(self);
     editor.addCopiedReference(
         argument,
-        @enumFromInt(raw_id),
+        @fromBackingInt(@intCast(raw_id)),
         scope,
         .{ .read = true },
         Reference.NO_STMT,
         Reference.NO_STMT,
     ) catch |err| return editError(err);
-    try self.trackGeneratorStateReference(argument, @enumFromInt(raw_id), scope, .{ .read = true });
+    try self.trackGeneratorStateReference(argument, @fromBackingInt(@intCast(raw_id)), scope, .{ .read = true });
 }
 
 /// Hoisting a source `var` declaration into an assignment creates a new write
@@ -3722,7 +3722,7 @@ pub fn trackUserWriteFromBinding(self: *Transformer, target: NodeIndex, binding:
     const editor = try editorFor(self);
     editor.addCopiedReference(
         target,
-        @enumFromInt(raw_id),
+        @fromBackingInt(@intCast(raw_id)),
         scope,
         .{ .write = true },
         Reference.NO_STMT,
@@ -3757,7 +3757,7 @@ pub fn trackUserReadFromBinding(self: *Transformer, target: NodeIndex, binding: 
     const editor = try editorFor(self);
     editor.addCopiedReference(
         target,
-        @enumFromInt(raw_id),
+        @fromBackingInt(@intCast(raw_id)),
         scope,
         .{ .read = true },
         Reference.NO_STMT,
@@ -3776,7 +3776,7 @@ pub fn trackExactOutputRead(self: *Transformer, target: NodeIndex, symbol_id: u3
 /// output scope and read/write role are known only during the final AST walk.
 pub fn trackExactOutputReference(self: *Transformer, target: NodeIndex, symbol_id: u32) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
-    if (target.isNone() or @intFromEnum(target) >= self.ast.nodes.items.len)
+    if (target.isNone() or @backingInt(target) >= self.ast.nodes.items.len)
         std.debug.panic("exact generated reference has an invalid AST node", .{});
     const node = self.ast.getNode(target);
     if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier and node.tag != .jsx_identifier)
@@ -3784,7 +3784,7 @@ pub fn trackExactOutputReference(self: *Transformer, target: NodeIndex, symbol_i
     const editor = try editorFor(self);
     if (symbol_id >= editor.symbols.items.len)
         std.debug.panic("exact generated reference has an out-of-range SymbolId", .{});
-    const raw = @intFromEnum(target);
+    const raw = @backingInt(target);
     if (self.exact_output_ref_symbol_ids.get(raw)) |existing| {
         if (existing != symbol_id)
             std.debug.panic("generated reference was assigned multiple exact SymbolIds", .{});
@@ -3799,20 +3799,20 @@ pub fn moveBindingToOutputScope(self: *Transformer, binding: NodeIndex, scope: S
     if (!self.semantic_edit_enabled or binding.isNone() or scope.isNone()) return;
     const raw_id = self.getSymbolIdAt(binding) orelse return;
     const editor = try editorFor(self);
-    editor.moveSymbolToScope(@enumFromInt(raw_id), scope) catch |err| return editError(err);
+    editor.moveSymbolToScope(@fromBackingInt(@intCast(raw_id)), scope) catch |err| return editError(err);
 }
 
 pub fn moveSymbolToOutputScope(self: *Transformer, raw_id: u32, scope: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled or scope.isNone()) return;
     const editor = try editorFor(self);
-    editor.moveSymbolToScope(@enumFromInt(raw_id), scope) catch |err| return editError(err);
+    editor.moveSymbolToScope(@fromBackingInt(@intCast(raw_id)), scope) catch |err| return editError(err);
 }
 
 /// Rebind a newly generated declaration node to the exact existing class-self
 /// SymbolId selected by the transform's class owner.
 pub fn setGeneratedSymbolId(self: *Transformer, node: NodeIndex, raw_id: u32) Transformer.Error!void {
-    if (node.isNone() or @intFromEnum(node) < self.parser_node_count) std.debug.panic("cannot replace a parser-owned SymbolId", .{});
-    const index = @intFromEnum(node);
+    if (node.isNone() or @backingInt(node) < self.parser_node_count) std.debug.panic("cannot replace a parser-owned SymbolId", .{});
+    const index = @backingInt(node);
     if (self.symbol_ids.items.len <= index)
         try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
     if (self.semantic_editor) |*editor| {
@@ -3820,7 +3820,7 @@ pub fn setGeneratedSymbolId(self: *Transformer, node: NodeIndex, raw_id: u32) Tr
             try editor.symbol_ids.appendNTimes(self.allocator, null, index + 1 - editor.symbol_ids.items.len);
         if (self.ast.getNode(node).tag == .binding_identifier) {
             if (raw_id >= editor.symbols.items.len) std.debug.panic("generated binding SymbolId is out of range", .{});
-            editor.rebindBinding(node, @enumFromInt(raw_id)) catch |err| return editError(err);
+            editor.rebindBinding(node, @fromBackingInt(@intCast(raw_id))) catch |err| return editError(err);
         } else {
             editor.symbol_ids.items[index] = raw_id;
         }
@@ -3833,11 +3833,11 @@ pub fn rebindOutputBinding(self: *Transformer, node: NodeIndex, raw_id: u32) Tra
     if (self.semantic_edit_enabled) {
         const editor = try editorFor(self);
         if (raw_id >= editor.symbols.items.len) std.debug.panic("invalid output binding rebind", .{});
-        editor.rebindBinding(node, @enumFromInt(raw_id)) catch |err| return editError(err);
+        editor.rebindBinding(node, @fromBackingInt(@intCast(raw_id))) catch |err| return editError(err);
     } else if (self.symbols.len != 0 and raw_id >= self.symbols.len) {
         std.debug.panic("invalid output binding rebind", .{});
     }
-    const index = @intFromEnum(node);
+    const index = @backingInt(node);
     if (self.symbol_ids.items.len <= index)
         try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
     self.symbol_ids.items[index] = raw_id;
@@ -3848,22 +3848,22 @@ pub fn splitOutputBindingAsVar(self: *Transformer, node: NodeIndex, expected_raw
     const editor = try editorFor(self);
     const id = editor.splitBindingIdentity(
         node,
-        @enumFromInt(expected_raw_id),
+        @fromBackingInt(@intCast(expected_raw_id)),
         scope,
         .variable_var,
         declaration_span,
     ) catch |err| return editError(err);
-    const index = @intFromEnum(node);
+    const index = @backingInt(node);
     if (self.symbol_ids.items.len <= index)
         try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
-    self.symbol_ids.items[index] = @intFromEnum(id);
-    return @intFromEnum(id);
+    self.symbol_ids.items[index] = @backingInt(id);
+    return @backingInt(id);
 }
 
 pub fn relocateOutputSymbolAs(self: *Transformer, raw_id: u32, scope: ScopeId, binding: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
-    editor.relocateSymbolAs(@enumFromInt(raw_id), scope, binding) catch |err| return editError(err);
+    editor.relocateSymbolAs(@fromBackingInt(@intCast(raw_id)), scope, binding) catch |err| return editError(err);
 }
 
 /// Split the parameter identity from a same-named body `var` that the source
@@ -3878,15 +3878,15 @@ pub fn splitParameterBodyVarBinding(
 ) Transformer.Error!?SymbolId {
     if (!self.semantic_edit_enabled) return null;
     const editor = try editorFor(self);
-    if (binding.isNone() or @intFromEnum(binding) >= self.ast.nodes.items.len or
-        @intFromEnum(binding) >= editor.symbol_ids.items.len or
-        @intFromEnum(binding) >= self.symbol_ids.items.len)
+    if (binding.isNone() or @backingInt(binding) >= self.ast.nodes.items.len or
+        @backingInt(binding) >= editor.symbol_ids.items.len or
+        @backingInt(binding) >= self.symbol_ids.items.len)
         std.debug.panic("invalid parameter binding for body-var identity split", .{});
     const binding_node = self.ast.getNode(binding);
     if (binding_node.tag != .binding_identifier or alias_span.start & ast_mod.Ast.STRING_TABLE_BIT == 0)
         std.debug.panic("invalid parameter binding shape for body-var identity split", .{});
-    if (editor.symbol_ids.items[@intFromEnum(binding)] != body_var_id or
-        self.symbol_ids.items[@intFromEnum(binding)] != body_var_id)
+    if (editor.symbol_ids.items[@backingInt(binding)] != body_var_id or
+        self.symbol_ids.items[@backingInt(binding)] != body_var_id)
         std.debug.panic("parameter/body-var split no longer points at the shared SymbolId", .{});
     if (body_var_id >= editor.symbols.items.len) std.debug.panic("parameter/body-var SymbolId is out of range", .{});
     const original = editor.symbols.items[body_var_id];
@@ -3903,7 +3903,7 @@ pub fn splitParameterBodyVarBinding(
     if (alias_name.len == 0 or editor.scope_maps.items[original.scope_id.toIndex()].contains(alias_name))
         std.debug.panic("parameter/body-var alias is empty or already bound", .{});
 
-    const slot = @intFromEnum(binding);
+    const slot = @backingInt(binding);
     editor.symbol_ids.items[slot] = null;
     self.symbol_ids.items[slot] = null;
     const alias_binding = es_helpers.makeExactSyntheticBinding(self, alias_name) catch return error.OutOfMemory;
@@ -3921,14 +3921,14 @@ pub fn splitParameterBodyVarBinding(
         self.symbol_ids.items[slot] = body_var_id;
         return editError(err);
     };
-    editor.symbols.items[@intFromEnum(parameter_id)].name = original.name;
+    editor.symbols.items[@backingInt(parameter_id)].name = original.name;
     editor.attachExistingBinding(binding, parameter_id) catch |err| return editError(err);
     if (original.kind == .parameter) {
         editor.symbols.items[body_var_id].kind = .variable_var;
         editor.symbols.items[body_var_id].decl_flags = SymbolKind.variable_var.declFlags();
         editor.symbols.items[body_var_id].declaration_span = body_var_span;
     }
-    self.symbol_ids.items[slot] = @intFromEnum(parameter_id);
+    self.symbol_ids.items[slot] = @backingInt(parameter_id);
     return parameter_id;
 }
 
@@ -3938,22 +3938,22 @@ pub fn rebindParameterBodyVarReference(self: *Transformer, reference: NodeIndex,
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
     editor.rebindReference(reference, parameter_id) catch |err| return editError(err);
-    const slot = @intFromEnum(reference);
+    const slot = @backingInt(reference);
     if (self.symbol_ids.items.len <= slot)
         try self.symbol_ids.appendNTimes(self.allocator, null, slot + 1 - self.symbol_ids.items.len);
-    self.symbol_ids.items[slot] = @intFromEnum(parameter_id);
+    self.symbol_ids.items[slot] = @backingInt(parameter_id);
 }
 
 pub fn renameParameterEnvironmentBinding(self: *Transformer, raw_id: u32, name: []const u8) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
-    editor.renameParameterEnvironmentBinding(@enumFromInt(raw_id), name) catch |err| return editError(err);
+    editor.renameParameterEnvironmentBinding(@fromBackingInt(@intCast(raw_id)), name) catch |err| return editError(err);
 }
 
 pub fn renameParameterEnvironmentBindingForDynamicBody(self: *Transformer, raw_id: u32, name: []const u8) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
-    editor.renameParameterEnvironmentBindingForDynamicBody(@enumFromInt(raw_id), name) catch |err| return editError(err);
+    editor.renameParameterEnvironmentBindingForDynamicBody(@fromBackingInt(@intCast(raw_id)), name) catch |err| return editError(err);
 }
 
 pub fn rebindOutputReference(self: *Transformer, node: NodeIndex, raw_id: u32) Transformer.Error!void {
@@ -3965,11 +3965,11 @@ pub fn rebindOutputReference(self: *Transformer, node: NodeIndex, raw_id: u32) T
     editor.relocateReference(
         node,
         reference.scope_id,
-        @enumFromInt(raw_id),
+        @fromBackingInt(@intCast(raw_id)),
         reference.stmt_idx,
         reference.scope_stmt_idx,
     ) catch |err| return editError(err);
-    const index = @intFromEnum(node);
+    const index = @backingInt(node);
     if (self.symbol_ids.items.len <= index)
         try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
     self.symbol_ids.items[index] = raw_id;
@@ -3980,13 +3980,13 @@ pub fn rebindOutputReference(self: *Transformer, node: NodeIndex, raw_id: u32) T
 pub fn ensureSymbolDeclaration(self: *Transformer, raw_id: u32, scope: ScopeId) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
-    editor.ensureDeclaration(@enumFromInt(raw_id), scope) catch |err| return editError(err);
+    editor.ensureDeclaration(@fromBackingInt(@intCast(raw_id)), scope) catch |err| return editError(err);
 }
 
 pub fn ensureSymbolDeclarationAtNode(self: *Transformer, raw_id: u32, scope: ScopeId, binding: NodeIndex) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     const editor = try editorFor(self);
-    editor.ensureDeclarationAtNode(@enumFromInt(raw_id), scope, binding) catch |err| return editError(err);
+    editor.ensureDeclarationAtNode(@fromBackingInt(@intCast(raw_id)), scope, binding) catch |err| return editError(err);
 }
 
 /// State-machine collection can flatten an empty generated block while keeping
@@ -4005,7 +4005,7 @@ fn elideUnreachableEmptyGeneratedScopes(
         const scope_raw = entry.value_ptr.*;
         if (owner_raw >= self.ast.nodes.items.len or reachable_nodes.contains(owner_raw) or
             scope_raw < self.scopes.len or scope_raw >= editor.scopes.items.len) continue;
-        try candidates.append(self.allocator, @enumFromInt(owner_raw));
+        try candidates.append(self.allocator, @fromBackingInt(@intCast(owner_raw)));
     }
     for (candidates.items) |owner| {
         _ = editor.elideEmptyGeneratedScopeOwner(owner) catch |err| return editError(err);
@@ -4040,10 +4040,10 @@ fn reanchorDetachedDeclarations(
     }
     for (editor.references.items) |*reference| {
         if (!reference.flags.declare) continue;
-        const sid = @intFromEnum(reference.symbol_id);
+        const sid = @backingInt(reference.symbol_id);
         const candidate = emitted_bindings.get(sid) orelse {
             if (!reference.declaration_node_index.isNone()) {
-                const old_raw = @intFromEnum(reference.declaration_node_index);
+                const old_raw = @backingInt(reference.declaration_node_index);
                 if (!reachable.contains(old_raw) and old_raw < editor.symbol_ids.items.len and
                     editor.symbol_ids.items[old_raw] == sid)
                 {
@@ -4061,13 +4061,13 @@ fn reanchorDetachedDeclarations(
         // one would invent an exact identity, so leave the mismatch visible.
         if (candidate.count != 1) continue;
         if (reference.declaration_node_index.isNone()) {
-            reference.declaration_node_index = @enumFromInt(candidate.node);
+            reference.declaration_node_index = @fromBackingInt(@intCast(candidate.node));
             continue;
         }
-        const old_raw = @intFromEnum(reference.declaration_node_index);
+        const old_raw = @backingInt(reference.declaration_node_index);
         if (reachable.contains(old_raw) or old_raw >= editor.symbol_ids.items.len or
             editor.symbol_ids.items[old_raw] != sid) continue;
-        reference.declaration_node_index = @enumFromInt(candidate.node);
+        reference.declaration_node_index = @fromBackingInt(@intCast(candidate.node));
     }
 }
 
@@ -4095,7 +4095,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
             self.scope_owner_map.get(entry.key_ptr.*) orelse
             editor.scope_owner_map.get(entry.key_ptr.*)) |owner_scope_raw|
         {
-            if (owner_scope_raw != @intFromEnum(function_scope))
+            if (owner_scope_raw != @backingInt(function_scope))
                 std.debug.panic("deferred generator loop owner changed its exact ScopeId", .{});
         }
     }
@@ -4111,9 +4111,9 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
     var remaps = self.scope_owner_remaps.iterator();
     while (remaps.next()) |entry| {
         if (self.scope_owner_removed.contains(entry.key_ptr.*)) {
-            editor.remapScopeOwnerAfterInPlaceRewrite(@enumFromInt(entry.key_ptr.*), @enumFromInt(entry.value_ptr.*)) catch |err| return editError(err);
+            editor.remapScopeOwnerAfterInPlaceRewrite(@fromBackingInt(@intCast(entry.key_ptr.*)), @fromBackingInt(@intCast(entry.value_ptr.*))) catch |err| return editError(err);
         } else {
-            editor.remapScopeOwner(@enumFromInt(entry.key_ptr.*), @enumFromInt(entry.value_ptr.*)) catch |err| return editError(err);
+            editor.remapScopeOwner(@fromBackingInt(@intCast(entry.key_ptr.*)), @fromBackingInt(@intCast(entry.value_ptr.*))) catch |err| return editError(err);
         }
     }
     try bindReachableLexicalCaptures(self);
@@ -4142,7 +4142,7 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
             while (i > 0) {
                 i -= 1;
                 const ref = editor.references.items[i];
-                if (ref.node_index.isNone() or live.contains(@intFromEnum(ref.node_index))) continue;
+                if (ref.node_index.isNone() or live.contains(@backingInt(ref.node_index))) continue;
                 try removeReference(self, editor, ref.node_index);
             }
             try elideUnreachableEmptyGeneratedScopes(self, editor, &live);

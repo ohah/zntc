@@ -61,7 +61,7 @@ pub fn emitComments(self: anytype, pos: ?u32) !void {
 pub fn isSkipped(self: anytype, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
     const meta = self.options.linking_metadata orelse return false;
-    const node_idx = @intFromEnum(idx);
+    const node_idx = @backingInt(idx);
     return node_idx < meta.skip_nodes.capacity() and meta.skip_nodes.isSet(node_idx);
 }
 
@@ -73,7 +73,7 @@ inline fn isElidedStmt(self: anytype, idx: NodeIndex) bool {
     if (isSkipped(self, idx)) return true;
     if (!self.options.minify_whitespace) return false;
     // `NodeIndex.none` 은 sentinel max — bound check 가 자연 차단.
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= self.ast.nodes.items.len) return false;
     return self.ast.nodes.items[ni].tag == .empty_statement;
 }
@@ -82,7 +82,7 @@ fn lastNonElidedStmt(self: anytype, indices: []const u32) ?NodeIndex {
     var i = indices.len;
     while (i > 0) {
         i -= 1;
-        const idx: NodeIndex = @enumFromInt(indices[i]);
+        const idx: NodeIndex = @fromBackingInt(@intCast(indices[i]));
         if (idx.isNone()) continue;
         if (isElidedStmt(self, idx)) continue;
         return idx;
@@ -97,7 +97,7 @@ fn stmtNeedsTrailingSemicolonBeforeBlockClose(self: anytype, idx: NodeIndex) boo
         .for_statement => blk: {
             const e = node.data.extra;
             if (e + 3 >= self.ast.extra_data.items.len) break :blk false;
-            break :blk stmtNeedsTrailingSemicolonBeforeBlockClose(self, @enumFromInt(self.ast.extra_data.items[e + 3]));
+            break :blk stmtNeedsTrailingSemicolonBeforeBlockClose(self, @fromBackingInt(@intCast(self.ast.extra_data.items[e + 3])));
         },
         .for_in_statement, .for_of_statement, .for_await_of_statement => stmtNeedsTrailingSemicolonBeforeBlockClose(self, node.data.ternary.c),
         .while_statement => stmtNeedsTrailingSemicolonBeforeBlockClose(self, node.data.binary.right),
@@ -121,7 +121,7 @@ pub fn emitProgram(self: anytype, node: Node) !void {
     var names_emitted = !self.options.keep_names;
     var preamble = self.options.program_preamble;
     for (indices) |raw_idx| {
-        const node_idx: NodeIndex = @enumFromInt(raw_idx);
+        const node_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (node_idx.isNone()) continue;
         // skip_nodes된 statement는 emitNode가 early-return하지만 newline은 이미 찍혀
         // 빈 줄이 남는다 (#1602). 사전 체크로 해당 slot 전체를 건너뛴다.
@@ -142,7 +142,7 @@ pub fn emitProgram(self: anytype, node: Node) !void {
         }
         if (!names_emitted and tag != .hashbang and tag != .directive) {
             for (indices) |raw| {
-                if (isElidedStmt(self, @enumFromInt(raw))) continue;
+                if (isElidedStmt(self, @fromBackingInt(@intCast(raw)))) continue;
                 const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
                 if (emitted) try writeNewline(self);
                 try keep_names.emitNameStatement(self, target.name, target.original);
@@ -155,7 +155,7 @@ pub fn emitProgram(self: anytype, node: Node) !void {
         if (self.options.minify_whitespace) {
             if (tryUnwrapStandaloneBlock(self, node_idx)) |inner| {
                 for (inner) |inner_raw| {
-                    const inner_idx: NodeIndex = @enumFromInt(inner_raw);
+                    const inner_idx: NodeIndex = @fromBackingInt(@intCast(inner_raw));
                     if (inner_idx.isNone()) continue;
                     if (isElidedStmt(self, inner_idx)) continue;
                     if (emitted) try writeNewline(self);
@@ -199,7 +199,7 @@ fn tryUnwrapStandaloneBlock(self: anytype, idx: NodeIndex) ?[]const u32 {
     const list = node.data.list;
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     for (indices) |raw| {
-        const child_idx: NodeIndex = @enumFromInt(raw);
+        const child_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (child_idx.isNone()) continue;
         const child = self.ast.getNode(child_idx);
         switch (child.tag) {
@@ -244,7 +244,7 @@ pub fn canEmitMultiExprBlockAsSequence(self: anytype, body_idx: NodeIndex) bool 
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     var count: usize = 0;
     for (indices) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (isElidedStmt(self, idx)) continue;
         const n = self.ast.getNode(idx);
         if (n.tag != .expression_statement) return false;
@@ -289,7 +289,7 @@ fn emitMultiExprBlockSeqInner(self: anytype, body_idx: NodeIndex) !void {
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     var first = true;
     for (indices) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (isElidedStmt(self, idx)) continue;
         if (!first) try self.writeByte(',');
         const n = self.ast.getNode(idx);
@@ -342,7 +342,7 @@ fn singleNonElidedStmt(self: anytype, block: Node) ?NodeIndex {
     const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
     var only: ?NodeIndex = null;
     for (indices) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (isElidedStmt(self, idx)) continue;
         if (only != null) return null;
         only = idx;
@@ -413,7 +413,7 @@ fn isLowerableBlockFunction(self: anytype, idx: NodeIndex) bool {
     if (node.tag != .function_declaration) return false;
     const extras = self.ast.extra_data.items;
     if (node.data.extra + 3 >= extras.len) return false;
-    const name: NodeIndex = @enumFromInt(extras[node.data.extra]);
+    const name: NodeIndex = @fromBackingInt(@intCast(extras[node.data.extra]));
     if (name.isNone()) return false;
     const flags = extras[node.data.extra + 3];
     return flags & (ast_mod.FunctionFlags.is_async | ast_mod.FunctionFlags.is_generator) == 0;
@@ -422,7 +422,7 @@ fn isLowerableBlockFunction(self: anytype, idx: NodeIndex) bool {
 /// `function f() {}` -> `let f = function() {};` (name inferred from the binding).
 fn emitLoweredBlockFunction(self: anytype, idx: NodeIndex) !void {
     const node = self.ast.getNode(idx);
-    const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.extra]);
+    const name: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra]));
     try self.write("let ");
     try self.emitNode(name);
     try self.write(if (self.options.minify_whitespace) "=" else " = ");
@@ -435,7 +435,7 @@ fn emitLoweredBlockFunction(self: anytype, idx: NodeIndex) !void {
 /// statement list, so their names are restored there (keep_names.zig).
 fn emitHoistedFunctionNames(self: anytype, indices: []const u32) !void {
     for (indices) |raw| {
-        if (isElidedStmt(self, @enumFromInt(raw))) continue;
+        if (isElidedStmt(self, @fromBackingInt(@intCast(raw)))) continue;
         const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
         try writeNewline(self);
         try writeIndent(self);
@@ -476,7 +476,7 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
         // entered, so their lowered `let` bindings go first.
         if (lower_functions) {
             for (indices) |raw| {
-                const idx: NodeIndex = @enumFromInt(raw);
+                const idx: NodeIndex = @fromBackingInt(@intCast(raw));
                 if (!isLowerableBlockFunction(self, idx) or isElidedStmt(self, idx)) continue;
                 try writeNewline(self);
                 try writeIndent(self);
@@ -486,7 +486,7 @@ pub fn emitBracedList(self: anytype, node: Node) !void {
         var names_emitted = !self.options.keep_names;
         var i: usize = 0;
         while (i < indices.len) : (i += 1) {
-            const idx: NodeIndex = @enumFromInt(indices[i]);
+            const idx: NodeIndex = @fromBackingInt(@intCast(indices[i]));
             if (isElidedStmt(self, idx)) continue;
             if (!names_emitted and self.ast.getNode(idx).tag != .directive) {
                 try emitHoistedFunctionNames(self, indices);
@@ -591,7 +591,7 @@ fn operandStartsIdentifierLike(self: anytype, idx: ast_mod.NodeIndex) bool {
 /// 시작 토큰이 leftmost 자식의 시작 토큰과 같으므로. depth 가드는 기형 AST 안전망.
 fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth: u32) bool {
     if (depth >= 32) return true;
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return true;
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return true;
     const n = self.ast.getNode(idx);
     // TS/Flow type cast 래퍼(`x as T`/`<T>x`)는 strip 후 안쪽이 시작 토큰 → 따라간다.
     if (ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
@@ -631,20 +631,20 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
         .static_member_expression, .computed_member_expression, .private_field_expression => blk: {
             const ex = n.data.extra;
             if (ex >= self.ast.extra_data.items.len) break :blk true;
-            const obj_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[ex]);
+            const obj_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[ex]));
             break :blk operandStartsIdentifierLikeDepth(self, obj_idx, depth + 1);
         },
         .call_expression => blk: {
             const ex = n.data.extra;
             if (ex >= self.ast.extra_data.items.len) break :blk true;
-            const callee_idx: ast_mod.NodeIndex = @enumFromInt(self.ast.extra_data.items[ex]);
+            const callee_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[ex]));
             break :blk operandStartsIdentifierLikeDepth(self, callee_idx, depth + 1);
         },
         .sequence_expression => blk: {
             const list = n.data.list;
             if (list.len == 0) break :blk true;
             const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
-            break :blk operandStartsIdentifierLikeDepth(self, @enumFromInt(indices[0]), depth + 1);
+            break :blk operandStartsIdentifierLikeDepth(self, @fromBackingInt(@intCast(indices[0])), depth + 1);
         },
         else => true,
     };
@@ -672,7 +672,7 @@ fn operandStartsIdentifierLikeDepth(self: anytype, idx: ast_mod.NodeIndex, depth
 /// "출력 시작 토큰" 의 정의가 갈린다.
 fn leftmostTokenStartDepth(self: anytype, idx: NodeIndex, depth: u32) ?u32 {
     if (depth > 32 or idx.isNone()) return null;
-    if (@intFromEnum(idx) >= self.ast.nodes.items.len) return null;
+    if (@backingInt(idx) >= self.ast.nodes.items.len) return null;
     const n = self.ast.getNode(idx);
     if (ast_mod.Node.Tag.isTransparentTypeWrapper(n.tag)) {
         return leftmostTokenStartDepth(self, n.data.unary.operand, depth + 1);
@@ -688,12 +688,12 @@ fn leftmostTokenStartDepth(self: anytype, idx: NodeIndex, depth: u32) ?u32 {
         => blk: {
             const ex = n.data.extra;
             if (ex >= self.ast.extra_data.items.len) break :blk null;
-            break :blk @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[ex]));
+            break :blk @as(NodeIndex, @fromBackingInt(@intCast(self.ast.extra_data.items[ex])));
         },
         .sequence_expression => blk: {
             const list = n.data.list;
             if (list.len == 0) break :blk null;
-            break :blk @as(NodeIndex, @enumFromInt(self.ast.extra_data.items[list.start]));
+            break :blk @as(NodeIndex, @fromBackingInt(@intCast(self.ast.extra_data.items[list.start])));
         },
         else => null,
     };
@@ -883,7 +883,7 @@ fn writeFoldedTestSeparator(self: anytype, test_idx: NodeIndex) !void {
     if (self.options.minify_whitespace) {
         // transparent wrapper(paren) 너머 실제 첫 노드가 wrap 주체다 (#4042).
         const real = call_emit.skipWrappers(self, test_idx, true);
-        if (!real.isNone() and @intFromEnum(real) < self.ast.nodes.items.len) {
+        if (!real.isNone() and @backingInt(real) < self.ast.nodes.items.len) {
             if (self.exprNeedsParens(self.ast.getNode(real), .conditional, .{})) return;
             if (!operandStartsIdentifierLike(self, real)) return;
         }
@@ -896,7 +896,7 @@ fn writeFoldedTestSeparator(self: anytype, test_idx: NodeIndex) !void {
 /// list 인덱스를 반환. 아니면 null. minify_syntax 전용 (emitBracedList 에서만 호출).
 /// `c` 가 paren 없이 `?:` test 자리에 올 수 있고, A/B 가 sequence(comma) / void 가 아닐 때만.
 fn tryEmitReturnFallthrough(self: anytype, indices: []const u32, i: usize) !?usize {
-    const if_node = self.ast.getNode(@enumFromInt(indices[i]));
+    const if_node = self.ast.getNode(@fromBackingInt(@intCast(indices[i])));
     if (if_node.tag != .if_statement) return null;
     const t = if_node.data.ternary;
     if (!t.c.isNone() and !isElidedAlternate(self, t.c)) return null; // else 가 있으면 #3095 가 처리
@@ -905,9 +905,9 @@ fn tryEmitReturnFallthrough(self: anytype, indices: []const u32, i: usize) !?usi
     const a_arg = singleReturnArg(self, t.b) orelse return null;
     if (self.ast.getNode(a_arg).tag == .sequence_expression) return null;
     var j = i + 1;
-    while (j < indices.len and isElidedStmt(self, @enumFromInt(indices[j]))) : (j += 1) {}
+    while (j < indices.len and isElidedStmt(self, @fromBackingInt(@intCast(indices[j])))) : (j += 1) {}
     if (j >= indices.len) return null;
-    const next = self.ast.getNode(@enumFromInt(indices[j]));
+    const next = self.ast.getNode(@fromBackingInt(@intCast(indices[j])));
     if (next.tag != .return_statement or next.data.unary.operand.isNone()) return null;
     const b_arg = next.data.unary.operand;
     if (self.ast.getNode(b_arg).tag == .sequence_expression) return null;
@@ -1013,7 +1013,7 @@ fn startsWithLetIdentifier(self: anytype, idx: NodeIndex) bool {
     var cur = call_emit.skipWrappers(self, idx, true);
     var depth: u8 = 0;
     while (depth < 32) : (depth += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) return false;
         const n = self.ast.getNode(cur);
         switch (n.tag) {
             .identifier_reference => return std.mem.eql(u8, self.ast.identifierNameText(n), "let"),
@@ -1064,7 +1064,7 @@ fn emitIfVerbatim(self: anytype, t: anytype) !void {
 }
 
 fn isFunctionDeclarationNode(self: anytype, node_idx: NodeIndex) bool {
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) return false;
     return self.ast.getNode(node_idx).tag == .function_declaration;
 }
 
@@ -1079,7 +1079,7 @@ fn isElidedAlternate(self: anytype, node_idx: NodeIndex) bool {
 
 fn isElidedAlternateDepth(self: anytype, node_idx: NodeIndex, depth: u32) bool {
     if (depth >= 128) return false;
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) return false;
     const n = self.ast.getNode(node_idx);
     switch (n.tag) {
         .empty_statement => return true,
@@ -1088,7 +1088,7 @@ fn isElidedAlternateDepth(self: anytype, node_idx: NodeIndex, depth: u32) bool {
             const list = n.data.list;
             const indices = self.ast.extra_data.items[list.start .. list.start + list.len];
             for (indices) |raw| {
-                const idx: NodeIndex = @enumFromInt(raw);
+                const idx: NodeIndex = @fromBackingInt(@intCast(raw));
                 if (!isElidedAlternateDepth(self, idx, depth + 1)) return false;
             }
             return true;
@@ -1105,7 +1105,7 @@ fn isDeadIfNode(self: anytype, node_idx: NodeIndex) bool {
 
 fn isDeadIfNodeDepth(self: anytype, node_idx: NodeIndex, depth: u32) bool {
     if (depth >= 128) return false;
-    if (node_idx.isNone() or @intFromEnum(node_idx) >= self.ast.nodes.items.len) return false;
+    if (node_idx.isNone() or @backingInt(node_idx) >= self.ast.nodes.items.len) return false;
     const n = self.ast.getNode(node_idx);
     if (n.tag != .if_statement) return false;
     const t = n.data.ternary;
@@ -1122,7 +1122,7 @@ pub fn evalBooleanCondition(self: anytype, cond_idx: NodeIndex) ?bool {
 
 fn evalBooleanConditionDepth(self: anytype, cond_idx: NodeIndex, depth: u8) ?bool {
     if (depth >= 8) return null;
-    if (cond_idx.isNone() or @intFromEnum(cond_idx) >= self.ast.nodes.items.len) return null;
+    if (cond_idx.isNone() or @backingInt(cond_idx) >= self.ast.nodes.items.len) return null;
     const cond = self.ast.getNode(cond_idx);
     return switch (cond.tag) {
         .boolean_literal => {
@@ -1151,7 +1151,7 @@ fn evalBooleanConditionDepth(self: anytype, cond_idx: NodeIndex, depth: u8) ?boo
         },
         .logical_expression => {
             const left = evalBooleanConditionDepth(self, cond.data.binary.left, depth + 1) orelse return null;
-            const log_op: Kind = @enumFromInt(cond.data.binary.flags);
+            const log_op: Kind = @fromBackingInt(@intCast(cond.data.binary.flags));
             if (log_op == .amp2 and !left) return false;
             if (log_op == .pipe2 and left) return true;
             return null;
@@ -1164,8 +1164,8 @@ fn evalBooleanConditionDepth(self: anytype, cond_idx: NodeIndex, depth: u8) ?boo
             const e = cond.data.extra;
             const extras = self.ast.extra_data.items;
             if (e + 1 >= extras.len) return null;
-            const operand_idx: NodeIndex = @enumFromInt(extras[e]);
-            const op: Kind = @enumFromInt(@as(u8, @truncate(extras[e + 1])));
+            const operand_idx: NodeIndex = @fromBackingInt(@intCast(extras[e]));
+            const op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[e + 1]))));
             if (op == .bang) {
                 if (evalBooleanConditionDepth(self, operand_idx, depth + 1)) |v| return !v;
             }
@@ -1177,7 +1177,7 @@ fn evalBooleanConditionDepth(self: anytype, cond_idx: NodeIndex, depth: u8) ?boo
             // 으로 inline 된 후 isDeadIfNode 가 dead branch 를 잡을 수 있도록.
             // 다른 binary op (number, identifier 등) 는 부수효과/런타임 의존이라 evaluate
             // 안 함 — esbuild 도 동일하게 string equality 만 안전 평가.
-            const op: Kind = @enumFromInt(cond.data.binary.flags);
+            const op: Kind = @fromBackingInt(@intCast(cond.data.binary.flags));
             //   eq2 = `==`, eq3 = `===`, neq = `!=`, neq2 = `!==`
             if (op != .eq2 and op != .eq3 and op != .neq and op != .neq2) return null;
             const left = self.ast.getNode(cond.data.binary.left);
@@ -1241,14 +1241,14 @@ pub fn emitFor(self: anytype, node: Node) !void {
     self.in_for_init = true;
     // init 식의 top-level `in`(`for((a in b);;)`)이 for-in 헤더로 오파싱되지 않게 forbid_in.
     // var_decl init 은 emitVariableDeclarator 가 self.in_for_init 로 별도 전파(flag 미투과 경로).
-    try self.emitExpr(@enumFromInt(extras[0]), .lowest, .{ .forbid_in = true });
+    try self.emitExpr(@fromBackingInt(@intCast(extras[0])), .lowest, .{ .forbid_in = true });
     if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
     self.in_for_init = saved_for_init;
-    try self.emitNode(@enumFromInt(extras[1]));
+    try self.emitNode(@fromBackingInt(@intCast(extras[1])));
     if (self.options.minify_whitespace) try self.writeByte(';') else try self.write("; ");
-    try self.emitNode(@enumFromInt(extras[2]));
+    try self.emitNode(@fromBackingInt(@intCast(extras[2])));
     try self.writeByte(')');
-    try emitStatementBody(self, @enumFromInt(extras[3]));
+    try emitStatementBody(self, @fromBackingInt(@intCast(extras[3])));
 }
 
 pub fn emitForAwaitOf(self: anytype, node: Node) !void {
@@ -1317,13 +1317,13 @@ fn tryHoistForInVarInit(self: anytype, left: NodeIndex) !bool {
     const list_len = extras[e + 2];
     if (list_len == 0) return false;
 
-    const first_decl: NodeIndex = @enumFromInt(extras[list_start]);
+    const first_decl: NodeIndex = @fromBackingInt(@intCast(extras[list_start]));
     if (first_decl.isNone()) return false;
     const decl_node = self.ast.getNode(first_decl);
     if (decl_node.tag != .variable_declarator) return false;
 
-    const name: NodeIndex = @enumFromInt(extras[decl_node.data.extra]);
-    const init_val: NodeIndex = @enumFromInt(extras[decl_node.data.extra + 2]);
+    const name: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra]));
+    const init_val: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra + 2]));
     if (init_val.isNone()) return false;
 
     // name = init;
@@ -1349,12 +1349,12 @@ fn shouldSkipVarInit(self: anytype, left: NodeIndex) !bool {
     const list_len = extras[e + 2];
     if (list_len == 0) return false;
 
-    const first_decl: NodeIndex = @enumFromInt(extras[list_start]);
+    const first_decl: NodeIndex = @fromBackingInt(@intCast(extras[list_start]));
     if (first_decl.isNone()) return false;
     const decl_node = self.ast.getNode(first_decl);
     if (decl_node.tag != .variable_declarator) return false;
 
-    const init_val: NodeIndex = @enumFromInt(extras[decl_node.data.extra + 2]);
+    const init_val: NodeIndex = @fromBackingInt(@intCast(extras[decl_node.data.extra + 2]));
     return !init_val.isNone();
 }
 
@@ -1362,7 +1362,7 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
     // 파서 구조: extra = [discriminant, cases_start, cases_len]
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
-    const discriminant: NodeIndex = @enumFromInt(extras[0]);
+    const discriminant: NodeIndex = @fromBackingInt(@intCast(extras[0]));
     const cases_start = extras[1];
     const cases_len = extras[2];
     const case_indices = self.ast.extra_data.items[cases_start .. cases_start + cases_len];
@@ -1399,8 +1399,8 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
             self.indent_level += 1;
         }
         for (case_indices) |raw_case| {
-            for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
-                const idx: NodeIndex = @enumFromInt(raw);
+            for (switchCaseStatements(self, @fromBackingInt(@intCast(raw_case)))) |raw| {
+                const idx: NodeIndex = @fromBackingInt(@intCast(raw));
                 if (!isLowerableBlockFunction(self, idx) or isElidedStmt(self, idx)) continue;
                 try writeNewline(self);
                 try writeIndent(self);
@@ -1408,8 +1408,8 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
             }
         }
         for (case_indices) |raw_case| {
-            for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
-                if (!isLowerableBlockFunction(self, @enumFromInt(raw)) or isElidedStmt(self, @enumFromInt(raw))) continue;
+            for (switchCaseStatements(self, @fromBackingInt(@intCast(raw_case)))) |raw| {
+                if (!isLowerableBlockFunction(self, @fromBackingInt(@intCast(raw))) or isElidedStmt(self, @fromBackingInt(@intCast(raw)))) continue;
                 const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
                 try writeNewline(self);
                 try writeIndent(self);
@@ -1448,9 +1448,9 @@ pub fn emitSwitch(self: anytype, node: Node) !void {
             try writeNewline(self);
             try writeIndent(self);
             if (lower_functions) {
-                try emitSwitchCaseSkippingFunctions(self, self.ast.getNode(@enumFromInt(raw_idx)), true);
+                try emitSwitchCaseSkippingFunctions(self, self.ast.getNode(@fromBackingInt(@intCast(raw_idx))), true);
             } else {
-                try self.emitNode(@enumFromInt(raw_idx));
+                try self.emitNode(@fromBackingInt(@intCast(raw_idx)));
             }
         }
         self.indent_level -= 1;
@@ -1472,8 +1472,8 @@ fn switchCaseStatements(self: anytype, case_idx: NodeIndex) []const u32 {
 
 fn switchHasLowerableFunction(self: anytype, case_indices: []const u32) bool {
     for (case_indices) |raw_case| {
-        for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
-            if (isLowerableBlockFunction(self, @enumFromInt(raw))) return true;
+        for (switchCaseStatements(self, @fromBackingInt(@intCast(raw_case)))) |raw| {
+            if (isLowerableBlockFunction(self, @fromBackingInt(@intCast(raw)))) return true;
         }
     }
     return false;
@@ -1485,15 +1485,15 @@ fn discriminantReadsLoweredName(self: anytype, discriminant: NodeIndex, case_ind
     defer stack.deinit(self.allocator);
     stack.append(self.allocator, discriminant) catch return true;
     while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
         const node = self.ast.getNode(idx);
         if (node.tag == .identifier_reference) {
             const text = self.ast.getText(node.data.string_ref);
             for (case_indices) |raw_case| {
-                for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
-                    const decl: NodeIndex = @enumFromInt(raw);
+                for (switchCaseStatements(self, @fromBackingInt(@intCast(raw_case)))) |raw| {
+                    const decl: NodeIndex = @fromBackingInt(@intCast(raw));
                     if (!isLowerableBlockFunction(self, decl)) continue;
-                    const name: NodeIndex = @enumFromInt(self.ast.extra_data.items[self.ast.getNode(decl).data.extra]);
+                    const name: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[self.ast.getNode(decl).data.extra]));
                     if (std.mem.eql(u8, text, self.ast.getText(self.ast.getNode(name).data.string_ref))) return true;
                 }
             }
@@ -1533,7 +1533,7 @@ fn emitSwitchCaseSkippingFunctions(self: anytype, node: Node, skip_lowered_funct
     // test_expr가 none이면 default:
     const e = node.data.extra;
     const extras = self.ast.extra_data.items[e .. e + 3];
-    const test_expr: NodeIndex = @enumFromInt(extras[0]);
+    const test_expr: NodeIndex = @fromBackingInt(@intCast(extras[0]));
     const stmts_start = extras[1];
     const stmts_len = extras[2];
 
@@ -1550,9 +1550,9 @@ fn emitSwitchCaseSkippingFunctions(self: anytype, node: Node, skip_lowered_funct
     self.keep_name_switch_cases = &.{};
     self.indent_level += 1;
     for (switch_cases) |raw_case| {
-        for (switchCaseStatements(self, @enumFromInt(raw_case))) |raw| {
-            if (isElidedStmt(self, @enumFromInt(raw))) continue;
-            if (switch_lowered and isLowerableBlockFunction(self, @enumFromInt(raw))) continue;
+        for (switchCaseStatements(self, @fromBackingInt(@intCast(raw_case)))) |raw| {
+            if (isElidedStmt(self, @fromBackingInt(@intCast(raw)))) continue;
+            if (switch_lowered and isLowerableBlockFunction(self, @fromBackingInt(@intCast(raw)))) continue;
             const target = keep_names.hoistedFunctionName(self, raw) orelse continue;
             try writeNewline(self);
             try writeIndent(self);
@@ -1566,10 +1566,10 @@ fn emitSwitchCaseSkippingFunctions(self: anytype, node: Node, skip_lowered_funct
         self.indent_level += 1;
         const stmt_indices = self.ast.extra_data.items[stmts_start .. stmts_start + stmts_len];
         for (stmt_indices) |raw_idx| {
-            if (skip_lowered_functions and isLowerableBlockFunction(self, @enumFromInt(raw_idx))) continue;
+            if (skip_lowered_functions and isLowerableBlockFunction(self, @fromBackingInt(@intCast(raw_idx)))) continue;
             try writeNewline(self);
             try writeIndent(self);
-            try self.emitNode(@enumFromInt(raw_idx));
+            try self.emitNode(@fromBackingInt(@intCast(raw_idx)));
         }
         self.indent_level -= 1;
     }

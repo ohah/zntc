@@ -211,8 +211,8 @@ pub const NamespaceAccessIndex = struct {
                 //     되므로(transform_prepass.zig, counter$4 fix), 2차가 놓쳐도 1차가 보강한다
                 // 안 잡으면 "JSX 로만 쓰인 export" 가 미사용으로 판정돼 제거되고, 출력엔 `_jsx(Root)`
                 // 참조만 남아 dangling ReferenceError 가 된다.
-                const obj_idx: u32 = @intFromEnum(node.data.binary.left);
-                const prop_idx: u32 = @intFromEnum(node.data.binary.right);
+                const obj_idx: u32 = @backingInt(node.data.binary.left);
+                const prop_idx: u32 = @backingInt(node.data.binary.right);
                 if (obj_idx >= node_count or prop_idx >= node_count) continue;
                 try self.prop_by_obj.put(allocator, obj_idx, prop_idx);
                 // text fallback 색인: object 가 root 식별자(jsx_identifier)인 경우만. 중첩
@@ -367,8 +367,8 @@ pub fn analyzeNamespaceAccessWithIndex(
     defer stmt_by_node.deinit(allocator);
     if (stmt_spans != null) {
         for (references) |r| {
-            if (@intFromEnum(r.symbol_id) != ns_sym_id or r.stmt_idx == Reference.NO_STMT) continue;
-            try stmt_by_node.put(allocator, @intFromEnum(r.node_index), r.stmt_idx);
+            if (@backingInt(r.symbol_id) != ns_sym_id or r.stmt_idx == Reference.NO_STMT) continue;
+            try stmt_by_node.put(allocator, @backingInt(r.node_index), r.stmt_idx);
         }
     }
 

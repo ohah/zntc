@@ -8,7 +8,7 @@ const profile = @import("../../profile.zig");
 
 pub fn requestAll(self: anytype, idx: ModuleIndex) !bool {
     if (idx.isNone()) return false;
-    const key: u32 = @intFromEnum(idx);
+    const key: u32 = @backingInt(idx);
     var s_mx = profile.begin(.graph_discover_incr_req_mutex);
     self.requested_exports_mutex.lock();
     s_mx.end();
@@ -33,7 +33,7 @@ pub fn requestAll(self: anytype, idx: ModuleIndex) !bool {
 
 pub fn requestNamed(self: anytype, idx: ModuleIndex, name: []const u8) !bool {
     if (idx.isNone()) return false;
-    const key: u32 = @intFromEnum(idx);
+    const key: u32 = @backingInt(idx);
     var s_mx = profile.begin(.graph_discover_incr_req_mutex);
     self.requested_exports_mutex.lock();
     s_mx.end();
@@ -189,7 +189,7 @@ pub fn requestedExportsForReExportRecord(
     dep_idx: ModuleIndex,
 ) !bool {
     var s_entry = profile.begin(.graph_discover_incr_re_export_entry);
-    const importer_key: u32 = @intFromEnum(importer.index);
+    const importer_key: u32 = @backingInt(importer.index);
     var changed = false;
 
     // PR-Z1: 매 호출 ArrayList alloc-free (M6 측정 = re_export entry 의 72%, 13.3ms) 회피.
@@ -456,7 +456,7 @@ const RdxStub = struct {
 
 test "ensureBindingsByRecord: record 별 그룹화 + 원래 순서 보존 + 캐시 hit" {
     const testing = std.testing;
-    var module = Module.init(@enumFromInt(0), "idx.ts");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "idx.ts");
     defer module.deinit(testing.allocator);
 
     // 4 records — Module.deinit 가 record.kind(.require_context) 만 보므로 zeroes(=.static_import) 안전.
@@ -509,7 +509,7 @@ test "ensureBindingsByRecord: record 별 그룹화 + 원래 순서 보존 + 캐�
 
 test "populateExportIndexByName: 빈 export_bindings 면 null" {
     const testing = std.testing;
-    var module = Module.init(@enumFromInt(0), "empty.ts");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "empty.ts");
     defer module.deinit(testing.allocator);
 
     try populateExportIndexByName(&module, testing.allocator);
@@ -518,7 +518,7 @@ test "populateExportIndexByName: 빈 export_bindings 면 null" {
 
 test "populateExportIndexByName: re_export_star 는 제외, 나머지는 idx 등록" {
     const testing = std.testing;
-    var module = Module.init(@enumFromInt(0), "mix.ts");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "mix.ts");
     defer module.deinit(testing.allocator);
 
     const ebs = try testing.allocator.alloc(ExportBinding, 3);
@@ -538,7 +538,7 @@ test "populateExportIndexByName: re_export_star 는 제외, 나머지는 idx 등
 
 test "populateExportIndexByName: resync 시 stale idx 회피 (재build, 누수 없음)" {
     const testing = std.testing;
-    var module = Module.init(@enumFromInt(0), "resync.ts");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "resync.ts");
     defer module.deinit(testing.allocator);
 
     // build 1

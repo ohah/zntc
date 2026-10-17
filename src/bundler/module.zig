@@ -800,7 +800,7 @@ pub const Module = struct {
         if (reference.binding_node_index != binding_node_index) return false;
         const semantic = self.semantic orelse return false;
         const binding_index: usize = @intCast(binding_node_index);
-        const symbol_index: usize = @intFromEnum(reference.symbol_id);
+        const symbol_index: usize = @backingInt(reference.symbol_id);
         if (binding_index >= semantic.symbol_ids.len or symbol_index >= semantic.symbols.items.len) return false;
         if (semantic.symbol_ids[binding_index] != @as(u32, @intCast(symbol_index))) return false;
         return semantic.symbols.items[symbol_index].scope_id == reference.scope_id;
@@ -817,7 +817,7 @@ pub const Module = struct {
     fn syntheticName(self: *const Module, maybe_id: ?SemanticSymbolId, rt: ?*const RenameTable) ?[]const u8 {
         const id = maybe_id orelse return null;
         const sem = self.semantic orelse return null;
-        const idx: u32 = @intFromEnum(id);
+        const idx: u32 = @backingInt(id);
         if (idx >= sem.symbols.items.len) return null;
         if (rt) |t| {
             if (t.get(SymbolID.make(self.index, idx))) |n| if (n.len > 0) return n;
@@ -990,7 +990,7 @@ pub const Module = struct {
     /// 인덱스 범위 밖이거나 semantic 없으면 null.
     pub fn symbolName(self: *const Module, id: SemanticSymbolId) ?[]const u8 {
         const sem = self.semantic orelse return null;
-        const idx: u32 = @intFromEnum(id);
+        const idx: u32 = @backingInt(id);
         if (idx >= sem.symbols.items.len) return null;
         return self.symbolText(&sem.symbols.items[idx]);
     }
@@ -1214,7 +1214,7 @@ pub const Module = struct {
 };
 
 test "Module.importBindingLocalName allows helper binding local_name fallback" {
-    var module = Module.init(@enumFromInt(0), "synthetic.tsx");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "synthetic.tsx");
     defer module.deinit(std.testing.allocator);
 
     const ib = ImportBinding{
@@ -1230,7 +1230,7 @@ test "Module.importBindingLocalName allows helper binding local_name fallback" {
 }
 
 test "Module.exportBindingLocalName keeps scanner local_name without semantic ref" {
-    var module = Module.init(@enumFromInt(0), "namespace.ts");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "namespace.ts");
     defer module.deinit(std.testing.allocator);
 
     const eb = ExportBinding{
@@ -1244,7 +1244,7 @@ test "Module.exportBindingLocalName keeps scanner local_name without semantic re
 }
 
 test "Module.exportBindingIsCjsStorage excludes non-eligible bindings (#4587)" {
-    var module = Module.init(@enumFromInt(0), "m.mjs");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "m.mjs");
     defer module.deinit(std.testing.allocator);
     // wrap_kind == .none (기본), semantic == null.
 

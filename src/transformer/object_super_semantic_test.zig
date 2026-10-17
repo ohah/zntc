@@ -36,12 +36,12 @@ test "#4819 lowered default object-super home temp reserves and reuses its funct
     var function_scope: ?ScopeId = null;
     var owners = analyzer.scope_owner_map.iterator();
     while (owners.next()) |entry| {
-        const owner: ast_mod.NodeIndex = @enumFromInt(entry.key_ptr.*);
+        const owner: ast_mod.NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
         const node = parser.ast.getNode(owner);
         if (node.tag != .function_declaration) continue;
         const name = parser.ast.readExtraNode(node.data.extra, ast_mod.FunctionExtra.name);
         if (name.isNone() or !std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(name).data.string_ref), "make")) continue;
-        function_scope = @enumFromInt(entry.value_ptr.*);
+        function_scope = @fromBackingInt(@intCast(entry.value_ptr.*));
         break;
     }
     const expected_scope = function_scope orelse return error.MissingFunctionScope;
@@ -67,12 +67,12 @@ test "#4819 lowered default object-super home temp reserves and reuses its funct
     for (editor.symbols.items[source_symbol_count..], source_symbol_count..) |symbol, raw_id| {
         if (symbol.kind == .variable_var and std.mem.eql(u8, symbol.synthetic_name, "_a")) {
             try std.testing.expect(home_id == null);
-            home_id = @enumFromInt(@as(u32, @intCast(raw_id)));
+            home_id = @fromBackingInt(@intCast(@as(u32, @intCast(raw_id))));
         }
     }
     const id = home_id orelse return error.MissingObjectHomeSymbol;
-    const symbol = editor.symbols.items[@intFromEnum(id)];
-    try std.testing.expectEqual(@intFromEnum(expected_scope), @intFromEnum(symbol.scope_id));
+    const symbol = editor.symbols.items[@backingInt(id)];
+    try std.testing.expectEqual(@backingInt(expected_scope), @backingInt(symbol.scope_id));
     try std.testing.expect(!transformer.pending_temp_ref_chains.contains(symbol.name.start));
 
     var live_reference_count: usize = 0;
@@ -94,7 +94,7 @@ test "#4819 lowered default object-super home temp reserves and reuses its funct
     var binding_count: usize = 0;
     for (transformer.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
-        if (edited.symbol_ids[raw] == @as(?u32, @intCast(@intFromEnum(id)))) binding_count += 1;
+        if (edited.symbol_ids[raw] == @as(?u32, @intCast(@backingInt(id)))) binding_count += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), binding_count);
 

@@ -441,7 +441,7 @@ fn exposeMatch(graph: anytype, abs: []const u8) ?struct { idx: types.ModuleIndex
     const count = graph.moduleCount();
     var i: usize = 0;
     while (i < count) : (i += 1) {
-        const idx: types.ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+        const idx: types.ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
         const m = graph.getModule(idx) orelse continue;
         if (std.mem.eql(u8, m.path, abs)) {
             if (m.federation_id) |fid| return .{ .idx = idx, .fed_id = fid };
@@ -546,7 +546,7 @@ fn collectExposes(
             const hrefs = css_hrefs orelse break :blk null;
             const ci = chunk_graph.getModuleChunk(match.idx);
             if (ci.isNone()) break :blk null;
-            const cu: usize = @intFromEnum(ci);
+            const cu: usize = @backingInt(ci);
             break :blk if (cu < hrefs.len) hrefs[cu] else null;
         };
         try list.append(allocator, .{

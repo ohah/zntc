@@ -69,7 +69,7 @@ fn trackPrivateHelperStatements(
 fn classBodyHasStaticBlock(self: *Transformer, body_idx: NodeIndex) bool {
     const body = self.ast.getNode(body_idx);
     for (self.ast.extra_data.items[body.data.list.start .. body.data.list.start + body.data.list.len]) |raw| {
-        if (self.ast.getNode(@enumFromInt(raw)).tag == .static_block) return true;
+        if (self.ast.getNode(@fromBackingInt(@intCast(raw))).tag == .static_block) return true;
     }
     return false;
 }
@@ -153,7 +153,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     const saved_class_name_node = self.current_class_name_node;
     const saved_class_self_symbol_id = self.current_class_self_symbol_id;
     self.current_class_name_node = new_name;
-    self.current_class_self_symbol_id = self.class_self_symbol_map.get(@intFromEnum(source_idx));
+    self.current_class_self_symbol_id = self.class_self_symbol_map.get(@backingInt(source_idx));
     defer self.current_class_name_node = saved_class_name_node;
     defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
@@ -272,8 +272,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                     std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, class_name_scope);
                 self.current_class_name_node = new_name;
-                self.current_class_self_symbol_id = @intFromEnum(id);
-                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
+                self.current_class_self_symbol_id = @backingInt(id);
+                try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
             }
         }
         var new_body_pl: NodeIndex = .none;
@@ -408,8 +408,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 std.debug.panic("anonymous class wrapper name has no direct SymbolId", .{});
             es_helpers.markStandaloneLateSyntheticTemp(self, id, class_name_scope);
             self.current_class_name_node = new_name;
-            self.current_class_self_symbol_id = @intFromEnum(id);
-            try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
+            self.current_class_self_symbol_id = @backingInt(id);
+            try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
         }
     }
 
@@ -547,8 +547,8 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                     es_helpers.markStandaloneLateSyntheticSymbol(self, symbol_id, .anonymous_class_export_binding);
                 try self.lowered_anonymous_class_export_bindings.put(
                     self.allocator,
-                    @intFromEnum(source_idx),
-                    @intFromEnum(binding),
+                    @backingInt(source_idx),
+                    @backingInt(binding),
                 );
                 anonymous_default_export_binding = binding;
             }
@@ -613,7 +613,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     else
         NodeList{ .start = 0, .len = 0 };
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     // static field / static block이 있으면 class 뒤에 할당문 추가
     const has_static_fields = static_field_assignments.items.len > 0;
@@ -629,9 +629,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
             break :blk self.outputScopeParent(class_scope);
         } else self.current_scope;
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-            none,                   0,                       0,
-            new_decos.start,        new_decos.len,
+            @backingInt(new_name), @backingInt(new_super), @backingInt(new_body),
+            none,                  0,                      0,
+            new_decos.start,       new_decos.len,
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
         var post: std.ArrayListUnmanaged(NodeIndex) = .empty;
@@ -664,9 +664,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     // V_ASSIGN fix: descriptor 만 있고 priv_pre_stmts 가 비어도 emit 경로 활성화.
     if (priv_pre_stmts.items.len > 0 or assign_static_descriptors.items.len > 0) {
         const class_result = try self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-            none,                   0,                       0,
-            new_decos.start,        new_decos.len,
+            @backingInt(new_name), @backingInt(new_super), @backingInt(new_body),
+            none,                  0,                      0,
+            new_decos.start,       new_decos.len,
         });
         if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
         if (as_expression) {
@@ -693,9 +693,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
     }
 
     const class_result = try self.addExtraNode(node.tag, node.span, &.{
-        @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-        none,                   0,                       0,
-        new_decos.start,        new_decos.len,
+        @backingInt(new_name), @backingInt(new_super), @backingInt(new_body),
+        none,                  0,                      0,
+        new_decos.start,       new_decos.len,
     });
     if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
     return class_result;
@@ -764,7 +764,7 @@ pub fn hasAnyMemberDecorators(self: *Transformer, class_extra: u32) bool {
 
     var i: u32 = 0;
     while (i < len) : (i += 1) {
-        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[start + i]);
+        const member_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[start + i]));
         if (member_idx.isNone()) continue;
         const member = self.ast.getNode(member_idx);
         const me = member.data.extra;
@@ -833,7 +833,7 @@ fn classHasLegacyDecorators(self: *Transformer, node: Node) bool {
                 const params = self.ast.functionParamsList(member);
                 var i: u32 = 0;
                 while (i < params.len) : (i += 1) {
-                    const param_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[params.start + i]);
+                    const param_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[params.start + i]));
                     if (param_idx.isNone()) continue;
                     const param = self.ast.getNode(param_idx);
                     if (param.tag == .formal_parameter and
@@ -854,7 +854,7 @@ fn classBodyNeedsNameForStatics(self: *Transformer, body_idx: NodeIndex, lowers_
     const body = self.ast.getNode(body_idx);
     var i: u32 = 0;
     while (i < body.data.list.len) : (i += 1) {
-        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[body.data.list.start + i]));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[body.data.list.start + i])));
         switch (member.tag) {
             .static_block => if (self.options.unsupported.class_static_block) return true,
             .property_definition => if (lowers_static_fields and
@@ -873,13 +873,13 @@ fn classBodyHasFieldAndComputedKey(self: *Transformer, body_idx: NodeIndex) bool
     var has_computed = false;
     var i: u32 = 0;
     while (i < body.data.list.len) : (i += 1) {
-        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[body.data.list.start + i]));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[body.data.list.start + i])));
         switch (member.tag) {
             .property_definition, .accessor_property => has_field = true,
             .method_definition => {},
             else => continue,
         }
-        const key: NodeIndex = @enumFromInt(self.ast.extra_data.items[member.data.extra]);
+        const key: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[member.data.extra]));
         if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) has_computed = true;
     }
     return has_field and has_computed;
@@ -952,7 +952,7 @@ pub fn hoistLegacyDecoratorComputedMethodKeys(
     var changed = false;
     var i: u32 = 0;
     while (i < body.data.list.len) : (i += 1) {
-        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body.data.list.start + i]);
+        const member_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[body.data.list.start + i]));
         const member = self.ast.getNode(member_idx);
         if (member.tag != .method_definition) {
             try members.append(self.allocator, member_idx);
@@ -965,7 +965,7 @@ pub fn hoistLegacyDecoratorComputedMethodKeys(
         const params = self.ast.functionParamsList(member);
         var param_i: u32 = 0;
         while (param_i < params.len) : (param_i += 1) {
-            const param_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[params.start + param_i]);
+            const param_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[params.start + param_i]));
             if (param_idx.isNone() or self.ast.getNode(param_idx).tag != .formal_parameter) continue;
             const param_extra = self.ast.getNode(param_idx).data.extra;
             if (self.readU32(param_extra, 5) > 0) {
@@ -1005,7 +1005,7 @@ pub fn hoistLegacyDecoratorComputedMethodKeys(
         });
         var slots: [6]u32 = undefined;
         for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[me + slot];
-        slots[ast_mod.MethodExtra.key] = @intFromEnum(computed_key);
+        slots[ast_mod.MethodExtra.key] = @backingInt(computed_key);
         const copied_extra = try self.ast.addExtras(&slots);
         const copied_member = try self.ast.addNode(.{
             .tag = .method_definition,
@@ -1025,7 +1025,7 @@ pub fn hoistLegacyDecoratorComputedMethodKeys(
     });
     var slots: [8]u32 = undefined;
     for (0..slots.len) |slot| slots[slot] = self.ast.extra_data.items[node.data.extra + slot];
-    slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+    slots[ast_mod.ClassExtra.body] = @backingInt(new_body);
     const copied_extra = try self.ast.addExtras(&slots);
     const copied_class = try self.ast.addNode(.{ .tag = node.tag, .span = node.span, .data = .{ .extra = copied_extra } });
     if (self.semantic_edit_enabled) {
@@ -1045,7 +1045,7 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
     defer members.deinit(self.allocator);
     var i: u32 = 0;
     while (i < body.data.list.len) : (i += 1) {
-        const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body.data.list.start + i]);
+        const member_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[body.data.list.start + i]));
         const member = self.ast.getNode(member_idx);
         const slot_count: usize = switch (member.tag) {
             .method_definition => 6, // MethodExtra: key, params, body, flags, deco_start, deco_len
@@ -1056,7 +1056,7 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
             },
         };
         const me = member.data.extra;
-        const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+        const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
         if (key_idx.isNone() or self.ast.getNode(key_idx).tag != .computed_property_key) {
             try members.append(self.allocator, member_idx);
             continue;
@@ -1088,7 +1088,7 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
         });
         var slots: [6]u32 = undefined;
         for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];
-        slots[0] = @intFromEnum(new_key);
+        slots[0] = @backingInt(new_key);
         const new_extra = try self.ast.addExtras(slots[0..slot_count]);
         const copied = try self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } });
         if (member.tag == .method_definition) try self.remapCopiedScopeOwner(member_idx, copied);
@@ -1120,7 +1120,7 @@ pub fn lowerClassWithPrehoistedKeys(
 
     var slots: [8]u32 = undefined;
     for (0..8) |k| slots[k] = self.ast.extra_data.items[node.data.extra + k];
-    slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+    slots[ast_mod.ClassExtra.body] = @backingInt(new_body);
     const new_extra = try self.ast.addExtras(&slots);
     const result = try lower(self, source_idx, .{ .tag = node.tag, .span = node.span, .data = .{ .extra = new_extra } });
 

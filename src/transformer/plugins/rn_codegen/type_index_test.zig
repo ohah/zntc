@@ -166,12 +166,12 @@ test "TypeIndex: duplicate name keeps last definition" {
     const list = program.data.list;
     var expected_last: @import("../../../parser/ast.zig").NodeIndex = .none;
     for (ast.extra_data.items[list.start .. list.start + list.len]) |raw| {
-        const stmt: @import("../../../parser/ast.zig").NodeIndex = @enumFromInt(raw);
+        const stmt: @import("../../../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw));
         if (stmt == .none) continue;
         const node = ast.getNode(stmt);
         if (node.tag != .ts_type_alias_declaration) continue;
         const name_idx: @import("../../../parser/ast.zig").NodeIndex =
-            @enumFromInt(ast.extra_data.items[node.data.extra]);
+            @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
         const name = ast.getText(ast.getNode(name_idx).data.string_ref);
         if (std.mem.eql(u8, name, "Props")) expected_last = stmt;
     }

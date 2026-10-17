@@ -18,14 +18,14 @@ pub fn buildParentMap(
     defer stack.deinit(allocator);
     try stack.append(allocator, root);
     while (stack.pop()) |node| {
-        if (node.isNone() or @intFromEnum(node) >= ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node);
+        if (node.isNone() or @backingInt(node) >= ast.nodes.items.len) continue;
+        const raw = @backingInt(node);
         const gop = try reachable.getOrPut(allocator, raw);
         if (gop.found_existing) continue;
         var children = ast_walk.children(ast, ast.getNode(node));
         while (children.next()) |child| {
-            if (child.isNone() or @intFromEnum(child) >= ast.nodes.items.len) continue;
-            const parent_gop = try parents.getOrPut(allocator, @intFromEnum(child));
+            if (child.isNone() or @backingInt(child) >= ast.nodes.items.len) continue;
+            const parent_gop = try parents.getOrPut(allocator, @backingInt(child));
             if (!parent_gop.found_existing) parent_gop.value_ptr.* = raw;
             try stack.append(allocator, child);
         }
@@ -84,15 +84,15 @@ pub fn expectedScope(
     var hops: usize = 0;
     while (hops <= ast.nodes.items.len) : (hops += 1) {
         const parent = parents.get(child) orelse return if (scope_owner_map.get(child)) |scope|
-            @enumFromInt(scope)
+            @fromBackingInt(@intCast(scope))
         else
             null;
         if (!skipsOwner(ast, parent, child)) {
-            if (scope_owner_map.get(parent)) |scope| return @enumFromInt(scope);
+            if (scope_owner_map.get(parent)) |scope| return @fromBackingInt(@intCast(scope));
         }
         child = parent;
-        if (child == @intFromEnum(root)) return if (scope_owner_map.get(child)) |scope|
-            @enumFromInt(scope)
+        if (child == @backingInt(root)) return if (scope_owner_map.get(child)) |scope|
+            @fromBackingInt(@intCast(scope))
         else
             null;
     }

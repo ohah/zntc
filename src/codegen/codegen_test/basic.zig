@@ -75,7 +75,7 @@ fn expectAmbiguousGeneratedIifeParameter(
         parameter_id = raw;
     }
     const selected_parameter = parameter_id orelse return error.MissingGeneratedIifeParameterFixture;
-    const owner_scope = @intFromEnum(analyzer.symbols.items[selected_parameter].scope_id);
+    const owner_scope = @backingInt(analyzer.symbols.items[selected_parameter].scope_id);
 
     const semantic_options: CodegenOptions = .{
         .semantic_symbol_ids = transformer.symbol_ids.items,
@@ -379,15 +379,15 @@ fn e2eEnumWithRename(backing_allocator: std.mem.Allocator, source: []const u8, r
     const list = root_node.data.list;
     var enum_name_idx: NodeIndex = .none;
     for (transformer.ast.extra_data.items[list.start .. list.start + list.len]) |raw_idx| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw_idx);
+        const stmt_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         const stmt = transformer.ast.getNode(stmt_idx);
         if (stmt.tag == .ts_enum_declaration) {
-            enum_name_idx = @enumFromInt(transformer.ast.extra_data.items[stmt.data.extra]);
+            enum_name_idx = @fromBackingInt(@intCast(transformer.ast.extra_data.items[stmt.data.extra]));
             break;
         }
     }
     if (enum_name_idx.isNone()) return error.MissingEnumDeclaration;
-    const enum_symbol_id = transformer.symbol_ids.items[@intFromEnum(enum_name_idx)] orelse return error.MissingEnumSymbol;
+    const enum_symbol_id = transformer.symbol_ids.items[@backingInt(enum_name_idx)] orelse return error.MissingEnumSymbol;
 
     const skip = try std.DynamicBitSet.initEmpty(allocator, transformer.ast.nodes.items.len);
     var renames: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
@@ -583,8 +583,8 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
     const symbols = [_]Symbol{
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .parameter,
             .declaration_span = .{ .start = 0, .end = 0 },
             .synthetic_kind = .namespace_iife_parameter,
@@ -592,8 +592,8 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
         },
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .parameter,
             .declaration_span = .{ .start = 0, .end = 0 },
             .synthetic_kind = .namespace_iife_parameter,
@@ -601,8 +601,8 @@ test "Codegen: namespace IIFE parameter name resolves from its SymbolId" {
         },
         .{
             .name = .{ .start = 0, .end = 0 },
-            .scope_id = @enumFromInt(0),
-            .origin_scope = @enumFromInt(0),
+            .scope_id = @fromBackingInt(@intCast(0)),
+            .origin_scope = @fromBackingInt(@intCast(0)),
             .kind = .parameter,
             .declaration_span = .{ .start = 0, .end = 0 },
             .synthetic_kind = .enum_iife_parameter,
@@ -751,7 +751,7 @@ test "#4819 Codegen rejects a missing namespace declaration SymbolId in linked s
     try std.testing.expect(std.mem.indexOf(u8, output, "var renamedNamespace;") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, ")(renamedNamespace || (renamedNamespace = {}));") != null);
 
-    const name_raw = @intFromEnum(name_idx);
+    const name_raw = @backingInt(name_idx);
     linked_symbol_ids[name_raw] = null;
     var missing_sid_cg = Codegen.initWithOptions(allocator, transformer.ast, options);
     try std.testing.expectError(error.MissingNamespaceDeclarationSymbol, missing_sid_cg.generate(root));
@@ -978,7 +978,7 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
         }
     }
     const member_sid = enum_member_symbol orelse return error.MissingEnumIifeMemberSymbol;
-    const actual_owner_sid = @intFromEnum(analyzer.symbols.items[member_sid].synthetic_owner_id orelse return error.MissingEnumIifeOwnerSymbol);
+    const actual_owner_sid = @backingInt(analyzer.symbols.items[member_sid].synthetic_owner_id orelse return error.MissingEnumIifeOwnerSymbol);
     mutated_symbols[member_sid].synthetic_owner_id = null;
     var mutated_options = options;
     mutated_options.semantic_symbols = mutated_symbols;
@@ -986,7 +986,7 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
     defer mutated_cg.deinit();
     try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, mutated_cg.generate(root));
 
-    mutated_symbols[member_sid].synthetic_owner_id = @enumFromInt(mutated_symbols.len + 1);
+    mutated_symbols[member_sid].synthetic_owner_id = @fromBackingInt(@intCast(mutated_symbols.len + 1));
     var out_of_range_cg = Codegen.initWithOptions(allocator, transformer.ast, mutated_options);
     defer out_of_range_cg.deinit();
     try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, out_of_range_cg.generate(root));
@@ -998,7 +998,7 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
             break;
         }
     }
-    mutated_symbols[member_sid].synthetic_owner_id = @enumFromInt(wrong_owner orelse return error.MissingInvalidEnumOwnerFixture);
+    mutated_symbols[member_sid].synthetic_owner_id = @fromBackingInt(@intCast(wrong_owner orelse return error.MissingInvalidEnumOwnerFixture));
     var wrong_kind_cg = Codegen.initWithOptions(allocator, transformer.ast, mutated_options);
     defer wrong_kind_cg.deinit();
     try std.testing.expectError(error.InvalidEnumIifeMemberSymbol, wrong_kind_cg.generate(root));
@@ -1010,7 +1010,7 @@ test "#4819 Codegen rejects enum member symbols without their IIFE owner" {
     fake_owner_symbols[fake_owner_sid] = analyzer.symbols.items[actual_owner_sid];
     fake_owner_symbols[fake_owner_sid].kind = .variable_const;
     fake_owner_symbols[fake_owner_sid].synthetic_name = "_StaleEnumOwner";
-    fake_owner_symbols[member_sid].synthetic_owner_id = @enumFromInt(fake_owner_sid);
+    fake_owner_symbols[member_sid].synthetic_owner_id = @fromBackingInt(@intCast(fake_owner_sid));
     var wrong_owner_binding_kind_options = mutated_options;
     wrong_owner_binding_kind_options.semantic_symbols = fake_owner_symbols;
     var wrong_owner_binding_kind_cg = Codegen.initWithOptions(allocator, transformer.ast, wrong_owner_binding_kind_options);

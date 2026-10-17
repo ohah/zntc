@@ -72,7 +72,7 @@ fn emitJsxAttrs(self: anytype, start: u32, len: u32) !void {
     if (len == 0) return;
     const items = self.ast.extra_data.items[start .. start + len];
     for (items) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (idx.isNone()) continue;
         try self.writeByte(' ');
         try self.emitNode(idx);
@@ -83,7 +83,7 @@ fn emitJsxChildren(self: anytype, start: u32, len: u32) !void {
     if (len == 0) return;
     const items = self.ast.extra_data.items[start .. start + len];
     for (items) |raw| {
-        const idx: NodeIndex = @enumFromInt(raw);
+        const idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (idx.isNone()) continue;
         try self.emitNode(idx);
     }

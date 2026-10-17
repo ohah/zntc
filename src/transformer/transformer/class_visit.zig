@@ -87,8 +87,8 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-private class name has no direct SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
-                generated_class_self_symbol_id = @intFromEnum(id);
-                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
+                generated_class_self_symbol_id = @backingInt(id);
+                try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
             }
         }
         if (self.options.unsupported.class_static_block and as_expression and new_name.isNone() and
@@ -102,15 +102,15 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 const id = try self.declareSyntheticInScope(new_name, node.span, .class_decl, prepared_wrapper_scope) orelse
                     std.debug.panic("anonymous static-block class name has no direct SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticTemp(self, id, prepared_wrapper_scope);
-                generated_class_self_symbol_id = @intFromEnum(id);
-                try self.class_self_symbol_map.put(self.allocator, @intFromEnum(source_idx), @intFromEnum(id));
+                generated_class_self_symbol_id = @backingInt(id);
+                try self.class_self_symbol_map.put(self.allocator, @backingInt(source_idx), @backingInt(id));
             }
         }
         const saved_class_name_node = self.current_class_name_node;
         const saved_class_self_symbol_id = self.current_class_self_symbol_id;
         self.current_class_name_node = new_name;
         self.current_class_self_symbol_id = generated_class_self_symbol_id orelse
-            self.class_self_symbol_map.get(@intFromEnum(source_idx));
+            self.class_self_symbol_map.get(@backingInt(source_idx));
         defer self.current_class_name_node = saved_class_name_node;
         defer self.current_class_self_symbol_id = saved_class_self_symbol_id;
 
@@ -352,11 +352,11 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                 current_body_idx = new_body;
 
                 const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) });
-                const none = @intFromEnum(NodeIndex.none);
+                const none = @backingInt(NodeIndex.none);
                 const class_result = try self.addExtraNode(node.tag, node.span, &.{
-                    @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
-                    none,                   0,                       0,
-                    new_decos.start,        new_decos.len,
+                    @backingInt(new_name), @backingInt(new_super), @backingInt(current_body_idx),
+                    none,                  0,                      0,
+                    new_decos.start,       new_decos.len,
                 });
                 if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
 
@@ -415,11 +415,11 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
 
         if (had_private_methods or had_private_fields) {
             const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) });
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const class_result = try self.addExtraNode(node.tag, node.span, &.{
-                @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(current_body_idx),
-                none,                   0,                       0,
-                new_decos.start,        new_decos.len,
+                @backingInt(new_name), @backingInt(new_super), @backingInt(current_body_idx),
+                none,                  0,                      0,
+                new_decos.start,       new_decos.len,
             });
             if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_result);
 
@@ -462,11 +462,11 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
 
         const new_body = try self.visitNode(current_body_idx);
         const new_decos = try self.visitExtraList(.{ .start = self.readU32(e, ast_mod.ClassExtra.deco_start), .len = self.readU32(e, ast_mod.ClassExtra.deco_len) });
-        const none = @intFromEnum(NodeIndex.none);
+        const none = @backingInt(NodeIndex.none);
         return self.addExtraNode(node.tag, node.span, &.{
-            @intFromEnum(new_name), @intFromEnum(new_super), @intFromEnum(new_body),
-            none,                   0,                       0,
-            new_decos.start,        new_decos.len,
+            @backingInt(new_name), @backingInt(new_super), @backingInt(new_body),
+            none,                  0,                      0,
+            new_decos.start,       new_decos.len,
         });
     }
 
@@ -497,7 +497,7 @@ pub fn classBodyHasLowerableMember(
 
     var i: u32 = 0;
     while (i < len) : (i += 1) {
-        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[start + i])));
         switch (member.tag) {
             .method_definition => {
                 if (!lower_pm) continue;
@@ -541,7 +541,7 @@ pub fn classBodyHasPublicField(self: *Transformer, body_idx: NodeIndex) bool {
 
     var i: u32 = 0;
     while (i < len) : (i += 1) {
-        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[start + i])));
         if (member.tag != .property_definition) continue;
         const e = member.data.extra;
         if (e + ast_mod.PropertyExtra.flags >= self.ast.extra_data.items.len) continue;
@@ -568,7 +568,7 @@ pub fn classBodyHasStaticPrivateMember(self: *Transformer, body_idx: NodeIndex, 
 
     var i: u32 = 0;
     while (i < len) : (i += 1) {
-        const member = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[start + i]));
+        const member = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[start + i])));
         switch (member.tag) {
             .method_definition => {
                 if (!lower_methods) continue;
@@ -629,11 +629,11 @@ pub fn wrapClassExprInIIFE(
     es_helpers.consumeTempVarSpan(self, ret_name_span);
 
     const ce = self.ast.getNode(class_expr_node).data.extra;
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const class_decl = try self.addExtraNode(.class_declaration, span, &.{
-        @intFromEnum(decl_name), @intFromEnum(self.readNodeIdx(ce, 1)), @intFromEnum(self.readNodeIdx(ce, 2)),
-        none,                    0,                                     0,
-        self.readU32(ce, 6),     self.readU32(ce, 7),
+        @backingInt(decl_name), @backingInt(self.readNodeIdx(ce, 1)), @backingInt(self.readNodeIdx(ce, 2)),
+        none,                   0,                                    0,
+        self.readU32(ce, 6),    self.readU32(ce, 7),
     });
     if (self.semantic_edit_enabled) try self.remapCopiedScopeOwner(source_idx, class_decl);
 
@@ -641,12 +641,12 @@ pub fn wrapClassExprInIIFE(
         if (self.getSymbolIdAt(decl_name)) |id| break :blk id;
         const id = try self.declareSyntheticInScope(decl_name, span, .class_decl, wrapper_scope) orelse
             std.debug.panic("generated class wrapper name has no direct SymbolId", .{});
-        break :blk @intFromEnum(id);
+        break :blk @backingInt(id);
     } else null;
     if (generated_ret_name and self.semantic_edit_enabled) {
         es_helpers.markStandaloneLateSyntheticTemp(
             self,
-            @enumFromInt(class_binding_symbol_id orelse std.debug.panic("generated class wrapper has no exact SymbolId", .{})),
+            @fromBackingInt(@intCast(class_binding_symbol_id orelse std.debug.panic("generated class wrapper has no exact SymbolId", .{}))),
             wrapper_scope,
         );
     }
@@ -681,7 +681,7 @@ pub fn wrapClassExprInIIFE(
     });
 
     const arrow = try self.addExtraNode(.arrow_function_expression, span, &.{
-        none, @intFromEnum(body_block), 0,
+        none, @backingInt(body_block), 0,
     });
     if (self.semantic_edit_enabled) {
         try self.bindReservedFunctionOwner(wrapper_scope, arrow);
@@ -703,7 +703,7 @@ pub fn wrapClassExprInIIFE(
 fn wrapperClassRef(self: *Transformer, class_binding_symbol_id: ?u32, name_span: Span, wrapper_scope: ScopeId, decl_name: NodeIndex) Error!NodeIndex {
     if (class_binding_symbol_id) |raw_id| {
         const ref = try es_helpers.makeIdentifierRefFromSpan(self, name_span);
-        try self.addSyntheticRefInScope(ref, @enumFromInt(raw_id), wrapper_scope, .{ .read = true });
+        try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(raw_id)), wrapper_scope, .{ .read = true });
         return ref;
     }
     if (self.semantic_edit_enabled) return self.makeCurrentClassRefAtScope(name_span, wrapper_scope);
@@ -728,7 +728,7 @@ pub fn shouldDropClassExprName(self: *Transformer, tag: Tag, name_idx: NodeIndex
     if (self.options.keep_names) return false;
     if (tag != .class_expression) return false;
     if (name_idx.isNone()) return false;
-    const node_i = @intFromEnum(name_idx);
+    const node_i = @backingInt(name_idx);
     if (node_i >= self.symbol_ids.items.len) return false;
     const sym_id = self.symbol_ids.items[node_i] orelse return false;
     if (sym_id >= self.symbols.len) return false;
@@ -761,10 +761,10 @@ pub fn pushClassKeySuperContexts(self: *Transformer, class_idx: NodeIndex, inser
         const key_node = self.ast.getNode(key);
         if (key_node.tag != .computed_property_key) continue;
         for ([_]NodeIndex{ key, key_node.data.unary.operand }) |target| {
-            const entry = try self.class_key_super_contexts.getOrPut(self.allocator, @intFromEnum(target));
+            const entry = try self.class_key_super_contexts.getOrPut(self.allocator, @backingInt(target));
             if (entry.found_existing) continue;
             entry.value_ptr.* = outer;
-            try inserted.append(self.allocator, @intFromEnum(target));
+            try inserted.append(self.allocator, @backingInt(target));
         }
     }
 }

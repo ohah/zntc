@@ -180,7 +180,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
 
     const has_directive = api.hasDirective(info.body_idx, "worklet");
     const display_name = api.transformer.plugins.worklet.class_factory_display_names.fetchRemove(
-        @intFromEnum(info.original_body_idx),
+        @backingInt(info.original_body_idx),
     );
     if (display_name != null and !has_directive)
         std.debug.panic("class factory worklet lost its directive", .{});
@@ -295,7 +295,7 @@ fn onFunction(ctx: ?*anyopaque, api: *AstTransformCtx, info: FunctionInfo) Plugi
             hash,
             info.source_path,
         );
-        const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+        const key_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[me]));
         const prop = try t.ast.addNode(.{
             .tag = .object_property,
             .span = method_node.span,
@@ -334,13 +334,13 @@ fn buildFunctionExprFromMethod(api: *AstTransformCtx, info: FunctionInfo, body_i
     if ((method_flags & METHOD_FLAG_ASYNC) != 0) func_flags |= 0x01; // function async
     if ((method_flags & METHOD_FLAG_GENERATOR) != 0) func_flags |= 0x02; // function generator
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     // function_expression: extra = [name(0), params(1), body(2), flags(3), ret_type(4)]
     const params_list_node = t.ast.addFormalParameters(info.params, method_node.span) catch return error.OutOfMemory;
     const func_extra = t.ast.addExtras(&.{
-        @intFromEnum(name_node),
-        @intFromEnum(params_list_node),
-        @intFromEnum(body_idx),
+        @backingInt(name_node),
+        @backingInt(params_list_node),
+        @backingInt(body_idx),
         func_flags,
         none, // return type
     }) catch return error.OutOfMemory;
@@ -372,17 +372,17 @@ fn buildFactoryBody(
         null;
     if (binding_symbol) |symbol_id| {
         if (t.semantic_editor) |*editor| {
-            const symbol = &editor.symbols.items[@intFromEnum(symbol_id)];
+            const symbol = &editor.symbols.items[@backingInt(symbol_id)];
             symbol.synthetic_kind = .worklet_factory_local;
             symbol.output_name_hint = local_name.output_name_hint orelse "";
         } else unreachable;
     }
     const binding_name_span = t.ast.getNode(binding).data.string_ref;
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
-        @intFromEnum(binding),
+        @backingInt(binding),
         none, // type annotation
-        @intFromEnum(func_node), // init = original function
+        @backingInt(func_node), // init = original function
     });
     const decl_list = try t.ast.addNodeList(&.{declarator});
     const var_decl = try t.addExtraNode(.variable_declaration, zero_span, &.{
@@ -397,8 +397,8 @@ fn buildFactoryBody(
         const statement = t.ast.getNode(stmt);
         const assignment = t.ast.getNode(statement.data.unary.operand);
         const member = t.ast.getNode(assignment.data.binary.left);
-        const name_ref: NodeIndex = @enumFromInt(t.ast.extra_data.items[member.data.extra]);
-        t.ast.nodes.items[@intFromEnum(name_ref)].data.string_ref = binding_name_span;
+        const name_ref: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[member.data.extra]));
+        t.ast.nodes.items[@backingInt(name_ref)].data.string_ref = binding_name_span;
         try t.addSyntheticRefInScope(name_ref, binding_symbol, scope, .{ .read = true });
     }
 
@@ -438,14 +438,14 @@ fn buildWorkletIIFE(
 ) PluginError!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const t = api.transformer;
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     // function() { ... } (wrapper — 파라미터 없는 익명 함수)
     const empty_params = try t.ast.addNodeList(&.{});
     const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
     const wrapper_func = try t.addExtraNode(.function_expression, zero_span, &.{
         none, // name (anonymous)
-        @intFromEnum(empty_params_node),
+        @backingInt(empty_params_node),
         none, // body filled after its output scope is registered
         0, // flags
         none, // return type
@@ -467,12 +467,12 @@ fn buildWorkletIIFE(
     const local_name = try chooseFactoryLocalName(api, func_name, closure_vars, false);
     const body = try buildFactoryBody(api, func_node, local_name, prop_stmts, wrapper_scope);
     const wrapper_extra = t.ast.getNode(wrapper_func).data.extra;
-    t.ast.extra_data.items[wrapper_extra + ast_mod.FunctionExtra.body] = @intFromEnum(body);
+    t.ast.extra_data.items[wrapper_extra + ast_mod.FunctionExtra.body] = @backingInt(body);
 
     // (function() { ... })() — IIFE 호출
     const call_args = try t.ast.addNodeList(&.{});
     const call_extra = try t.ast.addExtras(&.{
-        @intFromEnum(wrapper_func),
+        @backingInt(wrapper_func),
         call_args.start,
         call_args.len,
         0,
@@ -562,7 +562,7 @@ fn onCallExpression(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex
     if (node.tag != .call_expression) return null;
     const e = node.data.extra;
     if (e + 3 >= t.ast.extra_data.items.len) return null;
-    const callee_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[e]);
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[e]));
     const args_len = t.ast.extra_data.items[e + 2];
     if (args_len != 0 or callee_idx.isNone()) return null;
     const callee = t.ast.getNode(callee_idx);
@@ -588,7 +588,7 @@ fn onCallExpression(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeIndex
 fn hasFileWorkletDirective(t: *Transformer, list_start: u32, list_len: u32) bool {
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
-        const idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list_start + i]);
+        const idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[list_start + i]));
         // prologue 종료 감지: directive 가 아닌 첫 문장에서 바로 false.
         const text = worklet_mod.directiveText(t.ast, idx) orelse return false;
         if (std.mem.eql(u8, text, "worklet")) return true;
@@ -614,7 +614,7 @@ fn visitFileWorkletProgram(t: *Transformer, node: Node) !NodeIndex {
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
         const raw = t.ast.extra_data.items[list_start + i];
-        const child_idx: NodeIndex = @enumFromInt(raw);
+        const child_idx: NodeIndex = @fromBackingInt(@intCast(raw));
         if (!child_idx.isNone()) {
             const child = t.ast.getNode(child_idx);
             if (isCommonJSExport(t, child)) {
@@ -664,7 +664,7 @@ fn isCommonJSExport(t: *Transformer, node: Node) bool {
     if (lhs.tag != .static_member_expression) return false;
     const me = lhs.data.extra;
     if (me >= t.ast.extra_data.items.len) return false;
-    const obj_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[me]));
     if (obj_idx.isNone()) return false;
     const obj = t.ast.getNode(obj_idx);
     if (obj.tag != .identifier_reference) return false;
@@ -677,7 +677,7 @@ fn hasWorkletContextObjectMarker(t: *Transformer, node: Node) bool {
     const list_len = node.data.list.len;
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
-        const idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[list_start + i]);
+        const idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[list_start + i]));
         if (idx.isNone()) continue;
         const prop = t.ast.getNode(idx);
         if (prop.tag != .object_property) continue;
@@ -702,7 +702,7 @@ fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
         const child_raw = t.ast.extra_data.items[list_start + i];
-        const child_idx: NodeIndex = @enumFromInt(child_raw);
+        const child_idx: NodeIndex = @fromBackingInt(@intCast(child_raw));
         const prop = t.ast.getNode(child_idx);
         var is_marker = false;
         if (prop.tag == .object_property) {
@@ -724,9 +724,9 @@ fn lowerWorkletContextObject(t: *Transformer, node: Node) !NodeIndex {
         const body = try buildContextObjectFactoryBody(t, list_start, list_len);
         const empty_params = try t.ast.addNodeList(&.{});
         const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
-        const none = @intFromEnum(NodeIndex.none);
+        const none = @backingInt(NodeIndex.none);
         const fn_node = try t.addExtraNode(.function_expression, zero_span, &.{
-            none, @intFromEnum(empty_params_node), @intFromEnum(body), 0, none,
+            none, @backingInt(empty_params_node), @backingInt(body), 0, none,
         });
         const visited_fn = try t.visitNode(fn_node);
         const new_prop = try t.ast.addNode(.{
@@ -757,7 +757,7 @@ fn buildContextObjectFactoryBody(t: *Transformer, list_start: u32, list_len: u32
     var i: u32 = 0;
     while (i < list_len) : (i += 1) {
         const child_raw = t.ast.extra_data.items[list_start + i];
-        const child_idx: NodeIndex = @enumFromInt(child_raw);
+        const child_idx: NodeIndex = @fromBackingInt(@intCast(child_raw));
         const member = t.ast.getNode(child_idx);
         if (member.tag == .object_property) {
             const k = t.ast.getNode(member.data.binary.left);
@@ -769,17 +769,17 @@ fn buildContextObjectFactoryBody(t: *Transformer, list_start: u32, list_len: u32
         } else if (member.tag == .method_definition) {
             // method → object_property with function_expression value.
             const me = member.data.extra;
-            const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+            const key_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[me]));
             const params_idx_raw = t.ast.extra_data.items[me + 1];
-            const body_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me + 2]);
+            const body_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[me + 2]));
             const m_flags = t.ast.extra_data.items[me + 3];
             // method → function expression flags: async/generator만 전파
             var fn_flags: u32 = 0;
             if ((m_flags & METHOD_FLAG_ASYNC) != 0) fn_flags |= 0x01;
             if ((m_flags & METHOD_FLAG_GENERATOR) != 0) fn_flags |= 0x02;
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const fn_expr = try t.addExtraNode(.function_expression, member.span, &.{
-                none, params_idx_raw, @intFromEnum(body_idx), fn_flags, none,
+                none, params_idx_raw, @backingInt(body_idx), fn_flags, none,
             });
             const new_prop = try t.ast.addNode(.{
                 .tag = .object_property,
@@ -858,7 +858,7 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     // class body = extra[2] (.list)
     const class_extra = node.data.extra;
     if (class_extra + 2 >= t.ast.extra_data.items.len) return null;
-    const body_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[class_extra + 2]);
+    const body_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[class_extra + 2]));
     if (body_idx.isNone()) return null;
 
     // marker 검사를 먼저 — 없으면 early return (synthetic class_expression의 경우
@@ -868,15 +868,15 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
 
     // __workletClass property를 strip한 새 body 생성 + default 방문 수행.
     const stripped_body = try stripWorkletClassMarker(t, body_idx);
-    const source_class_self = t.class_self_symbol_map.get(@intFromEnum(node_idx));
+    const source_class_self = t.class_self_symbol_map.get(@backingInt(node_idx));
     // 원본 class extra를 복사하여 body만 교체한 새 class 노드.
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const new_name_idx = t.ast.extra_data.items[class_extra];
     const new_super_idx = t.ast.extra_data.items[class_extra + 1];
     const deco_start = t.ast.extra_data.items[class_extra + 6];
     const deco_len = t.ast.extra_data.items[class_extra + 7];
     const new_class = try t.addExtraNode(node.tag, node.span, &.{
-        new_name_idx, new_super_idx, @intFromEnum(stripped_body),
+        new_name_idx, new_super_idx, @backingInt(stripped_body),
         none,         0,             0,
         deco_start,   deco_len,
     });
@@ -885,7 +885,7 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
     const factory_stmt = try buildClassFactoryAssignment(
         t,
         class_name,
-        @enumFromInt(new_name_idx),
+        @fromBackingInt(@intCast(new_name_idx)),
         stripped_body,
         source_class_self,
     );
@@ -896,7 +896,7 @@ fn onClassDeclaration(ctx: ?*anyopaque, api: *AstTransformCtx, node_idx: NodeInd
 
 fn getClassName(t: *Transformer, node: Node) ?[]const u8 {
     const e = node.data.extra;
-    const name_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[e]);
+    const name_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[e]));
     if (name_idx.isNone()) return null;
     const name_node = t.ast.getNode(name_idx);
     if (name_node.tag != .binding_identifier) return null;
@@ -910,13 +910,13 @@ fn hasWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) bool {
     const ll = body.data.list.len;
     var i: u32 = 0;
     while (i < ll) : (i += 1) {
-        const m: NodeIndex = @enumFromInt(t.ast.extra_data.items[ls + i]);
+        const m: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[ls + i]));
         if (m.isNone()) continue;
         const mn = t.ast.getNode(m);
         if (mn.tag != .property_definition) continue;
         const me = mn.data.extra;
         if (me >= t.ast.extra_data.items.len) continue;
-        const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+        const key_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[me]));
         if (key_idx.isNone()) continue;
         const key = t.ast.getNode(key_idx);
         if (key.tag != .identifier_reference) continue;
@@ -936,14 +936,14 @@ fn stripWorkletClassMarker(t: *Transformer, body_idx: NodeIndex) !NodeIndex {
 
     var i: u32 = 0;
     while (i < ll) : (i += 1) {
-        const m: NodeIndex = @enumFromInt(t.ast.extra_data.items[ls + i]);
+        const m: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[ls + i]));
         if (m.isNone()) continue;
         const mn = t.ast.getNode(m);
         var is_marker = false;
         if (mn.tag == .property_definition) {
             const me = mn.data.extra;
             if (me < t.ast.extra_data.items.len) {
-                const key_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[me]);
+                const key_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[me]));
                 if (!key_idx.isNone()) {
                     const key = t.ast.getNode(key_idx);
                     if (key.tag == .identifier_reference) {
@@ -976,7 +976,7 @@ fn cloneClassFactoryBody(t: *Transformer, source_body_idx: NodeIndex) !NodeIndex
 
     var i: u32 = 0;
     while (i < len) : (i += 1) {
-        const member_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[start + i]);
+        const member_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[start + i]));
         const member = t.ast.getNode(member_idx);
         if (member.tag == .method_definition) {
             var clone = member;
@@ -999,7 +999,7 @@ fn buildClassFactoryBody(
     factory_scope: @import("../../semantic/scope.zig").ScopeId,
 ) !ClassFactoryBody {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
     // `var Foo = class Foo {}` has two bindings: the factory local and the
     // class expression's immutable inner name. Keep their AST nodes and IDs
@@ -1008,11 +1008,11 @@ fn buildClassFactoryBody(
     const class_self_binding = try es_helpers.makeSyntheticBinding(t, class_name_span);
     const factory_body = try cloneClassFactoryBody(t, stripped_body);
     const class_expr = try t.addExtraNode(.class_expression, zero_span, &.{
-        @intFromEnum(class_self_binding), none, @intFromEnum(factory_body),
-        none,                             0,    0,
-        0,                                0,
+        @backingInt(class_self_binding), none, @backingInt(factory_body),
+        none,                            0,    0,
+        0,                               0,
     });
-    try t.generated_class_without_source_anchor.put(t.allocator, @intFromEnum(class_expr), {});
+    try t.generated_class_without_source_anchor.put(t.allocator, @backingInt(class_expr), {});
 
     var class_self_symbol: ?@import("../../semantic/symbol.zig").SymbolId = null;
     if (t.semantic_edit_enabled) {
@@ -1023,17 +1023,17 @@ fn buildClassFactoryBody(
             .class_decl,
             class_scope,
         )).?;
-        try t.class_self_symbol_map.put(t.allocator, @intFromEnum(class_expr), @intFromEnum(class_self_symbol.?));
+        try t.class_self_symbol_map.put(t.allocator, @backingInt(class_expr), @backingInt(class_self_symbol.?));
         if (t.semantic_editor) |*editor| {
-            editor.symbols.items[@intFromEnum(class_self_symbol.?)].decl_flags.is_const = true;
-            editor.symbols.items[@intFromEnum(class_self_symbol.?)].decl_flags.preserve_class_name = true;
+            editor.symbols.items[@backingInt(class_self_symbol.?)].decl_flags.is_const = true;
+            editor.symbols.items[@backingInt(class_self_symbol.?)].decl_flags.preserve_class_name = true;
         } else unreachable;
 
         const factory_body_node = t.ast.getNode(factory_body);
         const member_start = factory_body_node.data.list.start;
         var i: u32 = 0;
         while (i < factory_body_node.data.list.len) : (i += 1) {
-            const member_idx: NodeIndex = @enumFromInt(t.ast.extra_data.items[member_start + i]);
+            const member_idx: NodeIndex = @fromBackingInt(@intCast(t.ast.extra_data.items[member_start + i]));
             if (t.ast.getNode(member_idx).tag == .method_definition)
                 _ = try t.addGeneratedFunctionScope(class_scope, member_idx);
         }
@@ -1042,7 +1042,7 @@ fn buildClassFactoryBody(
     const factory_symbol = try t.declareSyntheticInScope(class_binding, zero_span, .variable_var, factory_scope);
     // var <Class> = class_expr;
     const declarator = try t.addExtraNode(.variable_declarator, zero_span, &.{
-        @intFromEnum(class_binding), none, @intFromEnum(class_expr),
+        @backingInt(class_binding), none, @backingInt(class_expr),
     });
     const decl_list = try t.ast.addNodeList(&.{declarator});
     const var_decl = try t.addExtraNode(.variable_declaration, zero_span, &.{
@@ -1090,10 +1090,10 @@ fn buildClassFactoryAssignment(
     const binding_node = try es_helpers.makeExactSyntheticBindingFromSpan(t, binding_name_span);
     const empty_params = try t.ast.addNodeList(&.{});
     const empty_params_node = try t.ast.addFormalParameters(empty_params, zero_span);
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const inner_fn = try t.addExtraNode(.function_declaration, zero_span, &.{
-        @intFromEnum(binding_node), @intFromEnum(empty_params_node),
-        none,                       0,
+        @backingInt(binding_node), @backingInt(empty_params_node),
+        none,                      0,
         none,
     });
 
@@ -1101,7 +1101,7 @@ fn buildClassFactoryAssignment(
     // expression. Its class scope must be nested under the factory function,
     // which is the final output owner for this synthetic body.
     const wrapper_fn = try t.addExtraNode(.function_expression, zero_span, &.{
-        none, @intFromEnum(empty_params_node), none, 0, none,
+        none, @backingInt(empty_params_node), none, 0, none,
     });
     const wrapper_scope = if (t.semantic_edit_enabled)
         try t.addGeneratedFunctionScope(t.current_scope, wrapper_fn)
@@ -1114,13 +1114,13 @@ fn buildClassFactoryAssignment(
     const factory_symbol = try t.declareSyntheticInScope(binding_node, binding_name_span, .function_decl, wrapper_scope);
     if (factory_symbol) |symbol_id| {
         const editor = if (t.semantic_editor) |*existing| existing else unreachable;
-        const symbol = &editor.symbols.items[@intFromEnum(symbol_id)];
+        const symbol = &editor.symbols.items[@backingInt(symbol_id)];
         symbol.synthetic_kind = .worklet_factory_local;
         symbol.output_name_hint = try t.allocator.dupe(u8, t.ast.getText(factory_name_span));
     }
     const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope);
-    t.ast.extra_data.items[t.ast.getNode(inner_fn).data.extra + ast_mod.FunctionExtra.body] = @intFromEnum(factory_body.node);
-    const body_raw = @intFromEnum(factory_body.node);
+    t.ast.extra_data.items[t.ast.getNode(inner_fn).data.extra + ast_mod.FunctionExtra.body] = @backingInt(factory_body.node);
+    const body_raw = @backingInt(factory_body.node);
     if (t.plugins.worklet.class_factory_display_names.contains(body_raw))
         std.debug.panic("class factory display name was registered twice", .{});
     try t.plugins.worklet.class_factory_display_names.put(t.allocator, body_raw, factory_name_span);
@@ -1135,9 +1135,9 @@ fn buildClassFactoryAssignment(
     });
     const iife_body_list = try t.ast.addNodeList(&.{ inner_fn, ret_stmt });
     const iife_body = try t.ast.addNode(.{ .tag = .block_statement, .span = zero_span, .data = .{ .list = iife_body_list } });
-    t.ast.extra_data.items[t.ast.getNode(wrapper_fn).data.extra + ast_mod.FunctionExtra.body] = @intFromEnum(iife_body);
+    t.ast.extra_data.items[t.ast.getNode(wrapper_fn).data.extra + ast_mod.FunctionExtra.body] = @backingInt(iife_body);
     const call_args = try t.ast.addNodeList(&.{});
-    const call_extra = try t.ast.addExtras(&.{ @intFromEnum(wrapper_fn), call_args.start, call_args.len, 0 });
+    const call_extra = try t.ast.addExtras(&.{ @backingInt(wrapper_fn), call_args.start, call_args.len, 0 });
     const iife = try t.ast.addNode(.{ .tag = .call_expression, .span = zero_span, .data = .{ .extra = call_extra } });
 
     // visit을 돌려 plugin의 onFunction이 IIFE 내부 function_declaration을 worklet화하도록.
@@ -1146,7 +1146,7 @@ fn buildClassFactoryAssignment(
     const previous_copy_target_self = t.generated_class_copy_target_self_symbol;
     if (t.semantic_edit_enabled) {
         t.generated_class_copy_source_self_symbol = source_class_self;
-        t.generated_class_copy_target_self_symbol = if (factory_body.class_self_symbol) |id| @intFromEnum(id) else null;
+        t.generated_class_copy_target_self_symbol = if (factory_body.class_self_symbol) |id| @backingInt(id) else null;
     }
     defer {
         t.generated_class_copy_source_self_symbol = previous_copy_source_self;
@@ -1159,7 +1159,7 @@ fn buildClassFactoryAssignment(
     try t.trackUserReadFromBinding(obj_ref, class_name_node, t.current_scope);
     const prop_ref = try es_helpers.makePropertyNameFromSpan(t, factory_name_span);
     const member = try t.addExtraNode(.static_member_expression, zero_span, &.{
-        @intFromEnum(obj_ref), @intFromEnum(prop_ref), 0,
+        @backingInt(obj_ref), @backingInt(prop_ref), 0,
     });
     // assignment_expression: binary = { left, right, flags }
     const assign = try t.ast.addNode(.{

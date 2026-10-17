@@ -33,10 +33,10 @@ pub fn Constructors(comptime Transformer: type) type {
         pub fn prependToFunctionBody(self: *Transformer, func_idx: NodeIndex, stmts: []const NodeIndex) Transformer.Error!NodeIndex {
             const func = self.ast.getNode(func_idx);
             const fe = func.data.extra;
-            const body_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[fe + 2]);
+            const body_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[fe + 2]));
 
             const new_body = try self.prependStatementsToBody(body_idx, stmts);
-            self.ast.extra_data.items[fe + 2] = @intFromEnum(new_body);
+            self.ast.extra_data.items[fe + 2] = @backingInt(new_body);
             return func_idx;
         }
 
@@ -47,9 +47,9 @@ pub fn Constructors(comptime Transformer: type) type {
             defer self.in_extracted_fn_body = saved_extracted_body;
             const saved_scope = self.current_scope;
             if (self.semantic_edit_enabled) {
-                const key = @intFromEnum(ctor_idx);
+                const key = @backingInt(ctor_idx);
                 if (self.transformed_scope_owner_map.get(key) orelse self.scope_owner_map.get(key)) |scope| {
-                    self.current_scope = @enumFromInt(scope);
+                    self.current_scope = @fromBackingInt(@intCast(scope));
                 }
             }
             defer self.current_scope = saved_scope;
@@ -147,7 +147,7 @@ pub fn Constructors(comptime Transformer: type) type {
                     const pp_stmts = self.ast.extra_data.items[pp_stmts_list.start .. pp_stmts_list.start + pp_stmts_list.len];
                     const scratch_top = self.scratch.items.len;
                     defer self.scratch.shrinkRetainingCapacity(scratch_top);
-                    for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+                    for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
                     for (instance_fields) |f| try self.scratch.append(self.allocator, f);
                     try transformDerivedConstructorReturns(self, new_body);
                     new_body = try postProcessDerivedConstructorBody(self, new_body, param_stmts, self.scratch.items[scratch_top..], span);
@@ -159,12 +159,12 @@ pub fn Constructors(comptime Transformer: type) type {
 
             new_body = try self.hoistParameterTempsAndRestore(new_body, parameter_temp_start, parameter_temp_end, span);
 
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(lowered_params, span);
             const func_extra = try self.ast.addExtras(&.{
-                @intFromEnum(name),
-                @intFromEnum(new_params_node),
-                @intFromEnum(new_body),
+                @backingInt(name),
+                @backingInt(new_params_node),
+                @backingInt(new_body),
                 0, // flags (no async/generator)
                 none, // return_type
             });
@@ -187,11 +187,11 @@ pub fn Constructors(comptime Transformer: type) type {
 
             const empty_params = try self.ast.addNodeList(&.{});
             const empty_params_node = try self.ast.addFormalParameters(empty_params, span);
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const func_extra = try self.ast.addExtras(&.{
-                @intFromEnum(name),
-                @intFromEnum(empty_params_node),
-                @intFromEnum(empty_body),
+                @backingInt(name),
+                @backingInt(empty_params_node),
+                @backingInt(empty_body),
                 0,
                 none,
             });

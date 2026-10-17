@@ -80,7 +80,7 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, io: std.Io, abs_path: []const
     s_dedup.end();
     if (existing_opt) |existing| {
         if (resolve_dir) |dir| {
-            const existing_module = self.modules.at(@intFromEnum(existing));
+            const existing_module = self.modules.at(@backingInt(existing));
             if (existing_module.resolve_dir == null) {
                 existing_module.resolve_dir = try self.allocator.dupe(u8, dir);
             }
@@ -91,7 +91,7 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, io: std.Io, abs_path: []const
     // 새 모듈 슬롯 할당 — PR-Z4: path 만 path_arena (Module.deinit/store transfer 안전).
     // resolve_dir 은 Module.deinit 가 graph_allocator 로 free 하므로 그대로 유지.
     var s_alloc = profile.begin(.graph_discover_incr_add_module_alloc);
-    const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
+    const index: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.modules.count()))));
     var ownership_transferred = false;
     const path_owned = try self.path_arena.allocator().dupe(u8, abs_path);
     const resolve_dir_owned = if (resolve_dir) |dir| try self.allocator.dupe(u8, dir) else null;
@@ -127,7 +127,7 @@ pub fn addModuleWithResolveDir(self: *ModuleGraph, io: std.Io, abs_path: []const
     try self.path_to_module.put(self.allocator, path_owned, index);
     // PR-Z3: lodash-es 평균 3-4 dep / module 로 ArrayList default grow (4→8→16) 가 매
     // build 마다 alloc 1-2회. 사전 capacity 8 로 link 의 grow 회피 (M8 측정 link 98%).
-    const mod_ref = self.modules.at(@intFromEnum(index));
+    const mod_ref = self.modules.at(@backingInt(index));
     mod_ref.dependencies.ensureTotalCapacity(self.allocator, 8) catch {};
     mod_ref.importers.ensureTotalCapacity(self.allocator, 8) catch {};
     s_put.end();
@@ -176,7 +176,7 @@ fn addDisabledModuleWithMode(
         return existing;
     }
 
-    const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
+    const index: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.modules.count()))));
     var module = Module.init(index, disabled_path);
     module.module_type = .js;
     module.exports_kind = .commonjs;
@@ -197,7 +197,7 @@ fn addDisabledModuleWithMode(
 pub fn addExternalModule(self: *ModuleGraph, specifier: []const u8) !ModuleIndex {
     if (self.path_to_module.get(specifier)) |existing| return existing;
 
-    const index: ModuleIndex = @enumFromInt(@as(u32, @intCast(self.modules.count())));
+    const index: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(self.modules.count()))));
     // PR-Z4: path_arena 에서 alloc — graph 일괄 해제.
     const path_owned = try self.path_arena.allocator().dupe(u8, specifier);
     var module = Module.init(index, path_owned);

@@ -118,9 +118,9 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
         var i_loop: u32 = 0;
         while (i_loop < list_len) : (i_loop += 1) {
             const raw_idx = self.ast.extra_data.items[list_start + i_loop];
-            const decl = self.ast.getNode(@enumFromInt(raw_idx));
+            const decl = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
             if (decl.tag != .variable_declarator) {
-                const new_node = try self.visitNode(@enumFromInt(raw_idx));
+                const new_node = try self.visitNode(@fromBackingInt(@intCast(raw_idx)));
                 if (!new_node.isNone()) try self.scratch.append(self.allocator, new_node);
                 continue;
             }
@@ -135,29 +135,29 @@ pub fn visitVariableDeclaration(self: *Transformer, node: Node) Error!NodeIndex 
                 // for-of/for-in의 left에서 매 반복 iter value를 받으며, `{x} = void 0` 같은
                 // statement는 block_statement로 잘못 파싱되어 syntax error (#1302).
                 const is_destructuring = isBindingPattern(self, new_name);
-                const none = @intFromEnum(NodeIndex.none);
+                const none = @backingInt(NodeIndex.none);
                 const init_node: u32 = if (is_destructuring)
                     none
                 else
-                    @intFromEnum(try es_helpers.makeVoidZero(self, node.span));
-                const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, init_node });
+                    @backingInt(try es_helpers.makeVoidZero(self, node.span));
+                const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @backingInt(new_name), none, init_node });
                 try self.scratch.append(self.allocator, new_decl);
             } else {
                 // es5 경로(let/const → var)도 익명 클래스 이름 추론을 지킨다 (#4723).
                 var new_init = try self.visitNode(try nameAnonymousConstClass(self, name_idx, init_idx));
                 new_init = try postProcessVariableDeclaratorInit(self, new_name, new_init);
-                const none = @intFromEnum(NodeIndex.none);
-                const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
+                const none = @backingInt(NodeIndex.none);
+                const new_decl = try self.addExtraNode(.variable_declarator, decl.span, &.{ @backingInt(new_name), none, @backingInt(new_init) });
                 try self.scratch.append(self.allocator, new_decl);
             }
         }
 
         const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
-        return self.addExtraNode(.variable_declaration, node.span, &.{ @intFromEnum(kind), new_list.start, new_list.len });
+        return self.addExtraNode(.variable_declaration, node.span, &.{ @backingInt(kind), new_list.start, new_list.len });
     }
 
     const new_list = try self.visitExtraList(.{ .start = list_start, .len = list_len });
-    return self.addExtraNode(.variable_declaration, node.span, &.{ @intFromEnum(kind), new_list.start, new_list.len });
+    return self.addExtraNode(.variable_declaration, node.span, &.{ @backingInt(kind), new_list.start, new_list.len });
 }
 
 /// variable_declarator: extra_data = [name, type_ann, init]
@@ -167,8 +167,8 @@ pub fn visitVariableDeclarator(self: *Transformer, node: Node) Error!NodeIndex {
     const init_idx = try nameAnonymousConstClass(self, self.readNodeIdx(e, 0), self.readNodeIdx(e, 2));
     var new_init = try self.visitNode(init_idx);
     new_init = try postProcessVariableDeclaratorInit(self, new_name, new_init);
-    const none = @intFromEnum(NodeIndex.none);
-    return self.addExtraNode(.variable_declarator, node.span, &.{ @intFromEnum(new_name), none, @intFromEnum(new_init) });
+    const none = @backingInt(NodeIndex.none);
+    return self.addExtraNode(.variable_declarator, node.span, &.{ @backingInt(new_name), none, @backingInt(new_init) });
 }
 
 /// function/function_declaration/function_expression/arrow_function_expression
@@ -359,11 +359,11 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         try self.maybeRegisterRefreshSignature(fn_name_for_sig, new_name, old_body_idx, &new_body);
     }
 
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
     const new_params_node = try self.ast.addFormalParameters(pp.new_params, params_span);
     const result = try self.addExtraNode(node.tag, node.span, &.{
-        @intFromEnum(new_name), @intFromEnum(new_params_node),
-        @intFromEnum(new_body), self.readU32(e, 3),
+        @backingInt(new_name), @backingInt(new_params_node),
+        @backingInt(new_body), self.readU32(e, 3),
         none,
     });
 
@@ -412,19 +412,19 @@ pub fn visitParamsCollectProperties(self: *Transformer, vp: NodeList) Error!Para
     var i_loop: u32 = 0;
     while (i_loop < vp.len) : (i_loop += 1) {
         const raw_idx = self.ast.extra_data.items[vp.start + i_loop];
-        const param_idx: NodeIndex = @enumFromInt(raw_idx);
+        const param_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (param_idx.isNone()) continue;
         const param_node = self.ast.getNode(param_idx);
         // formal_parameter: extra = [pattern, type_ann, default, flags, deco_start, deco_len]
         // flags != 0 → parameter property (public/private/protected/readonly/override)
         if (param_node.tag == .formal_parameter and self.ast.extra_data.items[param_node.data.extra + ast_mod.FormalParameterExtra.flags] != 0) {
-            const inner = try self.visitNode(@enumFromInt(self.ast.extra_data.items[param_node.data.extra + ast_mod.FormalParameterExtra.pattern]));
+            const inner = try self.visitNode(@fromBackingInt(@intCast(self.ast.extra_data.items[param_node.data.extra + ast_mod.FormalParameterExtra.pattern])));
             try self.scratch.append(self.allocator, inner);
             if (parameterPropertyBindingName(self, inner)) |binding| {
                 try result.prop_names.append(self.allocator, binding);
             }
         } else {
-            const new_param = try self.visitParameterNode(@enumFromInt(raw_idx));
+            const new_param = try self.visitParameterNode(@fromBackingInt(@intCast(raw_idx)));
             if (!new_param.isNone()) {
                 try self.scratch.append(self.allocator, new_param);
             }
@@ -460,7 +460,7 @@ pub fn buildParameterPropertyStatements(self: *Transformer, prop_names: []const 
             .span = name_node.span,
             .data = .{ .none = 0 },
         });
-        const member_extra = try self.ast.addExtras(&.{ @intFromEnum(this_node), @intFromEnum(name_idx), 0 });
+        const member_extra = try self.ast.addExtras(&.{ @backingInt(this_node), @backingInt(name_idx), 0 });
         const member = try self.ast.addNode(.{
             .tag = .static_member_expression,
             .span = name_node.span,
@@ -496,7 +496,7 @@ pub fn insertParameterPropertyAssignmentsAfterSuper(self: *Transformer, body_idx
     const pp_raw = self.ast.extra_data.items[pp_list.start .. pp_list.start + pp_list.len];
     const stmts = try self.allocator.alloc(NodeIndex, pp_raw.len);
     defer self.allocator.free(stmts);
-    for (pp_raw, 0..) |raw_idx, i| stmts[i] = @enumFromInt(raw_idx);
+    for (pp_raw, 0..) |raw_idx, i| stmts[i] = @fromBackingInt(@intCast(raw_idx));
     return self.insertStatementsAfterSuper(body_idx, stmts);
 }
 
@@ -513,10 +513,10 @@ pub fn insertParameterPropertyAssignments(self: *Transformer, body_idx: NodeInde
 
     const pp_list = try self.buildParameterPropertyStatements(prop_names);
     const pp_stmts = self.ast.extra_data.items[pp_list.start .. pp_list.start + pp_list.len];
-    for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    for (pp_stmts) |raw_idx| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
 
     const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
-    for (old_stmts) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    for (old_stmts) |raw_idx| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
 
     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return self.ast.addNode(.{
@@ -542,13 +542,13 @@ pub fn insertStatementsAfterSuper(self: *Transformer, body_idx: NodeIndex, stmts
     // super() 호출이 들어있는 expression_statement 찾기.
     var super_idx: ?u32 = null;
     for (old_stmts, 0..) |raw_idx, i| {
-        const stmt = self.ast.getNode(@enumFromInt(raw_idx));
+        const stmt = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
         if (stmt.tag != .expression_statement) continue;
         const operand = stmt.data.unary.operand;
         if (operand.isNone()) continue;
         const call = self.ast.getNode(operand);
         if (call.tag != .call_expression) continue;
-        const callee_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[call.data.extra]);
+        const callee_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[call.data.extra]));
         const callee = self.ast.getNode(callee_idx);
         if (callee.tag == .super_expression) {
             super_idx = @intCast(i);
@@ -563,9 +563,9 @@ pub fn insertStatementsAfterSuper(self: *Transformer, body_idx: NodeIndex, stmts
 
     // [0..super_idx] + super() + stmts + [super_idx+1..]
     const cut: u32 = super_idx.? + 1;
-    for (old_stmts[0..cut]) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    for (old_stmts[0..cut]) |raw_idx| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
     for (stmts) |stmt| try self.scratch.append(self.allocator, stmt);
-    for (old_stmts[cut..]) |raw_idx| try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+    for (old_stmts[cut..]) |raw_idx| try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
 
     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
     return self.ast.addNode(.{
@@ -603,7 +603,7 @@ pub fn prependStatementsToBody(self: *Transformer, body_idx: NodeIndex, stmts: [
 
     const old_stmts = self.ast.extra_data.items[old_list.start .. old_list.start + old_list.len];
     for (old_stmts) |raw_idx| {
-        try self.scratch.append(self.allocator, @enumFromInt(raw_idx));
+        try self.scratch.append(self.allocator, @fromBackingInt(@intCast(raw_idx)));
     }
 
     const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -633,7 +633,7 @@ pub fn lowerNewTarget(self: *Transformer, span: Span) Error!NodeIndex {
                 .data = .{ .binary = .{
                     .left = this1,
                     .right = fn_ref,
-                    .flags = @intFromEnum(token_mod.Kind.kw_instanceof),
+                    .flags = @backingInt(token_mod.Kind.kw_instanceof),
                 } },
             });
 
@@ -683,7 +683,7 @@ fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx:
     // 않는다 — 물려주면 두 바인딩이 한 심볼을 나눠 가져 mangler 가 안쪽 이름을 따로 줄이지 못한다.
     const name_span = try self.ast.addString(self.ast.getText(binding.data.string_ref));
     const synthetic_name = try es_helpers.makeSyntheticBinding(self, name_span);
-    slots[ast_mod.ClassExtra.name] = @intFromEnum(synthetic_name);
+    slots[ast_mod.ClassExtra.name] = @backingInt(synthetic_name);
     const new_extra = try self.ast.addExtras(&slots);
     const named = try self.ast.addNode(.{ .tag = .class_expression, .span = init.span, .data = .{ .extra = new_extra } });
     try self.remapCopiedScopeOwner(init_idx, named);
@@ -696,7 +696,7 @@ fn nameAnonymousConstClass(self: *Transformer, binding_idx: NodeIndex, init_idx:
             .class_decl,
             class_scope,
         )) orelse std.debug.panic("inferred class name did not receive a SymbolId", .{});
-        try self.class_self_symbol_map.put(self.allocator, @intFromEnum(named), @intFromEnum(id));
+        try self.class_self_symbol_map.put(self.allocator, @backingInt(named), @backingInt(id));
     }
     return named;
 }

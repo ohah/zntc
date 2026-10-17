@@ -103,7 +103,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // function, not a lexical boundary for arrows in the source loop
             // body. Their `this`/`arguments` belong to the enclosing source
             // generator; keep that frame so its wrapper owns the aliases.
-            const extracted_loop = self.deferred_generator_loop_owners.contains(@intFromEnum(source_owner));
+            const extracted_loop = self.deferred_generator_loop_owners.contains(@backingInt(source_owner));
             const arrow_env: ?es_helpers.ArrowEnvSnapshot = if (extracted_loop) null else es_helpers.pushArrowEnv(self);
             defer if (arrow_env) |env| es_helpers.popArrowEnv(self, env);
             const saved_extracted_body = self.in_extracted_fn_body;
@@ -189,12 +189,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // 일반 function으로 변환 (generator 플래그 제거)
             const new_flags = flags & ~@as(u32, ast_mod.FunctionFlags.is_generator);
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const new_params_node = try self.ast.addFormalParameters(new_params, span);
             const new_extra = try self.ast.addExtras(&.{
-                @intFromEnum(new_name),
-                @intFromEnum(new_params_node),
-                @intFromEnum(new_body),
+                @backingInt(new_name),
+                @backingInt(new_params_node),
+                @backingInt(new_body),
                 new_flags,
                 none,
             });
@@ -204,7 +204,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .data = .{ .extra = new_extra },
             });
             if (self.semantic_edit_enabled and source_scope.isNone()) {
-                try self.deferred_generator_helper_refs.put(self.allocator, @intFromEnum(result), gen.helper_ref);
+                try self.deferred_generator_helper_refs.put(self.allocator, @backingInt(result), gen.helper_ref);
             }
             // Ordinary wrappers bind captures at declaration creation. Extracted
             // loop generators inherit the source generator's exact capture frame.
@@ -326,7 +326,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var i_stmts: u32 = 0;
             while (i_stmts < stmts_len) : (i_stmts += 1) {
                 const raw_idx = self.ast.extra_data.items[stmts_start + i_stmts];
-                try collectOperations(self, @enumFromInt(raw_idx), &ops, &next_label);
+                try collectOperations(self, @fromBackingInt(@intCast(raw_idx)), &ops, &next_label);
             }
 
             // 암시적 return (마지막에 return이 없으면 추가)
@@ -350,14 +350,14 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var symbol_id = self.getSymbolIdAt(binding);
             if (self.semantic_edit_enabled) {
                 if (owner_scope.isNone()) std.debug.panic("generator wrapper binding has no exact owner ScopeId", .{});
-                if (@intFromEnum(binding) >= self.parser_node_count) {
+                if (@backingInt(binding) >= self.parser_node_count) {
                     const registered = try self.registerGeneratedWrapperTemp(binding, name_span, declaration_span, owner_scope) orelse
                         std.debug.panic("generated generator wrapper binding lost its SymbolId", .{});
                     if (symbol_id) |existing| {
-                        if (existing != @intFromEnum(registered))
+                        if (existing != @backingInt(registered))
                             std.debug.panic("generator wrapper binding changed its exact SymbolId", .{});
                     }
-                    symbol_id = @intFromEnum(registered);
+                    symbol_id = @backingInt(registered);
                 } else {
                     const raw_id = symbol_id orelse std.debug.panic("source generator wrapper binding has no exact SymbolId", .{});
                     const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
@@ -390,7 +390,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
         fn ensureGeneratorStateTempSymbol(self: *Transformer, name_span: Span, declaration_span: Span) Transformer.Error!?@import("../semantic/symbol.zig").SymbolId {
             if (!self.semantic_edit_enabled or self.state_machine_depth == 0) return null;
-            if (self.generator_state_temp_symbols.get(name_span.start)) |raw_id| return @enumFromInt(raw_id);
+            if (self.generator_state_temp_symbols.get(name_span.start)) |raw_id| return @fromBackingInt(@intCast(raw_id));
             if (self.generator_state_machine_scope.isNone())
                 std.debug.panic("generator state temp has no exact wrapper ScopeId", .{});
             const symbol = (try self.reserveSyntheticTempSymbolInScope(
@@ -408,7 +408,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // Producer-reserved state temps already have a stable ID;
                 // defer only their final callback reference scope.
                 if (self.generator_state_temp_symbols.get(name_span.start)) |raw_id| {
-                    try self.trackGeneratorStateReference(ref, @enumFromInt(raw_id), self.current_scope, flags);
+                    try self.trackGeneratorStateReference(ref, @fromBackingInt(@intCast(raw_id)), self.current_scope, flags);
                 } else if (!self.generator_var_origins.contains(spanKey(name_span))) {
                     for (self.generator_temp_var_spans.items) |state_span| {
                         if (state_span.start != name_span.start or state_span.end != name_span.end) continue;
@@ -430,7 +430,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 담으므로, 선언을 만들 때 심볼을 물려줄 수 있게 원래 바인딩을 따로 기록한다.
         fn registerGeneratorVar(self: *Transformer, span: Span, origin: NodeIndex) Transformer.Error!void {
             try self.generator_temp_var_spans.append(self.allocator, span);
-            const origin_raw = @intFromEnum(origin);
+            const origin_raw = @backingInt(origin);
             if (origin_raw < self.symbol_ids.items.len and self.symbol_ids.items[origin_raw] != null)
                 try self.generator_var_origins.put(self.allocator, spanKey(span), origin);
         }
@@ -480,11 +480,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const id = try self.declareSyntheticTempInScope(binding, span, wrapper_scope) orelse
                         std.debug.panic("generated generator wrapper temp lost its SymbolId", .{});
                     if (self.generator_state_temp_symbols.get(temp_span.start)) |recorded| {
-                        if (recorded != @intFromEnum(id)) {
+                        if (recorded != @backingInt(id)) {
                             std.debug.panic("generator temp producer and wrapper registration disagree on SymbolId", .{});
                         }
                     }
-                    break :blk @intFromEnum(id);
+                    break :blk @backingInt(id);
                 } else self.generator_state_temp_symbols.get(temp_span.start);
                 try state_temps.append(self.allocator, .{
                     .binding = binding,
@@ -524,11 +524,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (stmt_idx.isNone()) return;
             const saved_scope = self.generator_operation_scope;
             if (self.semantic_edit_enabled) {
-                const raw = @intFromEnum(stmt_idx);
+                const raw = @backingInt(stmt_idx);
                 const owner_scope = if (self.scope_owner_removed.contains(raw)) null else self.transformed_scope_owner_map.get(raw) orelse
                     self.scope_owner_map.get(raw) orelse
                     if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw) else null;
-                if (owner_scope) |scope| self.generator_operation_scope = @enumFromInt(scope);
+                if (owner_scope) |scope| self.generator_operation_scope = @fromBackingInt(@intCast(scope));
             }
             defer self.generator_operation_scope = saved_scope;
             const stmt = self.ast.getNode(stmt_idx);
@@ -761,7 +761,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const list_len = self.readU32(e, 2);
             var i: u32 = 0;
             while (i < list_len) : (i += 1) {
-                const decl = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[list_start + i]));
+                const decl = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[list_start + i])));
                 if (decl.tag != .variable_declarator) continue;
                 const binding_idx = self.readNodeIdx(decl.data.extra, 0);
                 const binding = self.ast.getNode(binding_idx);
@@ -919,7 +919,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // missing owner must still fail instead of using current_scope.
             // This also marks the synthetic boundary as transparent to source
             // lexical arrow captures during its later generator visit.
-            try self.deferred_generator_loop_owners.put(self.allocator, @intFromEnum(result.loop_function), .{
+            try self.deferred_generator_loop_owners.put(self.allocator, @backingInt(result.loop_function), .{
                 .function_scope = result.generator_function_scope,
             });
 
@@ -933,7 +933,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const decl_len = self.readU32(loop_fn_node.data.extra, 2);
                 for (0..decl_len) |offset| {
                     const decl_raw = self.ast.extra_data.items[decl_start + offset];
-                    const declarator = self.ast.getNode(@as(NodeIndex, @enumFromInt(decl_raw)));
+                    const declarator = self.ast.getNode(@as(NodeIndex, @fromBackingInt(@intCast(decl_raw))));
                     if (declarator.tag != .variable_declarator or
                         self.readNodeIdx(declarator.data.extra, 2) != result.loop_function) continue;
                     const binding = self.ast.getNode(self.readNodeIdx(declarator.data.extra, 0));
@@ -958,10 +958,10 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 .for_statement => blk: {
                     const e = stmt.data.extra;
                     const new_extra = try self.ast.addExtras(&.{
-                        @intFromEnum(self.readNodeIdx(e, 0)),
-                        @intFromEnum(self.readNodeIdx(e, 1)),
-                        @intFromEnum(self.readNodeIdx(e, 2)),
-                        @intFromEnum(result.call_and_check),
+                        @backingInt(self.readNodeIdx(e, 0)),
+                        @backingInt(self.readNodeIdx(e, 1)),
+                        @backingInt(self.readNodeIdx(e, 2)),
+                        @backingInt(result.call_and_check),
                     });
                     break :blk try self.ast.addNode(.{
                         .tag = .for_statement,
@@ -991,8 +991,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// owner가 없는 복사본도 보존된 SymbolId의 선언 스코프로 호출 위치를 정한다.
         fn loopCallScope(self: *Transformer, stmt_idx: NodeIndex, bindings: []const NodeIndex) @import("../semantic/scope.zig").ScopeId {
             if (!self.semantic_edit_enabled) return self.current_scope;
-            if (self.scope_owner_map.get(@intFromEnum(stmt_idx)) orelse self.transformed_scope_owner_map.get(@intFromEnum(stmt_idx))) |scope|
-                return @enumFromInt(scope);
+            if (self.scope_owner_map.get(@backingInt(stmt_idx)) orelse self.transformed_scope_owner_map.get(@backingInt(stmt_idx))) |scope|
+                return @fromBackingInt(@intCast(scope));
             for (bindings) |binding| {
                 const id = self.getSymbolIdAt(binding) orelse continue;
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
@@ -1009,7 +1009,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 else => false,
             };
             if (!has_loop_scope) return call_scope;
-            const raw = @intFromEnum(owner);
+            const raw = @backingInt(owner);
             const has_exact_loop_owner = !self.scope_owner_removed.contains(raw) and
                 (self.transformed_scope_owner_map.contains(raw) or self.scope_owner_map.contains(raw) or
                     (if (self.semantic_editor) |*editor| editor.scope_owner_map.contains(raw) else false));
@@ -1388,7 +1388,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 // default case 감지
                 const raw_idx = self.ast.extra_data.items[cases_start_val + i];
-                const case_node = self.ast.getNode(@enumFromInt(raw_idx));
+                const case_node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const ce = case_node.data.extra;
                 const test_idx: NodeIndex = self.readNodeIdx(ce, 0);
                 if (test_idx.isNone()) {
@@ -1403,7 +1403,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // visitNode가 extra_data를 재할당할 수 있으므로 인덱스 루프 사용
             for (0..cases_len_val) |i| {
                 const raw_idx = self.ast.extra_data.items[cases_start_val + i];
-                const case_node = self.ast.getNode(@enumFromInt(raw_idx));
+                const case_node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const ce = case_node.data.extra;
                 const test_idx: NodeIndex = self.readNodeIdx(ce, 0);
 
@@ -1416,7 +1416,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     .data = .{ .binary = .{
                         .left = new_disc,
                         .right = new_test,
-                        .flags = @intFromEnum(token_mod.Kind.eq3),
+                        .flags = @backingInt(token_mod.Kind.eq3),
                     } },
                 });
 
@@ -1445,7 +1445,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 try ops.append(self.allocator, .{ .code = .nop, .arg = .{ .none = {} } });
 
                 const raw_idx = self.ast.extra_data.items[cases_start_val + i];
-                const case_node = self.ast.getNode(@enumFromInt(raw_idx));
+                const case_node = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 const ce = case_node.data.extra;
                 const stmts_s = self.readU32(ce, 1);
                 const stmts_l = self.readU32(ce, 2);
@@ -1454,11 +1454,11 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var j_loop: u32 = 0;
                 while (j_loop < stmts_l) : (j_loop += 1) {
                     const case_stmt_raw = self.ast.extra_data.items[stmts_s + j_loop];
-                    const case_stmt = self.ast.getNode(@enumFromInt(case_stmt_raw));
+                    const case_stmt = self.ast.getNode(@fromBackingInt(@intCast(case_stmt_raw)));
                     if (case_stmt.tag == .break_statement and case_stmt.data.unary.operand.isNone()) {
                         try ops.append(self.allocator, .{ .code = .break_op, .arg = .{ .label = end_sentinel } });
                     } else {
-                        try collectOperations(self, @enumFromInt(case_stmt_raw), ops, next_label);
+                        try collectOperations(self, @fromBackingInt(@intCast(case_stmt_raw)), ops, next_label);
                     }
                 }
             }
@@ -1732,7 +1732,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < stmts_len) : (i_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[stmts_start + i_loop];
-                try collectHoistedVarFromNode(self, @enumFromInt(raw_idx), hoisted);
+                try collectHoistedVarFromNode(self, @fromBackingInt(@intCast(raw_idx)), hoisted);
             }
         }
 
@@ -1747,7 +1747,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 일반 방문이 블록 스코핑 규칙대로 처리한다 (#4712).
                 var i: u32 = 0;
                 while (i < node.data.list.len) : (i += 1) {
-                    const child: NodeIndex = @enumFromInt(self.ast.extra_data.items[node.data.list.start + i]);
+                    const child: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[node.data.list.start + i]));
                     if (stateMachineRenamesBlockScope(self) and isLexicalDeclaration(self, child)) continue;
                     try collectHoistedVarFromNode(self, child, hoisted);
                 }
@@ -1762,7 +1762,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var j_loop: u32 = 0;
                 while (j_loop < list_len) : (j_loop += 1) {
                     const decl_raw = self.ast.extra_data.items[list_start + j_loop];
-                    const decl = self.ast.getNode(@enumFromInt(decl_raw));
+                    const decl = self.ast.getNode(@fromBackingInt(@intCast(decl_raw)));
                     if (decl.tag != .variable_declarator) continue;
                     const binding: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
                     if (!binding.isNone()) {
@@ -1809,7 +1809,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     const cases_len = extras[e + 2];
                     var i: u32 = 0;
                     while (i < cases_len) : (i += 1) {
-                        try collectHoistedVarFromNode(self, @enumFromInt(extras[cases_start + i]), hoisted);
+                        try collectHoistedVarFromNode(self, @fromBackingInt(@intCast(extras[cases_start + i])), hoisted);
                     }
                 }
             } else if (node.tag == .for_await_of_statement) {
@@ -1839,7 +1839,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     var p_loop: u32 = 0;
                     while (p_loop < non_rest_len) : (p_loop += 1) {
                         const raw_idx = self.ast.extra_data.items[props_start + p_loop];
-                        const prop = self.ast.getNode(@enumFromInt(raw_idx));
+                        const prop = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                         if (prop.tag == .binding_property) {
                             // {key: value} → value 쪽에서 identifier 추출
                             try collectBindingIdentifiers(self, prop.data.binary.right, hoisted);
@@ -1860,7 +1860,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     var e_loop: u32 = 0;
                     while (e_loop < non_rest_len) : (e_loop += 1) {
                         const raw_idx = self.ast.extra_data.items[elems_start + e_loop];
-                        const elem_idx: NodeIndex = @enumFromInt(raw_idx);
+                        const elem_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                         if (elem_idx.isNone()) continue; // array hole
                         // `[a, , b]` 의 빈 칸은 `.elision` 노드다 — 이름이 없다. `else => unreachable`
                         // 로 떨어지면 릴리스 빌드에서 빈 이름이 들어가 `var a,,b` 가 된다 (#4791).
@@ -1924,7 +1924,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             var i_loop: u32 = 0;
             while (i_loop < list_len) : (i_loop += 1) {
                 const decl_raw = self.ast.extra_data.items[list_start + i_loop];
-                const decl = self.ast.getNode(@enumFromInt(decl_raw));
+                const decl = self.ast.getNode(@fromBackingInt(@intCast(decl_raw)));
                 if (decl.tag != .variable_declarator) continue;
 
                 const binding: NodeIndex = self.readNodeIdx(decl.data.extra, 0);
@@ -1994,7 +1994,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
                 if (raw_id >= symbols.len) std.debug.panic("generator assignment binding id is out of range", .{});
                 try self.trackUserWriteFromBinding(target, binding, symbols[raw_id].scope_id);
-            } else if (self.semantic_edit_enabled and @intFromEnum(binding) >= self.parser_node_count) {
+            } else if (self.semantic_edit_enabled and @backingInt(binding) >= self.parser_node_count) {
                 // Lowering-created var bindings become assignment targets in
                 // the state machine. Reserve their wrapper identity before
                 // the hoisted binding node is constructed.
@@ -2027,13 +2027,13 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             for (0..8) |k| class_slots[k] = self.ast.extra_data.items[ce + k];
 
             // 1. extends 식
-            const super_idx: NodeIndex = @enumFromInt(class_slots[ast_mod.ClassExtra.super]);
+            const super_idx: NodeIndex = @fromBackingInt(@intCast(class_slots[ast_mod.ClassExtra.super]));
             if (!super_idx.isNone()) {
-                class_slots[ast_mod.ClassExtra.super] = @intFromEnum(try evalIntoGeneratorTemp(self, super_idx, ops, next_label));
+                class_slots[ast_mod.ClassExtra.super] = @backingInt(try evalIntoGeneratorTemp(self, super_idx, ops, next_label));
             }
 
             // 2. 멤버의 computed 키 (소스 순서)
-            const body_idx: NodeIndex = @enumFromInt(class_slots[ast_mod.ClassExtra.body]);
+            const body_idx: NodeIndex = @fromBackingInt(@intCast(class_slots[ast_mod.ClassExtra.body]));
             if (!body_idx.isNone()) {
                 const body = self.ast.getNode(body_idx);
                 const scratch_top = self.scratch.items.len;
@@ -2041,12 +2041,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var i: u32 = 0;
                 while (i < body.data.list.len) : (i += 1) {
                     // evalIntoGeneratorTemp 가 extra_data 를 재할당할 수 있으므로 매번 다시 읽는다.
-                    const member_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[body.data.list.start + i]);
+                    const member_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[body.data.list.start + i]));
                     try self.scratch.append(self.allocator, try rewriteMemberComputedKey(self, member_idx, ops, next_label));
                 }
                 const new_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 const new_body = try self.ast.addNode(.{ .tag = .class_body, .span = body.span, .data = .{ .list = new_list } });
-                class_slots[ast_mod.ClassExtra.body] = @intFromEnum(new_body);
+                class_slots[ast_mod.ClassExtra.body] = @backingInt(new_body);
             }
 
             const new_extra = try self.ast.addExtras(&class_slots);
@@ -2064,7 +2064,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 else => return member_idx,
             };
             const me = member.data.extra;
-            const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+            const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
             if (key_idx.isNone() or self.ast.getNode(key_idx).tag != .computed_property_key) return member_idx;
 
             const key_node = self.ast.getNode(key_idx);
@@ -2077,7 +2077,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             var slots: [6]u32 = undefined;
             for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];
-            slots[0] = @intFromEnum(new_key);
+            slots[0] = @backingInt(new_key);
             const new_extra = try self.ast.addExtras(slots[0..slot_count]);
             const copied = try self.ast.addNode(.{ .tag = member.tag, .span = member.span, .data = .{ .extra = new_extra } });
             if (member.tag == .method_definition) try self.remapCopiedScopeOwner(member_idx, copied);
@@ -2180,12 +2180,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 평가된다 — 키만 추출하고 나머지는 평소대로 visit (#4723).
             if (node.tag == .method_definition) {
                 const me = node.data.extra;
-                const key_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[me]);
+                const key_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[me]));
                 if (!key_idx.isNone() and self.ast.getNode(key_idx).tag == .computed_property_key) {
                     const new_key = try visitExprWithYieldExtraction(self, key_idx, ops, next_label);
                     var slots: [6]u32 = undefined;
                     for (0..6) |k| slots[k] = self.ast.extra_data.items[me + k];
-                    slots[0] = @intFromEnum(new_key);
+                    slots[0] = @backingInt(new_key);
                     const new_extra = try self.ast.addExtras(&slots);
                     return self.visitNode(try self.ast.addNode(.{ .tag = .method_definition, .span = node.span, .data = .{ .extra = new_extra } }));
                 }
@@ -2207,7 +2207,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // logical expression: short-circuit / nullish lazy branch 보존.
             if (node.tag == .logical_expression) {
-                const op_kind: token_mod.Kind = @enumFromInt(node.data.binary.flags);
+                const op_kind: token_mod.Kind = @fromBackingInt(@intCast(node.data.binary.flags));
                 switch (op_kind) {
                     .amp2, .pipe2, .question2 => return lowerLogicalExprWithYieldExtraction(self, node, ops, next_label, op_kind),
                     else => {},
@@ -2240,7 +2240,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
                 var i_seq: u32 = 0;
                 while (i_seq < list_len) : (i_seq += 1) {
-                    const elem_idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list_start + i_seq]);
+                    const elem_idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list_start + i_seq]));
                     const is_last = i_seq + 1 == list_len;
                     const new_elem = if (es2015_scan.containsYield(self, elem_idx))
                         try visitExprWithYieldExtraction(self, elem_idx, ops, next_label)
@@ -2264,7 +2264,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const op_flags = self.readU32(e, 1);
                 const new_operand = try visitExprWithYieldExtraction(self, operand_idx, ops, next_label);
                 const new_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_operand),
+                    @backingInt(new_operand),
                     op_flags, // operator_and_flags
                 });
                 return self.ast.addNode(.{
@@ -2302,8 +2302,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const new_child0 = try visitExprWithYieldExtraction(self, child0_idx, ops, next_label);
                 const new_child1 = try visitExprWithYieldExtraction(self, child1_idx, ops, next_label);
                 const new_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_child0),
-                    @intFromEnum(new_child1),
+                    @backingInt(new_child0),
+                    @backingInt(new_child1),
                     flags,
                 });
                 return self.ast.addNode(.{
@@ -2329,12 +2329,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var i_arg: u32 = 0;
                 while (i_arg < args_len) : (i_arg += 1) {
                     const arg_raw = self.ast.extra_data.items[args_start + i_arg];
-                    const new_arg = try visitExprWithYieldExtraction(self, @enumFromInt(arg_raw), ops, next_label);
+                    const new_arg = try visitExprWithYieldExtraction(self, @fromBackingInt(@intCast(arg_raw)), ops, next_label);
                     try self.scratch.append(self.allocator, new_arg);
                 }
                 const new_args = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
                 const new_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(new_callee),
+                    @backingInt(new_callee),
                     new_args.start,
                     new_args.len,
                     call_flags,
@@ -2365,7 +2365,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var i_elem: u32 = 0;
                 while (i_elem < list_len) : (i_elem += 1) {
                     const raw_idx = self.ast.extra_data.items[list_start + i_elem];
-                    const elem_idx: NodeIndex = @enumFromInt(raw_idx);
+                    const elem_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
                     // An object method lowers like in any object literal (`n() {}` →
                     // `n: function () {}`); its body is its own function (#4736).
                     const new_elem = if (node.tag == .object_expression and
@@ -2655,7 +2655,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // switch_statement: extra = [discriminant, cases_start, cases_len]
             const cases_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             const switch_extra = try self.ast.addExtras(&.{
-                @intFromEnum(discriminant),
+                @backingInt(discriminant),
                 cases_list.start,
                 cases_list.len,
             });
@@ -2698,7 +2698,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         fn collectLexicalBindingsInList(self: *Transformer, list: ast_mod.NodeList, out: *std.ArrayList(NodeIndex)) Transformer.Error!void {
             var i: u32 = 0;
             while (i < list.len) : (i += 1) {
-                const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+                const idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
                 if (!isLexicalDeclaration(self, idx)) continue;
                 const node = self.ast.getNode(idx);
                 if (node.tag == .class_declaration) {
@@ -2710,7 +2710,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 const dl = self.readU32(node.data.extra, 2);
                 var j: u32 = 0;
                 while (j < dl) : (j += 1) {
-                    const d = self.ast.getNode(@enumFromInt(self.ast.extra_data.items[ds + j]));
+                    const d = self.ast.getNode(@fromBackingInt(@intCast(self.ast.extra_data.items[ds + j])));
                     if (d.tag != .variable_declarator) continue;
                     try collectBindingNodes(self, self.readNodeIdx(d.data.extra, 0), out);
                 }
@@ -2735,7 +2735,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// 고유하게 지어지므로 이름을 그대로 올린다.
         fn registerStateMachineBindings(self: *Transformer, bindings: []const NodeIndex) Transformer.Error!void {
             for (bindings) |binding| {
-                const bi = @intFromEnum(binding);
+                const bi = @backingInt(binding);
                 const sym: ?u32 = if (bi < self.symbol_ids.items.len) self.symbol_ids.items[bi] else null;
                 const sid = sym orelse {
                     try registerGeneratorVar(self, self.ast.getNode(binding).data.string_ref, binding);
@@ -2791,18 +2791,18 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (!isLexicalDeclaration(self, head)) return;
             var bindings: std.ArrayList(NodeIndex) = .empty;
             defer bindings.deinit(self.allocator);
-            try collectLexicalBindingsInList(self, .{ .start = try self.ast.addExtras(&.{@intFromEnum(head)}), .len = 1 }, &bindings);
+            try collectLexicalBindingsInList(self, .{ .start = try self.ast.addExtras(&.{@backingInt(head)}), .len = 1 }, &bindings);
             try registerStateMachineBindings(self, bindings.items);
         }
 
         fn collectBodyOperations(self: *Transformer, body_idx: NodeIndex, ops: *std.ArrayList(Operation), next_label: *u32) Transformer.Error!void {
             const saved_scope = self.generator_operation_scope;
             if (self.semantic_edit_enabled) {
-                const raw = @intFromEnum(body_idx);
+                const raw = @backingInt(body_idx);
                 const owner_scope = if (self.scope_owner_removed.contains(raw)) null else self.transformed_scope_owner_map.get(raw) orelse
                     self.scope_owner_map.get(raw) orelse
                     if (self.semantic_editor) |*editor| editor.scope_owner_map.get(raw) else null;
-                if (owner_scope) |scope| self.generator_operation_scope = @enumFromInt(scope);
+                if (owner_scope) |scope| self.generator_operation_scope = @fromBackingInt(@intCast(scope));
             }
             defer self.generator_operation_scope = saved_scope;
             const body_node = self.ast.getNode(body_idx);
@@ -2821,7 +2821,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 var i_stmt: u32 = 0;
                 while (i_stmt < stmts_len) : (i_stmt += 1) {
                     const raw_idx = self.ast.extra_data.items[stmts_start + i_stmt];
-                    try collectOperations(self, @enumFromInt(raw_idx), ops, next_label);
+                    try collectOperations(self, @fromBackingInt(@intCast(raw_idx)), ops, next_label);
                 }
             } else {
                 try collectOperations(self, body_idx, ops, next_label);
@@ -2837,8 +2837,8 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     .tag = .unary_expression,
                     .span = span,
                     .data = .{ .extra = try self.ast.addExtras(&.{
-                        @intFromEnum(cond),
-                        @intFromEnum(token_mod.Kind.bang),
+                        @backingInt(cond),
+                        @backingInt(token_mod.Kind.bang),
                     }) },
                 });
             } else cond;
@@ -2865,7 +2865,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             const body_list = try self.ast.addNodeList(stmts);
             const case_extra = try self.ast.addExtras(&.{
-                @intFromEnum(test_node),
+                @backingInt(test_node),
                 body_list.start,
                 body_list.len,
             });
@@ -2991,12 +2991,12 @@ pub fn ES2015Generator(comptime Transformer: type) type {
 
             // function(_state) { ... }
             const params = try self.ast.addNodeList(&.{state_param});
-            const none = @intFromEnum(NodeIndex.none);
+            const none = @backingInt(NodeIndex.none);
             const params_node_g = try self.ast.addFormalParameters(params, .{ .start = 0, .end = 0 });
             const func_extra = try self.ast.addExtras(&.{
                 none, // anonymous
-                @intFromEnum(params_node_g),
-                @intFromEnum(body),
+                @backingInt(params_node_g),
+                @backingInt(body),
                 0, // flags
                 none,
             });
@@ -3054,7 +3054,7 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     var expression: NodeIndex = .none;
     for (transformer.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .numeric_literal) continue;
-        expression = @enumFromInt(raw);
+        expression = @fromBackingInt(@intCast(raw));
         break;
     }
     if (expression.isNone()) return error.MissingGeneratorTempExpression;

@@ -64,7 +64,7 @@ pub fn applyScanResult(self: *ModuleGraph, io: std.Io, result: ScanResult) !void
     defer apply_scope.end();
     defer if (result.resolve_outputs.len > 0) self.allocator.free(result.resolve_outputs);
 
-    const mod_idx = @intFromEnum(result.module_idx);
+    const mod_idx = @backingInt(result.module_idx);
     const mod_ptr = self.modules.at(mod_idx);
     self.applySideEffectsFromPackageJson(io, mod_ptr);
     mod_ptr.state = .ready;
@@ -103,7 +103,7 @@ pub fn scanModule(self: *ModuleGraph, io: std.Io, idx: ModuleIndex) ScanResult {
         self.parseModule(io, idx);
     }
 
-    const mod_idx = @intFromEnum(idx);
+    const mod_idx = @backingInt(idx);
     if (mod_idx >= self.modules.count()) {
         return .{ .module_idx = idx, .resolve_outputs = &.{} };
     }

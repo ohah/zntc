@@ -260,13 +260,13 @@ pub fn Members(comptime Transformer: type) type {
             }
             while (stack.pop()) |idx| {
                 if (idx.isNone()) continue;
-                const raw = @intFromEnum(idx);
+                const raw = @backingInt(idx);
                 if (seen.contains(raw)) continue;
                 try seen.put(self.allocator, raw, {});
                 const owner = self.transformed_scope_owner_map.get(raw) orelse
                     (if (self.semantic_editor) |*e| e.scope_owner_map.get(raw) else null) orelse self.scope_owner_map.get(raw);
                 if (owner) |scope_raw| {
-                    var cursor: @import("../../semantic/scope.zig").ScopeId = @enumFromInt(scope_raw);
+                    var cursor: @import("../../semantic/scope.zig").ScopeId = @fromBackingInt(@intCast(scope_raw));
                     var steps: usize = 0;
                     while (!cursor.isNone() and cursor != class_scope and steps < scopes.len) : (steps += 1) {
                         const parent = scopes[cursor.toIndex()].parent;
@@ -281,7 +281,7 @@ pub fn Members(comptime Transformer: type) type {
                 while (children.next()) |child| try stack.append(self.allocator, child);
             }
             var roots = frontier.keyIterator();
-            while (roots.next()) |raw| try self.reparentGeneratedScope(@enumFromInt(raw.*), ctor_scope);
+            while (roots.next()) |raw| try self.reparentGeneratedScope(@fromBackingInt(@intCast(raw.*)), ctor_scope);
         }
 
         /// instance + static private field 매핑을 빌드하여 current_private_fields에 설정.
@@ -303,7 +303,7 @@ pub fn Members(comptime Transformer: type) type {
                     const id = try self.declareSyntheticInScope(binding, declaration_span, .variable_var, helper_scope) orelse
                         std.debug.panic("private field helper has no direct SymbolId", .{});
                     pf.binding_node = binding;
-                    pf.symbol_id = @intFromEnum(id);
+                    pf.symbol_id = @backingInt(id);
                 }
                 mappings[i] = .{
                     .original_name = pf.original_name,
@@ -323,7 +323,7 @@ pub fn Members(comptime Transformer: type) type {
                     const id = try self.declareSyntheticInScope(binding, declaration_span, .variable_var, helper_scope) orelse
                         std.debug.panic("static private field helper has no direct SymbolId", .{});
                     pf.binding_node = binding;
-                    pf.symbol_id = @intFromEnum(id);
+                    pf.symbol_id = @backingInt(id);
                 }
                 mappings[cm.private_fields.items.len + i] = .{
                     .original_name = pf.original_name,
@@ -363,7 +363,7 @@ pub fn Members(comptime Transformer: type) type {
             var m_loop: u32 = 0;
             while (m_loop < members_len) : (m_loop += 1) {
                 const raw_idx = self.ast.extra_data.items[members_start + m_loop];
-                const member = self.ast.getNode(@enumFromInt(raw_idx));
+                const member = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
 
                 if (member.tag == .method_definition) {
                     const me = member.data.extra;
@@ -373,14 +373,14 @@ pub fn Members(comptime Transformer: type) type {
                     const is_abstract = (flags & ast_mod.MethodFlags.is_abstract) != 0;
                     const is_declare = (flags & ast_mod.MethodFlags.is_declare) != 0;
                     const pm_kind = es_helpers.privateMethodKindFromFlags(flags);
-                    const kind = @intFromEnum(pm_kind);
+                    const kind = @backingInt(pm_kind);
 
                     // 본문 없는 메서드 스트리핑: abstract, declare, TS 오버로드 시그니처
-                    const method_body: NodeIndex = @enumFromInt(self.readU32(me, MethodExtra.body));
+                    const method_body: NodeIndex = @fromBackingInt(@intCast(self.readU32(me, MethodExtra.body)));
                     if (is_abstract or is_declare or method_body.isNone()) continue;
 
                     if (!is_static and es_helpers.isConstructorKey(self, key)) {
-                        cm.constructor_idx = @enumFromInt(raw_idx);
+                        cm.constructor_idx = @fromBackingInt(@intCast(raw_idx));
                         continue;
                     }
 
@@ -395,8 +395,8 @@ pub fn Members(comptime Transformer: type) type {
                             const names = try private_names.makePrivateMethodNames(orig_name, pm_kind);
 
                             try cm.private_methods.append(self.allocator, .{
-                                .member_idx = @enumFromInt(raw_idx),
-                                .source_member_idx = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx),
+                                .member_idx = @fromBackingInt(@intCast(raw_idx)),
+                                .source_member_idx = @fromBackingInt(@intCast(self.scope_owner_origins.get(raw_idx) orelse raw_idx)),
                                 .class_name = if (is_static) try self.stableName(self.ast.getText(class_name_span)) else null,
                                 .class_name_node = self.current_class_name_node,
                                 .original_name = orig_name,
@@ -411,11 +411,11 @@ pub fn Members(comptime Transformer: type) type {
 
                     const member_idx = if (!key.isNone() and self.ast.getNode(key).tag == .computed_property_key) blk: {
                         const memo_key = try memoizeStaticComputedFieldKey(self, &cm, self.ast.getNode(key).data.unary.operand, member.span);
-                        break :blk try es_helpers.replaceMethodDefinitionKey(self, @enumFromInt(raw_idx), memo_key);
-                    } else @as(NodeIndex, @enumFromInt(raw_idx));
+                        break :blk try es_helpers.replaceMethodDefinitionKey(self, @fromBackingInt(@intCast(raw_idx)), memo_key);
+                    } else @as(NodeIndex, @fromBackingInt(@intCast(raw_idx)));
                     // Field computed-key prehoisting can already have copied this
                     // method before classification. Keep the analyzer's exact owner.
-                    const source_member_idx: NodeIndex = @enumFromInt(self.scope_owner_origins.get(raw_idx) orelse raw_idx);
+                    const source_member_idx: NodeIndex = @fromBackingInt(@intCast(self.scope_owner_origins.get(raw_idx) orelse raw_idx));
 
                     if (kind == 1 or kind == 2) {
                         try cm.accessors.append(self.allocator, .{
@@ -490,7 +490,7 @@ pub fn Members(comptime Transformer: type) type {
                             var i_loop: u32 = 0;
                             while (i_loop < sb_stmts_len) : (i_loop += 1) {
                                 const sb_raw = self.ast.extra_data.items[sb_stmts_start + i_loop];
-                                try cm.static_elements.append(self.allocator, .{ .raw_stmt = @enumFromInt(sb_raw) });
+                                try cm.static_elements.append(self.allocator, .{ .raw_stmt = @fromBackingInt(@intCast(sb_raw)) });
                             }
                         }
                     }
@@ -807,7 +807,7 @@ pub fn Members(comptime Transformer: type) type {
                 .data = .{ .string_ref = storage_span },
             });
             const extra = try self.ast.addExtras(&.{
-                @intFromEnum(this_node), @intFromEnum(storage_ref), 0,
+                @backingInt(this_node), @backingInt(storage_ref), 0,
             });
             return self.ast.addNode(.{
                 .tag = .private_field_expression,

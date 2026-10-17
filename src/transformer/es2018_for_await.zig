@@ -79,7 +79,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             else
                 self.current_scope;
             const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
-            const outer_scope = if (!source_loop_scope.isNone() and @intFromEnum(source_loop_scope) < scopes.len)
+            const outer_scope = if (!source_loop_scope.isNone() and @backingInt(source_loop_scope) < scopes.len)
                 scopes[source_loop_scope.toIndex()].parent
             else
                 source_loop_scope;
@@ -196,7 +196,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const catch_body = try block(self, &.{set_errobj}, span);
             var catch_node = self.ast.getNode(catch_clause);
             catch_node.data.binary.right = catch_body;
-            self.ast.nodes.items[@intFromEnum(catch_clause)] = catch_node;
+            self.ast.nodes.items[@backingInt(catch_clause)] = catch_node;
 
             // finally { try { if (_step && !_step.done && (_ret = _iter.return)) await _ret.call(_iter); }
             //           finally { if (_errObj) throw _errObj.error; } }
@@ -264,7 +264,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                 try self.trackGeneratorStateReference(node, binding.symbol_id, scope, flags);
             } else if (register_sm_temps and self.semantic_edit_enabled) {
                 const symbol_id = binding.symbol_id orelse std.debug.panic("for-await temp reference has no exact SymbolId", .{});
-                try self.trackExactOutputReference(node, @intFromEnum(symbol_id));
+                try self.trackExactOutputReference(node, @backingInt(symbol_id));
             }
             return node;
         }
@@ -282,7 +282,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             defer kids.deinit(self.allocator);
             try stack.append(self.allocator, root);
             while (stack.pop()) |idx| {
-                if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) continue;
+                if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
                 var node = self.ast.getNode(idx);
                 switch (node.tag) {
                     .function_declaration, .function_expression, .function, .arrow_function_expression, .method_definition, .class_declaration, .class_expression => continue,
@@ -290,7 +290,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                         _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, idx, false);
                         node = self.ast.getNode(idx);
                         const rewritten = try rewriteForAwait(self, idx, node, .none, register_semantics, false);
-                        self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
+                        self.ast.nodes.items[@backingInt(idx)] = self.ast.getNode(rewritten);
                         if (register_semantics) try self.removeInPlaceScopeOwner(idx);
                         node = self.ast.getNode(idx);
                     },
@@ -299,7 +299,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
                         if (!child.isNone() and self.ast.getNode(child).tag == .for_await_of_statement) {
                             _ = try @import("es2025_using.zig").ES2025Using(Transformer).normalizeForOfUsingHead(self, child, false);
                             const rewritten = try rewriteForAwait(self, child, self.ast.getNode(child), node.data.binary.left, register_semantics, false);
-                            self.ast.nodes.items[@intFromEnum(idx)] = self.ast.getNode(rewritten);
+                            self.ast.nodes.items[@backingInt(idx)] = self.ast.getNode(rewritten);
                             node = self.ast.getNode(idx);
                         }
                     },
@@ -316,7 +316,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             return self.ast.addNode(.{ .tag = .logical_expression, .span = span, .data = .{ .binary = .{
                 .left = a,
                 .right = b,
-                .flags = @intFromEnum(token_mod.Kind.amp2),
+                .flags = @backingInt(token_mod.Kind.amp2),
             } } });
         }
 
