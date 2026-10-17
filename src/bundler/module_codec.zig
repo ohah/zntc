@@ -63,7 +63,7 @@ comptime {
     // (예: import_records)가 추가되면 직렬화에서 silently 누락 → cache-hit 연결 시 drift.
     // 필드 수를 못박아 codec 갱신을 컴파일 에러로 강제(semantic_codec 의 ModuleSemanticData
     // 가드와 동일 철학).
-    if (@typeInfo(DeserializedModule).@"struct".fields.len != 2) {
+    if (@typeInfo(DeserializedModule).@"struct".field_names.len != 2) {
         @compileError("DeserializedModule 필드 수가 바뀜 — module_codec serialize/deserialize 갱신 필요.");
     }
 }

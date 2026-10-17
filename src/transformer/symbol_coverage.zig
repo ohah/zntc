@@ -76,7 +76,7 @@ const Ctx = struct {
     fn markName(ctx: *Ctx, idx: NodeIndex) void {
         if (idx.isNone()) return;
         if (ctx.ast.getNode(idx).tag == .computed_property_key) return;
-        ctx.name_positions.put(ctx.allocator, @intFromEnum(idx), {}) catch {
+        ctx.name_positions.put(ctx.allocator, @backingInt(idx), {}) catch {
             ctx.oom = true;
         };
     }
@@ -88,7 +88,7 @@ fn visit(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
         // `o.x` 의 x, `{ k: v }`·`{ k: pattern }` 의 k, 메서드·필드 이름은 변수가 아니다.
         // 축약형(`{ x }`)은 키가 곧 값 참조라 센다.
         .static_member_expression => {
-            ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra + 1]));
+            ctx.markName(@fromBackingInt(@intCast(ctx.ast.extra_data.items[node.data.extra + 1])));
             return .descend;
         },
         .object_property, .binding_property => {
@@ -98,7 +98,7 @@ fn visit(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             return .descend;
         },
         .method_definition, .property_definition, .accessor_property => {
-            ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra]));
+            ctx.markName(@fromBackingInt(@intCast(ctx.ast.extra_data.items[node.data.extra])));
             return .descend;
         },
         // 공용 순회는 export 지정자 목록으로 내려가지 않는다 — 로컬 export(`export { a as b }`)의
@@ -106,11 +106,11 @@ fn visit(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
         .export_named_declaration => {
             const e = node.data.extra;
             const source = ctx.ast.extra_data.items[e + 3];
-            if (source != @intFromEnum(NodeIndex.none)) return .descend;
+            if (source != @backingInt(NodeIndex.none)) return .descend;
             const specs_start = ctx.ast.extra_data.items[e + 1];
             const specs_len = ctx.ast.extra_data.items[e + 2];
             for (ctx.ast.extra_data.items[specs_start .. specs_start + specs_len]) |raw| {
-                const spec = ctx.ast.getNode(@enumFromInt(raw));
+                const spec = ctx.ast.getNode(@fromBackingInt(@intCast(raw)));
                 if (spec.tag != .export_specifier) continue;
                 const local = spec.data.binary.left;
                 if (local.isNone()) continue;
@@ -129,7 +129,7 @@ fn checkIdentifier(ctx: *Ctx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
         .identifier_reference, .binding_identifier, .assignment_target_identifier => {},
         else => return .descend,
     }
-    const i = @intFromEnum(idx);
+    const i = @backingInt(idx);
     if (i < ctx.parser_node_count) return .descend;
     if (ctx.synthetic) |set| {
         if (set.contains(i)) return .descend;
@@ -308,20 +308,21 @@ pub const ExactReport = struct {
     /// update to the independent fixture-gate expectations.
     pub fn schemaCounts() SchemaCounts {
         var counts: SchemaCounts = .{};
-        inline for (std.meta.fields(ExactReport)) |field| {
-            if (comptime isObservationField(field.name)) {
-                if (comptime std.mem.eql(u8, field.name, "legacy_debt_fingerprint")) {
-                    if (comptime field.type != u64) @compileError("ExactReport legacy fingerprint must remain u64");
-                } else if (comptime field.type != usize) {
+        const info = @typeInfo(ExactReport).@"struct";
+        inline for (info.field_names, info.field_types) |name, field_type| {
+            if (comptime isObservationField(name)) {
+                if (comptime std.mem.eql(u8, name, "legacy_debt_fingerprint")) {
+                    if (comptime field_type != u64) @compileError("ExactReport legacy fingerprint must remain u64");
+                } else if (comptime field_type != usize) {
                     @compileError("ExactReport observation fields must remain usize except the legacy fingerprint");
                 }
                 counts.observation_fields += 1;
-            } else if (comptime isDiagnosticField(field.name)) {
-                if (comptime @typeInfo(field.type) != .optional)
+            } else if (comptime isDiagnosticField(name)) {
+                if (comptime @typeInfo(field_type) != .optional)
                     @compileError("ExactReport diagnostic fields must remain optional findings");
                 counts.diagnostic_fields += 1;
             } else {
-                if (comptime field.type != usize) @compileError("unclassified ExactReport field");
+                if (comptime field_type != usize) @compileError("unclassified ExactReport field");
                 counts.invariant_counters += 1;
             }
         }
@@ -333,14 +334,15 @@ pub const ExactReport = struct {
     pub fn schemaFingerprint() u64 {
         var hash: u64 = 0xcbf29ce484222325;
         feedSchemaFingerprint(&hash, "zntc.ExactReport/v1\x00");
-        inline for (std.meta.fields(ExactReport)) |field| {
-            const category = if (comptime isObservationField(field.name))
+        const info = @typeInfo(ExactReport).@"struct";
+        inline for (info.field_names) |name| {
+            const category = if (comptime isObservationField(name))
                 "observation"
-            else if (comptime isDiagnosticField(field.name))
+            else if (comptime isDiagnosticField(name))
                 "diagnostic"
             else
                 "invariant";
-            feedSchemaFingerprint(&hash, field.name);
+            feedSchemaFingerprint(&hash, name);
             feedSchemaFingerprint(&hash, "\x00");
             feedSchemaFingerprint(&hash, category);
             feedSchemaFingerprint(&hash, "\n");
@@ -352,14 +354,15 @@ pub const ExactReport = struct {
     /// an invariant counter and fails closed by default, so adding a new
     /// counter cannot silently leave the aggregate exact-coverage gate green.
     pub fn isClean(self: ExactReport) bool {
-        inline for (std.meta.fields(ExactReport)) |field| {
-            if (comptime isObservationField(field.name)) continue;
-            if (comptime isDiagnosticField(field.name)) {
-                if (@field(self, field.name) != null) return false;
+        const info = @typeInfo(ExactReport).@"struct";
+        inline for (info.field_names, info.field_types) |name, field_type| {
+            if (comptime isObservationField(name)) continue;
+            if (comptime isDiagnosticField(name)) {
+                if (@field(self, name) != null) return false;
                 continue;
             }
-            if (comptime field.type != usize) @compileError("unclassified ExactReport field; classify it as an observation, diagnostic, or usize invariant counter");
-            if (@field(self, field.name) != 0) return false;
+            if (comptime field_type != usize) @compileError("unclassified ExactReport field; classify it as an observation, diagnostic, or usize invariant counter");
+            if (@field(self, name) != 0) return false;
         }
         return true;
     }
@@ -589,12 +592,12 @@ fn isFunctionExpressionNameScope(
         actual_parent.toIndex() >= scope_maps.len) return false;
     const extra = ast.nodes.items[owner_node].data.extra;
     if (extra >= ast.extra_data.items.len) return false;
-    const name_node: NodeIndex = @enumFromInt(ast.extra_data.items[extra]);
-    if (name_node.isNone() or @intFromEnum(name_node) >= ast.nodes.items.len or
-        @intFromEnum(name_node) >= symbol_ids.len) return false;
+    const name_node: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+    if (name_node.isNone() or @backingInt(name_node) >= ast.nodes.items.len or
+        @backingInt(name_node) >= symbol_ids.len) return false;
     const name = ast.getNode(name_node);
     if (name.tag != .binding_identifier) return false;
-    const symbol_id = symbol_ids[@intFromEnum(name_node)] orelse return false;
+    const symbol_id = symbol_ids[@backingInt(name_node)] orelse return false;
     if (symbol_id >= symbols.len) return false;
     const symbol = symbols[symbol_id];
     if (symbol.scope_id != actual_parent or !symbol.kind.isFunctionLike() or
@@ -634,7 +637,7 @@ fn ownerParentMatchesAst(
             ast,
             owner_node,
             parent,
-            @enumFromInt(expected_parent_scope),
+            @fromBackingInt(@intCast(expected_parent_scope)),
             symbol_ids,
             symbols,
             scopes,
@@ -670,7 +673,7 @@ fn functionParameterNode(ast: *const Ast, function_raw: u32) ?u32 {
     };
     if (!ast.hasExtra(function.data.extra, slot)) return null;
     const raw = ast.extra_data.items[function.data.extra + slot];
-    if (raw == @intFromEnum(NodeIndex.none) or raw >= ast.nodes.items.len) return null;
+    if (raw == @backingInt(NodeIndex.none) or raw >= ast.nodes.items.len) return null;
     return raw;
 }
 
@@ -826,10 +829,10 @@ fn exactCjsWrapperBindings(
     scope_maps: []const std.StringHashMapUnmanaged(usize),
     scope_owner_map: *const std.AutoHashMapUnmanaged(u32, u32),
 ) ?ExactCjsWrapperBindings {
-    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len or ast.nodes.items[@intFromEnum(root)].tag != .program)
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or ast.nodes.items[@backingInt(root)].tag != .program)
         return null;
     if (scopes.len < 2 or scope_maps.len != scopes.len or scope_maps.len == 0) return null;
-    if (scope_owner_map.get(@intFromEnum(root)) != 0) return null;
+    if (scope_owner_map.get(@backingInt(root)) != 0) return null;
 
     const wrapper_id = scopes[0].parent;
     if (!exactValidScope(scopes, wrapper_id) or wrapper_id.toIndex() == 0) return null;
@@ -933,7 +936,7 @@ fn exactDetachedOutputSymbolHasNoLexicalEdges(
         if (mapped_symbol == symbol_id) return false;
     }
     for (references) |reference| {
-        if (@intFromEnum(reference.symbol_id) == symbol_id) return false;
+        if (@backingInt(reference.symbol_id) == symbol_id) return false;
     }
     for (scope_maps) |scope_map| {
         var bindings = scope_map.valueIterator();
@@ -950,13 +953,13 @@ fn collectBindingPatternNodes(
     root: NodeIndex,
     bindings: *std.AutoHashMapUnmanaged(u32, void),
 ) std.mem.Allocator.Error!void {
-    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) return;
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) return;
     var walker = try ast_walk.bindingIdentifiers(allocator, ast, root, .{ .cover_grammar_assignment = true });
     defer walker.deinit();
     while (try walker.next()) |idx| {
         const tag = ast.getNode(idx).tag;
         if (tag == .binding_identifier or tag == .identifier_reference or tag == .assignment_target_identifier)
-            try bindings.put(allocator, @intFromEnum(idx), {});
+            try bindings.put(allocator, @backingInt(idx), {});
     }
 }
 
@@ -974,47 +977,47 @@ pub fn collectDeclarationNodes(
         switch (node.tag) {
             .function_declaration, .function_expression, .function => {
                 if (ast.hasExtra(node.data.extra, 0)) {
-                    const name: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-                    if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
+                    const name: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
+                    if (!name.isNone()) try bindings.put(allocator, @backingInt(name), {});
                 }
                 if (ast.hasExtra(node.data.extra, 1)) {
-                    const params: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + 1]);
+                    const params: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra + 1]));
                     try collectBindingPatternNodes(allocator, ast, params, &bindings);
                 }
             },
             .arrow_function_expression, .method_definition => {
                 const slot: u32 = if (node.tag == .arrow_function_expression) 0 else 1;
                 if (ast.hasExtra(node.data.extra, slot)) {
-                    const params: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra + slot]);
+                    const params: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra + slot]));
                     try collectBindingPatternNodes(allocator, ast, params, &bindings);
                 }
             },
             .class_declaration, .class_expression => {
                 if (ast.hasExtra(node.data.extra, 0)) {
-                    const name: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-                    if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
+                    const name: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
+                    if (!name.isNone()) try bindings.put(allocator, @backingInt(name), {});
                 }
             },
             .ts_enum_declaration, .flow_enum_declaration => {
                 if (ast.hasExtra(node.data.extra, 0)) {
-                    const name: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-                    if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
+                    const name: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
+                    if (!name.isNone()) try bindings.put(allocator, @backingInt(name), {});
                 }
             },
             .ts_module_declaration => {
                 const name = node.data.binary.left;
-                if (!name.isNone() and @intFromEnum(name) < ast.nodes.items.len and
+                if (!name.isNone() and @backingInt(name) < ast.nodes.items.len and
                     ast.getNode(name).tag != .string_literal)
-                    try bindings.put(allocator, @intFromEnum(name), {});
+                    try bindings.put(allocator, @backingInt(name), {});
             },
             .ts_import_equals_declaration => {
                 const name = node.data.binary.left;
-                if (!name.isNone()) try bindings.put(allocator, @intFromEnum(name), {});
+                if (!name.isNone()) try bindings.put(allocator, @backingInt(name), {});
             },
             .catch_clause => try collectBindingPatternNodes(allocator, ast, node.data.binary.left, &bindings),
             .variable_declarator => {
                 if (ast.hasExtra(node.data.extra, 1)) {
-                    const pattern: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
+                    const pattern: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
                     try collectBindingPatternNodes(allocator, ast, pattern, &bindings);
                 }
             },
@@ -1025,11 +1028,11 @@ pub fn collectDeclarationNodes(
                 const specs_len = ast.extra_data.items[extra + 1];
                 if (specs_start + specs_len > ast.extra_data.items.len) continue;
                 for (ast.extra_data.items[specs_start .. specs_start + specs_len]) |raw_spec| {
-                    const spec_idx: NodeIndex = @enumFromInt(raw_spec);
-                    if (spec_idx.isNone() or @intFromEnum(spec_idx) >= ast.nodes.items.len) continue;
+                    const spec_idx: NodeIndex = @fromBackingInt(@intCast(raw_spec));
+                    if (spec_idx.isNone() or @backingInt(spec_idx) >= ast.nodes.items.len) continue;
                     const spec = ast.getNode(spec_idx);
                     switch (spec.tag) {
-                        .import_default_specifier, .import_namespace_specifier => try bindings.put(allocator, @intFromEnum(spec_idx), {}),
+                        .import_default_specifier, .import_namespace_specifier => try bindings.put(allocator, @backingInt(spec_idx), {}),
                         .import_specifier => try collectBindingPatternNodes(allocator, ast, spec.data.binary.right, &bindings),
                         else => {},
                     }
@@ -1042,7 +1045,7 @@ pub fn collectDeclarationNodes(
 }
 
 fn exactVisibleFrom(scopes: []const Scope, symbols: []const Symbol, symbol_id: SymbolId, use_scope: ScopeId) bool {
-    const sid = @intFromEnum(symbol_id);
+    const sid = @backingInt(symbol_id);
     if (sid >= symbols.len or !exactValidScope(scopes, use_scope)) return false;
     const declared_scope = symbols[sid].scope_id;
     if (!exactValidScope(scopes, declared_scope)) return false;
@@ -1223,7 +1226,7 @@ fn childSkipsScopeOwner(ast: *const Ast, parent_raw: u32, child_raw: u32) bool {
             const extra = parent.data.extra;
             return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
         },
-        .ts_module_declaration => return @intFromEnum(parent.data.binary.left) == child_raw,
+        .ts_module_declaration => return @backingInt(parent.data.binary.left) == child_raw,
         .switch_statement => {
             const extra = parent.data.extra;
             return extra < ast.extra_data.items.len and ast.extra_data.items[extra] == child_raw;
@@ -1288,7 +1291,7 @@ fn generatedFunctionExpressionNameScope(
     if (!isFunctionExpressionNameScope(
         ast,
         function_raw,
-        @enumFromInt(name_scope),
+        @fromBackingInt(@intCast(name_scope)),
         scopes[name_scope].parent,
         symbol_ids,
         symbols,
@@ -1313,7 +1316,7 @@ fn functionExpressionNameScope(
     var name_scope = scopes[function_scope].parent;
     if (ast.hasExtra(extra, 1)) {
         const params = ast.readExtraNode(extra, 1);
-        if (!params.isNone() and scope_owner_map.get(@intFromEnum(params)) == @as(?u32, @intFromEnum(name_scope))) {
+        if (!params.isNone() and scope_owner_map.get(@backingInt(params)) == @as(?u32, @backingInt(name_scope))) {
             if (name_scope.isNone() or name_scope.toIndex() >= scopes.len) return null;
             name_scope = scopes[name_scope.toIndex()].parent;
         }
@@ -1344,7 +1347,7 @@ fn expectedReferenceScopeFromParent(
             if (scope_owner_map.get(parent_raw)) |scope| return .{ .node = parent_raw, .scope = scope };
         }
         child = parent_raw;
-        if (child == @intFromEnum(root)) return if (scope_owner_map.get(child)) |scope|
+        if (child == @backingInt(root)) return if (scope_owner_map.get(child)) |scope|
             .{ .node = child, .scope = scope }
         else
             null;
@@ -1374,9 +1377,9 @@ fn topLevelStatementIndex(
     node: u32,
     initial_parent: ?u32,
 ) ?u32 {
-    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len or
-        ast.nodes.items[@intFromEnum(root)].tag != .program) return null;
-    const root_raw = @intFromEnum(root);
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or
+        ast.nodes.items[@backingInt(root)].tag != .program) return null;
+    const root_raw = @backingInt(root);
     const child_parent = initial_parent orelse parent_by_node.get(node) orelse return null;
     var child = node;
     var parent = child_parent;
@@ -1407,8 +1410,8 @@ fn scopeStatementPosition(
     node: u32,
     initial_parent: ?u32,
 ) ?StatementListPosition {
-    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len or node >= ast.nodes.items.len) return null;
-    const root_raw = @intFromEnum(root);
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len or node >= ast.nodes.items.len) return null;
+    const root_raw = @backingInt(root);
     var child = node;
     var parent = initial_parent orelse parent_by_node.get(child) orelse return null;
     var hops: usize = 0;
@@ -1515,7 +1518,7 @@ fn isNamespaceBodyBlock(
     const parent_raw = parent_by_node.get(block_raw) orelse return false;
     if (parent_raw >= ast.nodes.items.len) return false;
     const parent = ast.nodes.items[parent_raw];
-    return parent.tag == .ts_module_declaration and @intFromEnum(parent.data.binary.right) == block_raw;
+    return parent.tag == .ts_module_declaration and @backingInt(parent.data.binary.right) == block_raw;
 }
 
 fn isFlowComponentImplementationFunction(
@@ -1533,7 +1536,7 @@ fn isFlowComponentImplementationFunction(
 fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
     switch (node.tag) {
         .static_member_expression => {
-            ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra + 1]));
+            ctx.markName(@fromBackingInt(@intCast(ctx.ast.extra_data.items[node.data.extra + 1])));
             return .descend;
         },
         .jsx_attribute => {
@@ -1550,7 +1553,7 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             return .descend;
         },
         .jsx_identifier => {
-            const raw = @intFromEnum(idx);
+            const raw = @backingInt(idx);
             if (ctx.jsx_variable_roots.contains(raw)) {
                 ctx.checkIdentifier(idx);
                 return .descend;
@@ -1576,7 +1579,7 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             return .descend;
         },
         .method_definition, .property_definition, .accessor_property => {
-            ctx.markName(@enumFromInt(ctx.ast.extra_data.items[node.data.extra]));
+            ctx.markName(@fromBackingInt(@intCast(ctx.ast.extra_data.items[node.data.extra])));
             return .descend;
         },
         .ts_enum_member, .flow_enum_member => {
@@ -1588,13 +1591,13 @@ fn exactVisit(ctx: *ExactCtx, idx: NodeIndex, node: Node) ast_walk.WalkAction {
             // references. Source-less exports still resolve the local side.
             const extra = node.data.extra;
             if (extra + 3 < ctx.ast.extra_data.items.len and
-                ctx.ast.extra_data.items[extra + 3] != @intFromEnum(NodeIndex.none))
+                ctx.ast.extra_data.items[extra + 3] != @backingInt(NodeIndex.none))
             {
                 const start = ctx.ast.extra_data.items[extra + 1];
                 const len = ctx.ast.extra_data.items[extra + 2];
                 if (start <= ctx.ast.extra_data.items.len and len <= ctx.ast.extra_data.items.len - start) {
                     for (ctx.ast.extra_data.items[start .. start + len]) |raw_spec| {
-                        const spec = ctx.ast.getNode(@enumFromInt(raw_spec));
+                        const spec = ctx.ast.getNode(@fromBackingInt(@intCast(raw_spec)));
                         if (spec.tag != .export_specifier) continue;
                         ctx.markName(spec.data.binary.left);
                         ctx.markName(spec.data.binary.right);
@@ -1662,7 +1665,7 @@ const ExactCtx = struct {
         var hops: usize = 0;
         while (hops <= ctx.ast.nodes.items.len) : (hops += 1) {
             if (ctx.with_body_roots.contains(current)) return true;
-            if (current == @intFromEnum(ctx.root)) return false;
+            if (current == @backingInt(ctx.root)) return false;
             current = ctx.parent_by_node.get(current) orelse return false;
         }
         return false;
@@ -1679,7 +1682,7 @@ const ExactCtx = struct {
     fn hasDynamicNameEnvironment(ctx: *const ExactCtx, node: u32, scope: ?u32) bool {
         if (ctx.isWithinWithBody(node)) return true;
         if (scope) |scope_id| {
-            const unit = exactExecutionUnit(ctx.scopes, @enumFromInt(scope_id)) orelse
+            const unit = exactExecutionUnit(ctx.scopes, @fromBackingInt(@intCast(scope_id))) orelse
                 return ctx.dynamic_eval_units.count() > 0;
             return ctx.dynamic_eval_units.contains(unit);
         }
@@ -1690,7 +1693,7 @@ const ExactCtx = struct {
 
     fn markName(ctx: *ExactCtx, idx: NodeIndex) void {
         if (idx.isNone() or ctx.ast.getNode(idx).tag == .computed_property_key) return;
-        ctx.name_positions.put(ctx.allocator, @intFromEnum(idx), {}) catch {
+        ctx.name_positions.put(ctx.allocator, @backingInt(idx), {}) catch {
             ctx.oom = true;
         };
     }
@@ -1704,7 +1707,7 @@ const ExactCtx = struct {
             current = member.data.binary.left;
         }
         if (!current.isNone() and ctx.ast.getNode(current).tag == .jsx_identifier) {
-            ctx.jsx_variable_roots.put(ctx.allocator, @intFromEnum(current), {}) catch {
+            ctx.jsx_variable_roots.put(ctx.allocator, @backingInt(current), {}) catch {
                 ctx.oom = true;
             };
         }
@@ -1732,7 +1735,7 @@ const ExactCtx = struct {
         // external while still treating other references in that execution
         // unit as dynamic.
         if (!ctx.isDirectEvalCallee(node) and ctx.hasDynamicNameEnvironment(node, expected.scope)) return .unknown_scope;
-        if (resolveInExactScopes(ctx, name, @enumFromInt(expected.scope))) |symbol_id| {
+        if (resolveInExactScopes(ctx, name, @fromBackingInt(@intCast(expected.scope)))) |symbol_id| {
             if (!ctx.isErasedTypeOnlyImportBinding(name, symbol_id)) return .shadowed;
         }
         if (ctx.helper_scope_map.get(name) != null) return .shadowed;
@@ -1757,17 +1760,17 @@ const ExactCtx = struct {
                 import.specs_len > ctx.ast.extra_data.items.len - import.specs_start) continue;
             var i: u32 = 0;
             while (i < import.specs_len) : (i += 1) {
-                const spec_idx: NodeIndex = @enumFromInt(ctx.ast.extra_data.items[import.specs_start + i]);
-                if (spec_idx.isNone() or @intFromEnum(spec_idx) >= ctx.ast.nodes.items.len) continue;
+                const spec_idx: NodeIndex = @fromBackingInt(@intCast(ctx.ast.extra_data.items[import.specs_start + i]));
+                if (spec_idx.isNone() or @backingInt(spec_idx) >= ctx.ast.nodes.items.len) continue;
                 const spec = ctx.ast.getNode(spec_idx);
                 const local_idx = switch (spec.tag) {
                     .import_default_specifier, .import_namespace_specifier => spec_idx,
                     .import_specifier => spec.data.binary.right,
                     else => continue,
                 };
-                if (local_idx.isNone() or @intFromEnum(local_idx) >= ctx.ast.nodes.items.len or
-                    @intFromEnum(local_idx) >= ctx.symbol_ids.len or
-                    ctx.symbol_ids[@intFromEnum(local_idx)] != symbol_id) continue;
+                if (local_idx.isNone() or @backingInt(local_idx) >= ctx.ast.nodes.items.len or
+                    @backingInt(local_idx) >= ctx.symbol_ids.len or
+                    ctx.symbol_ids[@backingInt(local_idx)] != symbol_id) continue;
                 const local_name = ctx.ast.getText(ctx.ast.getNode(local_idx).span);
                 if (!std.mem.eql(u8, local_name, name)) continue;
                 const inline_type_only = spec.tag == .import_specifier and
@@ -1785,13 +1788,13 @@ const ExactCtx = struct {
             if (hops >= ctx.ast.nodes.items.len or parent_raw >= ctx.ast.nodes.items.len) return false;
             const parent = ctx.ast.nodes.items[parent_raw];
             if (ast_mod.Node.Tag.isTransparentTypeWrapper(parent.tag) and
-                parent.data.unary.operand == @as(NodeIndex, @enumFromInt(child)))
+                parent.data.unary.operand == @as(NodeIndex, @fromBackingInt(@intCast(child))))
             {
                 child = parent_raw;
                 continue;
             }
             if (parent.tag == .static_member_expression) {
-                return ctx.ast.readExtraNode(parent.data.extra, 0) == @as(NodeIndex, @enumFromInt(child));
+                return ctx.ast.readExtraNode(parent.data.extra, 0) == @as(NodeIndex, @fromBackingInt(@intCast(child)));
             }
             return false;
         }
@@ -1803,11 +1806,11 @@ const ExactCtx = struct {
         const symbol = ctx.symbols[symbol_id];
         if (symbol.synthetic_kind != .enum_iife_member or !std.mem.eql(u8, symbol.synthetic_name, name)) return false;
         const owner_id = symbol.synthetic_owner_id orelse return false;
-        const parameter_raw = @intFromEnum(owner_id);
+        const parameter_raw = @backingInt(owner_id);
         if (parameter_raw >= ctx.symbols.len or ctx.symbols[parameter_raw].synthetic_kind != .enum_iife_parameter or
             ctx.symbols[parameter_raw].scope_id != symbol.scope_id) return false;
         if (isEnumObjectBase(ctx, node_raw)) return false;
-        if (!exactVisibleFrom(ctx.scopes, ctx.symbols, @enumFromInt(symbol_id), use_scope)) return false;
+        if (!exactVisibleFrom(ctx.scopes, ctx.symbols, @fromBackingInt(@intCast(symbol_id)), use_scope)) return false;
 
         var enum_raw: ?u32 = null;
         var current_member: ?u32 = null;
@@ -1825,7 +1828,7 @@ const ExactCtx = struct {
         }
         const owner_raw = enum_raw orelse return false;
         const member_raw = current_member orelse return false;
-        if (ctx.scope_owner_map.get(owner_raw) != @as(?u32, @intCast(@intFromEnum(symbol.scope_id)))) return false;
+        if (ctx.scope_owner_map.get(owner_raw) != @as(?u32, @intCast(@backingInt(symbol.scope_id)))) return false;
 
         const declaration = ctx.ast.nodes.items[owner_raw];
         const extra = declaration.data.extra;
@@ -1837,9 +1840,9 @@ const ExactCtx = struct {
         var current_position: ?u32 = null;
         var target_position: ?u32 = null;
         for (ctx.ast.extra_data.items[members_start .. members_start + members_len], 0..) |raw_member, position| {
-            const listed_member: NodeIndex = @enumFromInt(raw_member);
+            const listed_member: NodeIndex = @fromBackingInt(@intCast(raw_member));
             if (raw_member == member_raw) current_position = @intCast(position);
-            if (listed_member.isNone() or @intFromEnum(listed_member) >= ctx.ast.nodes.items.len) continue;
+            if (listed_member.isNone() or @backingInt(listed_member) >= ctx.ast.nodes.items.len) continue;
             const member_node = ctx.ast.getNode(listed_member);
             if (member_node.tag != .ts_enum_member or member_node.data.binary.left.isNone()) continue;
             const key = ctx.ast.getNode(member_node.data.binary.left);
@@ -1885,12 +1888,12 @@ const ExactCtx = struct {
     }
 
     fn checkIdentifier(ctx: *ExactCtx, idx: NodeIndex) void {
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (ctx.name_positions.contains(raw)) return;
         const node = ctx.ast.getNode(idx);
         if (!ctx.reachable_nodes.contains(raw)) std.debug.print(
             "zntc: symbol-identity-traversal-mismatch node={d} name={s} root={d}\n",
-            .{ raw, ctx.ast.getText(node.data.string_ref), @intFromEnum(ctx.root) },
+            .{ raw, ctx.ast.getText(node.data.string_ref), @backingInt(ctx.root) },
         );
         const name = ctx.ast.getText(node.data.string_ref);
         const generated = raw >= ctx.parser_node_count;
@@ -1959,7 +1962,7 @@ const ExactCtx = struct {
             ctx.report.invalid_id += 1;
             return;
         }
-        const id: SymbolId = @enumFromInt(raw_id);
+        const id: SymbolId = @fromBackingInt(@intCast(raw_id));
         const symbol = ctx.symbols[raw_id];
         if (!exactValidScope(ctx.scopes, symbol.scope_id)) {
             ctx.report.invalid_scope += 1;
@@ -1978,7 +1981,7 @@ const ExactCtx = struct {
                         ctx.scope_owner_map,
                         raw,
                     );
-                    const resolved = resolveInScopes(ctx.scopes, ctx.scope_maps, symbol_name, @enumFromInt(expected));
+                    const resolved = resolveInScopes(ctx.scopes, ctx.scope_maps, symbol_name, @fromBackingInt(@intCast(expected)));
                     const owner_binding = if (expected < ctx.scope_maps.len)
                         ctx.scope_maps[expected].get(symbol_name)
                     else
@@ -2001,7 +2004,7 @@ const ExactCtx = struct {
                         symbol.scope_id.toIndex() == lexical.scope
                     else
                         false;
-                    const retained_source_scope = !hasReachableScopeOwner(ctx, @intFromEnum(symbol.scope_id)) and
+                    const retained_source_scope = !hasReachableScopeOwner(ctx, @backingInt(symbol.scope_id)) and
                         (resolved == null or resolved.? == raw_id);
                     const annex_b_alias = lexical_binding_matches and
                         isAnnexBBlockFunctionAlias(ctx.scopes, &symbol, expected);
@@ -2029,12 +2032,12 @@ const ExactCtx = struct {
                 if ((mapped == null or mapped.? != raw_id) and !isolated_helper_binding) recordScopeMapMismatch(
                     ctx.report,
                     "binding-not-in-scope-map",
-                    @intFromEnum(symbol.scope_id),
+                    @backingInt(symbol.scope_id),
                     raw_id,
                     symbol_name,
                 );
             } else {
-                recordScopeMapMismatch(ctx.report, "binding-scope-map-out-of-range", @intFromEnum(symbol.scope_id), raw_id, symbol_name);
+                recordScopeMapMismatch(ctx.report, "binding-scope-map-out-of-range", @backingInt(symbol.scope_id), raw_id, symbol_name);
             }
             if (symbol.synthetic_name.len > 0 and
                 (raw_id >= ctx.declaration_counts.len or ctx.declaration_counts[raw_id] == 0))
@@ -2052,7 +2055,7 @@ const ExactCtx = struct {
             if (generated) recordLegacyDebt(ctx.report, "missing_reference", finding);
             const origin = ctx.origins.get(raw) orelse std.math.maxInt(u32);
             if (origin < ctx.ast.nodes.items.len and ctx.ast.nodes.items[origin].tag == .identifier_reference) {
-                const origin_node = ctx.ast.getNode(@enumFromInt(origin));
+                const origin_node = ctx.ast.getNode(@fromBackingInt(@intCast(origin)));
                 std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}:{s}@{d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin, ctx.ast.getText(origin_node.data.string_ref), origin_node.span.start });
             } else {
                 std.debug.print("zntc: symbol-debt-node kind=missing_reference node={d} name={s} tag={s} span={d} id={d} origin={d}\n", .{ raw, name, @tagName(node.tag), node.span.start, raw_id, origin });
@@ -2068,7 +2071,7 @@ const ExactCtx = struct {
             ctx.report.invisible_reference += 1;
         }
         if (expectedReferenceScope(ctx.ast, ctx.root, ctx.parent_by_node, ctx.scope_owner_map, raw)) |expected_scope| {
-            if (@intFromEnum(indexed.scope_id) != expected_scope.scope) {
+            if (@backingInt(indexed.scope_id) != expected_scope.scope) {
                 const retained_source_scope = !ctx.helper_reference_nodes.contains(raw) and
                     isRetainedSourceScopeReference(
                         ctx,
@@ -2076,18 +2079,18 @@ const ExactCtx = struct {
                         name,
                         id,
                         indexed.scope_id,
-                        @enumFromInt(expected_scope.scope),
+                        @fromBackingInt(@intCast(expected_scope.scope)),
                     );
                 if (!retained_source_scope) {
                     ctx.report.reference_scope_mismatch += 1;
-                    const actual_owner = scopeOwnerNode(ctx.scope_owner_map, @intFromEnum(indexed.scope_id));
+                    const actual_owner = scopeOwnerNode(ctx.scope_owner_map, @backingInt(indexed.scope_id));
                     const actual_owner_tag = if (actual_owner) |owner|
                         if (owner < ctx.ast.nodes.items.len) @tagName(ctx.ast.nodes.items[owner].tag) else "out-of-range"
                     else
                         "none";
                     const indexed_id = indexed.symbol_id;
                     const indexed_symbol_scope = if (indexed_id < ctx.symbols.len)
-                        @intFromEnum(ctx.symbols[indexed_id].scope_id)
+                        @backingInt(ctx.symbols[indexed_id].scope_id)
                     else
                         std.math.maxInt(u32);
                     const indexed_symbol_kind = if (indexed_id < ctx.symbols.len)
@@ -2103,7 +2106,7 @@ const ExactCtx = struct {
                             indexed_id,
                             indexed_symbol_scope,
                             indexed_symbol_kind,
-                            @intFromEnum(indexed.scope_id),
+                            @backingInt(indexed.scope_id),
                             actual_owner_tag,
                             actual_owner orelse std.math.maxInt(u32),
                             expected_scope.scope,
@@ -2121,17 +2124,17 @@ const ExactCtx = struct {
         if (expected) |expected_id| {
             if (expected_id != raw_id) {
                 ctx.report.scope_resolution_mismatch += 1;
-                const expected_scope = if (expected_id < ctx.symbols.len) @intFromEnum(ctx.symbols[expected_id].scope_id) else std.math.maxInt(u32);
-                const actual_scope = @intFromEnum(ctx.symbols[raw_id].scope_id);
+                const expected_scope = if (expected_id < ctx.symbols.len) @backingInt(ctx.symbols[expected_id].scope_id) else std.math.maxInt(u32);
+                const actual_scope = @backingInt(ctx.symbols[raw_id].scope_id);
                 const expected_kind = if (expected_id < ctx.symbols.len) @tagName(ctx.symbols[expected_id].kind) else "invalid";
                 std.debug.print(
                     "zntc: symbol-identity-resolution node={d} name={s} actual={d}@{d}:{s} expected={d}@{d}:{s} ref_scope={d}\n",
-                    .{ raw, name, raw_id, actual_scope, @tagName(ctx.symbols[raw_id].kind), expected_id, expected_scope, expected_kind, @intFromEnum(indexed.scope_id) },
+                    .{ raw, name, raw_id, actual_scope, @tagName(ctx.symbols[raw_id].kind), expected_id, expected_scope, expected_kind, @backingInt(indexed.scope_id) },
                 );
                 for (ctx.symbol_ids, 0..) |binding_id, binding_node| {
                     if (binding_id == null or (binding_id.? != raw_id and binding_id.? != expected_id)) continue;
                     if (binding_node >= ctx.ast.nodes.items.len or ctx.ast.nodes.items[binding_node].tag != .binding_identifier) continue;
-                    const binding = ctx.ast.getNode(@enumFromInt(@as(u32, @intCast(binding_node))));
+                    const binding = ctx.ast.getNode(@fromBackingInt(@intCast(@as(u32, @intCast(binding_node)))));
                     const binding_name = ctx.ast.getText(binding.data.string_ref);
                     std.debug.print(
                         "  identity-binding id={d} node={d} name={s} span={d} tag={s}\n",
@@ -2196,7 +2199,7 @@ fn formalParametersAreNonSimple(ctx: *const ExactCtx, params: @import("../parser
                 const extra: usize = param.data.extra;
                 const extra_len = ctx.ast.extra_data.items.len;
                 if (extra <= extra_len and extra_len - extra > 2 and
-                    ctx.ast.extra_data.items[extra + 2] != @intFromEnum(NodeIndex.none)) return true;
+                    ctx.ast.extra_data.items[extra + 2] != @backingInt(NodeIndex.none)) return true;
                 if (extra < extra_len) {
                     const pattern_raw = ctx.ast.extra_data.items[extra];
                     if (pattern_raw < ctx.ast.nodes.items.len) {
@@ -2347,7 +2350,7 @@ fn expectedBindingScope(ctx: *const ExactCtx, node: u32, kind: @import("../seman
 
 fn isRetainedCatchBinding(ctx: *const ExactCtx, node: u32, symbol_id: u32, scope: ScopeId) bool {
     if (symbol_id >= ctx.symbols.len or ctx.symbols[symbol_id].kind != .catch_binding) return false;
-    return !hasReachableScopeOwner(ctx, @intFromEnum(scope)) and
+    return !hasReachableScopeOwner(ctx, @backingInt(scope)) and
         hasReachableBindingForSymbol(ctx, symbol_id) and
         node < ctx.symbol_ids.len and ctx.symbol_ids[node] == symbol_id;
 }
@@ -2636,16 +2639,16 @@ fn checkExactImpl(
     defer reachable_stack.deinit(allocator);
     var reachable_node_order: std.ArrayList(u32) = .empty;
     defer reachable_node_order.deinit(allocator);
-    if (root.isNone() or @intFromEnum(root) >= ast.nodes.items.len) {
+    if (root.isNone() or @backingInt(root) >= ast.nodes.items.len) {
         report.invalid_ast_root += 1;
-        report.first_invalid_ast_root = @intFromEnum(root);
+        report.first_invalid_ast_root = @backingInt(root);
         return report;
     }
     try reachable_stack.append(allocator, .{ .node_index = root });
     while (reachable_stack.pop()) |frame| {
         const node_idx = frame.node_index;
-        if (node_idx.isNone() or @intFromEnum(node_idx) >= ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node_idx);
+        if (node_idx.isNone() or @backingInt(node_idx) >= ast.nodes.items.len) continue;
+        const raw = @backingInt(node_idx);
         if (frame.exit) {
             try visit_states.put(allocator, raw, .visited);
             continue;
@@ -2666,7 +2669,7 @@ fn checkExactImpl(
         var children = ast_walk.children(ast, ast.getNode(node_idx));
         while (children.next()) |child| {
             if (child.isNone()) continue;
-            const child_raw = @intFromEnum(child);
+            const child_raw = @backingInt(child);
             if (child_raw >= ast.nodes.items.len) {
                 report.invalid_ast_edge += 1;
                 if (report.first_invalid_ast_edge == null) report.first_invalid_ast_edge = .{
@@ -2700,7 +2703,7 @@ fn checkExactImpl(
                     }
                 }
             }
-            if (child_raw == @intFromEnum(root)) {
+            if (child_raw == @backingInt(root)) {
                 report.ambiguous_ast_parent += 1;
                 if (report.first_ambiguous_ast_parent == null) report.first_ambiguous_ast_parent = .{
                     .node_index = child_raw,
@@ -2842,8 +2845,8 @@ fn checkExactImpl(
             if (declaration.tag != .ts_module_declaration or declaration.data.binary.flags == 1) continue;
             const scope_id = scope_owner_map.get(raw) orelse continue;
             const name_idx = declaration.data.binary.left;
-            if (name_idx.isNone() or @intFromEnum(name_idx) >= symbol_ids.len) continue;
-            const declaration_id = symbol_ids[@intFromEnum(name_idx)] orelse continue;
+            if (name_idx.isNone() or @backingInt(name_idx) >= symbol_ids.len) continue;
+            const declaration_id = symbol_ids[@backingInt(name_idx)] orelse continue;
             if (declaration_id >= symbols.len) continue;
             const owner_id = declaration_owners.get(declaration_id) orelse declaration_id;
             if (scope_id >= scopes.len or owner_id >= symbols.len) {
@@ -2867,16 +2870,16 @@ fn checkExactImpl(
         const raw = entry.key_ptr.*;
         const node = ast.nodes.items[raw];
         if (node.tag == .with_statement and !node.data.binary.right.isNone()) {
-            try with_body_roots.put(allocator, @intFromEnum(node.data.binary.right), {});
+            try with_body_roots.put(allocator, @backingInt(node.data.binary.right), {});
         }
         if (node.tag != .call_expression or node.data.extra + 2 >= ast.extra_data.items.len) continue;
-        const callee: NodeIndex = @enumFromInt(ast.extra_data.items[node.data.extra]);
-        if (callee.isNone() or @intFromEnum(callee) >= ast.nodes.items.len) continue;
+        const callee: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[node.data.extra]));
+        if (callee.isNone() or @backingInt(callee) >= ast.nodes.items.len) continue;
         const callee_node = ast.getNode(callee);
         if (callee_node.tag != .identifier_reference or
             !std.mem.eql(u8, ast.getText(callee_node.data.string_ref), "eval")) continue;
-        const eval_scope = expectedReferenceScope(ast, root, &parent_by_node, scope_owner_map, @intFromEnum(callee)) orelse continue;
-        if (exactExecutionUnit(scopes, @enumFromInt(eval_scope.scope))) |unit|
+        const eval_scope = expectedReferenceScope(ast, root, &parent_by_node, scope_owner_map, @backingInt(callee)) orelse continue;
+        if (exactExecutionUnit(scopes, @fromBackingInt(@intCast(eval_scope.scope)))) |unit|
             try dynamic_eval_units.put(allocator, unit, {});
     }
     var declaration_nodes = try collectDeclarationNodes(allocator, ast, &reachable_nodes);
@@ -2906,8 +2909,8 @@ fn checkExactImpl(
             if (parent_raw < ast.nodes.items.len) {
                 const parent = ast.nodes.items[parent_raw];
                 if (parent.tag == .import_specifier) {
-                    const is_imported_slot = @intFromEnum(parent.data.binary.left) == raw;
-                    const is_local_slot = @intFromEnum(parent.data.binary.right) == raw;
+                    const is_imported_slot = @backingInt(parent.data.binary.left) == raw;
+                    const is_local_slot = @backingInt(parent.data.binary.right) == raw;
                     if (is_imported_slot and !is_local_slot) continue;
                     if (!is_imported_slot and !is_local_slot) {
                         report.helper_symbol_mismatch += 1;
@@ -2979,7 +2982,7 @@ fn checkExactImpl(
     for (scopes, 0..) |scope, scope_i| {
         if (scope_i == 0) {
             const is_cjs_wrapper_parent = if (cjs_wrapper) |wrapper|
-                scope.parent == @as(ScopeId, @enumFromInt(wrapper.scope_id))
+                scope.parent == @as(ScopeId, @fromBackingInt(@intCast(wrapper.scope_id)))
             else
                 false;
             if (!scope.parent.isNone() and !is_cjs_wrapper_parent) report.invalid_scope += 1;
@@ -2991,7 +2994,7 @@ fn checkExactImpl(
                 report.invalid_scope += 1;
             }
         }
-        var ancestor: ScopeId = @enumFromInt(@as(u32, @intCast(scope_i)));
+        var ancestor: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(scope_i))));
         var hops: usize = 0;
         while (!ancestor.isNone() and hops <= scopes.len) : (hops += 1) {
             if (!exactValidScope(scopes, ancestor)) {
@@ -3009,7 +3012,7 @@ fn checkExactImpl(
                 continue;
             }
             const mapped_symbol = symbols[entry.value_ptr.*];
-            const mapped_scope: ScopeId = @enumFromInt(@as(u32, @intCast(scope_i)));
+            const mapped_scope: ScopeId = @fromBackingInt(@intCast(@as(u32, @intCast(scope_i))));
             const is_cjs_root_alias = if (cjs_wrapper) |wrapper| blk: {
                 if (scope_i != 0) break :blk false;
                 break :blk (std.mem.eql(u8, entry.key_ptr.*, "exports") and entry.value_ptr.* == wrapper.exports_symbol_id) or
@@ -3034,14 +3037,14 @@ fn checkExactImpl(
 
     if (pre_transform_scope_count) |source_scope_count| {
         if (source_scope_count > scopes.len) {
-            recordScopeOwnerMismatch(&report, @intFromEnum(root), ast.getNode(root).tag, "source-scope-count-out-of-range", null, null, null);
+            recordScopeOwnerMismatch(&report, @backingInt(root), ast.getNode(root).tag, "source-scope-count-out-of-range", null, null, null);
         } else {
             var reachable_scope_owners: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer reachable_scope_owners.deinit(allocator);
             var live_scope_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer live_scope_ids.deinit(allocator);
-            for (symbols) |symbol| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @intFromEnum(symbol.scope_id));
-            for (references) |reference| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @intFromEnum(reference.scope_id));
+            for (symbols) |symbol| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(symbol.scope_id));
+            for (references) |reference| try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @backingInt(reference.scope_id));
             for (scope_maps, 0..) |scope_map, scope_index| {
                 if (scope_map.count() > 0) try markScopeAndAncestors(allocator, &live_scope_ids, scopes, @intCast(scope_index));
             }
@@ -3063,7 +3066,7 @@ fn checkExactImpl(
                 // Declaration rows anchor a binding in its own scope; only an
                 // evaluated read or write would sit in the self-name scope.
                 if (reference.flags.declare) continue;
-                try referenced_scopes.put(allocator, @intFromEnum(reference.scope_id), {});
+                try referenced_scopes.put(allocator, @backingInt(reference.scope_id), {});
             }
             var name_scope_iter = reachable_nodes.iterator();
             while (name_scope_iter.next()) |entry| {
@@ -3148,7 +3151,7 @@ fn checkExactImpl(
                 if (member_in_lexical_map) break;
             }
             if (member_in_lexical_map) {
-                recordScopeMapMismatch(&report, "namespace-member-in-lexical-map", @intFromEnum(symbols[member_id].scope_id), member_id, exactSymbolName(ast, &symbols[member_id]));
+                recordScopeMapMismatch(&report, "namespace-member-in-lexical-map", @backingInt(symbols[member_id].scope_id), member_id, exactSymbolName(ast, &symbols[member_id]));
             }
         }
     }
@@ -3175,7 +3178,7 @@ fn checkExactImpl(
             null;
         const helper = helper_scope_map.get(name);
         if ((normal == null or normal.? != sid) and (helper == null or helper.? != sid))
-            recordScopeMapMismatch(&report, "symbol-not-in-either-map", @intFromEnum(symbol.scope_id), @intCast(sid), name);
+            recordScopeMapMismatch(&report, "symbol-not-in-either-map", @backingInt(symbol.scope_id), @intCast(sid), name);
     }
     var reachable_iter = reachable_nodes.iterator();
     while (reachable_iter.next()) |reachable_entry| {
@@ -3202,7 +3205,7 @@ fn checkExactImpl(
             const is_function_body = if (parent_raw) |parent| blk: {
                 const parent_node = ast.nodes.items[parent];
                 break :blk ast.functionBodyBlock(parent_node) != null and
-                    @intFromEnum(ast.functionBodyBlock(parent_node).?) == raw;
+                    @backingInt(ast.functionBodyBlock(parent_node).?) == raw;
             } else false;
             const is_aliased_catch_body = if (parent_raw) |parent| blk: {
                 const parent_node = ast.nodes.items[parent];
@@ -3263,11 +3266,11 @@ fn checkExactImpl(
         }
         if (scope_raw >= scopes.len) continue;
         const owner_scope = scopes[scope_raw];
-        if (raw == @intFromEnum(root)) {
+        if (raw == @backingInt(root)) {
             // A non-Program root can be a fragment nested inside an implicit
             // outer scope, so only a Program owner is required to be parentless.
             const is_cjs_wrapper_parent = if (cjs_wrapper) |wrapper|
-                scope_raw == 0 and owner_scope.parent == @as(ScopeId, @enumFromInt(wrapper.scope_id))
+                scope_raw == 0 and owner_scope.parent == @as(ScopeId, @fromBackingInt(@intCast(wrapper.scope_id)))
             else
                 false;
             if (ast.nodes.items[raw].tag == .program and !owner_scope.parent.isNone() and !is_cjs_wrapper_parent)
@@ -3277,7 +3280,7 @@ fn checkExactImpl(
                     ast.nodes.items[raw].tag,
                     scope_raw,
                     null,
-                    if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                    if (exactValidScope(scopes, owner_scope.parent)) @backingInt(owner_scope.parent) else null,
                 );
             continue;
         }
@@ -3289,12 +3292,12 @@ fn checkExactImpl(
                     ast.nodes.items[raw].tag,
                     scope_raw,
                     null,
-                    if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                    if (exactValidScope(scopes, owner_scope.parent)) @backingInt(owner_scope.parent) else null,
                 );
                 continue;
             };
             if (function_scope >= scopes.len or
-                scopes[function_scope].parent != @as(ScopeId, @enumFromInt(scope_raw)))
+                scopes[function_scope].parent != @as(ScopeId, @fromBackingInt(@intCast(scope_raw))))
             {
                 recordScopeOwnerParentMismatch(
                     &report,
@@ -3303,7 +3306,7 @@ fn checkExactImpl(
                     function_scope,
                     scope_raw,
                     if (function_scope < scopes.len and exactValidScope(scopes, scopes[function_scope].parent))
-                        @intFromEnum(scopes[function_scope].parent)
+                        @backingInt(scopes[function_scope].parent)
                     else
                         null,
                 );
@@ -3322,7 +3325,7 @@ fn checkExactImpl(
                     ast.nodes.items[raw].tag,
                     scope_raw,
                     null,
-                    if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                    if (exactValidScope(scopes, owner_scope.parent)) @backingInt(owner_scope.parent) else null,
                 );
                 continue;
             };
@@ -3344,7 +3347,7 @@ fn checkExactImpl(
                 ast.nodes.items[raw].tag,
                 scope_raw,
                 expected_parent.scope,
-                if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                if (exactValidScope(scopes, owner_scope.parent)) @backingInt(owner_scope.parent) else null,
             );
             continue;
         }
@@ -3355,7 +3358,7 @@ fn checkExactImpl(
                 ast.nodes.items[raw].tag,
                 scope_raw,
                 null,
-                if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+                if (exactValidScope(scopes, owner_scope.parent)) @backingInt(owner_scope.parent) else null,
             );
             continue;
         };
@@ -3377,7 +3380,7 @@ fn checkExactImpl(
             ast.nodes.items[raw].tag,
             scope_raw,
             expected_parent.scope,
-            if (exactValidScope(scopes, owner_scope.parent)) @intFromEnum(owner_scope.parent) else null,
+            if (exactValidScope(scopes, owner_scope.parent)) @backingInt(owner_scope.parent) else null,
         );
     }
 
@@ -3421,7 +3424,7 @@ fn checkExactImpl(
         var parameter_id: ?u32 = null;
         var parameter_count: usize = 0;
         for (symbols, 0..) |symbol, sid| {
-            if (symbol.synthetic_kind != .namespace_iife_parameter or @intFromEnum(symbol.scope_id) != scope_raw) continue;
+            if (symbol.synthetic_kind != .namespace_iife_parameter or @backingInt(symbol.scope_id) != scope_raw) continue;
             parameter_id = @intCast(sid);
             parameter_count += 1;
         }
@@ -3438,8 +3441,8 @@ fn checkExactImpl(
             report.namespace_iife_param_mismatch += 1;
         }
         const source_name = declaration.data.binary.left;
-        if (source_name.isNone() or @intFromEnum(source_name) >= ast.nodes.items.len or @intFromEnum(source_name) >= symbol_ids.len or
-            symbol_ids[@intFromEnum(source_name)] == null or symbol_ids[@intFromEnum(source_name)].? == sid)
+        if (source_name.isNone() or @backingInt(source_name) >= ast.nodes.items.len or @backingInt(source_name) >= symbol_ids.len or
+            symbol_ids[@backingInt(source_name)] == null or symbol_ids[@backingInt(source_name)].? == sid)
         {
             report.namespace_iife_param_mismatch += 1;
         }
@@ -3452,7 +3455,7 @@ fn checkExactImpl(
         var owner_is_reachable = false;
         var reachable_owner_scan = reachable_nodes.iterator();
         while (reachable_owner_scan.next()) |reachable| {
-            if (scope_owner_map.get(reachable.key_ptr.*) == @as(?u32, @intFromEnum(symbol.scope_id))) {
+            if (scope_owner_map.get(reachable.key_ptr.*) == @as(?u32, @backingInt(symbol.scope_id))) {
                 owner_is_reachable = true;
                 break;
             }
@@ -3483,7 +3486,7 @@ fn checkExactImpl(
         var parameter_id: ?u32 = null;
         var parameter_count: usize = 0;
         for (symbols, 0..) |symbol, sid| {
-            if (symbol.synthetic_kind != .enum_iife_parameter or @intFromEnum(symbol.scope_id) != scope_raw) continue;
+            if (symbol.synthetic_kind != .enum_iife_parameter or @backingInt(symbol.scope_id) != scope_raw) continue;
             parameter_id = @intCast(sid);
             parameter_count += 1;
         }
@@ -3494,8 +3497,8 @@ fn checkExactImpl(
         const sid = parameter_id.?;
         report.enum_iife_params += 1;
         const parameter = symbols[sid];
-        const name_idx: NodeIndex = @enumFromInt(ast.extra_data.items[enum_extra]);
-        const source_name = if (!name_idx.isNone() and @intFromEnum(name_idx) < ast.nodes.items.len)
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[enum_extra]));
+        const source_name = if (!name_idx.isNone() and @backingInt(name_idx) < ast.nodes.items.len)
             ast.getText(ast.getNode(name_idx).span)
         else
             "";
@@ -3505,8 +3508,8 @@ fn checkExactImpl(
         {
             report.enum_iife_param_mismatch += 1;
         }
-        if (name_idx.isNone() or @intFromEnum(name_idx) >= ast.nodes.items.len or @intFromEnum(name_idx) >= symbol_ids.len or
-            symbol_ids[@intFromEnum(name_idx)] == null or symbol_ids[@intFromEnum(name_idx)].? == sid)
+        if (name_idx.isNone() or @backingInt(name_idx) >= ast.nodes.items.len or @backingInt(name_idx) >= symbol_ids.len or
+            symbol_ids[@backingInt(name_idx)] == null or symbol_ids[@backingInt(name_idx)].? == sid)
         {
             report.enum_iife_param_mismatch += 1;
         }
@@ -3521,7 +3524,7 @@ fn checkExactImpl(
         while (reachable_owner_scan.next()) |reachable| {
             const owner_idx = reachable.key_ptr.*;
             if (ast.nodes.items[owner_idx].tag == .ts_enum_declaration and
-                scope_owner_map.get(owner_idx) == @as(?u32, @intCast(@intFromEnum(symbol.scope_id))))
+                scope_owner_map.get(owner_idx) == @as(?u32, @intCast(@backingInt(symbol.scope_id))))
             {
                 owner_is_reachable = true;
                 break;
@@ -3531,7 +3534,7 @@ fn checkExactImpl(
     }
 
     for (references) |reference| {
-        const sid = @intFromEnum(reference.symbol_id);
+        const sid = @backingInt(reference.symbol_id);
         if (sid >= symbols.len) {
             report.invalid_id += 1;
             continue;
@@ -3543,7 +3546,7 @@ fn checkExactImpl(
                     report.declaration_identity_mismatch += 1;
                 }
             } else {
-                const declaration_raw = @intFromEnum(reference.declaration_node_index);
+                const declaration_raw = @backingInt(reference.declaration_node_index);
                 if (declaration_raw >= ast.nodes.items.len or
                     !reachable_nodes.contains(declaration_raw) or
                     !declaration_nodes.contains(declaration_raw) or
@@ -3583,7 +3586,7 @@ fn checkExactImpl(
             if (!reference.flags.declare) report.invalid_reference_node += 1;
             continue;
         }
-        const key = @intFromEnum(reference.node_index);
+        const key = @backingInt(reference.node_index);
         if (key >= ast.nodes.items.len or reference.flags.declare) {
             report.invalid_reference_node += 1;
             continue;
@@ -3599,7 +3602,7 @@ fn checkExactImpl(
                 continue;
             },
         }
-        if (ast.nodes.items[@intFromEnum(root)].tag == .program and
+        if (ast.nodes.items[@backingInt(root)].tag == .program and
             reference.stmt_idx != Reference.NO_STMT)
         {
             const expected_stmt_idx = topLevelStatementIndex(ast, root, &parent_by_node, key, null);
@@ -3654,7 +3657,7 @@ fn checkExactImpl(
             if (entry.value_ptr.* > 1) report.declaration_anchor_mismatch += 1;
         }
     }
-    if (ast.nodes.items[@intFromEnum(root)].tag == .program) {
+    if (ast.nodes.items[@backingInt(root)].tag == .program) {
         var aliased_nodes = aliased_statement_parents.iterator();
         while (aliased_nodes.next()) |entry| {
             const node = entry.key_ptr.*;
@@ -3708,7 +3711,7 @@ fn checkExactImpl(
         }
         const symbol = symbols[entry.value_ptr.*];
         if (symbol.kind != .import_binding or !std.mem.eql(u8, entry.key_ptr.*, exactSymbolName(ast, &symbol))) {
-            recordScopeMapMismatch(&report, "helper-entry-kind-or-name", @intFromEnum(symbol.scope_id), @intCast(entry.value_ptr.*), entry.key_ptr.*);
+            recordScopeMapMismatch(&report, "helper-entry-kind-or-name", @backingInt(symbol.scope_id), @intCast(entry.value_ptr.*), entry.key_ptr.*);
         }
     }
 
@@ -3773,8 +3776,8 @@ fn countCyclicAstEdges(
     var cyclic_edges: usize = 0;
     while (stack.pop()) |frame| {
         const node_index = frame.node_index;
-        if (node_index.isNone() or @intFromEnum(node_index) >= ast.nodes.items.len) continue;
-        const raw = @intFromEnum(node_index);
+        if (node_index.isNone() or @backingInt(node_index) >= ast.nodes.items.len) continue;
+        const raw = @backingInt(node_index);
         if (frame.exit) {
             try states.put(allocator, raw, .visited);
             continue;
@@ -3788,7 +3791,7 @@ fn countCyclicAstEdges(
         try stack.append(allocator, .{ .node_index = node_index, .exit = true });
         var children = ast_walk.children(ast, ast.getNode(node_index));
         while (children.next()) |child| {
-            if (!child.isNone() and @intFromEnum(child) < ast.nodes.items.len)
+            if (!child.isNone() and @backingInt(child) < ast.nodes.items.len)
                 try stack.append(allocator, .{ .node_index = child });
         }
     }
@@ -3807,7 +3810,7 @@ fn isRetainedSourceScopeReference(
     use_scope: ScopeId,
     output_scope: ScopeId,
 ) bool {
-    const raw_id = @intFromEnum(symbol_id);
+    const raw_id = @backingInt(symbol_id);
     if (raw_id >= ctx.symbols.len or !exactValidScope(ctx.scopes, use_scope) or
         !exactValidScope(ctx.scopes, output_scope)) return false;
     const symbol = ctx.symbols[raw_id];
@@ -3817,7 +3820,7 @@ fn isRetainedSourceScopeReference(
         // Keep the exact catch SymbolId only when the catch owner disappeared
         // from the output tree and a binding with that ID still exists there.
         if (symbol.kind != .catch_binding or
-            hasReachableScopeOwner(ctx, @intFromEnum(symbol.scope_id)) or
+            hasReachableScopeOwner(ctx, @backingInt(symbol.scope_id)) or
             !hasReachableBindingForSymbol(ctx, raw_id)) return false;
     }
     if (!exactVisibleFrom(ctx.scopes, ctx.symbols, symbol_id, use_scope)) return false;
@@ -3835,13 +3838,13 @@ fn isRetainedSourceScopeReference(
         if (hops >= ctx.ast.nodes.items.len or parent >= ctx.ast.nodes.items.len) return false;
         if (!childSkipsScopeOwner(ctx.ast, parent, child)) {
             if (ctx.scope_owner_map.get(parent)) |scope| {
-                if (scope == @intFromEnum(use_scope)) return false;
+                if (scope == @backingInt(use_scope)) return false;
             }
         }
         child = parent;
-        if (child == @intFromEnum(ctx.root)) {
+        if (child == @backingInt(ctx.root)) {
             if (ctx.scope_owner_map.get(child)) |scope| {
-                if (scope == @intFromEnum(use_scope)) return false;
+                if (scope == @backingInt(use_scope)) return false;
             }
             break;
         }
@@ -3899,10 +3902,11 @@ pub const PostMinifyReport = struct {
     /// invariant counter and participates automatically so a new failure
     /// counter cannot be omitted from the post-minify gate.
     pub fn isClean(self: PostMinifyReport) bool {
-        inline for (std.meta.fields(PostMinifyReport)) |field| {
-            if (comptime isObservationField(field.name)) continue;
-            if (comptime field.type != usize) @compileError("unclassified PostMinifyReport field; classify it as an observation or usize invariant counter");
-            if (@field(self, field.name) != 0) return false;
+        const info = @typeInfo(PostMinifyReport).@"struct";
+        inline for (info.field_names, info.field_types) |name, field_type| {
+            if (comptime isObservationField(name)) continue;
+            if (comptime field_type != usize) @compileError("unclassified PostMinifyReport field; classify it as an observation or usize invariant counter");
+            if (@field(self, name) != 0) return false;
         }
         return true;
     }
@@ -3947,7 +3951,7 @@ pub fn checkPostMinify(
     var pre_reference_ids: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer pre_reference_ids.deinit(allocator);
     for (pre_minify_references) |reference| {
-        if (!reference.node_index.isNone()) try pre_reference_ids.put(allocator, @intFromEnum(reference.node_index), @intFromEnum(reference.symbol_id));
+        if (!reference.node_index.isNone()) try pre_reference_ids.put(allocator, @backingInt(reference.node_index), @backingInt(reference.symbol_id));
     }
     var report: PostMinifyReport = .{};
 
@@ -3979,7 +3983,7 @@ pub fn checkPostMinify(
             else => continue,
         }
         const has_name = ast.hasExtra(owner_node.data.extra, ast_mod.ClassExtra.name) and
-            !(@as(NodeIndex, @enumFromInt(ast.extra_data.items[owner_node.data.extra + ast_mod.ClassExtra.name]))).isNone();
+            !(@as(NodeIndex, @fromBackingInt(@intCast(ast.extra_data.items[owner_node.data.extra + ast_mod.ClassExtra.name])))).isNone();
         const owner_key = spanKey(owner_node.span);
         var actual: ?u32 = null;
         var actual_it = actual_class_self_symbols.iterator();
@@ -4079,7 +4083,7 @@ pub fn checkPostMinify(
     // that key position. Use the shared edge-aware reference walk so the audit
     // compares only actual references.
     for (reference_nodes) |reference_node| {
-        const raw = @intFromEnum(reference_node);
+        const raw = @backingInt(reference_node);
         if (raw >= ast.nodes.items.len) continue;
         if (ast.nodes.items[raw].tag == .binding_identifier or declaration_nodes.contains(raw)) continue;
         report.references_checked += 1;
@@ -4478,6 +4482,8 @@ pub const StrictStatus = enum {
     duplicate_reference,
 };
 
+const strict_status_count = @typeInfo(StrictStatus).@"enum".field_names.len;
+
 const StrictStatusPolicy = enum {
     accepted_bound,
     accepted_external,
@@ -4534,7 +4540,7 @@ pub const OrphanSyntheticSymbol = struct {
     scope_id: ScopeId,
 };
 pub const StrictReport = struct {
-    counts: [std.meta.fields(StrictStatus).len]usize = @splat(0),
+    counts: [strict_status_count]usize = @splat(0),
     marked_synthetic: usize = 0,
     orphan_symbols: usize = 0,
     cyclic_ast_edges: usize = 0,
@@ -4542,7 +4548,7 @@ pub const StrictReport = struct {
     orphan_symbol_findings: std.ArrayList(OrphanSyntheticSymbol) = .empty,
 
     pub fn statusCount() usize {
-        return std.meta.fields(StrictStatus).len;
+        return strict_status_count;
     }
 
     /// Pin the enum-backed counter schema independently of the hand-written
@@ -4569,10 +4575,10 @@ pub const StrictReport = struct {
     /// The checker updates both while walking the AST; a drift here would let
     /// a zeroed counter hide a failing finding (or hide a dropped finding).
     pub fn isConsistent(self: *const StrictReport) bool {
-        var observed_counts: [std.meta.fields(StrictStatus).len]usize = @splat(0);
+        var observed_counts: [strict_status_count]usize = @splat(0);
         var observed_marked_synthetic: usize = 0;
         for (self.findings.items) |finding| {
-            observed_counts[@intFromEnum(finding.status)] += 1;
+            observed_counts[@backingInt(finding.status)] += 1;
             if (finding.marked_synthetic) observed_marked_synthetic += 1;
         }
         for (observed_counts, self.counts) |observed, reported| {
@@ -4590,7 +4596,7 @@ pub const StrictReport = struct {
         if (!self.isConsistent()) return false;
         if (self.orphan_symbols != 0) return false;
         for (self.counts, 0..) |count, status| {
-            switch (strictStatusPolicy(@enumFromInt(status))) {
+            switch (strictStatusPolicy(@fromBackingInt(@intCast(status)))) {
                 .accepted_bound, .accepted_external => {},
                 .binding_scope_delegated, .must_be_zero => if (count != 0) return false,
             }
@@ -4611,7 +4617,7 @@ pub const StrictReport = struct {
             if (finding.status == .scope_mismatch and finding.tag != .binding_identifier) return false;
         }
         for (self.counts, 0..) |count, status| {
-            switch (strictStatusPolicy(@enumFromInt(status))) {
+            switch (strictStatusPolicy(@fromBackingInt(@intCast(status)))) {
                 .accepted_bound, .accepted_external, .binding_scope_delegated => {},
                 .must_be_zero => if (count != 0) return false,
             }
@@ -4638,7 +4644,7 @@ const StrictCtx = struct {
     oom: bool = false,
 
     fn add(self: *StrictCtx, idx: NodeIndex, node: Node) void {
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (raw < self.parser_node_count or self.seen.contains(raw)) return;
         self.seen.put(self.allocator, raw, {}) catch {
             self.oom = true;
@@ -4650,7 +4656,7 @@ const StrictCtx = struct {
         const trace = self.node_scopes.get(raw);
         const reference = self.references.get(raw);
         const status = self.classify(raw, node, name, sid, trace, reference);
-        self.report.counts[@intFromEnum(status)] += 1;
+        self.report.counts[@backingInt(status)] += 1;
         if (marked) self.report.marked_synthetic += 1;
         self.report.findings.append(self.allocator, .{
             .node = raw,
@@ -4659,11 +4665,11 @@ const StrictCtx = struct {
             .status = status,
             .marked_synthetic = marked,
             .symbol_id = sid,
-            .reference_symbol_id = if (reference) |e| @intFromEnum(e.reference.symbol_id) else null,
+            .reference_symbol_id = if (reference) |e| @backingInt(e.reference.symbol_id) else null,
             .expected_scope_id = if (trace) |s| s.scope_id else null,
-            .symbol_scope_id = if (sid) |id| if (id < self.symbols.len) @intFromEnum(self.symbols[id].scope_id) else null else null,
-            .symbol_origin_scope_id = if (sid) |id| if (id < self.symbols.len) @intFromEnum(self.symbols[id].origin_scope) else null else null,
-            .reference_scope_id = if (reference) |e| @intFromEnum(e.reference.scope_id) else null,
+            .symbol_scope_id = if (sid) |id| if (id < self.symbols.len) @backingInt(self.symbols[id].scope_id) else null else null,
+            .symbol_origin_scope_id = if (sid) |id| if (id < self.symbols.len) @backingInt(self.symbols[id].origin_scope) else null else null,
+            .reference_scope_id = if (reference) |e| @backingInt(e.reference.scope_id) else null,
         }) catch {
             self.oom = true;
         };
@@ -4711,7 +4717,7 @@ const StrictCtx = struct {
             }
             if (!expected.valid) return .invalid_scope;
             const lexical_scope = expected.scope_id orelse return .scope_unknown;
-            if (!validScope(@enumFromInt(lexical_scope), self.scopes)) return .invalid_scope;
+            if (!validScope(@fromBackingInt(@intCast(lexical_scope)), self.scopes)) return .invalid_scope;
             // Lowering a lexical `let`/`const` declaration to emitted `var`
             // syntax does not change that source binding's semantic scope.
             // The transformer keeps those SymbolIds in their lexical scopes
@@ -4724,7 +4730,7 @@ const StrictCtx = struct {
                 nearestVarScope(lexical_scope, self.scopes) orelse return .invalid_scope
             else
                 lexical_scope;
-            if (@intFromEnum(symbol.scope_id) != declaration_scope) return .scope_mismatch;
+            if (@backingInt(symbol.scope_id) != declaration_scope) return .scope_mismatch;
             // scope_id is the binding's current output storage scope.
             // origin_scope is source provenance and may name a detached
             // source scope after lowering moves the binding into generated
@@ -4734,13 +4740,13 @@ const StrictCtx = struct {
 
         const evidence = reference orelse return .missing_reference;
         if (evidence.count != 1) return .duplicate_reference;
-        if (@intFromEnum(evidence.reference.symbol_id) != id) return .identity_mismatch;
+        if (@backingInt(evidence.reference.symbol_id) != id) return .identity_mismatch;
         if (!validScope(evidence.reference.scope_id, self.scopes) or !validScope(symbol.scope_id, self.scopes)) return .invalid_scope;
         const expected = trace orelse return .scope_unknown;
         if (expected.ambiguous) return .scope_ambiguous;
         if (!expected.valid) return .invalid_scope;
         const expected_scope = expected.scope_id orelse return .scope_unknown;
-        if (@intFromEnum(evidence.reference.scope_id) != expected_scope) return .scope_mismatch;
+        if (@backingInt(evidence.reference.scope_id) != expected_scope) return .scope_mismatch;
         if (!visibleFrom(symbol.scope_id, evidence.reference.scope_id, self.scopes)) return .invisible_reference;
         return .bound;
     }
@@ -4782,8 +4788,8 @@ fn collectParentTraces(
     defer children.deinit(allocator);
     try stack.append(allocator, .{ .node = root });
     while (stack.pop()) |parent_visit| {
-        if (parent_visit.node.isNone() or @as(usize, @intFromEnum(parent_visit.node)) >= ast.nodes.items.len) continue;
-        const raw = @intFromEnum(parent_visit.node);
+        if (parent_visit.node.isNone() or @as(usize, @backingInt(parent_visit.node)) >= ast.nodes.items.len) continue;
+        const raw = @backingInt(parent_visit.node);
         if (parent_visit.parent) |parent| {
             const gop = try traces.getOrPut(allocator, raw);
             if (gop.found_existing) {
@@ -4836,7 +4842,7 @@ fn isAnnexBBlockFunctionAlias(scopes: []const Scope, symbol: *const Symbol, bloc
 }
 
 fn nearestVarScope(start: u32, scopes: []const Scope) ?u32 {
-    var current: ScopeId = @enumFromInt(start);
+    var current: ScopeId = @fromBackingInt(@intCast(start));
     var hops: usize = 0;
     while (!current.isNone() and hops < scopes.len) : (hops += 1) {
         const index = current.toIndex();
@@ -4890,8 +4896,8 @@ fn collectScopeTraces(
         .{ .valid = false };
     try stack.append(allocator, .{ .node = root, .incoming = initial_scope });
     while (stack.pop()) |scope_visit| {
-        if (scope_visit.node.isNone() or @as(usize, @intFromEnum(scope_visit.node)) >= ast.nodes.items.len) continue;
-        const raw = @intFromEnum(scope_visit.node);
+        if (scope_visit.node.isNone() or @as(usize, @backingInt(scope_visit.node)) >= ast.nodes.items.len) continue;
+        const raw = @backingInt(scope_visit.node);
         var effective = scope_visit.incoming;
         if (scope_owner_map.get(raw)) |owner_scope| {
             if (@as(usize, owner_scope) >= scopes.len) {
@@ -4923,10 +4929,10 @@ fn collectScopeTraces(
                 scope_owner_map,
                 scopes,
                 raw,
-                @intFromEnum(child),
+                @backingInt(child),
             )) |name_scope|
                 ScopePath{ .scope_id = name_scope, .valid = true }
-            else if (childSkipsScopeOwner(ast, raw, @intFromEnum(child)))
+            else if (childSkipsScopeOwner(ast, raw, @backingInt(child)))
                 scope_visit.incoming
             else
                 effective;
@@ -4944,7 +4950,7 @@ fn collectReferenceEvidence(
     errdefer result.deinit(allocator);
     for (references) |reference| {
         if (reference.node_index.isNone() or reference.flags.declare) continue;
-        const raw = @intFromEnum(reference.node_index);
+        const raw = @backingInt(reference.node_index);
         if (result.getPtr(raw)) |evidence| {
             evidence.count = if (evidence.count == std.math.maxInt(u8)) evidence.count else evidence.count + 1;
         } else {
@@ -4958,7 +4964,7 @@ fn strictBindingVisit(ctx: *StrictCtx, idx: NodeIndex, node: Node) ast_walk.Walk
     if (reference_walk.isTypeOnly(node.tag)) return .skip_children;
     if (node.tag == .ts_module_declaration and node.data.binary.flags == 1) return .skip_children;
     if (node.tag == .binding_identifier) {
-        const raw = @intFromEnum(idx);
+        const raw = @backingInt(idx);
         if (raw < ctx.symbol_ids.len) {
             if (ctx.symbol_ids[raw]) |id| {
                 if (id < ctx.symbols.len) ctx.reachable_binding_symbols.put(ctx.allocator, id, {}) catch {
@@ -5115,7 +5121,7 @@ pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
     const report_written = blk: {
         writer.print("zntc: synthetic-coverage {s}:", .{file_path}) catch break :blk false;
         inline for (std.meta.tags(StrictStatus)) |status| {
-            writer.print(" {s}={d}", .{ @tagName(status), report.counts[@intFromEnum(status)] }) catch break :blk false;
+            writer.print(" {s}={d}", .{ @tagName(status), report.counts[@backingInt(status)] }) catch break :blk false;
         }
         writer.print(
             " orphan_symbols={d} cyclic_ast_edges={d} marked_synthetic={d} consistent={d} symbol_identity_complete={d} strict_status_count={d} strict_status_fingerprint={x}\n",
@@ -5134,13 +5140,13 @@ pub fn printStrict(file_path: []const u8, report: *const StrictReport) void {
             finding.symbol_id,
             finding.name,
             @tagName(finding.kind),
-            @intFromEnum(finding.scope_id),
+            @backingInt(finding.scope_id),
         });
     }
-    var printed: [std.meta.fields(StrictStatus).len]usize = @splat(0);
+    var printed: [strict_status_count]usize = @splat(0);
     for (report.findings.items) |finding| {
         if (finding.status == .bound or finding.status == .external) continue;
-        const group = @intFromEnum(finding.status);
+        const group = @backingInt(finding.status);
         if (printed[group] == 8) continue;
         std.debug.print("  synthetic-coverage {s} node={d} {s}({s}) marked={any} sid={any} ref_sid={any} scope={any} symbol_scope={any} origin_scope={any} ref_scope={any}\n", .{
             @tagName(finding.status),   finding.node,                finding.name,              @tagName(finding.tag),   finding.marked_synthetic,
@@ -5171,10 +5177,11 @@ test "exact coverage is not clean when a generated binding scope is unknown" {
 }
 
 test "exact coverage cleanliness fails closed for every invariant counter" {
-    inline for (std.meta.fields(ExactReport)) |field| {
-        if (comptime ExactReport.isObservationField(field.name) or ExactReport.isDiagnosticField(field.name)) continue;
+    const exact_info = @typeInfo(ExactReport).@"struct";
+    inline for (exact_info.field_names) |name| {
+        if (comptime ExactReport.isObservationField(name) or ExactReport.isDiagnosticField(name)) continue;
         var report: ExactReport = .{};
-        @field(report, field.name) = 1;
+        @field(report, name) = 1;
         try std.testing.expect(!report.isClean());
     }
 
@@ -5238,10 +5245,11 @@ test "exact coverage diagnostic findings cannot disagree with a clean report" {
 }
 
 test "post-minify coverage cleanliness includes every invariant counter" {
-    inline for (std.meta.fields(PostMinifyReport)) |field| {
-        if (comptime PostMinifyReport.isObservationField(field.name)) continue;
+    const post_info = @typeInfo(PostMinifyReport).@"struct";
+    inline for (post_info.field_names) |name| {
+        if (comptime PostMinifyReport.isObservationField(name)) continue;
         var report: PostMinifyReport = .{};
-        @field(report, field.name) = 1;
+        @field(report, name) = 1;
         try std.testing.expect(!report.isClean());
     }
 
@@ -5274,10 +5282,10 @@ test "exact helper coverage rejects an unbound generated helper reference" {
     };
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
     const symbol_ids = [_]?u32{null};
-    const helper_refs = [_]u32{@intFromEnum(helper_ref)};
+    const helper_refs = [_]u32{@backingInt(helper_ref)};
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -5324,8 +5332,8 @@ test "exact helper coverage rejects an ancestor scope on a nested helper referen
         .data = .{ .list = try ast.addNodeList(&.{block}) },
     });
 
-    const global_scope: ScopeId = @enumFromInt(0);
-    const block_scope: ScopeId = @enumFromInt(1);
+    const global_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const block_scope: ScopeId = @fromBackingInt(@intCast(1));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = global_scope, .kind = .block, .is_strict = false },
@@ -5348,14 +5356,14 @@ test "exact helper coverage rejects an ancestor scope on a nested helper referen
     var references = [_]Reference{.{
         .node_index = helper_ref,
         .scope_id = block_scope,
-        .symbol_id = @enumFromInt(0),
+        .symbol_id = @fromBackingInt(@intCast(0)),
         .flags = .{ .read = true },
     }};
-    const helper_refs = [_]u32{@intFromEnum(helper_ref)};
+    const helper_refs = [_]u32{@backingInt(helper_ref)};
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), @intFromEnum(global_scope));
-    try scope_owner_map.put(allocator, @intFromEnum(block), @intFromEnum(block_scope));
+    try scope_owner_map.put(allocator, @backingInt(root), @backingInt(global_scope));
+    try scope_owner_map.put(allocator, @backingInt(block), @backingInt(block_scope));
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     defer helper_scope_map.deinit(allocator);
     try helper_scope_map.put(allocator, "__helper", 0);
@@ -5415,11 +5423,11 @@ fn makeTestIdentifierNode(ast: *Ast, tag: Node.Tag, span: Span) !NodeIndex {
 fn makePostMinifyTestSymbolTable(comptime count: usize, span: Span) [count]Symbol {
     const filler: Symbol = .{
         .name = span,
-        .scope_id = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
         .kind = .variable_const,
         .declaration_span = span,
     };
-    return [_]Symbol{filler} ** count;
+    return @splat(filler);
 }
 
 test "exact identity audit catches a same-name reference bound to the wrong scope" {
@@ -5438,8 +5446,8 @@ test "exact identity audit catches a same-name reference bound to the wrong scop
         .data = .{ .list = list },
     });
 
-    const outer_scope: ScopeId = @enumFromInt(0);
-    const inner_scope: ScopeId = @enumFromInt(1);
+    const outer_scope: ScopeId = @fromBackingInt(@intCast(0));
+    const inner_scope: ScopeId = @fromBackingInt(@intCast(1));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
         .{ .parent = outer_scope, .kind = .block, .is_strict = false },
@@ -5457,7 +5465,7 @@ test "exact identity audit catches a same-name reference bound to the wrong scop
     };
     const symbol_ids = [_]?u32{ 0, null };
     const references = [_]Reference{
-        .{ .node_index = ref_node, .scope_id = inner_scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = ref_node, .scope_id = inner_scope, .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -5504,7 +5512,7 @@ test "exact identity audit rejects a shadowed binding carrying the outer SymbolI
 
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
     };
     var outer_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer outer_names.deinit(allocator);
@@ -5514,21 +5522,21 @@ test "exact identity audit rejects a shadowed binding carrying the outer SymbolI
     try inner_names.put(allocator, "x", 1);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ outer_names, inner_names };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name },
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = name },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = name },
     };
     var symbol_ids = [_]?u32{ null, null, null, null };
-    symbol_ids[@intFromEnum(outer_binding)] = 0;
+    symbol_ids[@backingInt(outer_binding)] = 0;
     // Adversarial corruption: the inner declaration uses the outer identity.
-    symbol_ids[@intFromEnum(inner_binding)] = 0;
+    symbol_ids[@backingInt(inner_binding)] = 0;
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(1), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(1)), .flags = .{ .declare = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
-    try scope_owner_map.put(allocator, @intFromEnum(inner), 1);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(inner), 1);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -5574,17 +5582,17 @@ test "exact identity audit resolves relocated symbols by their emitted scope-map
     try output_names.put(allocator, "_err3$6", 1);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){output_names};
     const symbols = [_]Symbol{
-        .{ .name = source_name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$4" },
-        .{ .name = source_name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$6" },
+        .{ .name = source_name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$4" },
+        .{ .name = source_name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = source_name, .synthetic_name = "_err3$6" },
     };
     const symbol_ids = [_]?u32{ 0, 1, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(1), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(1)), .flags = .{ .declare = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -5626,7 +5634,7 @@ test "exact identity audit rejects non-declaration references without an AST nod
         .span = name,
         .data = .{ .list = list },
     });
-    const scope: ScopeId = @enumFromInt(0);
+    const scope: ScopeId = @fromBackingInt(@intCast(0));
     var names: std.StringHashMapUnmanaged(usize) = .empty;
     defer names.deinit(allocator);
     try names.put(allocator, "x", 0);
@@ -5637,8 +5645,8 @@ test "exact identity audit rejects non-declaration references without an AST nod
     };
     const symbol_ids = [_]?u32{ 0, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
-        .{ .node_index = root, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = .none, .scope_id = scope, .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
+        .{ .node_index = root, .scope_id = scope, .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -5679,7 +5687,7 @@ test "exact identity audit checks parser-owned SymbolIds against their reference
     const ref = try makeTestIdentifierNode(&ast, .identifier_reference, x_name);
     const list = try ast.addNodeList(&.{ binding, ref });
     const root = try ast.addListNode(.array_expression, x_name, list);
-    const scope: ScopeId = @enumFromInt(0);
+    const scope: ScopeId = @fromBackingInt(@intCast(0));
     var names: std.StringHashMapUnmanaged(usize) = .empty;
     defer names.deinit(allocator);
     try names.put(allocator, "x", 0);
@@ -5692,7 +5700,7 @@ test "exact identity audit checks parser-owned SymbolIds against their reference
     };
     const symbol_ids = [_]?u32{ 0, 1, null };
     const references = [_]Reference{
-        .{ .node_index = ref, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = ref, .scope_id = scope, .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -5732,7 +5740,7 @@ test "exact identity audit rejects references to nodes removed from the final AS
     const orphan = try makeTestIdentifierNode(&ast, .identifier_reference, x_name);
     const zero = try ast.addString("0");
     const root = try ast.addNode(.{ .tag = .numeric_literal, .span = zero, .data = .{ .none = 0 } });
-    const scope: ScopeId = @enumFromInt(0);
+    const scope: ScopeId = @fromBackingInt(@intCast(0));
     var names: std.StringHashMapUnmanaged(usize) = .empty;
     defer names.deinit(allocator);
     try names.put(allocator, "x", 0);
@@ -5743,7 +5751,7 @@ test "exact identity audit rejects references to nodes removed from the final AS
     };
     const symbol_ids = [_]?u32{ 0, null };
     const references = [_]Reference{
-        .{ .node_index = orphan, .scope_id = scope, .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = orphan, .scope_id = scope, .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -5798,27 +5806,27 @@ test "exact identity audit rejects an identifier node shared by different lexica
     });
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false },
     };
     var root_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer root_names.deinit(allocator);
     try root_names.put(allocator, "x", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, root_names, .empty, .empty };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
     };
     const symbol_ids = [_]?u32{ 0, 0, null, null, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = shared_ref, .scope_id = @enumFromInt(3), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = shared_ref, .scope_id = @fromBackingInt(@intCast(3)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
-    try scope_owner_map.put(allocator, @intFromEnum(left), 2);
-    try scope_owner_map.put(allocator, @intFromEnum(right), 3);
+    try scope_owner_map.put(allocator, @backingInt(root), 1);
+    try scope_owner_map.put(allocator, @backingInt(left), 2);
+    try scope_owner_map.put(allocator, @backingInt(right), 3);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -5884,18 +5892,18 @@ test "exact identity audit rejects a shared reference node across top-level stat
     try local_names.put(allocator, "x", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){local_names};
     var symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name, .reference_count = 2 },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = name, .reference_count = 2 },
     };
     const symbol_ids = [_]?u32{ 0, 0, 0, null, null, null, null };
     var references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = shared_ref, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
-        .{ .node_index = unshared_ref, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true }, .stmt_idx = 3 },
-        .{ .node_index = unshared_ref, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true }, .stmt_idx = 99 },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = shared_ref, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
+        .{ .node_index = unshared_ref, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true }, .stmt_idx = 3 },
+        .{ .node_index = unshared_ref, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true }, .stmt_idx = 99 },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -5994,24 +6002,24 @@ test "exact identity audit rejects a reference node shared by block statements" 
     const root = try ast.addListNode(.program, name, try ast.addNodeList(&.{ binding, block }));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
     };
     var global_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer global_names.deinit(allocator);
     try global_names.put(allocator, "x", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ global_names, .empty };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
     };
     const symbol_ids = [_]?u32{ 0, 0, null, null, null, null, null };
     var references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true }, .stmt_idx = 0, .scope_stmt_idx = 0 },
-        .{ .node_index = reference_node, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true }, .stmt_idx = 1, .scope_stmt_idx = 1 },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true }, .stmt_idx = 0, .scope_stmt_idx = 0 },
+        .{ .node_index = reference_node, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true }, .stmt_idx = 1, .scope_stmt_idx = 1 },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
-    try scope_owner_map.put(allocator, @intFromEnum(block), 1);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(block), 1);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6035,7 +6043,7 @@ test "exact identity audit rejects a reference node shared by block statements" 
     );
     try std.testing.expectEqual(@as(usize, 0), clean.reference_scope_statement_alias);
 
-    ast.nodes.items[@intFromEnum(first_statement)].data.unary.operand = reference_node;
+    ast.nodes.items[@backingInt(first_statement)].data.unary.operand = reference_node;
     const aliased = try checkExact(
         allocator,
         &ast,
@@ -6086,16 +6094,16 @@ test "exact identity audit rejects one reference node used twice in one statemen
     try global_names.put(allocator, "x", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){global_names};
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
     };
     const symbol_ids = [_]?u32{ 0, 0, null, null, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true }, .stmt_idx = 0 },
-        .{ .node_index = reference_node, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .read = true }, .stmt_idx = 1 },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true }, .stmt_idx = 0 },
+        .{ .node_index = reference_node, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true }, .stmt_idx = 1 },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6139,29 +6147,29 @@ test "exact identity audit rejects a copied external reference shadowed in its o
     });
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
     };
     var local_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer local_names.deinit(allocator);
     try local_names.put(allocator, "Object", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, local_names };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = name },
     };
     const symbol_ids = [_]?u32{ null, 0, null, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    try scope_owner_map.put(allocator, @backingInt(root), 1);
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, @intFromEnum(source_global), {});
+    try unresolved.put(allocator, @backingInt(source_global), {});
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer origins.deinit(allocator);
-    try origins.put(allocator, @intFromEnum(copied_global), @intFromEnum(source_global));
+    try origins.put(allocator, @backingInt(copied_global), @backingInt(source_global));
 
     const report = try checkExact(
         allocator,
@@ -6199,10 +6207,10 @@ test "exact identity audit accepts a provenance-backed external at a known ordin
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
     var owners: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer owners.deinit(allocator);
-    try owners.put(allocator, @intFromEnum(root), 0);
+    try owners.put(allocator, @backingInt(root), 0);
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, @intFromEnum(external_ref), {});
+    try unresolved.put(allocator, @backingInt(external_ref), {});
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
 
@@ -6238,7 +6246,7 @@ test "exact identity audit keeps a copied external unclassified inside with at a
     const name = try ast.addString("Object");
     const source_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
     const copied_ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
-    const parser_node_count = @intFromEnum(copied_ref);
+    const parser_node_count = @backingInt(copied_ref);
     const object_span = try ast.addString("'scope'");
     const object = try ast.addNode(.{
         .tag = .string_literal,
@@ -6266,14 +6274,14 @@ test "exact identity audit keeps a copied external unclassified inside with at a
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, @intFromEnum(source_ref), {});
+    try unresolved.put(allocator, @backingInt(source_ref), {});
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer origins.deinit(allocator);
-    try origins.put(allocator, @intFromEnum(copied_ref), @intFromEnum(source_ref));
+    try origins.put(allocator, @backingInt(copied_ref), @backingInt(source_ref));
 
     const report = try checkExact(
         allocator,
@@ -6294,7 +6302,7 @@ test "exact identity audit keeps a copied external unclassified inside with at a
     );
     try std.testing.expectEqual(@as(usize, 0), report.external_references);
     try std.testing.expectEqual(@as(usize, 1), report.unclassified_reference);
-    try std.testing.expectEqual(@intFromEnum(copied_ref), report.first_unclassified_reference.?.node_index);
+    try std.testing.expectEqual(@backingInt(copied_ref), report.first_unclassified_reference.?.node_index);
 }
 
 test "exact identity audit keeps a copied external unclassified after direct eval" {
@@ -6315,7 +6323,7 @@ test "exact identity audit keeps a copied external unclassified after direct eva
         .data = .{ .string_ref = eval_arg_span },
     });
     const eval_args = try ast.addNodeList(&.{eval_arg});
-    const eval_extra = try ast.addExtras(&.{ @intFromEnum(eval_ref), eval_args.start, eval_args.len, 0 });
+    const eval_extra = try ast.addExtras(&.{ @backingInt(eval_ref), eval_args.start, eval_args.len, 0 });
     const eval_call = try ast.addExtraNode(.call_expression, eval_name, eval_extra);
     const eval_statement = try ast.addNode(.{
         .tag = .expression_statement,
@@ -6339,15 +6347,15 @@ test "exact identity audit keeps a copied external unclassified after direct eva
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, @intFromEnum(source_ref), {});
-    try unresolved.put(allocator, @intFromEnum(eval_ref), {});
+    try unresolved.put(allocator, @backingInt(source_ref), {});
+    try unresolved.put(allocator, @backingInt(eval_ref), {});
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer origins.deinit(allocator);
-    try origins.put(allocator, @intFromEnum(copied_ref), @intFromEnum(source_ref));
+    try origins.put(allocator, @backingInt(copied_ref), @backingInt(source_ref));
 
     const report = try checkExact(
         allocator,
@@ -6385,7 +6393,7 @@ test "exact identity audit accepts an unresolved external when its scope path is
     const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, @intFromEnum(external_ref), {});
+    try unresolved.put(allocator, @backingInt(external_ref), {});
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
 
@@ -6425,17 +6433,17 @@ test "exact identity audit keeps an unknown-scope external unclassified if any l
     try nested_names.put(allocator, "Object", 0);
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .function, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .function, .is_strict = false },
     };
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, nested_names };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = name },
     };
     const symbol_ids = [_]?u32{null};
     const scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer unresolved.deinit(allocator);
-    try unresolved.put(allocator, @intFromEnum(external_ref), {});
+    try unresolved.put(allocator, @backingInt(external_ref), {});
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
 
@@ -6484,26 +6492,26 @@ test "exact identity audit rejects a visible but non-innermost reference scope" 
     });
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false },
     };
     var outer_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer outer_names.deinit(allocator);
     try outer_names.put(allocator, "x", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, outer_names, .empty };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
     };
     const symbol_ids = [_]?u32{ 0, null, null };
     // x는 outer_scope에서 보이고 여기서 이름 조회도 성공하지만, 실제
     // 참조 노드는 inner block 안에 있으므로 ScopeId는 2여야 한다.
     const references = [_]Reference{
-        .{ .node_index = ref_node, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = ref_node, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
-    try scope_owner_map.put(allocator, @intFromEnum(inner), 2);
+    try scope_owner_map.put(allocator, @backingInt(root), 1);
+    try scope_owner_map.put(allocator, @backingInt(inner), 2);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6540,12 +6548,12 @@ test "exact identity audit preserves a relocated source binding after its source
     const name = try ast.addString("x");
     const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
     const ref_node = try makeTestIdentifierNode(&ast, .identifier_reference, name);
-    const none = @intFromEnum(NodeIndex.none);
-    const declarator_extra = try ast.addExtras(&.{ @intFromEnum(binding), none, none });
+    const none = @backingInt(NodeIndex.none);
+    const declarator_extra = try ast.addExtras(&.{ @backingInt(binding), none, none });
     const declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = name, .data = .{ .extra = declarator_extra } });
     const declarators = try ast.addNodeList(&.{declarator});
     const declaration_extra = try ast.addExtras(&.{
-        @intFromEnum(ast_mod.VariableDeclarationKind.@"var"),
+        @backingInt(ast_mod.VariableDeclarationKind.@"var"),
         declarators.start,
         declarators.len,
     });
@@ -6553,27 +6561,27 @@ test "exact identity audit preserves a relocated source binding after its source
     const root = try ast.addListNode(.block_statement, name, try ast.addNodeList(&.{ declaration, ref_node }));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
     };
     var output_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer output_names.deinit(allocator);
     try output_names.put(allocator, "x", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ output_names, .empty, .empty };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(0), .origin_scope = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .origin_scope = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
     };
     var symbol_ids = try allocator.alloc(?u32, ast.nodes.items.len);
     @memset(symbol_ids, null);
-    symbol_ids[@intFromEnum(binding)] = 0;
-    symbol_ids[@intFromEnum(ref_node)] = 0;
+    symbol_ids[@backingInt(binding)] = 0;
+    symbol_ids[@backingInt(ref_node)] = 0;
     const references = [_]Reference{
-        .{ .node_index = .none, .declaration_node_index = binding, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = ref_node, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = .none, .declaration_node_index = binding, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = ref_node, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 2);
+    try scope_owner_map.put(allocator, @backingInt(root), 2);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6612,9 +6620,9 @@ test "exact identity audit rejects retained source scope when output binding sha
     const relocated_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
     const shadow_binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
     const reference = try makeTestIdentifierNode(&ast, .identifier_reference, name);
-    const none = @intFromEnum(NodeIndex.none);
+    const none = @backingInt(NodeIndex.none);
 
-    const relocated_declarator_extra = try ast.addExtras(&.{ @intFromEnum(relocated_binding), none, none });
+    const relocated_declarator_extra = try ast.addExtras(&.{ @backingInt(relocated_binding), none, none });
     const relocated_declarator = try ast.addNode(.{
         .tag = .variable_declarator,
         .span = name,
@@ -6622,7 +6630,7 @@ test "exact identity audit rejects retained source scope when output binding sha
     });
     const relocated_declarators = try ast.addNodeList(&.{relocated_declarator});
     const relocated_declaration_extra = try ast.addExtras(&.{
-        @intFromEnum(ast_mod.VariableDeclarationKind.@"var"),
+        @backingInt(ast_mod.VariableDeclarationKind.@"var"),
         relocated_declarators.start,
         relocated_declarators.len,
     });
@@ -6632,7 +6640,7 @@ test "exact identity audit rejects retained source scope when output binding sha
         .data = .{ .extra = relocated_declaration_extra },
     });
 
-    const shadow_declarator_extra = try ast.addExtras(&.{ @intFromEnum(shadow_binding), none, none });
+    const shadow_declarator_extra = try ast.addExtras(&.{ @backingInt(shadow_binding), none, none });
     const shadow_declarator = try ast.addNode(.{
         .tag = .variable_declarator,
         .span = name,
@@ -6640,7 +6648,7 @@ test "exact identity audit rejects retained source scope when output binding sha
     });
     const shadow_declarators = try ast.addNodeList(&.{shadow_declarator});
     const shadow_declaration_extra = try ast.addExtras(&.{
-        @intFromEnum(ast_mod.VariableDeclarationKind.let),
+        @backingInt(ast_mod.VariableDeclarationKind.let),
         shadow_declarators.start,
         shadow_declarators.len,
     });
@@ -6654,9 +6662,9 @@ test "exact identity audit rejects retained source scope when output binding sha
 
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
-        .{ .parent = @enumFromInt(2), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(2)), .kind = .block, .is_strict = false },
     };
     var output_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer output_names.deinit(allocator);
@@ -6666,23 +6674,23 @@ test "exact identity audit rejects retained source scope when output binding sha
     try shadow_names.put(allocator, "x", 1);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ output_names, .empty, .empty, shadow_names };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(0), .origin_scope = @enumFromInt(1), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
-        .{ .name = name, .scope_id = @enumFromInt(3), .kind = .variable_let, .declaration_span = name },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .origin_scope = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = name, .reference_count = 1 },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(3)), .kind = .variable_let, .declaration_span = name },
     };
     var symbol_ids = try allocator.alloc(?u32, ast.nodes.items.len);
     @memset(symbol_ids, null);
-    symbol_ids[@intFromEnum(relocated_binding)] = 0;
-    symbol_ids[@intFromEnum(shadow_binding)] = 1;
-    symbol_ids[@intFromEnum(reference)] = 0;
+    symbol_ids[@backingInt(relocated_binding)] = 0;
+    symbol_ids[@backingInt(shadow_binding)] = 1;
+    symbol_ids[@backingInt(reference)] = 0;
     const references = [_]Reference{
-        .{ .node_index = .none, .declaration_node_index = relocated_binding, .scope_id = @enumFromInt(0), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = .none, .declaration_node_index = shadow_binding, .scope_id = @enumFromInt(3), .symbol_id = @enumFromInt(1), .flags = .{ .declare = true } },
-        .{ .node_index = reference, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = .none, .declaration_node_index = relocated_binding, .scope_id = @fromBackingInt(@intCast(0)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = .none, .declaration_node_index = shadow_binding, .scope_id = @fromBackingInt(@intCast(3)), .symbol_id = @fromBackingInt(@intCast(1)), .flags = .{ .declare = true } },
+        .{ .node_index = reference, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 2);
-    try scope_owner_map.put(allocator, @intFromEnum(inner), 3);
+    try scope_owner_map.put(allocator, @backingInt(root), 2);
+    try scope_owner_map.put(allocator, @backingInt(inner), 3);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6718,12 +6726,12 @@ test "exact identity audit preserves generated catch symbols after state-machine
     const name = try ast.addString("_caught");
     const binding = try makeTestIdentifierNode(&ast, .binding_identifier, name);
     const ref = try makeTestIdentifierNode(&ast, .identifier_reference, name);
-    const none = @intFromEnum(NodeIndex.none);
-    const declarator_extra = try ast.addExtras(&.{ @intFromEnum(binding), none, none });
+    const none = @backingInt(NodeIndex.none);
+    const declarator_extra = try ast.addExtras(&.{ @backingInt(binding), none, none });
     const declarator = try ast.addNode(.{ .tag = .variable_declarator, .span = name, .data = .{ .extra = declarator_extra } });
     const declarators = try ast.addNodeList(&.{declarator});
     const declaration_extra = try ast.addExtras(&.{
-        @intFromEnum(ast_mod.VariableDeclarationKind.@"var"),
+        @backingInt(ast_mod.VariableDeclarationKind.@"var"),
         declarators.start,
         declarators.len,
     });
@@ -6732,25 +6740,25 @@ test "exact identity audit preserves generated catch symbols after state-machine
     const dead_catch = try ast.addNode(.{ .tag = .catch_clause, .span = name, .data = .{ .binary = .{ .left = .none, .right = .none, .flags = 0 } } });
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .catch_clause, .is_strict = false },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .catch_clause, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false },
     };
     var catch_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer catch_names.deinit(allocator);
     try catch_names.put(allocator, "_caught", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, catch_names, .empty };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .catch_binding, .declaration_span = name, .reference_count = 1, .synthetic_name = "_caught" },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .catch_binding, .declaration_span = name, .reference_count = 1, .synthetic_name = "_caught" },
     };
     const symbol_ids = [_]?u32{ 0, 0, null, null, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .declaration_node_index = binding, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = ref, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = .none, .declaration_node_index = binding, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = ref, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(body), 2);
-    try scope_owner_map.put(allocator, @intFromEnum(dead_catch), 1);
+    try scope_owner_map.put(allocator, @backingInt(body), 2);
+    try scope_owner_map.put(allocator, @backingInt(dead_catch), 1);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6792,25 +6800,25 @@ test "exact identity audit rejects generated catch symbols while their owner rem
     const root = try ast.addListNode(.array_expression, name, try ast.addNodeList(&.{catch_clause}));
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .catch_clause, .is_strict = false },
-        .{ .parent = @enumFromInt(1), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .catch_clause, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(1)), .kind = .block, .is_strict = false },
     };
     var catch_names: std.StringHashMapUnmanaged(usize) = .empty;
     defer catch_names.deinit(allocator);
     try catch_names.put(allocator, "_caught", 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, catch_names, .empty };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(1), .kind = .catch_binding, .declaration_span = name, .reference_count = 1, .synthetic_name = "_caught" },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .catch_binding, .declaration_span = name, .reference_count = 1, .synthetic_name = "_caught" },
     };
     const symbol_ids = [_]?u32{ 0, 0, null, null };
     const references = [_]Reference{
-        .{ .node_index = .none, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .declare = true } },
-        .{ .node_index = ref, .scope_id = @enumFromInt(1), .symbol_id = @enumFromInt(0), .flags = .{ .read = true } },
+        .{ .node_index = .none, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .declare = true } },
+        .{ .node_index = ref, .scope_id = @fromBackingInt(@intCast(1)), .symbol_id = @fromBackingInt(@intCast(0)), .flags = .{ .read = true } },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(catch_clause), 1);
-    try scope_owner_map.put(allocator, @intFromEnum(body), 2);
+    try scope_owner_map.put(allocator, @backingInt(catch_clause), 1);
+    try scope_owner_map.put(allocator, @backingInt(body), 2);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6846,16 +6854,16 @@ test "exact identity audit requires generated class and switch scopes" {
     const span = try ast.addString("x");
     const discriminant = try ast.addNode(.{ .tag = .numeric_literal, .span = span, .data = .{ .none = 0 } });
     const no_cases = try ast.addNodeList(&.{});
-    const switch_extra = try ast.addExtras(&.{ @intFromEnum(discriminant), no_cases.start, no_cases.len });
+    const switch_extra = try ast.addExtras(&.{ @backingInt(discriminant), no_cases.start, no_cases.len });
     const switch_node = try ast.addNode(.{
         .tag = .switch_statement,
         .span = span,
         .data = .{ .extra = switch_extra },
     });
     const class_extra = try ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(NodeIndex.none),
+        @backingInt(NodeIndex.none),
+        @backingInt(NodeIndex.none),
+        @backingInt(NodeIndex.none),
     });
     const class_node = try ast.addNode(.{
         .tag = .class_expression,
@@ -6870,12 +6878,12 @@ test "exact identity audit requires generated class and switch scopes" {
     });
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
     };
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, .empty };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    try scope_owner_map.put(allocator, @backingInt(root), 1);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6928,17 +6936,17 @@ test "exact identity audit rejects appended scopes without a reachable AST owner
     const generated_name = try ast.addString("generated");
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .block, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
     };
     var generated_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     try generated_scope_map.put(allocator, ast.getText(generated_name), 0);
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .empty, generated_scope_map };
     const symbols = [_]Symbol{
-        .{ .name = generated_name, .scope_id = @enumFromInt(1), .kind = .variable_let, .declaration_span = generated_name },
+        .{ .name = generated_name, .scope_id = @fromBackingInt(@intCast(1)), .kind = .variable_let, .declaration_span = generated_name },
     };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -6967,7 +6975,7 @@ test "exact identity audit rejects appended scopes without a reachable AST owner
 
     // A stale mapping to an AST node removed from the root is not ownership
     // evidence for a transform-created scope.
-    try scope_owner_map.put(allocator, @intFromEnum(stale_owner), 1);
+    try scope_owner_map.put(allocator, @backingInt(stale_owner), 1);
     const stale_mapping = try checkExactWithScopeBoundary(
         allocator,
         &ast,
@@ -6990,7 +6998,7 @@ test "exact identity audit rejects appended scopes without a reachable AST owner
     try std.testing.expect(!stale_mapping.isClean());
 
     // A reachable non-scope AST node is not a valid owner either.
-    try scope_owner_map.put(allocator, @intFromEnum(statement), 1);
+    try scope_owner_map.put(allocator, @backingInt(statement), 1);
     const wrong_owner_kind = try checkExactWithScopeBoundary(
         allocator,
         &ast,
@@ -7052,12 +7060,12 @@ test "exact identity audit excludes statement labels from variable references" {
     });
     const scopes = [_]Scope{
         .{ .parent = .none, .kind = .global, .is_strict = false },
-        .{ .parent = @enumFromInt(0), .kind = .block, .is_strict = false },
+        .{ .parent = @fromBackingInt(@intCast(0)), .kind = .block, .is_strict = false },
     };
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){ .{}, .{} };
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 1);
+    try scope_owner_map.put(allocator, @backingInt(root), 1);
     const unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
@@ -7173,15 +7181,15 @@ test "exact identity audit requires node provenance for external references and 
     const scope_maps = [_]std.StringHashMapUnmanaged(usize){.empty};
     const references: []const Reference = &.{};
     var unresolved: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    try unresolved.put(allocator, @intFromEnum(source_global), {});
+    try unresolved.put(allocator, @backingInt(source_global), {});
     var explicit_globals: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    try explicit_globals.put(allocator, @intFromEnum(explicit_global), {});
+    try explicit_globals.put(allocator, @backingInt(explicit_global), {});
     var origins: std.AutoHashMapUnmanaged(u32, u32) = .empty;
-    try origins.put(allocator, @intFromEnum(copied_global), @intFromEnum(source_global));
-    try origins.put(allocator, @intFromEnum(different_global), @intFromEnum(source_global));
+    try origins.put(allocator, @backingInt(copied_global), @backingInt(source_global));
+    try origins.put(allocator, @backingInt(different_global), @backingInt(source_global));
     var scope_owner_map: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer scope_owner_map.deinit(allocator);
-    try scope_owner_map.put(allocator, @intFromEnum(root), 0);
+    try scope_owner_map.put(allocator, @backingInt(root), 0);
     const helper_refs: []const u32 = &.{};
     const helper_scopes: std.StringHashMapUnmanaged(usize) = .empty;
 
@@ -7265,10 +7273,10 @@ test "post-minify audit rejects out-of-range class-self and helper IDs" {
         .data = .{ .list = try ast.addNodeList(&.{}) },
     });
     const class_extra = try ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(body),
-        @intFromEnum(NodeIndex.none),
+        @backingInt(NodeIndex.none),
+        @backingInt(NodeIndex.none),
+        @backingInt(body),
+        @backingInt(NodeIndex.none),
         0,
         0,
         0,
@@ -7292,10 +7300,10 @@ test "post-minify audit rejects out-of-range class-self and helper IDs" {
     try helper_scope_map.put(allocator, "value", 7);
     var actual_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer actual_class_self.deinit(allocator);
-    try actual_class_self.put(allocator, @intFromEnum(class), 7);
+    try actual_class_self.put(allocator, @backingInt(class), 7);
     var resolved_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer resolved_class_self.deinit(allocator);
-    try resolved_class_self.put(allocator, @intFromEnum(class), 2);
+    try resolved_class_self.put(allocator, @backingInt(class), 2);
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
 
     const report = try checkPostMinify(
@@ -7333,10 +7341,10 @@ test "post-minify audit accepts an alias read rebound to a surviving binding" {
     const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
     var actual = [_]?u32{ 7, 7, null };
     var resolved = [_]?u32{ 2, 2, null };
-    actual[@intFromEnum(binding)] = 7;
-    actual[@intFromEnum(reference)] = 7;
-    resolved[@intFromEnum(binding)] = 2;
-    resolved[@intFromEnum(reference)] = 2;
+    actual[@backingInt(binding)] = 7;
+    actual[@backingInt(reference)] = 7;
+    resolved[@backingInt(binding)] = 2;
+    resolved[@backingInt(reference)] = 2;
 
     const actual_symbols = makePostMinifyTestSymbolTable(8, try ast.addString("__actual_filler"));
     const resolved_symbols = makePostMinifyTestSymbolTable(3, try ast.addString("__resolved_filler"));
@@ -7404,7 +7412,7 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
     try std.testing.expect(report.isClean());
     try std.testing.expectEqual(@as(usize, 1), report.references_checked);
 
-    actual[@intFromEnum(value)] = null;
+    actual[@backingInt(value)] = null;
     report = try checkPostMinify(
         allocator,
         &ast,
@@ -7426,8 +7434,8 @@ test "post-minify audit ignores symbol-bearing static keys but checks property v
 
     // A bad value identity must still fail; skipping the static key must not
     // make the real property-value reference invisible to the gate.
-    actual[@intFromEnum(value)] = 7;
-    resolved[@intFromEnum(value)] = 3;
+    actual[@backingInt(value)] = 7;
+    resolved[@backingInt(value)] = 3;
     report = try checkPostMinify(
         allocator,
         &ast,
@@ -7462,10 +7470,10 @@ test "post-minify audit rejects a reference to an erased alias symbol" {
     const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
     var actual = [_]?u32{ 7, 9, null };
     var resolved = [_]?u32{ 2, 2, null };
-    actual[@intFromEnum(binding)] = 7;
-    actual[@intFromEnum(reference)] = 9;
-    resolved[@intFromEnum(binding)] = 2;
-    resolved[@intFromEnum(reference)] = 2;
+    actual[@backingInt(binding)] = 7;
+    actual[@backingInt(reference)] = 9;
+    resolved[@backingInt(binding)] = 2;
+    resolved[@backingInt(reference)] = 2;
 
     const actual_symbols = makePostMinifyTestSymbolTable(10, try ast.addString("__actual_filler"));
     const resolved_symbols = makePostMinifyTestSymbolTable(3, try ast.addString("__resolved_filler"));
@@ -7492,12 +7500,12 @@ test "post-minify audit rejects a reference mapped to the wrong shadowed binding
     const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
     var actual = [_]?u32{ 3, 4, 3, null };
     var resolved = [_]?u32{ 10, 11, 11, null };
-    actual[@intFromEnum(outer)] = 3;
-    actual[@intFromEnum(inner)] = 4;
-    actual[@intFromEnum(reference)] = 3;
-    resolved[@intFromEnum(outer)] = 10;
-    resolved[@intFromEnum(inner)] = 11;
-    resolved[@intFromEnum(reference)] = 11;
+    actual[@backingInt(outer)] = 3;
+    actual[@backingInt(inner)] = 4;
+    actual[@backingInt(reference)] = 3;
+    resolved[@backingInt(outer)] = 10;
+    resolved[@backingInt(inner)] = 11;
+    resolved[@backingInt(reference)] = 11;
 
     const actual_symbols = makePostMinifyTestSymbolTable(5, try ast.addString("__actual_filler"));
     const resolved_symbols = makePostMinifyTestSymbolTable(12, try ast.addString("__resolved_filler"));
@@ -7532,13 +7540,13 @@ test "post-minify audit rejects a helper reference shadowed by a source binding"
     const actual = [_]?u32{ 1, 0, null };
     const resolved = [_]?u32{ 1, 1, null };
     const symbols = [_]Symbol{
-        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .import_binding, .declaration_span = name },
-        .{ .name = name, .scope_id = @enumFromInt(0), .kind = .variable_let, .declaration_span = name },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .import_binding, .declaration_span = name },
+        .{ .name = name, .scope_id = @fromBackingInt(@intCast(0)), .kind = .variable_let, .declaration_span = name },
     };
     var helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     defer helper_scope_map.deinit(allocator);
     try helper_scope_map.put(allocator, "helper", 0);
-    const helper_nodes = [_]u32{@intFromEnum(helper_reference)};
+    const helper_nodes = [_]u32{@backingInt(helper_reference)};
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
     const empty_class_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty;
 
@@ -7599,10 +7607,10 @@ test "post-minify audit requires exact class self mapping before fallback" {
         .data = .{ .list = try ast.addNodeList(&.{self_reference}) },
     });
     const class_extra = try ast.addExtras(&.{
-        @intFromEnum(outer_binding),
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(body),
-        @intFromEnum(NodeIndex.none),
+        @backingInt(outer_binding),
+        @backingInt(NodeIndex.none),
+        @backingInt(body),
+        @backingInt(NodeIndex.none),
         0,
         0,
         0,
@@ -7621,7 +7629,7 @@ test "post-minify audit requires exact class self mapping before fallback" {
 
     const outer_symbol: Symbol = .{
         .name = name,
-        .scope_id = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
         .kind = .class_decl,
         .declaration_span = name,
     };
@@ -7630,7 +7638,7 @@ test "post-minify audit requires exact class self mapping before fallback" {
     var resolved_symbols: [12]Symbol = undefined;
     const filler: Symbol = .{
         .name = name,
-        .scope_id = @enumFromInt(0),
+        .scope_id = @fromBackingInt(@intCast(0)),
         .kind = .variable_const,
         .declaration_span = name,
     };
@@ -7646,10 +7654,10 @@ test "post-minify audit requires exact class self mapping before fallback" {
     const resolved = [_]?u32{ 10, 10, null, null, null };
     var actual_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer actual_class_self.deinit(allocator);
-    try actual_class_self.put(allocator, @intFromEnum(class), 1);
+    try actual_class_self.put(allocator, @backingInt(class), 1);
     var resolved_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer resolved_class_self.deinit(allocator);
-    try resolved_class_self.put(allocator, @intFromEnum(class), 11);
+    try resolved_class_self.put(allocator, @backingInt(class), 11);
     const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
 
@@ -7712,10 +7720,10 @@ test "post-minify audit accepts class self relocated to an exact wrapper binding
         .data = .{ .list = try ast.addNodeList(&.{self_reference}) },
     });
     const class_extra = try ast.addExtras(&.{
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(NodeIndex.none),
-        @intFromEnum(body),
-        @intFromEnum(NodeIndex.none),
+        @backingInt(NodeIndex.none),
+        @backingInt(NodeIndex.none),
+        @backingInt(body),
+        @backingInt(NodeIndex.none),
         0,
         0,
         0,
@@ -7738,7 +7746,7 @@ test "post-minify audit accepts class self relocated to an exact wrapper binding
     const resolved_symbols = makePostMinifyTestSymbolTable(11, name);
     var actual_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     defer actual_class_self.deinit(allocator);
-    try actual_class_self.put(allocator, @intFromEnum(class), 1);
+    try actual_class_self.put(allocator, @backingInt(class), 1);
     const missing_resolved_class_self: std.AutoHashMapUnmanaged(u32, u32) = .empty;
     const helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
     const empty_markers: std.AutoHashMapUnmanaged(u32, void) = .empty;
@@ -7764,9 +7772,9 @@ test "post-minify audit accepts class self relocated to an exact wrapper binding
     // Without the direct wrapper binding, the same missing owner map must
     // remain an error; the span/name fallback is insufficient evidence.
     var missing_wrapper_binding = actual;
-    missing_wrapper_binding[@intFromEnum(wrapper_binding)] = null;
+    missing_wrapper_binding[@backingInt(wrapper_binding)] = null;
     var missing_wrapper_resolution = resolved;
-    missing_wrapper_resolution[@intFromEnum(wrapper_binding)] = null;
+    missing_wrapper_resolution[@backingInt(wrapper_binding)] = null;
     const unproven_report = try checkPostMinify(
         allocator,
         &ast,
@@ -7801,10 +7809,10 @@ test "post-minify audit rejects shadowed globals and requires external provenanc
     const root = try ast.addNode(.{ .tag = .block_statement, .span = name, .data = .{ .list = list } });
     var actual = [_]?u32{ 7, 7, null };
     var resolved = [_]?u32{ 2, 2, null };
-    actual[@intFromEnum(binding)] = 7;
-    actual[@intFromEnum(reference)] = 7;
-    resolved[@intFromEnum(binding)] = 2;
-    resolved[@intFromEnum(reference)] = 2;
+    actual[@backingInt(binding)] = 7;
+    actual[@backingInt(reference)] = 7;
+    resolved[@backingInt(binding)] = 2;
+    resolved[@backingInt(reference)] = 2;
     const actual_symbols = makePostMinifyTestSymbolTable(8, try ast.addString("__actual_filler"));
     const resolved_symbols = makePostMinifyTestSymbolTable(3, try ast.addString("__resolved_filler"));
     const empty_helper_scope_map: std.StringHashMapUnmanaged(usize) = .empty;
@@ -7835,8 +7843,8 @@ test "post-minify audit rejects shadowed globals and requires external provenanc
     // A global marker cannot override fresh lexical resolution. If the final
     // spelling resolves to the same-named local binding, emitted code would
     // read that local instead of the intended global.
-    try explicit_globals.put(allocator, @intFromEnum(reference), {});
-    actual[@intFromEnum(reference)] = null;
+    try explicit_globals.put(allocator, @backingInt(reference), {});
+    actual[@backingInt(reference)] = null;
     report = try checkPostMinify(
         allocator,
         &ast,
@@ -7860,9 +7868,9 @@ test "post-minify audit rejects shadowed globals and requires external provenanc
     // unresolved. The fresh analyzer's exact unresolved-node set proves that
     // it is an external reference.
     const global_name = try ast.addString("GlobalName");
-    ast.nodes.items[@intFromEnum(reference)].data.string_ref = global_name;
-    resolved[@intFromEnum(reference)] = null;
-    try unresolved_references.put(allocator, @intFromEnum(reference), {});
+    ast.nodes.items[@backingInt(reference)].data.string_ref = global_name;
+    resolved[@backingInt(reference)] = null;
+    try unresolved_references.put(allocator, @backingInt(reference), {});
     report = try checkPostMinify(
         allocator,
         &ast,
@@ -7884,8 +7892,8 @@ test "post-minify audit rejects shadowed globals and requires external provenanc
 
     // If both forms of external evidence disappear, null IDs cannot silently
     // turn an unclassified identifier into a proven global.
-    _ = explicit_globals.remove(@intFromEnum(reference));
-    _ = unresolved_references.remove(@intFromEnum(reference));
+    _ = explicit_globals.remove(@backingInt(reference));
+    _ = unresolved_references.remove(@backingInt(reference));
     report = try checkPostMinify(
         allocator,
         &ast,

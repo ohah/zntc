@@ -88,9 +88,9 @@ pub const Category = enum {
     pub fn fromString(s: []const u8) ?Category {
         const trimmed = std.mem.trim(u8, s, " \t");
         if (trimmed.len == 0) return null;
-        inline for (@typeInfo(Category).@"enum".fields) |f| {
-            if (std.ascii.eqlIgnoreCase(trimmed, f.name)) {
-                return @field(Category, f.name);
+        inline for (@typeInfo(Category).@"enum".field_names) |name| {
+            if (std.ascii.eqlIgnoreCase(trimmed, name)) {
+                return @field(Category, name);
             }
         }
         return null;
@@ -103,7 +103,7 @@ var enabled_mask: u64 = 0;
 
 /// 활성 여부 조회. hot path 에서 호출 가능 (single u64 AND).
 pub fn enabled(cat: Category) bool {
-    const bit = @as(u64, 1) << @intFromEnum(cat);
+    const bit = @as(u64, 1) << @backingInt(cat);
     return (enabled_mask & bit) != 0;
 }
 
@@ -113,7 +113,7 @@ pub fn addFromCsv(csv: []const u8) void {
     var it = std.mem.splitScalar(u8, csv, ',');
     while (it.next()) |name| {
         if (Category.fromString(name)) |c| {
-            enabled_mask |= @as(u64, 1) << @intFromEnum(c);
+            enabled_mask |= @as(u64, 1) << @backingInt(c);
         }
     }
 }
@@ -122,7 +122,7 @@ pub fn addFromCsv(csv: []const u8) void {
 pub fn addCategories(names: []const []const u8) void {
     for (names) |name| {
         if (Category.fromString(name)) |c| {
-            enabled_mask |= @as(u64, 1) << @intFromEnum(c);
+            enabled_mask |= @as(u64, 1) << @backingInt(c);
         }
     }
 }

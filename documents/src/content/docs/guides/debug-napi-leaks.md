@@ -9,7 +9,7 @@ ZNTC 내부 contributor 용 측정 인프라. `packages/core/src/napi/common.zig
 (`napi_add_env_cleanup_hook`) 가 `detectLeaks()` 호출 → stack trace 포함
 leak 리포트를 stderr 로 dump.
 
-**Production 사용자 영향 0** — ReleaseFast 빌드는 `comptime builtin.mode != .Debug`
+**Production 사용자 영향 0** — fast 빌드는 `comptime builtin.mode != .Debug`
 early-out 으로 dead code 제거, `std.heap.c_allocator` 그대로 사용.
 
 ## 언제 쓰나
@@ -24,11 +24,11 @@ early-out 으로 dead code 제거, `std.heap.c_allocator` 그대로 사용.
 ## 활성화
 
 ```bash
-zig build napi -Dnapi-optimize=Debug
+zig build napi -Dnapi-optimize=debug
 cp zig-out/lib/zntc.node packages/core/zntc.node
 ```
 
-`-Dnapi-optimize=Debug` 가 핵심 — default `ReleaseFast` 는 c_allocator 사용,
+`-Dnapi-optimize=debug` 가 핵심 — default `fast` 는 c_allocator 사용,
 측정 도구 비활성.
 
 ## 1분 dev probe 측정 스크립트
@@ -99,7 +99,7 @@ bottom-up stack trace — NAPI 진입점 (가장 깊은 프레임) 부터 실제
 **임시 디버깅 인프라** 라 다음 trade-off 수용:
 
 - **RSS 인플레이션**: DebugAllocator stack-trace metadata (per-alloc ~128B) +
-  *never reuse memory addresses* 정책. ReleaseFast c_allocator baseline 과
+  *never reuse memory addresses* 정책. fast c_allocator baseline 과
   **직접 비교 금지**. Debug↔Debug, before↔after fix delta 만 valid
 - **perf 왜곡**: `thread_safe=true` mutex 로 모든 alloc 직렬화. wall-clock /
   sub-phase ns 절대값 무의미, 상대 ratio 만

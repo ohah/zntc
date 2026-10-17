@@ -519,11 +519,11 @@ process 정상 종료 시 NAPI env cleanup hook (`napi_add_env_cleanup_hook`) �
 ### 활성화
 
 ```sh
-zig build napi -Dnapi-optimize=Debug
+zig build napi -Dnapi-optimize=debug
 cp zig-out/lib/zntc.node packages/core/zntc.node
 ```
 
-ReleaseFast 빌드 영향 0 (`comptime builtin.mode != .Debug` early-out 으로 dead
+fast 빌드 영향 0 (`comptime builtin.mode != .Debug` early-out 으로 dead
 code 제거, `std.heap.c_allocator` 그대로 사용).
 
 ### 1분 dev probe 측정 스크립트
@@ -585,7 +585,7 @@ HashMap 내부 6 프레임에 caller 가 다 가려져 불충분.
 영구 변경이 아닌 **임시 디버깅 인프라** 라 다음 trade-off 수용:
 
 - **RSS 인플레이션**: DebugAllocator stack-trace metadata (per-alloc ~128B) +
-  `never reuse memory addresses` 정책. ReleaseFast c_allocator baseline 과
+  `never reuse memory addresses` 정책. fast c_allocator baseline 과
   직접 비교 금지. **Debug↔Debug, before↔after fix delta** 만 valid
 - **perf 왜곡**: `thread_safe=true` mutex 로 모든 alloc 직렬화. wall-clock /
   sub-phase ns 절대값 무의미, 상대 ratio 만

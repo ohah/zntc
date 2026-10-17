@@ -343,10 +343,10 @@ pub fn main(init: std.process.Init) !void {
     // 어떤 env 조회보다 앞서야 한다.
     env_flag.captureEnviron(init.environ_map);
 
-    // ReleaseFast/ReleaseSafe: mimalloc 사용 (스레드별 힙, 페이지 캐싱).
-    // Debug: GPA 사용 (leak detection, double-free 감지).
+    // fast/safe: mimalloc 사용 (스레드별 힙, 페이지 캐싱).
+    // debug: GPA 사용 (leak detection, double-free 감지).
     // init.gpa 는 무시하고 기존 allocator 전략 유지 (release 의 mimalloc 성능 특성 보존).
-    const is_debug = @import("builtin").mode == .Debug;
+    const is_debug = @import("builtin").mode == .debug;
     var gpa: if (is_debug) std.heap.DebugAllocator(.{}) else void =
         if (is_debug) .{} else {};
     defer if (is_debug) {

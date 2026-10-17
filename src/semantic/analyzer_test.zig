@@ -1,4 +1,5 @@
 const std = @import("std");
+const repeat = @import("../repeat.zig");
 const analyzer_mod = @import("analyzer.zig");
 const SemanticAnalyzer = analyzer_mod.SemanticAnalyzer;
 const Diagnostic = analyzer_mod.Diagnostic;
@@ -96,13 +97,13 @@ test "#4819 namespace exports and shadowed parameter retain distinct reference I
     var param_reads: usize = 0;
     for (ana.references.items) |ref| {
         if (ref.flags.declare) continue;
-        const ni = @intFromEnum(ref.node_index);
+        const ni = @backingInt(ref.node_index);
         if (ni >= ana.symbol_ids.items.len) continue;
-        try std.testing.expectEqual(@as(?u32, @intFromEnum(ref.symbol_id)), ana.symbol_ids.items[ni]);
-        if (@intFromEnum(ref.symbol_id) == export_id) {
+        try std.testing.expectEqual(@as(?u32, @backingInt(ref.symbol_id)), ana.symbol_ids.items[ni]);
+        if (@backingInt(ref.symbol_id) == export_id) {
             if (ref.flags.read) export_reads += 1;
             if (ref.flags.write) export_writes += 1;
-        } else if (@intFromEnum(ref.symbol_id) == param_id and ref.flags.read) {
+        } else if (@backingInt(ref.symbol_id) == param_id and ref.flags.read) {
             param_reads += 1;
         }
     }
@@ -142,7 +143,7 @@ test "#4819 merged namespace export has shared owner but separate lexical bindin
         if (ref.flags.declare or !ref.flags.read) continue;
         const node = parser.ast.getNode(ref.node_index);
         if (!std.mem.eql(u8, parser.ast.getText(node.span), "value")) continue;
-        if (@intFromEnum(ref.symbol_id) == proxy) {
+        if (@backingInt(ref.symbol_id) == proxy) {
             proxy_reads += 1;
             try std.testing.expectEqual(ana.symbols.items[owner].scope_id, ana.symbols.items[proxy].scope_id);
         } else {
@@ -175,15 +176,15 @@ test "#4819 enum initializer self-reference resolves to the generated IIFE param
             .enum_iife_parameter => {
                 try std.testing.expect(parameter_id == null);
                 parameter_id = @intCast(raw_id);
-                enum_scope = @intFromEnum(symbol.scope_id);
+                enum_scope = @backingInt(symbol.scope_id);
             },
             else => {},
         }
     }
     for (parser.ast.nodes.items) |node| {
         if (node.tag != .ts_enum_declaration) continue;
-        const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
-        enum_binding_id = ana.symbol_ids.items[@intFromEnum(name_idx)];
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[node.data.extra]));
+        enum_binding_id = ana.symbol_ids.items[@backingInt(name_idx)];
         break;
     }
     const parameter = parameter_id orelse return error.MissingEnumIifeParameter;
@@ -196,7 +197,7 @@ test "#4819 enum initializer self-reference resolves to the generated IIFE param
         if (reference.flags.declare or reference.node_index.isNone()) continue;
         const node = parser.ast.getNode(reference.node_index);
         if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.span), "Self")) continue;
-        try std.testing.expectEqual(parameter, @intFromEnum(reference.symbol_id));
+        try std.testing.expectEqual(parameter, @backingInt(reference.symbol_id));
         self_object_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), self_object_reads);
@@ -228,7 +229,7 @@ test "#4819 namespace IIFE parameter has a separate SymbolId in its function Sco
     const declaration_id = declaration_raw orelse return error.MissingRuntimeNamespace;
     const namespace_scope = analyzer.scope_owner_map.get(declaration_id) orelse return error.MissingNamespaceScope;
     const declaration = parser.ast.nodes.items[declaration_id];
-    const namespace_name_raw = @intFromEnum(declaration.data.binary.left);
+    const namespace_name_raw = @backingInt(declaration.data.binary.left);
     const outer_symbol = analyzer.symbol_ids.items[namespace_name_raw] orelse return error.MissingOuterNamespaceSymbol;
 
     var parameter_id: ?u32 = null;
@@ -237,13 +238,13 @@ test "#4819 namespace IIFE parameter has a separate SymbolId in its function Sco
         try std.testing.expect(parameter_id == null);
         parameter_id = @intCast(raw);
         try std.testing.expectEqual(SymbolKind.parameter, symbol.kind);
-        try std.testing.expectEqual(@as(u32, namespace_scope), @intFromEnum(symbol.scope_id));
+        try std.testing.expectEqual(@as(u32, namespace_scope), @backingInt(symbol.scope_id));
         try std.testing.expectEqualStrings("_N1", symbol.synthetic_name);
     }
     const iife_parameter = parameter_id orelse return error.MissingNamespaceIifeParameter;
     try std.testing.expect(iife_parameter != outer_symbol);
     try std.testing.expectEqual(@as(?usize, iife_parameter), analyzer.scope_maps.items[namespace_scope].get("_N1"));
-    try std.testing.expectEqual(@as(u32, 0), @intFromEnum(analyzer.symbols.items[outer_symbol].scope_id));
+    try std.testing.expectEqual(@as(u32, 0), @backingInt(analyzer.symbols.items[outer_symbol].scope_id));
 }
 
 test "#4819 runtime enum initializer references retain their source symbol IDs" {
@@ -273,8 +274,8 @@ test "#4819 runtime enum initializer references retain their source symbol IDs" 
         if (reference.flags.declare) continue;
         const node = parser.ast.getNode(reference.node_index);
         if (!std.mem.eql(u8, parser.ast.identifierNameText(node), "_E1")) continue;
-        try std.testing.expectEqual(expected, @intFromEnum(reference.symbol_id));
-        try std.testing.expectEqual(@as(?u32, expected), analyzer.symbol_ids.items[@intFromEnum(reference.node_index)]);
+        try std.testing.expectEqual(expected, @backingInt(reference.symbol_id));
+        try std.testing.expectEqual(@as(?u32, expected), analyzer.symbol_ids.items[@backingInt(reference.node_index)]);
         initializer_reference = true;
     }
     try std.testing.expect(initializer_reference);
@@ -315,16 +316,16 @@ test "#4819 bare enum members use virtual member IDs while initializer locals sh
         const name = parser.ast.identifierNameText(node);
         if (std.mem.eql(u8, name, "Same")) {
             if (node.span.start > next_marker and node.span.start < shadow_marker) {
-                member_reference = @intFromEnum(reference.symbol_id);
+                member_reference = @backingInt(reference.symbol_id);
             } else if (node.span.start > shadow_marker) {
-                shadow_reference = @intFromEnum(reference.symbol_id);
+                shadow_reference = @backingInt(reference.symbol_id);
             }
         } else if (std.mem.eql(u8, name, "Self")) {
             if (node.span.start > same_self_marker and node.span.start < direct_marker) {
-                try std.testing.expectEqual(.enum_iife_member, analyzer.symbols.items[@intFromEnum(reference.symbol_id)].synthetic_kind.?);
+                try std.testing.expectEqual(.enum_iife_member, analyzer.symbols.items[@backingInt(reference.symbol_id)].synthetic_kind.?);
                 bare_self_references += 1;
             } else if (node.span.start > direct_marker and node.span.start < shadow_marker) {
-                direct_object_reference = @intFromEnum(reference.symbol_id);
+                direct_object_reference = @backingInt(reference.symbol_id);
             }
         }
     }
@@ -336,7 +337,7 @@ test "#4819 bare enum members use virtual member IDs while initializer locals sh
     try std.testing.expectEqual(@as(usize, 3), bare_self_references);
     try std.testing.expectEqual(enum_parameter_id, direct_object_reference);
     const owner_id = analyzer.symbols.items[member_id].synthetic_owner_id orelse return error.MissingEnumMemberOwner;
-    try std.testing.expectEqual(enum_parameter_id, @as(?u32, @intFromEnum(owner_id)));
+    try std.testing.expectEqual(enum_parameter_id, @as(?u32, @backingInt(owner_id)));
 }
 
 test "#4819 escaped string enum member names resolve by decoded key" {
@@ -366,11 +367,11 @@ test "#4819 escaped string enum member names resolve by decoded key" {
         if (reference.flags.declare or reference.node_index.isNone()) continue;
         const node = parser.ast.getNode(reference.node_index);
         if (!std.mem.eql(u8, parser.ast.identifierNameText(node), "A") or node.span.start <= reference_start) continue;
-        const symbol = analyzer.symbols.items[@intFromEnum(reference.symbol_id)];
+        const symbol = analyzer.symbols.items[@backingInt(reference.symbol_id)];
         try std.testing.expectEqual(.enum_iife_member, symbol.synthetic_kind.?);
         try std.testing.expectEqualStrings("A", symbol.synthetic_name);
         const owner_id = symbol.synthetic_owner_id orelse return error.MissingEscapedMemberOwner;
-        try std.testing.expectEqual(parameter_id, @as(?u32, @intFromEnum(owner_id)));
+        try std.testing.expectEqual(parameter_id, @as(?u32, @backingInt(owner_id)));
         found_reference = true;
     }
     try std.testing.expect(found_reference);
@@ -405,8 +406,8 @@ test "#4819 editor preserves analyzed IDs while appending a generated binding" {
     defer editor.deinit();
     const name = try parser.ast.addString("_temp");
     const binding = try parser.ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
-    const id = try editor.declare(binding, name, @import("../lexer/token.zig").Span.EMPTY, @enumFromInt(0), .variable_var, 2, 2);
-    try std.testing.expectEqual(@as(u32, @intCast(original_count)), @intFromEnum(id));
+    const id = try editor.declare(binding, name, @import("../lexer/token.zig").Span.EMPTY, @fromBackingInt(@intCast(0)), .variable_var, 2, 2);
+    try std.testing.expectEqual(@as(u32, @intCast(original_count)), @backingInt(id));
     try std.testing.expectEqual(original_count, ana.symbols.items.len);
     try std.testing.expectEqualSlices(?u32, original_ids, editor.symbol_ids.items[0..original_ids.len]);
 }
@@ -428,12 +429,12 @@ test "#4819 analyzer accepts editor ownership without changing existing IDs" {
     defer editor.deinit();
     const name = try parser.ast.addString("_generated");
     const binding = try parser.ast.addNode(.{ .tag = .binding_identifier, .span = name, .data = .{ .string_ref = name } });
-    const generated = try editor.declare(binding, name, .EMPTY, @enumFromInt(0), .variable_var, 0, 0);
+    const generated = try editor.declare(binding, name, .EMPTY, @fromBackingInt(@intCast(0)), .variable_var, 0, 0);
     const result = try editor.finish();
     analyzer.applyEdit(result);
-    try std.testing.expectEqual(@as(u32, 1), @intFromEnum(generated));
+    try std.testing.expectEqual(@as(u32, 1), @backingInt(generated));
     try std.testing.expectEqualSlices(?u32, original_ids, analyzer.symbol_ids.items[0..original_ids.len]);
-    try std.testing.expectEqual(@as(?u32, 1), analyzer.symbol_ids.items[@intFromEnum(binding)]);
+    try std.testing.expectEqual(@as(?u32, 1), analyzer.symbol_ids.items[@backingInt(binding)]);
 }
 
 test "SemanticAnalyzer: var declaration creates symbol" {
@@ -1032,22 +1033,22 @@ test "SemanticAnalyzer: catch clause and body block retain distinct scope owners
     var catch_idx: NodeIndex = .none;
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .catch_clause) continue;
-        catch_idx = @enumFromInt(@as(u32, @intCast(raw)));
+        catch_idx = @fromBackingInt(@intCast(@as(u32, @intCast(raw))));
         break;
     }
     try std.testing.expect(!catch_idx.isNone());
     const catch_node = parser.ast.getNode(catch_idx);
     const body_idx = catch_node.data.binary.right;
-    const catch_scope_raw = ana.scope_owner_map.get(@intFromEnum(catch_idx)) orelse return error.MissingCatchScope;
-    const body_scope_raw = ana.scope_owner_map.get(@intFromEnum(body_idx)) orelse return error.MissingCatchBodyScope;
+    const catch_scope_raw = ana.scope_owner_map.get(@backingInt(catch_idx)) orelse return error.MissingCatchScope;
+    const body_scope_raw = ana.scope_owner_map.get(@backingInt(body_idx)) orelse return error.MissingCatchBodyScope;
     const ScopeKind = @import("scope.zig").ScopeKind;
     try std.testing.expectEqual(ScopeKind.catch_clause, ana.scopes.items[catch_scope_raw].kind);
     try std.testing.expectEqual(ScopeKind.block, ana.scopes.items[body_scope_raw].kind);
-    try std.testing.expectEqual(catch_scope_raw, @intFromEnum(ana.scopes.items[body_scope_raw].parent));
+    try std.testing.expectEqual(catch_scope_raw, @backingInt(ana.scopes.items[body_scope_raw].parent));
 
     const catch_param = catch_node.data.binary.left;
-    const catch_symbol = ana.symbol_ids.items[@intFromEnum(catch_param)] orelse return error.MissingCatchBindingSymbol;
-    try std.testing.expectEqual(catch_scope_raw, @intFromEnum(ana.symbols.items[catch_symbol].scope_id));
+    const catch_symbol = ana.symbol_ids.items[@backingInt(catch_param)] orelse return error.MissingCatchBindingSymbol;
+    try std.testing.expectEqual(catch_scope_raw, @backingInt(ana.symbols.items[catch_symbol].scope_id));
 
     var body_symbol: ?u32 = null;
     for (parser.ast.nodes.items, 0..) |node, raw| {
@@ -1056,7 +1057,7 @@ test "SemanticAnalyzer: catch clause and body block retain distinct scope owners
         break;
     }
     const body_binding = body_symbol orelse return error.MissingBodyBindingSymbol;
-    try std.testing.expectEqual(body_scope_raw, @intFromEnum(ana.symbols.items[body_binding].scope_id));
+    try std.testing.expectEqual(body_scope_raw, @backingInt(ana.symbols.items[body_binding].scope_id));
 }
 
 // ============================================================
@@ -1608,7 +1609,7 @@ test "#4400 analyzer: 분석 중 allocation 실패는 OutOfMemory 로 표면화 
     const source =
         "let a = 1;\n" ++
         "undeclaredGlobal;\n" ++
-        ("a;\n" ** 60);
+        repeat.bytes("a;\n", 60);
 
     var scanner = try Scanner.init(std.testing.allocator, source);
     defer scanner.deinit();
@@ -2055,8 +2056,8 @@ test "#4819 class declaration separates outer and immutable heritage self bindin
         if (node.tag != .class_declaration) continue;
         const candidate: u32 = @intCast(raw);
         const name = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
-        if (parser.ast.getNode(@enumFromInt(name)).tag != .binding_identifier) continue;
-        if (!std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(@enumFromInt(name)).data.string_ref), "C")) continue;
+        if (parser.ast.getNode(@fromBackingInt(@intCast(name))).tag != .binding_identifier) continue;
+        if (!std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(@fromBackingInt(@intCast(name))).data.string_ref), "C")) continue;
         class_idx = candidate;
         name_idx = name;
         break;
@@ -2102,7 +2103,7 @@ test "#4819 named class expression heritage resolves its own immutable binding" 
         if (node.tag == .class_expression) {
             const id = ana.class_self_symbol_map.get(@intCast(raw)) orelse continue;
             const name: u32 = parser.ast.extra_data.items[node.data.extra + @import("../parser/ast.zig").ClassExtra.name];
-            if (std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(@enumFromInt(name)).data.string_ref), "C")) self_id = id;
+            if (std.mem.eql(u8, parser.ast.getText(parser.ast.getNode(@fromBackingInt(@intCast(name))).data.string_ref), "C")) self_id = id;
         }
     }
     const inner = self_id orelse return error.TestUnexpectedResult;
@@ -2300,7 +2301,7 @@ const RefFixture = struct {
     /// 주어진 이름으로 선언된 심볼을 가리키는 references 항목만 필터.
     fn collectRefs(self: *const RefFixture, target_name: []const u8, out: *std.ArrayList(symbol_mod.Reference)) !void {
         for (self.ana.references.items) |r| {
-            const sym_idx = @intFromEnum(r.symbol_id);
+            const sym_idx = @backingInt(r.symbol_id);
             if (sym_idx >= self.ana.symbols.items.len) continue;
             const name = self.ana.symbols.items[sym_idx].nameText(self.parser.ast.source);
             if (std.mem.eql(u8, name, target_name)) {
@@ -2413,7 +2414,7 @@ test "references: scope_id 가 참조 발생 위치" {
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
     // x 가 선언된 scope 는 program scope (첫 번째). 참조는 block scope 에서 발생.
     const ref_scope = refs.items[0].scope_id;
-    const decl_scope = fx.ana.symbols.items[@intFromEnum(refs.items[0].symbol_id)].scope_id;
+    const decl_scope = fx.ana.symbols.items[@backingInt(refs.items[0].symbol_id)].scope_id;
     try std.testing.expect(!std.meta.eql(ref_scope, decl_scope));
 }
 
@@ -2479,7 +2480,7 @@ test "references: enable_stmt_info 시 top-level 선언에 declare flag 기록" 
     var declare_count: usize = 0;
     var read_count: usize = 0;
     for (ana.references.items) |r| {
-        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        const sym = ana.symbols.items[@backingInt(r.symbol_id)];
         if (!std.mem.eql(u8, sym.nameText(parser.ast.source), "x")) continue;
         if (r.flags.declare) declare_count += 1;
         if (r.flags.read) read_count += 1;
@@ -2510,10 +2511,10 @@ test "#1669: 함수 body 내부 선언도 declare ref 로 기록" {
     var y_declare_scope: u32 = 0;
     for (ana.references.items) |r| {
         if (!r.flags.declare) continue;
-        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        const sym = ana.symbols.items[@backingInt(r.symbol_id)];
         if (std.mem.eql(u8, sym.nameText(parser.ast.source), "y")) {
             y_declare_count += 1;
-            y_declare_scope = @intFromEnum(r.scope_id);
+            y_declare_scope = @backingInt(r.scope_id);
         }
     }
     try std.testing.expectEqual(@as(usize, 1), y_declare_count);
@@ -2538,7 +2539,7 @@ test "#1669: per-scope stmt_idx 는 함수 body 내부에서 0 부터 재시작"
     var c_scope_idx: u32 = std.math.maxInt(u32);
     for (ana.references.items) |r| {
         if (!r.flags.declare) continue;
-        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        const sym = ana.symbols.items[@backingInt(r.symbol_id)];
         const name = sym.nameText(parser.ast.source);
         if (std.mem.eql(u8, name, "b")) b_scope_idx = r.scope_stmt_idx;
         if (std.mem.eql(u8, name, "c")) c_scope_idx = r.scope_stmt_idx;
@@ -2564,7 +2565,7 @@ test "#2023: nested var predeclare records declare ref at function body stmt ind
     var declared_scope: ScopeId = .none;
     for (ana.references.items) |r| {
         if (!r.flags.declare) continue;
-        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        const sym = ana.symbols.items[@backingInt(r.symbol_id)];
         if (std.mem.eql(u8, sym.nameText(parser.ast.source), "hoisted")) {
             declare_count += 1;
             scope_stmt_idx = r.scope_stmt_idx;
@@ -2602,13 +2603,13 @@ test "block function predeclare maps declaration node to var-scope symbol" {
     var seen_ref_count: usize = 0;
     for (parser.ast.nodes.items, 0..) |node, i| {
         if (node.tag == .function_declaration) {
-            const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[node.data.extra]));
             if (name_idx.isNone()) continue;
             const name_node = parser.ast.getNode(name_idx);
             if (name_node.tag != .binding_identifier) continue;
             const text = parser.ast.getText(name_node.data.string_ref);
             if (!std.mem.eql(u8, text, "addException")) continue;
-            decl_sym = ana.symbol_ids.items[@intFromEnum(name_idx)] orelse return error.MissingAddExceptionDeclSymbol;
+            decl_sym = ana.symbol_ids.items[@backingInt(name_idx)] orelse return error.MissingAddExceptionDeclSymbol;
             continue;
         }
 
@@ -2653,19 +2654,19 @@ test "strict module block functions keep exact block scope bindings" {
     var reference_counts = [_]usize{ 0, 0, 0, 0 };
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .function_declaration) {
-            const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
-            if (name_idx.isNone() or @intFromEnum(name_idx) >= parser.ast.nodes.items.len) continue;
+            const name_idx: NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[node.data.extra]));
+            if (name_idx.isNone() or @backingInt(name_idx) >= parser.ast.nodes.items.len) continue;
             const name_node = parser.ast.getNode(name_idx);
             const name = parser.ast.getText(name_node.span);
             for (names, 0..) |expected, name_index| {
                 if (!std.mem.eql(u8, name, expected)) continue;
-                const symbol_id = ana.symbol_ids.items[@intFromEnum(name_idx)] orelse return error.MissingFunctionSymbol;
+                const symbol_id = ana.symbol_ids.items[@backingInt(name_idx)] orelse return error.MissingFunctionSymbol;
                 declaration_ids[name_index] = symbol_id;
                 declaration_counts[name_index] += 1;
                 const scope_id = ana.symbols.items[symbol_id].scope_id;
                 try std.testing.expect(!scope_id.isNone());
-                try std.testing.expect(@intFromEnum(scope_id) < ana.scopes.items.len);
-                try std.testing.expectEqual(expected_scopes[name_index], ana.scopes.items[@intFromEnum(scope_id)].kind);
+                try std.testing.expect(@backingInt(scope_id) < ana.scopes.items.len);
+                try std.testing.expectEqual(expected_scopes[name_index], ana.scopes.items[@backingInt(scope_id)].kind);
             }
         } else if (node.tag == .identifier_reference) {
             const name = parser.ast.getText(node.span);
@@ -2712,17 +2713,17 @@ test "strict class method nested function keeps its block scope" {
     var function_symbol_id: ?u32 = null;
     for (parser.ast.nodes.items) |node| {
         if (node.tag != .function_declaration) continue;
-        const name_idx: NodeIndex = @enumFromInt(parser.ast.extra_data.items[node.data.extra]);
+        const name_idx: NodeIndex = @fromBackingInt(@intCast(parser.ast.extra_data.items[node.data.extra]));
         const name = parser.ast.getText(parser.ast.getNode(name_idx).span);
         if (!std.mem.eql(u8, name, "local")) continue;
-        function_symbol_id = ana.symbol_ids.items[@intFromEnum(name_idx)];
+        function_symbol_id = ana.symbol_ids.items[@backingInt(name_idx)];
         break;
     }
     const symbol_id = function_symbol_id orelse return error.MissingFunctionSymbol;
     const scope_id = ana.symbols.items[symbol_id].scope_id;
     try std.testing.expect(!scope_id.isNone());
-    try std.testing.expect(@intFromEnum(scope_id) < ana.scopes.items.len);
-    try std.testing.expectEqual(SemanticScopeKind.block, ana.scopes.items[@intFromEnum(scope_id)].kind);
+    try std.testing.expect(@backingInt(scope_id) < ana.scopes.items.len);
+    try std.testing.expectEqual(SemanticScopeKind.block, ana.scopes.items[@backingInt(scope_id)].kind);
     for (parser.ast.nodes.items, 0..) |node, raw| {
         if (node.tag != .identifier_reference or !std.mem.eql(u8, parser.ast.getText(node.span), "local")) continue;
         try std.testing.expectEqual(@as(?u32, symbol_id), ana.symbol_ids.items[raw]);
@@ -2747,7 +2748,7 @@ test "#2023: predeclared lexical bindings record declare ref once" {
     var y_scope_stmt_idx: u32 = std.math.maxInt(u32);
     for (ana.references.items) |r| {
         if (!r.flags.declare) continue;
-        const sym = ana.symbols.items[@intFromEnum(r.symbol_id)];
+        const sym = ana.symbols.items[@backingInt(r.symbol_id)];
         const name = sym.nameText(parser.ast.source);
         if (std.mem.eql(u8, name, "x")) {
             x_declare_count += 1;
@@ -3100,8 +3101,8 @@ test "#4819 Flow match value patterns and arms preserve source reference IDs" {
         if (std.mem.eql(u8, name, "value")) value_reads += 1;
         if (std.mem.eql(u8, name, "one")) one_reads += 1;
         if (std.mem.eql(u8, name, "fallback")) fallback_reads += 1;
-        const node_index = @intFromEnum(reference.node_index);
-        try std.testing.expectEqual(@as(?u32, @intFromEnum(reference.symbol_id)), analyzer.symbol_ids.items[node_index]);
+        const node_index = @backingInt(reference.node_index);
+        try std.testing.expectEqual(@as(?u32, @backingInt(reference.symbol_id)), analyzer.symbol_ids.items[node_index]);
     }
     try std.testing.expectEqual(@as(usize, 2), value_reads);
     try std.testing.expectEqual(@as(usize, 1), one_reads);
@@ -3139,7 +3140,7 @@ test "#4819 Flow match bindings resolve in guards and arm bodies" {
         if (reference.flags.declare or !reference.flags.read) continue;
         const node = parser.ast.getNode(reference.node_index);
         if (!std.mem.eql(u8, parser.ast.getText(node.span), "item")) continue;
-        try std.testing.expectEqual(expected_item, @intFromEnum(reference.symbol_id));
+        try std.testing.expectEqual(expected_item, @backingInt(reference.symbol_id));
         item_reads += 1;
     }
     try std.testing.expectEqual(@as(usize, 2), item_reads);

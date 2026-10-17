@@ -12,7 +12,7 @@ const Span = @import("../lexer/token.zig").Span;
 
 test "ModuleIndex: none sentinel" {
     try std.testing.expect(ModuleIndex.none.isNone());
-    const idx: ModuleIndex = @enumFromInt(0);
+    const idx: ModuleIndex = @fromBackingInt(@intCast(0));
     try std.testing.expect(!idx.isNone());
 }
 
@@ -61,7 +61,7 @@ test "ModuleKey: 긴 이름은 heap으로 spill되어 makeModuleKey와 동일한
     const allocator = std.testing.allocator;
 
     // 4091바이트(= 4096 - 5)를 초과하는 이름은 기존 고정 스택 버퍼를 넘긴다.
-    // (이전 구현은 ReleaseFast에서 assert가 소거되어 stack-smashing이 발생했다.)
+    // (이전 구현은 fast에서 assert가 소거되어 stack-smashing이 발생했다.)
     const long_name = try allocator.alloc(u8, 5000);
     defer allocator.free(long_name);
     @memset(long_name, 'a');

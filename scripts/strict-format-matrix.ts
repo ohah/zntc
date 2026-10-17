@@ -11,7 +11,7 @@
  *   4) sourcemap 존재 시 mappings/names 유효성 round-trip
  *   5) Differential — esbuild/rolldown/rspack 빌드 성공한 케이스에서 stdout 동일
  *
- * 사용 — `bun scripts/strict-format-matrix.ts` (ReleaseFast `zig-out/bin/zntc` 필요).
+ * 사용 — `bun scripts/strict-format-matrix.ts` (fast `zig-out/bin/zntc` 필요).
  */
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';

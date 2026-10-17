@@ -52,8 +52,9 @@ comptime {
 fn fieldSig(comptime T: type) []const u8 {
     comptime {
         var sig: []const u8 = "";
-        for (@typeInfo(T).@"struct".fields) |f| {
-            sig = sig ++ f.name ++ ":" ++ @typeName(f.type) ++ ";";
+        const info = @typeInfo(T).@"struct";
+        for (info.field_names, info.field_types) |name, field_type| {
+            sig = sig ++ name ++ ":" ++ @typeName(field_type) ++ ";";
         }
         return sig;
     }
@@ -84,7 +85,7 @@ comptime {
     // serialize/deserialize 는 ModuleSemanticData 의 11개 필드를 손으로 열거한다. 필드가 추가되면
     // 직렬화에서 silently 누락 → PR4 cache-hit 연결 시 그 필드만 default 로 stale miscompile.
     // 필드 수를 못박아 새 필드 추가를 컴파일 에러로 만들어 codec 갱신을 강제한다.
-    if (@typeInfo(ModuleSemanticData).@"struct".fields.len != 13) {
+    if (@typeInfo(ModuleSemanticData).@"struct".field_names.len != 13) {
         @compileError("ModuleSemanticData 필드 수가 바뀜 — semantic_codec 의 serialize/deserialize 에 새 필드 직렬화 추가 후 이 가드를 갱신.");
     }
 }
@@ -118,34 +119,34 @@ fn putU8(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, v: u8) !void {
 fn putSymbol(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Symbol) !void {
     try putU32(buf, alloc, s.name.start);
     try putU32(buf, alloc, s.name.end);
-    try putU32(buf, alloc, @intFromEnum(s.scope_id));
-    try putU32(buf, alloc, @intFromEnum(s.origin_scope));
-    try putU8(buf, alloc, @intFromEnum(s.kind));
+    try putU32(buf, alloc, @backingInt(s.scope_id));
+    try putU32(buf, alloc, @backingInt(s.origin_scope));
+    try putU8(buf, alloc, @backingInt(s.kind));
     try putU16(buf, alloc, s.decl_flags.toInt());
     try putU32(buf, alloc, s.declaration_span.start);
     try putU32(buf, alloc, s.declaration_span.end);
     try putU32(buf, alloc, s.reference_count);
     try putU32(buf, alloc, s.write_count);
-    try putU8(buf, alloc, @intFromEnum(s.const_kind));
+    try putU8(buf, alloc, @backingInt(s.const_kind));
     // ?SyntheticKind → 0xFF=null, 아니면 enum 값(0xFF sentinel과 충돌하지 않음).
-    try putU8(buf, alloc, if (s.synthetic_kind) |k| @intFromEnum(k) else 0xFF);
+    try putU8(buf, alloc, if (s.synthetic_kind) |k| @backingInt(k) else 0xFF);
     try putBytes(buf, alloc, s.synthetic_name);
     try putBytes(buf, alloc, s.output_name_hint);
-    try putU32(buf, alloc, if (s.synthetic_owner_id) |owner| @intFromEnum(owner) else NULL_U32);
+    try putU32(buf, alloc, if (s.synthetic_owner_id) |owner| @backingInt(owner) else NULL_U32);
 }
 fn putScope(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, s: Scope) !void {
-    try putU32(buf, alloc, @intFromEnum(s.parent));
-    try putU8(buf, alloc, @intFromEnum(s.kind));
+    try putU32(buf, alloc, @backingInt(s.parent));
+    try putU8(buf, alloc, @backingInt(s.kind));
     try putU8(buf, alloc, @intFromBool(s.is_strict));
     try putU8(buf, alloc, @intFromBool(s.subtree_has_direct_eval));
     try putU8(buf, alloc, @intFromBool(s.subtree_has_with));
     try putU16(buf, alloc, s.symbol_count);
 }
 fn putReference(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, ref: Reference) !void {
-    try putU32(buf, alloc, @intFromEnum(ref.node_index));
-    try putU32(buf, alloc, @intFromEnum(ref.declaration_node_index));
-    try putU32(buf, alloc, @intFromEnum(ref.scope_id));
-    try putU32(buf, alloc, @intFromEnum(ref.symbol_id));
+    try putU32(buf, alloc, @backingInt(ref.node_index));
+    try putU32(buf, alloc, @backingInt(ref.declaration_node_index));
+    try putU32(buf, alloc, @backingInt(ref.scope_id));
+    try putU32(buf, alloc, @backingInt(ref.symbol_id));
     try putU32(buf, alloc, ref.stmt_idx);
     try putU32(buf, alloc, ref.scope_stmt_idx);
     try putU8(buf, alloc, @as(u8, @bitCast(ref.flags)));
@@ -368,8 +369,8 @@ fn readU16(r: *Reader) Error!u16 {
 fn readSymbol(r: *Reader, arena: std.mem.Allocator) Error!Symbol {
     var s = std.mem.zeroes(Symbol);
     s.name = .{ .start = try r.u32v(), .end = try r.u32v() };
-    s.scope_id = @enumFromInt(try r.u32v());
-    s.origin_scope = @enumFromInt(try r.u32v());
+    s.scope_id = @fromBackingInt(@intCast(try r.u32v()));
+    s.origin_scope = @fromBackingInt(@intCast(try r.u32v()));
     s.kind = std.enums.fromInt(symbol_mod.SymbolKind, try r.byte()) orelse return error.Truncated;
     s.decl_flags = symbol_mod.DeclFlags.fromInt(try readU16(r));
     s.declaration_span = .{ .start = try r.u32v(), .end = try r.u32v() };
@@ -383,12 +384,12 @@ fn readSymbol(r: *Reader, arena: std.mem.Allocator) Error!Symbol {
     const output_name_hint = try r.bytes();
     s.output_name_hint = if (output_name_hint.len == 0) "" else try arena.dupe(u8, output_name_hint);
     const owner_id = try r.u32v();
-    s.synthetic_owner_id = if (owner_id == NULL_U32) null else @enumFromInt(owner_id);
+    s.synthetic_owner_id = if (owner_id == NULL_U32) null else @fromBackingInt(@intCast(owner_id));
     return s;
 }
 fn readScope(r: *Reader) Error!Scope {
     var s = std.mem.zeroes(Scope);
-    s.parent = @enumFromInt(try r.u32v());
+    s.parent = @fromBackingInt(@intCast(try r.u32v()));
     s.kind = std.enums.fromInt(scope_mod.ScopeKind, try r.byte()) orelse return error.Truncated;
     s.is_strict = (try r.byte()) != 0;
     s.subtree_has_direct_eval = (try r.byte()) != 0;
@@ -398,10 +399,10 @@ fn readScope(r: *Reader) Error!Scope {
 }
 fn readReference(r: *Reader) Error!Reference {
     var ref = std.mem.zeroes(Reference);
-    ref.node_index = @enumFromInt(try r.u32v());
-    ref.declaration_node_index = @enumFromInt(try r.u32v());
-    ref.scope_id = @enumFromInt(try r.u32v());
-    ref.symbol_id = @enumFromInt(try r.u32v());
+    ref.node_index = @fromBackingInt(@intCast(try r.u32v()));
+    ref.declaration_node_index = @fromBackingInt(@intCast(try r.u32v()));
+    ref.scope_id = @fromBackingInt(@intCast(try r.u32v()));
+    ref.symbol_id = @fromBackingInt(@intCast(try r.u32v()));
     ref.stmt_idx = try r.u32v();
     ref.scope_stmt_idx = try r.u32v();
     ref.flags = @bitCast(try r.byte());
@@ -496,7 +497,7 @@ pub fn deserialize(data: []const u8, arena: std.mem.Allocator) Error!ModuleSeman
     }
 
     return .{
-        .symbols = .{ .items = symbols_slice, .capacity = symbols_slice.len },
+        .symbols = .{ .items = symbols_slice, .capacity = symbols_slice.len, .pointer_stability = .{} },
         .scopes = scopes,
         .scope_maps = scope_maps,
         .exported_names = exported_names,

@@ -596,8 +596,8 @@ pub const Linker = struct {
         }
         if (self.hmr_runtime_internal_names_owned) {
             if (self.hmr_runtime_internal_names) |names| {
-                inline for (std.meta.fields(rt_names.HmrRuntimeInternalNames)) |field| {
-                    self.allocator.free(@field(names, field.name));
+                inline for (@typeInfo(rt_names.HmrRuntimeInternalNames).@"struct".field_names) |name| {
+                    self.allocator.free(@field(names, name));
                 }
             }
         }
@@ -753,7 +753,7 @@ pub const Linker = struct {
         if (ib.import_record_index >= m.import_records.len) return false;
         const rec = m.import_records[ib.import_record_index];
         if (rec.resolved.isNone()) return !rec.is_lazy_resolved and !rec.ts_elided;
-        const target_idx = @intFromEnum(rec.resolved);
+        const target_idx = @backingInt(rec.resolved);
         if (target_idx >= self.graph.moduleCount()) return m.wrap_kind == .esm;
         const target_module = self.getModule(target_idx).?;
         const helper_modules = @import("../runtime_helper_modules.zig");
@@ -977,7 +977,7 @@ pub const Linker = struct {
             owner: NameOwner,
             fn add(c: @This(), name: []const u8, symbol_index: u32) anyerror!void {
                 var block_owner = c.owner;
-                block_owner.symbol_id = bundler_symbol.SymbolID.make(@enumFromInt(c.owner.module_index), symbol_index);
+                block_owner.symbol_id = bundler_symbol.SymbolID.make(@fromBackingInt(@intCast(c.owner.module_index)), symbol_index);
                 try c.linker.addNameOwner(c.map, name, block_owner);
             }
         };
@@ -1083,7 +1083,7 @@ pub const Linker = struct {
                 }
 
                 const symbol_id = bundler_symbol.SymbolID.make(
-                    @enumFromInt(module_index),
+                    @fromBackingInt(@intCast(module_index)),
                     @as(u32, @intCast(raw_symbol_id)),
                 );
                 const base = symbol.output_name_hint;
@@ -1313,7 +1313,7 @@ pub const Linker = struct {
             // originally owned it can stop being CJS after an incremental
             // rebuild. It remains usable while any CJS wrapper is emitted.
             if (self.cjs_factory_runtime_symbol_id == null) if (m.cjs_runtime_factory_symbol) |symbol_id| {
-                self.cjs_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(symbol_id));
+                self.cjs_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(symbol_id));
             };
             if (m.wrap_kind != .cjs) continue;
             if ((!self.tree_shaker_active or m.is_included) and !has_included_cjs_runtime) {
@@ -1339,7 +1339,7 @@ pub const Linker = struct {
     /// globals and wrapper spellings, then cache that chosen output name for the
     /// per-chunk passes to restore into rename_table.
     fn calculateGraphWideCjsRuntimeName(self: *Linker, symbol_id: bundler_symbol.SymbolID) ![]const u8 {
-        const module_index = @intFromEnum(symbol_id.module);
+        const module_index = @backingInt(symbol_id.module);
         const owner_module = self.getModule(module_index) orelse return error.CjsRuntimeFactoryOwnerMissing;
 
         // A prior whole-graph pass may already have assigned this same output
@@ -1439,7 +1439,7 @@ pub const Linker = struct {
                 }
                 if (owner_symbol != null) return error.RequireShimLocalIdentityAmbiguous;
                 owner_index = module.index;
-                owner_symbol = @enumFromInt(raw_id);
+                owner_symbol = @fromBackingInt(@intCast(raw_id));
             }
         }
 
@@ -1473,7 +1473,7 @@ pub const Linker = struct {
                 return error.RequireShimLocalOwnerMissing;
             }
         } else if (owner_index) |index| {
-            const owner = self.moduleAtMut(@intFromEnum(index)) orelse return error.RequireShimLocalOwnerMissing;
+            const owner = self.moduleAtMut(@backingInt(index)) orelse return error.RequireShimLocalOwnerMissing;
             owner.require_shim_local_symbol = owner_symbol;
         }
 
@@ -1481,7 +1481,7 @@ pub const Linker = struct {
         errdefer allocator.free(candidate);
 
         if (owner_index) |module_index| {
-            const symbol_id = bundler_symbol.SymbolID.make(module_index, @intFromEnum(owner_symbol.?));
+            const symbol_id = bundler_symbol.SymbolID.make(module_index, @backingInt(owner_symbol.?));
             const linker_owned_name = try self.allocator.dupe(u8, candidate);
             errdefer self.allocator.free(linker_owned_name);
             try self.assignSymbolCanonical(symbol_id, linker_owned_name);
@@ -1490,7 +1490,7 @@ pub const Linker = struct {
     }
 
     fn ensureRequireShimLocalSymbol(self: *Linker, module_index: ModuleIndex) !semantic_symbol.SymbolId {
-        const owner = self.moduleAtMut(@intFromEnum(module_index)) orelse return error.RequireShimLocalOwnerMissing;
+        const owner = self.moduleAtMut(@backingInt(module_index)) orelse return error.RequireShimLocalOwnerMissing;
         const sem = if (owner.semantic) |*value| value else return error.RequireShimLocalOwnerMissing;
         var recovered: ?semantic_symbol.SymbolId = null;
         for (sem.symbols.items, 0..) |symbol, raw_id| {
@@ -1499,7 +1499,7 @@ pub const Linker = struct {
                 return error.RequireShimLocalIdentityInvalid;
             }
             if (recovered != null) return error.RequireShimLocalIdentityAmbiguous;
-            recovered = @enumFromInt(raw_id);
+            recovered = @fromBackingInt(@intCast(raw_id));
         }
         if (recovered == null) {
             const arena = if (owner.parse_arena) |value| value.allocator() else return error.RequireShimLocalOwnerMissing;
@@ -1543,7 +1543,7 @@ pub const Linker = struct {
         owner_symbol: ?semantic_symbol.SymbolId,
     ) bool {
         const ignored_id: ?bundler_symbol.SymbolID = if (owner_index) |module_index|
-            if (owner_symbol) |inner| bundler_symbol.SymbolID.make(module_index, @intFromEnum(inner)) else null
+            if (owner_symbol) |inner| bundler_symbol.SymbolID.make(module_index, @backingInt(inner)) else null
         else
             null;
         const ignored_name = if (ignored_id) |id| self.rename_table.get(id) else null;
@@ -1583,7 +1583,7 @@ pub const Linker = struct {
                 // represent source bindings in the current emitted unit.
                 if (symbol.synthetic_kind == .require_shim_local) continue;
                 if (ignored_id) |id| {
-                    if (module.index == id.module and raw_id == @intFromEnum(id.inner)) continue;
+                    if (module.index == id.module and raw_id == @backingInt(id.inner)) continue;
                 }
                 if (std.mem.eql(u8, symbol.nameText(module.source), candidate)) return true;
             }
@@ -1721,7 +1721,7 @@ pub const Linker = struct {
         try self.prepareCjsRuntimeName();
         if (self.cjs_factory_runtime_name != null or !self.hasIncludedCjsRuntime()) return;
         const symbol_id = self.cjs_factory_runtime_symbol_id orelse return;
-        const module_index = @intFromEnum(symbol_id.module);
+        const module_index = @backingInt(symbol_id.module);
         const owner_module = self.getModule(module_index) orelse return;
         const base = if (self.minify_whitespace) rt_names.NAMES.CJS_FACTORY_MIN else "__commonJS";
         try self.addNameOwner(name_to_owners, base, .{
@@ -1756,12 +1756,12 @@ pub const Linker = struct {
             var modules = self.graph.modulesIterator();
             while (modules.next()) |m| {
                 if (m.to_binary_runtime_symbol) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
                 const sem = m.semantic orelse continue;
                 if (findBundlerRuntimeHelperSymbol(&sem, "__toBinary")) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
             }
@@ -1788,12 +1788,12 @@ pub const Linker = struct {
             var modules = self.graph.modulesIterator();
             while (modules.next()) |m| {
                 if (m.to_binary_runtime_symbol) |inner| {
-                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
                 const sem = m.semantic orelse continue;
                 if (findBundlerRuntimeHelperSymbol(&sem, "__toBinary")) |inner| {
-                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    self.to_binary_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
             }
@@ -1818,7 +1818,7 @@ pub const Linker = struct {
         base: []const u8,
         cross_chunk_export_name: ?[]const u8,
     ) ![]const u8 {
-        const module_index = @intFromEnum(symbol_id.module);
+        const module_index = @backingInt(symbol_id.module);
         const owner_module = self.getModule(module_index) orelse return error.BundlerRuntimeHelperOwnerMissing;
         const previous_name = self.rename_table.get(symbol_id);
         if (previous_name) |name| _ = self.canonical_names_used.fetchRemove(name);
@@ -1859,7 +1859,7 @@ pub const Linker = struct {
                     var scope_names = scope_map.iterator();
                     while (scope_names.next()) |entry| {
                         if (m.index == symbol_id.module and scope_idx == 0 and
-                            entry.value_ptr.* == @intFromEnum(symbol_id.inner)) continue;
+                            entry.value_ptr.* == @backingInt(symbol_id.inner)) continue;
                         try self.reserved_globals.put(self.allocator, entry.key_ptr.*, {});
                     }
                 }
@@ -1910,14 +1910,14 @@ pub const Linker = struct {
             for (m.import_bindings) |ib| {
                 if (!ib.is_helper) continue;
                 const resolved = self.getResolvedBinding(m.index.toU32(), ib.local_span) orelse continue;
-                const helper_module_index: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
+                const helper_module_index: u32 = @intCast(@backingInt(resolved.canonical.module_index));
                 const helper_module = self.getModule(helper_module_index) orelse continue;
                 if (!helper_modules.isVirtualId(helper_module.path)) continue;
                 if (self.getCrossChunkGlobalName(helper_module_index, resolved.canonical.export_name) == null) continue;
 
                 const export_local = self.getExportLocalName(helper_module_index, resolved.canonical.export_name) orelse resolved.canonical.export_name;
                 const helper_inner = self.findSymbolIdx(helper_module_index, export_local) orelse return error.BundlerRuntimeHelperIdentityMissing;
-                const helper_id = bundler_symbol.SymbolID.make(@enumFromInt(helper_module_index), helper_inner);
+                const helper_id = bundler_symbol.SymbolID.make(@fromBackingInt(@intCast(helper_module_index)), helper_inner);
                 const seen_entry = try seen.getOrPut(self.allocator, helper_id);
                 if (seen_entry.found_existing) continue;
                 seen_entry.value_ptr.* = {};
@@ -1953,7 +1953,7 @@ pub const Linker = struct {
         for (sem.symbols.items, 0..) |symbol, index| {
             if (symbol.synthetic_kind != .bundler_runtime_helper or
                 !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-            return @enumFromInt(index);
+            return @fromBackingInt(@intCast(index));
         }
         return null;
     }
@@ -1964,34 +1964,34 @@ pub const Linker = struct {
     pub fn cjsFactoryRuntimeInternalNames(self: *const Linker) !rt_names.CjsRuntimeInternalNames {
         if (!self.hasIncludedCjsRuntime()) return .{};
         const factory_id = self.cjs_factory_runtime_symbol_id orelse return error.CjsRuntimeFactoryIdentityMissing;
-        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
+        const owner = self.getModule(@backingInt(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
         const ids = owner.cjs_runtime_internal_symbols orelse return error.CjsRuntimeInternalSymbolsMissing;
         return .{
-            .callback_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.callback_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
-            .module_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.module_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
-            .catch_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
-            .require_function = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.require_function))) orelse return error.CjsRuntimeInternalNameMissing,
+            .callback_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.callback_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
+            .module_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.module_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
+            .catch_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.catch_parameter))) orelse return error.CjsRuntimeInternalNameMissing,
+            .require_function = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.require_function))) orelse return error.CjsRuntimeInternalNameMissing,
         };
     }
 
     fn restoreCjsRuntimeInternalNames(self: *Linker) !void {
         const factory_id = self.cjs_factory_runtime_symbol_id orelse return;
-        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
+        const owner = self.getModule(@backingInt(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
         const ids = owner.cjs_runtime_internal_symbols orelse return error.CjsRuntimeInternalSymbolsMissing;
         const names: rt_names.CjsRuntimeInternalNames = .{};
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.callback_parameter)), names.callback_parameter);
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.module_parameter)), names.module_parameter);
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter)), names.catch_parameter);
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.require_function)), names.require_function);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.callback_parameter)), names.callback_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.module_parameter)), names.module_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.catch_parameter)), names.catch_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.require_function)), names.require_function);
     }
 
     /// Recover helper-local IDs and fixed output names after a cached rename
     /// reuse, where a fresh Linker may not have run `prepareCjsRuntimeName`.
     pub fn prepareCjsRuntimeInternalNames(self: *Linker) !void {
         if (self.cjs_factory_runtime_symbol_id) |cached| {
-            const owner = self.getModule(@intFromEnum(cached.module));
+            const owner = self.getModule(@backingInt(cached.module));
             const semantic = if (owner) |module| module.semantic else null;
-            const raw: usize = @intFromEnum(cached.inner);
+            const raw: usize = @backingInt(cached.inner);
             const current = if (owner) |module| module.cjs_runtime_factory_symbol else null;
             const valid = if (semantic) |sem|
                 raw < sem.symbols.items.len and
@@ -2007,7 +2007,7 @@ pub const Linker = struct {
                 const sem = module.semantic orelse continue;
                 const cached_symbol_id: ?semantic_symbol.SymbolId = blk: {
                     if (module.cjs_runtime_factory_symbol) |existing| {
-                        const raw: usize = @intFromEnum(existing);
+                        const raw: usize = @backingInt(existing);
                         if (raw < sem.symbols.items.len and sem.symbols.items[raw].synthetic_kind == .cjs_runtime_factory) break :blk existing;
                     }
                     break :blk null;
@@ -2016,12 +2016,12 @@ pub const Linker = struct {
                     (findCjsRuntimeFactorySymbol(&sem) orelse continue)
                 else
                     continue;
-                self.cjs_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module.index, @intFromEnum(symbol_id));
+                self.cjs_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module.index, @backingInt(symbol_id));
                 break;
             }
         }
         if (self.cjs_factory_runtime_symbol_id) |factory_id| {
-            const owner = self.moduleAtMut(@intFromEnum(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
+            const owner = self.moduleAtMut(@backingInt(factory_id.module)) orelse return error.CjsRuntimeFactoryOwnerMissing;
             const sem = if (owner.semantic) |*value| value else return error.CjsRuntimeInternalSymbolsMissing;
             var internal_ids_valid = false;
             if (owner.cjs_runtime_internal_symbols) |ids| {
@@ -2046,7 +2046,7 @@ pub const Linker = struct {
 
     fn findCjsRuntimeFactorySymbol(sem: *const ModuleSemanticData) ?semantic_symbol.SymbolId {
         for (sem.symbols.items, 0..) |symbol, index| {
-            if (symbol.synthetic_kind == .cjs_runtime_factory) return @enumFromInt(index);
+            if (symbol.synthetic_kind == .cjs_runtime_factory) return @fromBackingInt(@intCast(index));
         }
         return null;
     }
@@ -2058,7 +2058,7 @@ pub const Linker = struct {
     ) ?semantic_symbol.SymbolId {
         for (sem.symbols.items, 0..) |symbol, index| {
             if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-            return @enumFromInt(index);
+            return @fromBackingInt(@intCast(index));
         }
         return null;
     }
@@ -2069,7 +2069,7 @@ pub const Linker = struct {
         name: []const u8,
         kind: semantic_symbol.SymbolKind,
     ) bool {
-        const raw: usize = @intFromEnum(symbol_id);
+        const raw: usize = @backingInt(symbol_id);
         if (raw >= sem.symbols.items.len) return false;
         const symbol = sem.symbols.items[raw];
         return symbol.synthetic_kind == .cjs_runtime_internal_local and
@@ -2083,9 +2083,9 @@ pub const Linker = struct {
     /// been remapped to the new numbering (#5629).
     fn validEsmFactorySymbolId(self: *const Linker) ?bundler_symbol.SymbolID {
         const cached = self.esm_factory_runtime_symbol_id orelse return null;
-        const owner = self.getModule(@intFromEnum(cached.module)) orelse return null;
+        const owner = self.getModule(@backingInt(cached.module)) orelse return null;
         const sem = owner.semantic orelse return null;
-        const raw: usize = @intFromEnum(cached.inner);
+        const raw: usize = @backingInt(cached.inner);
         if (raw >= sem.symbols.items.len) return null;
         const symbol = sem.symbols.items[raw];
         if (symbol.synthetic_kind != .bundler_runtime_helper or !std.mem.eql(u8, symbol.synthetic_name, "__esm")) return null;
@@ -2107,12 +2107,12 @@ pub const Linker = struct {
             var modules = self.graph.modulesIterator();
             while (modules.next()) |m| {
                 if (m.esm_runtime_factory_symbol) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
                 const sem = m.semantic orelse continue;
                 if (findBundlerRuntimeHelperSymbol(&sem, "__esm")) |inner| {
-                    symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
             }
@@ -2140,12 +2140,12 @@ pub const Linker = struct {
             var modules = self.graph.modulesIterator();
             while (modules.next()) |m| {
                 if (m.esm_runtime_factory_symbol) |inner| {
-                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
                 const sem = m.semantic orelse continue;
                 if (findBundlerRuntimeHelperSymbol(&sem, "__esm")) |inner| {
-                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                    self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     break;
                 }
             }
@@ -2193,27 +2193,27 @@ pub const Linker = struct {
             }
             return .{};
         };
-        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
+        const owner = self.getModule(@backingInt(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
         const ids = owner.esm_runtime_internal_symbols orelse return error.EsmRuntimeInternalSymbolsMissing;
         return .{
-            .factory_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
-            .result_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.result_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
-            .catch_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
-            .init_function = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.init_function))) orelse return error.EsmRuntimeInternalNameMissing,
-            .factory_local = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_local))) orelse return error.EsmRuntimeInternalNameMissing,
+            .factory_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.factory_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
+            .result_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.result_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
+            .catch_parameter = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.catch_parameter))) orelse return error.EsmRuntimeInternalNameMissing,
+            .init_function = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.init_function))) orelse return error.EsmRuntimeInternalNameMissing,
+            .factory_local = self.rename_table.get(bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.factory_local))) orelse return error.EsmRuntimeInternalNameMissing,
         };
     }
 
     fn restoreEsmRuntimeInternalNames(self: *Linker) !void {
         const factory_id = self.esm_factory_runtime_symbol_id orelse return;
-        const owner = self.getModule(@intFromEnum(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
+        const owner = self.getModule(@backingInt(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
         const ids = owner.esm_runtime_internal_symbols orelse return error.EsmRuntimeInternalSymbolsMissing;
         const names: rt_names.EsmRuntimeInternalNames = .{};
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_parameter)), names.factory_parameter);
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.result_parameter)), names.result_parameter);
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.catch_parameter)), names.catch_parameter);
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.init_function)), names.init_function);
-        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @intFromEnum(ids.factory_local)), names.factory_local);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.factory_parameter)), names.factory_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.result_parameter)), names.result_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.catch_parameter)), names.catch_parameter);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.init_function)), names.init_function);
+        try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(factory_id.module, @backingInt(ids.factory_local)), names.factory_local);
     }
 
     /// Recover cached ESM helper-local IDs, then restore their fixed spellings
@@ -2222,9 +2222,9 @@ pub const Linker = struct {
         if (!self.hasIncludedEsmRuntime()) return;
 
         if (self.esm_factory_runtime_symbol_id) |cached| {
-            const owner = self.getModule(@intFromEnum(cached.module));
+            const owner = self.getModule(@backingInt(cached.module));
             const semantic = if (owner) |module| module.semantic else null;
-            const raw: usize = @intFromEnum(cached.inner);
+            const raw: usize = @backingInt(cached.inner);
             const current = if (owner) |module| module.esm_runtime_factory_symbol else null;
             const valid = if (semantic) |sem|
                 raw < sem.symbols.items.len and
@@ -2242,7 +2242,7 @@ pub const Linker = struct {
                 const sem = module.semantic orelse continue;
                 const cached_id: ?semantic_symbol.SymbolId = blk: {
                     if (module.esm_runtime_factory_symbol) |existing| {
-                        const raw: usize = @intFromEnum(existing);
+                        const raw: usize = @backingInt(existing);
                         if (raw < sem.symbols.items.len and
                             sem.symbols.items[raw].synthetic_kind == .bundler_runtime_helper and
                             std.mem.eql(u8, sem.symbols.items[raw].synthetic_name, "__esm")) break :blk existing;
@@ -2250,7 +2250,7 @@ pub const Linker = struct {
                     break :blk null;
                 };
                 const inner = cached_id orelse findBundlerRuntimeHelperSymbol(&sem, "__esm") orelse continue;
-                self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module.index, @intFromEnum(inner));
+                self.esm_factory_runtime_symbol_id = bundler_symbol.SymbolID.make(module.index, @backingInt(inner));
                 break;
             }
         }
@@ -2262,7 +2262,7 @@ pub const Linker = struct {
             }
             return;
         };
-        const owner = self.moduleAtMut(@intFromEnum(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
+        const owner = self.moduleAtMut(@backingInt(factory_id.module)) orelse return error.EsmRuntimeFactoryOwnerMissing;
         const sem = if (owner.semantic) |*value| value else return error.EsmRuntimeInternalSymbolsMissing;
         var ids_valid = false;
         if (owner.esm_runtime_internal_symbols) |ids| {
@@ -2293,7 +2293,7 @@ pub const Linker = struct {
     ) ?semantic_symbol.SymbolId {
         for (sem.symbols.items, 0..) |symbol, index| {
             if (symbol.synthetic_kind != .esm_runtime_internal_local or symbol.kind != kind or !std.mem.eql(u8, symbol.synthetic_name, name)) continue;
-            return @enumFromInt(index);
+            return @fromBackingInt(@intCast(index));
         }
         return null;
     }
@@ -2304,7 +2304,7 @@ pub const Linker = struct {
         name: []const u8,
         kind: semantic_symbol.SymbolKind,
     ) bool {
-        const raw: usize = @intFromEnum(symbol_id);
+        const raw: usize = @backingInt(symbol_id);
         if (raw >= sem.symbols.items.len) return false;
         const symbol = sem.symbols.items[raw];
         return symbol.synthetic_kind == .esm_runtime_internal_local and
@@ -2367,7 +2367,7 @@ pub const Linker = struct {
             }
             return .{};
         };
-        const owner = self.getModule(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+        const owner = self.getModule(@backingInt(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
         const ids = owner.esm_interop_runtime_internal_symbols orelse return error.EsmInteropRuntimeInternalSymbolsMissing;
         return .{
             .copy_props_to = self.esmInteropInternalName(owner_index, ids.copy_props_to) orelse return error.EsmInteropRuntimeInternalNameMissing,
@@ -2388,7 +2388,7 @@ pub const Linker = struct {
     }
 
     fn esmInteropInternalName(self: *const Linker, owner_index: ModuleIndex, inner: semantic_symbol.SymbolId) ?[]const u8 {
-        return self.rename_table.get(bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner)));
+        return self.rename_table.get(bundler_symbol.SymbolID.make(owner_index, @backingInt(inner)));
     }
 
     pub fn hmrRuntimeInternalNames(self: *const Linker) !rt_names.HmrRuntimeInternalNames {
@@ -2444,7 +2444,7 @@ pub const Linker = struct {
         }
 
         const owner_index = semantic_owner orelse parse_backed_anchor orelse return error.HmrRuntimeInternalOwnerMissing;
-        var owner = self.moduleAtMut(@intFromEnum(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
+        var owner = self.moduleAtMut(@backingInt(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
         const sem = if (owner.semantic) |*value| value else return error.HmrRuntimeInternalSymbolsMissing;
         const arena = if (owner.parse_arena) |value| value.allocator() else return error.HmrRuntimeInternalOwnerMissing;
         var recovered: [HMR_RUNTIME_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
@@ -2459,7 +2459,7 @@ pub const Linker = struct {
                 if (std.mem.eql(u8, symbol.synthetic_name, row.identity)) {
                     if (matched or symbol.kind != row.kind or recovered[row_index] != null)
                         return error.HmrRuntimeInternalSymbolsInvalid;
-                    recovered[row_index] = @enumFromInt(index);
+                    recovered[row_index] = @fromBackingInt(@intCast(index));
                     matched = true;
                 }
             }
@@ -2501,7 +2501,7 @@ pub const Linker = struct {
         errdefer for (selected_names) |selected| if (selected) |name| self.allocator.free(name);
         inline for (HMR_RUNTIME_INTERNAL_ROWS, 0..) |row, row_index| {
             const inner = @field(ids, row.field_name);
-            const symbol_id = bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner));
+            const symbol_id = bundler_symbol.SymbolID.make(owner_index, @backingInt(inner));
             const selected = try self.calculateGraphWideRuntimeHelperName(symbol_id, row.emitted_name, null);
             selected_names[row_index] = selected;
             @field(names, row.field_name) = selected;
@@ -2512,12 +2512,12 @@ pub const Linker = struct {
 
     fn restoreHmrRuntimeInternalNames(self: *Linker) !void {
         const owner_index = self.hmr_runtime_internal_owner orelse return error.HmrRuntimeInternalOwnerMissing;
-        const owner = self.getModule(@intFromEnum(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
+        const owner = self.getModule(@backingInt(owner_index)) orelse return error.HmrRuntimeInternalOwnerMissing;
         const ids = owner.hmr_runtime_internal_symbols orelse return error.HmrRuntimeInternalSymbolsMissing;
         const names = self.hmr_runtime_internal_names orelse return error.HmrRuntimeInternalNamesMissing;
         inline for (HMR_RUNTIME_INTERNAL_ROWS) |row| {
             const inner = @field(ids, row.field_name);
-            const symbol_id = bundler_symbol.SymbolID.make(owner_index, @intFromEnum(inner));
+            const symbol_id = bundler_symbol.SymbolID.make(owner_index, @backingInt(inner));
             const selected = @field(names, row.field_name);
             const already_assigned = if (self.rename_table.get(symbol_id)) |current|
                 std.mem.eql(u8, current, selected)
@@ -2532,8 +2532,8 @@ pub const Linker = struct {
     fn reserveHmrRuntimeInternalNames(self: *Linker) !void {
         try self.prepareHmrRuntimeInternalNames();
         const names = self.hmr_runtime_internal_names orelse return error.HmrRuntimeInternalNamesMissing;
-        inline for (std.meta.fields(rt_names.HmrRuntimeInternalNames)) |field| {
-            try self.reserved_globals.put(self.allocator, @field(names, field.name), {});
+        inline for (@typeInfo(rt_names.HmrRuntimeInternalNames).@"struct".field_names) |name| {
+            try self.reserved_globals.put(self.allocator, @field(names, name), {});
         }
     }
 
@@ -2583,11 +2583,11 @@ pub const Linker = struct {
                 }
             }
             inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
-                const index = @intFromEnum(helper);
+                const index = @backingInt(helper);
                 if (self.esm_interop_runtime_symbol_ids[index] == null) {
                     const base_name = rt_names.esmInteropRuntimeHelperBaseName(helper);
                     if (findBundlerRuntimeHelperSymbol(&sem, base_name)) |inner| {
-                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(m.index, @intFromEnum(inner));
+                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(m.index, @backingInt(inner));
                     }
                 }
             }
@@ -2596,11 +2596,11 @@ pub const Linker = struct {
         if (has_semantic_module) {
             const owner_index = internal_owner_index orelse anchor_index orelse return error.EsmInteropRuntimeInternalOwnerMissing;
             if (anchor_index) |helper_owner_index| {
-                var owner = self.moduleAtMut(@intFromEnum(helper_owner_index)) orelse return error.EsmInteropRuntimeOwnerMissing;
+                var owner = self.moduleAtMut(@backingInt(helper_owner_index)) orelse return error.EsmInteropRuntimeOwnerMissing;
                 const arena = if (owner.parse_arena) |value| value.allocator() else return error.EsmInteropRuntimeOwnerMissing;
                 const sem = if (owner.semantic) |*value| value else return error.EsmInteropRuntimeOwnerMissing;
                 inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
-                    const index = @intFromEnum(helper);
+                    const index = @backingInt(helper);
                     if (self.esm_interop_runtime_symbol_ids[index] == null) {
                         const base_name = rt_names.esmInteropRuntimeHelperBaseName(helper);
                         const inner = try semantic_symbol.extendSymbol(
@@ -2611,12 +2611,12 @@ pub const Linker = struct {
                             base_name,
                             Span.EMPTY,
                         );
-                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(helper_owner_index, @intFromEnum(inner));
+                        self.esm_interop_runtime_symbol_ids[index] = bundler_symbol.SymbolID.make(helper_owner_index, @backingInt(inner));
                     }
                 }
             } else {
                 inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
-                    if (self.esm_interop_runtime_symbol_ids[@intFromEnum(helper)] == null) return error.EsmInteropRuntimeIdentityMissing;
+                    if (self.esm_interop_runtime_symbol_ids[@backingInt(helper)] == null) return error.EsmInteropRuntimeIdentityMissing;
                 }
             }
 
@@ -2632,7 +2632,7 @@ pub const Linker = struct {
             var owned_count: usize = 0;
             errdefer for (owned_names[0..owned_count]) |name| self.allocator.free(name);
             inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
-                const index = @intFromEnum(helper);
+                const index = @backingInt(helper);
                 const symbol_id = self.esm_interop_runtime_symbol_ids[index] orelse return error.EsmInteropRuntimeIdentityMissing;
                 const base_name = rt_names.helperName(rt_names.esmInteropRuntimeHelperBaseName(helper), self.minify_whitespace);
                 const selected_name = try self.calculateGraphWideRuntimeHelperName(symbol_id, base_name, null);
@@ -2653,7 +2653,7 @@ pub const Linker = struct {
     }
 
     fn prepareEsmInteropRuntimeInternalSymbols(self: *Linker, owner_index: ModuleIndex) !void {
-        var owner = self.moduleAtMut(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+        var owner = self.moduleAtMut(@backingInt(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
         const sem = if (owner.semantic) |*value| value else return error.EsmInteropRuntimeInternalSymbolsMissing;
         var recovered: [ESM_INTEROP_INTERNAL_ROWS.len]?semantic_symbol.SymbolId = @splat(null);
 
@@ -2663,7 +2663,7 @@ pub const Linker = struct {
             inline for (ESM_INTEROP_INTERNAL_ROWS, 0..) |row, row_index| {
                 if (std.mem.eql(u8, symbol.synthetic_name, row.identity)) {
                     if (matched or symbol.kind != row.kind or recovered[row_index] != null) return error.EsmInteropRuntimeInternalSymbolsInvalid;
-                    recovered[row_index] = @enumFromInt(index);
+                    recovered[row_index] = @fromBackingInt(@intCast(index));
                     matched = true;
                 }
             }
@@ -2717,7 +2717,7 @@ pub const Linker = struct {
 
     fn restoreEsmInteropRuntimeInternalNames(self: *Linker) !void {
         const owner_index = self.esm_interop_runtime_internal_owner orelse return error.EsmInteropRuntimeInternalOwnerMissing;
-        const owner = self.getModule(@intFromEnum(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
+        const owner = self.getModule(@backingInt(owner_index)) orelse return error.EsmInteropRuntimeInternalOwnerMissing;
         const ids = owner.esm_interop_runtime_internal_symbols orelse return error.EsmInteropRuntimeInternalSymbolsMissing;
         const names: rt_names.EsmInteropRuntimeInternalNames = .{};
         const values = .{
@@ -2737,7 +2737,7 @@ pub const Linker = struct {
             .{ ids.to_common_js_module, names.to_common_js_module },
         };
         inline for (values) |value| {
-            try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(owner_index, @intFromEnum(value[0])), value[1]);
+            try self.rename_table.put(self.allocator, bundler_symbol.SymbolID.make(owner_index, @backingInt(value[0])), value[1]);
         }
     }
 
@@ -2761,7 +2761,7 @@ pub const Linker = struct {
         inline for (rt_names.ESM_INTEROP_RUNTIME_HELPERS) |helper| {
             const selected_name = names.get(helper);
             try self.reserved_globals.put(self.allocator, selected_name, {});
-            const index = @intFromEnum(helper);
+            const index = @backingInt(helper);
             if (self.esm_interop_runtime_symbol_ids[index]) |symbol_id| {
                 if (self.rename_table.get(symbol_id)) |existing| {
                     if (!std.mem.eql(u8, existing, selected_name)) {
@@ -2909,7 +2909,7 @@ pub const Linker = struct {
                 continue;
             }
             if (rec.resolved.isNone()) continue;
-            const w = self.getModule(@intFromEnum(rec.resolved)) orelse continue;
+            const w = self.getModule(@backingInt(rec.resolved)) orelse continue;
             if (w.wrap_kind == .none) continue;
             if (try cb(ctx, w, false)) return;
         }
@@ -3092,7 +3092,7 @@ pub const Linker = struct {
         for (csem.scope_maps, 0..) |scope_map, sidx| {
             if (sidx < min_scope) continue;
             const sym_idx = scope_map.get(name) orelse continue;
-            const sid = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(ci)), sym_idx);
+            const sid = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(ci))), sym_idx);
             if (self.rename_table.get(sid) != null) continue;
             const cand = try self.pickConsumerShadowName(name, ci, c, name_to_owners);
             try self.assignSymbolCanonical(sid, cand);
@@ -3128,7 +3128,7 @@ pub const Linker = struct {
     /// ⚠️ minify 빌드에선 mangler(Phase B, `mergeUnifiedPhaseB`)가 nested rename 을 담당하고
     /// 애초에 scope-aware 라 shadow 를 자연히 피하므로, `manglerActive()` 로 게이트해서만 쓴다.
     pub fn nestedRenameFor(self: *const Linker, module_index: u32, sym_idx: u32) ?[]const u8 {
-        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), sym_idx));
+        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), sym_idx));
     }
 
     /// unified mangler(Phase B nested rename)가 이번 빌드에 도는가.
@@ -3218,8 +3218,8 @@ pub const Linker = struct {
             // → reuse 비활성, 다음 rebuild full 재계산 (위 doc 참고).
             const local = self.symbolLocalName(id) orelse {
                 debug_log.print(.rename_reuse, "buildRenameSnapshot: symbolLocalName(module={d},inner={d}) null → 스냅샷 폐기(capture 실패), reuse 비활성\n", .{
-                    @intFromEnum(id.module),
-                    @intFromEnum(id.inner),
+                    @backingInt(id.module),
+                    @backingInt(id.inner),
                 });
                 snap.arena.deinit();
                 return null;
@@ -3298,7 +3298,7 @@ pub const Linker = struct {
             var it = ch.iterator();
             while (it.next()) |e| {
                 const idx = self.graph.path_to_module.get(e.key_ptr.*) orelse return false;
-                const i = @intFromEnum(idx);
+                const i = @backingInt(idx);
                 if (i >= mc) return false;
                 const m = self.getModule(@intCast(i)) orelse return false;
                 if (!self.fingerprintMatches(m.*, snap.fingerprint[i])) return false;
@@ -3334,9 +3334,9 @@ pub const Linker = struct {
     /// 이 이 null 을 만나면 스냅샷을 폐기한다(불완전 capture 방지). pub: linker_test.zig 가
     /// 이 null 케이스를 직접 구성해 capture 폐기를 검증한다.
     pub fn symbolLocalName(self: *const Linker, id: bundler_symbol.SymbolID) ?[]const u8 {
-        const m = self.getModule(@intFromEnum(id.module)) orelse return null;
+        const m = self.getModule(@backingInt(id.module)) orelse return null;
         const sem = m.semantic orelse return null;
-        const idx = @intFromEnum(id.inner);
+        const idx = @backingInt(id.inner);
         if (sem.scope_maps.len > 0) {
             var it = sem.scope_maps[0].iterator();
             while (it.next()) |e| {
@@ -3361,7 +3361,7 @@ pub const Linker = struct {
             .unresolved_refs_hash = 0,
             .nested_name_set_hash = 0,
             // wrap_kind 를 seed 로 접어 넣는다(빈 import 모듈도 wrap flip 을 감지).
-            .import_locals_wrap_hash = @intFromEnum(m.wrap_kind) +% 1,
+            .import_locals_wrap_hash = @backingInt(m.wrap_kind) +% 1,
         };
 
         // top-level owner 이름집합 (G2) — collectModuleNames 와 동일 필터 공유.
@@ -3442,10 +3442,10 @@ pub const Linker = struct {
         }
 
         for (snap.entries) |entry| {
-            const module_index = @intFromEnum(entry.id.module);
+            const module_index = @backingInt(entry.id.module);
             // by-name 재유도: 초기 idx 대신 fresh 그래프에서 이름으로 다시 찾는다.
             const fresh_idx = self.findSymbolIdx(module_index, entry.local_name) orelse continue;
-            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), fresh_idx);
+            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), fresh_idx);
             // 스냅샷 문자열 borrow — 매 빌드 N dupe(alloc) 제거(lInj 절감, RFC_PERSISTENT_LINKER
             // Phase 1). `entry.canonical` 은 snap(=PreservedRenames, IncrementalBundler 수명)
             // 소유라 emit 까지 유효하고, linker.deinit 가 free 하지 않는다.
@@ -3511,7 +3511,7 @@ pub const Linker = struct {
 
         const ast = if (module.ast) |*value| value else return;
         const root = ast.transformed_root orelse if (ast.nodes.items.len > 0)
-            @as(NodeIndex, @enumFromInt(ast.nodes.items.len - 1))
+            @as(NodeIndex, @fromBackingInt(@intCast(ast.nodes.items.len - 1)))
         else
             return;
 
@@ -3528,8 +3528,8 @@ pub const Linker = struct {
         defer ambiguous.deinit(self.allocator);
 
         while (stack.pop()) |frame| {
-            if (frame.node.isNone() or @intFromEnum(frame.node) >= ast.nodes.items.len) continue;
-            const raw = @intFromEnum(frame.node);
+            if (frame.node.isNone() or @backingInt(frame.node) >= ast.nodes.items.len) continue;
+            const raw = @backingInt(frame.node);
             if (reachable.contains(raw)) {
                 if (frame.parent) |parent| {
                     if (parents.get(raw)) |first_parent| {
@@ -3582,7 +3582,7 @@ pub const Linker = struct {
                         return error.InvalidExplicitGlobalBinding;
                     const symbol_raw: u32 = @intCast(symbol_index);
                     const symbol_id = bundler_symbol.SymbolID.make(
-                        @enumFromInt(module_index),
+                        @fromBackingInt(@intCast(module_index)),
                         symbol_index,
                     );
                     if (renamed_symbols.contains(symbol_raw)) break;
@@ -3621,7 +3621,7 @@ pub const Linker = struct {
         for (m.import_bindings) |ib| {
             if (ib.kind == .namespace) continue;
             const resolved = self.getResolvedBinding(mod_i, ib.local_span) orelse continue;
-            const cmod: u32 = @intCast(@intFromEnum(resolved.canonical.module_index));
+            const cmod: u32 = @intCast(@backingInt(resolved.canonical.module_index));
 
             // target 이 이 청크(리네임 가능)인가. (module_to_chunk==null 이면 chunkOfModule 이 .none 이라
             // 아래 isNone 가드가 false → per_chunk 여도 same-chunk 아님.)
@@ -3662,7 +3662,7 @@ pub const Linker = struct {
                     // one visible to direct eval) keeps its spelling and cannot capture calls.
                     const export_local = self.getExportLocalName(cmod, resolved.canonical.export_name) orelse resolved.canonical.export_name;
                     const helper_inner = self.findSymbolIdx(cmod, export_local) orelse continue;
-                    const helper_id = bundler_symbol.SymbolID.make(@enumFromInt(cmod), helper_inner);
+                    const helper_id = bundler_symbol.SymbolID.make(@fromBackingInt(@intCast(cmod)), helper_inner);
                     const helper_name = try self.calculateGraphWideRuntimeHelperName(helper_id, export_local, resolved.canonical.export_name);
                     self.allocator.free(helper_name);
                     continue;
@@ -3831,7 +3831,7 @@ pub const Linker = struct {
             // bitset 슬롯은 unified_module_scopes 인덱싱(metadata) 때문에 유지하되, 청크
             // 비포함 모듈은 그 청크 emit 시 읽히지 않으므로 0-bit 로 할당 — 다청크 빌드에서
             // 청크마다 전체 모듈 sym_count 만큼 bit storage 를 잡던 비용을 제거한다(#4 효율).
-            const in_chunk = if (chunk_modules) |cm| cm.contains(@as(ModuleIndex, @enumFromInt(mi))) else true;
+            const in_chunk = if (chunk_modules) |cm| cm.contains(@as(ModuleIndex, @fromBackingInt(@intCast(mi)))) else true;
             const sym_count = if (in_chunk) (if (sem_opt) |s| s.symbols.items.len else 0) else 0;
             bitsets[created] = try std.DynamicBitSet.initEmpty(self.allocator, sym_count);
             created += 1;
@@ -3870,7 +3870,7 @@ pub const Linker = struct {
                             // synthetic 루프 가드와 대칭.
                             if (self.graph.preserve_modules) continue;
                             // RFC #3940 L.4c: dedup key 도 build-scope rename_table 경유. miss → synthetic_name.
-                            const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.preferredOutputName(m.source);
+                            const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(mi))), si)) orelse sym.preferredOutputName(m.source);
                             if (key.len <= 1) continue;
                             if (exported.contains(key)) continue;
                             try candidates.append(self.allocator, .{
@@ -3936,7 +3936,7 @@ pub const Linker = struct {
                         if (self.tree_shaker_active and !m.isStatementAliveBySym(sym_idx_usize)) continue;
 
                         // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
-                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), sym_idx)) orelse sym_name;
+                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(mi))), sym_idx)) orelse sym_name;
                         if (key.len <= 1) {
                             // canonical_name 이 sym_name 과 다른 1-char 케이스도 reserve
                             // (위 sym_name 분기와 대칭 — #2965).
@@ -4019,7 +4019,7 @@ pub const Linker = struct {
                         // 드물어(RN) canonical 유지의 size 비용 무시 가능 → mangle 후보서 제외.
                         if ((sk == .esm_init or sk == .cjs_require) and rbm_module_indices.contains(m.index)) continue;
                         // RFC #3940 L.4c: dedup key 를 build-scope rename_table 경유 (parity 로 동치).
-                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(mi)), si)) orelse sym.preferredOutputName(m.source);
+                        const key = self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(mi))), si)) orelse sym.preferredOutputName(m.source);
                         if (key.len <= 1) continue;
                         if (exported.contains(key)) continue;
 
@@ -4058,8 +4058,8 @@ pub const Linker = struct {
                         const s = sr.semantic;
                         if (s.module.isNone() or s.symbol.isNone()) return;
                         try buf.append(la, .{
-                            .source_module_index = @intFromEnum(s.module),
-                            .source_symbol_id = @intFromEnum(s.symbol),
+                            .source_module_index = @backingInt(s.module),
+                            .source_symbol_id = @backingInt(s.symbol),
                         });
                     }
                 }.f;
@@ -4074,7 +4074,7 @@ pub const Linker = struct {
                         if (ib.import_record_index >= m.import_records.len) continue;
                         const tgt = m.import_records[ib.import_record_index].resolved;
                         if (tgt.isNone()) continue;
-                        const tm = self.getModule(@intFromEnum(tgt)) orelse continue;
+                        const tm = self.getModule(@backingInt(tgt)) orelse continue;
                         if (ib.namespace_used_properties) |props| {
                             for (props) |p| {
                                 if (self.resolveSemanticExportSource(tgt, p)) |sr|
@@ -4257,7 +4257,7 @@ pub const Linker = struct {
             const sem = cand_mod.semantic orelse continue;
             if (cand.symbol_id >= sem.symbols.items.len) continue;
             const dup = try self.allocator.dupe(u8, mangled);
-            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(cand.module_index)), cand.symbol_id);
+            const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(cand.module_index))), cand.symbol_id);
             try self.assignSymbolCanonical(id, dup);
         }
     }
@@ -4355,7 +4355,7 @@ pub const Linker = struct {
             self.allocator.free(value);
             return;
         };
-        const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), idx);
+        const id = bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), idx);
         try self.assignSymbolCanonical(id, value);
     }
 
@@ -4572,8 +4572,8 @@ pub const Linker = struct {
     pub fn emitFingerprint(self: *const Linker, m: *const Module) u64 {
         var h: u64 = 0x4535;
         // 1. Module-level emit-영향 사실 (interop/wrap/reachability/TLA).
-        h = h *% 31 +% @as(u64, @intFromEnum(m.wrap_kind));
-        h = h *% 31 +% @as(u64, @intFromEnum(m.exports_kind));
+        h = h *% 31 +% @as(u64, @backingInt(m.wrap_kind));
+        h = h *% 31 +% @as(u64, @backingInt(m.exports_kind));
         h = h *% 31 +% @as(u64, @intFromBool(m.has_cjs_export_signal));
         h = h *% 31 +% @as(u64, @intFromBool(m.can_skip_cjs_default_interop));
         // ⚠️ is_included(tree-shaking)는 증분 경로에서 빌드 간 비결정적(store 재사용 시 stale)이라
@@ -4598,7 +4598,7 @@ pub const Linker = struct {
         // 불변인 채 "type"(module↔commonjs)만 바뀌면 interop 모드가 flip → default import 오바인딩
         // (`module.exports` 전체 vs `.default`). def_format 을 자기 fp 에 접어 own-index fold 로 re-emit.
         // (provider-side cjsInteropIsNode 는 cross-chunk/entry 경로용으로 위에서 별도 접음.) 단조 안전.
-        h = h *% 31 +% @as(u64, @intFromEnum(m.def_format));
+        h = h *% 31 +% @as(u64, @backingInt(m.def_format));
         // 2. 래퍼명(cross-chunk deconflict 결과 — 소비자 preamble 이 이 이름을 호출/참조).
         if (m.getRequireName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x11, n);
         if (m.getInitName(&self.rename_table)) |n| h ^= std.hash.Wyhash.hash(0x12, n);
@@ -4619,7 +4619,7 @@ pub const Linker = struct {
                     if (sem.scope_maps[0].get(local)) |sidx| {
                         if (sidx < sem.symbols.items.len) {
                             const sym = sem.symbols.items[sidx];
-                            eh ^= (@as(u64, @intFromEnum(sym.const_kind)) +% 1) *% 0x9e3779b1;
+                            eh ^= (@as(u64, @backingInt(sym.const_kind)) +% 1) *% 0x9e3779b1;
                             eh ^= @as(u64, sym.write_count) *% 0x100000001b3;
                             if (sym.const_kind == .number) {
                                 eh ^= std.hash.Wyhash.hash(0x24, sem.numericConstText(@intCast(sidx)));
@@ -4655,7 +4655,7 @@ pub const Linker = struct {
     pub fn emitDeepFingerprint(self: *const Linker, idx: u32, out: []u64, state: []u8, depth: u32) u64 {
         if (idx >= out.len) return 0;
         if (state[idx] == 2) return out[idx];
-        const m = self.graph.getModule(@enumFromInt(idx)) orelse {
+        const m = self.graph.getModule(@fromBackingInt(@intCast(idx))) orelse {
             state[idx] = 2;
             out[idx] = 0;
             return 0;
@@ -4692,7 +4692,7 @@ pub const Linker = struct {
         const idx = self.findSymbolIdx(module_index, name) orelse return null;
         // emit 경로는 build-scope `rename_table` 을 읽는다 — `Symbol.canonical_name` field 는
         // RFC #3940 Sub-PR-L.5c 에서 제거됨. miss → null (원본 이름 유지).
-        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @enumFromInt(module_index)), idx));
+        return self.rename_table.get(bundler_symbol.SymbolID.make(@as(ModuleIndex, @fromBackingInt(@intCast(module_index))), idx));
     }
 
     /// ExportBinding의 canonical local name을 kind별 safe한 방법으로 조회.
@@ -4724,7 +4724,7 @@ pub const Linker = struct {
             },
             .semantic => |s| blk: {
                 const sem = m.semantic orelse break :blk null;
-                const idx: u32 = @intFromEnum(s.symbol);
+                const idx: u32 = @backingInt(s.symbol);
                 if (idx >= sem.symbols.items.len) break :blk null;
                 break :blk self.rename_table.get(bundler_symbol.SymbolID.make(s.module, idx));
             },
@@ -4753,7 +4753,7 @@ pub const Linker = struct {
 
         for (0..self.graph.moduleCount()) |i| {
             const m = self.getModule(@intCast(i)) orelse continue;
-            const mod_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+            const mod_idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
             for (m.export_bindings) |eb| {
                 if (std.mem.eql(u8, eb.exported_name, "*")) continue;
                 // 키는 name borrow → 중복 키는 put 이 value 만 덮어씀(free 불필요).
@@ -4819,7 +4819,7 @@ pub const Linker = struct {
                         if (sem.scope_maps.len > 0) {
                             if (sem.scope_maps[0].get(ib.local_name)) |sym_idx| {
                                 for (sem.references) |r| {
-                                    if (@intFromEnum(r.symbol_id) == sym_idx and r.isValueUse()) {
+                                    if (@backingInt(r.symbol_id) == sym_idx and r.isValueUse()) {
                                         value_used = true;
                                         break;
                                     }
@@ -4890,7 +4890,7 @@ pub const Linker = struct {
     /// `.alias` import 와 namespace member 접근이 공유하는 source 도출 (RFC #3288).
     fn resolveSemanticExportSource(self: *const Linker, module_idx: ModuleIndex, name: []const u8) ?bundler_symbol.SymbolRef {
         const chain = self.resolveExportChain(module_idx, name, 0) orelse return null;
-        const cm = self.getModule(@intFromEnum(chain.module_index)) orelse return null;
+        const cm = self.getModule(@backingInt(chain.module_index)) orelse return null;
         for (cm.export_bindings) |eb| {
             if (std.mem.eql(u8, eb.exported_name, chain.export_name)) {
                 return if (eb.symbol == .semantic) eb.symbol else null;
@@ -4912,13 +4912,13 @@ pub const Linker = struct {
             switch (eb.kind) {
                 .re_export => {
                     const target = resolvedRecordModule(m.import_records, eb.import_record_index) orelse return false;
-                    return self.exportIsTsType(@enumFromInt(target), eb.local_name, depth + 1);
+                    return self.exportIsTsType(@fromBackingInt(@intCast(target)), eb.local_name, depth + 1);
                 },
                 .local => {
                     for (m.import_bindings) |ib| {
                         if (ib.kind != .named or !std.mem.eql(u8, ib.local_name, eb.local_name)) continue;
                         const target = resolvedRecordModule(m.import_records, ib.import_record_index) orelse return false;
-                        return self.exportIsTsType(@enumFromInt(target), ib.imported_name, depth + 1);
+                        return self.exportIsTsType(@fromBackingInt(@intCast(target)), ib.imported_name, depth + 1);
                     }
                     return m.ts_type_export_names.contains(name);
                 },
@@ -4979,7 +4979,7 @@ pub const Linker = struct {
     ) ?SymbolRef {
         if (depth > max_chain_depth) return null;
 
-        const mod_i = @intFromEnum(module_idx);
+        const mod_i = @backingInt(module_idx);
         if (mod_i >= self.graph.moduleCount()) return null;
 
         // 메모이제이션: chain_cache가 활성화된 경우에만 캐시 조회/저장.
@@ -5010,7 +5010,7 @@ pub const Linker = struct {
 
     /// resolveExportChain 의 **캐시 우회** 변형 (#4564). 캐싱 wrapper 는 depth==0 에서 chain_cache
     /// 를 락 없이 `@constCast` put/get 한다 — 병렬 emit 스레드(buildMetadataForAst)에서 **cold key**
-    /// 로 호출하면 concurrent put/get 데이터 레이스(rehash-during-read → segfault, ReleaseFast-only,
+    /// 로 호출하면 concurrent put/get 데이터 레이스(rehash-during-read → segfault, fast-only,
     /// 비결정적)가 난다. `resolveExportChainInner` 는 chain_cache 를 안 건드리므로(재귀도
     /// resolveOrCjsFallback→Inner 로 cache-free) 직접 호출해 레이스를 원천 차단. namespace 멤버
     /// canonical 해석은 상위 ns_export_cache 가 이미 메모이즈해 캐시 손실 영향도 없다.
@@ -5032,7 +5032,7 @@ pub const Linker = struct {
     ) ?SymbolRef {
         if (depth > max_chain_depth) return null;
 
-        const mod_i = @intFromEnum(module_idx);
+        const mod_i = @backingInt(module_idx);
         const m_any = self.graph.getModule(module_idx) orelse return null;
 
         // 1. 직접 export 확인 — struct 키 (조회마다 문자열 빌드/해싱 없음).
@@ -5139,7 +5139,7 @@ pub const Linker = struct {
     /// 두 SymbolRef 가 같은 canonical(동일 정의)을 가리키는지. diamond(같은 underlying
     /// 모듈이 여러 경로로 re-export)는 ambiguous 가 아니므로 이 비교로 구별한다. #3982
     fn sameCanonical(a: SymbolRef, b: SymbolRef) bool {
-        if (@intFromEnum(a.module_index) != @intFromEnum(b.module_index)) return false;
+        if (@backingInt(a.module_index) != @backingInt(b.module_index)) return false;
         if (!std.mem.eql(u8, a.export_name, b.export_name)) return false;
         const am = a.synthetic_member;
         const bm = b.synthetic_member;
@@ -5286,10 +5286,10 @@ pub const Linker = struct {
             var it = ch.iterator();
             while (it.next()) |e| {
                 const idx = self.graph.path_to_module.get(e.key_ptr.*) orelse break :blk false;
-                set.put(self.allocator, @intFromEnum(idx), {}) catch break :blk false;
-                const m = self.getModule(@intFromEnum(idx)) orelse break :blk false;
-                for (m.importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
-                for (m.dynamic_importers.items) |imp| set.put(self.allocator, @intFromEnum(imp), {}) catch break :blk false;
+                set.put(self.allocator, @backingInt(idx), {}) catch break :blk false;
+                const m = self.getModule(@backingInt(idx)) orelse break :blk false;
+                for (m.importers.items) |imp| set.put(self.allocator, @backingInt(imp), {}) catch break :blk false;
+                for (m.dynamic_importers.items) |imp| set.put(self.allocator, @backingInt(imp), {}) catch break :blk false;
             }
             break :blk true;
         };
@@ -5357,12 +5357,12 @@ pub const Linker = struct {
                         // 많은 alias id 를 가리킬 수 있어 (e.g. source 가 재파싱되며 re_export
                         // 엔트리가 줄어든 경우) 경계 검사. 벗어난 참조는 이번 build 에서
                         // stale — ref_count 증가 건너뜀.
-                        if (@intFromEnum(a.symbol) >= table_ptr.count()) continue;
+                        if (@backingInt(a.symbol) >= table_ptr.count()) continue;
                         table_ptr.incRefCount(a.symbol);
                     },
                     .semantic => |s| {
                         const sem_ptr = if (source.semantic) |*sem| sem else continue;
-                        const idx: u32 = @intFromEnum(s.symbol);
+                        const idx: u32 = @backingInt(s.symbol);
                         if (idx >= sem_ptr.symbols.items.len) continue;
                         sem_ptr.symbols.items[idx].reference_count += 1;
                     },
@@ -5397,7 +5397,7 @@ pub const Linker = struct {
                 if (sem.scope_maps.len > 0) sem.scope_maps[0] else null
             else
                 null;
-            const mod_idx: bundler_symbol.ModuleIndex = @enumFromInt(i);
+            const mod_idx: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(i));
 
             for (importer.import_bindings) |*ib| {
                 // current-side: scope_maps[0]에서 로컬 심볼 조회.
@@ -5443,7 +5443,7 @@ pub const Linker = struct {
         if (ib.import_record_index >= consumer.import_records.len) return false;
         const resolved = consumer.import_records[ib.import_record_index].resolved;
         if (resolved == .none) return false;
-        if (@intFromEnum(resolved) != reexporter_idx) return false;
+        if (@backingInt(resolved) != reexporter_idx) return false;
         return std.mem.eql(u8, ib.imported_name, reexport_name);
     }
 
@@ -5797,7 +5797,7 @@ pub const Linker = struct {
         if (depth > max_chain_depth) return null;
         const m = self.graph.getModule(module_idx) orelse return null;
         const entry = self.export_map.get(.{
-            .module_index = @intCast(@intFromEnum(module_idx)),
+            .module_index = @intCast(@backingInt(module_idx)),
             .name = name,
         }) orelse return null;
 
@@ -5807,7 +5807,7 @@ pub const Linker = struct {
             if (rec_idx >= m.import_records.len) return null;
             const src = m.import_records[rec_idx].resolved;
             if (src.isNone()) return null;
-            if (@intFromEnum(src) == cjs_mod_idx) return m;
+            if (@backingInt(src) == cjs_mod_idx) return m;
             return self.findCjsImportOwner(src, entry.binding.local_name, cjs_mod_idx, depth + 1);
         }
 
@@ -5817,7 +5817,7 @@ pub const Linker = struct {
             if (ib.import_record_index >= m.import_records.len) return null;
             const src = m.import_records[ib.import_record_index].resolved;
             if (src.isNone()) return null;
-            if (@intFromEnum(src) == cjs_mod_idx) return m;
+            if (@backingInt(src) == cjs_mod_idx) return m;
             return self.findCjsImportOwner(src, ib.imported_name, cjs_mod_idx, depth + 1);
         }
         return null;
@@ -5860,7 +5860,7 @@ pub const Linker = struct {
         if (rec_idx >= records.len) return null;
         const src = records[rec_idx].resolved;
         if (src.isNone()) return null;
-        return @intFromEnum(src);
+        return @backingInt(src);
     }
 
     /// 모듈의 모든 export를 재귀적으로 수집 (export * 체인 포함).
@@ -5874,7 +5874,7 @@ pub const Linker = struct {
         depth: u32,
     ) WrapperNameError!void {
         if (depth > max_chain_depth) return;
-        const mod_i = @intFromEnum(module_idx);
+        const mod_i = @backingInt(module_idx);
         const m = self.graph.getModule(module_idx) orelse return;
         // diamond export * 패턴에서 동일 모듈 재방문 방지
         if (visited.contains(mod_i)) return;
@@ -5912,7 +5912,7 @@ pub const Linker = struct {
             } else if (eb.kind == .re_export) blk: {
                 if (self.resolveExportChain(module_idx, eb.exported_name, 0)) |canonical| {
                     init_mod = if (self.graph.getModule(canonical.module_index)) |cmod|
-                        if (cmod.wrap_kind == .esm) @intFromEnum(canonical.module_index) else null
+                        if (cmod.wrap_kind == .esm) @backingInt(canonical.module_index) else null
                     else
                         null;
                     if (self.graph.getModule(canonical.module_index)) |cmod| {
@@ -6035,7 +6035,7 @@ pub const Linker = struct {
         const tm = self.graph.getModule(target) orelse return null;
         if (tm.wrap_kind == .cjs) return .{ .module_index = target, .export_name = CJS_NS_EXPORT_NAME };
         const redirected = metadata_mod.pureCjsStarTarget(self, target.toU32()) orelse return null;
-        return .{ .module_index = @enumFromInt(redirected), .export_name = CJS_NS_EXPORT_NAME };
+        return .{ .module_index = @fromBackingInt(@intCast(redirected)), .export_name = CJS_NS_EXPORT_NAME };
     }
 
     /// (#4494) import 바인딩이 최종적으로 가리키는 **CJS canonical**(re-export 포워딩 + 직접
@@ -6198,19 +6198,19 @@ pub const Linker = struct {
             const blocks_mangling = sem.scopes.len == 0 or sem.scopes[0].blocksMangling();
             const exports_id = module.cjs_wrapper_exports_parameter_symbol;
             const module_id = module.cjs_wrapper_module_parameter_symbol;
-            const exports_sid = if (exports_id) |id| bundler_symbol.SymbolID.make(module.index, @intFromEnum(id)) else null;
-            const module_sid = if (module_id) |id| bundler_symbol.SymbolID.make(module.index, @intFromEnum(id)) else null;
+            const exports_sid = if (exports_id) |id| bundler_symbol.SymbolID.make(module.index, @backingInt(id)) else null;
+            const module_sid = if (module_id) |id| bundler_symbol.SymbolID.make(module.index, @backingInt(id)) else null;
             var exports_name: ?[]const u8 = null;
 
             if (exports_id) |id| {
-                const raw: usize = @intFromEnum(id);
+                const raw: usize = @backingInt(id);
                 if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
                 const source_binding_conflict = cjsWrapperParameterConflictsWithRoot(module, raw, "exports");
                 const needs_alias = source_binding_conflict or (normal_aliasing and !blocks_mangling);
                 const sid = exports_sid.?;
                 if (needs_alias) {
                     const other = if (module_sid) |other_sid|
-                        try self.cjsWrapperParameterCurrentName(module, other_sid, @intFromEnum(module_id.?))
+                        try self.cjsWrapperParameterCurrentName(module, other_sid, @backingInt(module_id.?))
                     else
                         null;
                     const selected = if (self.rename_table.get(sid)) |existing|
@@ -6227,7 +6227,7 @@ pub const Linker = struct {
             }
 
             if (module_id) |id| {
-                const raw: usize = @intFromEnum(id);
+                const raw: usize = @backingInt(id);
                 if (raw >= sem.symbols.items.len) return error.InvalidCjsWrapperParameterSymbol;
                 const source_binding_conflict = cjsWrapperParameterConflictsWithRoot(module, raw, "module");
                 const needs_alias = source_binding_conflict or (normal_aliasing and !blocks_mangling);

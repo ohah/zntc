@@ -293,7 +293,7 @@ pub fn mangleAll(
             // 후 같은 top-level scope 에서 동일 이름 → silent broken (예: `.alias`
             // re-export source 가 per_mod_reserved 누락 시). debug 빌드 안전망 —
             // (c) 코어 통합이 1-char 압력을 키우기 전에 정합성을 기계 증명.
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 if (per_mod_reserved[i].contains(entry.value_ptr.*)) {
                     std.debug.panic(
                         "RFC#3288 collision: module {d} nested '{s}' shadows reserved top-level name (silent-broken)",

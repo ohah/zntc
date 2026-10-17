@@ -6,7 +6,7 @@
 //!
 //! 식별자 = hash(git_sha + optimize mode + zig 버전). git 이 없으면 git 부분이 "unknown"
 //! (tarball 빌드 등) — 같은 tarball 은 한 버전이라 무방. optimize mode 포함은 release-only 회귀
-//! (debug 통과해도 ReleaseFast 에서만 깨지는 차이)를 다른 빌드로 분리하기 위함. git_sha 는
+//! (debug 통과해도 fast 에서만 깨지는 차이)를 다른 빌드로 분리하기 위함. git_sha 는
 //! `git rev-parse HEAD`(clone depth 무관)라 full/shallow clone 이 같은 commit 에 같은 값.
 //!
 //! ⚠️ working tree 가 dirty 면 git_sha 가 `<sha>-dirty` 로 **고정**되어 dirty 변경 내용을
@@ -49,9 +49,9 @@ test "build_id: 각 dimension 이 키를 바꾸고 0 이 아님" {
     const t = std.testing;
     try t.expect(current() != 0);
     // 결정성.
-    try t.expectEqual(compute("abc", "Debug", "0.16.0"), compute("abc", "Debug", "0.16.0"));
+    try t.expectEqual(compute("abc", "debug", "0.17.0"), compute("abc", "debug", "0.17.0"));
     // 각 dimension 변경 → 키 변경(하나라도 해시에서 빠지면 cross-build cache poisoning).
-    try t.expect(compute("abc", "Debug", "0.16.0") != compute("abd", "Debug", "0.16.0")); // git_sha
-    try t.expect(compute("abc", "Debug", "0.16.0") != compute("abc", "ReleaseFast", "0.16.0")); // mode
-    try t.expect(compute("abc", "Debug", "0.16.0") != compute("abc", "Debug", "0.16.1")); // zig ver
+    try t.expect(compute("abc", "debug", "0.17.0") != compute("abd", "debug", "0.17.0")); // git_sha
+    try t.expect(compute("abc", "debug", "0.17.0") != compute("abc", "fast", "0.17.0")); // mode
+    try t.expect(compute("abc", "debug", "0.17.0") != compute("abc", "debug", "0.17.1")); // zig ver
 }

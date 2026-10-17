@@ -52,6 +52,7 @@ pub const PersistentModuleStore = struct {
         mtime: i128,
         /// Module 구조체. parse_arena 포함.
         /// store가 소유 — graph에 주입 시 parse_arena 소유권을 이전하고 null로 설정.
+        /// module.path 는 별도 할당 없이 map key를 borrow한다.
         module: Module,
         /// import specifier 목록 (store allocator 소유). import 변경 감지용.
         import_specifiers: []const []const u8,
@@ -240,7 +241,6 @@ pub const PersistentModuleStore = struct {
             self.allocator.free(specs);
             return;
         };
-
         // 기존 캐시가 있으면 제거. (#3755 sweep) freeCachedModule 가 contents 만 free
         // 하므로 entry 자체는 그대로 — 다음 단계에서 map.put 으로 *값* 만 update.
         // OOM rollback 으로 put 에 도달 못하면 entry 가 dangling 으로 남기 때문에
@@ -325,6 +325,7 @@ pub const PersistentModuleStore = struct {
 
         if (had_existing) {
             // 기존 키 재사용 — put은 값만 업데이트
+            cached_module.path = self.modules.getKey(path).?;
             self.modules.put(self.allocator, path, .{
                 .mtime = mtime,
                 .module = cached_module,
@@ -340,6 +341,7 @@ pub const PersistentModuleStore = struct {
                 self.freeCachedModule(&orphan);
                 return;
             };
+            cached_module.path = key;
 
             self.modules.put(self.allocator, key, .{
                 .mtime = mtime,
@@ -435,11 +437,11 @@ test "PersistentModuleStore: alias_table ownership 왕복 (rebuild 2회)" {
     defer store.deinit();
 
     // build 1: graph 가 새 module 을 만든다
-    var module = Module.init(@enumFromInt(0), "/virtual/mod.ts");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "/virtual/mod.ts");
     module.alias_table = symbol_mod.AliasTable.init(allocator);
     _ = try module.alias_table.?.declare("foo");
     _ = try module.alias_table.?.declare("bar");
-    try module.dynamic_importers.append(allocator, @enumFromInt(1));
+    try module.dynamic_importers.append(allocator, @fromBackingInt(@intCast(1)));
 
     // build 1 end: store 로 소유권 이전.
     store.putModule("/virtual/mod.ts", &module, 1);
@@ -451,7 +453,7 @@ test "PersistentModuleStore: alias_table ownership 왕복 (rebuild 2회)" {
 
     // build 2: cache-hit — store 에서 graph 로 소유권 환원.
     const cached = store.getIfFresh("/virtual/mod.ts", 1) orelse return error.CacheMiss;
-    var mod2 = Module.init(@enumFromInt(0), "/virtual/mod.ts");
+    var mod2 = Module.init(@fromBackingInt(@intCast(0)), "/virtual/mod.ts");
     const saved_deps = mod2.dependencies;
     const saved_importers = mod2.importers;
     const saved_dynamic = mod2.dynamic_imports;
@@ -494,7 +496,7 @@ test "PersistentModuleStore: parse_arena ownership 왕복 후 alloc 정상 (#269
     var store = PersistentModuleStore.init(allocator);
     defer store.deinit();
 
-    var module = Module.init(@enumFromInt(0), "\x00zntc:runtime/extends");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "\x00zntc:runtime/extends");
     module.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
     // 첫 빌드에서 arena 에 alloc — buffer_list 에 BufNode 등록.
     _ = try module.parse_arena.?.allocator().alloc(u8, 256);
@@ -505,7 +507,7 @@ test "PersistentModuleStore: parse_arena ownership 왕복 후 alloc 정상 (#269
 
     // build 2: cache-hit. graph 가 ownership 환수.
     const cached = store.getIfFresh("\x00zntc:runtime/extends", 1) orelse return error.CacheMiss;
-    var mod2 = Module.init(@enumFromInt(0), "\x00zntc:runtime/extends");
+    var mod2 = Module.init(@fromBackingInt(@intCast(0)), "\x00zntc:runtime/extends");
     const saved_deps = mod2.dependencies;
     const saved_importers = mod2.importers;
     mod2 = cached.module;
@@ -538,7 +540,7 @@ test "PersistentModuleStore: evict 완전 저장 엔트리 + parse_arena=null da
     try testing.expect(!store.modules.contains("\x00zntc:absent"));
 
     // case 1: 완전 저장 엔트리(arena 를 store 가 소유) evict → arena 포함 전체 free, 엔트리 제거.
-    var m1 = Module.init(@enumFromInt(0), "\x00zntc:evict/full");
+    var m1 = Module.init(@fromBackingInt(@intCast(0)), "\x00zntc:evict/full");
     m1.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
     _ = try m1.parse_arena.?.allocator().alloc(u8, 128);
     store.putModule("\x00zntc:evict/full", &m1, 1);
@@ -549,7 +551,7 @@ test "PersistentModuleStore: evict 완전 저장 엔트리 + parse_arena=null da
 
     // case 2: cache-hit 로 arena 를 graph 가 환수해 store 엔트리의 parse_arena=null 인 dangling
     // 상태를 evict — freeCachedModule 이 null arena 를 이중 free 하지 않아야 한다.
-    var m2 = Module.init(@enumFromInt(0), "\x00zntc:evict/dangling");
+    var m2 = Module.init(@fromBackingInt(@intCast(0)), "\x00zntc:evict/dangling");
     m2.parse_arena = Module_mod.createParseArena(allocator) orelse return error.OutOfMemory;
     _ = try m2.parse_arena.?.allocator().alloc(u8, 64);
     store.putModule("\x00zntc:evict/dangling", &m2, 1);
@@ -575,7 +577,7 @@ test "PersistentModuleStore: evictConstConsumers 전이 fixpoint + 불변 no-op 
 
     const putBaked = struct {
         fn call(s: *PersistentModuleStore, a: std.mem.Allocator, path: []const u8, providers: []const []const u8) void {
-            var m = Module.init(@enumFromInt(0), path);
+            var m = Module.init(@fromBackingInt(@intCast(0)), path);
             m.const_providers = providers; // borrowed — putModule 이 store allocator 로 dupe.
             s.putModule(path, &m, 1);
             m.deinit(a); // graph 쪽 잔여 해제 (const_providers 는 borrowed 라 free 안 함).
@@ -628,7 +630,7 @@ test "PersistentModuleStore: evictConstConsumers query-suffix 전이 도메인 �
 
     const putBaked = struct {
         fn call(s: *PersistentModuleStore, a: std.mem.Allocator, path: []const u8, providers: []const []const u8) void {
-            var m = Module.init(@enumFromInt(0), path);
+            var m = Module.init(@fromBackingInt(@intCast(0)), path);
             m.const_providers = providers;
             s.putModule(path, &m, 1);
             m.deinit(a);
@@ -661,7 +663,7 @@ test "PersistentModuleStore: evictConstConsumers OOM → 전량 evict 폴백 (#4
 
     const putBaked = struct {
         fn call(s: *PersistentModuleStore, a: std.mem.Allocator, path: []const u8, providers: []const []const u8) void {
-            var m = Module.init(@enumFromInt(0), path);
+            var m = Module.init(@fromBackingInt(@intCast(0)), path);
             m.const_providers = providers;
             s.putModule(path, &m, 1);
             m.deinit(a);
@@ -710,7 +712,7 @@ test "PersistentModuleStore: putModule OOM rollback double-free 차단 (#3755)" 
     var store = PersistentModuleStore.init(alloc);
     defer store.deinit();
 
-    var module = Module.init(@enumFromInt(0), "/virtual/oom.ts");
+    var module = Module.init(@fromBackingInt(@intCast(0)), "/virtual/oom.ts");
     // resolved_deps 3개를 .interned variant 로 등록 — clone 시 .owned 로 변환 시도.
     // FailingAllocator 가 중간에서 OOM → rollback 실행.
     var deps: std.ArrayListUnmanaged(CachedResolvedDep) = .empty;
@@ -748,7 +750,7 @@ test "PersistentModuleStore: putModule had_existing + OOM rollback 시 map entry
     defer store.deinit();
 
     // 첫 putModule — 정상 저장 (deps 없이).
-    var mod1 = Module.init(@enumFromInt(0), "/virtual/oom-had-existing.ts");
+    var mod1 = Module.init(@fromBackingInt(@intCast(0)), "/virtual/oom-had-existing.ts");
     defer mod1.deinit(testing.allocator);
     store.putModule("/virtual/oom-had-existing.ts", &mod1, 1);
     try testing.expect(store.modules.contains("/virtual/oom-had-existing.ts"));
@@ -761,7 +763,7 @@ test "PersistentModuleStore: putModule had_existing + OOM rollback 시 map entry
     store.allocator = failing.allocator();
     defer store.allocator = orig_alloc; // deinit 도 testing.allocator 로 free 일관.
 
-    var mod2 = Module.init(@enumFromInt(0), "/virtual/oom-had-existing.ts");
+    var mod2 = Module.init(@fromBackingInt(@intCast(0)), "/virtual/oom-had-existing.ts");
     var deps2: std.ArrayListUnmanaged(CachedResolvedDep) = .empty;
     defer mod2.deinit(testing.allocator);
     try deps2.append(testing.allocator, .{ .kind = .static_import, .target = .file, .path = .{ .interned = "x/y" } });

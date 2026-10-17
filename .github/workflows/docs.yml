@@ -37,7 +37,7 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           # WASM 빌드 프로파일. upstream 키에 job ID도 포함되어 CI의 wasm job과는 분리된다.
           cache-key: wasm
 

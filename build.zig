@@ -1,23 +1,30 @@
 const std = @import("std");
 const boringssl_build = @import("build/boringssl.zig");
+const TranslateC = @import("translate_c").Translator;
 
 /// 이 빌드의 commit 식별자(#4438 디스크 캐시 무효화 키 — src/build_id.zig 참조).
 /// `git rev-parse HEAD`(clone depth 무관 — `describe` 와 달리 shallow clone 에서도 같은 commit =
 /// 같은 값) + working tree dirty 여부. git 이 없거나 실패하면 "unknown"(tarball 빌드 등).
 fn gitBuildId(b: *std.Build) []const u8 {
+    // Git metadata and tracked working-tree status are configure-time inputs that
+    // Zig cannot model as stable file dependencies across normal repos/worktrees.
+    // Re-run build.zig so build_options.git_sha cannot remain stale in the config cache.
+    b.graph.poisonCache();
     const sha = gitRun(b, &.{ "git", "rev-parse", "HEAD" }) orelse return "unknown";
     // dirty 면 "-dirty" 부착(변경 내용 자체는 구분 못 함 — build_id.zig 의 dirty 주의 참조).
     const dirty = gitRun(b, &.{ "git", "status", "--porcelain", "--untracked-files=no" });
     return if (dirty != null) b.fmt("{s}-dirty", .{sha}) else sha;
 }
 
-/// argv 를 실행해 trim 된 stdout 반환. 실패/비-제로 exit/빈 출력은 null. out_code 는
-/// runAllowFail 이 error 경로에서만 쓰므로(성공 시 미기록) 읽지 않는다.
+/// argv 를 실행해 trim 된 stdout 반환. 실패/비-제로 exit/빈 출력은 null.
 fn gitRun(b: *std.Build, argv: []const []const u8) ?[]const u8 {
-    var code: u8 = 0;
-    const out = b.runAllowFail(argv, &code, .ignore) catch return null;
-    const t = std.mem.trim(u8, out, " \t\r\n");
-    return if (t.len > 0) t else null;
+    return switch (b.runFallible(argv, .{ .stderr_behavior = .ignore })) {
+        .success => |out| blk: {
+            const trimmed = std.mem.trim(u8, out, " \t\r\n");
+            break :blk if (trimmed.len > 0) trimmed else null;
+        },
+        .spawn_failed, .bad_exit_code, .crashed => null,
+    };
 }
 
 // Although this function looks imperative, note that its job is to
@@ -31,29 +38,28 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
 
     // Standard optimization options allow the person running `zig build` to select
-    // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall. Here we do not
-    // set a preferred release mode, allowing the user to decide how to optimize.
+    // between debug, safe, fast, and small. Here we do not set a preferred mode.
     const optimize = b.standardOptimizeOption(.{});
 
-    // `-Dkeep-debug=true` 로 ReleaseFast/Safe/Small 빌드에서도 debug info 유지.
+    // `-Dkeep-debug=true` 로 fast/safe/small 빌드에서도 debug info 유지.
     // samply / Instruments / dtrace 같은 sampling profiler 가 함수명을 해석하려면
-    // DWARF 가 필요하다. 기본은 false (Zig optimize mode 기본값 = Release* 면 strip).
+    // DWARF 가 필요하다. 기본은 false (최적화 빌드에서는 기본 strip).
     // docs/PERF_PROFILING.md 참고.
     const keep_debug = b.option(
         bool,
         "keep-debug",
-        "Keep debug info in Release* builds (for samply/Instruments profiling). Default: false",
+        "Keep debug info in optimized builds (for samply/Instruments profiling). Default: false",
     ) orelse false;
     const strip_setting: ?bool = if (keep_debug) false else null;
 
-    // `-Dwasm-optimize` 로 WASM 빌드의 최적화 모드를 덮어쓴다 (기본 ReleaseSmall — 배포 사이즈
-    // 우선). wasm 전용 버그 디버깅 시 Debug/ReleaseSafe 로 빌드하기 위한 것으로, NAPI 의
+    // `-Dwasm-optimize` 로 WASM 빌드의 최적화 모드를 덮어쓴다 (기본 small — 배포 사이즈
+    // 우선). wasm 전용 버그 디버깅 시 debug/safe 로 빌드하기 위한 것으로, NAPI 의
     // `-Dnapi-optimize` 와 동일한 패리티. CLI/네이티브 빌드의 `-Doptimize` 와는 독립이다.
     const wasm_optimize = b.option(
-        std.builtin.OptimizeMode,
+        std.builtin.Optimize,
         "wasm-optimize",
-        "WASM 모듈 최적화 모드 (기본: ReleaseSmall, 디버깅 시 Debug/ReleaseSafe)",
-    ) orelse .ReleaseSmall;
+        "WASM 모듈 최적화 모드 (기본: small, 디버깅 시 debug/safe)",
+    ) orelse .small;
 
     // `-Denable-lto=true` 로 WASM 배포 아티팩트에 LTO(full)를 켠다 (기본 off). 컴파일 시간이
     // 늘지만 코드 사이즈가 줄 수 있어 배포 빌드에서 opt-in 한다. 일반 빌드엔 영향이 없다.
@@ -122,8 +128,7 @@ pub fn build(b: *std.Build) void {
         .name = "zntc",
         .root_module = exe_mod,
     });
-    // Zig 0.16: linkLibC()/addCSourceFile()/addIncludePath() 등이 Step.Compile 에서
-    // 제거되고 *Module 로 이관됐다. exe 의 root module(exe_mod) 에 직접 설정한다.
+    // C inputs, include paths, and system library settings belong to the root module.
     exe_mod.link_libc = true;
 
     // mimalloc: 고성능 메모리 할당자 (vendor/mimalloc, static.c 단일 컴파일).
@@ -184,9 +189,7 @@ pub fn build(b: *std.Build) void {
 
     // This allows the user to pass arguments to the application in the build
     // command itself, like this: `zig build run -- arg1 arg2 etc`
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     // This creates a build step. It will be visible in the `zig build --help` menu,
     // and can be selected like this: `zig build run`
@@ -333,14 +336,28 @@ pub fn build(b: *std.Build) void {
     // `zig build napi` — .node 파일(공유 라이브러리)을 빌드한다.
     // Node.js/Bun/Deno에서 require()로 로드하여 in-process 트랜스파일을 수행한다.
     //
-    // 기본 최적화: ReleaseFast (프로덕션 배포). 디버깅 시 `-Dnapi-optimize=Debug`
-    // 또는 `-Dnapi-optimize=ReleaseSafe` 로 덮어써 stack trace + safety 활성.
+    // 기본 최적화: fast (프로덕션 배포). 디버깅 시 `-Dnapi-optimize=debug`
+    // 또는 `-Dnapi-optimize=safe` 로 덮어써 stack trace + safety 활성.
     {
         const napi_optimize = b.option(
-            std.builtin.OptimizeMode,
+            std.builtin.Optimize,
             "napi-optimize",
-            "NAPI .node 최적화 모드 (기본: ReleaseFast, 디버깅 시 Debug/ReleaseSafe)",
-        ) orelse .ReleaseFast;
+            "NAPI .node 최적화 모드 (기본: fast, 디버깅 시 debug/safe)",
+        ) orelse .fast;
+
+        const translate_c = b.dependency("translate_c", .{});
+        const napi_header = b.addWriteFiles().add("napi_wrapper.h",
+            \\#define NAPI_VERSION 8
+            \\#include <node_api.h>
+            \\
+        );
+        const napi_c = TranslateC.init(translate_c, .{
+            .name = "napi",
+            .c_source_file = napi_header,
+            .target = target,
+            .optimize = napi_optimize,
+        });
+        napi_c.addIncludePath(b.path("vendor/node-api-headers"));
 
         const napi_lib_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
@@ -355,7 +372,7 @@ pub fn build(b: *std.Build) void {
             .optimize = napi_optimize,
         });
         napi_mod.addImport("zntc_lib", napi_lib_mod);
-        napi_mod.addIncludePath(b.path("vendor/node-api-headers"));
+        napi_mod.addImport("napi_c", napi_c.mod);
 
         const napi_lib = b.addLibrary(.{
             .linkage = .dynamic,
@@ -418,9 +435,21 @@ pub fn build(b: *std.Build) void {
         const bench_mod_napi = b.createModule(.{
             .root_source_file = b.path("tools/napi-callback-bench/src/bench.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
+            .optimize = .fast,
         });
-        bench_mod_napi.addIncludePath(b.path("vendor/node-api-headers"));
+        const translate_c = b.dependency("translate_c", .{});
+        const bench_header = b.addWriteFiles().add("napi_bench_wrapper.h",
+            \\#include <node_api.h>
+            \\
+        );
+        const bench_c = TranslateC.init(translate_c, .{
+            .name = "napi_bench",
+            .c_source_file = bench_header,
+            .target = target,
+            .optimize = .fast,
+        });
+        bench_c.addIncludePath(b.path("vendor/node-api-headers"));
+        bench_mod_napi.addImport("napi_c", bench_c.mod);
 
         const bench_lib = b.addLibrary(.{
             .linkage = .dynamic,
@@ -457,9 +486,7 @@ pub fn build(b: *std.Build) void {
         .root_module = test262_run_mod,
     });
     const test262_run_cmd = b.addRunArtifact(test262_exe);
-    if (b.args) |args| {
-        test262_run_cmd.addArgs(args);
-    }
+    test262_run_cmd.addPassthruArgs();
     const test262_run_step = b.step("test262-run", "Run Test262 parser tests (pass rate)");
     test262_run_step.dependOn(&test262_run_cmd.step);
 
@@ -469,7 +496,7 @@ pub fn build(b: *std.Build) void {
     const schema_mod = b.createModule(.{
         .root_source_file = b.path("tools/emit_schema.zig"),
         .target = b.graph.host,
-        .optimize = .Debug,
+        .optimize = .debug,
     });
     schema_mod.addImport("zntc_lib", lib_mod);
     const schema_exe = b.addExecutable(.{

@@ -41,10 +41,10 @@ pub fn bundleEntry(
 
     const entries: []const []const u8 = &.{entry};
     var opts: BundleOptions = .{ .entry_points = entries, .format = .iife };
-    inline for (@typeInfo(@TypeOf(extra)).@"struct".fields) |f| {
-        if (comptime std.mem.eql(u8, f.name, "entry_points")) continue;
-        if (comptime std.mem.eql(u8, f.name, "format")) continue;
-        @field(opts, f.name) = @field(extra, f.name);
+    inline for (@typeInfo(@TypeOf(extra)).@"struct".field_names) |name| {
+        if (comptime std.mem.eql(u8, name, "entry_points")) continue;
+        if (comptime std.mem.eql(u8, name, "format")) continue;
+        @field(opts, name) = @field(extra, name);
     }
 
     var bundler = Bundler.initWithResolveCache(backing, opts, &cache);

@@ -315,31 +315,31 @@ pub const Kind = enum(u8) {
     // ========================================================================
     comptime {
         // Reserved keywords: kw_await..kw_with 연속
-        std.debug.assert(@intFromEnum(Kind.kw_await) < @intFromEnum(Kind.kw_with));
-        std.debug.assert(@intFromEnum(Kind.kw_with) + 1 == @intFromEnum(Kind.kw_async));
+        std.debug.assert(@backingInt(Kind.kw_await) < @backingInt(Kind.kw_with));
+        std.debug.assert(@backingInt(Kind.kw_with) + 1 == @backingInt(Kind.kw_async));
 
         // Contextual keywords → strict mode reserved 연속
-        std.debug.assert(@intFromEnum(Kind.kw_let) + 1 == @intFromEnum(Kind.kw_implements));
+        std.debug.assert(@backingInt(Kind.kw_let) + 1 == @backingInt(Kind.kw_implements));
 
         // Strict mode reserved: kw_implements..kw_yield 연속
-        std.debug.assert(@intFromEnum(Kind.kw_implements) < @intFromEnum(Kind.kw_yield));
-        std.debug.assert(@intFromEnum(Kind.kw_yield) + 1 == @intFromEnum(Kind.kw_true));
+        std.debug.assert(@backingInt(Kind.kw_implements) < @backingInt(Kind.kw_yield));
+        std.debug.assert(@backingInt(Kind.kw_yield) + 1 == @backingInt(Kind.kw_true));
 
         // Literal keywords: kw_true..kw_null 연속, 그 다음이 l_paren
-        std.debug.assert(@intFromEnum(Kind.kw_null) + 1 == @intFromEnum(Kind.l_paren));
+        std.debug.assert(@backingInt(Kind.kw_null) + 1 == @backingInt(Kind.l_paren));
 
         // Full keyword range: kw_await..kw_null
-        std.debug.assert(@intFromEnum(Kind.kw_await) < @intFromEnum(Kind.kw_null));
+        std.debug.assert(@backingInt(Kind.kw_await) < @backingInt(Kind.kw_null));
 
         // Assignment operators: eq..question2_eq 연속
-        std.debug.assert(@intFromEnum(Kind.eq) < @intFromEnum(Kind.question2_eq));
+        std.debug.assert(@backingInt(Kind.eq) < @backingInt(Kind.question2_eq));
 
         // Numeric literals: decimal..hex_bigint 연속
-        std.debug.assert(@intFromEnum(Kind.decimal) < @intFromEnum(Kind.hex_bigint));
-        std.debug.assert(@intFromEnum(Kind.decimal_bigint) < @intFromEnum(Kind.hex_bigint));
+        std.debug.assert(@backingInt(Kind.decimal) < @backingInt(Kind.hex_bigint));
+        std.debug.assert(@backingInt(Kind.decimal_bigint) < @backingInt(Kind.hex_bigint));
 
         // Template literals: no_substitution_template..template_tail 연속
-        std.debug.assert(@intFromEnum(Kind.no_substitution_template) < @intFromEnum(Kind.template_tail));
+        std.debug.assert(@backingInt(Kind.no_substitution_template) < @backingInt(Kind.template_tail));
     }
 
     // ========================================================================
@@ -348,8 +348,8 @@ pub const Kind = enum(u8) {
 
     /// 두 Kind 값 사이에 있는지 (inclusive range check).
     fn inRange(self: Kind, first: Kind, last: Kind) bool {
-        const v = @intFromEnum(self);
-        return v >= @intFromEnum(first) and v <= @intFromEnum(last);
+        const v = @backingInt(self);
+        return v >= @backingInt(first) and v <= @backingInt(last);
     }
 
     /// ECMAScript reserved keyword인지 (await..with)
@@ -488,7 +488,7 @@ pub const Kind = enum(u8) {
     /// 토큰의 이름 문자열을 반환한다 (에러 메시지용).
     /// 키워드는 `kw_` 접두사 없이 반환한다 (예: .kw_break → "break").
     pub fn symbol(self: Kind) []const u8 {
-        return token_names[@intFromEnum(self)];
+        return token_names[@backingInt(self)];
     }
 };
 
@@ -565,10 +565,11 @@ pub const keywords = std.StaticStringMap(Kind).initComptime(.{
 /// Kind enum의 u8 값으로 인덱싱.
 /// 키워드는 `kw_` 접두사를 제거하여 반환 (예: `kw_break` → `"break"`).
 const token_names = blk: {
-    const enum_fields = @typeInfo(Kind).@"enum".fields;
-    var names: [enum_fields.len][]const u8 = undefined;
-    for (enum_fields) |field| {
-        names[field.value] = switch (@as(Kind, @enumFromInt(field.value))) {
+    const enum_info = @typeInfo(Kind).@"enum";
+    var names: [enum_info.field_names.len][]const u8 = undefined;
+    for (enum_info.field_values) |value| {
+        const kind: Kind = @fromBackingInt(@intCast(value));
+        names[value] = switch (kind) {
             .eof => "<eof>",
             .undetermined => "<undetermined>",
             .syntax_error => "<syntax error>",
@@ -659,7 +660,7 @@ const token_names = blk: {
             .jsx_identifier => "<jsx identifier>",
             // Keywords — kw_ 접두사를 제거하여 실제 키워드 문자열 반환
             else => blk2: {
-                const name = field.name;
+                const name = @tagName(kind);
                 if (name.len > 3 and name[0] == 'k' and name[1] == 'w' and name[2] == '_') {
                     break :blk2 name[3..];
                 }

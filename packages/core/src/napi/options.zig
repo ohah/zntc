@@ -616,10 +616,11 @@ pub fn parseBuildOptions(
         // 해석 불가는 아래에서 throw — 조용한 esnext 는 그 자체가 원래 버그다.
         target_compat.unsupportedFromTargetSpec(s) orelse {
             var buf: [256]u8 = undefined;
-            const msg = std.fmt.bufPrintZ(
+            const msg = std.mem.printSentinel(
                 &buf,
                 "unknown target '{s}' (expected an ES version like es2020, or an engine matrix like chrome80,safari14,node16)",
                 .{s[0..@min(s.len, 120)]},
+                0,
             ) catch "unknown target";
             _ = common.throwError(env, msg);
             return null;

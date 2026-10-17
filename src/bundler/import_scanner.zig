@@ -135,7 +135,7 @@ pub fn extractImportsWithCjsDetectionAndDefines(
             },
             .call_expression => {
                 const callee_idx = ast.readExtraNode(node.data.extra, 0);
-                if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) continue;
+                if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) continue;
                 const callee = ast.getNode(callee_idx);
 
                 switch (callee.tag) {
@@ -214,7 +214,7 @@ fn collectDeadIfRanges(
         const known = evalToBoolean(ast, parts.a, defines) orelse continue;
         const dead_idx = if (known) parts.c else parts.b;
         if (dead_idx.isNone()) continue;
-        if (@intFromEnum(dead_idx) >= ast.nodes.items.len) continue;
+        if (@backingInt(dead_idx) >= ast.nodes.items.len) continue;
         try dead_ranges.append(allocator, ast.getNode(dead_idx).span);
     }
 }
@@ -269,7 +269,7 @@ pub fn markLazyRequiresInCallbacks(
             else => continue,
         }
         const body_idx = ast.functionBodyBlock(node) orelse continue;
-        if (@intFromEnum(body_idx) >= ast.nodes.items.len) continue;
+        if (@backingInt(body_idx) >= ast.nodes.items.len) continue;
         try lazy_ranges.append(allocator, ast.getNode(body_idx).span);
     }
     markRecordsInsideSpans(records, lazy_ranges.items, "in_lazy_callback");
@@ -293,7 +293,7 @@ pub fn markOptionalRequiresInTryBlocks(
         if (node.tag != .try_statement) continue;
         const block_idx = node.data.ternary.a;
         if (block_idx.isNone()) continue;
-        if (@intFromEnum(block_idx) >= ast.nodes.items.len) continue;
+        if (@backingInt(block_idx) >= ast.nodes.items.len) continue;
         try try_ranges.append(allocator, ast.getNode(block_idx).span);
     }
     markRecordsInsideSpans(records, try_ranges.items, "is_optional");
@@ -325,7 +325,7 @@ fn boolLiteralFromText(text: []const u8) ?bool {
 }
 
 fn evalToBooleanDepth(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry, depth: u8) ?bool {
-    if (depth >= 8 or idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    if (depth >= 8 or idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
     const node = ast.getNode(idx);
     return switch (node.tag) {
         .boolean_literal => boolLiteralFromText(ast.getText(node.span)),
@@ -333,15 +333,15 @@ fn evalToBooleanDepth(ast: *const Ast, idx: NodeIndex, defines: []const DefineEn
         .unary_expression => blk: {
             const e = node.data.extra;
             if (e + 1 >= ast.extra_data.items.len) break :blk null;
-            const operand_idx: NodeIndex = @enumFromInt(ast.extra_data.items[e]);
-            const op: TokenKind = @enumFromInt(@as(u8, @truncate(ast.extra_data.items[e + 1])));
+            const operand_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[e]));
+            const op: TokenKind = @fromBackingInt(@intCast(@as(u8, @truncate(ast.extra_data.items[e + 1]))));
             if (op != .bang) break :blk null;
             const value = evalToBooleanDepth(ast, operand_idx, defines, depth + 1) orelse break :blk null;
             break :blk !value;
         },
         .logical_expression => blk: {
             const left = evalToBooleanDepth(ast, node.data.binary.left, defines, depth + 1) orelse break :blk null;
-            const op: TokenKind = @enumFromInt(node.data.binary.flags);
+            const op: TokenKind = @fromBackingInt(@intCast(node.data.binary.flags));
             if (op == .amp2 and !left) break :blk false;
             if (op == .pipe2 and left) break :blk true;
             const right = evalToBooleanDepth(ast, node.data.binary.right, defines, depth + 1) orelse break :blk null;
@@ -355,7 +355,7 @@ fn evalToBooleanDepth(ast: *const Ast, idx: NodeIndex, defines: []const DefineEn
 }
 
 fn evalBinaryBoolean(ast: *const Ast, node: Node, defines: []const DefineEntry) ?bool {
-    const op: TokenKind = @enumFromInt(node.data.binary.flags);
+    const op: TokenKind = @fromBackingInt(@intCast(node.data.binary.flags));
     if (op != .eq2 and op != .eq3 and op != .neq and op != .neq2) return null;
 
     const left = evalToString(ast, node.data.binary.left, defines) orelse return null;
@@ -420,13 +420,13 @@ fn allSpecsAreTypeOnly(ast: *const Ast, specs_start: u32, specs_len: u32) bool {
     if (specs_start + specs_len > ast.extra_data.items.len) return false;
     const spec_indices = ast.extra_data.items[specs_start .. specs_start + specs_len];
     for (spec_indices) |raw_idx| {
-        const spec_idx: NodeIndex = @enumFromInt(raw_idx);
+        const spec_idx: NodeIndex = @fromBackingInt(@intCast(raw_idx));
         if (spec_idx.isNone()) return false;
         const spec_node = ast.getNode(spec_idx);
         // spec-level `type` modifier 는 named `import_specifier` 만 가짐 (module.zig:33-36
         // SPEC_FLAG_TYPE_ONLY 정의). `import_default_specifier` / `import_namespace_specifier`
         // 는 `data = .string_ref` 레이아웃이라 `data.binary.flags` 를 읽으면 union punning
-        // 으로 garbage 를 읽고, ReleaseFast 에서 비결정적으로 type-only 로 오판되어
+        // 으로 garbage 를 읽고, fast 에서 비결정적으로 type-only 로 오판되어
         // namespace/default import 의 record 가 누락됐었다.
         if (spec_node.tag != .import_specifier) return false;
         if ((spec_node.data.binary.flags & module_parser.SPEC_FLAG_TYPE_ONLY) == 0) return false;
@@ -455,7 +455,7 @@ fn tryExtractExportNamed(ast: *const Ast, node: Node) ?ImportRecord {
     if (e + 3 >= ast.extra_data.items.len) return null;
 
     const source_raw = ast.extra_data.items[e + 3];
-    const source_idx: NodeIndex = @enumFromInt(source_raw);
+    const source_idx: NodeIndex = @fromBackingInt(@intCast(source_raw));
     if (source_idx.isNone()) return null;
 
     const specifier = getStringLiteralText(ast, source_idx) orelse return null;
@@ -539,7 +539,7 @@ pub fn tryExtractRequireContextFromCallee(
     call_span: Span,
     defines: []const DefineEntry,
 ) ?ImportRecord {
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return null;
     const callee = ast.getNode(callee_idx);
     const extras = ast.extra_data.items;
 
@@ -555,7 +555,7 @@ pub fn tryExtractRequireContextFromCallee(
     if (member_flags & MemberFlags.optional_chain != 0) return null;
 
     if (member_obj_idx.isNone() or member_prop_idx.isNone()) return null;
-    if (@intFromEnum(member_obj_idx) >= ast.nodes.items.len or @intFromEnum(member_prop_idx) >= ast.nodes.items.len) return null;
+    if (@backingInt(member_obj_idx) >= ast.nodes.items.len or @backingInt(member_prop_idx) >= ast.nodes.items.len) return null;
     const obj_node = ast.getNode(member_obj_idx);
     const prop_node = ast.getNode(member_prop_idx);
 
@@ -591,7 +591,7 @@ pub fn tryExtractRequireContextFromCallee(
     var i: u32 = 0;
     while (i < args_len) : (i += 1) {
         const arg_idx = ast.readExtraNode(args_start, i);
-        if (@intFromEnum(arg_idx) >= ast.nodes.items.len) return null;
+        if (@backingInt(arg_idx) >= ast.nodes.items.len) return null;
         if (ast.getNode(arg_idx).tag == .spread_element) {
             record.context_invalid_reason = "require.context arguments cannot use spread";
             return record;
@@ -673,7 +673,7 @@ pub fn tryExtractRequireContextFromCallee(
 ///
 /// Metro `path.evaluate()` 와 동등 능력 — `process.env.NODE_ENV` 같은 build-time 상수 평가.
 fn evalToString(ast: *const Ast, idx: NodeIndex, defines: []const DefineEntry) ?[]const u8 {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
 
     // 1. String literal — 직접 추출
     if (getStringLiteralText(ast, idx)) |s| return s;
@@ -746,7 +746,7 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
     // callee가 identifier_reference "require"인지 확인
     const callee_idx = ast.readExtraNode(e, 0);
     if (callee_idx.isNone()) return null;
-    const callee_ni = @intFromEnum(callee_idx);
+    const callee_ni = @backingInt(callee_idx);
     if (callee_ni >= ast.nodes.items.len) return null;
     const callee = ast.nodes.items[callee_ni];
     if (callee.tag != .identifier_reference) return null;
@@ -761,7 +761,7 @@ fn tryExtractRequire(ast: *const Ast, node: Node) ?ImportRecord {
     // 인수가 string_literal인지 확인
     const args_start = ast.readExtra(e, 1);
     if (args_start >= ast.extra_data.items.len) return null;
-    const arg_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    const arg_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
 
     const specifier = getStringLiteralText(ast, arg_idx) orelse return null;
     const arg_node = ast.getNode(arg_idx);
@@ -795,7 +795,7 @@ fn classifyObjectDefinePropertyExports(ast: *const Ast, node: Node) ?DefinePrope
     if (args_start >= ast.extra_data.items.len) return null;
     const target_idx = ast.readExtraNode(args_start, 0);
 
-    if (target_idx.isNone() or @intFromEnum(target_idx) >= ast.nodes.items.len) return null;
+    if (target_idx.isNone() or @backingInt(target_idx) >= ast.nodes.items.len) return null;
     const target = ast.getNode(target_idx);
     if (target.tag == .identifier_reference and std.mem.eql(u8, ast.getText(target.span), "exports")) {
         if (isDefinePropertyEsModuleMarker(ast, args_start)) return .esmodule_marker;
@@ -833,7 +833,7 @@ fn isDefinePropertyModuleExports(ast: *const Ast, args_start: u32) bool {
 const MemberParts = struct { object: []const u8, property: []const u8 };
 
 fn getStaticMemberParts(ast: *const Ast, idx: NodeIndex) ?MemberParts {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return null;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return null;
     const node = ast.getNode(idx);
     if (node.tag != .static_member_expression) return null;
 
@@ -841,12 +841,12 @@ fn getStaticMemberParts(ast: *const Ast, idx: NodeIndex) ?MemberParts {
     if (!ast.hasExtra(e, 1)) return null;
 
     const obj_idx = ast.readExtraNode(e, 0);
-    if (obj_idx.isNone() or @intFromEnum(obj_idx) >= ast.nodes.items.len) return null;
+    if (obj_idx.isNone() or @backingInt(obj_idx) >= ast.nodes.items.len) return null;
     const obj = ast.getNode(obj_idx);
     if (obj.tag != .identifier_reference) return null;
 
     const prop_idx = ast.readExtraNode(e, 1);
-    if (prop_idx.isNone() or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+    if (prop_idx.isNone() or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
     const prop = ast.getNode(prop_idx);
 
     return .{
@@ -875,14 +875,14 @@ fn isEsModuleMarkerAssign(ast: *const Ast, node: Node) bool {
     }
 
     const lhs_idx = node.data.binary.left;
-    if (lhs_idx.isNone() or @intFromEnum(lhs_idx) >= ast.nodes.items.len) return false;
+    if (lhs_idx.isNone() or @backingInt(lhs_idx) >= ast.nodes.items.len) return false;
     const lhs_node = ast.getNode(lhs_idx);
     if (lhs_node.tag != .static_member_expression) return false;
     const outer_e = lhs_node.data.extra;
     const outer_obj_idx = ast.readExtraNode(outer_e, 0);
     const outer_prop_idx = ast.readExtraNode(outer_e, 1);
     if (outer_obj_idx.isNone() or outer_prop_idx.isNone()) return false;
-    if (@intFromEnum(outer_obj_idx) >= ast.nodes.items.len or @intFromEnum(outer_prop_idx) >= ast.nodes.items.len) return false;
+    if (@backingInt(outer_obj_idx) >= ast.nodes.items.len or @backingInt(outer_prop_idx) >= ast.nodes.items.len) return false;
     const outer_prop = ast.getNode(outer_prop_idx);
     if (!std.mem.eql(u8, ast.getText(outer_prop.span), ES_MODULE_MARKER)) return false;
     const inner_parts = getStaticMemberParts(ast, outer_obj_idx) orelse return false;
@@ -896,19 +896,19 @@ fn isExportsDotAssign(ast: *const Ast, node: Node) bool {
         if (std.mem.eql(u8, parts.object, "exports")) return true;
     }
 
-    if (lhs_idx.isNone() or @intFromEnum(lhs_idx) >= ast.nodes.items.len) return false;
+    if (lhs_idx.isNone() or @backingInt(lhs_idx) >= ast.nodes.items.len) return false;
     const lhs_node = ast.getNode(lhs_idx);
     if (lhs_node.tag != .static_member_expression) return false;
     const outer_e = lhs_node.data.extra;
     const outer_obj_idx = ast.readExtraNode(outer_e, 0);
-    if (outer_obj_idx.isNone() or @intFromEnum(outer_obj_idx) >= ast.nodes.items.len) return false;
+    if (outer_obj_idx.isNone() or @backingInt(outer_obj_idx) >= ast.nodes.items.len) return false;
     const outer_obj = ast.getNode(outer_obj_idx);
     if (outer_obj.tag != .static_member_expression) return false;
     const inner_e = outer_obj.data.extra;
     const obj_idx = ast.readExtraNode(inner_e, 0);
     const prop_idx = ast.readExtraNode(inner_e, 1);
     if (obj_idx.isNone() or prop_idx.isNone()) return false;
-    if (@intFromEnum(obj_idx) >= ast.nodes.items.len or @intFromEnum(prop_idx) >= ast.nodes.items.len) return false;
+    if (@backingInt(obj_idx) >= ast.nodes.items.len or @backingInt(prop_idx) >= ast.nodes.items.len) return false;
     const obj = ast.getNode(obj_idx);
     const prop = ast.getNode(prop_idx);
     return obj.tag == .identifier_reference and
@@ -924,7 +924,7 @@ fn isExportsDotAssign(ast: *const Ast, node: Node) bool {
 /// 관례) 도 valid 한 specifier 로 보존.
 fn getStringLiteralText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
     if (idx.isNone()) return null;
-    if (@intFromEnum(idx) >= ast.nodes.items.len) return null;
+    if (@backingInt(idx) >= ast.nodes.items.len) return null;
 
     const node = ast.getNode(idx);
     if (node.tag != .string_literal) return null;
@@ -936,7 +936,7 @@ fn getStringLiteralText(ast: *const Ast, idx: NodeIndex) ?[]const u8 {
 /// `new Worker(url, { type: 'module' })` 의 두 번째 인자가 module worker 옵션인지 (#4603).
 /// module worker 는 ESM 으로 방출해야 external `import` 를 보존할 수 있다.
 pub fn isModuleWorkerOptions(ast: *const Ast, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) return false;
+    if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) return false;
     const obj = ast.getNode(idx);
     if (obj.tag != .object_expression) return false;
     var key_buf: [64]u8 = undefined;
@@ -966,7 +966,7 @@ fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
     // callee가 "Worker" 또는 "SharedWorker"인지 확인
     const callee_idx = ast.readExtraNode(e, 0);
     if (callee_idx.isNone()) return null;
-    const callee_ni = @intFromEnum(callee_idx);
+    const callee_ni = @backingInt(callee_idx);
     if (callee_ni >= ast.nodes.items.len) return null;
     const callee = ast.nodes.items[callee_ni];
     if (callee.tag != .identifier_reference) return null;
@@ -980,9 +980,9 @@ fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
     // 첫 번째 인수: new URL(...)인지 확인
     const args_start = ast.readExtra(e, 1);
     if (args_start >= ast.extra_data.items.len) return null;
-    const url_new_idx: NodeIndex = @enumFromInt(ast.extra_data.items[args_start]);
+    const url_new_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[args_start]));
     if (url_new_idx.isNone()) return null;
-    const url_ni = @intFromEnum(url_new_idx);
+    const url_ni = @backingInt(url_new_idx);
     if (url_ni >= ast.nodes.items.len) return null;
     const url_new = ast.nodes.items[url_ni];
     if (url_new.tag != .new_expression) return null;
@@ -992,7 +992,7 @@ fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
     if (!ast.hasExtra(ue, 2)) return null;
     const url_callee_idx = ast.readExtraNode(ue, 0);
     if (url_callee_idx.isNone()) return null;
-    const uc_ni = @intFromEnum(url_callee_idx);
+    const uc_ni = @backingInt(url_callee_idx);
     if (uc_ni >= ast.nodes.items.len) return null;
     const url_callee = ast.nodes.items[uc_ni];
     if (url_callee.tag != .identifier_reference) return null;
@@ -1006,12 +1006,12 @@ fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
     if (url_args_start + 1 >= ast.extra_data.items.len) return null;
 
     // 첫 번째 인수: string_literal (worker 경로)
-    const spec_idx: NodeIndex = @enumFromInt(ast.extra_data.items[url_args_start]);
+    const spec_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[url_args_start]));
     const specifier = getStringLiteralText(ast, spec_idx) orelse return null;
     const spec_node = ast.getNode(spec_idx);
 
     // 두 번째 인수: import.meta.url 패턴 확인
-    const meta_url_idx: NodeIndex = @enumFromInt(ast.extra_data.items[url_args_start + 1]);
+    const meta_url_idx: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[url_args_start + 1]));
     if (!isImportMetaUrl(ast, meta_url_idx)) return null;
 
     return .{
@@ -1020,14 +1020,14 @@ fn tryExtractWorkerNew(ast: *const Ast, node: Node) ?ImportRecord {
         .span = spec_node.span,
         .url_span = url_new.span, // new URL(...) 전체 범위
         .worker_module = args_len >= 2 and args_start + 1 < ast.extra_data.items.len and
-            isModuleWorkerOptions(ast, @enumFromInt(ast.extra_data.items[args_start + 1])),
+            isModuleWorkerOptions(ast, @fromBackingInt(@intCast(ast.extra_data.items[args_start + 1]))),
     };
 }
 
 /// static_member_expression(object=meta_property "import.meta", property="url")인지 확인.
 fn isImportMetaUrl(ast: *const Ast, idx: NodeIndex) bool {
     if (idx.isNone()) return false;
-    const ni = @intFromEnum(idx);
+    const ni = @backingInt(idx);
     if (ni >= ast.nodes.items.len) return false;
     const node = ast.nodes.items[ni];
     if (node.tag != .static_member_expression) return false;
@@ -1038,7 +1038,7 @@ fn isImportMetaUrl(ast: *const Ast, idx: NodeIndex) bool {
     // object: meta_property (import.meta)
     const obj_idx = ast.readExtraNode(me, 0);
     if (obj_idx.isNone()) return false;
-    const obj_ni = @intFromEnum(obj_idx);
+    const obj_ni = @backingInt(obj_idx);
     if (obj_ni >= ast.nodes.items.len) return false;
     const obj = ast.nodes.items[obj_ni];
     if (obj.tag != .meta_property) return false;
@@ -1047,7 +1047,7 @@ fn isImportMetaUrl(ast: *const Ast, idx: NodeIndex) bool {
     // property: "url"
     const prop_idx = ast.readExtraNode(me, 1);
     if (prop_idx.isNone()) return false;
-    const prop_ni = @intFromEnum(prop_idx);
+    const prop_ni = @backingInt(prop_idx);
     if (prop_ni >= ast.nodes.items.len) return false;
     const prop = ast.nodes.items[prop_ni];
     if (!std.mem.eql(u8, ast.getText(prop.span), "url")) return false;
@@ -1078,21 +1078,21 @@ fn tryExtractGlob(ast: *const Ast, node: Node) ?ImportRecord {
     const e = node.data.extra;
     if (e + 2 >= extras.len) return null;
 
-    const callee_idx: NodeIndex = @enumFromInt(extras[e]);
+    const callee_idx: NodeIndex = @fromBackingInt(@intCast(extras[e]));
     const args_start = extras[e + 1];
     const args_len = extras[e + 2];
     if (args_len == 0) return null;
-    if (callee_idx.isNone() or @intFromEnum(callee_idx) >= ast.nodes.items.len) return null;
+    if (callee_idx.isNone() or @backingInt(callee_idx) >= ast.nodes.items.len) return null;
 
     // callee가 static_member_expression(import.meta.glob)인지 확인
     const callee = ast.getNode(callee_idx);
     if (callee.tag != .static_member_expression) return null;
     if (callee.data.extra + 2 >= extras.len) return null;
 
-    const obj_idx: NodeIndex = @enumFromInt(extras[callee.data.extra]);
-    const prop_idx: NodeIndex = @enumFromInt(extras[callee.data.extra + 1]);
+    const obj_idx: NodeIndex = @fromBackingInt(@intCast(extras[callee.data.extra]));
+    const prop_idx: NodeIndex = @fromBackingInt(@intCast(extras[callee.data.extra + 1]));
     if (obj_idx.isNone() or prop_idx.isNone()) return null;
-    if (@intFromEnum(obj_idx) >= ast.nodes.items.len or @intFromEnum(prop_idx) >= ast.nodes.items.len) return null;
+    if (@backingInt(obj_idx) >= ast.nodes.items.len or @backingInt(prop_idx) >= ast.nodes.items.len) return null;
 
     // object: meta_property (import.meta)
     const obj = ast.getNode(obj_idx);
@@ -1106,8 +1106,8 @@ fn tryExtractGlob(ast: *const Ast, node: Node) ?ImportRecord {
 
     // args[0]: string_literal (패턴)
     if (args_start >= extras.len) return null;
-    const arg0_idx: NodeIndex = @enumFromInt(extras[args_start]);
-    if (arg0_idx.isNone() or @intFromEnum(arg0_idx) >= ast.nodes.items.len) return null;
+    const arg0_idx: NodeIndex = @fromBackingInt(@intCast(extras[args_start]));
+    if (arg0_idx.isNone() or @backingInt(arg0_idx) >= ast.nodes.items.len) return null;
     const arg0 = ast.getNode(arg0_idx);
     if (arg0.tag != .string_literal) return null;
 
@@ -1155,11 +1155,11 @@ pub fn parseGlobOptions(
         const key_idx = prop_node.data.binary.left;
         const val_idx = prop_node.data.binary.right;
         if (key_idx.isNone() or val_idx.isNone()) continue;
-        if (@intFromEnum(key_idx) >= nodes.len or @intFromEnum(val_idx) >= nodes.len) continue;
+        if (@backingInt(key_idx) >= nodes.len or @backingInt(val_idx) >= nodes.len) continue;
 
-        const key = nodes[@intFromEnum(key_idx)];
+        const key = nodes[@backingInt(key_idx)];
         const key_text = source[key.span.start..key.span.end];
-        const val = nodes[@intFromEnum(val_idx)];
+        const val = nodes[@backingInt(val_idx)];
 
         if (std.mem.eql(u8, key_text, "eager")) {
             if (val.tag == .boolean_literal)

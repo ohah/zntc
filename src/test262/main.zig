@@ -6,6 +6,7 @@
 //!   zig build test262-run -- expressions  # 특정 카테고리만
 
 const std = @import("std");
+const repeat = @import("../repeat.zig");
 const zntc = @import("zntc_lib");
 const runner = zntc.test262.runner;
 
@@ -78,7 +79,7 @@ pub fn main(init: std.process.Init) !void {
 
         var total = runner.TestSummary{};
         try stdout.print("{s:<30} {s:>6} {s:>6} {s:>6} {s:>6} {s:>8}\n", .{ "Category", "Total", "Pass", "Fail", "Skip", "Rate" });
-        try stdout.print("{s}\n", .{"-" ** 70});
+        try stdout.print("{s}\n", .{repeat.bytes("-", 70)});
 
         for (categories) |cat| {
             const s = cat.summary;
@@ -91,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
             total.skipped += s.skipped;
         }
 
-        try stdout.print("{s}\n", .{"-" ** 70});
+        try stdout.print("{s}\n", .{repeat.bytes("-", 70)});
         try stdout.print("{s:<30} {d:>6} {d:>6} {d:>6} {d:>6} {d:>7.1}%\n", .{
             "TOTAL", total.total, total.passed, total.failed, total.skipped, total.passRate(),
         });

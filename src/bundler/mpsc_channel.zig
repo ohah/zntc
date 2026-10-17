@@ -38,7 +38,7 @@ pub fn MpscChannel(comptime T: type) type {
         send_failed: bool = false,
         /// 단일 소비자(Single-Consumer) 불변식 검증용. 첫 recv 호출 스레드를 기록하고 이후
         /// 동일 스레드인지 assert (위 "inline-async 안전성" (1)). runtime_safety 빌드에서만
-        /// 존재 — ReleaseFast 에선 void 라 필드/검사 모두 0비용. mutex 보호 하에서만 접근.
+        /// 존재 — fast 에선 void 라 필드/검사 모두 0비용. mutex 보호 하에서만 접근.
         consumer_thread_id: if (std.debug.runtime_safety) ?std.Thread.Id else void =
             if (std.debug.runtime_safety) null else {},
 

@@ -997,7 +997,7 @@ test "Tree shaking: numeric const post-pass preserves exact shadow and reference
 
     for (semantic.references) |reference| {
         if (reference.node_index.isNone()) continue;
-        const node_index = @intFromEnum(reference.node_index);
+        const node_index = @backingInt(reference.node_index);
         try std.testing.expect(node_index < ast.nodes.items.len);
         try std.testing.expectEqual(.identifier_reference, ast.nodes.items[node_index].tag);
     }
@@ -2777,7 +2777,7 @@ test "#4466 기본 로더: inline limit 초과 자산은 파일로 방출" {
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import icon from './icon.png';\nconsole.log(icon);");
     // 5000B > 기본 한계 4096B
-    const big = [_]u8{0xAB} ** 5000;
+    const big: [5000]u8 = @splat(0xAB);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icon.png", .data = &big });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -2920,7 +2920,7 @@ test "#4466 기본 로더: 폰트(.woff2/.ttf) 도 --loader 없이 성공" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import f from './x.woff2';\nconsole.log(f);");
-    const big = [_]u8{0xCD} ** 5000; // 한계 초과 → 파일 방출
+    const big: [5000]u8 = @splat(0xCD); // 한계 초과 → 파일 방출
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "x.woff2", .data = &big });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -3722,7 +3722,7 @@ test "#4466 CSS url(): 자산 해시 방출 + url 재작성" {
         \\@font-face { font-family: icons; src: url(./icons.woff2) format("woff2"); }
     );
     // inline limit 초과 → 별도 파일
-    const font = [_]u8{0x77} ** 5000;
+    const font: [5000]u8 = @splat(0x77);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "icons.woff2", .data = &font });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -3758,7 +3758,7 @@ test "#4466 CSS url(): CSS 전용 자산은 JS 번들에 죽은 __commonJS 로 �
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import './style.css';\nconsole.log('hi');");
     try writeFile(tmp.dir, "style.css", ".a { background: url(./bg.png); }");
-    const img = [_]u8{0x11} ** 5000;
+    const img: [5000]u8 = @splat(0x11);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "bg.png", .data = &img });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -3786,7 +3786,7 @@ test "#4466 CSS url(): JS 와 CSS 가 같은 자산을 참조하면 파일 1개�
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import './style.css';\nimport u from './shared.png';\nconsole.log(u);");
     try writeFile(tmp.dir, "style.css", ".a { background: url(./shared.png); }");
-    const img = [_]u8{0x22} ** 5000;
+    const img: [5000]u8 = @splat(0x22);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "shared.png", .data = &img });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -3889,7 +3889,7 @@ test "#4466 CSS url(): ?query / #fragment suffix 보존 (IE9 ?#iefix)" {
     try writeFile(tmp.dir, "style.css",
         \\@font-face { src: url(./f.eot?#iefix) format("embedded-opentype"); }
     );
-    const font = [_]u8{0x33} ** 5000;
+    const font: [5000]u8 = @splat(0x33);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.eot", .data = &font });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -3911,7 +3911,7 @@ test "#4466 CSS url(): --public-path 접두" {
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import './style.css';");
     try writeFile(tmp.dir, "style.css", ".a { background: url(./bg.png); }");
-    const img = [_]u8{0x44} ** 5000;
+    const img: [5000]u8 = @splat(0x44);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "bg.png", .data = &img });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -3940,7 +3940,7 @@ test "#4466 CSS url(): 기본 테이블 밖 확장자(.cur)도 빌드를 깨지 
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import './style.css';");
     try writeFile(tmp.dir, "style.css", ".c { cursor: url(./p.cur), auto; }");
-    const cur = [_]u8{0x55} ** 5000; // 인라인 한계 초과 → 파일
+    const cur: [5000]u8 = @splat(0x55); // 인라인 한계 초과 → 파일
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "p.cur", .data = &cur });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -4053,7 +4053,7 @@ test "#4485 CSS url(): ./ 없는 bare 도 자산으로 재작성된다" {
         \\.a { background: url(./logo.png); }
         \\.b { background: url(logo.png); }
     );
-    const img = [_]u8{0x44} ** 5000; // 인라인 한계 초과 → 파일
+    const img: [5000]u8 = @splat(0x44); // 인라인 한계 초과 → 파일
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "logo.png", .data = &img });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -4098,10 +4098,10 @@ test "#4604 CSS url(): 형제 파일이 동명 패키지를 이긴다" {
     try writeFile(tmp.dir, "node_modules/imgpkg/package.json",
         \\{"name":"imgpkg"}
     );
-    const pkg_img = [_]u8{0xAA} ** 5000;
+    const pkg_img: [5000]u8 = @splat(0xAA);
     try writeFile(tmp.dir, "node_modules/imgpkg/pic.png", &pkg_img);
     // 동명의 형제 디렉토리 (내용이 달라야 어느 쪽이 이겼는지 구분된다).
-    const sibling_img = [_]u8{0xBB} ** 5000;
+    const sibling_img: [5000]u8 = @splat(0xBB);
     try writeFile(tmp.dir, "imgpkg/pic.png", &sibling_img);
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -4134,7 +4134,7 @@ test "#4604 CSS url(): 형제가 없으면 여전히 패키지로 폴백한다" 
     try writeFile(tmp.dir, "node_modules/imgpkg/package.json",
         \\{"name":"imgpkg"}
     );
-    const pkg_img = [_]u8{0xAA} ** 5000;
+    const pkg_img: [5000]u8 = @splat(0xAA);
     try writeFile(tmp.dir, "node_modules/imgpkg/pic.png", &pkg_img);
     // 형제 디렉토리는 **두지 않는다** — 이 픽스처의 위험 조건이 "형제 부재" 다.
 
@@ -4174,8 +4174,8 @@ const CatchAllPathsCss = struct {
 };
 
 fn bundleCatchAllPathsCss(tmp: *std.testing.TmpDir, sibling: bool) !CatchAllPathsCss {
-    const root_img = [_]u8{0xC1} ** 5000;
-    const sibling_img = [_]u8{0xC2} ** 5000;
+    const root_img: [5000]u8 = @splat(0xC1);
+    const sibling_img: [5000]u8 = @splat(0xC2);
     try writeFile(tmp.dir, "src/assets/logo.png", &root_img);
     if (sibling) try writeFile(tmp.dir, "src/components/assets/logo.png", &sibling_img);
     try writeFile(tmp.dir, "src/components/card.css", ".card { background: url(assets/logo.png); }");
@@ -4275,8 +4275,8 @@ fn bundleSiblingSymlink(
 } {
     // ⚠️ 자산은 인라인 임계값보다 커야 한다 — 작으면 data URI 로 인라인돼 `asset_outputs`
     // 가 비고, 어느 쪽이 이겼는지 구분 자체가 안 된다 (테스트가 공허해진다).
-    const pkg_img = [_]u8{0xC3} ** 5000;
-    const file_img = [_]u8{0xC4} ** 5000;
+    const pkg_img: [5000]u8 = @splat(0xC3);
+    const file_img: [5000]u8 = @splat(0xC4);
 
     const css = if (bare_spelling)
         ".card { background: url(logo.png); }"
@@ -5175,7 +5175,7 @@ test "#4604 CSS url(): prefix paths 매핑(@/*)이 url() 에서 계속 동작한
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const img = [_]u8{0xD5} ** 5000;
+    const img: [5000]u8 = @splat(0xD5);
     try writeFile(tmp.dir, "src/assets/logo.png", &img);
     try writeFile(tmp.dir, "src/components/card.css", ".card { background: url(@/assets/logo.png); }");
     try writeFile(tmp.dir, "src/main.ts", "import './components/card.css';");
@@ -5291,7 +5291,7 @@ test "#4485 CSS url(): --platform=node 에서 builtin 이름과 겹치는 자산
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import './style.css';");
     try writeFile(tmp.dir, "style.css", ".a { background: url(path/logo.png); }");
-    const img = [_]u8{0x77} ** 5000;
+    const img: [5000]u8 = @splat(0x77);
     try writeFile(tmp.dir, "path/.keep", "");
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "path/logo.png", .data = &img });
 
@@ -5351,7 +5351,7 @@ test "#4485 CSS url(): bare + ?query / #fragment suffix 도 재작성 + suffix �
         \\@font-face { src: url(f.eot?#iefix) format("embedded-opentype"); }
         \\.i { background: url(sprite.svg#icon); }
     );
-    const font = [_]u8{0x66} ** 5000;
+    const font: [5000]u8 = @splat(0x66);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "f.eot", .data = &font });
     try writeFile(tmp.dir, "sprite.svg", "<svg><g id=\"icon\"/></svg>");
 
@@ -5381,8 +5381,8 @@ test "#4475 동명 basename 자산의 require 래퍼가 deconflict 된다" {
     try tmp.dir.createDirPath(std.testing.io, "b");
     try writeFile(tmp.dir, "entry.ts", "import x from './a/logo.png';\nimport y from './b/logo.png';\nconsole.log(x, y);");
     // inline limit 초과 + 내용이 서로 달라야 해시가 갈린다.
-    const img_a = [_]u8{0xA1} ** 5000;
-    const img_b = [_]u8{0xB2} ** 5000;
+    const img_a: [5000]u8 = @splat(0xA1);
+    const img_b: [5000]u8 = @splat(0xB2);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/logo.png", .data = &img_a });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "b/logo.png", .data = &img_b });
 
@@ -5423,8 +5423,8 @@ test "#4819 minified asset declarations and rewritten imports share the exact wr
     try tmp.dir.createDirPath(std.testing.io, "a");
     try tmp.dir.createDirPath(std.testing.io, "b");
     try writeFile(tmp.dir, "entry.ts", "import x from './a/logo.png';\nimport y from './b/logo.png';\nconsole.log(x, y);");
-    const img_a = [_]u8{0xA1} ** 5000;
-    const img_b = [_]u8{0xB2} ** 5000;
+    const img_a: [5000]u8 = @splat(0xA1);
+    const img_b: [5000]u8 = @splat(0xB2);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "a/logo.png", .data = &img_a });
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "b/logo.png", .data = &img_b });
 
@@ -5513,7 +5513,7 @@ test "#4467 ?inline — data URL 로 인라인" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     try writeFile(tmp.dir, "entry.ts", "import i from './big.png?inline';\nconsole.log(i);");
-    const big = [_]u8{0x99} ** 5000; // 한계 초과지만 ?inline 이 이긴다
+    const big: [5000]u8 = @splat(0x99); // 한계 초과지만 ?inline 이 이긴다
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "big.png", .data = &big });
 
     const entry = try absPath(&tmp, "entry.ts");
@@ -5804,9 +5804,9 @@ test "#4485 CSS url(): `./` 없는 bare 상대 지정자도 자산으로 재작�
         \\.dot { background: url(./dot.woff2); }
         \\.bare { background: url(bare.woff2); }
     );
-    const font = [_]u8{0x77} ** 5000; // inline limit 초과 → 별도 파일
+    const font: [5000]u8 = @splat(0x77); // inline limit 초과 → 별도 파일
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "dot.woff2", .data = &font });
-    const font2 = [_]u8{0x88} ** 5000;
+    const font2: [5000]u8 = @splat(0x88);
     try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "bare.woff2", .data = &font2 });
 
     const entry = try absPath(&tmp, "entry.ts");

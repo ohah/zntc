@@ -42,8 +42,8 @@ pub fn emitUnary(self: anytype, node: Node, level: Level, flags: ExprFlags) !voi
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 1 >= extras.len) return;
-    const operand: NodeIndex = @enumFromInt(extras[e]);
-    const op: Kind = @enumFromInt(@as(u8, @truncate(extras[e + 1])));
+    const operand: NodeIndex = @fromBackingInt(@intCast(extras[e]));
+    const op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extras[e + 1]))));
     if (op == .bang and self.options.linking_metadata != null) {
         if (self.evalBooleanCondition(operand)) |v| {
             try self.write(if (!v) "true" else "false");
@@ -71,10 +71,10 @@ pub fn emitUpdate(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
     const e = node.data.extra;
     const extras = self.ast.extra_data.items;
     if (e + 1 >= extras.len) return;
-    const operand: NodeIndex = @enumFromInt(extras[e]);
+    const operand: NodeIndex = @fromBackingInt(@intCast(extras[e]));
     const extra_flags = extras[e + 1];
     const is_postfix = (extra_flags & ast_mod.UnaryFlags.postfix) != 0;
-    const op: Kind = @enumFromInt(@as(u8, @truncate(extra_flags)));
+    const op: Kind = @fromBackingInt(@intCast(@as(u8, @truncate(extra_flags))));
     if (!is_postfix) {
         // 직전 연산자와 붙어 `---`(=`--`+`-`) 나 `<!--`(HTML 주석) 가 되면 한 칸 끊는다.
         try self.printSpaceBeforeOperator(op);
@@ -96,7 +96,7 @@ pub fn emitUpdate(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
 
 /// 이항 연산자 심볼 + 양옆 spacing 을 좌/우 피연산자 사이에 emit. 재귀·반복 경로 공용.
 fn emitBinaryOperator(self: anytype, node: Node) !void {
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
     if (op == .kw_in or op == .kw_instanceof) {
         // 영문 키워드 연산자는 양옆 공백 필수 (`a in b` ≠ `ainb`) — minify 와 무관.
         try self.writeByte(' ');
@@ -118,7 +118,7 @@ fn emitBinaryOperator(self: anytype, node: Node) !void {
 /// 없을 때(linking_metadata == null)만 — fold 는 좌/우 일부만 emit 해 평탄화를 깨므로 그땐
 /// 재귀 경로로 둔다(깊은 `&&`/`||` 체인 + 번들 상수폴드 조합은 드묾). (#4123)
 fn emitSpineContinues(self: anytype, idx: NodeIndex) bool {
-    if (idx.isNone() or @intFromEnum(idx) >= self.ast.nodes.items.len) return false;
+    if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) return false;
     const t = self.ast.getNode(idx).tag;
     if (t == .binary_expression) return true;
     if (t == .logical_expression and self.options.linking_metadata == null) return true;
@@ -132,7 +132,7 @@ const BinaryChildLevels = struct { left: Level, right: Level };
 /// 우결합(`**`) → left=entry, right=entry.lower(). `??`↔`||`/`&&` 혼용 금지와 `**`
 /// 좌단항 강제괄호 특수처리 포함. (PR5: 계산만, wrap 발동은 PR6.)
 fn binaryChildLevels(self: anytype, node: Node) BinaryChildLevels {
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
     const entry = precedence.binaryOpLevel(op) orelse return .{ .left = .lowest, .right = .lowest };
     var left_level = if (precedence.isRightAssociative(op)) entry else entry.lower();
     var right_level = if (precedence.isLeftAssociative(op)) entry else entry.lower();
@@ -159,10 +159,10 @@ fn skipTransparent(self: anytype, idx: NodeIndex) NodeIndex {
 /// 노드가 (transparent wrapper 너머로) `||`(.pipe2) 또는 `&&`(.amp2) logical_expression 인지.
 fn binaryChildIsLogical(self: anytype, idx: NodeIndex) bool {
     const real = skipTransparent(self, idx);
-    if (real.isNone() or @intFromEnum(real) >= self.ast.nodes.items.len) return false;
+    if (real.isNone() or @backingInt(real) >= self.ast.nodes.items.len) return false;
     const n = self.ast.getNode(real);
     if (n.tag != .logical_expression) return false;
-    const cop: Kind = @enumFromInt(n.data.binary.flags);
+    const cop: Kind = @fromBackingInt(@intCast(n.data.binary.flags));
     return cop == .pipe2 or cop == .amp2;
 }
 
@@ -179,7 +179,7 @@ fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
     var cur = skipTransparent(self, idx);
     var depth: u8 = 0;
     while (depth < 32) : (depth += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return false;
+        if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) return false;
         const n = self.ast.getNode(cur);
         switch (n.tag) {
             // `-x` / `!x` / `void x` / `await x` — 단항으로 시작.
@@ -206,7 +206,7 @@ fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
             .logical_expression => {
                 if (self.options.linking_metadata == null) return false;
                 const left_val = self.evalBooleanCondition(n.data.binary.left) orelse return false;
-                const op: Kind = @enumFromInt(n.data.binary.flags);
+                const op: Kind = @fromBackingInt(@intCast(n.data.binary.flags));
                 // 단락 확정 → `true`/`false` 텍스트로 접힘 (키워드로 시작).
                 if ((op == .amp2 and !left_val) or (op == .pipe2 and left_val)) return false;
                 cur = skipTransparent(self, n.data.binary.right); // 우변이 그 자리에 온다
@@ -236,10 +236,10 @@ fn powLeftNeedsParen(self: anytype, idx: NodeIndex) bool {
 /// 이유로든 빠지면 잡힌다. 새 노드 종류를 `powLeftNeedsParen` 에 추가하면서 wrap 쪽을
 /// 안 고치면 여기서 즉시 터진다.
 ///
-/// runtime_safety 빌드(Debug/ReleaseSafe = 테스트·CI)에서만 검사한다.
+/// runtime_safety 빌드(debug/safe = 테스트·CI)에서만 검사한다.
 fn assertPowLeftWrapped(self: anytype, node: Node, left: NodeIndex, left_start: usize) void {
     if (!std.debug.runtime_safety) return;
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
     if (op != .star2) return;
     if (!powLeftNeedsParen(self, left)) return;
     // 주석이 앞설 수 있어(`/*c*/(-2)**2`) 첫 non-comment 바이트를 찾는 대신, `(` 가 어딘가
@@ -264,7 +264,7 @@ pub fn emitBinary(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
     // 살아남는 분기를 부모 level 로 투과해, 폴드로 wrap 을 위임받은 그 분기가 자기 wrap 을
     // 정확히 걸 수 있게 한다(.lowest 로 투과하면 고-precedence 슬롯에서 괄호 유실).
     try self.addSourceMapping(node.span);
-    const op: Kind = @enumFromInt(node.data.binary.flags);
+    const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
     // 괄호 안이 아니면 자식에 forbid_in 전파(`for ((a in b);;)` 헤더 오파싱 방지).
     // PR6 에서 wrap 시 false 로 조정(괄호 안에선 in 이 안전). PR5 는 wrap 미발동.
     const child_flags = ExprFlags{ .forbid_in = flags.forbid_in };
@@ -326,7 +326,7 @@ pub fn emitBinary(self: anytype, node: Node, level: Level, flags: ExprFlags) !vo
 pub fn unaryOpKind(self: anytype, extra_base: u32) ?Kind {
     const extras = self.ast.extra_data.items;
     if (extra_base + 1 >= extras.len) return null;
-    return @enumFromInt(@as(u8, @truncate(extras[extra_base + 1])));
+    return @fromBackingInt(@intCast(@as(u8, @truncate(extras[extra_base + 1]))));
 }
 
 /// 식별자가 번들 상수 인라인 대상이면 그 상수값, 아니면 null. codegen 의 identifier
@@ -351,7 +351,7 @@ pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags)
     self.member_assign_target = false;
     try self.writeSpace();
     if (node.data.binary.flags != 0) {
-        const op: Kind = @enumFromInt(node.data.binary.flags);
+        const op: Kind = @fromBackingInt(@intCast(node.data.binary.flags));
         try self.write(op.symbol());
     } else {
         try self.writeByte('=');
@@ -360,10 +360,10 @@ pub fn emitAssignment(self: anytype, node: Node, level: Level, flags: ExprFlags)
     const right = node.data.binary.right;
     const right_level = Level.assign.lower();
     const is_simple_assign = node.data.binary.flags == 0 or
-        @as(Kind, @enumFromInt(node.data.binary.flags)) == .eq;
+        @as(Kind, @fromBackingInt(@intCast(node.data.binary.flags))) == .eq;
     // `=`, `&&=`, `||=` and `??=` name an anonymous function after an
     // identifier target (NamedEvaluation).
-    const names_value = is_simple_assign or switch (@as(Kind, @enumFromInt(node.data.binary.flags))) {
+    const names_value = is_simple_assign or switch (@as(Kind, @fromBackingInt(@intCast(node.data.binary.flags)))) {
         .amp2_eq, .pipe2_eq, .question2_eq => true,
         else => false,
     };
@@ -425,7 +425,7 @@ pub fn emitSequence(self: anytype, node: Node) !void {
 pub fn emitParen(self: anytype, node: Node, level: Level, flags: ExprFlags) !void {
     const inner = node.data.unary.operand;
     const real = skipTransparent(self, inner);
-    if (!real.isNone() and @intFromEnum(real) < self.ast.nodes.items.len) {
+    if (!real.isNone() and @backingInt(real) < self.ast.nodes.items.len) {
         switch (self.ast.getNode(real).tag) {
             .function_expression, .function, .arrow_function_expression => {
                 // 중첩 transparent wrapper 의 이중 괄호 방지 위해 skip 한 실제 노드를
@@ -488,7 +488,7 @@ fn lastEmittedIsElision(self: anytype, node: Node) bool {
     var i = list.len;
     while (i > 0) {
         i -= 1;
-        const idx: NodeIndex = @enumFromInt(self.ast.extra_data.items[list.start + i]);
+        const idx: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[list.start + i]));
         if (idx.isNone() or statements.isSkipped(self, idx)) continue;
         return self.ast.getNode(idx).tag == .elision;
     }
@@ -707,7 +707,7 @@ pub fn emitStaticMember(self: anytype, node: Node, level: Level, flags: ExprFlag
         // `?.` 를 안전히 제거할 수 있다(`ns?.x` ≡ `ns.x`). 체인 뒤쪽(`ns?.a?.b`)의 `?.`
         // 는 각자의 base 기준이라 영향 없음. (이 블록이 fire 하지 않으면 아래 일반 emit 이
         // `?.` 를 그대로 보존한다.)
-        const obj_node_i = @intFromEnum(object);
+        const obj_node_i = @backingInt(object);
         if (obj_node_i < meta.symbol_ids.len) {
             if (meta.symbol_ids[obj_node_i]) |obj_sym_id| {
                 if (meta.ns_member_rewrites.get(obj_sym_id)) |inner_map| {

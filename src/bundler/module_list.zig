@@ -49,7 +49,7 @@ pub fn StableSegmentedList(comptime T: type) type {
         pub const MAX_SHELVES: ShelfIndex = 32;
         const ShelfIndex = u6;
 
-        shelves: [MAX_SHELVES]?[*]T = [_]?[*]T{null} ** MAX_SHELVES,
+        shelves: [MAX_SHELVES]?[*]T = @splat(null),
         len: usize = 0,
 
         pub fn deinit(self: *Self, allocator: Allocator) void {
@@ -135,7 +135,7 @@ pub fn StableSegmentedList(comptime T: type) type {
         }
 
         fn AtType(comptime SelfType: type) type {
-            if (@typeInfo(SelfType).pointer.is_const) return *const T;
+            if (@typeInfo(SelfType).pointer.attrs.@"const") return *const T;
             return *T;
         }
 

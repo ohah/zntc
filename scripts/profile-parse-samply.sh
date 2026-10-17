@@ -51,8 +51,8 @@ fi
 
 cd "$REPO_ROOT"
 
-echo "==> building zntc (-Doptimize=ReleaseFast -Dkeep-debug=true) ..."
-zig build -Doptimize=ReleaseFast -Dkeep-debug=true
+echo "==> building zntc (-Doptimize=fast -Dkeep-debug=true) ..."
+zig build -Doptimize=fast -Dkeep-debug=true
 
 # macOS: regenerate .dSYM unconditionally. The `-nt` mtime check is unreliable
 # because `zig build` can hardlink a cache-hit binary while leaving an older

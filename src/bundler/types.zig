@@ -106,17 +106,17 @@ pub const ModuleIndex = enum(u32) {
     /// `@intFromEnum(m.index)`를 호출부마다 반복하지 않도록 한다 (#1553 항목 2).
     /// `none`에는 호출하지 말 것 — u32::MAX가 반환됨.
     pub inline fn toU32(self: ModuleIndex) u32 {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     /// usize 인덱서(ArrayList 등)용 편의.
     pub inline fn toUsize(self: ModuleIndex) usize {
-        return @intCast(@intFromEnum(self));
+        return @intCast(@backingInt(self));
     }
 
     /// iteration 시 usize → ModuleIndex 변환. `for (0..graph.moduleCount()) |i|` 패턴용.
     pub inline fn fromUsize(i: usize) ModuleIndex {
-        return @enumFromInt(@as(u32, @intCast(i)));
+        return @fromBackingInt(@intCast(@as(u32, @intCast(i))));
     }
 };
 
@@ -1133,7 +1133,7 @@ pub fn makeModuleKey(allocator: std.mem.Allocator, module_index: u32, name: []co
 ///
 /// 이름이 내부 스택 버퍼(4091바이트)에 맞으면 **할당 없이** 버퍼를 쓰고, 초과하면 heap으로
 /// spill 한다. export/import 이름은 문자열 리터럴(`export { x as "..." }`)로 길이 제한이
-/// 없으므로, 고정 버퍼 + `std.debug.assert`(ReleaseFast에서 소거됨) 만으로는 stack-smashing
+/// 없으므로, 고정 버퍼 + `std.debug.assert`(fast에서 소거됨) 만으로는 stack-smashing
 /// 위험이 있었다. spill 된 메모리는 `deinit`으로 해제해야 한다.
 ///
 /// 사용 패턴:

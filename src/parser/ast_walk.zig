@@ -83,7 +83,7 @@ pub const ChildIterator = struct {
                 const pos = list.start + self.cursor;
                 self.cursor += 1;
                 if (pos >= extras.len) return null;
-                return @enumFromInt(extras[pos]);
+                return @fromBackingInt(@intCast(extras[pos]));
             },
             .extra => return self.nextExtraChild(),
         }
@@ -101,7 +101,7 @@ pub const ChildIterator = struct {
             self.cursor += 1;
             const idx = base + off;
             if (idx >= extras.len) continue;
-            return @enumFromInt(extras[idx]);
+            return @fromBackingInt(@intCast(extras[idx]));
         }
 
         // 2단계: list_offsets (간접 NodeIndex 리스트)
@@ -110,7 +110,7 @@ pub const ChildIterator = struct {
                 if (self.list_pos < self.list_end) {
                     const raw = extras[self.list_pos];
                     self.list_pos += 1;
-                    return @enumFromInt(raw);
+                    return @fromBackingInt(@intCast(raw));
                 }
                 self.in_list = false;
             }
@@ -185,7 +185,7 @@ pub const BindingIdentifierWalker = struct {
         while (self.stack.items.len > 0) {
             const idx = self.stack.pop().?;
             if (idx.isNone()) continue;
-            const raw: u32 = @intFromEnum(idx);
+            const raw: u32 = @backingInt(idx);
             if (raw >= self.ast.nodes.items.len) continue;
             const node = self.ast.nodes.items[raw];
             switch (node.tag) {
@@ -195,7 +195,7 @@ pub const BindingIdentifierWalker = struct {
                 => return idx,
                 .formal_parameter => {
                     if (node.data.extra >= self.ast.extra_data.items.len) continue;
-                    try self.push(@enumFromInt(self.ast.extra_data.items[node.data.extra]));
+                    try self.push(@fromBackingInt(@intCast(self.ast.extra_data.items[node.data.extra])));
                 },
                 .formal_parameters,
                 .array_pattern,
@@ -239,7 +239,7 @@ pub const BindingIdentifierWalker = struct {
         while (i > 0) {
             i -= 1;
             const raw = self.ast.extra_data.items[list.start + i];
-            try self.push(@enumFromInt(raw));
+            try self.push(@fromBackingInt(@intCast(raw)));
         }
     }
 };
@@ -259,7 +259,7 @@ pub fn bindingIdentifiers(
         .stack = .empty,
     };
     errdefer w.stack.deinit(allocator);
-    if (!idx.isNone() and @intFromEnum(idx) < ast.nodes.items.len) {
+    if (!idx.isNone() and @backingInt(idx) < ast.nodes.items.len) {
         try w.stack.append(allocator, idx);
     }
     return w;
@@ -282,9 +282,9 @@ fn rawPrivateVisit(ctx: *RawPrivateCtx, idx: NodeIndex, node: Node) WalkAction {
 }
 
 pub fn hasRawPrivateSyntax(ast: *const Ast, root: NodeIndex) bool {
-    // 반복 순회(#4123): 깊은 좌결합 체인에서 재귀 시 스택 오버플로우. 이건 Debug/ReleaseSafe
+    // 반복 순회(#4123): 깊은 좌결합 체인에서 재귀 시 스택 오버플로우. 이건 debug/safe
     // 전용 invariant(`assert(!hasRawPrivateSyntax(...))`) — OOM 시 false 반환(검사 skip, false
-    // panic 회피; ReleaseFast 에선 assert 자체가 compiled out).
+    // panic 회피; fast 에선 assert 자체가 compiled out).
     var c = RawPrivateCtx{ .found = false };
     walkPreorderIterative(ast.allocator, ast, root, &c, rawPrivateVisit) catch return false;
     return c.found;
@@ -297,7 +297,7 @@ pub fn collectReachableNodeIndices(allocator: std.mem.Allocator, ast: *const Ast
     const root_idx = ast.transformed_root orelse if (ast.nodes.items.len == 0)
         @as(NodeIndex, .none)
     else
-        @as(NodeIndex, @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))));
+        @as(NodeIndex, @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))));
     return collectReachableNodeIndicesFrom(allocator, ast, root_idx);
 }
 
@@ -323,7 +323,7 @@ pub fn collectReachableNodeIndicesFrom(allocator: std.mem.Allocator, ast: *const
 
     while (stack.pop()) |idx| {
         if (idx.isNone()) continue;
-        const ni: u32 = @intFromEnum(idx);
+        const ni: u32 = @backingInt(idx);
         if (ni >= ast.nodes.items.len) continue;
         if (visited[ni]) continue;
         visited[ni] = true;
@@ -334,7 +334,7 @@ pub fn collectReachableNodeIndicesFrom(allocator: std.mem.Allocator, ast: *const
         var it = children(ast, ast.nodes.items[ni]);
         while (it.next()) |child_idx| {
             if (child_idx.isNone()) continue;
-            if (@intFromEnum(child_idx) >= ast.nodes.items.len) continue;
+            if (@backingInt(child_idx) >= ast.nodes.items.len) continue;
             try child_buf.append(allocator, child_idx);
         }
 
@@ -356,9 +356,9 @@ pub fn topLevelStatementIndices(ast: *const Ast) ?[]const u32 {
 
     const root_idx = ast.transformed_root orelse @as(
         NodeIndex,
-        @enumFromInt(@as(u32, @intCast(ast.nodes.items.len - 1))),
+        @fromBackingInt(@intCast(@as(u32, @intCast(ast.nodes.items.len - 1)))),
     );
-    if (root_idx.isNone() or @intFromEnum(root_idx) >= ast.nodes.items.len) return null;
+    if (root_idx.isNone() or @backingInt(root_idx) >= ast.nodes.items.len) return null;
     const root = ast.getNode(root_idx);
     if (root.tag != .program) return null;
 
@@ -412,8 +412,8 @@ pub fn walkPreorderIterative(
     defer child_buf.deinit(allocator);
 
     while (stack.pop()) |idx| {
-        if (idx.isNone() or @intFromEnum(idx) >= ast.nodes.items.len) continue;
-        const node = ast.nodes.items[@intFromEnum(idx)];
+        if (idx.isNone() or @backingInt(idx) >= ast.nodes.items.len) continue;
+        const node = ast.nodes.items[@backingInt(idx)];
         switch (visit(ctx, idx, node)) {
             .stop => return,
             .skip_children => continue,
@@ -477,8 +477,8 @@ test "import and named export specifiers are reachable AST children" {
         .span = import_source_span,
         .data = .{ .string_ref = import_source_span },
     });
-    const none = @intFromEnum(NodeIndex.none);
-    const import_extra = try ast.addExtras(&.{ import_specifiers.start, import_specifiers.len, @intFromEnum(import_source), 0, 0, 0 });
+    const none = @backingInt(NodeIndex.none);
+    const import_extra = try ast.addExtras(&.{ import_specifiers.start, import_specifiers.len, @backingInt(import_source), 0, 0, 0 });
     const import_node = try ast.addExtraNode(.import_declaration, import_source_span, import_extra);
 
     const local_span = try ast.addString("local");
@@ -506,10 +506,10 @@ test "import and named export specifiers are reachable AST children" {
 
     const reachable = try collectReachableNodeIndices(std.testing.allocator, &ast);
     defer std.testing.allocator.free(reachable);
-    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(imported)) != null);
-    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(import_local)) != null);
-    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(local)) != null);
-    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @intFromEnum(exported)) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(imported)) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(import_local)) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(local)) != null);
+    try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(exported)) != null);
 }
 
 test "top-level statement indices omit nested AST nodes and retain later imports" {

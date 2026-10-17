@@ -1,7 +1,7 @@
 //! JSON Schema 생성기 — `TranspileOptionsDto`의 comptime `@typeInfo`를 반사해
 //! JSON Schema Draft-07을 emit한다. build.zig의 `schema` step에서 실행.
 //!
-//! 단일 진실의 소스 = Zig struct. enum 허용값은 `@typeInfo(T).@"enum".fields`
+//! 단일 진실의 소스 = Zig struct. enum 허용값은 `@typeInfo(T).@"enum".field_names`
 //! 로 자동 수집하므로 수동 매핑 없음. 필드를 바꾸면 schema가 자동 갱신.
 
 const std = @import("std");
@@ -42,12 +42,12 @@ const field_docs = std.StaticStringMap([]const u8).initComptime(.{
 /// DTO의 모든 필드를 순회하며 `"properties": {...}` 내부를 생성.
 /// 각 필드는 optional이므로 `null`을 허용하는 타입 unwrap 후 실제 타입으로 schema emit.
 fn writeProperties(writer: anytype) !void {
-    const fields = @typeInfo(TranspileOptionsDto).@"struct".fields;
-    inline for (fields, 0..) |field, i| {
+    const info = @typeInfo(TranspileOptionsDto).@"struct";
+    inline for (info.field_names, info.field_types, 0..) |name, field_type, i| {
         if (i > 0) try writer.writeAll(",");
-        try writer.print("\n    \"{s}\": ", .{field.name});
-        const inner_type = @typeInfo(field.type).optional.child;
-        try writeTypeSchema(writer, inner_type, field.name);
+        try writer.print("\n    \"{s}\": ", .{name});
+        const inner_type = @typeInfo(field_type).optional.child;
+        try writeTypeSchema(writer, inner_type, name);
     }
 }
 
@@ -67,9 +67,9 @@ fn writeTypeSchema(writer: anytype, comptime T: type, comptime field_name: []con
         },
         .@"enum" => |info| {
             try writer.writeAll("\"type\": \"string\", \"enum\": [");
-            inline for (info.fields, 0..) |ef, i| {
+            inline for (info.field_names, 0..) |name, i| {
                 if (i > 0) try writer.writeAll(", ");
-                try writer.print("\"{s}\"", .{ef.name});
+                try writer.print("\"{s}\"", .{name});
             }
             try writer.writeAll("]");
         },
@@ -102,11 +102,11 @@ fn writeTypeSchema(writer: anytype, comptime T: type, comptime field_name: []con
 
 fn writeStructSchema(writer: anytype, comptime T: type) !void {
     try writer.writeAll("{\"type\": \"object\", \"properties\": {");
-    const fields = @typeInfo(T).@"struct".fields;
-    inline for (fields, 0..) |field, i| {
+    const info = @typeInfo(T).@"struct";
+    inline for (info.field_names, info.field_types, 0..) |name, field_type, i| {
         if (i > 0) try writer.writeAll(", ");
-        try writer.print("\"{s}\": ", .{field.name});
-        const inner = if (@typeInfo(field.type) == .optional) @typeInfo(field.type).optional.child else field.type;
+        try writer.print("\"{s}\": ", .{name});
+        const inner = if (@typeInfo(field_type) == .optional) @typeInfo(field_type).optional.child else field_type;
         try writeTypeSchema(writer, inner, "");
     }
     try writer.writeAll("}, \"additionalProperties\": false}");

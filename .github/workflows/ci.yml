@@ -86,7 +86,7 @@ jobs:
         if: ${{ !cancelled() && steps.plan.outputs.core == 'true' }}
         uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           # zig fmt --check 만 실행 — 빌드 캐시 미생성. 캐싱은 순수 오버헤드이고,
           # 이 job에서는 캐시 복원/저장 자체를 생략한다.
           use-cache: false
@@ -186,7 +186,7 @@ jobs:
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: debug
 
       - name: Build (Debug)
@@ -209,8 +209,8 @@ jobs:
         run: ./zig-out/bin/zntc --test262 tests/test262/test/language/
 
   release-build:
-    # Ubuntu baseline ReleaseFast is built in prepare-cli; macOS native
-    # ReleaseFast is built in macos-native. Keep the other release profiles here.
+    # Ubuntu baseline fast is built in prepare-cli; macOS native
+    # fast is built in macos-native. Keep the other release profiles here.
     name: Release Build (${{ matrix.os }}, ${{ matrix.optimize }})
     needs: checks
     if: ${{ !cancelled() && needs.checks.outputs.core == 'true' }}
@@ -219,8 +219,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: windows-latest, optimize: ReleaseFast }
-          - { os: ubuntu-latest, optimize: ReleaseSafe }
+          - { os: windows-latest, optimize: fast }
+          - { os: ubuntu-latest, optimize: safe }
 
     steps:
       - name: Checkout
@@ -231,7 +231,7 @@ jobs:
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: release-${{ matrix.optimize }}
 
       # Windows GitHub runner (7GB RAM) 는 Debug LLVM 메모리 상한에 걸림
@@ -243,7 +243,7 @@ jobs:
   # Build the CLI alongside NAPI so package consumers do not wait for it.
   # Separate jobs also preserve artifacts when the other product fails.
   prepare-cli:
-    name: Prepare Ubuntu CLI (baseline ReleaseFast)
+    name: Prepare Ubuntu CLI (baseline fast)
     needs: checks
     if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') }}
     runs-on: ubuntu-latest
@@ -255,12 +255,12 @@ jobs:
       - uses: ./.github/actions/setup-zig
         id: zig
         with:
-          cache-key: cli-ubuntu-baseline-releasefast
-      # This also owns Ubuntu ReleaseFast coverage for draft/core-only changes.
+          cache-key: cli-ubuntu-baseline-fast
+      # This also owns Ubuntu fast coverage for draft/core-only changes.
       - name: Build portable Linux CLI
         id: cli
         if: ${{ !cancelled() && (needs.checks.outputs.core == 'true' || needs.checks.outputs.integration == 'true') && steps.zig.outcome == 'success' }}
-        run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
+        run: zig build -Doptimize=fast -Dcpu=baseline
       - uses: actions/upload-artifact@v4
         id: cli-upload
         # Draft/core-only runs still build the CLI, but have no artifact consumers.
@@ -441,10 +441,10 @@ jobs:
         id: deps
         with:
           profile: ${{ needs.checks.outputs.integration == 'true' && 'integration' || 'core-test' }}
-      - name: Build native macOS CLI (ReleaseFast)
+      - name: Build native macOS CLI (fast)
         if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
         id: cli
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Doptimize=fast
       - name: Build portable macOS NAPI
         if: ${{ !cancelled() && steps.zig.outcome == 'success' }}
         id: napi
@@ -570,7 +570,7 @@ jobs:
         if: matrix.platform != 'linux-x64-gnu'
         uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: napi-smoke-${{ matrix.platform }}
 
       - name: Setup Node.js
@@ -696,7 +696,7 @@ jobs:
 
       - uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: wasm
       - uses: ./.github/actions/install-deps
         with:

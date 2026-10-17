@@ -240,7 +240,7 @@ for (const eventName of ['pull_request_target', 'schedule', 'workflow_dispatch']
     const caches = [1, 2, 3].map((attempt) =>
       cache(300 + attempt, {
         ref: 'refs/heads/main',
-        key: `setup-zig-cache-v2-prepare_cli-zig-x86_64-linux-0.16.0-baseline-202-${attempt}`,
+        key: `setup-zig-cache-v2-prepare_cli-zig-x86_64-linux-0.17.0-baseline-202-${attempt}`,
         version: 'main-version',
         created_at: `2026-01-0${attempt}T00:00:00Z`,
         last_accessed_at: `2026-01-0${attempt}T00:00:00Z`,

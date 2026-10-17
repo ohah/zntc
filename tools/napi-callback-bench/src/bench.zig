@@ -7,9 +7,7 @@
 //! 등록된 callback 은 no-op 권장 — overhead 격리 측정 목적.
 
 const std = @import("std");
-const c = @cImport({
-    @cInclude("node_api.h");
-});
+const c = @import("napi_c");
 
 // 글로벌 callback 상태. register() 호출 시 갱신.
 var g_tsfn: c.napi_threadsafe_function = null;

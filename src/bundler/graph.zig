@@ -513,7 +513,7 @@ fn shouldRunPrePassForTest(
     const source_copy = try arena_alloc.dupe(u8, source);
     var scanner = try Scanner.init(arena_alloc, source_copy);
     var parser = Parser.init(arena_alloc, &scanner);
-    var module = Module.init(@enumFromInt(0), path);
+    var module = Module.init(@fromBackingInt(@intCast(0)), path);
     module.module_type = ModuleType.fromExtension(std.fs.path.extension(path));
     module.loader = .javascript;
     module.source = source_copy;
@@ -665,7 +665,7 @@ test "graph pre-pass predicate: worklet transforms stay gated by conservative AS
     try expectPrePassDecision(true, "function f() { 'worklet'; return 1; }", "/repo/node_modules/react-native-reanimated/worklet.js", worklet);
 }
 
-// Regression: `toPosixPath` 가 Debug/ReleaseSafe 빌드에서 null byte path 를
+// Regression: `toPosixPath` 가 debug/safe 빌드에서 null byte path 를
 // `reached unreachable code` 로 panic 시키던 걸 `getMtime` 이 error 로
 // 폴백하도록 만든 가드. plugin 합성 virtual path / AssetRegistry / 빈 경로
 // 등이 실제로 putModule loop 을 타고 들어와 서버가 통째로 죽던 사례 (#1682).

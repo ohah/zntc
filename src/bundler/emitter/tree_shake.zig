@@ -58,7 +58,7 @@ pub fn propagateCrossModulePurity(
 
             const callee_idx = ast.readExtraNode(e, 0);
             if (callee_idx.isNone()) continue;
-            const callee_ni = @intFromEnum(callee_idx);
+            const callee_ni = @backingInt(callee_idx);
             if (callee_ni >= ast.nodes.items.len or callee_ni >= symbol_ids.len) continue;
             if (ast.nodes.items[callee_ni].tag != .identifier_reference) continue;
             const sym_idx = symbol_ids[callee_ni] orelse continue;
@@ -74,7 +74,7 @@ pub fn propagateCrossModulePurity(
 
     // 0 = 무관, 1 = 호출 callee 후보, 2 = @__NO_SIDE_EFFECTS__ import.
     // 기존과 같이 작은 모듈은 stack, 큰 모듈만 emitter arena를 사용한다.
-    var import_call_state_buf: [256]u8 = .{0} ** 256;
+    var import_call_state_buf: [256]u8 = @splat(0);
     const import_call_state: []u8 = if (sym_count <= import_call_state_buf.len)
         import_call_state_buf[0..sym_count]
     else
@@ -97,7 +97,7 @@ pub fn propagateCrossModulePurity(
 
             const resolved = linker.getResolvedBinding(module_index, ib.local_span) orelse continue;
 
-            const canon_mod_idx = @intFromEnum(resolved.canonical.module_index);
+            const canon_mod_idx = @backingInt(resolved.canonical.module_index);
             const target_module = linker.graph.getModule(resolved.canonical.module_index) orelse continue;
             const target_sem = target_module.semantic orelse continue;
 

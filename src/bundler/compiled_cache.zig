@@ -109,7 +109,7 @@ const intentionally_unhashed_fields = [_][]const u8{
 };
 
 comptime {
-    const actual = @typeInfo(EmitOptions).@"struct".fields.len;
+    const actual = @typeInfo(EmitOptions).@"struct".field_names.len;
     if (actual != expected_emit_options_field_count) {
         @compileError(std.fmt.comptimePrint(
             "EmitOptions 필드 개수 변경 감지 (expected {d}, actual {d}). " ++
@@ -121,7 +121,7 @@ comptime {
 
 /// EmitOptions 의 emit 결과에 영향을 주는 모든 필드를 순차 hash.
 pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
-    h.addU32(@intFromEnum(options.format));
+    h.addU32(@backingInt(options.format));
     h.addBool(options.minify_whitespace);
     h.addBool(options.minify_syntax);
     h.addBool(options.minify_identifiers);
@@ -165,7 +165,7 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addBool(options.verbatim_module_syntax);
     // UnsupportedFeatures 는 packed struct → asBytes 로 일괄 hash
     h.inner.update(std.mem.asBytes(&options.unsupported));
-    h.addU32(@intFromEnum(options.platform));
+    h.addU32(@backingInt(options.platform));
     h.addStr(options.public_path);
     h.addOptStr(options.banner_js);
     h.addOptStr(options.footer_js);
@@ -191,13 +191,13 @@ pub fn hashEmitOptions(h: *InputHasher, options: *const EmitOptions) void {
     h.addStr(options.entry_names);
     h.addStr(options.chunk_names);
     h.addStr(options.asset_names);
-    h.addU32(@intFromEnum(options.legal_comments));
+    h.addU32(@backingInt(options.legal_comments));
     h.addU32(options.line_limit);
     h.addBool(options.keep_names);
     h.addStrList(options.drop_labels);
     h.addStrList(options.pure);
-    h.addU32(@intFromEnum(options.output_exports));
-    h.addU32(@intFromEnum(options.jsx_runtime));
+    h.addU32(@backingInt(options.output_exports));
+    h.addU32(@backingInt(options.jsx_runtime));
     h.addStr(options.jsx_factory);
     h.addStr(options.jsx_fragment);
     h.addStr(options.jsx_import_source);
@@ -347,7 +347,7 @@ pub fn computeInputHash(
     for (module.import_records) |rec| {
         h.addStr(rec.specifier);
         h.addBool(rec.is_external);
-        h.addU32(@intFromEnum(rec.kind));
+        h.addU32(@backingInt(rec.kind));
         // resolved 는 `graph.getModule(index).path` 로 hash — ModuleIndex 는 빌드 간
         // 재할당되므로 path 가 안정적. external/unresolved 는 specifier 만.
         if (rec.is_external or rec.resolved.isNone()) {
@@ -533,8 +533,8 @@ test "computeInputHash: transformed source participates in cache key (#2038)" {
     var graph = ModuleGraph.init(alloc, &resolve_cache);
     defer graph.deinit();
 
-    var a = Module.init(@enumFromInt(0), "/entry.ts");
-    var b = Module.init(@enumFromInt(0), "/entry.ts");
+    var a = Module.init(@fromBackingInt(@intCast(0)), "/entry.ts");
+    var b = Module.init(@fromBackingInt(@intCast(0)), "/entry.ts");
     a.mtime = 123;
     b.mtime = 123;
     a.source = "console.log('plugin output A');";
@@ -553,8 +553,8 @@ test "computeInputHash: unchanged transformed source keeps cache key stable (#20
     var graph = ModuleGraph.init(alloc, &resolve_cache);
     defer graph.deinit();
 
-    var a = Module.init(@enumFromInt(0), "/entry.ts");
-    var b = Module.init(@enumFromInt(0), "/entry.ts");
+    var a = Module.init(@fromBackingInt(@intCast(0)), "/entry.ts");
+    var b = Module.init(@fromBackingInt(@intCast(0)), "/entry.ts");
     a.mtime = 123;
     b.mtime = 123;
     a.source = "console.log('same plugin output');";

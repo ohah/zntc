@@ -100,7 +100,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         pub const NamedGroupEntry = struct {
             name: []const u8,
             /// 이 그룹이 속한 alternative 경로.
-            alt_path: [8]u32 = [_]u32{0} ** 8,
+            alt_path: [8]u32 = @splat(0),
             alt_depth: u8 = 0,
         };
 
@@ -136,7 +136,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
         /// 현재 그룹 중첩 깊이 (최대 7로 클램핑).
         alt_depth: u8 = 0,
         /// 각 깊이에서의 현재 alternative 인덱스.
-        alt_indices: [8]u32 = [_]u32{0} ** 8,
+        alt_indices: [8]u32 = @splat(0),
 
         // ── character class range 검증용 ──
         // parseClassAtom/parseEscape가 설정, parseCharacterClass에서 사용.
@@ -383,7 +383,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     self.setError("out of memory building regexp AST");
                     return .none;
                 };
-                return @enumFromInt(@as(u32, @intCast(self.ast_nodes.items.len - 1)));
+                return @fromBackingInt(@intCast(@as(u32, @intCast(self.ast_nodes.items.len - 1))));
             }
             unreachable;
         }
@@ -443,14 +443,14 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // 스택 버퍼에 alternative 인덱스를 모은다
                 var buf: [64]u32 = undefined;
                 var buf_len: u32 = 0;
-                buf[0] = @intFromEnum(self.last_node);
+                buf[0] = @backingInt(self.last_node);
                 buf_len = 1;
 
                 while (self.eat('|')) {
                     self.alt_indices[@min(self.alt_depth, 7)] +|= 1;
                     self.parseAlternative();
                     if (buf_len < 64) {
-                        buf[buf_len] = @intFromEnum(self.last_node);
+                        buf[buf_len] = @backingInt(self.last_node);
                         buf_len += 1;
                     } else {
                         self.setError("too many alternatives in regular expression");
@@ -497,7 +497,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         return;
                     }
                     if (buf_len < 256) {
-                        buf[buf_len] = @intFromEnum(self.last_node);
+                        buf[buf_len] = @backingInt(self.last_node);
                         buf_len += 1;
                     } else {
                         self.setError("too many terms in regular expression alternative");
@@ -578,7 +578,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     self.last_node = self.addNode(.boundary_assertion, .{
                         .start = self.pos - 1,
                         .end = self.pos,
-                    }, .{ @intFromEnum(kind), 0, 0 });
+                    }, .{ @backingInt(kind), 0, 0 });
                 }
                 return true;
             }
@@ -594,7 +594,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.boundary_assertion, .{
                             .start = self.pos - 2,
                             .end = self.pos,
-                        }, .{ @intFromEnum(kind), 0, 0 });
+                        }, .{ @backingInt(kind), 0, 0 });
                     }
                     return true;
                 }
@@ -618,7 +618,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.lookaround_assertion, .{
                                 .start = assert_start,
                                 .end = self.pos,
-                            }, .{ @intFromEnum(kind), @intFromEnum(body), 0 });
+                            }, .{ @backingInt(kind), @backingInt(body), 0 });
                         }
                         return true;
                     }
@@ -636,7 +636,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 self.last_node = self.addNode(.lookaround_assertion, .{
                                     .start = assert_start,
                                     .end = self.pos,
-                                }, .{ @intFromEnum(kind), @intFromEnum(body), 0 });
+                                }, .{ @backingInt(kind), @backingInt(body), 0 });
                             }
                             return true;
                         }
@@ -695,7 +695,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = lit_start,
                                 .end = self.pos,
-                            }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                            }, .{ cp, @backingInt(ast.CharacterKind.symbol), 0 });
                         }
                     }
                     return true;
@@ -713,7 +713,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = lit_start,
                                 .end = self.pos,
-                            }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                            }, .{ cp, @backingInt(ast.CharacterKind.symbol), 0 });
                         }
                     }
                     return true;
@@ -728,7 +728,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = lit_start,
                                 .end = self.pos,
-                            }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                            }, .{ cp, @backingInt(ast.CharacterKind.symbol), 0 });
                         }
                     }
                     return true;
@@ -786,7 +786,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.character_class_escape, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ @intFromEnum(kind), 0, 0 });
+                        }, .{ @backingInt(kind), 0, 0 });
                     }
                     return true;
                 },
@@ -809,7 +809,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ value, @intFromEnum(ast.CharacterKind.single_escape), 0 });
+                        }, .{ value, @backingInt(ast.CharacterKind.single_escape), 0 });
                     }
                     return true;
                 },
@@ -825,7 +825,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
                                     .end = self.pos,
-                                }, .{ ctrl & 0x1F, @intFromEnum(ast.CharacterKind.control_letter), 0 });
+                                }, .{ ctrl & 0x1F, @backingInt(ast.CharacterKind.control_letter), 0 });
                             }
                             return true;
                         }
@@ -839,7 +839,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ 'c', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                        }, .{ 'c', @backingInt(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -864,7 +864,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
-                            }, .{ val, @intFromEnum(ast.CharacterKind.octal), 0 });
+                            }, .{ val, @backingInt(ast.CharacterKind.octal), 0 });
                         }
                     } else {
                         self.setClassValue(0);
@@ -872,7 +872,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
-                            }, .{ 0, @intFromEnum(ast.CharacterKind.null_char), 0 });
+                            }, .{ 0, @backingInt(ast.CharacterKind.null_char), 0 });
                         }
                     }
                     return true;
@@ -891,7 +891,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
-                            }, .{ 'x', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                            }, .{ 'x', @backingInt(ast.CharacterKind.identifier), 0 });
                         }
                     } else {
                         const val = char_helpers.computeHexValue(self.source, hex_start, self.pos);
@@ -900,7 +900,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
-                            }, .{ val, @intFromEnum(ast.CharacterKind.hexadecimal_escape), 0 });
+                            }, .{ val, @backingInt(ast.CharacterKind.hexadecimal_escape), 0 });
                         }
                     }
                     return true;
@@ -925,7 +925,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.character, .{
                                 .start = bs_pos,
                                 .end = self.pos,
-                            }, .{ val, @intFromEnum(ast.CharacterKind.unicode_escape), 0 });
+                            }, .{ val, @backingInt(ast.CharacterKind.unicode_escape), 0 });
                         }
                     } else {
                         const hex_start = self.pos;
@@ -939,7 +939,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
                                     .end = self.pos,
-                                }, .{ 'u', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                                }, .{ 'u', @backingInt(ast.CharacterKind.identifier), 0 });
                             }
                         } else {
                             const val = char_helpers.computeHexValue(self.source, hex_start, self.pos);
@@ -948,7 +948,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
                                     .end = self.pos,
-                                }, .{ val, @intFromEnum(ast.CharacterKind.unicode_escape), 0 });
+                                }, .{ val, @backingInt(ast.CharacterKind.unicode_escape), 0 });
                             }
                         }
                     }
@@ -1042,7 +1042,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ id_cp, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                        }, .{ id_cp, @backingInt(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -1064,7 +1064,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                     self.last_node = self.addNode(.character, .{
                                         .start = bs_pos,
                                         .end = bs_pos + 2, // \k only
-                                    }, .{ 'k', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                                    }, .{ 'k', @backingInt(ast.CharacterKind.identifier), 0 });
                                 }
                                 return true;
                             }
@@ -1096,7 +1096,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ 'k', @intFromEnum(ast.CharacterKind.identifier), 0 });
+                        }, .{ 'k', @backingInt(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -1131,7 +1131,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 self.last_node = self.addNode(.character, .{
                                     .start = bs_pos,
                                     .end = self.pos,
-                                }, .{ c, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                                }, .{ c, @backingInt(ast.CharacterKind.identifier), 0 });
                             }
                             return true;
                         }
@@ -1146,7 +1146,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.last_node = self.addNode(.character, .{
                             .start = bs_pos,
                             .end = self.pos,
-                        }, .{ id_cp, @intFromEnum(ast.CharacterKind.identifier), 0 });
+                        }, .{ id_cp, @backingInt(ast.CharacterKind.identifier), 0 });
                     }
                     return true;
                 },
@@ -1227,25 +1227,25 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                     .start = atom_pos,
                                     .end = self.pos,
                                 }, .{
-                                    @intFromEnum(first_node),
-                                    @intFromEnum(second_node),
+                                    @backingInt(first_node),
+                                    @backingInt(second_node),
                                     0,
                                 });
-                                if (!self.bufAppend(&buf, &buf_len, @intFromEnum(range_node))) return false;
+                                if (!self.bufAppend(&buf, &buf_len, @backingInt(range_node))) return false;
                             }
                         } else {
                             if (emit_ast) {
-                                if (!self.bufAppend(&buf, &buf_len, @intFromEnum(first_node))) return false;
+                                if (!self.bufAppend(&buf, &buf_len, @backingInt(first_node))) return false;
                                 const dash_node = self.addNode(.character, .{
                                     .start = self.pos - 1,
                                     .end = self.pos,
-                                }, .{ '-', @intFromEnum(ast.CharacterKind.symbol), 0 });
-                                if (!self.bufAppend(&buf, &buf_len, @intFromEnum(dash_node))) return false;
+                                }, .{ '-', @backingInt(ast.CharacterKind.symbol), 0 });
+                                if (!self.bufAppend(&buf, &buf_len, @backingInt(dash_node))) return false;
                             }
                         }
                     } else {
                         if (emit_ast) {
-                            if (!self.bufAppend(&buf, &buf_len, @intFromEnum(first_node))) return false;
+                            if (!self.bufAppend(&buf, &buf_len, @backingInt(first_node))) return false;
                         }
                     }
                 }
@@ -1261,7 +1261,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 for (buf[0..buf_len]) |idx| self.appendExtra(idx);
                 // flags: bit 0 = negative, bits 1-2 = CharacterClassContentsKind
                 const kind_bits: u32 = if (self.flags.v)
-                    @intFromEnum(self.last_class_contents_kind)
+                    @backingInt(self.last_class_contents_kind)
                 else
                     0; // non-v-flag: 항상 union(0)
                 const flags_val: u32 = @intFromBool(negated) | (kind_bits << 1);
@@ -1296,7 +1296,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 self.last_node = self.addNode(.character, .{
                     .start = lit_start,
                     .end = self.pos,
-                }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                }, .{ cp, @backingInt(ast.CharacterKind.symbol), 0 });
             }
             return true;
         }
@@ -1339,7 +1339,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.ignore_group, .{
                                 .start = group_start,
                                 .end = self.pos,
-                            }, .{ 0, 0, @intFromEnum(body) });
+                            }, .{ 0, 0, @backingInt(body) });
                         }
                         return true;
                     },
@@ -1367,7 +1367,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         self.named_groups.append(self.ext_alloc, .{
                             .name = name,
                             .alt_path = blk: {
-                                var path: [8]u32 = [_]u32{0} ** 8;
+                                var path: [8]u32 = @splat(0);
                                 const len = @min(cur_depth + 1, 8);
                                 @memcpy(path[0..len], self.alt_indices[0..len]);
                                 break :blk path;
@@ -1389,7 +1389,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.capturing_group, .{
                                 .start = group_start,
                                 .end = self.pos,
-                            }, .{ name_s, name_e, @intFromEnum(body) });
+                            }, .{ name_s, name_e, @backingInt(body) });
                         }
                         return true;
                     },
@@ -1406,7 +1406,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             self.last_node = self.addNode(.ignore_group, .{
                                 .start = group_start,
                                 .end = self.pos,
-                            }, .{ mods.enabling, mods.disabling, @intFromEnum(body) });
+                            }, .{ mods.enabling, mods.disabling, @backingInt(body) });
                         }
                         return true;
                     },
@@ -1429,7 +1429,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     self.last_node = self.addNode(.capturing_group, .{
                         .start = group_start,
                         .end = self.pos,
-                    }, .{ std.math.maxInt(u32), 0, @intFromEnum(body) });
+                    }, .{ std.math.maxInt(u32), 0, @backingInt(body) });
                 }
                 return true;
             }
@@ -1541,7 +1541,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                             };
                             codepoint = codepoint * 16 + d;
                             // #4201: in-loop cap — 9+ hex digit 에서 u32 오버플로우
-                            // (Debug 패닉 / ReleaseFast accept-invalid). group_name.zig
+                            // (debug 패닉 / fast accept-invalid). group_name.zig
                             // nextCodepoint 와 동일 가드.
                             if (codepoint > 0x10FFFF) {
                                 self.setError("invalid unicode escape in group name");
@@ -1687,7 +1687,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                         }, .{
                             qmin,
                             qmax,
-                            (@intFromEnum(atom_node) & 0x7FFFFFFF) | (@as(u32, @intFromBool(greedy)) << 31),
+                            (@backingInt(atom_node) & 0x7FFFFFFF) | (@as(u32, @intFromBool(greedy)) << 31),
                         });
                     } else {
                         self.advance();
@@ -1717,7 +1717,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                 }, .{
                                     min_val,
                                     max_val,
-                                    (@intFromEnum(atom_node) & 0x7FFFFFFF) | (@as(u32, @intFromBool(greedy)) << 31),
+                                    (@backingInt(atom_node) & 0x7FFFFFFF) | (@as(u32, @intFromBool(greedy)) << 31),
                                 });
                                 return;
                             }
@@ -1879,7 +1879,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 return;
             }
             if (emit_ast) {
-                if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+                if (!self.bufAppend(buf, buf_len, @backingInt(self.last_node))) return;
             }
 
             // 3. 연산자 확인: && → intersection, -- → subtraction, else → union
@@ -1906,7 +1906,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 // operand 시도
                 if (self.parseClassSetOperand()) {
                     if (emit_ast) {
-                        if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+                        if (!self.bufAppend(buf, buf_len, @backingInt(self.last_node))) return;
                     }
                     continue;
                 }
@@ -1938,7 +1938,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return;
                 }
                 if (emit_ast) {
-                    if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+                    if (!self.bufAppend(buf, buf_len, @backingInt(self.last_node))) return;
                 }
             }
         }
@@ -1957,7 +1957,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return;
                 }
                 if (emit_ast) {
-                    if (!self.bufAppend(buf, buf_len, @intFromEnum(self.last_node))) return;
+                    if (!self.bufAppend(buf, buf_len, @backingInt(self.last_node))) return;
                 }
             }
         }
@@ -1988,11 +1988,11 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                                     .start = saved_pos,
                                     .end = self.pos,
                                 }, .{
-                                    @intFromEnum(first_node),
-                                    @intFromEnum(second_node),
+                                    @backingInt(first_node),
+                                    @backingInt(second_node),
                                     0,
                                 });
-                                if (!self.bufAppend(buf, buf_len, @intFromEnum(range_node))) return false;
+                                if (!self.bufAppend(buf, buf_len, @backingInt(range_node))) return false;
                             }
                             return true;
                         }
@@ -2060,7 +2060,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                 self.last_node = self.addNode(.character, .{
                     .start = lit_start,
                     .end = self.pos,
-                }, .{ cp, @intFromEnum(ast.CharacterKind.symbol), 0 });
+                }, .{ cp, @backingInt(ast.CharacterKind.symbol), 0 });
             }
             return true;
         }
@@ -2115,7 +2115,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     return;
                 }
                 if (emit_ast) {
-                    if (!self.bufAppend(&char_buf, &char_len, @intFromEnum(self.last_node))) return;
+                    if (!self.bufAppend(&char_buf, &char_len, @backingInt(self.last_node))) return;
                 }
             }
 
@@ -2126,7 +2126,7 @@ pub fn PatternParser(comptime emit_ast: bool) type {
                     .start = start,
                     .end = self.pos,
                 }, .{ list_start, char_len, 0 });
-                if (!self.bufAppend(outer_buf, outer_len, @intFromEnum(string_node))) return;
+                if (!self.bufAppend(outer_buf, outer_len, @backingInt(string_node))) return;
             }
         }
 

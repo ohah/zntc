@@ -5,15 +5,15 @@ name: NAPI Leak Gate (manual)
 # 1분 dev probe 후 process 종료 시 stack trace 포함 leak 리포트 dump. 회귀
 # 발생 시 leak entries > 0 또는 panic 으로 즉시 차단.
 #
-# **자동 실행 비활성화** — 과거 Zig 0.15.2 + Linux x86_64 + libc shared library 의
+# **자동 실행 비활성화** — 과거 Zig 0.17.0 + Linux x86_64 + libc shared library 의
 # DebugAllocator `captureStackTrace` 가 frame pointer chain unwinding 시 SEGV
-# (Zig issue #25025) 때문에 보류했다. ZTS 는 #1514 로 0.16.0 으로 올라가
+# (Zig issue #25025) 때문에 보류했다. ZTS 는 #1514 로 0.17.0 으로 올라가
 # (issue #25025 는 0.16 milestone 에서 fix). 현재는 수동 진단 도구로 유지한다.
 #
 # **macOS local 측정은 정상 동작** — `docs/DEBUG.md` / Starlight guide 의
 # 1분 dev probe 스크립트로 직접 사용 가능. 회귀 의심 시 macOS 에서 수동 측정.
 #
-# **임시 측정 인프라**: Debug NAPI 빌드 한정. ReleaseFast (production) 영향 0.
+# **임시 측정 인프라**: Debug NAPI 빌드 한정. fast (production) 영향 0.
 # 기대값: leak entries=0, panics=0, rebuilt≥5 (touch-probe 정상 작동 검증).
 
 on:
@@ -56,7 +56,7 @@ jobs:
       - name: Setup Zig
         uses: ./.github/actions/setup-zig
         with:
-          version: 0.16.0
+          version: 0.17.0
           cache-key: napi
 
       - name: Setup Bun
@@ -75,9 +75,9 @@ jobs:
           profile: e2e
 
       - name: Build NAPI (Debug — leak detector 활성)
-        # `-Dnapi-optimize=Debug` 는 build.zig:233 의 napi_optimize option.
-        # default ReleaseFast 라 명시적 Debug 필수.
-        run: zig build napi -Dnapi-optimize=Debug
+        # `-Dnapi-optimize=debug` 는 build.zig:233 의 napi_optimize option.
+        # default fast 라 명시적 Debug 필수.
+        run: zig build napi -Dnapi-optimize=debug
 
       - name: Verify Debug NAPI build artifact (fail-fast)
         # `|| true` 로 cp 실패를 마스킹하면 stale binary 로 진행 → 진단 불가.

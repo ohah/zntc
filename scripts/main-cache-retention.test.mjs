@@ -8,7 +8,7 @@ const grace = 8 * 60 * 60 * 1000;
 const mainRef = 'refs/heads/main';
 const cacheRoute = '/repos/{owner}/{repo}/actions/caches';
 const prefix =
-  'setup-zig-cache-v2-prepare_cli-zig-x86_64-linux-0.16.0-cli-ubuntu-baseline-releasefast';
+  'setup-zig-cache-v2-prepare_cli-zig-x86_64-linux-0.17.0-cli-ubuntu-baseline-fast';
 const repository = { id: 41, full_name: 'ohah/zntc', default_branch: 'main' };
 
 const date = (age) => new Date(now - age).toISOString();

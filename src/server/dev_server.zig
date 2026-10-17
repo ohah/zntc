@@ -40,7 +40,7 @@ fn getLog() DebugLog {
 // undefined symbol. (x64/arm64-windows 는 데코레이션이 없어 우연히 매칭돼 통과.)
 // winapi(=x86 에서 stdcall) 규약으로 ws2_32 와 직접 매칭하는 선언을 둔다. Windows 의
 // namelen 인자는 `int*`(i32) — POSIX 의 socklen_t 와 폭이 같아 값은 동일.
-const ws2_32_getsockname = if (builtin.os.tag == .windows)
+const ws2_32_getsockname = if (builtin.target.os.tag == .windows)
     struct {
         extern "ws2_32" fn getsockname(s: std.posix.fd_t, name: *std.c.sockaddr, namelen: *i32) callconv(.winapi) c_int;
     }.getsockname
@@ -52,7 +52,7 @@ else {};
 /// fallback(옵션 지정 port) 을 그대로 반환 — 비-ephemeral 경로는 무영향.
 fn socketBoundPort(handle: std.posix.fd_t, fallback: u16) u16 {
     var addr: std.c.sockaddr.in = undefined;
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         var addrlen: i32 = @sizeOf(std.c.sockaddr.in);
         if (ws2_32_getsockname(handle, @ptrCast(&addr), &addrlen) != 0) return fallback;
     } else {
@@ -1450,7 +1450,7 @@ pub const DevServer = struct {
     /// profile.zig 의 useAtomicCounter 와 동일한 전략이다.
     inline fn seqUsesAtomic() bool {
         return !builtin.single_threaded and
-            !builtin.cpu.arch.isWasm() and
+            !builtin.target.cpu.arch.isWasm() and
             @bitSizeOf(u64) <= @bitSizeOf(usize);
     }
 

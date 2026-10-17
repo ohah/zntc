@@ -70,7 +70,7 @@ fn printBanner(out: anytype, msg: []const u8) !void {
     if (ctx.entry) |e| try out.print("  entry:  {s}\n", .{e});
     if (ctx.input_file) |f| try out.print("  input:  {s}\n", .{f});
     if (ctx.target) |t| try out.print("  target: {s}\n", .{t});
-    try out.print("  os/arch: {s}/{s}\n", .{ @tagName(builtin.os.tag), @tagName(builtin.cpu.arch) });
+    try out.print("  os/arch: {s}/{s}\n", .{ @tagName(builtin.target.os.tag), @tagName(builtin.target.cpu.arch) });
     try out.print("  zig:     {s}\n", .{builtin.zig_version_string});
 
     try out.writeAll(

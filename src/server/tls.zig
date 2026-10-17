@@ -17,7 +17,7 @@ const builtin = @import("builtin");
 const boringssl = @import("boringssl.zig");
 
 /// BoringSSL 진단 정보 — production 에서는 `std.log.err` 그대로 운영자 가시화
-/// (ReleaseFast/Safe default log level=`.err` 통과). test 환경에서는 zig test
+/// (fast/safe default log level=`.err` 통과). test 환경에서는 zig test
 /// runner 가 `std.log.err` 호출 자체를 detection 해 `expectError` 통과 후에도
 /// fail 마크. test runner 의 `std_options.logFn` override 가 사용자 root 보다
 /// 우선이라 우회 불가 — `builtin.is_test` 분기로 호출 자체 skip (#2538 4-2).
@@ -95,7 +95,7 @@ pub const TlsContext = struct {
 /// 의 mitigation 까지 누적), 본 fix 는 struct 자체를 comptime 분기해 Windows 빌드
 /// 통과 + runtime 시 `WindowsTlsUnsupported` error 반환. `dev_server.zig:158/434` 의
 /// catch handler 가 이미 처리. winsock 어댑터 (#3841 Phase 2) 머지 시 분기 제거.
-pub const TlsConnection = if (builtin.os.tag == .windows) WindowsTlsConnectionStub else PosixTlsConnection;
+pub const TlsConnection = if (builtin.target.os.tag == .windows) WindowsTlsConnectionStub else PosixTlsConnection;
 
 /// Windows 한정 stub — init 가 즉시 error 반환. reader/writer 는 init error 가드 후
 /// 호출 안 되지만 type signature 만족 위해 undefined-backed stub 제공.

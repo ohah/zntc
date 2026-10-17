@@ -654,7 +654,7 @@ Zig 코어 (parser + transformer + codegen)
 WASM 모듈은 **transpile-only** 와 **bundler** 두 binary 로 분리해서 빌드한다 — bundler 는 graph/resolver/linker + wasi-libc (thread support) 가 포함되어 ~1.7배 크기.
 playground 가 trans pile-only 모드에선 작은 binary 만 다운로드, bundler 모드 진입 시 lazy 로드 (`initBundler()`) — 두 함수가 별도 entry point 라 자연 lazy.
 
-`zig build wasm wasm-bundler` (둘 다 `.optimize = .ReleaseSmall`) 후 `bun scripts/measure-wasm-size.ts` 로 측정한 사이즈:
+`zig build wasm wasm-bundler` (둘 다 `.optimize = .small`) 후 `bun scripts/measure-wasm-size.ts` 로 측정한 사이즈:
 
 | Target | Role | Raw | Gzip (-9) | Brotli (q=11) |
 |---|---|---:|---:|---:|

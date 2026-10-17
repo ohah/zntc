@@ -32,14 +32,14 @@ pub const FileWatcher = struct {
     backend: Backend,
 
     /// 플랫폼별 백엔드 선택.
-    const Backend = if (builtin.os.tag == .macos or
-        builtin.os.tag == .ios or
-        builtin.os.tag == .freebsd or
-        builtin.os.tag == .netbsd or
-        builtin.os.tag == .openbsd or
-        builtin.os.tag == .dragonfly)
+    const Backend = if (builtin.target.os.tag == .macos or
+        builtin.target.os.tag == .ios or
+        builtin.target.os.tag == .freebsd or
+        builtin.target.os.tag == .netbsd or
+        builtin.target.os.tag == .openbsd or
+        builtin.target.os.tag == .dragonfly)
         KqueueBackend
-    else if (builtin.os.tag == .linux)
+    else if (builtin.target.os.tag == .linux)
         InotifyBackend
     else
         MtimeBackend;

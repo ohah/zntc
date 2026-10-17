@@ -56,7 +56,7 @@ const type_args = @import("expression/type_args.zig");
 ///     괄호/배열/호출/객체/첨자/템플릿 255단계 · 스프레드 127단계 · ternary/대입/단항/`**`/
 ///     `new`/arrow/JSX 765단계.
 ///   수정 전 SIGSEGV 임계(Debug, 8MB 스택) 대비 여유는 **1.48x ~ 4.6x**(스프레드 2.98x,
-///   객체 2.24x). ReleaseFast 는 프레임이 3~4배 작아 같은 상한에서 5배 이상 여유다.
+///   객체 2.24x). fast 는 프레임이 3~4배 작아 같은 상한에서 5배 이상 여유다.
 /// - 실코드 쪽(하한): node_modules + 저장소 소스 + test262 **303,399개 실파일**(RN Flow 포함)의
 ///   최대 식 중첩은 **598 프레임**(google-closure-compiler-js 의 3MB 생성 번들 `jscomp.js`)이고,
 ///   그 다음이 284(firebase 번들)다. 손으로 쓴 소스는 대부분 30 이하 — 768 은 코퍼스 p100 보다
@@ -143,7 +143,7 @@ fn parseExpressionOrRest(self: *Parser) ParseError2!NodeIndex {
         if (items.len > 0) {
             const last_idx = items[items.len - 1];
             if (!last_idx.isNone() and self.ast.getNode(last_idx).tag == .spread_element) {
-                self.ast.nodes.items[@intFromEnum(last_idx)].data = .{
+                self.ast.nodes.items[@backingInt(last_idx)].data = .{
                     .unary = .{ .operand = self.ast.getNode(last_idx).data.unary.operand, .flags = Parser.spread_trailing_comma },
                 };
             }
@@ -274,7 +274,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                     const params_node = try self.wrapAsFormalParameters(&.{param}, id_span);
                     const body = try parseArrowBody(self, true, params_node);
                     {
-                        const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0x01 });
+                        const ae = try self.ast.addExtras(&.{ @backingInt(params_node), @backingInt(body), 0x01 });
                         return try self.ast.addNode(.{
                             .tag = .arrow_function_expression,
                             .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -306,7 +306,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                         const params_node = try self.wrapAsFormalParameters(&.{}, .{ .start = empty_paren_start, .end = empty_paren_start });
                         const body = try parseArrowBody(self, true, params_node);
                         {
-                            const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0x01 });
+                            const ae = try self.ast.addExtras(&.{ @backingInt(params_node), @backingInt(body), 0x01 });
                             return try self.ast.addNode(.{
                                 .tag = .arrow_function_expression,
                                 .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -325,7 +325,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
                         try self.advance(); // skip =>
                         const body = try parseArrowBody(self, true, normalized_params);
                         {
-                            const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0x01 });
+                            const ae = try self.ast.addExtras(&.{ @backingInt(normalized_params), @backingInt(body), 0x01 });
                             return try self.ast.addNode(.{
                                 .tag = .arrow_function_expression,
                                 .span = .{ .start = async_span.start, .end = self.currentSpan().start },
@@ -363,7 +363,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
             const body = try parseArrowBody(self, false, params_node);
 
             {
-                const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0 });
+                const ae = try self.ast.addExtras(&.{ @backingInt(params_node), @backingInt(body), 0 });
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = id_span.start, .end = self.currentSpan().start },
@@ -387,7 +387,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
             const params_node = try self.wrapAsFormalParameters(&.{}, .{ .start = arrow_start, .end = arrow_start });
             const body = try parseArrowBody(self, false, params_node);
             {
-                const ae = try self.ast.addExtras(&.{ @intFromEnum(params_node), @intFromEnum(body), 0 });
+                const ae = try self.ast.addExtras(&.{ @backingInt(params_node), @backingInt(body), 0 });
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = arrow_start, .end = self.currentSpan().start },
@@ -466,7 +466,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         const body = try parseArrowBody(self, false, normalized_params);
 
         {
-            const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0 });
+            const ae = try self.ast.addExtras(&.{ @backingInt(normalized_params), @backingInt(body), 0 });
             return try self.ast.addNode(.{
                 .tag = .arrow_function_expression,
                 .span = .{ .start = left_start, .end = self.currentSpan().start },
@@ -480,7 +480,7 @@ pub fn parseAssignmentExpression(self: *Parser) ParseError2!NodeIndex {
         // 구조적 유효성 + rest-init + escaped keyword + strict eval/arguments를 단일 walk로 검증
         _ = try self.coverExpressionToAssignmentTarget(left, true);
         const left_start = self.ast.getNode(left).span.start;
-        const flags: u16 = @intFromEnum(self.current());
+        const flags: u16 = @backingInt(self.current());
         try self.advance();
         const right = try parseAssignmentExpression(self);
 
@@ -602,7 +602,7 @@ fn tryReinterpretAsTypedArrow(self: *Parser, paren_expr: NodeIndex) ParseError2!
     try self.advance(); // skip =>
     const body = try parseArrowBody(self, false, normalized_params);
 
-    const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0 });
+    const ae = try self.ast.addExtras(&.{ @backingInt(normalized_params), @backingInt(body), 0 });
     return try self.ast.addNode(.{
         .tag = .arrow_function_expression,
         .span = .{ .start = arrow_start, .end = self.currentSpan().start },
@@ -688,7 +688,7 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         if (op_kind == .question2 and !right.isNone()) {
             const right_node = self.ast.getNode(right);
             if (right_node.tag == .logical_expression) {
-                const right_op: Kind = @enumFromInt(right_node.data.binary.flags);
+                const right_op: Kind = @fromBackingInt(@intCast(right_node.data.binary.flags));
                 if (right_op == .amp2 or right_op == .pipe2) {
                     try self.addErrorCode(right_node.span, "Cannot mix '??' with '&&' or '||' without parentheses", .nullish_mix_logical);
                 }
@@ -700,7 +700,7 @@ fn parseBinaryExpression(self: *Parser, min_prec: u8) ParseError2!NodeIndex {
         left = try self.ast.addNode(.{
             .tag = tag,
             .span = .{ .start = left_start, .end = self.currentSpan().start },
-            .data = .{ .binary = .{ .left = left, .right = right, .flags = @intFromEnum(op_kind) } },
+            .data = .{ .binary = .{ .left = left, .right = right, .flags = @backingInt(op_kind) } },
         });
     }
 
@@ -741,8 +741,8 @@ pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                         del_node.tag == .private_field_expression)
                     {
                         const de = del_node.data.extra;
-                        const right_idx: NodeIndex = if (de + 1 < self.ast.extra_data.items.len) @enumFromInt(self.ast.extra_data.items[de + 1]) else NodeIndex.none;
-                        if (!right_idx.isNone() and @intFromEnum(right_idx) < self.ast.nodes.items.len) {
+                        const right_idx: NodeIndex = if (de + 1 < self.ast.extra_data.items.len) @fromBackingInt(@intCast(self.ast.extra_data.items[de + 1])) else NodeIndex.none;
+                        if (!right_idx.isNone() and @backingInt(right_idx) < self.ast.nodes.items.len) {
                             if (self.ast.getNode(right_idx).tag == .private_identifier) {
                                 try self.addErrorCode(del_node.span, "Private fields cannot be deleted", .private_delete);
                             }
@@ -764,7 +764,7 @@ pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
                 }
             }
             {
-                const ue = try self.ast.addExtras(&.{ @intFromEnum(operand), @intFromEnum(kind) });
+                const ue = try self.ast.addExtras(&.{ @backingInt(operand), @backingInt(kind) });
                 return try self.ast.addNode(.{
                     .tag = .unary_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -779,7 +779,7 @@ pub fn parseUnaryExpression(self: *Parser) ParseError2!NodeIndex {
             // ++/-- operand는 유효한 assignment target이어야 함
             _ = try self.coverExpressionToAssignmentTarget(operand, true);
             {
-                const ue = try self.ast.addExtras(&.{ @intFromEnum(operand), @intFromEnum(kind) });
+                const ue = try self.ast.addExtras(&.{ @backingInt(operand), @backingInt(kind) });
                 return try self.ast.addNode(.{
                     .tag = .update_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -852,7 +852,7 @@ fn parsePostfixExpression(self: *Parser) ParseError2!NodeIndex {
         const kind = self.current();
         try self.advance();
         {
-            const ue = try self.ast.addExtras(&.{ @intFromEnum(expr), @as(u32, @intFromEnum(kind)) | ast_mod.UnaryFlags.postfix });
+            const ue = try self.ast.addExtras(&.{ @backingInt(expr), @as(u32, @backingInt(kind)) | ast_mod.UnaryFlags.postfix });
             expr = try self.ast.addNode(.{
                 .tag = .update_expression,
                 .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -945,7 +945,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     had_pure_comment = false; // 소비: 첫 call에만 적용
                 }
                 const call_extra = try self.ast.addExtras(&.{
-                    @intFromEnum(expr), arg_list.start, arg_list.len, call_flags,
+                    @backingInt(expr), arg_list.start, arg_list.len, call_flags,
                 });
 
                 // Inline scan: require("specifier") → CJS import record
@@ -976,7 +976,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 }
                 {
                     const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
-                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 0 });
                     expr = try self.ast.addNode(.{
                         .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
                             .private_field_expression
@@ -998,7 +998,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                 self.restoreContext(cm_saved);
                 try self.expect(.r_bracket);
                 {
-                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 0 });
                     expr = try self.ast.addNode(.{
                         .tag = .computed_member_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1040,7 +1040,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     self.restoreContext(oc_saved);
                     try self.expect(.r_bracket);
                     {
-                        const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
+                        const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 1 }); // 1 = optional
                         expr = try self.ast.addNode(.{
                             .tag = .computed_member_expression,
                             .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1056,7 +1056,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                             const prop = try parseIdentifierName(self);
                             {
                                 const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
-                                const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
+                                const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 1 }); // 1 = optional
                                 expr = try self.ast.addNode(.{
                                     .tag = .static_member_expression,
                                     .span = .{ .start = expr_start, .end = prop_end },
@@ -1076,7 +1076,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                         had_pure_comment = false;
                     }
                     const oc_extra = try self.ast.addExtras(&.{
-                        @intFromEnum(expr), arg_list.start, arg_list.len, oc_flags,
+                        @backingInt(expr), arg_list.start, arg_list.len, oc_flags,
                     });
                     expr = try self.ast.addNode(.{
                         .tag = .call_expression,
@@ -1088,7 +1088,7 @@ pub fn parseCallExpression(self: *Parser) ParseError2!NodeIndex {
                     const prop = try parseIdentifierName(self);
                     {
                         const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
-                        const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 1 }); // 1 = optional
+                        const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 1 }); // 1 = optional
                         // 비-optional `.` 경로와 동일하게 prop이 private_identifier이면 private_field_expression.
                         // 이 분기 누락 시 `a?.#x` 가 static_member_expression 으로 잘못 태깅되어
                         // private field lowering이 안 돌고 codegen 그대로 `o.#x` 출력 → 런타임 에러 (#1492).
@@ -1239,7 +1239,7 @@ fn optionalChainArglessNewHead(self: *const Parser, base: NodeIndex) NodeIndex {
     var cur = base;
     var guard: u32 = 0;
     while (guard < 100_000) : (guard += 1) {
-        if (cur.isNone() or @intFromEnum(cur) >= self.ast.nodes.items.len) return .none;
+        if (cur.isNone() or @backingInt(cur) >= self.ast.nodes.items.len) return .none;
         const node = self.ast.getNode(cur);
         if (ast_mod.Node.Tag.isParenFreeTypeWrapper(node.tag)) {
             cur = node.data.unary.operand;
@@ -1275,7 +1275,7 @@ fn finishNewExpressionWithArgs(self: *Parser, start: u32, callee: NodeIndex, arg
     // (`new a()?.b`)의 valid base. 무인자 new 경로는 had_arguments 를 빼두어 `new new a()?.b`/
     // `new new a().b?.c` 등을 optionalChainArglessNewHead 가 잡아낸다.
     const ne = try self.ast.addExtras(&.{
-        @intFromEnum(callee),
+        @backingInt(callee),
         arg_list.start,
         arg_list.len,
         ast_mod.CallFlags.had_arguments | newCalleeOptionalFlag(callee_optional),
@@ -1304,7 +1304,7 @@ fn finishNewExpressionNoArgs(
     callee_optional: bool,
 ) !NodeIndex {
     const extra = try self.ast.addExtras(&.{
-        @intFromEnum(callee), 0, 0, newCalleeOptionalFlag(callee_optional),
+        @backingInt(callee), 0, 0, newCalleeOptionalFlag(callee_optional),
     });
     return try self.ast.addNode(.{
         .tag = .new_expression,
@@ -1332,7 +1332,7 @@ fn finishTaggedTemplate(self: *Parser, tag_expr: NodeIndex, start: u32) !NodeInd
             .{ .start = 0, .len = 0 },
         );
     };
-    const te = try self.ast.addExtras(&.{ @intFromEnum(tag_expr), @intFromEnum(tmpl), 0 });
+    const te = try self.ast.addExtras(&.{ @backingInt(tag_expr), @backingInt(tmpl), 0 });
     return try self.ast.addNode(.{
         .tag = .tagged_template_expression,
         .span = .{ .start = start, .end = self.currentSpan().start },
@@ -1414,7 +1414,7 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
                 const prop = try parseIdentifierName(self);
                 {
                     const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
-                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 0 });
                     // `new obj.#priv()` — prop 이 private_identifier 면 private_field_expression 태그를
                     // 써야 transformer 가 `_priv.get(obj)` 로 lowering 함. 일반 `.dot` 경로와 동기화 (#1507).
                     expr = try self.ast.addNode(.{
@@ -1437,7 +1437,7 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
                 self.restoreContext(cm_saved);
                 try self.expect(.r_bracket);
                 {
-                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 0 });
                     expr = try self.ast.addNode(.{
                         .tag = .computed_member_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1463,7 +1463,7 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
                     const prop = try parseExpression(self);
                     self.restoreContext(cm_saved);
                     try self.expect(.r_bracket);
-                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 0 });
                     expr = try self.ast.addNode(.{
                         .tag = .computed_member_expression,
                         .span = .{ .start = expr_start, .end = self.currentSpan().start },
@@ -1477,7 +1477,7 @@ fn parseNewCallee(self: *Parser, out_callee_optional: *bool) ParseError2!NodeInd
                     // 호출하므로 "Identifier expected" 2차 에러(노이즈)가 안 붙는다.
                     const prop = try parseIdentifierName(self);
                     const prop_end = if (!prop.isNone()) self.ast.getNode(prop).span.end else self.currentSpan().start;
-                    const me = try self.ast.addExtras(&.{ @intFromEnum(expr), @intFromEnum(prop), 0 });
+                    const me = try self.ast.addExtras(&.{ @backingInt(expr), @backingInt(prop), 0 });
                     expr = try self.ast.addNode(.{
                         .tag = if (!prop.isNone() and self.ast.getNode(prop).tag == .private_identifier)
                             .private_field_expression
@@ -2078,7 +2078,7 @@ fn parseArrayExpression(self: *Parser) ParseError2!NodeIndex {
         // spread 뒤에 trailing comma가 있고 바로 ]가 오면 플래그를 설정.
         // 이 정보는 coverArrayExpressionToTarget에서 rest trailing comma 에러에 사용된다.
         if (!elem.isNone() and self.ast.getNode(elem).tag == .spread_element and self.current() == .r_bracket) {
-            self.ast.nodes.items[@intFromEnum(elem)].data.unary.flags = Parser.spread_trailing_comma;
+            self.ast.nodes.items[@backingInt(elem)].data.unary.flags = Parser.spread_trailing_comma;
         }
     }
 
@@ -2352,7 +2352,7 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
             if (self.current() == .arrow and !self.scanner.token.has_newline_before) {
                 try self.advance(); // skip =>
                 const body = try parseArrowBody(self, false, .none);
-                const ae = try self.ast.addExtras(&.{ @intFromEnum(NodeIndex.none), @intFromEnum(body), 0 });
+                const ae = try self.ast.addExtras(&.{ @backingInt(NodeIndex.none), @backingInt(body), 0 });
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },
@@ -2373,7 +2373,7 @@ fn parseTSTypeAssertion(self: *Parser) ParseError2!NodeIndex {
                 const normalized_params = try self.coverExpressionToArrowParams(paren_expr);
                 try self.advance(); // skip =>
                 const body = try parseArrowBody(self, false, normalized_params);
-                const ae = try self.ast.addExtras(&.{ @intFromEnum(normalized_params), @intFromEnum(body), 0 });
+                const ae = try self.ast.addExtras(&.{ @backingInt(normalized_params), @backingInt(body), 0 });
                 return try self.ast.addNode(.{
                     .tag = .arrow_function_expression,
                     .span = .{ .start = start, .end = self.currentSpan().start },

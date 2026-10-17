@@ -306,7 +306,7 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
         for (store.chunks.items[processed..cur_len]) |chk| {
             if (self.path_to_module.get(chk.id)) |idx| {
                 // 이미 graph 에 있는 모듈 (B-i).
-                const ei = @intFromEnum(idx);
+                const ei = @backingInt(idx);
                 if (ei >= self.modules.count()) continue;
                 const m = self.modules.at(ei);
                 if (m.is_external or m.is_disabled) {
@@ -339,7 +339,7 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
                     continue;
                 };
                 _ = try graph_requested_exports.requestAll(self, new_idx);
-                const nei = @intFromEnum(new_idx);
+                const nei = @backingInt(new_idx);
                 if (nei < self.modules.count()) self.modules.at(nei).is_emitted_chunk_entry = true;
             } else {
                 // 상대/bare specifier (B-ii): source_dir(project_root) 기준 resolve (RFC §4.2).
@@ -376,7 +376,7 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
                     .file => |f| {
                         // PR resolve interning: f.path / f.resolve_dir 는 path_pool 소유 (borrow only).
                         const new_idx = try self.addModuleWithResolveDir(io, f.path, f.resolve_dir);
-                        const nei = @intFromEnum(new_idx);
+                        const nei = @backingInt(new_idx);
                         if (nei >= self.modules.count()) continue;
                         const nm = self.modules.at(nei);
                         // 기존 external/disabled 모듈로 dedup 되면 chunk 대상이 아니다. 신규 모듈은
@@ -463,7 +463,7 @@ fn injectEmittedChunks(self: *ModuleGraph, io: std.Io) !void {
 /// 있어야 한다(Rollup 도 "유일 chunk 연결" 요구) → 미존재 시 진단(silent drop 금지).
 fn wireImplicitlyLoaded(self: *ModuleGraph, io: std.Io, e_idx: ModuleIndex, ids: []const []const u8, source_dir: []const u8) !void {
     if (ids.len == 0) return;
-    const ei = @intFromEnum(e_idx);
+    const ei = @backingInt(e_idx);
     if (ei >= self.modules.count()) return;
     for (ids) |raw_id| {
         const parent_idx = resolveExistingModuleIndex(self, io, source_dir, raw_id) orelse {
@@ -479,7 +479,7 @@ fn wireImplicitlyLoaded(self: *ModuleGraph, io: std.Io, e_idx: ModuleIndex, ids:
             continue;
         };
         if (parent_idx == e_idx) continue; // self-reference 무시
-        const pi = @intFromEnum(parent_idx);
+        const pi = @backingInt(parent_idx);
         if (pi >= self.modules.count()) continue;
         try appendUniqueModuleIndex(self.allocator, &self.modules.at(ei).implicitly_loaded_after_one_of, parent_idx);
         try appendUniqueModuleIndex(self.allocator, &self.modules.at(pi).implicitly_loaded_before, e_idx);
@@ -589,7 +589,7 @@ fn discoverPendingModulesSequential(self: *ModuleGraph, io: std.Io, start_index:
         for (parse_start..parse_end) |j| {
             const m = self.modules.at(j);
             if (m.state == .ready) continue;
-            self.parseModule(io, @enumFromInt(@as(u32, @intCast(j))));
+            self.parseModule(io, @fromBackingInt(@intCast(@as(u32, @intCast(j)))));
         }
         for (parse_start..parse_end) |i| {
             const m_ptr = self.modules.at(i);
@@ -600,7 +600,7 @@ fn discoverPendingModulesSequential(self: *ModuleGraph, io: std.Io, start_index:
         for (parse_start..parse_end) |i| {
             const m_ptr = self.modules.at(i);
             if (m_ptr.is_disabled or m_ptr.is_external) continue;
-            try graph_resolve_imports.resolveModuleImports(self, io, @enumFromInt(@as(u32, @intCast(i))));
+            try graph_resolve_imports.resolveModuleImports(self, io, @fromBackingInt(@intCast(@as(u32, @intCast(i)))));
             try graph_resolve_imports.applyContextDepResults(self, io, i);
         }
         parse_start = parse_end;
@@ -617,7 +617,7 @@ fn linkExecutionRoots(
     if (inject_indices.len == 0 and runtime_indices.len == 0 and run_before_main_indices.len == 0) return;
     for (entry_points) |entry_path| {
         const entry_idx = self.path_to_module.get(entry_path) orelse continue;
-        const ei = @intFromEnum(entry_idx);
+        const ei = @backingInt(entry_idx);
         if (ei >= self.modules.count()) continue;
         for (inject_indices) |inject_idx| try linkDependencyUnique(self, entry_idx, inject_idx);
         for (runtime_indices) |runtime_idx| try linkDependencyUnique(self, entry_idx, runtime_idx);
@@ -676,7 +676,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
     defer entry_indices.deinit(self.allocator);
     for (entry_points) |entry_path| {
         if (self.path_to_module.get(entry_path)) |idx| {
-            const ei = @intFromEnum(idx);
+            const ei = @backingInt(idx);
             if (ei < self.modules.count()) {
                 self.modules.at(ei).is_entry_point = true;
             }
@@ -694,7 +694,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
             const m = self.modules.at(mi);
             if (!m.is_emitted_chunk_entry) continue;
             m.is_entry_point = true;
-            const idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(mi)));
+            const idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(mi))));
             try graph_cycles.dfs(self, idx, &visited, &in_stack);
             try entry_indices.append(self.allocator, idx);
         }
@@ -731,7 +731,7 @@ fn finalizeGraph(self: *ModuleGraph, entry_points: []const []const u8) !void {
         while (mi < self.modules.count()) : (mi += 1) {
             const dyn = self.modules.at(mi).dynamic_imports.items;
             for (dyn) |target_idx| {
-                const ti = @intFromEnum(target_idx);
+                const ti = @backingInt(target_idx);
                 if (ti >= self.modules.count()) continue;
                 if (visited.isSet(ti)) continue;
                 try graph_cycles.dfs(self, target_idx, &visited, &in_stack);
@@ -763,7 +763,7 @@ fn checkSelfReExport(self: *ModuleGraph) void {
     var it = self.modules.iterator(0);
     var i: usize = 0;
     while (it.next()) |m| : (i += 1) {
-        const self_idx: ModuleIndex = @enumFromInt(@as(u32, @intCast(i)));
+        const self_idx: ModuleIndex = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
         for (m.export_bindings) |eb| {
             if (eb.kind != .re_export) continue;
             if (std.mem.eql(u8, eb.exported_name, "default")) continue;
@@ -1103,12 +1103,12 @@ pub fn buildIncremental(
                 var s_mp = profile.begin(.graph_discover_incr_miss_parse);
                 defer s_mp.end();
                 // 캐시 미스: 정상 파싱
-                self.parseModule(io, @enumFromInt(@as(u32, @intCast(i))));
+                self.parseModule(io, @fromBackingInt(@intCast(@as(u32, @intCast(i)))));
                 const m_ptr = self.modules.at(i);
                 self.applySideEffectsFromPackageJson(io, m_ptr);
                 m_ptr.mtime = mtime;
                 m_ptr.state = .ready;
-                try reparsed.append(self.allocator, @enumFromInt(@as(u32, @intCast(i))));
+                try reparsed.append(self.allocator, @fromBackingInt(@intCast(@as(u32, @intCast(i)))));
             }
         }
 
@@ -1122,7 +1122,7 @@ pub fn buildIncremental(
             } else {
                 var s_mr = profile.begin(.graph_discover_incr_miss_resolve);
                 defer s_mr.end();
-                try graph_resolve_imports.resolveModuleImports(self, io, @enumFromInt(@as(u32, @intCast(i))));
+                try graph_resolve_imports.resolveModuleImports(self, io, @fromBackingInt(@intCast(@as(u32, @intCast(i)))));
             }
         }
 
@@ -1260,7 +1260,7 @@ pub fn buildIncrementalPreserved(
         try build(self, io, entry_points);
         const n = self.modules.count();
         const reparsed = try self.allocator.alloc(types.ModuleIndex, n);
-        for (0..n) |i| reparsed[i] = @enumFromInt(@as(u32, @intCast(i)));
+        for (0..n) |i| reparsed[i] = @fromBackingInt(@intCast(@as(u32, @intCast(i))));
         return .{ .graph_changed = true, .reparsed_indices = reparsed };
     }
 
@@ -1309,7 +1309,7 @@ pub fn buildIncrementalPreserved(
                 // changed 파일이 graph 에 없음 → 신규 모듈 추가(위상 변화) 가능성 → full.
                 return fallbackFullRebuild(self, io, entry_points, store, changed_files);
             };
-            const ui = @intFromEnum(idx);
+            const ui = @backingInt(idx);
             if (ui >= self.modules.count()) {
                 return fallbackFullRebuild(self, io, entry_points, store, changed_files);
             }
@@ -1483,7 +1483,7 @@ pub fn buildIncrementalPreserved(
             if (self.path_to_module.get(e.key_ptr.*)) |idx| {
                 try reparsed.append(self.allocator, idx);
                 // OOM 시 try 로 빌드 에러(부분 set 으로 stale peek 방지) — 다음 빌드 진입부가 clear.
-                try self.changed_emit_paths.?.put(self.allocator, self.modules.at(@intFromEnum(idx)).path, {});
+                try self.changed_emit_paths.?.put(self.allocator, self.modules.at(@backingInt(idx)).path, {});
             }
         }
     }
@@ -1694,7 +1694,7 @@ fn reparseChangedModulePreserveEdges(self: *ModuleGraph, io: std.Io, mod_idx: us
 /// path 는 error 로 폴백해 호출부가 `catch 0` 으로 처리하도록 한다.
 ///
 /// `std.fs.Dir.statFile` 은 내부에서 `toPosixPath` 를 거치는데, 그 함수가
-/// `runtime_safety` (Debug / ReleaseSafe) 빌드에서 path 내 null byte 존재 시
+/// `runtime_safety` (debug / safe) 빌드에서 path 내 null byte 존재 시
 /// `assert(indexOfScalar == null)` 로 panic (reached unreachable code) 한다.
 /// plugin 이 합성한 virtual path, AssetRegistry 등 에서 실제로 이런 path 가 들어와
 /// HMR rebuild 중 번들러가 통째로 죽던 버그를 막는다.

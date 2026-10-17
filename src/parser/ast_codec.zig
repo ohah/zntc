@@ -56,7 +56,7 @@ comptime {
     // minifier 예외 목록이며 parse-cache Ast 에는 비어 있어야 한다.
     // #5595 `is_typescript`: **직렬화**(메타 플래그). transformer 의 import elision 범위를 정한다.
     // #5665 `has_object_getter`: **직렬화**(메타 플래그). tree shaking 의 속성 읽기 순수성 판정.
-    if (@typeInfo(Ast).@"struct".fields.len != 28)
+    if (@typeInfo(Ast).@"struct".field_names.len != 28)
         @compileError("Ast 필드 수가 바뀜 — 새 필드의 직렬화 필요 여부를 판정해 ast_codec 갱신 후 이 수를 갱신할 것.");
 }
 
@@ -82,7 +82,7 @@ fn putNodes(buf: *std.ArrayList(u8), alloc: std.mem.Allocator, nodes: []const No
     for (nodes) |n| {
         try putU32(buf, alloc, n.span.start);
         try putU32(buf, alloc, n.span.end);
-        const tag_int: u16 = @intFromEnum(n.tag);
+        const tag_int: u16 = @backingInt(n.tag);
         try buf.appendSlice(alloc, std.mem.asBytes(&tag_int));
         const width = Node.Tag.dataWidth(n.tag);
         try buf.appendSlice(alloc, std.mem.asBytes(&n.data)[0..width]);
@@ -154,7 +154,7 @@ pub fn serialize(ast: *const Ast, out: *std.ArrayList(u8), alloc: std.mem.Alloca
 
     // transform 상태 (?u32 / ?NodeIndex) — present 바이트 + 값
     try putU32(&payload, alloc, if (ast.transform_boundary) |b| b else NULL_OFFSET);
-    try putU32(&payload, alloc, if (ast.transformed_root) |r| @intFromEnum(r) else NULL_OFFSET);
+    try putU32(&payload, alloc, if (ast.transformed_root) |r| @backingInt(r) else NULL_OFFSET);
 
     const checksum = wyhash.hashU64(payload.items);
     try putU32(out, alloc, MAGIC);
@@ -269,7 +269,7 @@ pub fn deserialize(data: []const u8, alloc: std.mem.Allocator) Error!Ast {
     const tb = try r.u32v();
     ast.transform_boundary = if (tb == NULL_OFFSET) null else tb;
     const tr = try r.u32v();
-    ast.transformed_root = if (tr == NULL_OFFSET) null else @enumFromInt(tr);
+    ast.transformed_root = if (tr == NULL_OFFSET) null else @fromBackingInt(@intCast(tr));
 
     return ast;
 }

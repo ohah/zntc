@@ -702,7 +702,7 @@ test "#4237: astral literal + quantifier /u — u 보존 게이트" {
     try testing.expect(std.mem.endsWith(u8, r.text.?, "/u"));
 }
 
-// #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 ReleaseFast 에서
+// #2472 회귀 가드: 32개 stack-cap 시 33번째부터 std.debug.assert 가 fast 에서
 // 비활성화되어 OOB 쓰기 (UB) 가 발생했음. dynamic ArrayList 로 전환 후 50개도 정상 동작.
 test "#2472 regression: 50 named groups + last backref — no truncation" {
     var pat: std.ArrayList(u8) = .empty;

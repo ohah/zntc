@@ -1818,7 +1818,7 @@ pub const Scanner = struct {
         // 안전모드 `pop()` 은 제거 슬롯을 `undefined`(Debug 0xaa) 로 덮어써 그 전제를 깬다.
         // 그러면 복구된 top 이 0xaaaaaaaa 가 되어, template 안 `(x)` 같은 paren 식 lookahead
         // 직후의 닫는 `}` 가 template continuation 이 아닌 일반 `r_curly` 로 오인식돼
-        // "Expected template continuation"(ZNTC0909) 가 난다 (Debug/ReleaseSafe 전용 회귀).
+        // "Expected template continuation"(ZNTC0909) 가 난다 (debug/safe 전용 회귀).
         if (self.template_depth_stack.items.len > 0) {
             self.template_depth_stack.items.len -= 1;
         }
