@@ -1006,10 +1006,10 @@ pub const Linker = struct {
         return true;
     }
 
-    /// Assign Worklet factory locals after the full semantic graph is available.
-    /// These locals can shadow outer bindings read by the generated closure
-    /// object, so checking only the factory's own scope is insufficient.
-    fn resolveWorkletFactoryLocalNames(
+    /// Assign producer-owned local output hints after the full semantic graph
+    /// is available. These names can shadow bindings used by generated code,
+    /// so check every source scope in the module before assigning a spelling.
+    fn resolvePostGraphOutputHintNames(
         self: *Linker,
         name_to_owners: *const NameToOwnersMap,
         only: ?[]const ModuleIndex,
@@ -1021,16 +1021,35 @@ pub const Linker = struct {
             const module = self.getModule(module_index) orelse continue;
             const semantic = module.semantic orelse continue;
             for (semantic.symbols.items, 0..) |symbol, raw_symbol_id| {
-                if (symbol.synthetic_kind != .worklet_factory_local) continue;
-                if (symbol.output_name_hint.len == 0 or symbol.scope_id.isNone())
-                    return error.InvalidWorkletFactoryLocal;
+                const kind = symbol.synthetic_kind orelse continue;
+                const is_variable_local = switch (symbol.kind) {
+                    .variable_var, .variable_let, .variable_const => true,
+                    else => false,
+                };
+                switch (kind) {
+                    .worklet_factory_local => {
+                        if (symbol.output_name_hint.len == 0 or symbol.scope_id.isNone())
+                            return error.InvalidWorkletFactoryLocal;
+                    },
+                    .stage3_class_this_binding => {
+                        if (!is_variable_local or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_classThis"))
+                            return error.InvalidStage3ClassThisOutputBinding;
+                    },
+                    .stage3_metadata_binding => {
+                        if (!is_variable_local or symbol.scope_id.isNone() or
+                            !std.mem.eql(u8, symbol.output_name_hint, "_metadata"))
+                            return error.InvalidStage3MetadataOutputBinding;
+                    },
+                    else => continue,
+                }
 
                 const symbol_id = bundler_symbol.SymbolID.make(
                     @enumFromInt(module_index),
                     @as(u32, @intCast(raw_symbol_id)),
                 );
                 const base = symbol.output_name_hint;
-                const selected = if (self.workletFactoryNameAvailable(module_index, @intCast(raw_symbol_id), base, name_to_owners))
+                const selected = if (self.postGraphLocalNameAvailable(module_index, @intCast(raw_symbol_id), base, name_to_owners))
                     try self.allocator.dupe(u8, base)
                 else blk: {
                     var suffix: u32 = 1;
@@ -1043,7 +1062,7 @@ pub const Linker = struct {
         }
     }
 
-    fn workletFactoryNameAvailable(
+    fn postGraphLocalNameAvailable(
         self: *const Linker,
         module_index: u32,
         symbol_index: u32,
@@ -2894,7 +2913,7 @@ pub const Linker = struct {
         try self.buildNestedBindingCache(&name_to_owners);
         defer self.clearNestedBindingCache();
 
-        try self.resolveWorkletFactoryLocalNames(&name_to_owners, null);
+        try self.resolvePostGraphOutputHintNames(&name_to_owners, null);
 
         // 2. 충돌하는 이름에 대해 리네임 계산
         try self.calculateRenames(&name_to_owners, false);
@@ -6382,7 +6401,7 @@ pub const Linker = struct {
         try self.buildNestedBindingCache(&name_to_owners);
         defer self.clearNestedBindingCache();
 
-        try self.resolveWorkletFactoryLocalNames(&name_to_owners, module_indices);
+        try self.resolvePostGraphOutputHintNames(&name_to_owners, module_indices);
 
         // 2. 충돌하는 이름에 대해 리네임 계산 (cross-chunk 점유 마커는 skip)
         try self.calculateRenames(&name_to_owners, true);

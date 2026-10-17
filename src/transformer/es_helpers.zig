@@ -631,6 +631,19 @@ pub fn collidesWithUserSymbol(self: anytype, name: []const u8) !bool {
 pub fn canUseLateStandaloneOutputName(self: anytype, scope_id: ScopeId) bool {
     if (!self.semantic_edit_enabled or !self.options.defer_runtime_helper_name_resolution or
         self.options.emit_runtime_helper_imports or scope_id.isNone()) return false;
+    return lateOutputNameScopeChainIsSafe(self, scope_id);
+}
+
+/// Bundled output names can be deferred to the linker when the generated local
+/// has a stable semantic owner and no enclosing eval/with scope observes its
+/// spelling. The exact binding and its output hint must then cross semantic
+/// reanalysis together through a producer-owned NodeIndex.
+pub fn canUseLateGraphOutputName(self: anytype, scope_id: ScopeId) bool {
+    if (!self.semantic_edit_enabled or !self.options.emit_runtime_helper_imports or scope_id.isNone()) return false;
+    return lateOutputNameScopeChainIsSafe(self, scope_id);
+}
+
+fn lateOutputNameScopeChainIsSafe(self: anytype, scope_id: ScopeId) bool {
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     var scope = scope_id;
     var hops: usize = 0;

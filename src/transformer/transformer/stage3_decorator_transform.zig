@@ -42,6 +42,26 @@ fn markStandaloneLateStage3Symbol(
     editor.symbols.items[@intFromEnum(symbol_id)].synthetic_kind = kind;
 }
 
+fn markLateStage3OutputSymbol(
+    self: *Transformer,
+    enabled: bool,
+    graph_output_name: bool,
+    symbol_id: SymbolId,
+    kind: SyntheticKind,
+    output_name_hint: []const u8,
+) void {
+    if (!enabled) return;
+    const editor = if (self.semantic_editor) |*semantic_editor|
+        semantic_editor
+    else
+        std.debug.panic("late-named Stage 3 output binding has no semantic editor", .{});
+    const raw = @intFromEnum(symbol_id);
+    if (raw >= editor.symbols.items.len) std.debug.panic("late-named Stage 3 output binding has an invalid SymbolId", .{});
+    const symbol = &editor.symbols.items[raw];
+    symbol.synthetic_kind = kind;
+    if (graph_output_name) symbol.output_name_hint = output_name_hint;
+}
+
 fn generatedLetBinding(self: *Transformer, declaration_idx: NodeIndex) NodeIndex {
     const declaration = self.ast.getNode(declaration_idx);
     if (declaration.tag != .variable_declaration) std.debug.panic("Stage 3 generated local is not a variable declaration", .{});
@@ -133,6 +153,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     else
         self.current_scope;
     const late_standalone_output_names = es_helpers.canUseLateStandaloneOutputName(self, class_parent_scope);
+    const late_graph_output_names = es_helpers.canUseLateGraphOutputName(self, class_parent_scope);
     const class_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
     const class_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
 
@@ -692,13 +713,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     defer iife_stmts.deinit(self.allocator);
 
     // _classThis 변수
-    const class_this_late_output_name = late_standalone_output_names;
+    const class_this_late_output_name = late_standalone_output_names or late_graph_output_names;
     const class_this_name = if (class_this_late_output_name)
         try es_helpers.deferSyntheticOutputName(self, "_classThis")
     else
         try es_helpers.resolveSyntheticName(self, "_classThis");
     const classThis_span = try self.ast.addString(class_this_name);
-    if (class_this_late_output_name and class_deco_len > 0) {
+    if (late_standalone_output_names and class_deco_len > 0) {
         inline for (.{ "_classDecorators", "_classDescriptor", "_classExtraInitializers" }) |name| {
             try reserveStandaloneLateStage3Name(self, class_this_late_output_name, name);
         }
@@ -770,7 +791,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     // → 2번째 static { } 블록에 모두 넣기
 
     // const _metadata = typeof Symbol === "function" && Symbol.metadata ? Object.create(null) : void 0;
-    const metadata_late_output_name = late_standalone_output_names;
+    const metadata_late_output_name = late_standalone_output_names or late_graph_output_names;
     const metadata_name = if (metadata_late_output_name)
         try es_helpers.deferSyntheticOutputName(self, "_metadata")
     else
@@ -926,13 +947,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_const,
             metadata_block_scope,
         )) orelse std.debug.panic("Stage 3 metadata binding has no SymbolId", .{});
-        if (metadata_late_output_name) {
-            const editor = if (self.semantic_editor) |*semantic_editor|
-                semantic_editor
-            else
-                std.debug.panic("late-named Stage 3 metadata has no semantic editor", .{});
-            editor.symbols.items[@intFromEnum(metadata_symbol)].synthetic_kind = .stage3_metadata_binding;
-        }
+        markLateStage3OutputSymbol(
+            self,
+            metadata_late_output_name,
+            late_graph_output_names,
+            metadata_symbol,
+            .stage3_metadata_binding,
+            "_metadata",
+        );
         for (metadata_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, metadata_symbol, metadata_block_scope, .{ .read = true });
         }
@@ -1226,7 +1248,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class decorators binding has no SymbolId", .{});
-        if (class_this_late_output_name) {
+        if (late_standalone_output_names) {
             const editor = if (self.semantic_editor) |*semantic_editor|
                 semantic_editor
             else
@@ -1245,7 +1267,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class descriptor binding has no SymbolId", .{});
-        if (class_this_late_output_name) {
+        if (late_standalone_output_names) {
             const editor = if (self.semantic_editor) |*semantic_editor|
                 semantic_editor
             else
@@ -1267,7 +1289,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class extra initializers binding has no SymbolId", .{});
-        if (class_this_late_output_name) {
+        if (late_standalone_output_names) {
             const editor = if (self.semantic_editor) |*semantic_editor|
                 semantic_editor
             else
@@ -1289,13 +1311,14 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
             .variable_let,
             arrow_scope,
         )) orelse std.debug.panic("Stage 3 class this binding has no SymbolId", .{});
-        if (class_this_late_output_name) {
-            const editor = if (self.semantic_editor) |*semantic_editor|
-                semantic_editor
-            else
-                std.debug.panic("late-named Stage 3 class this has no semantic editor", .{});
-            editor.symbols.items[@intFromEnum(class_this_symbol)].synthetic_kind = .stage3_class_this_binding;
-        }
+        markLateStage3OutputSymbol(
+            self,
+            class_this_late_output_name,
+            late_graph_output_names,
+            class_this_symbol,
+            .stage3_class_this_binding,
+            "_classThis",
+        );
         if (class_this_initialization_scope.isNone()) std.debug.panic("Stage 3 class this has no initialization block scope", .{});
         for (class_this_initialization_refs.items) |reference| {
             try self.addSyntheticRefInScope(reference, class_this_symbol, class_this_initialization_scope, .{ .write = true });

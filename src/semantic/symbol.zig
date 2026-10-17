@@ -251,11 +251,13 @@ pub const SyntheticKind = enum(u8) {
     /// non-minified output selects its spelling from this exact SymbolId after
     /// the transformed symbol set is complete.
     optional_catch_binding,
-    /// Stage 3 decorator metadata local. Standalone output selects its
-    /// spelling from this exact SymbolId after all generated names are known.
+    /// Stage 3 decorator metadata local. Standalone output and the bundler
+    /// linker select its spelling from this exact SymbolId after generated
+    /// names are known.
     stage3_metadata_binding,
-    /// Stage 3 decorator class-this local. Standalone output selects its
-    /// spelling from this exact SymbolId after all generated names are known.
+    /// Stage 3 decorator class-this local. Standalone output and the bundler
+    /// linker select its spelling from this exact SymbolId after generated
+    /// names are known.
     stage3_class_this_binding,
     /// Stage 3 class decorator locals. Standalone output selects their
     /// spellings from exact SymbolIds after all generated names are known.

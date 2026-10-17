@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { createFixture, runZntcInDir } from './helpers';
+import { createFixture, runZntcInDir, ZNTC_BIN } from './helpers';
 
 describe('Stage 3 decorator runtime helper symbols (#4819)', () => {
   let cleanup: (() => Promise<void>) | undefined;
@@ -140,6 +140,55 @@ console.log(_metadata, _metadata2, _classThis, _classThis2, _classDecorators, _c
       '11 12 21 22 31 32 41 42 51 52 61 62 71 72 81 82 91 92 101 102 111 112 121 122 4 6 8 5 7 9\n',
     );
   });
+
+  for (const target of ['esnext', 'es5']) {
+    test(`bundled Stage 3 local names are selected after graph analysis (${target})`, async () => {
+      const fixture = await createFixture({
+        'input.ts': `
+const _metadata = 11, _classThis = 21;
+function dec(value: any): any { return value; }
+@dec class Example {
+  @dec value = _classThis;
+  @dec method() { return _metadata; }
+}
+console.log(_metadata, _classThis, new Example().value, new Example().method());
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.cjs');
+      const result = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'input.ts',
+          '--platform=node',
+          '--format=cjs',
+          `--target=${target}`,
+          '-o',
+          output,
+        ],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toContain(
+        `semantic_graph=${target === 'esnext' ? 'retained' : 'reanalyzed'}`,
+      );
+      expect(result.stderr).toMatch(/symbol-identity-prepass .*unclassified_reference=0/);
+      expect(result.stderr).toMatch(/symbol-identity-prepass .*clean=1(?:\s|$)/);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('11 21 21 11\n');
+
+      const code = readFileSync(output, 'utf8');
+      expect(code).toMatch(/value:\s*_classThis\$[0-9]+/);
+      expect(code).toMatch(/metadata:\s*_metadata\$[0-9]+/);
+    });
+  }
 
   test('standalone private Stage 3 descriptor bindings get distinct exact SymbolId names', async () => {
     const fixture = await createFixture({
