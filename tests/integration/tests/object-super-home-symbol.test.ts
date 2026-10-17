@@ -468,6 +468,156 @@ Promise.all([
     expect(actual.stdout).toBe('41 45 42 43 44 outer-a outer-b\n');
   });
 
+  test('home temp scope detection stops at the nearest function owner across eleven hostile shapes', async () => {
+    const homeBody = (value: number) => `var methods = {
+  input: 0,
+  read() { return super.read(); },
+};
+Object.setPrototypeOf(methods, base);
+return methods.read.call({ input: ${value} });`;
+    const cases = [
+      {
+        name: 'async outer with a nested function declaration',
+        source: `async function outer() {
+  function nested() { ${homeBody(1)} }
+  return nested();
+}
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'async outer with a nested function expression',
+        source: `async function outer() {
+  var nested = function() { ${homeBody(2)} };
+  return nested();
+}
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'two levels of nested synchronous functions',
+        source: `async function outer() {
+  function middle() {
+    function inner() { ${homeBody(3)} }
+    return inner();
+  }
+  return middle();
+}
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'async class method with a nested synchronous function',
+        source: `class Outer {
+  async run() {
+    function nested() { ${homeBody(4)} }
+    return nested();
+  }
+}
+Outer.prototype.run.call({ input: 0 }).then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'async arrow with a nested synchronous function',
+        source: `var outer = async () => {
+  function nested() { ${homeBody(5)} }
+  return nested();
+};
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'generator function with a nested synchronous function',
+        source: `function* outer() {
+  function nested() { ${homeBody(6)} }
+  yield nested();
+}
+var iterator = outer();
+console.log(iterator.next().value, _c, _c2);`,
+      },
+      {
+        name: 'generator method with a nested synchronous function',
+        source: `class Outer {
+  *run() {
+    function nested() { ${homeBody(7)} }
+    yield nested();
+  }
+}
+var iterator = Outer.prototype.run.call({ input: 0 });
+console.log(iterator.next().value, _c, _c2);`,
+      },
+      {
+        name: 'async function inside async function with a nested sync leaf',
+        source: `async function outer() {
+  async function middle() {
+    function nested() { ${homeBody(8)} }
+    return nested();
+  }
+  return middle();
+}
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'synchronous class method inside an async owner',
+        source: `async function outer() {
+  class Inner {
+    run() { ${homeBody(9)} }
+  }
+  return new Inner().run();
+}
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'try and catch block inside a nested synchronous function',
+        source: `async function outer() {
+  function nested() {
+    try { throw 1; } catch (error) { ${homeBody(10)} }
+  }
+  return nested();
+}
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+      {
+        name: 'default parameter object in a nested synchronous function',
+        source: `async function outer() {
+  function nested(methods = { __proto__: base, read() { return super.read(); } }) {
+    return methods.read.call({ input: 11 });
+  }
+  return nested();
+}
+outer().then((value) => console.log(value, _c, _c2));`,
+      },
+    ];
+    const prefix = `var _c = 'source-c';
+var _c2 = 'source-c2';
+var base = { read() { return this.input; } };
+`;
+
+    for (const item of cases) {
+      const fixture = await createFixture({ 'input.js': prefix + item.source });
+      try {
+        const output = join(fixture.dir, 'out.js');
+        const native = spawnSync('node', [join(fixture.dir, 'input.js')], {
+          cwd: fixture.dir,
+          encoding: 'utf8',
+        });
+        expect(native.status, `${item.name}: ${native.stderr}`).toBe(0);
+        const transformed = spawnSync(ZNTC_BIN, ['input.js', '--target=es5', '-o', output], {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        });
+        expect(transformed.status, `${item.name}: ${transformed.stderr}`).toBe(0);
+        const report = transformed.stderr
+          .split(/\r?\n/)
+          .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'));
+        expect(report, `${item.name}: ${transformed.stderr}`).toMatch(/missing_binding=0(?:\s|$)/);
+        expect(report, `${item.name}: ${transformed.stderr}`).toMatch(/unclassified_reference=0(?:\s|$)/);
+        expect(report, item.name).toMatch(/clean=1(?:\s|$)/);
+        const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
+        expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
+        expect(actual.stdout, item.name).toBe(native.stdout);
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+  });
+
   test('computed super compound, nullish, and postfix temps keep identity and evaluation order', async () => {
     const fixture = await createFixture({
       'input.js': `var events = [];
