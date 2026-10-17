@@ -161,6 +161,148 @@ test "linker: createRequire shim local has an exact detached SymbolId and reserv
     sem_mut.symbols.items.len = original_len;
 }
 
+test "linker: default export facade final name stays on its exact SymbolId" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.mjs", "const _default = 'source'; export { _default }; export default 42;");
+    try writeFile(tmp.dir, "entry.mjs", "import value, { _default as local } from './dep.mjs'; console.log(value, local);");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+    try r.linker.computeRenames();
+
+    const dep_index = findModuleIdx(r.graph, "dep.mjs") orelse return error.TestUnexpectedResult;
+    const dep = r.graph.getModule(dep_index) orelse return error.TestUnexpectedResult;
+    const sem = dep.semantic orelse return error.NoSemantic;
+    var facade_ref: bundler_symbol.SymbolRef = .invalid;
+    for (dep.export_bindings) |eb| {
+        if (eb.kind == .local and std.mem.eql(u8, eb.exported_name, "default") and eb.hasSyntheticDefault(sem.symbols.items)) {
+            facade_ref = eb.symbol;
+            break;
+        }
+    }
+    if (!facade_ref.isValid()) return error.MissingDefaultExportFacade;
+
+    const facade_id = bundler_symbol.SymbolID.fromRef(facade_ref) orelse return error.MissingDefaultExportFacadeSymbolId;
+    const facade = sem.symbols.items[@backingInt(facade_id.inner)];
+    try std.testing.expect(!facade.scope_id.isNone());
+    try std.testing.expectEqual(@as(u32, 0), facade.scope_id.toIndex());
+    const source_symbol_index = sem.scope_maps[0].get("_default") orelse return error.MissingSourceDefaultBinding;
+    const source_ref = bundler_symbol.SymbolRef.makeSemantic(dep_index, source_symbol_index);
+    const source_id = bundler_symbol.SymbolID.fromRef(source_ref) orelse return error.MissingSourceDefaultSymbolId;
+    try std.testing.expect(facade_id != source_id);
+
+    try std.testing.expectEqualStrings("_default", r.linker.getCanonicalByRef(facade_ref) orelse return error.MissingFacadeCanonicalName);
+    try std.testing.expectEqualStrings("_default$1", r.linker.getCanonicalByRef(source_ref) orelse return error.MissingSourceCanonicalName);
+}
+
+test "linker: a missing default facade SymbolId fails closed despite a colliding source name" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.mjs", "const _default = 'source'; export { _default }; export default 42;");
+    try writeFile(tmp.dir, "entry.mjs", "import value, { _default as local } from './dep.mjs'; console.log(value, local);");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const dep_index = findModuleIdx(r.graph, "dep.mjs") orelse return error.TestUnexpectedResult;
+    const dep = r.graph.getModule(dep_index) orelse return error.TestUnexpectedResult;
+    for (dep.export_bindings) |*eb| {
+        if (eb.kind != .local or !std.mem.eql(u8, eb.exported_name, "default") or !eb.has_default_export_facade)
+            continue;
+        eb.symbol = .invalid;
+        try std.testing.expectError(error.MissingDefaultExportFacadeSymbol, r.linker.computeRenames());
+        return;
+    }
+    return error.MissingDefaultExportFacade;
+}
+
+test "linker: default re-export bridge has a producer SymbolId and module owner scope" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "dep.mjs", "export default 42;");
+    try writeFile(
+        tmp.dir,
+        "barrel.mjs",
+        "const _default = 'source'; export { _default }; export { default } from './dep.mjs';",
+    );
+    try writeFile(
+        tmp.dir,
+        "entry.mjs",
+        "import value, { _default as local } from './barrel.mjs'; console.log(value, local);",
+    );
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+    try r.linker.computeRenames();
+
+    const barrel_index = findModuleIdx(r.graph, "barrel.mjs") orelse return error.TestUnexpectedResult;
+    const barrel = r.graph.getModule(barrel_index) orelse return error.TestUnexpectedResult;
+    const sem = barrel.semantic orelse return error.NoSemantic;
+    var bridge_ref: bundler_symbol.SymbolRef = .invalid;
+    for (barrel.export_bindings) |eb| {
+        if (eb.kind == .re_export and std.mem.eql(u8, eb.exported_name, "default") and eb.hasSyntheticDefault(sem.symbols.items)) {
+            bridge_ref = eb.symbol;
+            break;
+        }
+    }
+    if (!bridge_ref.isValid()) return error.MissingDefaultExportBridge;
+
+    const bridge_id = bundler_symbol.SymbolID.fromRef(bridge_ref) orelse return error.MissingDefaultExportBridgeSymbolId;
+    const bridge = sem.symbols.items[@backingInt(bridge_id.inner)];
+    try std.testing.expectEqual(semantic_symbol.SyntheticKind.default_export, bridge.synthetic_kind.?);
+    try std.testing.expect(!bridge.scope_id.isNone());
+    try std.testing.expectEqual(@as(u32, 0), bridge.scope_id.toIndex());
+
+    const source_index = sem.scope_maps[0].get("_default") orelse return error.MissingSourceDefaultBinding;
+    const source_ref = bundler_symbol.SymbolRef.makeSemantic(barrel_index, source_index);
+    try std.testing.expect(bridge_id != bundler_symbol.SymbolID.fromRef(source_ref).?);
+    try std.testing.expectEqualStrings("_default$1", r.linker.getCanonicalByRef(bridge_ref) orelse return error.MissingBridgeCanonicalName);
+    try std.testing.expectEqualStrings("_default$2", r.linker.getCanonicalByRef(source_ref) orelse return error.MissingSourceCanonicalName);
+}
+
+test "reuse: default facade SymbolId participates in the top-level fingerprint" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs", "import value from './dep.mjs'; console.log(value);");
+    try writeFile(tmp.dir, "dep.mjs", "export default 42;");
+
+    var r = try buildAndLink(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const dep_index = findModuleIdx(r.graph, "dep.mjs") orelse return error.TestUnexpectedResult;
+    const dep = r.graph.moduleAtMut(dep_index) orelse return error.TestUnexpectedResult;
+    const sem = &dep.semantic.?;
+    var default_export_index: ?usize = null;
+    for (dep.export_bindings, 0..) |eb, export_index| {
+        if (eb.kind == .local and eb.hasSyntheticDefault(sem.symbols.items)) {
+            default_export_index = export_index;
+            break;
+        }
+    }
+    const export_index = default_export_index orelse return error.MissingDefaultExportFacade;
+    const original_ref = dep.export_bindings[export_index].symbol;
+    const original_id = bundler_symbol.SymbolID.fromRef(original_ref) orelse return error.MissingDefaultExportFacadeSymbolId;
+    const before = try r.linker.moduleFingerprint(dep.*);
+    const original_symbol_count = sem.symbols.items.len;
+    const duplicate_index: u32 = @intCast(original_symbol_count);
+    try sem.symbols.append(dep.parse_arena.?.allocator(), sem.symbols.items[@backingInt(original_id.inner)]);
+    dep.export_bindings[export_index].symbol = bundler_symbol.SymbolRef.makeSemantic(dep_index, duplicate_index);
+    const after = try r.linker.moduleFingerprint(dep.*);
+
+    dep.export_bindings[export_index].symbol = original_ref;
+    sem.symbols.items.len = original_symbol_count;
+    try std.testing.expect(before.toplevel_name_set_hash != after.toplevel_name_set_hash);
+}
+
 test "linker: direct import resolves to export" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

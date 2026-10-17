@@ -25,6 +25,7 @@ const ModuleIndex = types.ModuleIndex;
 const symbol_mod = @import("symbol.zig");
 const AliasTable = symbol_mod.AliasTable;
 const semantic_symbol = @import("../semantic/symbol.zig");
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const SemanticSymbol = semantic_symbol.Symbol;
 
 pub const ImportBinding = struct {
@@ -772,6 +773,32 @@ pub fn populateSyntheticSymbols(
     /// reuse the SymbolId assigned to their `export default` node.
     symbol_ids: ?[]const ?u32,
 ) !void {
+    try populateSyntheticSymbolsWithOwnerScope(
+        table,
+        module_index,
+        export_bindings,
+        sem_symbols,
+        arena,
+        module_scope,
+        symbol_ids,
+        null,
+    );
+}
+
+/// As populateSyntheticSymbols, while assigning the module owner scope to
+/// bundler-created default re-export bridges that have no source AST binding.
+/// Analyzer-owned default facades already carry their exact scope; this checks
+/// that it agrees with the output owner.
+pub fn populateSyntheticSymbolsWithOwnerScope(
+    table: *AliasTable,
+    module_index: ModuleIndex,
+    export_bindings: []ExportBinding,
+    sem_symbols: *std.ArrayList(SemanticSymbol),
+    arena: std.mem.Allocator,
+    module_scope: ?std.StringHashMapUnmanaged(usize),
+    symbol_ids: ?[]const ?u32,
+    owner_scope_id: ?ScopeId,
+) !void {
     for (export_bindings) |*eb| {
         // Anonymous `export default <expr>` has an analyzer-owned facade node.
         // Default re-exports also materialize a bundler-local `_default` bridge,
@@ -793,6 +820,7 @@ pub fn populateSyntheticSymbols(
                     const facade = &sem_symbols.items[raw_symbol_id];
                     if (!std.mem.eql(u8, facade.synthetic_name, "_default"))
                         return error.InvalidDefaultExportFacadeSymbol;
+                    try assignDefaultExportOwnerScope(facade, owner_scope_id);
                     facade.synthetic_kind = .default_export;
                     facade.synthetic_name = "_default";
                     eb.symbol = .{
@@ -814,8 +842,10 @@ pub fn populateSyntheticSymbols(
                     if (existing_idx < sem_symbols.items.len and
                         std.mem.eql(u8, sem_symbols.items[existing_idx].synthetic_name, "_default"))
                     {
-                        sem_symbols.items[existing_idx].synthetic_kind = .default_export;
-                        sem_symbols.items[existing_idx].synthetic_name = "_default";
+                        const facade = &sem_symbols.items[existing_idx];
+                        try assignDefaultExportOwnerScope(facade, owner_scope_id);
+                        facade.synthetic_kind = .default_export;
+                        facade.synthetic_name = "_default";
                         const sym_id: semantic_symbol.SymbolId = @fromBackingInt(@intCast(@as(u32, @intCast(existing_idx))));
                         eb.symbol = .{ .semantic = .{ .module = module_index, .symbol = sym_id } };
                         continue;
@@ -830,6 +860,7 @@ pub fn populateSyntheticSymbols(
                 "_default",
                 eb.local_span,
             );
+            try assignDefaultExportOwnerScope(&sem_symbols.items[@backingInt(sem_id)], owner_scope_id);
             eb.symbol = .{ .semantic = .{ .module = module_index, .symbol = sem_id } };
         } else if (eb.kind == .re_export) {
             // re_export_alias는 bundler 전용 — linker가 post-link 단계에서
@@ -867,5 +898,14 @@ pub fn populateSyntheticSymbols(
             const sym_idx = scope.get(eb.local_name) orelse continue;
             eb.symbol = symbol_mod.SymbolRef.makeSemantic(module_index, sym_idx);
         }
+    }
+}
+
+fn assignDefaultExportOwnerScope(symbol: *SemanticSymbol, owner_scope_id: ?ScopeId) !void {
+    const owner = owner_scope_id orelse return;
+    if (symbol.scope_id.isNone()) {
+        symbol.scope_id = owner;
+    } else if (symbol.scope_id != owner) {
+        return error.DefaultExportFacadeOwnerScopeMismatch;
     }
 }
