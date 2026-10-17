@@ -78,6 +78,41 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     try std.testing.expect(std.mem.indexOf(u8, output, "__zntcWorkletFactoryLocal4.__workletHash") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "current.__workletHash") == null);
     const edited = (try transformer.finishSemanticEdit()).?;
+    const expected_factory_hints = [_]struct { name: []const u8, count: usize }{
+        .{ .name = "nested", .count = 1 },
+        .{ .name = "testts_null0", .count = 1 },
+        .{ .name = "testts_null1", .count = 1 },
+        .{ .name = "run", .count = 1 },
+        .{ .name = "current", .count = 3 },
+        .{ .name = "value", .count = 1 },
+    };
+    var factory_local_count: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, raw_symbol_id| {
+        if (symbol.synthetic_kind != .worklet_factory_local) continue;
+        factory_local_count += 1;
+        try std.testing.expect(symbol.output_name_hint.len > 0);
+        try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, symbol.output_name_hint));
+        try std.testing.expect(!symbol.scope_id.isNone());
+        const output_scope = edited.scopes[symbol.scope_id.toIndex()];
+        try std.testing.expectEqual(@import("../semantic/scope.zig").ScopeKind.function, output_scope.kind);
+        const symbol_id: @import("../semantic/symbol.zig").SymbolId = @enumFromInt(raw_symbol_id);
+        var reference_count: usize = 0;
+        for (edited.references) |reference| {
+            if (reference.symbol_id != symbol_id) continue;
+            try std.testing.expectEqual(symbol.scope_id, reference.scope_id);
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count > 0);
+    }
+    try std.testing.expectEqual(@as(usize, 8), factory_local_count);
+    for (expected_factory_hints) |expected| {
+        var found: usize = 0;
+        for (edited.symbols.items) |symbol| {
+            if (symbol.synthetic_kind == .worklet_factory_local and
+                std.mem.eql(u8, symbol.output_name_hint, expected.name)) found += 1;
+        }
+        try std.testing.expectEqual(expected.count, found);
+    }
     var report = try coverage.checkStrictWithExactExternalEvidence(
         allocator,
         transformer.ast,

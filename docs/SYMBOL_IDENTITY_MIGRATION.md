@@ -40,7 +40,11 @@ Bundler React Refresh registration은 `_c` binding에 생성 시점의 `SymbolId
 
 Bundler Emotion의 JSX `css` prop은 exact import SID와 shadowing alias SID를 갱신한 semantic graph를 재사용할 수 있다. 다만 runtime import 형태가 보존되는 `verbatimModuleSyntax` 조합에서만 허용하며, import elision이 가능한 조합과 직접 `eval`은 재분석에 남긴다. 이는 Emotion 옵션·문법 조합의 전수조사나 다른 plugin 경계의 제거를 뜻하지 않는다.
 
-Bundler Reanimated Worklets는 내장 plugin만 활성화되고 중첩 Worklet·downlevel·JSX·decorator·Refresh·styled-components·Emotion 변환이 없는 조합에서 생성 factory의 binding/reference/scope SID를 유지할 수 있다. explicit Worklet과 파일 수준 `'worklet'` 지시문 아래의 단순 중첩 helper 함수는 graph를 보존하고, 다른 함수 안에서 별도로 선언된 중첩 Worklet은 재분석한다. 생성된 `global.Error`는 실제 출력 스코프의 `global` 바인딩에 연결하고, 바인딩이 없을 때만 unresolved-name 예약에 반영한다. 직접 `eval`과 이 경계 밖 조합도 재분석에 남는다. Factory local은 이제 bundler semantic-edit 경로에서 staging 이름과 출력 이름 힌트를 분리해 exact SID로 늦게 배정한다. semantic-less fallback과 다른 생성자 전반의 단일 최종 이름 결정은 여전히 미완료다.
+Bundler Reanimated Worklets는 내장 plugin만 활성화되고 중첩 Worklet·downlevel·JSX·decorator·styled-components·Emotion 변환이 없는 조합에서 생성 factory의 binding/reference/scope SID를 유지할 수 있다. React Refresh registration은 PR #5966에서 이 제한된 조합에 추가 허용했다. explicit Worklet과 파일 수준 `'worklet'` 지시문 아래의 단순 중첩 helper 함수는 graph를 보존하고, 다른 함수 안에서 별도로 선언된 중첩 Worklet은 재분석한다. 생성된 `global.Error`는 실제 출력 스코프의 `global` 바인딩에 연결하고, 바인딩이 없을 때만 unresolved-name 예약에 반영한다. 직접 `eval`과 이 경계 밖 조합도 재분석에 남는다. Factory local은 bundler semantic-edit 경로에서 staging 이름과 출력 이름 힌트를 분리해 exact SID로 늦게 배정한다. semantic-less fallback과 다른 생성자 전반의 단일 최종 이름 결정은 여전히 미완료다.
+
+Worklet의 semantic-less fallback은 exact identity 경로로 세지 않는다. `Transformer`를 semantic graph 없이 직접 호출하면 일반 factory local은 `chooseFactoryLocalName`에서 closure/source 충돌을 검사해 문자열 이름을 미리 고르고, `__workletClass` factory도 문자열 기반의 고유 이름을 만든다. 이 호출에는 binding/reference `SymbolId`나 owner `ScopeId`가 없으므로 최종 이름을 심볼에서 늦게 배정한다고 주장할 수 없다. 현재 JS/NAPI `workletTransform` 진입점은 bundler 옵션이다. analyzer 결과가 있는 소스 모듈의 bundler pre-pass는 그 semantic graph를 transformer에 전달한다. graph 보존이 허용되지 않는 조합도 semantic edit를 먼저 수행한 뒤 재분석하며, graphless fallback과는 구분한다. semantic 정보가 없는 legacy 경로 또는 낮은 수준 Zig Transformer 호출에서 Worklet plugin을 실행하는 경우는 별도 fallback 범위다.
+
+Fallback을 제거할 조건은 모든 지원되는 Worklet 호출자가 semantic graph를 전달하거나 해당 plugin 경로를 더 이상 호출하지 않는다는 점을 call-site audit로 입증하고, 남은 직접 호출을 exact binding/reference/scope 등록으로 옮기는 것이다. 그 전까지 fallback의 충돌 회피 회귀는 유지하되 exact SymbolId coverage 완료로 보고하지 않는다.
 
 ## 보정 경로별 제거 조건
 
