@@ -6147,12 +6147,13 @@ fn canKeepPrepassSemanticGraph(
         if (top_level_statements) |*mask| mask.deinit();
     }
     // The Reanimated visitor edits only the module AST. Its generated factory
-    // bindings/references and scopes are attached to the semantic editor, so
-    // preserve that graph when it is the sole built-in plugin. Arbitrary user
-    // plugins remain on the full reanalysis path because their graph effects
-    // are not declared to the transformer.
+    // bindings/references and scopes, plus React Refresh registration handles
+    // and component references, are attached to the semantic editor. Preserve
+    // that graph for their bounded combination. Arbitrary user plugins remain
+    // on the full reanalysis path because their graph effects are not declared
+    // to the transformer.
     const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
-        !self.react_refresh and !self.styled_components and !self.emotion and
+        !self.styled_components and !self.emotion and
         !options.unsupported.hasAny() and !ast.has_jsx and !ast.has_decorator and
         !hasNestedWorkletFunctionScope(ast, semantic) and
         isBuiltinWorkletPluginSet(plugins) and isBuiltinWorkletPluginSet(options.plugins);
@@ -6624,7 +6625,7 @@ pub fn run(self: anytype, module: *Module, arena_alloc: std.mem.Allocator) void 
     else
         true;
     const safe_builtin_worklet = self.worklet_transform and self.plugins.len == 0 and
-        !self.react_refresh and !self.styled_components and !self.emotion and
+        !self.styled_components and !self.emotion and
         !moduleUnsupported(self.transform_options_base.unsupported, module).hasAny() and !ast_ptr.has_jsx and !ast_ptr.has_decorator and
         !has_nested_worklet_function_scopes and
         isBuiltinWorkletPluginSet(merged_plugins);
