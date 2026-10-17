@@ -23,6 +23,7 @@ const EditorError = @import("../../semantic/editor.zig").Error;
 const LexicalCaptureKind = @import("../transformer.zig").LexicalCaptureKind;
 const es_helpers = @import("../es_helpers.zig");
 const symbol_coverage = @import("../symbol_coverage.zig");
+const runtime_helper_names = @import("../../runtime_helper_names.zig");
 
 pub const SyntheticBinding = struct {
     node: NodeIndex,
@@ -3036,13 +3037,19 @@ pub fn trackRuntimeHelperRef(self: *Transformer, node: NodeIndex, local_name: []
 /// but has no AST callsite of its own (for example, helpers referenced only
 /// from another helper's template). Existing callsite-backed helper IDs are
 /// reused; otherwise the declaration gets its own exact preamble SymbolId.
-pub fn ensureStandaloneRuntimeHelperPreambleSymbol(self: *Transformer, name: []const u8) Transformer.Error!void {
+pub fn ensureStandaloneRuntimeHelperPreambleSymbol(
+    self: *Transformer,
+    base_name: []const u8,
+    minify: bool,
+) Transformer.Error!void {
     if (!self.semantic_edit_enabled or self.options.emit_runtime_helper_imports) return;
-    if (name.len == 0) std.debug.panic("standalone runtime helper preamble has an empty local name", .{});
+    if (base_name.len == 0) std.debug.panic("standalone runtime helper preamble has an empty canonical name", .{});
 
-    const local_name = es_helpers.resolveRuntimeHelperName(self, name) catch return error.OutOfMemory;
+    const helper_name = runtime_helper_names.helperName(base_name, minify);
+    const local_name = es_helpers.resolveRuntimeHelperName(self, helper_name) catch return error.OutOfMemory;
     const editor = try editorFor(self);
-    if (editor.helper_scope_map.get(local_name)) |raw_id| {
+    if (self.runtime_helper_symbol_ids.get(base_name)) |symbol_id| {
+        const raw_id = @intFromEnum(symbol_id);
         if (raw_id >= editor.symbols.items.len) std.debug.panic("standalone runtime helper preamble has an out-of-range SymbolId", .{});
         const symbol = editor.symbols.items[raw_id];
         if (symbol.scope_id != self.programScope() or symbol.kind != .import_binding or
@@ -3053,7 +3060,10 @@ pub fn ensureStandaloneRuntimeHelperPreambleSymbol(self: *Transformer, name: []c
     }
 
     const name_span = try self.ast.addString(local_name);
-    _ = editor.declareRuntimeHelperPreamble(name_span, Span.EMPTY, self.programScope()) catch |err| return editError(err);
+    const symbol_id = editor.declareRuntimeHelperPreamble(name_span, Span.EMPTY, self.programScope()) catch |err| return editError(err);
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const stable_base = self.name_arena.?.allocator().dupe(u8, base_name) catch return error.OutOfMemory;
+    try self.runtime_helper_symbol_ids.put(self.allocator, stable_base, symbol_id);
 }
 
 /// JSX and plugin helper imports are AST imports even in standalone mode,
