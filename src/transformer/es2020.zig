@@ -21,27 +21,77 @@ const NodeIndex = ast_mod.NodeIndex;
 const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const helpers = @import("es_helpers.zig");
 const es2015_class = @import("es2015_class.zig");
 
 /// Transformer 타입 (순환 import 방지를 위해 generic)
 pub fn ES2020(comptime Transformer: type) type {
     return struct {
-        fn trackTempReference(self: *Transformer, name_span: Span, declaration_span: Span, ref: NodeIndex, flags: @import("../semantic/symbol.zig").ReferenceFlags) Transformer.Error!void {
+        const TempIdentity = struct {
+            symbol_id: SymbolId,
+            reference_scope: ScopeId,
+        };
+
+        const TrackedTempCapture = struct {
+            span: Span,
+            paren_assign: NodeIndex,
+            identity: ?TempIdentity,
+        };
+
+        /// Reserve a producer-owned identity as soon as a known-scope
+        /// optional-chain/nullish temp is allocated. Parameter environments,
+        /// static initializers, and lowered function callbacks keep the
+        /// existing pending path until their emitted owner scope exists.
+        fn reserveTempIdentity(
+            self: *Transformer,
+            name_span: Span,
+            declaration_span: Span,
+        ) Transformer.Error!?TempIdentity {
+            const reference_scope = knownTempReferenceScope(self) orelse return null;
+            const symbol_id = try self.reserveSyntheticTempSymbolInScope(name_span, declaration_span, reference_scope) orelse
+                std.debug.panic("known-scope ES2020 temp identity reservation returned no SymbolId", .{});
+            return .{ .symbol_id = symbol_id, .reference_scope = reference_scope };
+        }
+
+        fn knownTempReferenceScope(self: *Transformer) ?ScopeId {
+            if (!self.semantic_edit_enabled or self.current_scope.isNone() or self.static_field_initializer_depth > 0)
+                return null;
+            const parameter_output_scope = self.loweredParameterEnvironmentOutputScope(self.current_scope);
+            if (parameter_output_scope == null and self.syntheticTempOutputScopeIsDeferred(self.current_scope))
+                return null;
+            return parameter_output_scope orelse self.current_scope;
+        }
+
+        fn trackTempReference(
+            self: *Transformer,
+            name_span: Span,
+            declaration_span: Span,
+            ref: NodeIndex,
+            flags: @import("../semantic/symbol.zig").ReferenceFlags,
+            identity: ?TempIdentity,
+        ) Transformer.Error!void {
+            if (identity) |exact| {
+                return self.addSyntheticRefInScope(ref, exact.symbol_id, exact.reference_scope, flags);
+            }
+            if (knownTempReferenceScope(self) != null)
+                std.debug.panic("known-scope ES2020 temp reference is missing its producer SymbolId", .{});
             try self.trackSyntheticTempReference(name_span, declaration_span, ref, flags);
         }
 
-        fn captureTrackedTemp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!helpers.TempCapture {
-            const cap = try helpers.captureToTemp(self, value, span);
-            const assignment = self.ast.getNode(cap.paren_assign);
-            std.debug.assert(assignment.tag == .assignment_expression);
-            try trackTempReference(self, cap.span, span, assignment.data.binary.left, .{ .write = true });
-            return cap;
+        fn captureTrackedTemp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!TrackedTempCapture {
+            const name_span = try helpers.makeTempVarSpan(self);
+            const identity = try reserveTempIdentity(self, name_span, span);
+            const left = try helpers.makeTempVarRef(self, name_span, span);
+            const assignment = try helpers.makeAssignExpr(self, left, value, span, @backingInt(token_mod.Kind.eq));
+            try trackTempReference(self, name_span, span, left, .{ .write = true }, identity);
+            return .{ .span = name_span, .paren_assign = assignment, .identity = identity };
         }
 
-        fn readTrackedTemp(self: *Transformer, name_span: Span, node_span: Span) Transformer.Error!NodeIndex {
+        fn readTrackedTemp(self: *Transformer, name_span: Span, identity: ?TempIdentity, node_span: Span) Transformer.Error!NodeIndex {
             const ref = try helpers.makeTempVarRef(self, name_span, node_span);
-            try trackTempReference(self, name_span, node_span, ref, .{ .read = true });
+            try trackTempReference(self, name_span, node_span, ref, .{ .read = true }, identity);
             return ref;
         }
 
@@ -94,8 +144,9 @@ pub fn ES2020(comptime Transformer: type) type {
                 });
             } else {
                 const temp_span = try helpers.makeTempVarSpan(self);
+                const identity = try reserveTempIdentity(self, temp_span, node.span);
                 const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
-                try trackTempReference(self, temp_span, node.span, temp_ref1, .{ .write = true });
+                try trackTempReference(self, temp_span, node.span, temp_ref1, .{ .write = true }, identity);
                 const assign_node = try self.ast.addNode(.{
                     .tag = .assignment_expression,
                     .span = node.span,
@@ -115,7 +166,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     } },
                 });
                 const temp_ref2 = try helpers.makeTempVarRef(self, temp_span, node.span);
-                try trackTempReference(self, temp_span, node.span, temp_ref2, .{ .read = true });
+                try trackTempReference(self, temp_span, node.span, temp_ref2, .{ .read = true }, identity);
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
                     .span = node.span,
@@ -212,7 +263,7 @@ pub fn ES2020(comptime Transformer: type) type {
             } else {
                 const cap = try captureTrackedTemp(self, visited_base, node.span);
                 null_check_base = cap.paren_assign;
-                chain_base = try readTrackedTemp(self, cap.span, node.span);
+                chain_base = try readTrackedTemp(self, cap.span, cap.identity, node.span);
             }
 
             const rebuilt_chain = if (optional_member_call) |mc|
@@ -289,7 +340,7 @@ pub fn ES2020(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             const visited_base = try self.visitNode(receiver_base);
             const base_cap = try captureTrackedTemp(self, visited_base, root.span);
-            const chain_base = try readTrackedTemp(self, base_cap.span, root.span);
+            const chain_base = try readTrackedTemp(self, base_cap.span, base_cap.identity, root.span);
             const rewritten = try replaceOptionalBoundaryWithTemp(self, root, receiver_base, chain_base);
             const lowered_tail = try self.visitNode(rewritten);
             const base_eq_null = try helpers.makeEqNull(self, base_cap.paren_assign, root.span);
@@ -380,7 +431,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 const cap = try captureTrackedTemp(self, member, root.span);
                 return .{
                     .null_check_base = cap.paren_assign,
-                    .chain_base = try readTrackedTemp(self, cap.span, root.span),
+                    .chain_base = try readTrackedTemp(self, cap.span, cap.identity, root.span),
                     .receiver = try makeThisOrAlias(self, root.span),
                 };
             }
@@ -398,7 +449,7 @@ pub fn ES2020(comptime Transformer: type) type {
             } else {
                 const obj_cap = try captureTrackedTemp(self, visited_obj, root.span);
                 member_obj = obj_cap.paren_assign;
-                receiver = try readTrackedTemp(self, obj_cap.span, root.span);
+                receiver = try readTrackedTemp(self, obj_cap.span, obj_cap.identity, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
@@ -409,7 +460,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const fn_cap = try captureTrackedTemp(self, member, root.span);
             return .{
                 .null_check_base = fn_cap.paren_assign,
-                .chain_base = try readTrackedTemp(self, fn_cap.span, root.span),
+                .chain_base = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, root.span),
                 .receiver = receiver,
             };
         }
@@ -452,8 +503,8 @@ pub fn ES2020(comptime Transformer: type) type {
             } else {
                 const cap = try captureTrackedTemp(self, visited_obj, root.span);
                 receiver_check = cap.paren_assign;
-                member_obj = try readTrackedTemp(self, cap.span, root.span);
-                receiver = try readTrackedTemp(self, cap.span, root.span);
+                member_obj = try readTrackedTemp(self, cap.span, cap.identity, root.span);
+                receiver = try readTrackedTemp(self, cap.span, cap.identity, root.span);
             }
 
             const new_prop = try self.visitNode(old_prop);
@@ -475,7 +526,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 // `receiver?.method?.().value` must evaluate as
                 // `method.call(receiver).value` only when both guards pass.
                 const fn_cap = try captureTrackedTemp(self, member, root.span);
-                const fn_ref = try readTrackedTemp(self, fn_cap.span, root.span);
+                const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, root.span);
                 const rebuilt = try rebuildChainNodeWithOptionalMemberCallThis(
                     self,
                     root,
@@ -625,7 +676,7 @@ pub fn ES2020(comptime Transformer: type) type {
             const eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, span);
 
             const call_prop = try helpers.makePropertyName(self, "call");
-            const fn_ref = try readTrackedTemp(self, fn_cap.span, span);
+            const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, span);
             const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, span);
 
             const args_start = self.readU32(call_e, 1);
@@ -954,7 +1005,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     receiver,
                 );
                 const obj_cap = try captureTrackedTemp(self, rebuilt_obj, old_call.span);
-                const obj_ref = try readTrackedTemp(self, obj_cap.span, old_call.span);
+                const obj_ref = try readTrackedTemp(self, obj_cap.span, obj_cap.identity, old_call.span);
                 const prop = try self.visitNode(old_prop);
                 const member_obj = if (is_optional_member) obj_ref else obj_cap.paren_assign;
                 const member = try self.ast.addNode(.{
@@ -967,7 +1018,7 @@ pub fn ES2020(comptime Transformer: type) type {
                     }) },
                 });
                 const fn_cap = try captureTrackedTemp(self, member, old_call.span);
-                const fn_ref = try readTrackedTemp(self, fn_cap.span, old_call.span);
+                const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, old_call.span);
                 const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, old_call.span);
                 const call_prop = try helpers.makePropertyName(self, "call");
                 const call_member = try helpers.makeStaticMember(self, fn_ref, call_prop, old_call.span);
@@ -1004,7 +1055,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 receiver,
             );
             const fn_cap = try captureTrackedTemp(self, rebuilt_callee, old_call.span);
-            const fn_ref = try readTrackedTemp(self, fn_cap.span, old_call.span);
+            const fn_ref = try readTrackedTemp(self, fn_cap.span, fn_cap.identity, old_call.span);
             const fn_eq_null = try helpers.makeEqNull(self, fn_cap.paren_assign, old_call.span);
             const call_extra = try self.ast.addExtras(&.{
                 @backingInt(fn_ref),
