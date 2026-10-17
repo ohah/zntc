@@ -235,6 +235,79 @@ console.log(_classDecorators, _classDescriptor, _classExtraInitializers, new Exa
       expect(code).toMatch(/_classDescriptor\$[0-9]+/);
       expect(code).toMatch(/_classExtraInitializers\$[0-9]+/);
     });
+
+    test(`bundled member decorator locals are selected after graph analysis (${target})`, async () => {
+      const fixture = await createFixture({
+        'input.ts': `
+const _method_decorators = 11, _value_decorators = 21;
+const _value_initializers = 31, _value_extraInitializers = 41;
+const _private_secret_descriptor = 51, _staticMethod_decorators = 61;
+const _instanceExtraInitializers = 71, _staticExtraInitializers = 81;
+const privateAccess: any[] = [];
+function dec(value: any, context: any): any {
+  if (context.private) privateAccess.push(context.access);
+  return value;
+}
+class Example {
+  @dec method() { return 3; }
+  @dec value = 4;
+  @dec #secret() { return 6; }
+  @dec static staticMethod() { return 5; }
+}
+const example = new Example();
+console.log(
+  _method_decorators, _value_decorators, _value_initializers, _value_extraInitializers,
+  _private_secret_descriptor, _staticMethod_decorators,
+  _instanceExtraInitializers, _staticExtraInitializers,
+  example.method(), example.value, Example.staticMethod(),
+  privateAccess[0].get(example).call(example),
+);
+`,
+      });
+      cleanup = fixture.cleanup;
+      const output = join(fixture.dir, 'out.cjs');
+      const result = spawnSync(
+        ZNTC_BIN,
+        [
+          '--bundle',
+          'input.ts',
+          '--platform=node',
+          '--format=cjs',
+          `--target=${target}`,
+          '-o',
+          output,
+        ],
+        {
+          cwd: fixture.dir,
+          env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+          encoding: 'utf8',
+        },
+      );
+      expect(result.status, result.error?.message ?? result.stderr).toBe(0);
+      expect(result.stderr).toContain(
+        `semantic_graph=${target === 'esnext' ? 'retained' : 'reanalyzed'}`,
+      );
+      expect(result.stderr).toMatch(/symbol-identity-prepass .*unclassified_reference=0/);
+      expect(result.stderr).toMatch(/symbol-identity-prepass .*clean=1(?:\s|$)/);
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, runtime.stderr).toBe(0);
+      expect(runtime.stdout).toBe('11 21 31 41 51 61 71 81 3 4 5 6\n');
+
+      const code = readFileSync(output, 'utf8');
+      for (const name of [
+        '_method_decorators',
+        '_value_decorators',
+        '_value_initializers',
+        '_value_extraInitializers',
+        '_private_secret_descriptor',
+        '_staticMethod_decorators',
+        '_instanceExtraInitializers',
+        '_staticExtraInitializers',
+      ]) {
+        expect(code).toMatch(new RegExp(`${name}\\$[0-9]+`));
+      }
+    });
   }
 
   test('standalone private Stage 3 descriptor bindings get distinct exact SymbolId names', async () => {
