@@ -49,7 +49,8 @@ pub fn ES2019(comptime Transformer: type) type {
             // SymbolId 집합을 보는 마지막 이름 단계에서 실제 이름을 배정한다.
             const new_body = try self.visitNode(body);
             const catch_scope = self.outputOwnedScope(owner) orelse self.current_scope;
-            const late_output_name = es_helpers.canUseLateStandaloneOutputName(self, catch_scope);
+            const late_output_name = es_helpers.canUseLateStandaloneOutputName(self, catch_scope) or
+                es_helpers.canUseLateGraphOutputName(self, catch_scope);
             const unused_span = if (late_output_name)
                 try self.ast.addString("_unused")
             else blk: {

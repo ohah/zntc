@@ -2743,7 +2743,11 @@ pub fn declareSyntheticCatch(
     if (late_output_name) {
         const symbol_id = id orelse std.debug.panic("late-named catch binding has no SymbolId", .{});
         const editor = try editorFor(self);
-        editor.symbols.items[@intFromEnum(symbol_id)].synthetic_kind = .optional_catch_binding;
+        const symbol = &editor.symbols.items[@intFromEnum(symbol_id)];
+        symbol.synthetic_kind = .optional_catch_binding;
+        if (self.options.emit_runtime_helper_imports) {
+            symbol.output_name_hint = "_unused";
+        }
     }
 }
 
