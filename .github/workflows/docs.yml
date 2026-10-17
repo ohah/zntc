@@ -47,7 +47,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: "1.3.11"
+          bun-version: "1.4.3"
 
       - name: Build WASM (transpile + bundler)
         run: zig build wasm wasm-bundler
