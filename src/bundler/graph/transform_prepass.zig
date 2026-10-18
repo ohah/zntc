@@ -3956,7 +3956,10 @@ fn registerRetainableEs5AsyncClassMethods(
 }
 
 // Downlevel class methods keep direct-body `super` accesses tied to their
-// source method and exact class home object. Nested scopes remain on resync.
+// source method and exact class home object. A synchronous method can also
+// retain `super` used only inside async arrows whose state-machine preflight
+// has already admitted those exact owners. Other nested scopes remain on
+// resync.
 fn registerRetainableSyncClassSuperMethods(
     ast: *const ast_mod.Ast,
     class_node: ast_mod.Node,
@@ -3982,7 +3985,9 @@ fn registerRetainableSyncClassSuperMethods(
             ast.extra_data.items.len - method_extra <= ast_mod.MethodExtra.flags) return false;
         const flags = ast.extra_data.items[method_extra + ast_mod.MethodExtra.flags];
         if (flags != 0 and flags != ast_mod.MethodFlags.is_static) continue;
-        if (super_idx.isNone() or !methodSuperUsesOnlyDirectMethodBody(ast, member)) return false;
+        if (super_idx.isNone() or
+            (!methodSuperUsesOnlyDirectMethodBody(ast, member) and
+                !methodSuperUsesInAsyncArrowScopesOrDirectBody(ast, member, false))) return false;
         retained_sync_super_methods.put(ast.allocator, raw_member_idx, {}) catch return false;
     }
     return true;
@@ -4685,9 +4690,10 @@ fn isRetainableEs5AsyncArrowSuper(
     const captures = es5AsyncArrowLexicalCaptures(ast, arrow_idx) orelse return false;
     if (arrow.tag != .arrow_function_expression or !captures.super_value) return false;
     const extra = arrow.data.extra;
-    if (extra > ast.extra_data.items.len or ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.flags or
+    if (extra > ast.extra_data.items.len or
+        ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.params or
+        ast.extra_data.items.len - extra <= ast_mod.ArrowExtra.flags or
         (ast.extra_data.items[extra + ast_mod.ArrowExtra.flags] & ast_mod.ArrowFlags.is_async) == 0) return false;
-
     var current = parents.get(@backingInt(arrow_idx)) orelse return false;
     var hops: usize = 0;
     while (hops < ast.nodes.items.len) : (hops += 1) {
@@ -4743,6 +4749,28 @@ fn isRetainableEs5AsyncArrowSuper(
             }
             if (method_owner.tag != .class_body or std.mem.eql(u8, ast.getText(key.span), "constructor"))
                 return false;
+            if (flags == 0 or flags == ast_mod.MethodFlags.is_static) {
+                // Parameter defaults run before a synchronous method's async
+                // state-machine body is entered. Keep those home-object reads
+                // on reanalysis. Async class methods have a separate audited
+                // parameter-default gate.
+                const params_idx: ast_mod.NodeIndex = @fromBackingInt(@intCast(
+                    ast.extra_data.items[extra + ast_mod.ArrowExtra.params],
+                ));
+                if (!params_idx.isNone()) {
+                    if (@backingInt(params_idx) >= ast.nodes.items.len) return false;
+                    const parameter_nodes = ast_walk.collectReachableNodeIndicesFrom(
+                        ast.allocator,
+                        ast,
+                        params_idx,
+                    ) catch return false;
+                    defer ast.allocator.free(parameter_nodes);
+                    for (parameter_nodes) |raw_idx| {
+                        if (raw_idx >= ast.nodes.items.len or
+                            ast.nodes.items[raw_idx].tag == .super_expression) return false;
+                    }
+                }
+            }
             const class_raw = parents.get(method_owner_raw) orelse return false;
             if (class_raw >= ast.nodes.items.len) return false;
             const class = ast.nodes.items[class_raw];
