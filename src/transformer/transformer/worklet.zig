@@ -22,6 +22,7 @@ const Span = token_mod.Span;
 const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
 const semantic_mod = @import("../../semantic/analyzer.zig");
+const CodegenOptions = @import("../../codegen/options.zig").CodegenOptions;
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const string_list = @import("../../util/string_list.zig");
@@ -995,7 +996,12 @@ pub fn generateInitCode(
     // of the outer module graph (where captured references still name outer
     // symbols). Analyze this exact program before codegen so every emitted
     // identifier is looked up by the payload's own SymbolId and ScopeId.
-    var payload_semantic = try analyzeSerializedProgram(self.allocator, self.ast, program);
+    // SemanticAnalyzer retains stable copies of generated names that share the
+    // AST's string table. Keep those rows in a short-lived arena so this
+    // detached graph does not leak through the transformer's general allocator.
+    var payload_arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer payload_arena.deinit();
+    var payload_semantic = try analyzeSerializedProgram(payload_arena.allocator(), self.ast, program);
     defer payload_semantic.deinit();
 
     // Codegen으로 code string 생성 (minified, TS 타입 스트리핑 완료된 AST 사용)
@@ -1025,7 +1031,11 @@ fn initSerializedCodegen(
     semantic: *const semantic_mod.SemanticAnalyzer,
 ) @import("../../codegen/codegen.zig").Codegen {
     const codegen_mod = @import("../../codegen/codegen.zig");
-    return codegen_mod.Codegen.initWithOptions(allocator, ast, .{
+    return codegen_mod.Codegen.initWithOptions(allocator, ast, serializedCodegenOptions(semantic));
+}
+
+fn serializedCodegenOptions(semantic: *const semantic_mod.SemanticAnalyzer) CodegenOptions {
+    return .{
         .minify_whitespace = true,
         // Worklet names and __closure keys are serialization contracts; this
         // graph supplies identity without applying the outer bundle's mangle.
@@ -1035,7 +1045,7 @@ fn initSerializedCodegen(
         .generated_iife_scope_owner_map = &semantic.scope_owner_map,
         .require_generated_iife_symbols = true,
         .namespace_declaration_owners = &semantic.namespace_declaration_owners,
-    });
+    };
 }
 
 /// const { var1, var2, ... } = this.__closure; 문을 생성한다.
@@ -1101,7 +1111,7 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
     });
 }
 
-test "worklet serialized program resolves aliases and shadowed names by SymbolId" {
+test "Worklet serialized program resolves aliases and shadowed names by SymbolId" {
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;
 
@@ -1158,9 +1168,64 @@ test "worklet serialized program resolves aliases and shadowed names by SymbolId
     try std.testing.expect(ids[alias_binding] != null);
     try std.testing.expect(ids[same_outer_binding] != null);
     try std.testing.expect(ids[same_outer_binding] != ids[same_inner_binding]);
+
+    const alias_sid = ids[alias_binding] orelse return error.TestUnexpectedResult;
+    const outer_same_sid = ids[same_outer_binding] orelse return error.TestUnexpectedResult;
+    const inner_same_sid = ids[same_inner_binding] orelse return error.TestUnexpectedResult;
+    const payload_sid = ids[payload_binding] orelse return error.TestUnexpectedResult;
+    const param_sid = ids[param_binding] orelse return error.TestUnexpectedResult;
+    var overrides: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    try overrides.put(allocator, alias_sid, "__closureAlias");
+    try overrides.put(allocator, outer_same_sid, "__outerSame");
+    try overrides.put(allocator, payload_sid, "__payloadSelf");
+    try overrides.put(allocator, param_sid, "__payloadParam");
+
+    var correct_options = serializedCodegenOptions(&semantic);
+    correct_options.semantic_symbol_name_overrides = &overrides;
+    var correct_codegen = @import("../../codegen/codegen.zig").Codegen.initWithOptions(allocator, &parser.ast, correct_options);
+    defer correct_codegen.deinit();
+    const expected = try allocator.dupe(u8, try correct_codegen.generate(program));
+    try std.testing.expect(std.mem.indexOf(u8, expected, "external:__closureAlias") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expected, "same:__outerSame") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expected, "__closureAlias+__outerSame+__payloadParam+__payloadSelf()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, expected, "function shadow(same){return same") != null);
+
+    const Mutation = struct {
+        node: u32,
+        symbol_id: ?u32,
+    };
+    const mutations = [_]Mutation{
+        .{ .node = alias_binding, .symbol_id = null },
+        .{ .node = alias_ref, .symbol_id = null },
+        .{ .node = alias_binding, .symbol_id = inner_same_sid },
+        .{ .node = same_outer_binding, .symbol_id = null },
+        .{ .node = same_outer_ref, .symbol_id = null },
+        .{ .node = same_outer_ref, .symbol_id = inner_same_sid },
+        .{ .node = payload_binding, .symbol_id = null },
+        .{ .node = payload_ref, .symbol_id = null },
+        .{ .node = param_binding, .symbol_id = null },
+        .{ .node = param_ref, .symbol_id = null },
+    };
+    var detected_mutations: usize = 0;
+    for (mutations) |mutation| {
+        const mutant_ids = try allocator.dupe(?u32, ids);
+        mutant_ids[mutation.node] = mutation.symbol_id;
+        var mutant_options = serializedCodegenOptions(&semantic);
+        mutant_options.semantic_symbol_ids = mutant_ids;
+        mutant_options.semantic_symbol_name_overrides = &overrides;
+        var mutant_codegen = @import("../../codegen/codegen.zig").Codegen.initWithOptions(allocator, &parser.ast, mutant_options);
+        defer mutant_codegen.deinit();
+        const mutant_output = mutant_codegen.generate(program) catch {
+            detected_mutations += 1;
+            continue;
+        };
+        try std.testing.expect(!std.mem.eql(u8, expected, mutant_output));
+        detected_mutations += 1;
+    }
+    try std.testing.expectEqual(mutations.len, detected_mutations);
 }
 
-test "worklet serialized identity resists ten hostile binding shapes" {
+test "Worklet serialized identity resists ten hostile binding shapes" {
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;
 
@@ -1210,7 +1275,7 @@ test "worklet serialized identity resists ten hostile binding shapes" {
     }
 }
 
-test "worklet serialized codegen requires detached enum and namespace identities" {
+test "Worklet serialized codegen requires detached enum and namespace identities" {
     const Scanner = @import("../../lexer/scanner.zig").Scanner;
     const Parser = @import("../../parser/parser.zig").Parser;
 
@@ -1230,8 +1295,24 @@ test "worklet serialized codegen requires detached enum and namespace identities
     var semantic = try analyzeSerializedProgram(allocator, &parser.ast, program);
     defer semantic.deinit();
 
-    var codegen = initSerializedCodegen(allocator, &parser.ast, &semantic);
+    var namespace_names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    var namespace_parameter_count: usize = 0;
+    for (semantic.symbols.items, 0..) |symbol, sid| {
+        if (symbol.synthetic_kind != .namespace_iife_parameter) continue;
+        const name = try std.fmt.allocPrint(allocator, "__workletNamespace{d}", .{namespace_parameter_count});
+        try namespace_names.put(allocator, @intCast(sid), name);
+        namespace_parameter_count += 1;
+    }
+    try std.testing.expect(namespace_parameter_count > 0);
+
+    var codegen_options = serializedCodegenOptions(&semantic);
+    codegen_options.semantic_symbol_name_overrides = &namespace_names;
+    var codegen = @import("../../codegen/codegen.zig").Codegen.initWithOptions(allocator, &parser.ast, codegen_options);
     defer codegen.deinit();
     const output = try codegen.generate(program);
     try std.testing.expect(output.len > 0);
+    var namespace_name_it = namespace_names.valueIterator();
+    while (namespace_name_it.next()) |name| {
+        try std.testing.expect(std.mem.indexOf(u8, output, name.*) != null);
+    }
 }
