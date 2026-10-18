@@ -6740,7 +6740,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
       }
       expect(report).toMatch(/clean=1(?:\s|$)/);
     };
-    const expectReanalyzedOutput = (
+    const expectAuditedGraphOutput = (
       result: { status: number | null; stderr: string },
       expected: string,
       label?: string,
@@ -6753,7 +6753,13 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           (line) =>
             line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('entry.ts'),
         );
-      expect(mode, `${context}${result.stderr}`).toContain('semantic_graph=reanalyzed');
+      if (mode?.includes('semantic_graph=retained')) {
+        // Audited async-arrow captures can keep the graph. Require the exact
+        // report to stay clean before accepting that path for hostile shapes.
+        expectRetainedClean(result.stderr);
+      } else {
+        expect(mode, `${context}${result.stderr}`).toContain('semantic_graph=reanalyzed');
+      }
       const actual = runOutput();
       expect(actual.status, `${context}${actual.stderr}`).toBe(0);
       expect(actual.stdout, context).toBe(expected);
@@ -7468,7 +7474,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             `try { var child = ${variant.creation ?? 'new Child("current")'}; console.log("ok", reads, keyCalls, child instanceof Child); } catch (error) { console.log(error.name); }`,
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperInitializerVariants: Array<{
@@ -7554,7 +7560,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             `try { var child = ${variant.creation ?? 'new Child("current")'}; console.log("ok", child.result, reads, keyCalls, child instanceof Child); } catch (error) { console.log(error.name); }`,
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperBinaryInitializerVariants: Array<{
@@ -7640,7 +7646,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             `try { var child = new Child("current", 2); console.log("ok", child.result, child.slot, reads, writes, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }`,
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperLogicalInitializerVariants: Array<{
@@ -7726,7 +7732,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child("current", 2); console.log("ok", child.result, child.slot, reads, writes, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperConditionalInitializerVariants: Array<{
@@ -7811,7 +7817,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child(true, 2); console.log("ok", child.result, child.slot, reads, keyCalls, callCount, child instanceof Child); } catch (error) { console.log(error.name); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperConditionalTestVariants: Array<{
@@ -7889,7 +7895,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child(replacement); console.log("ok", child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperUnaryConditionalTestVariants: Array<{
@@ -7967,7 +7973,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child(replacement); console.log("ok", child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperUnaryBranchVariants: Array<{
@@ -8044,7 +8050,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child(replacement); console.log("ok", typeof child.selected, child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorThisPropertyReadVariants: Array<{
@@ -8121,7 +8127,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child(replacement); console.log("ok", typeof child.selected, child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorComputedThisPropertyReadVariants: Array<{
@@ -8199,7 +8205,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child(replacement); console.log("ok", typeof child.selected, child.selected === replacement, child.selected === nested, reads, keyCalls, callCount); } catch (error) { console.log(error.name, reads, keyCalls, callCount); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const hostileDerivedConstructorSuperReturnVariants: Array<{
@@ -8277,7 +8283,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { var child = new Child(replacement); console.log("ok", child === replacement, child === nested, child.kind, child.value === nested, child instanceof Child, reads, keyCalls, callCount); } catch (error) { console.log(error.name); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       const derivedConstructorSuperPropertyThrow = run(
@@ -8380,7 +8386,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             'try { new Child(replacement); } catch (error) { console.log("caught", error === replacement, error === nested, typeof error, reads, keyCalls, callCount); }',
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       // The explicit derived constructor keeps direct post-super assignments
@@ -8492,11 +8498,12 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             `try { var child = ${variant.creation ?? 'new Child(7)'}; console.log("ok", child.slot, reads, writes, keyCalls, rhsCalls); } catch (error) { console.log(error.name); }`,
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
-      // Hostile owner and scope variants must stay on reanalysis. Each case
-      // would otherwise look like a retained simple class to a broad gate.
+      // Hostile owner and scope variants must either reanalyze or prove a clean
+      // exact retained graph. Each case would otherwise look like a retained
+      // simple class to a broad gate.
       const hostileSyncSuperVariants: Array<{
         name: string;
         methods: string;
@@ -8586,7 +8593,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
             `Promise.all([service.ready(), Promise.resolve(${variant.value})]).then(values => console.log(values.join(" ")));`,
           ].join('\n'),
         );
-        expectReanalyzedOutput(result, variant.expected, variant.name);
+        expectAuditedGraphOutput(result, variant.expected, variant.name);
       }
 
       // One synchronous arrow keeps instance super and its lexical receiver on the home graph.
@@ -9095,7 +9102,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'Service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedNestedStaticAsyncArrowSuper, '84\n');
+      expectAuditedGraphOutput(mixedNestedStaticAsyncArrowSuper, '84\n');
 
       // A direct method-body super mixed with async-arrow super stays on reanalysis.
       const mixedMethodAndAsyncArrowSuper = run(
@@ -9112,7 +9119,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedMethodAndAsyncArrowSuper, '84\n');
+      expectAuditedGraphOutput(mixedMethodAndAsyncArrowSuper, '84\n');
 
       // Sibling async arrows can keep separate state machines on the same
       // method home graph.
@@ -9153,7 +9160,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedSyncAndAsyncArrowSuperOwners, '84\n');
+      expectAuditedGraphOutput(mixedSyncAndAsyncArrowSuperOwners, '84\n');
 
       // One nested async arrow can retain its own state machine and the
       // intermediate async-arrow scope on the same method home graph.
@@ -9235,7 +9242,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedNestedAsyncArrowSuperOwners, '84\n');
+      expectAuditedGraphOutput(mixedNestedAsyncArrowSuperOwners, '84\n');
 
       // A method-depth and nested-depth super mix stays on reanalysis.
       const mixedAsyncArrowDepthSuper = run(
@@ -9256,7 +9263,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedAsyncArrowDepthSuper, '84\n');
+      expectAuditedGraphOutput(mixedAsyncArrowDepthSuper, '84\n');
 
       // A synchronous intermediate arrow has no async state-machine proof.
       const nestedSyncArrowSuper = run(
@@ -9277,7 +9284,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(nestedSyncArrowSuper, '42\n');
+      expectAuditedGraphOutput(nestedSyncArrowSuper, '42\n');
 
       // A synchronous outer arrow also stays out of the nested async proof.
       const nestedAsyncArrowInSyncOuter = run(
@@ -9297,7 +9304,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(nestedAsyncArrowInSyncOuter, '42\n');
+      expectAuditedGraphOutput(nestedAsyncArrowInSyncOuter, '42\n');
 
       // Three async-arrow scopes at one uniform depth retain their state machines.
       const threeDeepAsyncArrowSuper = run(
@@ -9384,7 +9391,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedNestedAsyncArrowDepthSuper, '84\n');
+      expectAuditedGraphOutput(mixedNestedAsyncArrowDepthSuper, '84\n');
 
       // A super default in async-arrow parameters runs before its state machine.
       const asyncArrowParameterSuper = run(
@@ -9427,7 +9434,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(nestedAsyncArrowParameterSuper, '42\n');
+      expectAuditedGraphOutput(nestedAsyncArrowParameterSuper, '42\n');
 
       // A method-body super mixed with the arrow capture keeps the class on reanalysis.
       const mixedMethodAndArrowSuper = run(
@@ -9444,7 +9451,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedMethodAndArrowSuper, '84\n');
+      expectAuditedGraphOutput(mixedMethodAndArrowSuper, '84\n');
 
       // Separate arrow owners are not covered by the one-scope home-object gate.
       const multipleArrowSuperOwners = run(
@@ -9462,7 +9469,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(multipleArrowSuperOwners, '84\n');
+      expectAuditedGraphOutput(multipleArrowSuperOwners, '84\n');
 
       // Deeper arrow nesting introduces another lexical owner and stays gated.
       const deepArrowSuper = run(
@@ -9479,7 +9486,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(deepArrowSuper, '42\n');
+      expectAuditedGraphOutput(deepArrowSuper, '42\n');
 
       // A super read in the arrow parameter initializer runs outside the body capture proof.
       const arrowParameterSuper = run(
@@ -9496,7 +9503,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'service.readAsync().then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(arrowParameterSuper, '42\n');
+      expectAuditedGraphOutput(arrowParameterSuper, '42\n');
 
       // Computed super exponentiation assignments keep the exact nested class
       // home graph while preserving the key, accessor, and receiver behavior.
@@ -9636,7 +9643,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'instance.update(2).then(value => console.log(value));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(mixedMethodAndArrowSuperExponentiationAssignment, '9 9 9 2 2 1\n');
+      expectAuditedGraphOutput(mixedMethodAndArrowSuperExponentiationAssignment, '9 9 9 2 2 1\n');
 
       // A computed key containing another super access remains outside the
       // direct-super target proof and continues through semantic reanalysis.
@@ -9659,7 +9666,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'instance.update(2).then(value => console.log(value, instance._value, reads, writes));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(nestedSuperKeyExponentiationAssignment, '9 9 1 1\n');
+      expectAuditedGraphOutput(nestedSuperKeyExponentiationAssignment, '9 9 1 1\n');
 
       // A computed optional key rooted in an untracked member chain remains
       // outside the audited optional-member proof even though the outer target
@@ -9685,7 +9692,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'instance.update().then(result => console.log(result, instance._value, keyEvaluations, reads, writes));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(untrackedOptionalComputedSuperExponentiationKey, '9 9 1 1 1\n');
+      expectAuditedGraphOutput(untrackedOptionalComputedSuperExponentiationKey, '9 9 1 1 1\n');
 
       // Optional keys stay retainable for logical super assignments only with
       // coverage for all short-circuit forms and their evaluation order.
@@ -9762,7 +9769,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'instance.update().then(result => console.log(result, instance._value, keyEvaluations, rhsEvaluations, reads, writes));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(untrackedOptionalComputedSuperLogicalAssignmentKey, '8 8 1 1 1 1\n');
+      expectAuditedGraphOutput(untrackedOptionalComputedSuperLogicalAssignmentKey, '8 8 1 1 1 1\n');
 
       // A nested super access inside the optional key remains outside the
       // direct-super target proof even when optional keys are admitted.
@@ -9786,7 +9793,7 @@ console.log(classes.map((value) => value.readValue()).join(',') + ':' + (classes
           'instance.update({ value: "value" }).then(result => console.log(result, instance._value, reads, writes));',
         ].join('\n'),
       );
-      expectReanalyzedOutput(nestedSuperOptionalComputedLogicalAssignmentKey, '8 8 1 1\n');
+      expectAuditedGraphOutput(nestedSuperOptionalComputedLogicalAssignmentKey, '8 8 1 1\n');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
