@@ -163,8 +163,8 @@ export interface TranspileResult {
 // ─── ES Target → UnsupportedFeatures bitmask ───
 
 // compat.zig Feature enum 순서와 1:1 대응 (src/transformer/compat.zig 참조).
-// 개수는 여기 적지 않는다 — 예전엔 "총 29 bits" 라고 적혀 있었지만 실제 목록은
-// 0-30 이었다. 실제 대조는 compat-engines.test.ts 의 네이티브 대조 테스트가 한다:
+// 비트 순서는 compat.zig Feature enum 과 compat-engines.ts FEATURES 배열이 공유한다.
+// 실제 대조는 compat-engines.test.ts 의 네이티브 대조 테스트가 한다:
 //   0-10  ES2015 (arrow, class, template_literal, destructuring, for_of, spread,
 //                  object_extensions, default_params, block_scoping, generator, new_target)
 //   11    ES2016 (exponentiation)
@@ -184,25 +184,26 @@ export interface TranspileResult {
 //   30    ES2018 (regex_lookbehind — query-only)
 //   31    ES2018 (async_generator — `async function*`; #4628)
 //   32    ES2022 (class_field — public class field; #4629)
+//   33    ESnext (decorator_auto_accessor — Stage 3 decorator auto-accessor; #5695)
 //
 // 타겟 T 에 대해 "T 이후 도입된" 모든 feature 비트를 set 한다.
-// Feature 추가 시 compat.zig 와 함께 갱신.
+// Feature 추가 시 compat.zig 와 compat-engines.ts 를 함께 갱신.
 export const ES_TARGET_BITS: Record<string, number> = {
   // ⚠️ 비트 31 부터는 16진 표기를 쓰지 않는다 — JS 비트 연산(`|`/`<<`)이 int32 로 잘라
   // 음수가 되므로, 값은 10진 정수 그대로 둔다. 실제 대조는 core 의 드리프트 가드
   // 테스트(unsupported-bits.ts)가 네이티브 `targetToUnsupported` 와 전수로 한다.
-  es5: 8589934591, // 모든 feature (bits 0-32)
-  es2015: 8438937600,
-  es2016: 8438935552,
-  es2017: 8438931456, // bit 31 async_generator + bit 32 class_field 포함
-  es2018: 5117034496,
-  es2019: 5117018112,
-  es2020: 5116919808,
-  es2021: 5116788736, // class_field 는 ES2022 라 여기까지 미지원
-  es2022: 817889280,
-  es2023: 813694976,
-  es2024: 813694976, // ES2024 자체 구문 변환 기능 없음
-  es2025: 0,
+  es5: 17179869183, // 모든 feature (bits 0-33)
+  es2015: 17028872192,
+  es2016: 17028870144,
+  es2017: 17028866048, // bit 31 async_generator + bit 32 class_field 포함
+  es2018: 13706969088,
+  es2019: 13706952704,
+  es2020: 13706854400,
+  es2021: 13706723328, // class_field 는 ES2022 라 여기까지 미지원
+  es2022: 9407823872,
+  es2023: 9403629568,
+  es2024: 9403629568, // ES2024 자체 구문 변환 기능 없음
+  es2025: 8589934592, // bit 33 decorator_auto_accessor 는 esnext 에서만 지원
   esnext: 0,
 };
 

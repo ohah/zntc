@@ -71,6 +71,7 @@ export const FEATURES = [
   'regex_lookbehind', // ES2018 (query-only — m-modifier 앵커 재작성 가능 여부)
   'async_generator', // ES2018 `async function*` (#4628)
   'class_field', // ES2022 public class field (#4629)
+  'decorator_auto_accessor', // ESnext Stage 3 decorator auto-accessor (#5695)
 ] as const;
 
 export type Feature = (typeof FEATURES)[number];
@@ -373,7 +374,7 @@ export type EngineVersion = { engine: Engine; major: number; minor: number };
 export function computeUnsupportedFromEngines(engines: EngineVersion[]): number {
   // BigInt 로 누산한다. `bits |= 1 << i` 는 JS 비트 연산이 피연산자를 int32 로
   // 자르기 때문에 i=31 에서 부호가 뒤집히고 i>=32 는 감긴다 — feature 는 계속
-  // 늘어나므로(현재 31개, 비트 0-30) 한 칸만 더해도 조용히 깨지는 코드였다.
+  // 늘어나므로 현재 34개인 목록에 `1 << i` 를 쓰면 조용히 깨진다.
   // BigInt 는 폭 제한이 없어 절단이 구조적으로 불가능하고, 결과는 2^53 까지
   // Number 로 정확히 환산된다(그 경계는 compat.zig 의 `WireBits` 와 같은 이유).
   let bits = 0n;
