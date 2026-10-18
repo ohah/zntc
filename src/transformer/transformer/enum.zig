@@ -128,21 +128,29 @@ fn isIntegral(value: ConstEnumValue) bool {
 /// 초기값이 병합된 앞선 선언의 멤버를 이름만으로 참조하는가. 멤버 접근의 속성 이름은 제외.
 fn refersToPriorMember(self: *const Transformer, expr_idx: NodeIndex, prior: []const ConstEnumMember) bool {
     if (prior.len == 0 or expr_idx.isNone()) return false;
-    const node = self.ast.getNode(expr_idx);
-    switch (node.tag) {
-        .identifier_reference => {
-            const name = self.ast.getText(node.span);
-            for (prior) |m| {
-                if (cooked_name.eql(m.name, name)) return true;
-            }
-            return false;
-        },
-        .static_member_expression => return refersToPriorMember(self, self.readNodeIdx(node.data.extra, 0), prior),
-        else => {},
-    }
-    var it = ast_walk.children(self.ast, node);
-    while (it.next()) |child| {
-        if (refersToPriorMember(self, child, prior)) return true;
+    var stack: std.ArrayListUnmanaged(NodeIndex) = .empty;
+    defer stack.deinit(self.allocator);
+    stack.append(self.allocator, expr_idx) catch return true;
+    while (stack.pop()) |idx| {
+        if (idx.isNone() or @backingInt(idx) >= self.ast.nodes.items.len) continue;
+        const node = self.ast.getNode(idx);
+        switch (node.tag) {
+            .identifier_reference => {
+                const name = self.ast.getText(node.span);
+                for (prior) |m| {
+                    if (cooked_name.eql(m.name, name)) return true;
+                }
+                continue;
+            },
+            .static_member_expression => {
+                const receiver = self.readNodeIdx(node.data.extra, 0);
+                if (!receiver.isNone()) stack.append(self.allocator, receiver) catch return true;
+                continue;
+            },
+            else => {},
+        }
+        var it = ast_walk.children(self.ast, node);
+        while (it.next()) |child| stack.append(self.allocator, child) catch return true;
     }
     return false;
 }

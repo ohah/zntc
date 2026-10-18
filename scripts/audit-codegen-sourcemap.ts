@@ -45,6 +45,7 @@ const SKIP_FUNCS = new Map<string, string>([
 	["emitTry", "container — block / catch / finally children carry mappings"],
 	["emitClassBody", "container — delegates to emitBracedList"],
 	["emitStaticBlock", "container — body carries mappings"],
+	["emitSwitchCase", "delegates to emitSwitchCaseSkippingFunctions, which emits the case node mapping before output"],
 	["emitEnumIIFE", "delegates to emitEnumIIFEInner, which maps node.span before emitting"],
 	["emitEnumIifeMemberReference", "guarded helper — addSourceMappingWithName(node.span, ...) before output; returns false without emitting"],
 	["emitNamespaceIIFE", "delegates to emitNamespaceIIFEInner"],
