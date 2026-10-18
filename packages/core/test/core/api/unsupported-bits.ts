@@ -62,12 +62,15 @@ describe('UnsupportedFeatures 비트마스크: Zig ↔ JS 미러', () => {
     expect(popcount(ES_TARGET_BITS.es5)).toBe(FEATURES.length);
   });
 
+  test('auto-accessor 는 esnext 전까지 미지원 비트로 남는다', () => {
+    const bit = 1n << BigInt(FEATURES.indexOf('decorator_auto_accessor'));
+    expect(BigInt(ES_TARGET_BITS.es2025) & bit).toBe(bit);
+    expect(BigInt(ES_TARGET_BITS.esnext) & bit).toBe(0n);
+  });
+
   test('엔진 매트릭스 환산이 ES 타겟 환산과 같은 폭을 쓴다', () => {
-    // 아주 낮은 엔진 = ES5 수준이므로 feature 대부분이 미지원으로 나와야 한다.
-    // ⚠️ 이 테스트는 "int32 절단" 을 잡지 못한다 — feature 가 31개(비트 0-30)뿐이라
-    //    `1 << i` 가 아직 넘치지 않기 때문이다(변이로 확인). 절단은 테스트가 아니라
-    //    BigInt 누산으로 구조적으로 막았다(compat-engines.ts). 여기서는 환산 결과가
-    //    ES5 비트집합의 부분집합인지만 본다.
+    // 아주 낮은 엔진 = ES5 수준이므로 미지원 feature 집합은 es5 집합 안에 있어야 한다.
+    // JS int32 비트 연산 절단은 compat-engines.ts 의 BigInt 누산으로 구조적으로 막는다.
     const bits = computeUnsupportedFromEngines([{ engine: 'chrome', major: 1, minor: 0 }]);
     expect(Number.isSafeInteger(bits)).toBe(true);
     expect(BigInt(bits) & ~BigInt(ES_TARGET_BITS.es5)).toBe(0n);
