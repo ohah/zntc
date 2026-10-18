@@ -125,6 +125,48 @@ function getKey(name) { events.push(name); return name; }
 class C { #private; [getKey('method')]() {} [getKey('field')] = () => 10; }
 const c = new C(); console.log(events.join(','), c.field.name);`,
   },
+  {
+    name: 'nested closure key keeps its function name',
+    source: `function make() { const key = 'closure'; class C { #private; [key] = () => 11; } return new C(); }
+console.log(make().closure.name);`,
+  },
+  {
+    name: 'returned class expression keeps its parameter key',
+    source: `function make(key) { return class C { #private; [key] = () => 12; }; }
+console.log(new (make('returned'))().returned.name);`,
+  },
+  {
+    name: 'arrow class factory keeps its parameter key',
+    source: `const make = (key) => class C { #private; [key] = function () {}; };
+console.log(new (make('arrowFactory'))().arrowFactory.name);`,
+  },
+  {
+    name: 'method nested class keeps its parameter key',
+    source: `class Factory { build(key) { class C { #private; [key] = () => 13; } return new C(); } }
+console.log(new Factory().build('method').method.name);`,
+  },
+  {
+    name: 'object member key survives a class factory',
+    source: `function make(obj) { class C { #private; [obj.key] = () => 14; } return new C(); }
+console.log(make({ key: 'objectKey' }).objectKey.name);`,
+  },
+  {
+    name: 'two captured keys keep separate function names',
+    source: `function make(left, right) { class C { #private; [left] = () => 15; [right] = () => 16; } return new C(); }
+const c = make('left', 'right'); console.log(c.left.name, c.right.name);`,
+  },
+  {
+    name: 'block nested class keeps its captured key',
+    source: `function make(key) { { class C { #private; [key] = function () {}; } return new C(); } }
+console.log(make('block').block.name);`,
+  },
+  {
+    name: 'nested method and field keys evaluate once',
+    source: `function make() { const events = []; const key = (n) => (events.push(n), n);
+class C { #private; [key('method')]() {} [key('field')] = () => 17; }
+const c = new C(); return [events.join(','), c.field.name]; }
+console.log(make().join(' '));`,
+  },
 ] as const;
 
 describe('computed-key function names survive private-field lowering (#4819)', () => {
