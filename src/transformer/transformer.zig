@@ -402,9 +402,12 @@ pub const Transformer = struct {
     /// Sentinel inferred-name span start -> the runtime computed key that names
     /// an anonymous class value (#5527). `nameValue` reads the key instead.
     runtime_key_class_names: std.AutoHashMapUnmanaged(u32, struct { key: NodeIndex, class_raw: u32, named: bool = false }) = .empty,
-    /// 합성 이름 → 이 모듈에서 실제로 쓰는 이름 (`resolveSyntheticName`). 사용자 코드에 같은 이름이
-    /// 있으면 `_this2` 처럼 비껴 간다. 같은 기본 이름은 모듈 안에서 늘 같은 결과라 바인딩과 참조가 맞는다.
+    /// Base spelling → module-wide collision-free spelling. Dynamic-eval names
+    /// that need scope-specific choices live in `scoped_synthetic_names`.
     synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Early collision names are scope-specific when direct eval can observe
+    /// them. Do not let a stricter scope rewrite another scope's spelling.
+    scoped_synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// Standalone runtime helpers share the output's top-level scope with user
     /// declarations. Cache collision-free helper locals by their emitted name.
     runtime_helper_aliases: std.StringHashMapUnmanaged([]const u8) = .empty,

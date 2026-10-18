@@ -3155,6 +3155,7 @@ test "generator state name handoff survives nested cache invalidation" {
         scopes: []const @import("../semantic/scope.zig").Scope = &.{},
         generator_state_output_scope: ScopeId = .none,
         synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
+        scoped_synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
         synthetic_taken: std.StringHashMapUnmanaged(void) = .empty,
         late_output_name_bases: std.StringHashMapUnmanaged([]const u8) = .empty,
         name_arena: ?std.heap.ArenaAllocator = null,
