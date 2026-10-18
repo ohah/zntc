@@ -203,6 +203,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.class_inferred_names.deinit(self.allocator);
     self.runtime_key_class_names.deinit(self.allocator);
     self.synthetic_names.deinit(self.allocator);
+    self.scoped_synthetic_names.deinit(self.allocator);
     self.runtime_helper_aliases.deinit(self.allocator);
     self.synthetic_taken.deinit(self.allocator);
     self.late_output_name_bases.deinit(self.allocator);

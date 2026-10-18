@@ -168,6 +168,123 @@ test "#4819 numbered loop names avoid direct eval identifiers" {
     try std.testing.expectEqualStrings("_loop3", try transformer.buildUniqueNameAvoidingDynamicEval("_loop", &counter, scope));
 }
 
+test "#6003 scoped synthetic resolver stays stable across dynamic-eval scopes" {
+    const names = [_][]const u8{
+        "_newTarget", "_super",     "_state",    "_loop", "_ret",
+        "_obj",       "_classThis", "_metadata", "_step", "_arguments",
+    };
+    const suffix_blocked = [_]bool{
+        false, true, false, true, false, true, false, true, false, true,
+    };
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+
+    for (names, suffix_blocked) |name, block_suffix| {
+        const base_literal = try std.fmt.allocPrint(std.testing.allocator, "'typeof {s}'", .{name});
+        defer std.testing.allocator.free(base_literal);
+        const base_span = try ast.addString(base_literal);
+        _ = try ast.addNode(.{
+            .tag = .string_literal,
+            .span = base_span,
+            .data = .{ .string_ref = base_span },
+        });
+        if (block_suffix) {
+            const suffix_literal = try std.fmt.allocPrint(std.testing.allocator, "'typeof {s}2'", .{name});
+            defer std.testing.allocator.free(suffix_literal);
+            const suffix_span = try ast.addString(suffix_literal);
+            _ = try ast.addNode(.{
+                .tag = .string_literal,
+                .span = suffix_span,
+                .data = .{ .string_ref = suffix_span },
+            });
+        }
+    }
+
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+    var scopes = [_]Scope{
+        .{ .parent = .none, .kind = .function, .is_strict = false, .subtree_has_direct_eval = false },
+        .{ .parent = .none, .kind = .function, .is_strict = false, .subtree_has_direct_eval = true },
+        .{ .parent = .none, .kind = .function, .is_strict = false, .subtree_has_direct_eval = true },
+    };
+    transformer.scopes = &scopes;
+    var unresolved: std.StringHashMapUnmanaged(void) = .empty;
+    defer unresolved.deinit(std.testing.allocator);
+    transformer.unresolved_references = &unresolved;
+
+    const plain_scope: ScopeId = @fromBackingInt(0);
+    const dynamic_scope: ScopeId = @fromBackingInt(1);
+    const second_dynamic_scope: ScopeId = @fromBackingInt(2);
+    for (names, suffix_blocked) |name, block_suffix| {
+        const first = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, name, plain_scope);
+        const dynamic = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, name, dynamic_scope);
+        const dynamic_again = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, name, dynamic_scope);
+        const module_wide = try es_helpers.resolveSyntheticName(&transformer, name);
+        const second_dynamic = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, name, second_dynamic_scope);
+        const first_again = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, name, plain_scope);
+        var expected_buf: [64]u8 = undefined;
+        const expected_dynamic = try std.fmt.bufPrint(&expected_buf, "{s}{d}", .{ name, if (block_suffix) @as(u8, 3) else 2 });
+        var expected_second_buf: [64]u8 = undefined;
+        const expected_second_dynamic = try std.fmt.bufPrint(&expected_second_buf, "{s}{d}", .{ name, if (block_suffix) @as(u8, 4) else 3 });
+
+        try std.testing.expectEqualStrings(name, first);
+        try std.testing.expectEqualStrings(expected_dynamic, dynamic);
+        try std.testing.expectEqualStrings(dynamic, dynamic_again);
+        try std.testing.expectEqualStrings(name, module_wide);
+        try std.testing.expectEqualStrings(expected_second_dynamic, second_dynamic);
+        try std.testing.expectEqualStrings(first, first_again);
+    }
+
+    var unique_counter: u32 = 1;
+    try std.testing.expectEqualStrings(
+        "_newTarget4",
+        try es_helpers.uniqueSyntheticName(&transformer, "_newTarget", &unique_counter),
+    );
+}
+
+test "#6003 dynamic resolver keeps source and unresolved names reserved per scope" {
+    var ast = Ast.init(std.testing.allocator, "");
+    defer ast.deinit();
+    const eval_literals = [_][]const u8{ "'typeof _super4'", "'typeof _super5'" };
+    for (eval_literals) |literal| {
+        const span = try ast.addString(literal);
+        _ = try ast.addNode(.{
+            .tag = .string_literal,
+            .span = span,
+            .data = .{ .string_ref = span },
+        });
+    }
+    const user_name = try ast.addString("_super");
+    const user_suffix = try ast.addString("_super2");
+
+    var transformer = try Transformer.init(std.testing.allocator, &ast, .{});
+    defer transformer.deinit();
+    var symbols = [_]@import("../semantic/symbol.zig").Symbol{
+        .{ .name = user_name, .scope_id = .none, .kind = .function_decl, .declaration_span = .EMPTY },
+        .{ .name = user_suffix, .scope_id = .none, .kind = .function_decl, .declaration_span = .EMPTY },
+    };
+    transformer.symbols = &symbols;
+    var scopes = [_]Scope{
+        .{ .parent = .none, .kind = .function, .is_strict = false, .subtree_has_direct_eval = false },
+        .{ .parent = .none, .kind = .function, .is_strict = false, .subtree_has_direct_eval = true },
+    };
+    transformer.scopes = &scopes;
+    var unresolved: std.StringHashMapUnmanaged(void) = .empty;
+    defer unresolved.deinit(std.testing.allocator);
+    try unresolved.put(std.testing.allocator, "_super3", {});
+    transformer.unresolved_references = &unresolved;
+
+    const plain_scope: ScopeId = @fromBackingInt(0);
+    const dynamic_scope: ScopeId = @fromBackingInt(1);
+    const first = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, "_super", plain_scope);
+    const dynamic = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, "_super", dynamic_scope);
+    const first_again = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, "_super", plain_scope);
+
+    try std.testing.expectEqualStrings("_super4", first);
+    try std.testing.expectEqualStrings("_super6", dynamic);
+    try std.testing.expectEqualStrings(first, first_again);
+}
+
 test "#4819 for-of step names avoid escaped direct eval identifiers" {
     const source = "function f(){ eval('typeof \\u005fstep'); }";
     var ast = Ast.init(std.testing.allocator, source);
