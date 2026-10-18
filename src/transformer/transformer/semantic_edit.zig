@@ -2679,6 +2679,31 @@ pub fn reserveSyntheticTempSymbolInScope(
     return id;
 }
 
+pub const SyntheticTempReferenceIdentity = struct {
+    symbol_id: SymbolId,
+    reference_scope: ScopeId,
+};
+
+/// Reserve an exact temp identity at a producer that emits a reference now and
+/// hoists its declaration into a known output var scope later. Deferred owners
+/// keep the pending-reference path until their final scope exists.
+pub fn reserveSyntheticTempIdentityForReference(
+    self: *Transformer,
+    name_span: Span,
+    declaration_span: Span,
+    reference_scope: ScopeId,
+) Transformer.Error!?SyntheticTempReferenceIdentity {
+    if (!self.semantic_edit_enabled or reference_scope.isNone() or self.static_field_initializer_depth > 0)
+        return null;
+
+    const parameter_output_scope = loweredDefaultParameterOutputScope(self, reference_scope);
+    if (parameter_output_scope == null and syntheticTempOutputScopeIsDeferred(self, reference_scope)) return null;
+
+    const output_scope = parameter_output_scope orelse reference_scope;
+    const symbol_id = try reserveSyntheticTempSymbolInScope(self, name_span, declaration_span, output_scope) orelse return null;
+    return .{ .symbol_id = symbol_id, .reference_scope = output_scope };
+}
+
 /// Look up the exact temp identity already selected for this output var scope.
 /// Callers attach references directly when present and use pending name-span
 /// tracking only when the binding scope has not been established yet.
@@ -3487,6 +3512,17 @@ fn visibleSyntheticTempCandidate(
 /// 원본 프로그램·함수의 호이스트 바인딩에 앞서 기록한 참조를 연결한다.
 /// 새로 만든 함수에는 scope 등록 전이므로 호출하지 않는다.
 pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, declaration_span: Span, binding_scope: @import("../../semantic/scope.zig").ScopeId) Transformer.Error!void {
+    return bindHoistedTempWithProducerSymbol(self, binding, name_span, declaration_span, binding_scope, null);
+}
+
+pub fn bindHoistedTempWithProducerSymbol(
+    self: *Transformer,
+    binding: NodeIndex,
+    name_span: Span,
+    declaration_span: Span,
+    binding_scope: ScopeId,
+    producer_symbol_id: ?SymbolId,
+) Transformer.Error!void {
     if (!self.semantic_edit_enabled) return;
     // State-machine operations are assembled before the generated callback
     // scope exists. Leave exact refs and duplicate var declarations pending;
@@ -3516,7 +3552,13 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
     const temp_key = syntheticTempSymbolKey(name_span, expected_scope);
     const known_temp_id = self.synthetic_temp_symbol_ids.get(temp_key);
     const bound_temp_id = self.bound_temp_symbols.get(temp_key);
-    if (chain == null and known_temp_id == null and bound_temp_id == null) return;
+    if (producer_symbol_id) |producer_id| {
+        const raw_producer_id = @backingInt(producer_id);
+        if ((known_temp_id != null and known_temp_id.? != raw_producer_id) or
+            (bound_temp_id != null and bound_temp_id.? != raw_producer_id))
+            std.debug.panic("hoisted temp producer changed its exact SymbolId", .{});
+    }
+    if (chain == null and known_temp_id == null and bound_temp_id == null and producer_symbol_id == null) return;
     if (known_temp_id != null and bound_temp_id != null and known_temp_id.? != bound_temp_id.?)
         std.debug.panic("hoisted temp allocation has conflicting exact SymbolIds", .{});
     const id = bindGeneratedTempByIdentity(
@@ -3526,7 +3568,7 @@ pub fn bindHoistedTemp(self: *Transformer, binding: NodeIndex, name_span: Span, 
         declaration_span,
         target_scope,
         expected_scope,
-        known_temp_id orelse bound_temp_id,
+        if (producer_symbol_id) |producer_id| @backingInt(producer_id) else known_temp_id orelse bound_temp_id,
     ) catch |err| return editError(err);
     const bound = try self.bound_temp_symbols.getOrPut(self.allocator, temp_key);
     if (bound.found_existing and bound.value_ptr.* != @backingInt(id))

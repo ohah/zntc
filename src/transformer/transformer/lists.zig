@@ -8,6 +8,7 @@ const NodeList = ast_mod.NodeList;
 const VariableDeclarationKind = ast_mod.VariableDeclarationKind;
 const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
+const SymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const es2015_block_scoping = @import("../es2015_block_scoping.zig");
 const es2025_using = @import("../es2025_using.zig");
@@ -392,10 +393,14 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
         else
             try es_helpers.makeSyntheticBinding(self, name_span);
         if (state_bindings) |bindings| try bindings.append(self.allocator, .{ .binding = binding, .name_span = name_span });
+        const producer_symbol_id: ?SymbolId = if (self.temp_symbol_ids_by_counter.get(i)) |raw_id|
+            @fromBackingInt(@intCast(raw_id))
+        else
+            null;
         if (body_node.tag == .program and self.semantic_edit_enabled) {
-            try self.bindHoistedTemp(binding, name_span, span, .none);
+            try self.bindHoistedTempWithProducerSymbol(binding, name_span, span, .none, producer_symbol_id);
         } else if (function_scope) |scope_id| {
-            try self.bindHoistedTemp(binding, name_span, span, scope_id);
+            try self.bindHoistedTempWithProducerSymbol(binding, name_span, span, scope_id, producer_symbol_id);
         }
         const none = @backingInt(NodeIndex.none);
         const declarator = try self.addExtraNode(.variable_declarator, span, &.{

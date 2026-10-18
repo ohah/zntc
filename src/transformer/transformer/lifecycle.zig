@@ -122,6 +122,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.scratch.deinit(self.allocator);
     if (self.temp_collision_set) |*set| set.deinit(self.allocator);
     self.temp_span_by_counter.deinit(self.allocator);
+    self.temp_symbol_ids_by_counter.deinit(self.allocator);
     self.generated_temp_spans.deinit(self.allocator);
     self.value_used_symbols.deinit(self.allocator);
     if (self.decorator_metadata_type_names) |*names| names.deinit(self.allocator);

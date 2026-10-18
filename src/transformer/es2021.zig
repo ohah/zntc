@@ -54,17 +54,23 @@ pub fn ES2021(comptime Transformer: type) type {
                 // The member target is captured as a whole below, so its
                 // prebuilt `target.value` refs are discarded with that branch.
                 try es_helpers.trackAssignmentTargetRefs(self, target, false, true);
-                const captured = try es_helpers.captureToTemp(self, target.read, node.span);
+                const captured = try es_helpers.captureToTempWithIdentity(self, target.read, node.span);
                 const captured_assign = self.ast.getNode(captured.paren_assign);
                 std.debug.assert(captured_assign.tag == .assignment_expression);
-                try self.trackSyntheticTempReference(
-                    captured.span,
-                    node.span,
-                    captured_assign.data.binary.left,
-                    .{ .write = true },
-                );
+                if (captured.symbol_id == null) {
+                    try self.trackSyntheticTempReference(
+                        captured.span,
+                        node.span,
+                        captured_assign.data.binary.left,
+                        .{ .write = true },
+                    );
+                }
                 const captured_value = try es_helpers.makeTempVarRef(self, captured.span, node.span);
-                try self.trackSyntheticTempReference(captured.span, node.span, captured_value, .{ .read = true });
+                if (captured.symbol_id) |symbol_id| {
+                    try self.addSyntheticRefInScope(captured_value, symbol_id, captured.reference_scope, .{ .read = true });
+                } else {
+                    try self.trackSyntheticTempReference(captured.span, node.span, captured_value, .{ .read = true });
+                }
                 const neq_null = try es_helpers.makeNeqNull(self, captured.paren_assign, node.span);
                 return self.ast.addNode(.{
                     .tag = .conditional_expression,
