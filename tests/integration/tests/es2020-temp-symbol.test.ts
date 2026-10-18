@@ -103,7 +103,7 @@ makeAsync().then((asyncValue) => console.log(generatorValue, asyncValue, calls))
     expect(actual.stdout).toBe('8 9 2\n');
   });
 
-  test('10 async and generator producer shapes retain exact callback temp identities', async () => {
+  test('11 async and generator producer shapes retain exact callback temp identities', async () => {
     const cases = [
       {
         name: 'generator yield',
@@ -160,6 +160,12 @@ console.log(source.values().next().value);`,
         source: `function getValue(value) { return value; }
 const source = { async value() { return getValue(null) ?? 5; } };
 source.value().then((result) => console.log(result));`,
+      },
+      {
+        name: 'optional method-call captures in generator',
+        source: `function makeBox() { return { value: 11, method() { return this.value; } }; }
+function* values() { yield makeBox()?.method?.() ?? 7; }
+console.log(values().next().value);`,
       },
       {
         name: 'user _a shadow in generator',
