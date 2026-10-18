@@ -2070,6 +2070,32 @@ pub const TempCapture = struct {
     reference_scope: ScopeId = .none,
 };
 
+/// Reserve a generated temp identity before its first reference is emitted.
+/// Use this when a lowering has several consumers instead of one capture
+/// assignment; the allocator slot keeps the eventual hoisted var on this ID.
+pub const TempIdentityCapture = struct {
+    span: Span,
+    symbol_id: ?symbol_mod.SymbolId = null,
+    reference_scope: ScopeId = .none,
+};
+
+pub fn reserveTrackedTempIdentity(self: anytype, declaration_span: Span) !TempIdentityCapture {
+    const temp_span = try makeTempVarSpan(self);
+    const counter_index = self.temp_var_counter - 1;
+    const identity = try self.reserveSyntheticTempIdentityForReference(
+        temp_span,
+        declaration_span,
+        self.current_scope,
+    );
+    if (identity) |exact|
+        try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(exact.symbol_id));
+    return .{
+        .span = temp_span,
+        .symbol_id = if (identity) |exact| exact.symbol_id else null,
+        .reference_scope = if (identity) |exact| exact.reference_scope else .none,
+    };
+}
+
 pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
     const temp_span = try makeTempVarSpan(self);
     const temp_lhs = try makeTempVarRef(self, temp_span, span);
@@ -2161,6 +2187,25 @@ pub fn makeCapturedTempRef(
     if (capture.symbol_id) |symbol_id| {
         if (capture.reference_scope.isNone())
             std.debug.panic("captured temp SymbolId has no reference scope", .{});
+        try self.addSyntheticRefInScope(ref, symbol_id, capture.reference_scope, flags);
+    } else {
+        try self.trackSyntheticTempReference(capture.span, node_span, ref, flags);
+    }
+    return ref;
+}
+
+/// Create a read/write from a temp reservation without looking up its generated
+/// spelling again. Deferred owners retain the existing pending handoff.
+pub fn makeTempRefFromIdentity(
+    self: anytype,
+    capture: TempIdentityCapture,
+    node_span: Span,
+    flags: @import("../semantic/mod.zig").ReferenceFlags,
+) !NodeIndex {
+    const ref = try makeTempVarRef(self, capture.span, node_span);
+    if (capture.symbol_id) |symbol_id| {
+        if (capture.reference_scope.isNone())
+            std.debug.panic("reserved temp SymbolId has no reference scope", .{});
         try self.addSyntheticRefInScope(ref, symbol_id, capture.reference_scope, flags);
     } else {
         try self.trackSyntheticTempReference(capture.span, node_span, ref, flags);
