@@ -834,7 +834,7 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
     }
     try std.testing.expectEqual(@as(usize, 1), parameter_temps);
     try std.testing.expect(function_var_temps > 0);
-    try std.testing.expectEqual(parameter_temps + function_var_temps, mapped_temp_count);
+    try std.testing.expect(mapped_temp_count <= function_var_temps);
 }
 
 fn expectRegisteredParameterTemp(
@@ -845,7 +845,8 @@ fn expectRegisteredParameterTemp(
 ) !u32 {
     const raw_id = transformer.getSymbolIdAt(binding) orelse return error.MissingCreationSymbolId;
     const name_span = transformer.ast.getNode(binding).data.string_ref;
-    try std.testing.expectEqual(raw_id, transformer.destructuring_temp_symbol_ids.get(name_span.start).?);
+    try std.testing.expect(transformer.destructuring_temp_symbol_ids.get(name_span.start) == null);
+    try std.testing.expect(transformer.lookupSyntheticTempSymbol(name_span, expected_scope) == null);
 
     const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
     try std.testing.expect(raw_id < editor.symbols.items.len);
@@ -873,6 +874,7 @@ fn lowerParameterPatternAndCheckCreation(
     source: []const u8,
     expect_array_read_binding: bool,
     reserve_ownerless_function_scope: bool,
+    expect_rest_pattern: bool,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -937,13 +939,28 @@ fn lowerParameterPatternAndCheckCreation(
     );
     defer lowered.body_stmts.deinit(allocator);
 
-    try std.testing.expectEqual(@as(u32, 1), lowered.new_params.len);
-    const parameter_binding: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[lowered.new_params.start]));
-    const parameter_id = try expectRegisteredParameterTemp(&transformer, parameter_binding, output_scope, .parameter);
+    var root_temp_id: ?u32 = null;
+    if (expect_rest_pattern) {
+        try std.testing.expectEqual(@as(u32, 0), lowered.new_params.len);
+        if (lowered.body_stmts.items.len == 0) return error.MissingRestTempDeclaration;
+        const statement = transformer.ast.getNode(lowered.body_stmts.items[0]);
+        if (statement.tag != .variable_declaration) return error.ExpectedRestTempDeclaration;
+        const list_start = transformer.ast.extra_data.items[statement.data.extra + 1];
+        const list_len = transformer.ast.extra_data.items[statement.data.extra + 2];
+        if (list_len == 0) return error.MissingRestTempDeclarator;
+        const declarator: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[list_start]));
+        const binding = transformer.ast.readExtraNode(transformer.ast.getNode(declarator).data.extra, 0);
+        root_temp_id = try expectRegisteredParameterTemp(&transformer, binding, output_scope, .variable_var);
+    } else {
+        try std.testing.expectEqual(@as(u32, 1), lowered.new_params.len);
+        const parameter_binding: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[lowered.new_params.start]));
+        root_temp_id = try expectRegisteredParameterTemp(&transformer, parameter_binding, output_scope, .parameter);
+    }
 
     var read_binding: ?@import("../parser/ast.zig").NodeIndex = null;
     if (expect_array_read_binding) {
-        for (lowered.body_stmts.items) |statement_idx| {
+        const statements = if (expect_rest_pattern) lowered.body_stmts.items[1..] else lowered.body_stmts.items;
+        for (statements) |statement_idx| {
             const statement = transformer.ast.getNode(statement_idx);
             if (statement.tag != .variable_declaration) continue;
             const list_start = transformer.ast.extra_data.items[statement.data.extra + 1];
@@ -955,7 +972,7 @@ fn lowerParameterPatternAndCheckCreation(
         }
         const array_read = read_binding orelse return error.MissingArrayReadBinding;
         const read_id = try expectRegisteredParameterTemp(&transformer, array_read, output_scope, .variable_var);
-        try std.testing.expect(read_id != parameter_id);
+        if (root_temp_id) |root_id| try std.testing.expect(read_id != root_id);
     }
 
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
@@ -967,6 +984,7 @@ test "#4819 default object-pattern temp is registered before lowerParamsPass2 re
         "function run({ first: { seed } } = {}) { return seed; }",
         false,
         false,
+        false,
     );
 }
 
@@ -975,12 +993,14 @@ test "#4819 default array-pattern parameter and read temps are registered at cre
         "function run([{ first: { seed } } = {}] = []) { return seed; }",
         true,
         false,
+        false,
     );
 }
 
 test "#4819 plain object-pattern parameter temp is registered at creation" {
     try lowerParameterPatternAndCheckCreation(
         "function run({ first: { seed } }) { return seed; }",
+        false,
         false,
         false,
     );
@@ -991,6 +1011,7 @@ test "#4819 plain array-pattern parameter and read temps are registered at creat
         "function run([{ first: { seed } }]) { return seed; }",
         true,
         false,
+        false,
     );
 }
 
@@ -999,7 +1020,25 @@ test "#4819 reserved generated constructor scope owns parameter temps before its
         "class Host { constructor({ first: { seed } } = {}) { return seed; } }",
         false,
         true,
+        false,
     );
+}
+
+test "#4819 parameter-pattern root temps pass exact identity without span lookup" {
+    const cases = [_]struct { source: []const u8, array_read: bool, rest: bool }{
+        .{ .source = "function run({ first: { seed } }) { return seed; }", .array_read = false, .rest = false },
+        .{ .source = "function run({ first: { seed } } = {}) { return seed; }", .array_read = false, .rest = false },
+        .{ .source = "function run([{ seed }]) { return seed; }", .array_read = true, .rest = false },
+        .{ .source = "function run([{ seed } = {}] = []) { return seed; }", .array_read = true, .rest = false },
+        .{ .source = "function run({ seed, ...rest } = {}) { return [seed, rest]; }", .array_read = false, .rest = false },
+        .{ .source = "function run([{ first: [seed] }]) { return seed; }", .array_read = true, .rest = false },
+        .{ .source = "const run = ({ first: { seed } }) => seed;", .array_read = false, .rest = false },
+        .{ .source = "class Host { run([{ seed }]) { return seed; } }", .array_read = true, .rest = false },
+        .{ .source = "class Host { constructor({ first: { seed } } = {}) { this.seed = seed; } }", .array_read = false, .rest = false },
+        .{ .source = "function run(...[seed]) { return seed; }", .array_read = true, .rest = true },
+    };
+    for (cases) |case|
+        try lowerParameterPatternAndCheckCreation(case.source, case.array_read, false, case.rest);
 }
 
 fn checkStandaloneParameterTempNameMarking(source: []const u8, expected_late: bool) !void {

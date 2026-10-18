@@ -34,16 +34,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
     return struct {
         /// The emitted formal parameter and body declarations have different
         /// SymbolKinds. Register each binding before emitting references to it.
-        fn registerDestructuringTempAtCreation(
-            self: *Transformer,
-            binding: NodeIndex,
-            name_span: Span,
-            declaration_span: Span,
-            kind: SymbolKind,
-        ) Transformer.Error!void {
-            _ = try registerDestructuringTempIdentityAtCreation(self, binding, name_span, declaration_span, kind, true);
-        }
-
         fn registerDestructuringTempIdentityAtCreation(
             self: *Transformer,
             binding: NodeIndex,
@@ -74,22 +64,25 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const symbol = editor.symbols.items[raw_id];
             if (symbol.scope_id != scope or symbol.kind != kind)
                 std.debug.panic("destructuring parameter temp SymbolId has the wrong owner", .{});
-            if (retain_span_lookup)
+            if (retain_span_lookup) {
                 try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, raw_id);
+            } else {
+                self.forgetSyntheticTempSymbolLookup(name_span, scope);
+            }
             return .{ .span = name_span, .symbol_id = symbol_id, .reference_scope = scope };
         }
 
         fn emitParameterPatternDeclarators(
             self: *Transformer,
             pattern: Node,
-            read_span: Span,
+            read_identity: es_helpers.TempIdentityCapture,
             span: Span,
         ) Transformer.Error!void {
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
             const saved_kind = self.destructuring_temp_kind;
             self.destructuring_temp_kind = .variable_var;
             defer self.destructuring_temp_kind = saved_kind;
-            try es2015_destruct.emitPatternDeclarators(self, pattern, read_span, span, .@"var");
+            try es2015_destruct.emitPatternDeclaratorsWithIdentity(self, pattern, read_identity, span, .@"var");
         }
 
         /// 파라미터 패턴 안에 object rest (`{a, ...r}`, ES2018) 가 있는지 검사 (#4251).
@@ -510,20 +503,34 @@ pub fn ES2015Params(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
-            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .parameter);
+            const temp_identity = try registerDestructuringTempIdentityAtCreation(
+                self,
+                temp_binding,
+                temp_span,
+                span,
+                .parameter,
+                false,
+            );
             es_helpers.consumeTempVarSpan(self, temp_span);
 
-            const default_stmt = try buildDefaultCheckForTemp(self, temp_span, visited_default, span);
+            const default_stmt = try buildDefaultCheckForTemp(self, temp_identity, visited_default, span);
             try body_stmts.append(self.allocator, default_stmt);
 
-            const temp_ref2 = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+            const temp_ref2 = try es_helpers.makeTempRefFromIdentity(self, temp_identity, span, .{ .read = true });
             const pattern_node = self.ast.getNode(visited_pattern);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
-            var read_binding: NodeIndex = .none;
-            const read_span = if (pattern_node.tag == .array_pattern) blk: {
+            var read_identity = temp_identity;
+            if (pattern_node.tag == .array_pattern) {
                 const read_span = try es_helpers.makeTempVarSpan(self);
-                read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
-                try registerDestructuringTempAtCreation(self, read_binding, read_span, span, .variable_var);
+                const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
+                read_identity = try registerDestructuringTempIdentityAtCreation(
+                    self,
+                    read_binding,
+                    read_span,
+                    span,
+                    .variable_var,
+                    false,
+                );
                 es_helpers.consumeTempVarSpan(self, read_span);
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref2, pattern_node, span);
                 const read_decl = try es_helpers.makeVarDeclaration(
@@ -533,12 +540,11 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     span,
                 );
                 try body_stmts.append(self.allocator, read_decl);
-                break :blk read_span;
-            } else temp_span;
+            }
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
-            try emitParameterPatternDeclarators(self, pattern_node, read_span, span);
+            try emitParameterPatternDeclarators(self, pattern_node, read_identity, span);
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
                 const destruct_decl = try es_helpers.makeVarDeclaration(self, declarators, .@"var", span);
@@ -558,7 +564,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
         ) Transformer.Error!NodeIndex {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
-            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .parameter);
+            const temp_identity = try registerDestructuringTempIdentityAtCreation(
+                self,
+                temp_binding,
+                temp_span,
+                span,
+                .parameter,
+                false,
+            );
             es_helpers.consumeTempVarSpan(self, temp_span);
 
             const scratch_top = self.scratch.items.len;
@@ -566,19 +579,25 @@ pub fn ES2015Params(comptime Transformer: type) type {
 
             const pattern = self.ast.getNode(pattern_idx);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
-            var read_binding: NodeIndex = .none;
-            const read_span = if (pattern.tag == .array_pattern) blk: {
+            var read_identity = temp_identity;
+            if (pattern.tag == .array_pattern) {
                 const read_span = try es_helpers.makeTempVarSpan(self);
-                read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
-                try registerDestructuringTempAtCreation(self, read_binding, read_span, span, .variable_var);
+                const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
+                read_identity = try registerDestructuringTempIdentityAtCreation(
+                    self,
+                    read_binding,
+                    read_span,
+                    span,
+                    .variable_var,
+                    false,
+                );
                 es_helpers.consumeTempVarSpan(self, read_span);
-                const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+                const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_identity, span, .{ .read = true });
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref, pattern, span);
                 const read_decl = try es_helpers.makeDeclarator(self, read_binding, read_init, span);
                 try self.scratch.append(self.allocator, read_decl);
-                break :blk read_span;
-            } else temp_span;
-            try emitParameterPatternDeclarators(self, pattern, read_span, span);
+            }
+            try emitParameterPatternDeclarators(self, pattern, read_identity, span);
 
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) {
@@ -635,21 +654,21 @@ pub fn ES2015Params(comptime Transformer: type) type {
             });
         }
 
-        fn buildDefaultCheckForTemp(self: *Transformer, temp_span: Span, default_val: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn buildDefaultCheckForTemp(self: *Transformer, temp: es_helpers.TempIdentityCapture, default_val: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const void_zero = try es_helpers.makeVoidZero(self, span);
-            const test_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+            const test_ref = try es_helpers.makeTempRefFromIdentity(self, temp, span, .{ .read = true });
             const eq_check = try self.ast.addNode(.{
                 .tag = .binary_expression,
                 .span = span,
                 .data = .{ .binary = .{ .left = test_ref, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
             });
-            const value_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+            const value_ref = try es_helpers.makeTempRefFromIdentity(self, temp, span, .{ .read = true });
             const conditional = try self.ast.addNode(.{
                 .tag = .conditional_expression,
                 .span = span,
                 .data = .{ .ternary = .{ .a = eq_check, .b = default_val, .c = value_ref } },
             });
-            const write_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .write = true });
+            const write_ref = try es_helpers.makeTempRefFromIdentity(self, temp, span, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -694,7 +713,14 @@ pub fn ES2015Params(comptime Transformer: type) type {
         ) Transformer.Error!void {
             const temp_span = try es_helpers.makeTempVarSpan(self);
             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
-            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .variable_var);
+            const temp_identity = try registerDestructuringTempIdentityAtCreation(
+                self,
+                temp_binding,
+                temp_span,
+                span,
+                .variable_var,
+                false,
+            );
             es_helpers.consumeTempVarSpan(self, temp_span);
             try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span));
 
@@ -702,17 +728,24 @@ pub fn ES2015Params(comptime Transformer: type) type {
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             const pattern = self.ast.getNode(pattern_idx);
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
-            const read_span = if (pattern.tag == .array_pattern) blk: {
+            var read_identity = temp_identity;
+            if (pattern.tag == .array_pattern) {
                 const read_span = try es_helpers.makeTempVarSpan(self);
                 const read_binding = try es_helpers.makeSyntheticBinding(self, read_span);
-                try registerDestructuringTempAtCreation(self, read_binding, read_span, span, .variable_var);
+                read_identity = try registerDestructuringTempIdentityAtCreation(
+                    self,
+                    read_binding,
+                    read_span,
+                    span,
+                    .variable_var,
+                    false,
+                );
                 es_helpers.consumeTempVarSpan(self, read_span);
-                const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, span, .{ .read = true });
+                const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_identity, span, .{ .read = true });
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref, pattern, span);
                 try self.scratch.append(self.allocator, try es_helpers.makeDeclarator(self, read_binding, read_init, span));
-                break :blk read_span;
-            } else temp_span;
-            try emitParameterPatternDeclarators(self, pattern, read_span, span);
+            }
+            try emitParameterPatternDeclarators(self, pattern, read_identity, span);
             const declarators = self.scratch.items[scratch_top..];
             if (declarators.len > 0) try body_stmts.append(self.allocator, try es_helpers.makeVarDeclaration(self, declarators, .@"var", span));
         }
