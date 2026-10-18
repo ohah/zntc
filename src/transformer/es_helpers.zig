@@ -2107,13 +2107,16 @@ pub fn captureToTempWithIdentity(self: anytype, value: NodeIndex, span: Span) !T
     };
 }
 
-/// Use only for new lowered expressions whose temp references will not be
-/// revisited by the transformer. The original captureToTemp contract stays
-/// unchanged for callers that track their own references.
+/// Use when a lowering creates a temp whose references will not be revisited by
+/// the transformer. Known owners retain the producer ID; deferred owners keep
+/// the pending-reference handoff. Callers that manage references themselves
+/// can continue to use captureToTemp.
 pub fn captureToTrackedTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
-    const captured = try captureToTemp(self, value, span);
-    const assignment = self.ast.getNode(captured.paren_assign);
-    try self.trackSyntheticTempReference(captured.span, span, assignment.data.binary.left, .{ .write = true });
+    const captured = try captureToTempWithIdentity(self, value, span);
+    if (captured.symbol_id == null) {
+        const assignment = self.ast.getNode(captured.paren_assign);
+        try self.trackSyntheticTempReference(captured.span, span, assignment.data.binary.left, .{ .write = true });
+    }
     return captured;
 }
 
@@ -2131,7 +2134,7 @@ pub const OnceReceiver = struct {
 
     pub fn use(receiver: OnceReceiver, self: anytype, span: Span) !NodeIndex {
         const temp = receiver.temp orelse return makeThisExpr(self, span);
-        return makeTrackedTempRef(self, temp.span, span, .{ .read = true });
+        return makeCapturedTempRef(self, temp, span, .{ .read = true });
     }
 
     /// `(_a = receiver, expr)`: the capture runs before every use.
@@ -2144,6 +2147,26 @@ pub const OnceReceiver = struct {
         });
     }
 };
+
+/// Create another reference from the producer-owned temp handle. Known owners
+/// use the exact SymbolId captured at creation; only owners that are still
+/// deferred fall back to the pending name/span handoff.
+pub fn makeCapturedTempRef(
+    self: anytype,
+    capture: TempCapture,
+    node_span: Span,
+    flags: @import("../semantic/mod.zig").ReferenceFlags,
+) !NodeIndex {
+    const ref = try makeTempVarRef(self, capture.span, node_span);
+    if (capture.symbol_id) |symbol_id| {
+        if (capture.reference_scope.isNone())
+            std.debug.panic("captured temp SymbolId has no reference scope", .{});
+        try self.addSyntheticRefInScope(ref, symbol_id, capture.reference_scope, flags);
+    } else {
+        try self.trackSyntheticTempReference(capture.span, node_span, ref, flags);
+    }
+    return ref;
+}
 
 pub fn makeTrackedTempRef(self: anytype, name_span: Span, node_span: Span, flags: @import("../semantic/mod.zig").ReferenceFlags) !NodeIndex {
     const ref = try makeTempVarRef(self, name_span, node_span);
