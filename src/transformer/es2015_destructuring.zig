@@ -1200,15 +1200,21 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         const key_value = try self.visitNode(key_node.data.unary.operand);
                         break :blk try es_helpers.makeDeclarator(self, key_temp.binding, key_value, span);
                     },
-                    .assign => try self.ast.addNode(.{
-                        .tag = .assignment_expression,
-                        .span = span,
-                        .data = .{ .binary = .{
-                            .left = try makeDestructuringTempWrite(self, key_span, span),
-                            .right = try self.visitNode(key_node.data.unary.operand),
-                            .flags = @backingInt(token_mod.Kind.eq),
-                        } },
-                    }),
+                    .assign => blk: {
+                        // Assignment lowering may not know the key temp's owner
+                        // SymbolId yet. Preserve the deferred span handoff so
+                        // computed defaults can read the same captured key.
+                        computed_key_temp_identity = .{ .span = key_span };
+                        break :blk try self.ast.addNode(.{
+                            .tag = .assignment_expression,
+                            .span = span,
+                            .data = .{ .binary = .{
+                                .left = try makeDestructuringTempWrite(self, key_span, span),
+                                .right = try self.visitNode(key_node.data.unary.operand),
+                                .flags = @backingInt(token_mod.Kind.eq),
+                            } },
+                        });
+                    },
                 };
                 try self.scratch.append(self.allocator, capture);
                 if (include_exclude_key) {
