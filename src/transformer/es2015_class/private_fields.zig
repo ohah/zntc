@@ -57,7 +57,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
         fn buildInstanceAccessorSetValue(self: *Transformer, setter: Transformer.PrivateMethodMapping, receiver: es_helpers.OnceReceiver, value: NodeIndex, span: Span) Transformer.Error!NodeIndex {
             const value_temp = try es_helpers.captureToTrackedTemp(self, value, span);
             const set_call = try buildInstanceAccessorCall(self, setter, receiver, value_temp.paren_assign, span);
-            return makeSequence(self, &.{ set_call, try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true }) }, span);
+            return makeSequence(self, &.{ set_call, try es_helpers.makeCapturedTempRef(self, value_temp, span, .{ .read = true }) }, span);
         }
 
         /// An instance private field or accessor pair that a compound, logical or
@@ -111,7 +111,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
             else blk: {
                 const value_temp = try es_helpers.captureToTrackedTemp(self, old_value, span);
                 const cond = try es_helpers.makeNeqNull(self, value_temp.paren_assign, span);
-                const read = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true });
+                const read = try es_helpers.makeCapturedTempRef(self, value_temp, span, .{ .read = true });
                 break :blk try self.ast.addNode(.{ .tag = .conditional_expression, .span = span, .data = .{ .ternary = .{ .a = cond, .b = read, .c = set_value } } });
             };
             return receiver.wrap(self, result, span);
@@ -123,14 +123,14 @@ pub fn PrivateFields(comptime Transformer: type) type {
         fn lowerTargetUpdate(self: *Transformer, target: PrivateTarget, obj_idx: NodeIndex, op_flags: u32, span: Span) Transformer.Error!NodeIndex {
             const receiver = try es_helpers.OnceReceiver.init(self, try self.visitNode(obj_idx), span);
             const value_temp = try es_helpers.captureToTrackedTemp(self, try targetGet(self, target, receiver, span), span);
-            const update_operand = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true, .write = true });
+            const update_operand = try es_helpers.makeCapturedTempRef(self, value_temp, span, .{ .read = true, .write = true });
             const update_extra = try self.ast.addExtras(&.{ @backingInt(update_operand), op_flags });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = update_extra } });
             if ((op_flags & ast_mod.UnaryFlags.postfix) != 0) {
                 const old_temp = try es_helpers.captureToTrackedTemp(self, update, span);
-                const new_value = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true });
+                const new_value = try es_helpers.makeCapturedTempRef(self, value_temp, span, .{ .read = true });
                 const set_call = try targetSet(self, target, receiver, new_value, span);
-                const old_result = try es_helpers.makeTrackedTempRef(self, old_temp.span, span, .{ .read = true });
+                const old_result = try es_helpers.makeCapturedTempRef(self, old_temp, span, .{ .read = true });
                 return receiver.wrap(self, try makeSequence(self, &.{ value_temp.paren_assign, old_temp.paren_assign, set_call, old_result }, span), span);
             }
             const set_call = try targetSet(self, target, receiver, update, span);
@@ -201,9 +201,9 @@ pub fn PrivateFields(comptime Transformer: type) type {
             if (op == .eq) return buildStaticMethodSet(self, mapping, receiver, rhs, span);
 
             const recv_temp = try es_helpers.captureToTrackedTemp(self, receiver, span);
-            const get_receiver = try es_helpers.makeTrackedTempRef(self, recv_temp.span, span, .{ .read = true });
+            const get_receiver = try es_helpers.makeCapturedTempRef(self, recv_temp, span, .{ .read = true });
             const old_value = try buildStaticMethodGet(self, mapping, get_receiver, span);
-            const set_receiver = try es_helpers.makeTrackedTempRef(self, recv_temp.span, span, .{ .read = true });
+            const set_receiver = try es_helpers.makeCapturedTempRef(self, recv_temp, span, .{ .read = true });
 
             if (assign_ops.compoundAssignBaseOp(flags)) |base_op| {
                 const computed = if (base_op == @backingInt(token_mod.Kind.star2) and self.options.unsupported.exponentiation)
@@ -221,7 +221,7 @@ pub fn PrivateFields(comptime Transformer: type) type {
                 // The read must occur once: a getter may have side effects.
                 const value_temp = try es_helpers.captureToTrackedTemp(self, old_value, span);
                 const cond = try es_helpers.makeNeqNull(self, value_temp.paren_assign, span);
-                const read = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true });
+                const read = try es_helpers.makeCapturedTempRef(self, value_temp, span, .{ .read = true });
                 break :blk try self.ast.addNode(.{ .tag = .conditional_expression, .span = span, .data = .{ .ternary = .{ .a = cond, .b = read, .c = set_call } } });
             };
             return makeSequence(self, &.{ recv_temp.paren_assign, result }, span);
@@ -556,20 +556,20 @@ pub fn PrivateFields(comptime Transformer: type) type {
         fn lowerStaticMethodUpdate(self: *Transformer, mapping: Transformer.PrivateMethodMapping, obj_idx: NodeIndex, op_flags: u32, span: Span) Transformer.Error!NodeIndex {
             const receiver = try self.visitNode(obj_idx);
             const recv_temp = try es_helpers.captureToTrackedTemp(self, receiver, span);
-            const get_receiver = try es_helpers.makeTrackedTempRef(self, recv_temp.span, span, .{ .read = true });
+            const get_receiver = try es_helpers.makeCapturedTempRef(self, recv_temp, span, .{ .read = true });
             const get_value = try buildStaticMethodGet(self, mapping, get_receiver, span);
             const value_temp = try es_helpers.captureToTrackedTemp(self, get_value, span);
             const postfix = (op_flags & ast_mod.UnaryFlags.postfix) != 0;
-            const set_receiver = try es_helpers.makeTrackedTempRef(self, recv_temp.span, span, .{ .read = true });
-            const update_operand = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true, .write = true });
+            const set_receiver = try es_helpers.makeCapturedTempRef(self, recv_temp, span, .{ .read = true });
+            const update_operand = try es_helpers.makeCapturedTempRef(self, value_temp, span, .{ .read = true, .write = true });
             const update_extra = try self.ast.addExtras(&.{ @backingInt(update_operand), op_flags });
             const update = try self.ast.addNode(.{ .tag = .update_expression, .span = span, .data = .{ .extra = update_extra } });
 
             if (postfix) {
                 const old_temp = try es_helpers.captureToTrackedTemp(self, update, span);
-                const new_value = try es_helpers.makeTrackedTempRef(self, value_temp.span, span, .{ .read = true });
+                const new_value = try es_helpers.makeCapturedTempRef(self, value_temp, span, .{ .read = true });
                 const set_call = try buildStaticMethodSet(self, mapping, set_receiver, new_value, span);
-                const old_result = try es_helpers.makeTrackedTempRef(self, old_temp.span, span, .{ .read = true });
+                const old_result = try es_helpers.makeCapturedTempRef(self, old_temp, span, .{ .read = true });
                 return makeSequence(self, &.{ recv_temp.paren_assign, value_temp.paren_assign, old_temp.paren_assign, set_call, old_result }, span);
             }
 
