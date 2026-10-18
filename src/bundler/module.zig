@@ -1052,15 +1052,17 @@ pub const Module = struct {
         // `let exports.A`(SyntaxError)가 되므로 **반드시** 함께 제외해 4곳 술어를 정합시킨다.
         if (self.wrap_kind != .none) return false;
         if (eb.kind != .local) return false;
-        // v1: identity export 만. aliased(`export { A as B }`)는 provider 가 storage 를 안 해
-        // 소비자 ns-access 와 어긋나므로 제외.
-        const local = self.exportBindingLocalName(eb);
-        if (!std.mem.eql(u8, local, eb.exported_name)) return false;
+        // The scanner already carries the exact local binding identity. Do not
+        // reconstruct it from `local_name`: a stale or deliberately divergent
+        // scope map must not redirect storage lowering to a different symbol.
+        const sym_idx = self.exportBindingSemanticIndex(eb) orelse return false;
         const sem = self.semantic orelse return false;
-        if (sem.scope_maps.len == 0) return false;
-        const sym_idx = sem.scope_maps[0].get(local) orelse return false;
-        if (sym_idx >= sem.symbols.items.len) return false;
         const sym = sem.symbols.items[sym_idx];
+        const local = self.symbolText(&sym) orelse return false;
+        // v1: identity export 만. aliased(`export { A as B }`)는 provider 가 storage 를 안 해
+        // 소비자 ns-access 와 어긋나므로 제외. 이름 비교는 외부 export 계약만 판정하며
+        // semantic symbol 선택에는 쓰지 않는다.
+        if (!std.mem.eql(u8, local, eb.exported_name)) return false;
         if (sym.write_count == 0) return false;
         if (sym.decl_flags.is_const or sym.decl_flags.is_function or sym.decl_flags.is_class) return false;
         // v1: destructuring 선언(`export let { A } = obj`)은 제외. renames[sid]="exports.A" 를
@@ -1072,6 +1074,17 @@ pub const Module = struct {
         // 제외 시 현행 로컬(`let f = () => 0` + 끝-할당) 유지 = `.name` 보존(무손실).
         if (eb.init_is_fn_or_class) return false;
         return true;
+    }
+
+    /// Return the scanner-owned semantic index for an export binding when it
+    /// belongs to this module and still points into its semantic symbol table.
+    /// This deliberately never re-searches `local_name` in `scope_maps`.
+    pub fn exportBindingSemanticIndex(self: *const Module, eb: ExportBinding) ?u32 {
+        const sym_idx = eb.symbol.semanticIndex() orelse return null;
+        if (eb.symbol.moduleIndex() != self.index) return null;
+        const sem = self.semantic orelse return null;
+        if (sym_idx >= sem.symbols.items.len) return null;
+        return sym_idx;
     }
 
     /// exported_name에 해당하는 SymbolRef 반환. 없으면 invalid.
@@ -1288,4 +1301,132 @@ test "Module.exportBindingIsCjsStorage excludes non-eligible bindings (#4587)" {
     // 위 가드를 모두 통과하는 shape 라도 semantic 이 없으면 false (write_count 판정 불가) —
     // 적격 판정은 semantic(write_count>0·비 const/fn/class)이 있어야 성립함을 확인.
     try std.testing.expect(!module.exportBindingIsCjsStorage(base));
+}
+
+test "Module.exportBindingIsCjsStorage uses the export SymbolId instead of a local-name re-search" {
+    const allocator = std.testing.allocator;
+    const SymbolKind = semantic_symbol.SymbolKind;
+
+    var module = Module.init(@fromBackingInt(@as(u32, 0)), "m.mjs");
+    defer module.deinit(allocator);
+
+    const scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), 1);
+    defer allocator.free(scope_maps);
+    scope_maps[0] = .empty;
+    defer scope_maps[0].deinit(allocator);
+    // Deliberately point the source-name lookup at symbol 1. The ExportBinding
+    // below owns symbol 0, so only the exact identity gives the right answer.
+    try scope_maps[0].put(allocator, "A", 1);
+
+    var semantic = ModuleSemanticData{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = scope_maps,
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    defer semantic.symbols.deinit(allocator);
+    try semantic.symbols.append(allocator, cjsStorageTestSymbol("A", .variable_let, 1));
+    try semantic.symbols.append(allocator, cjsStorageTestSymbol("decoy", .variable_const, 0));
+    module.semantic = semantic;
+
+    const Scenario = struct {
+        name: []const u8,
+        target_kind: SymbolKind,
+        target_writes: u32,
+        decoy_kind: SymbolKind,
+        decoy_writes: u32,
+        declared_via_pattern: bool = false,
+        init_is_fn_or_class: bool = false,
+        expected_storage: bool,
+    };
+    const scenarios = [_]Scenario{
+        .{ .name = "let over const", .target_kind = .variable_let, .target_writes = 1, .decoy_kind = .variable_const, .decoy_writes = 0, .expected_storage = true },
+        .{ .name = "const over let", .target_kind = .variable_const, .target_writes = 1, .decoy_kind = .variable_let, .decoy_writes = 1, .expected_storage = false },
+        .{ .name = "var over unwritten let", .target_kind = .variable_var, .target_writes = 1, .decoy_kind = .variable_let, .decoy_writes = 0, .expected_storage = true },
+        .{ .name = "unwritten let over written var", .target_kind = .variable_let, .target_writes = 0, .decoy_kind = .variable_var, .decoy_writes = 2, .expected_storage = false },
+        .{ .name = "written let over function", .target_kind = .variable_let, .target_writes = 2, .decoy_kind = .function_decl, .decoy_writes = 1, .expected_storage = true },
+        .{ .name = "function over written let", .target_kind = .function_decl, .target_writes = 1, .decoy_kind = .variable_let, .decoy_writes = 2, .expected_storage = false },
+        .{ .name = "class over written var", .target_kind = .class_decl, .target_writes = 1, .decoy_kind = .variable_var, .decoy_writes = 1, .expected_storage = false },
+        .{ .name = "written var over class", .target_kind = .variable_var, .target_writes = 1, .decoy_kind = .class_decl, .decoy_writes = 1, .expected_storage = true },
+        .{ .name = "frequently written let over const", .target_kind = .variable_let, .target_writes = 3, .decoy_kind = .variable_const, .decoy_writes = 1, .expected_storage = true },
+        .{ .name = "const over frequently written let", .target_kind = .variable_const, .target_writes = 0, .decoy_kind = .variable_let, .decoy_writes = 4, .expected_storage = false },
+        .{ .name = "pattern binding is not a storage target", .target_kind = .variable_let, .target_writes = 1, .decoy_kind = .variable_const, .decoy_writes = 0, .declared_via_pattern = true, .expected_storage = false },
+        .{ .name = "function-valued initializer keeps named evaluation", .target_kind = .variable_let, .target_writes = 1, .decoy_kind = .variable_const, .decoy_writes = 0, .init_is_fn_or_class = true, .expected_storage = false },
+    };
+
+    var failures: usize = 0;
+    for (scenarios) |scenario| {
+        semantic.symbols.items[0] = cjsStorageTestSymbol("A", scenario.target_kind, scenario.target_writes);
+        semantic.symbols.items[1] = cjsStorageTestSymbol("decoy", scenario.decoy_kind, scenario.decoy_writes);
+        const binding = ExportBinding{
+            .exported_name = "A",
+            .local_name = "A",
+            .local_span = Span.EMPTY,
+            .kind = .local,
+            .declared_via_pattern = scenario.declared_via_pattern,
+            .init_is_fn_or_class = scenario.init_is_fn_or_class,
+            .symbol = symbol_mod.SymbolRef.makeSemantic(module.index, 0),
+        };
+        const actual = module.exportBindingIsCjsStorage(binding);
+        if (actual != scenario.expected_storage) {
+            failures += 1;
+            std.debug.print("CJS export identity case failed: {s}\n", .{scenario.name});
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
+
+    // Restore an eligible target before checking the module and bounds guards.
+    // Otherwise later scenarios could make a missing guard appear harmless.
+    semantic.symbols.items[0] = cjsStorageTestSymbol("A", .variable_let, 1);
+
+    const exact_binding = ExportBinding{
+        .exported_name = "A",
+        .local_name = "A",
+        .local_span = Span.EMPTY,
+        .kind = .local,
+        .symbol = symbol_mod.SymbolRef.makeSemantic(module.index, 0),
+    };
+    try std.testing.expectEqual(@as(?u32, 0), module.exportBindingSemanticIndex(exact_binding));
+
+    // local_name is scanner spelling, not an identity key. The exact semantic
+    // symbol still identifies the exported binding when those spellings drift.
+    var stale_local_name = exact_binding;
+    stale_local_name.local_name = "decoy";
+    try std.testing.expect(module.exportBindingIsCjsStorage(stale_local_name));
+
+    var wrong_module = ExportBinding{
+        .exported_name = "A",
+        .local_name = "A",
+        .local_span = Span.EMPTY,
+        .kind = .local,
+        .symbol = symbol_mod.SymbolRef.makeSemantic(@fromBackingInt(@as(u32, 1)), 0),
+    };
+    try std.testing.expectEqual(@as(?u32, null), module.exportBindingSemanticIndex(wrong_module));
+    try std.testing.expect(!module.exportBindingIsCjsStorage(wrong_module));
+    wrong_module.symbol = symbol_mod.SymbolRef.invalid;
+    try std.testing.expectEqual(@as(?u32, null), module.exportBindingSemanticIndex(wrong_module));
+    try std.testing.expect(!module.exportBindingIsCjsStorage(wrong_module));
+
+    wrong_module.symbol = symbol_mod.SymbolRef.makeSemantic(module.index, 2);
+    try std.testing.expectEqual(@as(?u32, null), module.exportBindingSemanticIndex(wrong_module));
+    try std.testing.expect(!module.exportBindingIsCjsStorage(wrong_module));
+
+    var aliased = wrong_module;
+    aliased.symbol = symbol_mod.SymbolRef.makeSemantic(module.index, 0);
+    aliased.exported_name = "B";
+    try std.testing.expect(!module.exportBindingIsCjsStorage(aliased));
+}
+
+fn cjsStorageTestSymbol(name: []const u8, kind: semantic_symbol.SymbolKind, write_count: u32) Symbol {
+    return .{
+        .name = Span.EMPTY,
+        .scope_id = SemanticScopeId.none,
+        .kind = kind,
+        .decl_flags = kind.declFlags(),
+        .declaration_span = Span.EMPTY,
+        .write_count = write_count,
+        .synthetic_name = name,
+    };
 }
