@@ -8,6 +8,7 @@ const FunctionInfo = ast_plugin_mod.FunctionInfo;
 const transformer_mod = @import("../transformer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
+const ScopeId = @import("../../semantic/scope.zig").ScopeId;
 
 pub const VisitorHookKind = enum { on_program, on_object_expression, on_call_expression, on_class_declaration, on_class_expression };
 
@@ -26,9 +27,9 @@ pub fn dispatchVisitor(self: *Transformer, comptime kind: VisitorHookKind, node_
     return null;
 }
 
-pub fn dispatchFunctionPlugins(self: *Transformer, result: NodeIndex, func_info: FunctionInfo) Error!?NodeIndex {
+pub fn dispatchFunctionPlugins(self: *Transformer, result: NodeIndex, func_info: FunctionInfo, insertion_scope: ScopeId) Error!?NodeIndex {
     if (self.options.plugins.len == 0) return null;
-    var api = AstTransformCtx{ .transformer = self, .modified_body = null };
+    var api = AstTransformCtx{ .transformer = self, .insertion_scope = insertion_scope, .modified_body = null };
     defer api.deinitClosureCache();
     for (self.options.plugins) |p| {
         if (p.onFunction) |hook| {

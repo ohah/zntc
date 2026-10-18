@@ -18978,6 +18978,70 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction trailingCode keeps minified references in the insertion scope', () => {
+    const cases = [
+      {
+        label: 'program scope',
+        source: 'let shared = 40; function marker() {}',
+        functionName: 'marker',
+        expected: '40\n',
+      },
+      {
+        label: 'nested function scope with a shadowing binding',
+        source: 'function outer() { let shared = 100; function nestedMarker() {} } outer();',
+        functionName: 'nestedMarker',
+        expected: '100\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-trailing-symbol-'));
+      const entry = join(dir, 'entry.js');
+      const output = join(dir, 'out.cjs');
+      writeFileSync(entry, fixture.source);
+
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const baseOptions = JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        minify: true,
+        write: false,
+      });
+      const runner = [
+        `import { build } from ${JSON.stringify(coreEntry)};`,
+        `const result = await build({ ...${baseOptions}, plugins: [{ name: 'trailing-reference', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === ${JSON.stringify(fixture.functionName)} ? { trailingCode: ['throw shared;'] } : null); } }] });`,
+        'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+        'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+      ].join('\n');
+
+      try {
+        const buildResult = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          encoding: 'utf8',
+        });
+        expect(buildResult.status, `${fixture.label}: ${buildResult.stderr}`).toBe(0);
+        const outputs = JSON.parse(buildResult.stdout) as string[];
+        expect(outputs).toHaveLength(1);
+        writeFileSync(output, outputs[0]);
+
+        const execute = spawnSync(
+          'node',
+          [
+            '-e',
+            `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(execute.status, `${fixture.label}: ${execute.stderr}`).toBe(0);
+        expect(execute.stdout, fixture.label).toBe(fixture.expected);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }, 60_000);
+
   test('Emotion css prop keeps its exact import identity through bundling and minification', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-symbol-identity-'));
     const emotionDir = join(dir, 'node_modules', '@emotion', 'react');

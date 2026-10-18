@@ -42,6 +42,7 @@ pub const minify = @import("minify.zig");
 
 test {
     _ = transformer;
+    _ = ast_plugin_mod;
     _ = @import("transformer/namespace.zig");
     _ = options;
     _ = runtime_helper_bits;

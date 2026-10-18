@@ -2523,6 +2523,16 @@ pub fn outputOwnedScope(self: *Transformer, owner: NodeIndex) ?ScopeId {
     return if (id) |value| @fromBackingInt(@intCast(value)) else null;
 }
 
+/// Return the lexical scope owning a function's sibling trailing-statement
+/// list. This metadata is only needed by AST plugins, so ordinary transformer
+/// paths must not inspect possibly partial scope maps for it.
+pub fn functionListInsertionScope(self: *Transformer, owner: NodeIndex) ScopeId {
+    if (self.options.plugins.len == 0) return self.current_scope;
+    const function_scope = self.outputOwnedScope(owner) orelse return self.current_scope;
+    if (function_scope.isNone()) return self.current_scope;
+    return self.outputScopeParent(function_scope);
+}
+
 /// Track all copies of a lexical boundary. A source node can be revisited on
 /// separate branches, so the live owner is selected from the final AST later.
 pub fn remapCopiedScopeOwner(self: *Transformer, old: NodeIndex, new: NodeIndex) Transformer.Error!void {

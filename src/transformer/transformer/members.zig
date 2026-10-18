@@ -389,7 +389,7 @@ pub fn visitMethodDefinition(self: *Transformer, source_owner: NodeIndex, node: 
         .flags = flags,
         .source_path = self.options.jsx_filename,
         .is_auto_worklet = is_auto_worklet,
-    })) |replacement| {
+    }, self.functionListInsertionScope(source_owner))) |replacement| {
         return replacement;
     }
 

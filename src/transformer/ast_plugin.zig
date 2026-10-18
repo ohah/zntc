@@ -16,6 +16,8 @@ const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const ast_walk = @import("../parser/ast_walk.zig");
 
 // forward declaration — transformer.zig에서 실제 타입을 import
 const transformer_mod = @import("transformer.zig");
@@ -63,6 +65,9 @@ pub const FunctionInfo = struct {
 /// 내부적으로 Transformer를 위임 호출하므로 별도 상태를 가지지 않는다.
 pub const AstTransformCtx = struct {
     transformer: *Transformer,
+    /// `onFunction` trailing statements execute beside the function, so their
+    /// references resolve in the exact lexical scope that owns that list.
+    insertion_scope: ScopeId = .none,
 
     /// 플러그인이 body를 수정한 경우 새 body 인덱스.
     /// dispatcher가 이 값을 확인하여 result 노드의 extra_data를 패치한다.
@@ -220,6 +225,7 @@ pub const AstTransformCtx = struct {
 
         // 파싱된 노드를 transformer의 AST에 복사
         var result = alloc.alloc(NodeIndex, list.len) catch return error.OutOfMemory;
+        errdefer alloc.free(result);
         var count: usize = 0;
         var si: u32 = 0;
         while (si < list.len) : (si += 1) {
@@ -229,6 +235,7 @@ pub const AstTransformCtx = struct {
 
             // 파싱된 AST의 노드를 transformer AST에 복사
             const copied = self.copyNodeFromParsedAst(&parser_ptr.ast, stmt_idx) catch continue;
+            if (!copied.isNone()) try self.bindInjectedReferences(copied);
             result[count] = copied;
             count += 1;
         }
@@ -238,6 +245,50 @@ pub const AstTransformCtx = struct {
             return &.{};
         }
         return result[0..count];
+    }
+
+    /// Bind references parsed from plugin text at the scope where the
+    /// trailing statement is inserted. The spelling is used once here to
+    /// resolve the source binding; all later consumers receive its exact ID.
+    fn bindInjectedReferences(self: *AstTransformCtx, root: NodeIndex) Error!void {
+        const transformer = self.transformer;
+        if (self.insertion_scope.isNone()) {
+            // Graphless transformer calls have no lexical identity contract.
+            // A semantic edit, however, cannot silently lose this owner.
+            if (transformer.semantic_edit_enabled)
+                std.debug.panic("plugin trailing code has no exact insertion ScopeId", .{});
+            return;
+        }
+
+        const scopes = if (transformer.semantic_editor) |*editor| editor.scopes.items else transformer.scopes;
+        const scope_maps = if (transformer.semantic_editor) |*editor| editor.scope_maps.items else transformer.scope_maps;
+        if (self.insertion_scope.toIndex() >= scopes.len or self.insertion_scope.toIndex() >= scope_maps.len)
+            std.debug.panic("plugin trailing code has an invalid insertion ScopeId", .{});
+
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(transformer.allocator, transformer.ast, root);
+        defer transformer.allocator.free(reachable);
+
+        for (reachable) |raw| {
+            if (raw >= transformer.ast.nodes.items.len) continue;
+            const reference: NodeIndex = @fromBackingInt(@intCast(raw));
+            const node = transformer.ast.nodes.items[raw];
+            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier and node.tag != .jsx_identifier) continue;
+
+            const name = transformer.ast.getText(node.data.string_ref);
+            if (transformer.lexicalSymbolIdAtScope(name, self.insertion_scope)) |raw_id| {
+                if (transformer.semantic_edit_enabled) {
+                    try transformer.trackExactOutputReference(reference, raw_id);
+                } else {
+                    if (transformer.symbol_ids.items.len <= raw)
+                        try transformer.symbol_ids.appendNTimes(transformer.allocator, null, raw + 1 - transformer.symbol_ids.items.len);
+                    if (transformer.symbol_ids.items[raw]) |existing| {
+                        if (existing != raw_id) std.debug.panic("plugin trailing reference changed SymbolId", .{});
+                    } else transformer.symbol_ids.items[raw] = raw_id;
+                }
+            } else {
+                try transformer.markExplicitGlobalReference(reference);
+            }
+        }
     }
 
     /// 파싱된 AST에서 노드를 재귀적으로 transformer AST에 복사한다.
@@ -362,3 +413,133 @@ pub const AstTransformCtx = struct {
         );
     }
 };
+
+const trailing_scope_fixture_count = 10;
+const trailing_scope_fixture_names = [_][]const u8{
+    "shared", "shared", "value2", "value3", "value4", "value5", "value6", "value7", "value8", "value9",
+};
+
+const TrailingScopeFixtureState = struct {
+    insertion_scopes: [trailing_scope_fixture_count]?u32 = @splat(null),
+};
+
+fn injectIdentityFixtureTrailingCode(
+    ctx: ?*anyopaque,
+    api: *AstTransformCtx,
+    func: FunctionInfo,
+) @import("../bundler/plugin.zig").PluginError!void {
+    const name = func.name orelse return;
+    if (!std.mem.startsWith(u8, name, "marker")) return;
+    const index = std.fmt.parseInt(usize, name["marker".len..], 10) catch return error.PluginFailed;
+    if (index >= trailing_scope_fixture_count) return error.PluginFailed;
+    const state: *TrailingScopeFixtureState = @ptrCast(@alignCast(ctx orelse return error.PluginFailed));
+    state.insertion_scopes[index] = @backingInt(api.insertion_scope);
+    const code = try std.fmt.allocPrint(api.getAllocator(), "{s};", .{trailing_scope_fixture_names[index]});
+    defer api.getAllocator().free(code);
+    const statements = try api.parseAndInjectStatements(code);
+    defer api.getAllocator().free(statements);
+    for (statements) |statement| try api.addTrailingStatement(statement);
+}
+
+test "NAPI trailingCode references keep exact binding and insertion scope" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(alloc,
+        \\let shared = 0; function marker0() {}
+        \\{ const shared = 1; function marker1() {} }
+        \\function outer2() { let value2 = 2; function marker2() {} { const value3 = 3; function marker3() {} } }
+        \\function outer4(value7) { let value4 = 4; function marker4() {} function marker7() {} function inner5() { let value5 = 5; function marker5() {} { let value6 = 6; function marker6() {} } } }
+        \\let value8 = 8; class C { method() { function marker8() {} } }
+        \\let value9 = 9; const arrow9 = () => { function marker9() {} };
+    );
+    var parser = @import("../parser/parser.zig").Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    var expected_scopes: [trailing_scope_fixture_count]?u32 = @splat(null);
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration or node.data.extra >= parser.ast.extra_data.items.len) continue;
+        const name_raw = parser.ast.extra_data.items[node.data.extra];
+        if (name_raw >= parser.ast.nodes.items.len) continue;
+        const name_node = parser.ast.nodes.items[name_raw];
+        if (name_node.tag != .binding_identifier) continue;
+        const name = parser.ast.getText(name_node.data.string_ref);
+        for (0..trailing_scope_fixture_count) |index| {
+            const expected_name = try std.fmt.allocPrint(alloc, "marker{d}", .{index});
+            if (!std.mem.eql(u8, name, expected_name)) continue;
+            const function_scope = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.TestUnexpectedResult;
+            expected_scopes[index] = @backingInt(analyzer.scopes.items[function_scope].parent);
+        }
+    }
+
+    var expected_ids: [trailing_scope_fixture_count]?usize = @splat(null);
+    for (0..trailing_scope_fixture_count) |index| {
+        try std.testing.expect(expected_scopes[index] != null);
+        var scope: ScopeId = @fromBackingInt(expected_scopes[index].?);
+        var hops: usize = 0;
+        while (!scope.isNone() and hops < analyzer.scopes.items.len) : (hops += 1) {
+            const scope_index = scope.toIndex();
+            if (analyzer.scope_maps.items[scope_index].get(trailing_scope_fixture_names[index])) |symbol| {
+                expected_ids[index] = symbol;
+                break;
+            }
+            scope = analyzer.scopes.items[scope_index].parent;
+        }
+        try std.testing.expect(expected_ids[index] != null);
+    }
+    var state = TrailingScopeFixtureState{};
+
+    const plugins = [_]transformer_mod.Plugin{.{
+        .name = "exact-trailing-reference-test",
+        .context = @ptrCast(&state),
+        .onFunction = injectIdentityFixtureTrailingCode,
+    }};
+    var transformer = try Transformer.init(alloc, &parser.ast, .{ .plugins = &plugins });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var found_references: [trailing_scope_fixture_count]bool = @splat(false);
+    var found_reference_count: usize = 0;
+
+    for (edited.references) |reference| {
+        if (reference.node_index.isNone()) continue;
+        const ref_node = transformer.ast.getNode(reference.node_index);
+        if (ref_node.tag != .identifier_reference) continue;
+        const ref_name = transformer.ast.getText(ref_node.data.string_ref);
+        var fixture_index: ?usize = null;
+        for (0..trailing_scope_fixture_count) |index| {
+            if (std.mem.eql(u8, ref_name, trailing_scope_fixture_names[index]) and
+                state.insertion_scopes[index] == @backingInt(reference.scope_id))
+            {
+                fixture_index = index;
+                break;
+            }
+        }
+        const index = fixture_index orelse continue;
+        try std.testing.expect(!found_references[index]);
+        found_references[index] = true;
+        found_reference_count += 1;
+        const sid = @backingInt(reference.symbol_id);
+        try std.testing.expectEqual(@as(?u32, @intCast(sid)), edited.symbol_ids[@backingInt(reference.node_index)]);
+        try std.testing.expectEqual(@as(u32, @intCast(expected_ids[index].?)), sid);
+        try std.testing.expectEqual(expected_scopes[index].?, @backingInt(reference.scope_id));
+        try std.testing.expectEqual(expected_scopes[index].?, state.insertion_scopes[index].?);
+        try std.testing.expect(reference.flags.read);
+    }
+
+    try std.testing.expectEqual(trailing_scope_fixture_count, found_reference_count);
+    for (found_references) |found| try std.testing.expect(found);
+    _ = root;
+}
