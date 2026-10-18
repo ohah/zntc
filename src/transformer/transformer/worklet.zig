@@ -21,6 +21,7 @@ const token_mod = @import("../../lexer/token.zig");
 const Span = token_mod.Span;
 const es_helpers = @import("../es_helpers.zig");
 const transformer_mod = @import("../transformer.zig");
+const semantic_mod = @import("../../semantic/analyzer.zig");
 const Transformer = transformer_mod.Transformer;
 const Error = Transformer.Error;
 const string_list = @import("../../util/string_list.zig");
@@ -989,25 +990,52 @@ pub fn generateInitCode(
         .data = .{ .list = prog_list },
     });
 
+    // __initData.code is a detached serialized program. Its closure destructuring
+    // bindings and the body references must resolve in one graph, independently
+    // of the outer module graph (where captured references still name outer
+    // symbols). Analyze this exact program before codegen so every emitted
+    // identifier is looked up by the payload's own SymbolId and ScopeId.
+    var payload_semantic = try analyzeSerializedProgram(self.allocator, self.ast, program);
+    defer payload_semantic.deinit();
+
     // Codegen으로 code string 생성 (minified, TS 타입 스트리핑 완료된 AST 사용)
-    const codegen_mod = @import("../../codegen/codegen.zig");
-    var codegen = codegen_mod.Codegen.initWithOptions(self.allocator, self.ast, .{
-        .minify_whitespace = true,
-        // The init-data body is the pre-transform source AST. Reuse its exact
-        // semantic graph so runtime TS enum/namespace IIFEs use their analyzed
-        // parameter SymbolId instead of reconstructing a name from text.
-        .semantic_symbol_ids = self.symbol_ids.items,
-        .semantic_symbols = self.symbols,
-        .semantic_scope_maps = self.scope_maps,
-        .generated_iife_scope_owner_map = &self.scope_owner_map,
-        .require_generated_iife_symbols = true,
-        .namespace_declaration_owners = self.namespace_declaration_owners,
-    });
+    var codegen = initSerializedCodegen(self.allocator, self.ast, &payload_semantic);
     const code = codegen.generate(program) catch return error.OutOfMemory;
     // codegen의 buf는 codegen이 소유 → 복제 필요
     const duped = self.allocator.dupe(u8, code) catch return error.OutOfMemory;
     codegen.deinit();
     return duped;
+}
+
+fn analyzeSerializedProgram(allocator: std.mem.Allocator, ast: *Ast, program: NodeIndex) Error!semantic_mod.SemanticAnalyzer {
+    const previous_transformed_root = ast.transformed_root;
+    ast.transformed_root = program;
+    defer ast.transformed_root = previous_transformed_root;
+
+    var semantic = semantic_mod.SemanticAnalyzer.init(allocator, ast);
+    semantic.is_ts = ast.is_typescript;
+    errdefer semantic.deinit();
+    semantic.analyze() catch return error.OutOfMemory;
+    return semantic;
+}
+
+fn initSerializedCodegen(
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    semantic: *const semantic_mod.SemanticAnalyzer,
+) @import("../../codegen/codegen.zig").Codegen {
+    const codegen_mod = @import("../../codegen/codegen.zig");
+    return codegen_mod.Codegen.initWithOptions(allocator, ast, .{
+        .minify_whitespace = true,
+        // Worklet names and __closure keys are serialization contracts; this
+        // graph supplies identity without applying the outer bundle's mangle.
+        .semantic_symbol_ids = semantic.symbol_ids.items,
+        .semantic_symbols = semantic.symbols.items,
+        .semantic_scope_maps = semantic.scope_maps.items,
+        .generated_iife_scope_owner_map = &semantic.scope_owner_map,
+        .require_generated_iife_symbols = true,
+        .namespace_declaration_owners = &semantic.namespace_declaration_owners,
+    });
 }
 
 /// const { var1, var2, ... } = this.__closure; 문을 생성한다.
@@ -1071,4 +1099,139 @@ fn buildClosureDestructuring(self: *Transformer, closure_vars: []const ClosureVa
         decl_list.start,
         decl_list.len,
     });
+}
+
+test "worklet serialized program resolves aliases and shadowed names by SymbolId" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function payload(param) {
+        \\  const { external: alias, same } = this.__closure;
+        \\  function shadow(same) { return same; }
+        \\  return alias + same + param + payload() + shadow(1);
+        \\}
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const program = try parser.parse();
+    var semantic = try analyzeSerializedProgram(allocator, &parser.ast, program);
+    defer semantic.deinit();
+
+    const find = struct {
+        fn node(ast: *const Ast, name: []const u8, tag: Tag, occurrence: usize) ?u32 {
+            var seen: usize = 0;
+            for (ast.nodes.items, 0..) |candidate, index| {
+                if (candidate.tag != tag or !std.mem.eql(u8, ast.getText(candidate.span), name)) continue;
+                if (seen != occurrence) {
+                    seen += 1;
+                    continue;
+                }
+                return @intCast(index);
+            }
+            return null;
+        }
+    }.node;
+
+    const alias_binding = find(&parser.ast, "alias", .binding_identifier, 0) orelse return error.TestUnexpectedResult;
+    const alias_ref = find(&parser.ast, "alias", .identifier_reference, 0) orelse return error.TestUnexpectedResult;
+    const same_outer_binding = find(&parser.ast, "same", .binding_identifier, 0) orelse return error.TestUnexpectedResult;
+    const same_inner_binding = find(&parser.ast, "same", .binding_identifier, 1) orelse return error.TestUnexpectedResult;
+    const same_inner_ref = find(&parser.ast, "same", .identifier_reference, 0) orelse return error.TestUnexpectedResult;
+    const same_outer_ref = find(&parser.ast, "same", .identifier_reference, 1) orelse return error.TestUnexpectedResult;
+    const param_binding = find(&parser.ast, "param", .binding_identifier, 0) orelse return error.TestUnexpectedResult;
+    const param_ref = find(&parser.ast, "param", .identifier_reference, 0) orelse return error.TestUnexpectedResult;
+    const payload_binding = find(&parser.ast, "payload", .binding_identifier, 0) orelse return error.TestUnexpectedResult;
+    const payload_ref = find(&parser.ast, "payload", .identifier_reference, 0) orelse return error.TestUnexpectedResult;
+
+    const ids = semantic.symbol_ids.items;
+    try std.testing.expectEqual(ids[alias_binding], ids[alias_ref]);
+    try std.testing.expectEqual(ids[same_outer_binding], ids[same_outer_ref]);
+    try std.testing.expectEqual(ids[same_inner_binding], ids[same_inner_ref]);
+    try std.testing.expectEqual(ids[param_binding], ids[param_ref]);
+    try std.testing.expectEqual(ids[payload_binding], ids[payload_ref]);
+    try std.testing.expect(ids[alias_binding] != null);
+    try std.testing.expect(ids[same_outer_binding] != null);
+    try std.testing.expect(ids[same_outer_binding] != ids[same_inner_binding]);
+}
+
+test "worklet serialized identity resists ten hostile binding shapes" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+
+    const Fixture = struct {
+        source: []const u8,
+        binding: []const u8,
+        reference: []const u8,
+    };
+    const fixtures = [_]Fixture{
+        .{ .source = "function payload(){ const {external: alias} = this.__closure; return alias; }", .binding = "alias", .reference = "alias" },
+        .{ .source = "function payload(){ const {value} = this.__closure; return value; }", .binding = "value", .reference = "value" },
+        .{ .source = "function payload(){ const {value = fallback} = this.__closure; return value; }", .binding = "value", .reference = "value" },
+        .{ .source = "function payload(){ const {nested: {leaf}} = this.__closure; return leaf; }", .binding = "leaf", .reference = "leaf" },
+        .{ .source = "function payload(){ const {value, ...rest} = this.__closure; return rest.value; }", .binding = "rest", .reference = "rest" },
+        .{ .source = "function payload(){ function recurse(){ return recurse(); } return recurse(); }", .binding = "recurse", .reference = "recurse" },
+        .{ .source = "function payload(){ try { throw 1; } catch (caught) { return caught; } }", .binding = "caught", .reference = "caught" },
+        .{ .source = "function payload(){ for (const item of items) consume(item); return 0; }", .binding = "item", .reference = "item" },
+        .{ .source = "function payload(){ let selected = 1; switch (selected) { case 1: selected += 1; } return selected; }", .binding = "selected", .reference = "selected" },
+        .{ .source = "function payload(){ function nested(input){ return input; } return nested(value); }", .binding = "input", .reference = "input" },
+    };
+
+    const find = struct {
+        fn node(ast: *const Ast, name: []const u8, tag: Tag) ?u32 {
+            for (ast.nodes.items, 0..) |candidate, index| {
+                if (candidate.tag == tag and std.mem.eql(u8, ast.getText(candidate.span), name)) return @intCast(index);
+            }
+            return null;
+        }
+    }.node;
+
+    for (fixtures) |fixture| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+
+        var scanner = try Scanner.init(allocator, fixture.source);
+        var parser = Parser.init(allocator, &scanner);
+        parser.configureFromExtension(".ts");
+        const program = try parser.parse();
+        var semantic = try analyzeSerializedProgram(allocator, &parser.ast, program);
+        defer semantic.deinit();
+
+        const binding = find(&parser.ast, fixture.binding, .binding_identifier) orelse return error.TestUnexpectedResult;
+        const reference = find(&parser.ast, fixture.reference, .identifier_reference) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(semantic.symbol_ids.items[binding] != null);
+        try std.testing.expectEqual(semantic.symbol_ids.items[binding], semantic.symbol_ids.items[reference]);
+    }
+}
+
+test "worklet serialized codegen requires detached enum and namespace identities" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\namespace Outer { export namespace Inner { export const value = 1; } }
+        \\enum Mode { Idle = 1, Busy = 2 }
+        \\function payload() { return Outer.Inner.value + Mode.Busy; }
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    const program = try parser.parse();
+    var semantic = try analyzeSerializedProgram(allocator, &parser.ast, program);
+    defer semantic.deinit();
+
+    var codegen = initSerializedCodegen(allocator, &parser.ast, &semantic);
+    defer codegen.deinit();
+    const output = try codegen.generate(program);
+    try std.testing.expect(output.len > 0);
 }
