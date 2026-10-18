@@ -8,6 +8,7 @@
 //
 // 규칙: src/ 안의 모든 `ast_walk.children()` 호출처(주석/정의 제외)는 아래 ALLOWLIST 의
 // 한 분류에 *명시적으로* (file::fn 키로) 등록돼야 한다. 등록 안 된 신규 호출처가 있으면 CI 실패.
+// iterative_safe / one_level 항목은 함수 본문에 직접 자기 재귀 호출이 다시 들어와도 CI 실패한다.
 //   - iterative_safe   : 명시 스택/큐/collector 또는 sanctioned 헬퍼(walkPreorderIterative).
 //                        깊이 무관 안전.
 //   - one_level        : 재귀 없이 직계 자식만 1단계 순회(flat). 깊이 무관 안전.
@@ -47,7 +48,7 @@ const ALLOWLIST = {
   "src/transformer/es2015_block_scoping.zig::collectChildIndices": { class: "iterative_safe", note: "one-level collector feeding caller stack" },
   "src/transformer/transformer/worklet.zig::collectAllIdentifiers": { class: "iterative_safe", note: "explicit stack (worklet)" },
   "src/transformer/transformer/worklet.zig::collectNewExpressionCallees": { class: "iterative_safe", note: "explicit stack (worklet)" },
-  "src/transformer/transformer/worklet.zig::walkBodyForClosureAnalysis": { class: "iterative_safe", note: "explicit stack; nested-fn depth bounded by source nesting" },
+  "src/transformer/transformer/worklet.zig::walkBodyForClosureAnalysis": { class: "iterative_safe", allowDirectRecursion: true, note: "explicit stack for ordinary AST descent; recursion only enters nested function bodies and is bounded by source nesting" },
   "src/bundler/tree_shaker/const_materialize.zig::anyReachableNode": { class: "iterative_safe", note: "numeric_dfs_stack" },
   "src/semantic/reference_walk.zig::collectIdentifierReferences": { class: "iterative_safe", note: "explicit edge stack and one-level child collector" },
   "src/transformer/es2015_class/members.zig::moveInstanceInitScopes": { class: "iterative_safe", note: "explicit node stack for field initializer scope transfer" },
@@ -129,12 +130,55 @@ function stripLineComment(line) {
   return i === -1 ? line : line.slice(0, i);
 }
 
+// Function-body scan used to catch a listed iterative walker being changed back
+// into direct recursion. Ignore Zig line comments and quoted/multiline strings
+// so braces and function-name text inside them cannot affect the scan.
+function stripZigCode(line) {
+  if (line.trimStart().startsWith("\\\\")) return ""; // multiline string line
+  let out = "";
+  let quote = null;
+  let escaped = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (ch === "\\") escaped = true;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "/" && line[i + 1] === "/") break;
+    out += ch;
+  }
+  return out;
+}
+
+function braceDelta(code) {
+  let delta = 0;
+  for (const ch of code) {
+    if (ch === "{") delta++;
+    else if (ch === "}") delta--;
+  }
+  return delta;
+}
+
+function directRecursiveCall(code, fnName) {
+  return new RegExp(`\\b${fnName}\\s*\\(`).test(code);
+}
+
 const callSites = [];
+const directRecursiveSites = [];
 for (const file of listZigFiles(srcRoot)) {
   if (file.endsWith("_test.zig")) continue; // 테스트 파일만 제외(경로 substring 아님)
   const rel = relative(root, file).split("\\").join("/");
   const lines = readFileSync(file, "utf8").split("\n");
   let curFn = "<file-scope>";
+  let pendingFn = null;
+  let bodyFn = null;
+  let bodyDepth = 0;
   for (let i = 0; i < lines.length; i++) {
     const code = stripLineComment(lines[i]);
     const fnMatch = code.match(FN_DECL);
@@ -142,6 +186,35 @@ for (const file of listZigFiles(srcRoot)) {
     if (!CALL.test(code)) continue;
     if (/\bfn\s+children\s*\(/.test(code)) continue; // children() 정의 자체
     callSites.push({ key: `${rel}::${curFn}`, file: rel, line: i + 1, fn: curFn });
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const code = stripZigCode(lines[i]);
+    if (bodyFn === null) {
+      const fnMatch = code.match(FN_DECL);
+      if (fnMatch) pendingFn = fnMatch[1];
+      if (pendingFn === null) continue;
+
+      const bodyStart = code.indexOf("{");
+      if (bodyStart === -1) continue; // multiline function signature
+      bodyFn = pendingFn;
+      pendingFn = null;
+      const bodyCode = code.slice(bodyStart + 1);
+      const entry = ALLOWLIST[`${rel}::${bodyFn}`];
+      if (entry && entry.class !== "recursive_tracked" && !entry.allowDirectRecursion && directRecursiveCall(bodyCode, bodyFn)) {
+        directRecursiveSites.push({ file: rel, line: i + 1, fn: bodyFn });
+      }
+      bodyDepth = 1 + braceDelta(bodyCode);
+      if (bodyDepth <= 0) bodyFn = null;
+      continue;
+    }
+
+    const entry = ALLOWLIST[`${rel}::${bodyFn}`];
+    if (entry && entry.class !== "recursive_tracked" && !entry.allowDirectRecursion && directRecursiveCall(code, bodyFn)) {
+      directRecursiveSites.push({ file: rel, line: i + 1, fn: bodyFn });
+    }
+    bodyDepth += braceDelta(code);
+    if (bodyDepth <= 0) bodyFn = null;
   }
 }
 
@@ -163,7 +236,13 @@ console.log(
   `  iterative_safe=${byClass.iterative_safe}  one_level=${byClass.one_level}  recursive_tracked=${byClass.recursive_tracked}`,
 );
 
-if (violations.length > 0) {
+if (directRecursiveSites.length > 0) {
+  console.error("\n❌ iterative_safe / one_level walker 의 직접 자기 재귀 호출:");
+  for (const v of directRecursiveSites) console.error(`  ${v.file}:${v.line}  fn ${v.fn}`);
+  console.error("명시 스택/큐 순회를 유지하거나 recursive_tracked 로 분류하세요.");
+}
+
+if (violations.length > 0 || directRecursiveSites.length > 0) {
   console.error("\n❌ 분류되지 않은 ast_walk.children() 호출처:");
   for (const v of violations) console.error(`  ${v.file}:${v.line}  fn ${v.fn}`);
   console.error(
