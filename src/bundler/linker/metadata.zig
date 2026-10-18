@@ -1496,6 +1496,27 @@ pub fn buildMetadataForAst(
             !std.mem.eql(u8, symbol.synthetic_name, symbol.output_name_hint))
             return error.InvalidRuntimeHelperImportOutputBinding;
 
+        // For an internal import, the regular import-binding pass above has
+        // already renamed this SymbolId to the provider's canonical name. The
+        // helper's local mangled name is not a valid replacement: provider and
+        // importer are distinct SymbolIds, so each can receive a different
+        // short name even though scope-hoisting removes the import declaration.
+        var linked_helper_import = false;
+        for (m.import_bindings) |ib| {
+            if (!ib.is_helper or ib.local_symbol.semanticIndex() != @as(?u32, @intCast(raw_symbol_id)) or
+                ib.import_record_index >= m.import_records.len) continue;
+            if (self.getResolvedBinding(module_index, ib.local_span) == null) continue;
+            const rec = m.import_records[ib.import_record_index];
+            if (rec.is_external or rec.resolved.isNone()) continue;
+            if (self.graph.getModule(rec.resolved)) |target| {
+                if (!target.is_external) {
+                    linked_helper_import = true;
+                    break;
+                }
+            }
+        }
+        if (linked_helper_import) continue;
+
         const symbol_id = bundler_symbol.SymbolID.make(
             @fromBackingInt(@intCast(module_index)),
             @as(u32, @intCast(raw_symbol_id)),
