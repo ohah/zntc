@@ -3442,6 +3442,24 @@ pub fn trackKnownSyntheticTempReferenceInScope(
         syntheticTempOutputScopeIsDeferred(self, scope)) return false;
 
     const symbol_id = try lookupVisibleSyntheticTempSymbol(self, name_span, scope) orelse return false;
+    if (self.getSymbolIdAt(node)) |raw_id| {
+        if (raw_id != @backingInt(symbol_id)) return editError(error.InvalidSymbol);
+        const editor = try editorFor(self);
+        const existing = (editor.referenceForNode(node) catch |err| return editError(err)) orelse
+            return editError(error.InvalidSymbol);
+        if (existing.symbol_id != symbol_id or !std.meta.eql(existing.flags, flags))
+            return editError(error.InvalidSymbol);
+        if (existing.scope_id != scope) {
+            editor.relocateReference(
+                node,
+                scope,
+                symbol_id,
+                existing.stmt_idx,
+                existing.scope_stmt_idx,
+            ) catch |err| return editError(err);
+        }
+        return true;
+    }
     try addSyntheticRefInScope(self, node, symbol_id, scope, flags);
     return true;
 }

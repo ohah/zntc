@@ -26,6 +26,18 @@ const es2022 = @import("../es2022.zig");
 const class_private_fields = @import("../es2015_class/private_fields.zig");
 const PrivateMethodMapping = Transformer.PrivateMethodMapping;
 
+/// Preserve the producer handle for class computed-key memo temps. The
+/// eventual `var` binding is hoisted outside the class, but references created
+/// here belong to this lexical owner and should not rediscover their identity
+/// from the generated spelling and source span.
+fn captureClassComputedKey(self: *Transformer, value: NodeIndex, span: Span) Error!es_helpers.TempCapture {
+    return es_helpers.captureToTrackedTemp(self, value, span);
+}
+
+fn makeClassComputedKeyRead(self: *Transformer, capture: es_helpers.TempCapture, span: Span) Error!NodeIndex {
+    return es_helpers.makeCapturedTempRef(self, capture, span, .{ .read = true });
+}
+
 fn trackPrivateHelperPrelude(
     self: *Transformer,
     source_idx: NodeIndex,
@@ -989,15 +1001,8 @@ pub fn hoistLegacyDecoratorComputedMethodKeys(
             continue;
         }
 
-        const temp_span = try es_helpers.makeTempVarSpan(self);
-        const write_ref = try es_helpers.makeTempVarRef(self, temp_span, key.span);
-        if (self.semantic_edit_enabled)
-            try self.trackSyntheticTempReference(temp_span, key.span, write_ref, .{ .write = true });
-        const assignment = try self.ast.addNode(.{
-            .tag = .assignment_expression,
-            .span = key.span,
-            .data = .{ .binary = .{ .left = write_ref, .right = key.data.unary.operand, .flags = 0 } },
-        });
+        const captured = try captureClassComputedKey(self, key.data.unary.operand, key.span);
+        const assignment = captured.paren_assign;
         const computed_key = try self.ast.addNode(.{
             .tag = .computed_property_key,
             .span = key.span,
@@ -1068,14 +1073,8 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
             try es_helpers.makeToPropertyKey(self, visited_key, key_node.span)
         else
             visited_key;
-        const temp_span = try es_helpers.makeTempVarSpan(self);
-        const write_ref = try es_helpers.makeSyntheticRefFromSpan(self, temp_span);
-        if (self.semantic_edit_enabled) try self.trackSyntheticTempReference(temp_span, key_node.span, write_ref, .{ .write = true });
-        const assign = try self.ast.addNode(.{
-            .tag = .assignment_expression,
-            .span = key_node.span,
-            .data = .{ .binary = .{ .left = write_ref, .right = value, .flags = 0 } },
-        });
+        const captured = try captureClassComputedKey(self, value, key_node.span);
+        const assign = captured.paren_assign;
         if (tag == .class_expression) {
             try key_assigns.append(self.allocator, assign);
         } else {
@@ -1084,7 +1083,7 @@ fn hoistAllComputedKeys(self: *Transformer, tag: Node.Tag, body_idx: NodeIndex, 
         const new_key = try self.ast.addNode(.{
             .tag = .computed_property_key,
             .span = key_node.span,
-            .data = .{ .unary = .{ .operand = try es_helpers.makeSyntheticRefFromSpan(self, temp_span), .flags = key_node.data.unary.flags } },
+            .data = .{ .unary = .{ .operand = try makeClassComputedKeyRead(self, captured, key_node.span), .flags = key_node.data.unary.flags } },
         });
         var slots: [6]u32 = undefined;
         for (0..slot_count) |k| slots[k] = self.ast.extra_data.items[me + k];
@@ -1129,4 +1128,82 @@ pub fn lowerClassWithPrehoistedKeys(
     const list = try self.ast.addNodeList(key_assigns.items);
     const seq = try self.ast.addListNode(.sequence_expression, node.span, list);
     return self.ast.addNode(.{ .tag = .parenthesized_expression, .span = node.span, .data = .{ .unary = .{ .operand = seq, .flags = 0 } } });
+}
+
+test "#4819 class computed-key read retains its producer handle after lookup loss" {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const value = 1; function inner() {}");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
+        return error.MissingProgramScope;
+    var function_scope: @import("../../semantic/scope.zig").ScopeId = .none;
+    var owner_iterator = analyzer.scope_owner_map.iterator();
+    while (owner_iterator.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag != .function_declaration) continue;
+        function_scope = @fromBackingInt(@intCast(entry.value_ptr.*));
+        break;
+    }
+    if (function_scope.isNone()) return error.MissingFunctionScope;
+
+    var value: NodeIndex = .none;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .numeric_literal) continue;
+        value = @fromBackingInt(@intCast(raw));
+        break;
+    }
+    if (value.isNone()) return error.MissingCapturedValue;
+    const value_span = parser.ast.getNode(value).span;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @fromBackingInt(@intCast(program_scope));
+
+    const captured = try captureClassComputedKey(&transformer, value, value_span);
+    const id = captured.symbol_id orelse return error.MissingProducerSymbolId;
+    try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
+
+    const relocated_read = try makeClassComputedKeyRead(&transformer, captured, value_span);
+    try std.testing.expect(try transformer.trackKnownSyntheticTempReferenceInScope(
+        captured.span,
+        relocated_read,
+        function_scope,
+        .{ .read = true },
+    ));
+    const editor = if (transformer.semantic_editor) |*value_editor| value_editor else return error.MissingSemanticEditor;
+    const relocated_reference = (try editor.referenceForNode(relocated_read)) orelse return error.MissingRelocatedReference;
+    try std.testing.expectEqual(function_scope, relocated_reference.scope_id);
+
+    // A consumer must use the handle itself; name/span lookup is unavailable
+    // after the producer and would try to reserve the same binding again.
+    transformer.synthetic_temp_symbol_ids.clearRetainingCapacity();
+    const read = try makeClassComputedKeyRead(&transformer, captured, value_span);
+    try std.testing.expectEqual(@backingInt(id), transformer.getSymbolIdAt(read) orelse return error.MissingReadSymbolId);
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    var found_read = false;
+    for (editor.references.items) |reference| {
+        if (reference.node_index != read) continue;
+        try std.testing.expectEqual(id, reference.symbol_id);
+        try std.testing.expect(reference.flags.read);
+        found_read = true;
+    }
+    try std.testing.expect(found_read);
 }
