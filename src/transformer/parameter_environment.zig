@@ -949,13 +949,13 @@ fn runtimeNameCall(self: anytype, value: ast_mod.NodeIndex, key_ref: ast_mod.Nod
     return es_helpers.makeCallExpr(self, callee, &.{ value, key_ref }, span);
 }
 
-pub const CapturedKey = struct { key: ast_mod.NodeIndex, temp: @import("../lexer/token.zig").Span };
+pub const CapturedKey = struct { key: ast_mod.NodeIndex, temp: es_helpers.TempIdentityCapture };
 
 /// `_t = key`: evaluate a runtime computed key once into a temp so the value
 /// can be named after it (#5527).
 pub fn captureRuntimeKey(self: anytype, key_expr: ast_mod.NodeIndex, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!CapturedKey {
-    const temp = try es_helpers.makeTempVarSpan(self);
-    const target = try es_helpers.makeTrackedTempRef(self, temp, temp, .{ .write = true });
+    const temp = try es_helpers.reserveTrackedTempIdentity(self, span);
+    const target = try es_helpers.makeTempRefFromIdentity(self, temp, temp.span, .{ .write = true });
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
         .span = span,
@@ -965,8 +965,8 @@ pub fn captureRuntimeKey(self: anytype, key_expr: ast_mod.NodeIndex, span: @impo
 }
 
 /// `__name(value, _t[, prefix])` for a key captured by `captureRuntimeKey`.
-pub fn nameByTemp(self: anytype, value: ast_mod.NodeIndex, temp: @import("../lexer/token.zig").Span, prefix: ?[]const u8, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
-    return runtimeNameCall(self, value, try es_helpers.makeTrackedTempRef(self, temp, temp, .{ .read = true }), prefix, span);
+pub fn nameByTemp(self: anytype, value: ast_mod.NodeIndex, temp: es_helpers.TempIdentityCapture, prefix: ?[]const u8, span: @import("../lexer/token.zig").Span) std.mem.Allocator.Error!ast_mod.NodeIndex {
+    return runtimeNameCall(self, value, try es_helpers.makeTempRefFromIdentity(self, temp, temp.span, .{ .read = true }), prefix, span);
 }
 
 /// Whether a field or property value takes its name from a runtime computed
