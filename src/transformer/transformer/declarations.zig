@@ -369,6 +369,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
 
     // Plugin dispatch: onFunction (AST 훅)
     const is_auto_worklet = self.plugins.worklet.auto_next;
+    const plugin_insertion_scope = self.functionListInsertionScope(source_idx);
     if (try self.dispatchFunctionPlugins(result, .{
         .node_idx = result,
         .node_tag = node.tag,
@@ -380,7 +381,7 @@ pub fn visitFunction(self: *Transformer, node: Node, source_idx: NodeIndex) Erro
         .flags = self.readU32(e, 3),
         .source_path = self.options.jsx_filename,
         .is_auto_worklet = is_auto_worklet,
-    })) |replacement| {
+    }, plugin_insertion_scope)) |replacement| {
         return replacement;
     }
 

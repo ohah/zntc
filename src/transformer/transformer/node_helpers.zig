@@ -357,7 +357,7 @@ pub fn makeLexicalScopeRef(self: anytype, name: []const u8) Error!NodeIndex {
     return makeLexicalScopeRefAtScope(self, name, self.current_scope);
 }
 
-fn lexicalSymbolIdAtScope(self: anytype, name: []const u8, scope: @import("../../semantic/scope.zig").ScopeId) ?u32 {
+pub fn lexicalSymbolIdAtScope(self: anytype, name: []const u8, scope: @import("../../semantic/scope.zig").ScopeId) ?u32 {
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
     const scope_maps = if (self.semantic_editor) |*editor| editor.scope_maps.items else self.scope_maps;
     var cursor = scope;

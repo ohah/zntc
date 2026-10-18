@@ -954,6 +954,7 @@ pub const Transformer = struct {
     pub const makeRootScopeRef = node_helpers.makeRootScopeRef;
     pub const makeLexicalScopeRef = node_helpers.makeLexicalScopeRef;
     pub const makeLexicalScopeRefAtScope = node_helpers.makeLexicalScopeRefAtScope;
+    pub const lexicalSymbolIdAtScope = node_helpers.lexicalSymbolIdAtScope;
     pub fn markExplicitGlobalReference(self: *Transformer, node: NodeIndex) !void {
         if (self.synthetic_idents == null and !self.record_explicit_global_references) return;
         try self.explicit_global_reference_nodes.put(self.allocator, @backingInt(node), {});
@@ -990,6 +991,7 @@ pub const Transformer = struct {
     pub const outputScopeParent = @import("transformer/semantic_edit.zig").outputScopeParent;
     pub const reparentMovedStaticInitializerScopes = @import("transformer/semantic_edit.zig").reparentMovedStaticInitializerScopes;
     pub const outputOwnedScope = @import("transformer/semantic_edit.zig").outputOwnedScope;
+    pub const functionListInsertionScope = @import("transformer/semantic_edit.zig").functionListInsertionScope;
     pub const remapCopiedScopeOwner = @import("transformer/semantic_edit.zig").remapCopiedScopeOwner;
     pub const removeInPlaceScopeOwner = @import("transformer/semantic_edit.zig").removeInPlaceScopeOwner;
     pub const originalFunctionScope = @import("transformer/semantic_edit.zig").originalFunctionScope;

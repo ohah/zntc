@@ -82,11 +82,16 @@ console.log(methods.read.call({ input: 'home' }), _obj, _obj$1, _obj$2);`,
     expect(transformed.status, transformed.stderr).toBe(0);
     const mode = transformed.stderr
       .split(/\r?\n/)
-      .find((line) => line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('input.js'));
+      .find(
+        (line) =>
+          line.startsWith('zntc: symbol-identity-prepass-mode ') && line.includes('input.js'),
+      );
     expect(mode, transformed.stderr).toContain('semantic_graph=reanalyzed');
     const report = transformed.stderr
       .split(/\r?\n/)
-      .find((line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('input.js'));
+      .find(
+        (line) => line.startsWith('zntc: symbol-identity-prepass ') && line.includes('input.js'),
+      );
     expect(report, transformed.stderr).toMatch(/clean=1(?:\s|$)/);
     const code = readFileSync(output, 'utf8');
     expect(code).toMatch(/function\s*\(_obj\$3\)\s*\{/);
@@ -607,7 +612,9 @@ var base = { read() { return this.input; } };
           .split(/\r?\n/)
           .find((line) => line.startsWith('zntc: symbol-identity ') && line.includes('input.js'));
         expect(report, `${item.name}: ${transformed.stderr}`).toMatch(/missing_binding=0(?:\s|$)/);
-        expect(report, `${item.name}: ${transformed.stderr}`).toMatch(/unclassified_reference=0(?:\s|$)/);
+        expect(report, `${item.name}: ${transformed.stderr}`).toMatch(
+          /unclassified_reference=0(?:\s|$)/,
+        );
         expect(report, item.name).toMatch(/clean=1(?:\s|$)/);
         const actual = spawnSync('node', [output], { cwd: fixture.dir, encoding: 'utf8' });
         expect(actual.status, `${item.name}: ${actual.stderr}`).toBe(0);
