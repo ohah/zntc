@@ -154,7 +154,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // Capture first: the class lowering reads the temp.
                     const captured = try pe.captureRuntimeKey(self, try self.visitNode(self.ast.getNode(key_idx).data.unary.operand), span);
                     const bound = if (class_key)
-                        try pe.bindRuntimeKeyClass(self, key_idx, val_idx, try es_helpers.makeIdentifierRefFromSpan(self, captured.temp))
+                        try pe.bindRuntimeKeyClass(self, key_idx, val_idx, try es_helpers.makeIdentifierRefFromSpan(self, captured.temp.span))
                     else
                         null;
                     var value = try self.visitNode(val_idx);

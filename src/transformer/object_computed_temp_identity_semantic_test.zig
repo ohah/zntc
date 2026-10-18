@@ -81,10 +81,20 @@ fn checkObjectComputedTempIdentity(source: []const u8) !void {
         if (id >= editor.symbols.items.len) return error.InvalidProducerSymbolId;
         if (!sameSpan(editor.symbols.items[id].declaration_span, object_span)) continue;
         producer_count += 1;
-        producer_id = id;
-        producer_counter = entry.key_ptr.*;
+        // The object memo is reserved before lowering property values. A
+        // runtime-key name capture may reserve another temp with the same
+        // declaration span, so select the first producer slot here.
+        if (producer_counter) |existing| {
+            if (entry.key_ptr.* < existing) {
+                producer_id = id;
+                producer_counter = entry.key_ptr.*;
+            }
+        } else {
+            producer_id = id;
+            producer_counter = entry.key_ptr.*;
+        }
     }
-    try std.testing.expectEqual(@as(usize, 1), producer_count);
+    try std.testing.expect(producer_count > 0);
 
     const id = producer_id orelse return error.MissingObjectTempProducerSymbol;
     const counter = producer_counter orelse return error.MissingObjectTempProducerSlot;
