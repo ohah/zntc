@@ -58,7 +58,8 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             const members_len = node.data.list.len;
 
             // 임시 변수 생성
-            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_capture = try es_helpers.reserveTrackedTempIdentity(self, span);
+            const temp_span = temp_capture.span;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -102,7 +103,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             });
 
             // _a = { ... }
-            const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .write = true });
+            const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .write = true });
             const init_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -133,7 +134,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                     // 일반/async/generator 메서드는 es2015_object_methods가 먼저 object_property로 변환한다.
                     // getter/setter 외의 메서드가 여기 도달하면 pass 순서가 깨진 것.
                     std.debug.assert(is_getter or is_setter);
-                    const define_call = try emitDefineAccessor(self, @fromBackingInt(@intCast(raw_idx)), is_getter, temp_span, span);
+                    const define_call = try emitDefineAccessor(self, @fromBackingInt(@intCast(raw_idx)), is_getter, temp_capture, span);
                     try self.scratch.append(self.allocator, define_call);
                     continue;
                 }
@@ -161,7 +162,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                         try pe.finishRuntimeKeyClass(self, bound, val_idx, value, false, self.current_scope, span)
                     else
                         try pe.nameByTemp(self, value, captured.temp, null, span);
-                    const obj_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true });
+                    const obj_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true });
                     const member_expr = try es_helpers.makeComputedMember(self, obj_ref, captured.key, span);
                     const assign = try self.ast.addNode(.{
                         .tag = .assignment_expression,
@@ -183,7 +184,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
                 // (dot)로 emit → `_a."q\"z"`/`_a.10` 같은 비-identifier 키가
                 // SyntaxError. property 키는 rename 비대상이라 makeMemberFromKeyIdx
                 // 가 (computed inner 만 visit, 그 외 span 복사) 적절.
-                const obj_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true });
+                const obj_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true });
                 const member_expr = try es_helpers.makeMemberFromKeyIdx(self, obj_ref, key_idx, span);
 
                 const assign = try self.ast.addNode(.{
@@ -195,7 +196,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             }
 
             // 마지막에 _a 반환
-            try self.scratch.append(self.allocator, try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true }));
+            try self.scratch.append(self.allocator, try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_span, .{ .read = true }));
 
             // sequence_expression — paren 은 precedence 재유도가 처리 (#4042 PR8)
             const seq_list = try self.ast.addNodeList(self.scratch.items[seq_scratch_top..]);
@@ -226,7 +227,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
             self: *Transformer,
             member_idx: NodeIndex,
             is_getter: bool,
-            temp_span: Span,
+            temp_capture: es_helpers.TempIdentityCapture,
             span: Span,
         ) Transformer.Error!NodeIndex {
             const member = self.ast.getNode(member_idx);
@@ -271,7 +272,7 @@ pub fn ES2015Computed(comptime Transformer: type) type {
 
             const key_arg = captured_key orelse try es_helpers.buildDefinePropertyKeyArg(self, key_idx);
 
-            const temp_ref = try es_helpers.makeTrackedTempRef(self, temp_span, temp_span, .{ .read = true });
+            const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_capture, temp_capture.span, .{ .read = true });
             const object_span = try self.ast.addString("Object");
             const define_property_span = try self.ast.addString("defineProperty");
             return es_helpers.buildObjectDefinePropertyCall(self, object_span, define_property_span, temp_ref, key_arg, desc_obj, span);
