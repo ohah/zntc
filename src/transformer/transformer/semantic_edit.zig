@@ -2714,6 +2714,14 @@ pub fn lookupSyntheticTempSymbol(self: *Transformer, name_span: Span, scope: Sco
     return @fromBackingInt(@intCast(raw_id));
 }
 
+/// Drop a temp's span index after its producer handle has been handed directly
+/// to every known reference. The binding and symbol remain attached by ID.
+pub fn forgetSyntheticTempSymbolLookup(self: *Transformer, name_span: Span, scope: ScopeId) void {
+    if (!self.semantic_edit_enabled or scope.isNone()) return;
+    const key = syntheticTempSymbolKey(name_span, variableScope(self, scope));
+    _ = self.synthetic_temp_symbol_ids.remove(key);
+}
+
 /// Create a generated `var` temp and register its semantic identity at the
 /// same boundary when the output scope is already known. A missing scope is
 /// explicit: state-machine and extracted-function paths attach these temps
