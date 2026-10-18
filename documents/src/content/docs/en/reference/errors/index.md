@@ -231,3 +231,5 @@ ZNTC assigns a unique code to every diagnostic. Click a code for details and a r
 | [`ZNTC1500`](/zntc/en/reference/errors/zntc1500) | @jsx / @jsxFrag pragma ignored under the automatic JSX runtime |
 | [`ZNTC1501`](/zntc/en/reference/errors/zntc1501) | Regular expression inline modifier group is an ES2025 feature not supported by the target |
 | [`ZNTC1502`](/zntc/en/reference/errors/zntc1502) | Exponentiation is preserved because a dynamic scope makes Math downleveling unsafe |
+| [`ZNTC1503`](/zntc/en/reference/errors/zntc1503) | Arrow or containing class/object literal is preserved because a dynamic scope makes lexical capture downleveling unsafe; the target may not support syntax retained inside it |
+| [`ZNTC1504`](/zntc/en/reference/errors/zntc1504) | Arrow is preserved because a dynamic direct eval can observe generated lexical capture bindings; the target may not support retained arrow syntax |
