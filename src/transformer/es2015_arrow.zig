@@ -592,8 +592,15 @@ fn wrapNativeParameterArrow(
             .data = .{ .none = 1 },
         });
     } else blk: {
+        // This capture argument is consumed by the parent arrow's wrapper.
+        // Resolve it from that owner's output scope; a nested wrapper may need
+        // a different direct-eval-safe spelling from its own parameter.
+        const parent_name = if (self.semantic_edit_enabled) blk_name: {
+            const capture_owner_scope = self.outputOwnedScope(parent_native_parameter_arrow_owner) orelse self.current_scope;
+            break :blk_name (try es_helpers.resolveScopedSyntheticOutputNameWithGraph(self, "_newTarget", capture_owner_scope)).name;
+        } else name;
         const ref = if (self.semantic_edit_enabled)
-            try es_helpers.makeExactSyntheticRef(self, name)
+            try es_helpers.makeExactSyntheticRef(self, parent_name)
         else
             try es_helpers.makeSyntheticRef(self, "_newTarget");
         try self.trackNativeParameterArrowRef(parent_native_parameter_arrow_owner, ref);
