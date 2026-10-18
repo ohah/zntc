@@ -79,9 +79,22 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     break :blk receiver_ref;
                 }
 
-                const receiver_capture = try es_helpers.captureToTrackedTemp(self, obj_idx, span);
+                const receiver_capture = try es_helpers.captureToTempWithIdentity(self, obj_idx, span);
                 self.ast.extra_data.items[new_callee_node.data.extra] = @backingInt(receiver_capture.paren_assign);
-                break :blk try es_helpers.makeTrackedTempRef(self, receiver_capture.span, span, .{ .read = true });
+                const receiver_ref = try es_helpers.makeTempVarRef(self, receiver_capture.span, span);
+                if (receiver_capture.symbol_id) |symbol_id| {
+                    try self.addSyntheticRefInScope(receiver_ref, symbol_id, receiver_capture.reference_scope, .{ .read = true });
+                } else {
+                    const assignment = self.ast.getNode(receiver_capture.paren_assign);
+                    try self.trackSyntheticTempReference(
+                        receiver_capture.span,
+                        span,
+                        assignment.data.binary.left,
+                        .{ .write = true },
+                    );
+                    try self.trackSyntheticTempReference(receiver_capture.span, span, receiver_ref, .{ .read = true });
+                }
+                break :blk receiver_ref;
             } else try es_helpers.makeVoidZero(self, span);
 
             // args를 하나의 배열로 조합
@@ -138,12 +151,16 @@ pub fn ES2015Spread(comptime Transformer: type) type {
                     try self.duplicateUserReference(new_callee, this_ref);
                     break :blk .{ new_callee, this_ref };
                 } else blk: {
-                    const cap = try es_helpers.captureToTemp(self, new_callee, span);
+                    const cap = try es_helpers.captureToTempWithIdentity(self, new_callee, span);
                     const assignment = self.ast.getNode(cap.paren_assign);
                     std.debug.assert(assignment.tag == .assignment_expression);
-                    try self.trackSyntheticTempReference(cap.span, span, assignment.data.binary.left, .{ .write = true });
                     const ref = try es_helpers.makeTempVarRef(self, cap.span, span);
-                    try self.trackSyntheticTempReference(cap.span, span, ref, .{ .read = true });
+                    if (cap.symbol_id) |symbol_id| {
+                        try self.addSyntheticRefInScope(ref, symbol_id, cap.reference_scope, .{ .read = true });
+                    } else {
+                        try self.trackSyntheticTempReference(cap.span, span, assignment.data.binary.left, .{ .write = true });
+                        try self.trackSyntheticTempReference(cap.span, span, ref, .{ .read = true });
+                    }
                     break :blk .{ cap.paren_assign, ref };
                 };
 
