@@ -717,7 +717,8 @@ pub fn ES2022(comptime Transformer: type) type {
                                     if (self.options.use_define_for_class_fields and
                                         try @import("parameter_environment.zig").needsRuntimeKeyName(self, key, init_val))
                                     {
-                                        name_ref = try es_helpers.makeSyntheticRefFromSpan(self, self.ast.getNode(temp_ref).span);
+                                        const temp_name_span = self.ast.getNode(temp_ref).data.string_ref;
+                                        name_ref = try es_helpers.makeExactSyntheticRefFromSpan(self, temp_name_span);
                                         try es_helpers.trackKnownHoistedComputedKeyRef(self, name_ref, self.current_scope);
                                     }
                                 } else if (key_node.tag == .computed_property_key) {
