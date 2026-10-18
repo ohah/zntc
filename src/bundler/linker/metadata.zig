@@ -1475,11 +1475,10 @@ pub fn buildMetadataForAst(
         if (self.graph.preserve_modules and format == .cjs and output_produces_named) {
             for (m.export_bindings) |eb| {
                 if (!m.exportBindingIsCjsStorage(eb)) continue;
-                const local = m.exportBindingLocalName(eb);
-                const sym_idx = module_scope.get(local) orelse continue;
+                const sym_idx = m.exportBindingSemanticIndex(eb) orelse continue;
                 const storage = try std.fmt.allocPrint(self.allocator, "exports.{s}", .{eb.exported_name});
                 defer self.allocator.free(storage);
-                try putOwnedRename(self, &renames, &owned_nested_renames, @intCast(sym_idx), storage);
+                try putOwnedRename(self, &renames, &owned_nested_renames, sym_idx, storage);
             }
         }
     }
