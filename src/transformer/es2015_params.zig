@@ -41,7 +41,18 @@ pub fn ES2015Params(comptime Transformer: type) type {
             declaration_span: Span,
             kind: SymbolKind,
         ) Transformer.Error!void {
-            if (!self.semantic_edit_enabled) return;
+            _ = try registerDestructuringTempIdentityAtCreation(self, binding, name_span, declaration_span, kind, true);
+        }
+
+        fn registerDestructuringTempIdentityAtCreation(
+            self: *Transformer,
+            binding: NodeIndex,
+            name_span: Span,
+            declaration_span: Span,
+            kind: SymbolKind,
+            retain_span_lookup: bool,
+        ) Transformer.Error!es_helpers.TempIdentityCapture {
+            if (!self.semantic_edit_enabled) return .{ .span = name_span };
             const scope = self.current_scope;
             const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
             if (scope.isNone() or scope.toIndex() >= scopes.len or scopes[scope.toIndex()].kind != ScopeKind.function)
@@ -63,7 +74,9 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const symbol = editor.symbols.items[raw_id];
             if (symbol.scope_id != scope or symbol.kind != kind)
                 std.debug.panic("destructuring parameter temp SymbolId has the wrong owner", .{});
-            try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, raw_id);
+            if (retain_span_lookup)
+                try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, raw_id);
+            return .{ .span = name_span, .symbol_id = symbol_id, .reference_scope = scope };
         }
 
         fn emitParameterPatternDeclarators(
@@ -305,31 +318,39 @@ pub fn ES2015Params(comptime Transformer: type) type {
                         };
                         if (!default_value.isNone()) unlinked_after_default = true;
                         var temp_span: Span = undefined;
+                        var temp_identity: es_helpers.TempIdentityCapture = .{ .span = Span.EMPTY };
                         if (!unlinked_after_default) {
                             temp_span = try es_helpers.makeTempVarSpan(self);
                             const temp_binding = try es_helpers.makeSyntheticBinding(self, temp_span);
-                            try registerDestructuringTempAtCreation(self, temp_binding, temp_span, span, .parameter);
+                            temp_identity = try registerDestructuringTempIdentityAtCreation(
+                                self,
+                                temp_binding,
+                                temp_span,
+                                span,
+                                .parameter,
+                                false,
+                            );
                             es_helpers.consumeTempVarSpan(self, temp_span);
                             try self.scratch.append(self.allocator, temp_binding);
                         }
                         const read = struct {
-                            fn call(t: *Transformer, from_arguments: bool, temp: Span, index: usize, at: Span) Transformer.Error!NodeIndex {
-                                if (!from_arguments) return es_helpers.makeTrackedTempRef(t, temp, at, .{ .read = true });
+                            fn call(t: *Transformer, from_arguments: bool, temp: es_helpers.TempIdentityCapture, index: usize, at: Span) Transformer.Error!NodeIndex {
+                                if (!from_arguments) return es_helpers.makeTempRefFromIdentity(t, temp, at, .{ .read = true });
                                 return es_helpers.makeComputedMember(t, try es_helpers.makeGlobalRef(t, "arguments"), try es_helpers.makeNumericLiteral(t, @intCast(index)), at);
                             }
                         }.call;
                         const value = if (default_value.isNone())
-                            try read(self, unlinked_after_default, temp_span, param_index, span)
+                            try read(self, unlinked_after_default, temp_identity, param_index, span)
                         else blk: {
                             const is_undefined = try self.ast.addNode(.{
                                 .tag = .binary_expression,
                                 .span = span,
-                                .data = .{ .binary = .{ .left = try read(self, true, temp_span, param_index, span), .right = try es_helpers.makeVoidZero(self, span), .flags = @backingInt(token_mod.Kind.eq3) } },
+                                .data = .{ .binary = .{ .left = try read(self, true, temp_identity, param_index, span), .right = try es_helpers.makeVoidZero(self, span), .flags = @backingInt(token_mod.Kind.eq3) } },
                             });
                             break :blk try self.ast.addNode(.{
                                 .tag = .conditional_expression,
                                 .span = span,
-                                .data = .{ .ternary = .{ .a = is_undefined, .b = default_value, .c = try read(self, true, temp_span, param_index, span) } },
+                                .data = .{ .ternary = .{ .a = is_undefined, .b = default_value, .c = try read(self, true, temp_identity, param_index, span) } },
                             });
                         };
                         try body_stmts.append(self.allocator, try es_helpers.makeVarDeclaration(self, &.{try es_helpers.makeDeclarator(self, binding, value, span)}, .@"var", span));
