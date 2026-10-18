@@ -3645,12 +3645,55 @@ pub fn bindHoistedTempWithProducerSymbol(
                     break :blk expected_scope;
                 break :blk ref.scope;
             };
-            editor.addReference(ref.node, id, reference_scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
-            try setSymbolId(self, ref.node, id);
+            try bindPendingHoistedTempReference(self, editor, ref.node, id, reference_scope, ref.flags);
             i = ref.next;
         }
     }
     if (self.pending_temp_ref_chains.count() == 0) self.pending_temp_refs.clearRetainingCapacity();
+}
+
+/// A deferred reference may already carry the producer's exact SymbolId or
+/// have been attached by another lowering pass. Reuse that reference only
+/// after checking its identity, role, and final scope; never count it twice.
+fn bindPendingHoistedTempReference(
+    self: *Transformer,
+    editor: *SemanticEditor,
+    node: NodeIndex,
+    symbol: SymbolId,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!void {
+    const raw_node = @backingInt(node);
+    const transformer_symbol = self.getSymbolIdAt(node);
+    const editor_symbol = if (raw_node < editor.symbol_ids.items.len)
+        editor.symbol_ids.items[raw_node]
+    else
+        null;
+    if (transformer_symbol != null and editor_symbol != null and transformer_symbol.? != editor_symbol.?)
+        return editError(error.InvalidSymbol);
+    const known_symbol = transformer_symbol orelse editor_symbol;
+    if (known_symbol != null and known_symbol.? != @backingInt(symbol))
+        return editError(error.InvalidSymbol);
+
+    if (editor.referenceForNode(node) catch |err| return editError(err)) |existing| {
+        if (existing.symbol_id != symbol or !std.meta.eql(existing.flags, flags))
+            return editError(error.InvalidSymbol);
+        if (existing.scope_id != scope) {
+            editor.relocateReference(
+                node,
+                scope,
+                symbol,
+                existing.stmt_idx,
+                existing.scope_stmt_idx,
+            ) catch |err| return editError(err);
+        }
+    } else if (known_symbol != null) {
+        editor.addCopiedReference(node, symbol, scope, flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+    } else {
+        editor.addReference(node, symbol, scope, flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+    }
+
+    if (transformer_symbol == null) try setSymbolId(self, node, symbol);
 }
 
 /// Bind a generated temp that is emitted directly in a lexical declaration.
