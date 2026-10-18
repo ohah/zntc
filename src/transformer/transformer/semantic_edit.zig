@@ -2094,7 +2094,7 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     // Source temps carry producer identity. Only callback temps created after
     // state-machine assembly lack it and may take the exact-scope late-name
     // path here.
-    if (temp.symbol_id == null) es_helpers.markStandaloneLateSyntheticTemp(self, id, binding_scope);
+    if (temp.owner_scope.isNone()) es_helpers.markStandaloneLateSyntheticTemp(self, id, binding_scope);
     if (temp.symbol_id) |raw_id| {
         var nodes = live.iterator();
         while (nodes.next()) |entry| {
@@ -2124,7 +2124,33 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
             const trace = traces.get(@backingInt(ref.node)) orelse std.debug.panic("generated temp reference has no final scope trace", .{});
             if (trace.ambiguous_scope) std.debug.panic("generated temp reference has ambiguous output scopes", .{});
             const scope = try stateTempOutputScope(self, source_scope, callback_scope, binding_scope, ref.scope, trace.scope, live_scopes);
-            editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+            if (editor.referenceForNode(ref.node) catch |err| return editError(err)) |existing| {
+                if (existing.symbol_id != id or existing.flags.read != ref.flags.read or
+                    existing.flags.write != ref.flags.write)
+                    std.debug.panic("generated temp reference already has a different identity", .{});
+                if (existing.scope_id != scope) {
+                    editor.relocateReference(
+                        ref.node,
+                        scope,
+                        id,
+                        existing.stmt_idx,
+                        existing.scope_stmt_idx,
+                    ) catch |err| return editError(err);
+                }
+            } else {
+                const node_raw = @backingInt(ref.node);
+                if (node_raw < editor.symbol_ids.items.len) {
+                    if (editor.symbol_ids.items[node_raw]) |existing_id| {
+                        if (existing_id != @backingInt(id))
+                            std.debug.panic("generated temp reference has an unrelated SymbolId without a Reference", .{});
+                        editor.addCopiedReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+                    } else {
+                        editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+                    }
+                } else {
+                    editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
+                }
+            }
             if (self.getSymbolIdAt(ref.node)) |existing| {
                 if (existing != @backingInt(id)) std.debug.panic("generated temp reference changed its producer SymbolId", .{});
             } else try setSymbolId(self, ref.node, id);

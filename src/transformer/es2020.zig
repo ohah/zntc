@@ -54,6 +54,7 @@ pub fn ES2020(comptime Transformer: type) type {
             self: *Transformer,
             name_span: Span,
             declaration_span: Span,
+            counter_index: u32,
         ) Transformer.Error!?TempIdentity {
             const scopes = knownTempIdentityScopes(self) orelse return null;
             const symbol_id = try self.reserveSyntheticTempSymbolInScope(
@@ -64,6 +65,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 std.debug.panic("known-scope ES2020 temp identity reservation returned no SymbolId", .{});
             if (scopes.generator_state_temp)
                 try self.recordGeneratorStateTempSymbol(name_span, symbol_id);
+            try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(symbol_id));
             return .{ .symbol_id = symbol_id, .reference_scope = scopes.reference_scope };
         }
 
@@ -107,7 +109,7 @@ pub fn ES2020(comptime Transformer: type) type {
 
         fn captureTrackedTemp(self: *Transformer, value: NodeIndex, span: Span) Transformer.Error!TrackedTempCapture {
             const name_span = try helpers.makeTempVarSpan(self);
-            const identity = try reserveTempIdentity(self, name_span, span);
+            const identity = try reserveTempIdentity(self, name_span, span, self.temp_var_counter - 1);
             const left = try helpers.makeTempVarRef(self, name_span, span);
             const assignment = try helpers.makeAssignExpr(self, left, value, span, @backingInt(token_mod.Kind.eq));
             try trackTempReference(self, name_span, span, left, .{ .write = true }, identity);
@@ -169,7 +171,7 @@ pub fn ES2020(comptime Transformer: type) type {
                 });
             } else {
                 const temp_span = try helpers.makeTempVarSpan(self);
-                const identity = try reserveTempIdentity(self, temp_span, node.span);
+                const identity = try reserveTempIdentity(self, temp_span, node.span, self.temp_var_counter - 1);
                 const temp_ref1 = try helpers.makeTempVarRef(self, temp_span, node.span);
                 try trackTempReference(self, temp_span, node.span, temp_ref1, .{ .write = true }, identity);
                 const assign_node = try self.ast.addNode(.{

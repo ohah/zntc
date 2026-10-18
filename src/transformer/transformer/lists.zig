@@ -392,11 +392,18 @@ fn hoistTempVarsWithScope(self: *Transformer, body_idx: NodeIndex, saved_counter
             (generatedCallbackTempBinding(self, name_span) orelse try es_helpers.makeSyntheticBinding(self, name_span))
         else
             try es_helpers.makeSyntheticBinding(self, name_span);
-        if (state_bindings) |bindings| try bindings.append(self.allocator, .{ .binding = binding, .name_span = name_span });
         const producer_symbol_id: ?SymbolId = if (self.temp_symbol_ids_by_counter.get(i)) |raw_id|
             @fromBackingInt(@intCast(raw_id))
         else
             null;
+        if (state_bindings) |bindings| {
+            const binding_symbol_id: ?u32 = if (producer_symbol_id) |id| @backingInt(id) else self.getSymbolIdAt(binding);
+            try bindings.append(self.allocator, .{
+                .binding = binding,
+                .name_span = name_span,
+                .symbol_id = binding_symbol_id,
+            });
+        }
         if (body_node.tag == .program and self.semantic_edit_enabled) {
             try self.bindHoistedTempWithProducerSymbol(binding, name_span, span, .none, producer_symbol_id);
         } else if (function_scope) |scope_id| {
