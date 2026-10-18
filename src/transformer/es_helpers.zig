@@ -2648,20 +2648,35 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
         if (binding_node.tag == .array_pattern or binding_node.tag == .object_pattern) {
             // Destructuring pattern — 임시 변수 _t 도입 후 패턴을 declarator 로 전개
             const temp_span = try makeTempVarSpan(self);
-            const temp_binding = try makeSyntheticBinding(self, temp_span);
+            const temp = try self.createSyntheticTempBinding(
+                temp_span,
+                span,
+                if (self.current_scope.isNone()) null else self.current_scope,
+            );
+            if (self.semantic_edit_enabled and !self.current_scope.isNone() and temp.symbol_id == null)
+                std.debug.panic("known-owner for-of destructuring temp did not receive a SymbolId", .{});
+            const temp_identity = TempIdentityCapture{
+                .span = temp.name_span,
+                .symbol_id = temp.symbol_id,
+                .reference_scope = if (temp.symbol_id != null) self.current_scope else .none,
+            };
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(@TypeOf(self.*));
             const temp_init = if (binding_node.tag == .array_pattern)
                 try es2015_destruct.buildArrayRead(self, elem, binding_node, span)
             else
                 elem;
-            const temp_decl = try makeDeclarator(self, temp_binding, temp_init, span);
+            const temp_decl = try makeDeclarator(self, temp.node, temp_init, span);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             try self.scratch.append(self.allocator, temp_decl);
 
-            try es2015_destruct.emitPatternDeclarators(self, binding_node, temp_span, span, .@"var");
-            try self.bindSyntheticTempInScope(temp_binding, temp_span, span, .variable_var, self.current_scope);
+            const saved_temp_kind = self.destructuring_temp_kind;
+            self.destructuring_temp_kind = .variable_var;
+            defer self.destructuring_temp_kind = saved_temp_kind;
+            try es2015_destruct.emitPatternDeclaratorsWithIdentity(self, binding_node, temp_identity, span, .@"var");
+            if (temp.symbol_id == null)
+                try self.bindSyntheticTempInScope(temp.node, temp.name_span, span, .variable_var, self.current_scope);
 
             return makeVarDeclaration(self, self.scratch.items[scratch_top..], .@"var", span);
         }
