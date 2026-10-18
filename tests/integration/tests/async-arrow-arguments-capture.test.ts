@@ -213,6 +213,46 @@ const cases = [
     expectsRetainedGraph: true,
   },
   {
+    name: 'retains ES5 async-arrow class super getter with an exact home owner',
+    target: 'es5',
+    source: `
+      class Base { get value() { return this.prefix; } }
+      class Child extends Base {
+        read() {
+          this.prefix = 'instance:';
+          return (async () => {
+            await Promise.resolve();
+            return super.value;
+          })();
+        }
+      }
+      new Child().read().then(console.log);
+    `,
+    expected: 'instance:\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
+    name: 'retains ES5 static async-arrow super getter with an exact home owner',
+    target: 'es5',
+    source: `
+      class Base { static get value() { return this.prefix; } }
+      class Child extends Base {
+        static read() {
+          this.prefix = 'static:';
+          return (async () => {
+            await Promise.resolve();
+            return super.value;
+          })();
+        }
+      }
+      Child.read().then(console.log);
+    `,
+    expected: 'static:\n',
+    expectsBundleSyntheticBinding: true,
+    expectsRetainedGraph: true,
+  },
+  {
     name: 'retains exact graph for ES5 async-arrow state machine with object-method lexical super',
     target: 'es5',
     source: `
@@ -303,6 +343,61 @@ const cases = [
       new Child().readAsync('instance').then(console.log);
     `,
     expected: 'instance:direct::instance:instance\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'reanalyzes ES5 async-arrow super used by a parameter initializer',
+    target: 'es5',
+    source: `
+      class Base { value() { return 42; } }
+      class Derived extends Base {
+        read() {
+          return (async (value = super.value()) => {
+            await Promise.resolve();
+            return value;
+          })();
+        }
+      }
+      new Derived().read().then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'reanalyzes ES5 async-arrow super created by a method parameter initializer',
+    target: 'es5',
+    source: `
+      class Base { value() { return 42; } }
+      class Derived extends Base {
+        read(value = (async () => {
+          await Promise.resolve();
+          return super.value();
+        })()) {
+          return value;
+        }
+      }
+      new Derived().read().then(console.log);
+    `,
+    expected: '42\n',
+    expectsSyntheticBinding: false,
+    expectsRetainedGraph: false,
+  },
+  {
+    name: 'reanalyzes ES5 class method super nested in a synchronous arrow',
+    target: 'es5',
+    source: `
+      class Base { value() { return 42; } }
+      class Derived extends Base {
+        read() {
+          var nested = () => super.value();
+          return nested();
+        }
+      }
+      console.log(new Derived().read());
+    `,
+    expected: '42\n',
     expectsSyntheticBinding: false,
     expectsRetainedGraph: false,
   },
