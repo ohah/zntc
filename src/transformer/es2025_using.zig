@@ -100,11 +100,26 @@ pub fn ES2025Using(comptime Transformer: type) type {
         fn allocNames(self: *Transformer) Transformer.Error!Names {
             const bases = [_][]const u8{ "_stack", "_error", "_hasError", "_" };
             if (es_helpers.canUseLateStandaloneOutputName(self, self.current_scope)) {
+                // Multiple using regions in one function hoist their temps to
+                // the same var scope. Keep their staging spellings distinct so
+                // semantic registration can bind each producer to its own
+                // SymbolId; the standalone pass still chooses final names by
+                // those exact IDs.
+                self.using_counter += 1;
+                const n = self.using_counter;
+                var bufs: [4][32]u8 = undefined;
+                var names: [4][]const u8 = undefined;
+                for (bases, 0..) |base, i| {
+                    names[i] = if (n == 1)
+                        base
+                    else
+                        std.fmt.bufPrint(&bufs[i], "{s}{d}", .{ base, n }) catch unreachable;
+                }
                 return .{
-                    .stack = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[0])),
-                    .err = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[1])),
-                    .has_err = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[2])),
-                    .catch_param = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, bases[3])),
+                    .stack = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, names[0])),
+                    .err = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, names[1])),
+                    .has_err = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, names[2])),
+                    .catch_param = try self.ast.addString(try es_helpers.deferGeneratedOutputName(self, names[3])),
                     .late_output_names = true,
                 };
             }
@@ -660,6 +675,23 @@ test "#4819 standalone using locals defer their names to exact SymbolIds" {
         ids[i] = (try registerUsingVar(&transformer, binding, name_span, .EMPTY, names.late_output_names)) orelse
             return error.TestUnexpectedResult;
         try std.testing.expectEqual(@as(?u32, @backingInt(ids[i])), transformer.getSymbolIdAt(binding));
+    }
+
+    // A second using region in the same owner must get fresh staging names;
+    // otherwise registering the hoisted `_stack`/`_error`/`_hasError` locals
+    // fails with DuplicateBinding before exact-ID final naming can run.
+    const second_names = try Using.allocNames(&transformer);
+    try std.testing.expect(second_names.late_output_names);
+    try std.testing.expectEqual(@as(usize, 8), transformer.late_output_name_bases.count());
+    const second_spans = [_]Span{ second_names.stack, second_names.err, second_names.has_err };
+    var second_ids: [3]SymbolId = undefined;
+    for (second_spans, 0..) |name_span, i| {
+        const binding = try makeUsingBinding(&transformer, name_span, second_names.late_output_names);
+        second_ids[i] = (try registerUsingVar(&transformer, binding, name_span, .EMPTY, second_names.late_output_names)) orelse
+            return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(?u32, @backingInt(second_ids[i])), transformer.getSymbolIdAt(binding));
+        try std.testing.expect(!std.mem.eql(u8, transformer.ast.getText(name_span), transformer.ast.getText(spans[i])));
+        try std.testing.expect(second_ids[i] != ids[i]);
     }
 
     const editor = if (transformer.semantic_editor) |*value| value else return error.TestUnexpectedResult;

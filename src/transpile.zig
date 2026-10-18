@@ -2577,17 +2577,190 @@ test "#4819 standalone using locals choose final spellings from their SymbolIds"
     var result = try transpile(
         allocator,
         "var _stack = 1, _error = 2, _hasError = 3, _ = 4; " ++
-            "function run(resource) { using local = resource; return [_stack, _error, _hasError, _]; }",
+            "function run(resource, nextResource) { " ++
+            "{ using local = resource; } { using next = nextResource; } " ++
+            "return [_stack, _error, _hasError, _]; }",
         "input.mjs",
         .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
     );
     defer result.deinit(allocator);
 
     try std.testing.expect(std.mem.indexOf(u8, result.code, "var _stack2 = []") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _stack22 = []") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "_error2 = void 0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_error22 = void 0") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "_hasError2 = false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "_hasError22 = false") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "catch (_2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "__callDispose(_stack2, _error2, _hasError2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__callDispose(_stack22, _error22, _hasError22)") != null);
+}
+
+test "#4819 nested top-level using blocks register distinct exact temp identities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        "const RLong = (nLong, log) => ({ [Symbol.dispose]() { log.push('d' + nLong); } });\n" ++
+        "const log = [];\n" ++
+        "{ using aLong = RLong(1, log); { using bLong = RLong(2, log); log.push('inner'); } log.push('outer'); }\n" ++
+        "console.log(log.join());\n";
+    var result = try transpile(
+        allocator,
+        source,
+        "input.mjs",
+        .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _stack = []") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var _stack2 = []") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__callDispose(_stack, _error, _hasError)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "__callDispose(_stack2, _error2, _hasError2)") != null);
+}
+
+test "#4819 ten hostile using-owner shapes keep generated temps unique" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const fixtures = [_][]const u8{
+        "{ using a = one; { using b = two; } }",
+        "{ using a = one; } { using b = two; }",
+        "if (flag) { using a = one; } else { using b = two; }",
+        "try { using a = one; } finally { using b = two; }",
+        "switch (value) { case 0: { using a = one; break; } default: { using b = two; } }",
+        "function run() { { using a = one; } { using b = two; } }",
+        "const run = function() { { using a = one; } { using b = two; } };",
+        "const run = () => { { using a = one; } { using b = two; } };",
+        "while (flag) { { using a = one; } { using b = two; } break; }",
+        "class C { method() { { using a = one; } { using b = two; } } }",
+    };
+
+    for (fixtures) |fixture| {
+        const source = try std.fmt.allocPrint(allocator, "const one = {{}}, two = {{}}; {s}", .{fixture});
+        var result = try transpile(
+            allocator,
+            source,
+            "input.mjs",
+            .{ .unsupported = TransformOptions.compat.fromESTarget(.es5) },
+        );
+        defer result.deinit(allocator);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "var _stack = []") != null);
+        try std.testing.expect(std.mem.indexOf(u8, result.code, "var _stack2 = []") != null);
+    }
+}
+
+test "#4819 using temp codegen detects ten corrupted SymbolId table entries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        "const RLong = (nLong, log) => ({ [Symbol.dispose]() { log.push('d' + nLong); } });\n" ++
+        "const log = [];\n" ++
+        "{ using aLong = RLong(1, log); { using bLong = RLong(2, log); log.push('inner'); } log.push('outer'); }\n" ++
+        "console.log(log.join());\n";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    defer transformer.deinit();
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.helper_scope_map = analyzer.helper_scope_map;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    if (try transformer.finishSemanticEdit()) |edited| analyzer.applyEdit(edited);
+
+    var names: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    var generated_ids: [5]u32 = undefined;
+    var generated_count: usize = 0;
+    for (analyzer.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.synthetic_kind != .standalone_temp_binding) continue;
+        const id: u32 = @intCast(raw_id);
+        try names.put(allocator, id, try std.fmt.allocPrint(allocator, "__using_sid_{d}", .{id}));
+        if (generated_count < generated_ids.len) {
+            generated_ids[generated_count] = id;
+            generated_count += 1;
+        }
+    }
+    try std.testing.expectEqual(generated_ids.len, generated_count);
+
+    const generate = struct {
+        fn code(
+            alloc: std.mem.Allocator,
+            ast: *Ast,
+            program: ast_mod.NodeIndex,
+            semantic: *const SemanticAnalyzer,
+            ids: []const ?u32,
+            overrides: *const std.AutoHashMapUnmanaged(u32, []const u8),
+        ) ![]const u8 {
+            var codegen = Codegen.initWithOptions(alloc, ast, .{
+                .minify_whitespace = true,
+                .semantic_symbol_ids = ids,
+                .semantic_symbols = semantic.symbols.items,
+                .semantic_scope_maps = semantic.scope_maps.items,
+                .generated_iife_scope_owner_map = &semantic.scope_owner_map,
+                .semantic_symbol_name_overrides = overrides,
+            });
+            defer codegen.deinit();
+            return alloc.dupe(u8, try codegen.generate(program));
+        }
+    }.code;
+
+    const expected = try generate(allocator, transformer.ast, root, &analyzer, analyzer.symbol_ids.items, &names);
+    for (generated_ids) |id| {
+        const expected_name = names.get(id) orelse return error.TestUnexpectedResult;
+        try std.testing.expect(std.mem.indexOf(u8, expected, expected_name) != null);
+    }
+
+    const Mutation = struct { node: u32, symbol_id: ?u32 };
+    var bindings: [5]u32 = undefined;
+    var references: [5]u32 = undefined;
+    for (generated_ids, 0..) |id, i| {
+        var found_binding = false;
+        var found_reference = false;
+        for (transformer.ast.nodes.items, 0..) |node, raw_node| {
+            if (raw_node >= analyzer.symbol_ids.items.len or analyzer.symbol_ids.items[raw_node] != id) continue;
+            if (!found_binding and node.tag == .binding_identifier) {
+                bindings[i] = @intCast(raw_node);
+                found_binding = true;
+            }
+            if (!found_reference and (node.tag == .identifier_reference or node.tag == .assignment_target_identifier)) {
+                references[i] = @intCast(raw_node);
+                found_reference = true;
+            }
+            if (found_binding and found_reference) break;
+        }
+        try std.testing.expect(found_binding and found_reference);
+    }
+
+    var mutations: [10]Mutation = undefined;
+    for (0..5) |i| {
+        mutations[i] = .{ .node = bindings[i], .symbol_id = null };
+        mutations[i + 5] = .{ .node = references[i], .symbol_id = generated_ids[(i + 1) % generated_ids.len] };
+    }
+    var detected: usize = 0;
+    for (mutations) |mutation| {
+        const mutant_ids = try allocator.dupe(?u32, analyzer.symbol_ids.items);
+        mutant_ids[mutation.node] = mutation.symbol_id;
+        const mutant = try generate(allocator, transformer.ast, root, &analyzer, mutant_ids, &names);
+        try std.testing.expect(!std.mem.eql(u8, expected, mutant));
+        detected += 1;
+    }
+    try std.testing.expectEqual(mutations.len, detected);
 }
 
 test "#4819 standalone mangling names namespace IIFE parameters from their SymbolIds" {
