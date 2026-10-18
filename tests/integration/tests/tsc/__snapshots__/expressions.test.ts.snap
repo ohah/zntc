@@ -9452,8 +9452,8 @@ window.setTimeout(() => null, 100);// Arrow function as value in array literal
 var obj = (n) => "";var obj;// OK
 var arr = [(n) => ""];var arr;// Incorrect error here (bug 829597)
 // Arrow function as enum value
-var E = /* @__PURE__ */ ((E) => {E[E["x"]=() => 4]="x";E[E["y"]=// Error expected
-(() => this).length]="y";return E;})(E || {});let M;((_M) => {_M.a=// Arrow function as module variable initializer
+var E = /* @__PURE__ */ ((E2) => {E2[E2["x"]=() => 4]="x";E2[E2["y"]=// Error expected
+(() => this).length]="y";return E2;})(E || {});let M;((_M3) => {_M3.a=// Arrow function as module variable initializer
 (s) => "";var b = (s) => s;})(M || (M = {}));})(M2 || (M2 = {}));
 // <Identifier>(ParamList) => { ... } is a generic arrow function
 var generic1 = (n) => [n];
@@ -13256,7 +13256,7 @@ var y;if (typeof x === "string") {
 	x.toString();
 	// number
 }})(m2 || (m2 = {}));})(m || (m = {}));
-var m1;((_m1) => {var x;let m2;((_m2) => {let m3;((_m3) => {var b = x;// new scope - number | boolean | string
+var m1;((_m1) => {var x;let m2;((_m22) => {let m3;((_m3) => {var b = x;// new scope - number | boolean | string
 var y;if (typeof x === "string") {
 	y = x;
 	// string;
@@ -13264,7 +13264,7 @@ var y;if (typeof x === "string") {
 	y = typeof x === "boolean" ? x.toString() : // boolean
 	x.toString();
 	// number
-}})(m3 = _m2.m3 || (_m2.m3 = {}));})(m2 || (m2 = {}));})(m1 || (m1 = {}));
+}})(m3 = _m22.m3 || (_m22.m3 = {}));})(m2 || (m2 = {}));})(m1 || (m1 = {}));
 "
 `;
 
@@ -13486,7 +13486,7 @@ if (typeof _m3.var5 === "string") {
 	// string | number
 }})(m3 || (m3 = {}));})(m2 || (m2 = {}));
 // Dotted module
-var m3;((_m3) => {let m4;((_m4) => {// global vars in function declaration
+var m3;((_m32) => {let m4;((_m4) => {// global vars in function declaration
 num = typeof var1 === "string" && var1.length;// string
 // variables in module declaration
 var var2;if (typeof var2 === "string") {
@@ -13502,7 +13502,7 @@ if (typeof _m4.var3 === "string") {
 } else {
 	strOrNum = _m4.var3;
 	// string | number
-}})(m4 = _m3.m4 || (_m3.m4 = {}));})(m3 || (m3 = {}));
+}})(m4 = _m32.m4 || (_m32.m4 = {}));})(m3 || (m3 = {}));
 "
 `;
 

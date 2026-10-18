@@ -542,6 +542,93 @@ describe('Stage 3 Decorators', () => {
     expect(result.runOutput).toBe('2 3 6 10 value,other,current 100 1 200 1 300 1 400 1 1 1 1 1');
   });
 
+  const minifiedPostGraphBindingCases = [
+    {
+      name: 'single static field',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static value = 7; }
+        console.log(A.value);`,
+      expected: '7',
+    },
+    {
+      name: 'static field with ordinary method',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static value = 11; static method() { return 1; } }
+        console.log(A.value, A.method());`,
+      expected: '11 1',
+    },
+    {
+      name: 'static field with getter',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static value = 13; static get other() { return 1; } }
+        console.log(A.value, A.other);`,
+      expected: '13 1',
+    },
+    {
+      name: 'static auto-accessor',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static accessor value = 17; }
+        console.log(A.value);`,
+      expected: '17',
+    },
+    {
+      name: 'two static fields',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static first = 2; @mark static second = 3; }
+        console.log(A.first + A.second);`,
+      expected: '5',
+    },
+    {
+      name: 'static and instance fields',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static first = 3; @mark second = 4; }
+        console.log(A.first, new A().second);`,
+      expected: '3 4',
+    },
+    {
+      name: 'two classes with static fields',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static value = 5; }
+        class B { @mark static value = 8; }
+        console.log(A.value, B.value);`,
+      expected: '5 8',
+    },
+    {
+      name: 'class and static field decorators',
+      source: `function mark(value: any, context: any) { return value; }
+        @mark class A { @mark static value = 19; }
+        console.log(A.value);`,
+      expected: '19',
+    },
+    {
+      name: 'static field and instance accessor',
+      source: `function mark(value: any, context: any) { return value; }
+        class A { @mark static value = 23; @mark accessor other = 29; }
+        console.log(A.value, new A().other);`,
+      expected: '23 29',
+    },
+    {
+      name: 'shadowed generated-name candidate',
+      source: `const _staticExtraInitializers = 31;
+        function mark(value: any, context: any) { return value; }
+        class A { @mark static value = 37; }
+        console.log(A.value, _staticExtraInitializers);`,
+      expected: '37 31',
+    },
+  ] as const;
+
+  for (const scenario of minifiedPostGraphBindingCases) {
+    it(`ES5 minification restores live Stage 3 symbols after dead bindings are removed: ${scenario.name}`, async () => {
+      const result = await bundleAndRun({ 'index.ts': scenario.source }, 'index.ts', [
+        '--target=es5',
+        '--minify',
+      ]);
+      cleanup = result.cleanup;
+      expect(result.exitCode).toBe(0);
+      expect(result.runOutput).toBe(scenario.expected);
+    });
+  }
+
   it('ES5 static and instance decorators keep separate arrays for same-named members', async () => {
     const result = await bundleAndRun(
       {

@@ -7608,6 +7608,13 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
         // Restore only producer-marked binding identities. No text lookup is
         // involved, and dead intermediate nodes have no re-analyzed SymbolId.
         if (module.transform_cache) |cache| {
+            const reachable_post_graph_nodes: ?[]bool = if (ast.transformed_root) |root| blk: {
+                const reachable = try ast_walk.collectReachableNodeIndicesFrom(arena_alloc, ast, root);
+                const bitmap = try arena_alloc.alloc(bool, ast.nodes.items.len);
+                @memset(bitmap, false);
+                for (reachable) |raw| bitmap[raw] = true;
+                break :blk bitmap;
+            } else null;
             for (cache.preserved_class_name_nodes) |raw| {
                 if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len or
                     ast.nodes.items[raw].tag != .binding_identifier) continue;
@@ -7634,6 +7641,14 @@ fn refreshSemanticAndStmtInfoAfterAstMutation(
                 if (raw >= analyzer.symbol_ids.items.len or raw >= ast.nodes.items.len or
                     ast.nodes.items[raw].tag != .binding_identifier)
                     return error.InvalidPostGraphOutputBindingProvenance;
+                // Minification can remove an unused generated binding while
+                // leaving its old node index and producer sidecar in the AST
+                // allocation. Do not restore identity for an unreachable
+                // node, but keep failing closed when a live binding lost its
+                // analyzer SymbolId.
+                if (reachable_post_graph_nodes) |reachable| {
+                    if (!reachable[raw]) continue;
+                }
                 const id = analyzer.symbol_ids.items[raw] orelse return error.MissingPostGraphOutputBindingSymbol;
                 if (id >= analyzer.symbols.items.len) return error.InvalidPostGraphOutputSymbolId;
                 const symbol = &analyzer.symbols.items[id];
