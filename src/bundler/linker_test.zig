@@ -12,6 +12,7 @@ const graph_finalize = @import("graph/finalize.zig");
 const resolve_cache_mod = @import("resolve_cache.zig");
 const module_store_mod = @import("module_store.zig");
 const module_codec = @import("module_codec.zig");
+const TransformOptions = @import("../transformer/transformer.zig").TransformOptions;
 const writeFile = @import("test_helpers.zig").writeFile;
 const bundler_symbol = @import("symbol.zig");
 const semantic_symbol = @import("../semantic/symbol.zig");
@@ -52,6 +53,150 @@ fn buildAndLink(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_na
     try linker.link();
 
     return .{ .linker = linker, .graph = graph, .cache = cache };
+}
+
+fn buildAndLinkWithTransformOptions(
+    allocator: std.mem.Allocator,
+    tmp: *std.testing.TmpDir,
+    entry_name: []const u8,
+    transform_options: TransformOptions,
+    minify_identifiers: bool,
+) !TestResult {
+    const dp = try tmp.dir.realPathFileAlloc(std.testing.io, ".", allocator);
+    defer allocator.free(dp);
+    const entry = try std.fs.path.resolve(allocator, &.{ dp, entry_name });
+    defer allocator.free(entry);
+
+    var cache = resolve_cache_mod.ResolveCache.init(allocator, .{});
+    const graph = try allocator.create(ModuleGraph);
+    graph.* = ModuleGraph.init(allocator, &cache);
+    graph.transform_options_base = transform_options;
+    graph.minify_identifiers = minify_identifiers;
+    try graph.build(std.testing.io, &.{entry});
+
+    var linker = Linker.init(allocator, graph, .esm);
+    try linker.link();
+
+    return .{ .linker = linker, .graph = graph, .cache = cache };
+}
+
+test "linker: tagged-template cache final names come from exact post-graph bindings" {
+    for ([_]bool{ false, true }) |minify_identifiers| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(
+            tmp.dir,
+            "entry.mjs",
+            "const _templateObject = 10, _templateObject2 = 20;\n" ++
+                "function tag(parts) { return parts[0] + parts.raw[0]; }\n" ++
+                "console.log(tag`one`, tag`two`, _templateObject, _templateObject2);\n",
+        );
+
+        var result = try buildAndLinkWithTransformOptions(
+            std.testing.allocator,
+            &tmp,
+            "entry.mjs",
+            .{
+                .unsupported = TransformOptions.compat.fromESTarget(.es5),
+                .defer_runtime_helper_name_resolution = true,
+                .emit_runtime_helper_imports = true,
+            },
+            minify_identifiers,
+        );
+        errdefer result.cache.deinit();
+        errdefer result.destroyGraph();
+        errdefer result.linker.deinit();
+
+        try result.linker.computeRenames();
+        if (minify_identifiers) try result.linker.computeMangling();
+
+        const module_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingTaggedTemplateModule;
+        const module = result.graph.getModule(module_index) orelse return error.MissingTaggedTemplateModule;
+        const semantic = module.semantic orelse return error.MissingTaggedTemplateSemantic;
+        const transform_cache = module.transform_cache orelse return error.MissingTaggedTemplateTransformCache;
+        var captured_nodes: [2]u32 = undefined;
+        var captured_symbol_ids: [2]u32 = undefined;
+        var captured_count: usize = 0;
+        for (transform_cache.post_graph_output_bindings) |binding| {
+            if (binding.synthetic_kind != .tagged_template_function_binding) continue;
+            if (captured_count >= captured_nodes.len) return error.TooManyTaggedTemplateBindings;
+            const raw_symbol_id = transform_cache.symbol_ids[binding.node_index] orelse return error.MissingTaggedTemplateBindingSymbolId;
+            const symbol_index: usize = @intCast(raw_symbol_id);
+            try std.testing.expectEqual(
+                semantic_symbol.SyntheticKind.tagged_template_function_binding,
+                semantic.symbols.items[symbol_index].synthetic_kind.?,
+            );
+            if (captured_count > 0) {
+                try std.testing.expect(captured_nodes[0] != binding.node_index);
+                try std.testing.expect(captured_symbol_ids[0] != raw_symbol_id);
+            }
+            captured_nodes[captured_count] = binding.node_index;
+            captured_symbol_ids[captured_count] = raw_symbol_id;
+            captured_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), captured_count);
+
+        var final_names: [2][]const u8 = undefined;
+        var found: usize = 0;
+        for (semantic.symbols.items, 0..) |symbol, raw_symbol_id| {
+            if (symbol.synthetic_kind != .tagged_template_function_binding) continue;
+            try std.testing.expectEqual(semantic_symbol.SymbolKind.function_decl, symbol.kind);
+            try std.testing.expect(!symbol.scope_id.isNone());
+            try std.testing.expectEqualStrings("_templateObject", symbol.output_name_hint);
+            const id = bundler_symbol.SymbolID.make(module_index, @as(u32, @intCast(raw_symbol_id)));
+            const final_name = result.linker.rename_table.get(id) orelse return error.MissingTaggedTemplateFinalName;
+            if (!minify_identifiers) {
+                try std.testing.expectEqualStrings(if (found == 0) "_templateObject$1" else "_templateObject$2", final_name);
+            } else {
+                try std.testing.expect(!std.mem.eql(u8, symbol.synthetic_name, final_name));
+            }
+            final_names[found] = final_name;
+            found += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 2), found);
+        try std.testing.expect(!std.mem.eql(u8, final_names[0], final_names[1]));
+
+        result.linker.deinit();
+        result.destroyGraph();
+        result.cache.deinit();
+    }
+}
+
+test "linker: malformed tagged-template cache metadata fails closed" {
+    for ([_]bool{ false, true }) |wrong_binding_kind| {
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
+        try writeFile(tmp.dir, "entry.mjs", "function tag(parts) { return parts[0]; } console.log(tag`bad`);\n");
+
+        var result = try buildAndLinkWithTransformOptions(
+            std.testing.allocator,
+            &tmp,
+            "entry.mjs",
+            .{
+                .unsupported = TransformOptions.compat.fromESTarget(.es5),
+                .defer_runtime_helper_name_resolution = true,
+                .emit_runtime_helper_imports = true,
+            },
+            false,
+        );
+        defer result.linker.deinit();
+        defer result.destroyGraph();
+        defer result.cache.deinit();
+
+        const module_index = findModuleIdx(result.graph, "entry.mjs") orelse return error.MissingTaggedTemplateModule;
+        const module = result.linker.moduleAtMut(module_index.toU32()) orelse return error.MissingTaggedTemplateModule;
+        const semantic = module.semantic orelse return error.MissingTaggedTemplateSemantic;
+        const raw_symbol_id = for (semantic.symbols.items, 0..) |symbol, i| {
+            if (symbol.synthetic_kind == .tagged_template_function_binding) break i;
+        } else return error.MissingTaggedTemplateSymbol;
+        if (wrong_binding_kind) {
+            semantic.symbols.items[raw_symbol_id].kind = .variable_var;
+        } else {
+            semantic.symbols.items[raw_symbol_id].output_name_hint = "wrong-template-hint";
+        }
+
+        try std.testing.expectError(error.InvalidTaggedTemplateOutputBinding, result.linker.computeRenames());
+    }
 }
 
 test "linker: createRequire shim local has an exact detached SymbolId and reserves hostile names" {

@@ -306,6 +306,150 @@ console.log($tt, tag\`hello\`);
     expect(runtime.stdout).toBe('40 hello:hello\n');
   });
 
+  test('bundled ES5 tagged-template caches survive ten hostile binding layouts', async () => {
+    const cases = [
+      {
+        name: 'base and suffix 2 collisions',
+        files: {
+          'input.mjs': `const _templateObject = 40, _templateObject2 = 41;
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(_templateObject, _templateObject2, tag\`one\`, tag\`two\`);`,
+        },
+        expected: '40 41 one:one two:two\n',
+        templateCount: 2,
+      },
+      {
+        name: 'suffix 1 and 2 collisions',
+        files: {
+          'input.mjs': `const _templateObject1 = 50, _templateObject2 = 51;
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(_templateObject1, _templateObject2, tag\`first\`, tag\`second\`);`,
+        },
+        expected: '50 51 first:first second:second\n',
+        templateCount: 2,
+      },
+      {
+        name: 'suffix 3 and 4 collisions',
+        files: {
+          'input.mjs': `const _templateObject3 = 53, _templateObject4 = 54;
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(_templateObject3, _templateObject4, tag\`third\`, tag\`fourth\`);`,
+        },
+        expected: '53 54 third:third fourth:fourth\n',
+        templateCount: 2,
+      },
+      {
+        name: 'three cache functions in one module',
+        files: {
+          'input.mjs': `const _templateObject = 'a', _templateObject2 = 'b', _templateObject3 = 'c';
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(_templateObject, _templateObject2, _templateObject3, tag\`x\`, tag\`y\`, tag\`z\`);`,
+        },
+        expected: 'a b c x:x y:y z:z\n',
+        templateCount: 3,
+      },
+      {
+        name: 'nested parameter and local shadows',
+        files: {
+          'input.mjs': `function tag(parts, value) { return parts[0] + value + ':' + parts.raw[0] + value; }
+function run(_templateObject) { const _templateObject2 = 2; return tag\`n\${_templateObject}\` + _templateObject2; }
+console.log(run(7));`,
+        },
+        expected: 'n7:n72\n',
+        templateCount: 1,
+      },
+      {
+        name: 'escaped source binding spelling',
+        files: {
+          'input.mjs':
+            'const \\u005ftemplateObject = 60;\n' +
+            'function tag(parts) { return parts[0] + ":" + parts.raw[0]; }\n' +
+            'console.log(\\u005ftemplateObject, tag`escaped`);',
+        },
+        expected: '60 escaped:escaped\n',
+        templateCount: 1,
+      },
+      {
+        name: 'import alias from another module',
+        files: {
+          'input.mjs': `import { value as _templateObject } from './value.mjs';
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(_templateObject, tag\`imported\`);`,
+          'value.mjs': 'export const value = 70;',
+        },
+        expected: '70 imported:imported\n',
+        templateCount: 1,
+      },
+      {
+        name: 'direct eval reads the user binding',
+        files: {
+          'input.mjs': `const _templateObject = 80;
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(eval('String(_templateObject)'), tag\`eval\`);`,
+        },
+        expected: '80 eval:eval\n',
+        templateCount: 1,
+      },
+      {
+        name: 'one template site reuses its cached array',
+        files: {
+          'input.mjs': `const _templateObject = 90;
+function tag(parts) { return parts; }
+function read() { return tag\`identity\`; }
+console.log(_templateObject, read() === read());`,
+        },
+        expected: '90 true\n',
+        templateCount: 1,
+      },
+      {
+        name: 'identifier minification with adjacent collisions',
+        files: {
+          'input.mjs': `const _templateObject = 100, _templateObject2 = 101;
+function tag(parts) { return parts[0] + ':' + parts.raw[0]; }
+console.log(_templateObject, _templateObject2, tag\`min\`, tag\`ified\`);`,
+        },
+        expected: '100 101 min:min ified:ified\n',
+        templateCount: 2,
+        minify: true,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const fixture = await createFixture({
+        ...testCase.files,
+        'package.json': '{"type":"module"}',
+      });
+      cleanup = fixture.cleanup;
+
+      const output = join(fixture.dir, 'out.mjs');
+      const result = await runZntcInDir(fixture.dir, [
+        '--bundle',
+        '--platform=node',
+        '--format=esm',
+        'input.mjs',
+        '--target=es5',
+        ...(testCase.minify ? ['--minify-identifiers'] : []),
+        '-o',
+        output,
+      ]);
+      expect(result.exitCode, `${testCase.name}: ${result.stderr}`).toBe(0);
+
+      const code = readFileSync(output, 'utf8');
+      expect(code).not.toContain('__zntc_template_object');
+      if (!testCase.minify)
+        expect(code.match(/function _templateObject(?:\$?\d+)?\(\)/g), testCase.name).toHaveLength(
+          testCase.templateCount,
+        );
+
+      const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+      expect(runtime.status, `${testCase.name}: ${runtime.stderr}`).toBe(0);
+      expect(runtime.stdout, testCase.name).toBe(testCase.expected);
+
+      await fixture.cleanup();
+      cleanup = undefined;
+    }
+  });
+
   for (const variant of [
     {
       target: 'es5',

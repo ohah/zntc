@@ -6529,6 +6529,7 @@ fn isPostGraphOutputNameKind(kind: SemanticSyntheticKind) bool {
         .this_capture_binding,
         .arguments_capture_binding,
         .object_super_home_binding,
+        .tagged_template_function_binding,
         => true,
         else => false,
     };
@@ -6546,6 +6547,7 @@ fn isValidPostGraphOutputNameHint(kind: SemanticSyntheticKind, hint: []const u8)
         .this_capture_binding => std.mem.eql(u8, hint, "_this"),
         .arguments_capture_binding => std.mem.eql(u8, hint, "_arguments"),
         .object_super_home_binding => std.mem.eql(u8, hint, "_obj"),
+        .tagged_template_function_binding => std.mem.eql(u8, hint, "_templateObject"),
         else => false,
     };
 }
@@ -6567,8 +6569,17 @@ fn isPostGraphOutputBindingKind(synthetic_kind: SemanticSyntheticKind, kind: Sem
             else => false,
         },
         .object_super_home_binding => kind == .parameter,
+        .tagged_template_function_binding => kind == .function_decl,
         else => false,
     };
+}
+
+test "post-graph tagged-template cache requires its exact function binding metadata" {
+    try std.testing.expect(isPostGraphOutputNameKind(.tagged_template_function_binding));
+    try std.testing.expect(isValidPostGraphOutputNameHint(.tagged_template_function_binding, "_templateObject"));
+    try std.testing.expect(!isValidPostGraphOutputNameHint(.tagged_template_function_binding, "_templateObject2"));
+    try std.testing.expect(isPostGraphOutputBindingKind(.tagged_template_function_binding, .function_decl));
+    try std.testing.expect(!isPostGraphOutputBindingKind(.tagged_template_function_binding, .variable_var));
 }
 
 /// Preserve exact producer binding nodes for names selected by

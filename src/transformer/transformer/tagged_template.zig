@@ -134,7 +134,8 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
     const program_scope = if (self.semantic_edit_enabled) self.programScope() else .none;
     const dynamic_scope = if (program_scope.isNone()) self.current_scope else program_scope;
     const late_template_output_name = self.semantic_edit_enabled and
-        es_helpers.canUseLateStandaloneOutputName(self, program_scope);
+        (es_helpers.canUseLateStandaloneOutputName(self, program_scope) or
+            es_helpers.canUseLateGraphOutputName(self, program_scope));
     const fn_prefix = if (late_template_output_name) "__zntc_template_object" else "_templateObject";
     const fn_name = if (late_template_output_name)
         try es_helpers.uniqueSyntheticName(self, fn_prefix, &self.tagged_template_counter)
@@ -257,7 +258,11 @@ fn lowerTaggedTemplate(self: *Transformer, tag_idx: NodeIndex, tmpl_idx: NodeInd
         const fn_id = try self.declareSyntheticInScope(fn_name_binding, span, .function_decl, program_scope);
         if (late_template_output_name) {
             const symbol = fn_id orelse std.debug.panic("late-named tagged-template cache has no exact SymbolId", .{});
-            es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, fn_name, .tagged_template_function_binding, "_templateObject");
+            if (es_helpers.canUseLateGraphOutputName(self, program_scope)) {
+                es_helpers.markLateGraphSyntheticSymbol(self, symbol, .tagged_template_function_binding, "_templateObject");
+            } else {
+                es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, fn_name, .tagged_template_function_binding, "_templateObject");
+            }
         }
         const data_declarator_start = self.ast.extra_data.items[self.ast.getNode(data_decl).data.extra + 1];
         const data_declarator: NodeIndex = @fromBackingInt(@intCast(self.ast.extra_data.items[data_declarator_start]));
