@@ -117,40 +117,40 @@ var E = /* @__PURE__ */ ((E) => {E[E["test"]=value]="test";return E;})(E || {});
 
 exports[`TSC: enums enumExportMergingES6 1`] = `
 "export var Animals = /* @__PURE__ */ ((Animals) => {Animals[Animals["Cat"]=1]="Cat";return Animals;})(Animals || {});
-export var Animals = /* @__PURE__ */ ((Animals) => {Animals[Animals["Dog"]=2]="Dog";return Animals;})(Animals || {});
-export var Animals = /* @__PURE__ */ ((Animals) => {Animals[Animals["CatDog"]=3]="CatDog";return Animals;})(Animals || {});
+export var Animals = /* @__PURE__ */ ((Animals2) => {Animals2[Animals2["Dog"]=2]="Dog";return Animals2;})(Animals || {});
+export var Animals = /* @__PURE__ */ ((Animals3) => {Animals3[Animals3["CatDog"]=3]="CatDog";return Animals3;})(Animals || {});
 "
 `;
 
 exports[`TSC: enums enumMerging 1`] = `
 "// Enum with only constant members across 2 declarations with the same root module
 // Enum with initializer in all declarations with constant members with the same root module
-var M1;((_M1) => {var EImpl1 = /* @__PURE__ */ ((EImpl1) => {EImpl1[EImpl1["A"]=0]="A";EImpl1[EImpl1["B"]=1]="B";EImpl1[EImpl1["C"]=2]="C";return EImpl1;})(EImpl1 || {});var EImpl1 = /* @__PURE__ */ ((EImpl1) => {EImpl1[EImpl1["D"]=1]="D";EImpl1[EImpl1["E"]=2]="E";EImpl1[EImpl1["F"]=3]="F";return EImpl1;})(EImpl1 || {});var EConst1 = /* @__PURE__ */ ((EConst1) => {EConst1[EConst1["A"]=3]="A";EConst1[EConst1["B"]=2]="B";EConst1[EConst1["C"]=1]="C";return EConst1;})(EConst1=_M1.EConst1 || (_M1.EConst1 = {}));var EConst1 = /* @__PURE__ */ ((EConst1) => {EConst1[EConst1["D"]=7]="D";EConst1[EConst1["E"]=9]="E";EConst1[EConst1["F"]=8]="F";return EConst1;})(EConst1=_M1.EConst1 || (_M1.EConst1 = {}));var x = [EConst1.A, EConst1.B, EConst1.C, EConst1.D, EConst1.E, EConst1.F];})(M1 || (M1 = {}));
+var M1;((_M1) => {var EImpl1 = /* @__PURE__ */ ((EImpl1) => {EImpl1[EImpl1["A"]=0]="A";EImpl1[EImpl1["B"]=1]="B";EImpl1[EImpl1["C"]=2]="C";return EImpl1;})(EImpl1 || {});var EImpl1 = /* @__PURE__ */ ((EImpl12) => {EImpl12[EImpl12["D"]=1]="D";EImpl12[EImpl12["E"]=2]="E";EImpl12[EImpl12["F"]=3]="F";return EImpl12;})(EImpl1 || {});var EConst1 = /* @__PURE__ */ ((EConst1) => {EConst1[EConst1["A"]=3]="A";EConst1[EConst1["B"]=2]="B";EConst1[EConst1["C"]=1]="C";return EConst1;})(EConst1=_M1.EConst1 || (_M1.EConst1 = {}));var EConst1 = /* @__PURE__ */ ((EConst12) => {EConst12[EConst12["D"]=7]="D";EConst12[EConst12["E"]=9]="E";EConst12[EConst12["F"]=8]="F";return EConst12;})(EConst1=_M1.EConst1 || (_M1.EConst1 = {}));var x = [EConst1.A, EConst1.B, EConst1.C, EConst1.D, EConst1.E, EConst1.F];})(M1 || (M1 = {}));
 // Enum with only computed members across 2 declarations with the same root module 
-var M2;((_M2) => {var EComp2 = /* @__PURE__ */ ((EComp2) => {EComp2[EComp2["A"]="foo".length]="A";EComp2[EComp2["B"]="foo".length]="B";EComp2[EComp2["C"]="foo".length]="C";return EComp2;})(EComp2=_M2.EComp2 || (_M2.EComp2 = {}));var EComp2 = /* @__PURE__ */ ((EComp2) => {EComp2[EComp2["D"]="foo".length]="D";EComp2[EComp2["E"]="foo".length]="E";EComp2[EComp2["F"]="foo".length]="F";return EComp2;})(EComp2=_M2.EComp2 || (_M2.EComp2 = {}));var x = [EComp2.A, EComp2.B, EComp2.C, EComp2.D, EComp2.E, EComp2.F];})(M2 || (M2 = {}));
+var M2;((_M2) => {var EComp2 = /* @__PURE__ */ ((EComp2) => {EComp2[EComp2["A"]="foo".length]="A";EComp2[EComp2["B"]="foo".length]="B";EComp2[EComp2["C"]="foo".length]="C";return EComp2;})(EComp2=_M2.EComp2 || (_M2.EComp2 = {}));var EComp2 = /* @__PURE__ */ ((EComp22) => {EComp22[EComp22["D"]="foo".length]="D";EComp22[EComp22["E"]="foo".length]="E";EComp22[EComp22["F"]="foo".length]="F";return EComp22;})(EComp2=_M2.EComp2 || (_M2.EComp2 = {}));var x = [EComp2.A, EComp2.B, EComp2.C, EComp2.D, EComp2.E, EComp2.F];})(M2 || (M2 = {}));
 // Enum with initializer in only one of two declarations with constant members with the same root module
-var M3;((_M3) => {var EInit = /* @__PURE__ */ ((EInit) => {EInit[EInit["A"]=0]="A";EInit[EInit["B"]=1]="B";return EInit;})(EInit || {});var EInit = /* @__PURE__ */ ((EInit) => {EInit[EInit["C"]=1]="C";EInit[EInit["D"]=2]="D";EInit[EInit["E"]=3]="E";return EInit;})(EInit || {});})(M3 || (M3 = {}));
+var M3;((_M3) => {var EInit = /* @__PURE__ */ ((EInit) => {EInit[EInit["A"]=0]="A";EInit[EInit["B"]=1]="B";return EInit;})(EInit || {});var EInit = /* @__PURE__ */ ((EInit2) => {EInit2[EInit2["C"]=1]="C";EInit2[EInit2["D"]=2]="D";EInit2[EInit2["E"]=3]="E";return EInit2;})(EInit || {});})(M3 || (M3 = {}));
 // Enums with same name but different root module
-var M4;((_M4) => {var Color = /* @__PURE__ */ ((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=1]="Green";Color[Color["Blue"]=2]="Blue";return Color;})(Color=_M4.Color || (_M4.Color = {}));})(M4 || (M4 = {}));
-var M5;((_M5) => {var Color = /* @__PURE__ */ ((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=1]="Green";Color[Color["Blue"]=2]="Blue";return Color;})(Color=_M5.Color || (_M5.Color = {}));})(M5 || (M5 = {}));
-var M6;((_M6) => {let A;((_A) => {var Color = /* @__PURE__ */ ((Color) => {Color[Color["Red"]=0]="Red";Color[Color["Green"]=1]="Green";Color[Color["Blue"]=2]="Blue";return Color;})(Color=_A.Color || (_A.Color = {}));})(A = _M6.A || (_M6.A = {}));})(M6 || (M6 = {}));
-var M6;((_M6) => {let A;((_A) => {var Color = /* @__PURE__ */ ((Color) => {Color[Color["Yellow"]=1]="Yellow";return Color;})(Color=_A.Color || (_A.Color = {}));})(A = _M6.A || (_M6.A = {}));var t = A.Color.Yellow;t = A.Color.Red;})(M6 || (M6 = {}));
+var M4;((_M4) => {var Color = /* @__PURE__ */ ((Color2) => {Color2[Color2["Red"]=0]="Red";Color2[Color2["Green"]=1]="Green";Color2[Color2["Blue"]=2]="Blue";return Color2;})(Color=_M4.Color || (_M4.Color = {}));})(M4 || (M4 = {}));
+var M5;((_M5) => {var Color = /* @__PURE__ */ ((Color3) => {Color3[Color3["Red"]=0]="Red";Color3[Color3["Green"]=1]="Green";Color3[Color3["Blue"]=2]="Blue";return Color3;})(Color=_M5.Color || (_M5.Color = {}));})(M5 || (M5 = {}));
+var M6;((_M6) => {let A;((_A) => {var Color = /* @__PURE__ */ ((Color4) => {Color4[Color4["Red"]=0]="Red";Color4[Color4["Green"]=1]="Green";Color4[Color4["Blue"]=2]="Blue";return Color4;})(Color=_A.Color || (_A.Color = {}));})(A = _M6.A || (_M6.A = {}));})(M6 || (M6 = {}));
+var M6;((_M62) => {let A;((_A2) => {var Color = /* @__PURE__ */ ((Color5) => {Color5[Color5["Yellow"]=1]="Yellow";return Color5;})(Color=_A2.Color || (_A2.Color = {}));})(A = _M62.A || (_M62.A = {}));var t = A.Color.Yellow;t = A.Color.Red;})(M6 || (M6 = {}));
 "
 `;
 
 exports[`TSC: enums enumMergingErrors 1`] = `
 "// Enum with constant, computed, constant members split across 3 declarations with the same root module
-var M;((_M) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["A"]=0]="A";return E1;})(E1=_M.E1 || (_M.E1 = {}));var E2 = /* @__PURE__ */ ((E2) => {E2[E2["C"]=0]="C";return E2;})(E2=_M.E2 || (_M.E2 = {}));var E3 = /* @__PURE__ */ ((E3) => {E3[E3["A"]=0]="A";return E3;})(E3=_M.E3 || (_M.E3 = {}));})(M || (M = {}));
-((_M) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["B"]="foo".length]="B";return E1;})(E1=_M.E1 || (_M.E1 = {}));var E2 = /* @__PURE__ */ ((E2) => {E2[E2["B"]="foo".length]="B";return E2;})(E2=_M.E2 || (_M.E2 = {}));var E3 = /* @__PURE__ */ ((E3) => {E3[E3["C"]=0]="C";return E3;})(E3=_M.E3 || (_M.E3 = {}));})(M || (M = {}));
-((_M) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["C"]=0]="C";return E1;})(E1=_M.E1 || (_M.E1 = {}));var E2 = /* @__PURE__ */ ((E2) => {E2[E2["A"]=0]="A";return E2;})(E2=_M.E2 || (_M.E2 = {}));var E3 = /* @__PURE__ */ ((E3) => {E3[E3["B"]="foo".length]="B";return E3;})(E3=_M.E3 || (_M.E3 = {}));})(M || (M = {}));
+var M;((_M) => {var E1 = /* @__PURE__ */ ((E12) => {E12[E12["A"]=0]="A";return E12;})(E1=_M.E1 || (_M.E1 = {}));var E2 = /* @__PURE__ */ ((E22) => {E22[E22["C"]=0]="C";return E22;})(E2=_M.E2 || (_M.E2 = {}));var E3 = /* @__PURE__ */ ((E32) => {E32[E32["A"]=0]="A";return E32;})(E3=_M.E3 || (_M.E3 = {}));})(M || (M = {}));
+((_M2) => {var E1 = /* @__PURE__ */ ((E13) => {E13[E13["B"]="foo".length]="B";return E13;})(E1=_M2.E1 || (_M2.E1 = {}));var E2 = /* @__PURE__ */ ((E23) => {E23[E23["B"]="foo".length]="B";return E23;})(E2=_M2.E2 || (_M2.E2 = {}));var E3 = /* @__PURE__ */ ((E33) => {E33[E33["C"]=0]="C";return E33;})(E3=_M2.E3 || (_M2.E3 = {}));})(M || (M = {}));
+((_M3) => {var E1 = /* @__PURE__ */ ((E14) => {E14[E14["C"]=0]="C";return E14;})(E1=_M3.E1 || (_M3.E1 = {}));var E2 = /* @__PURE__ */ ((E24) => {E24[E24["A"]=0]="A";return E24;})(E2=_M3.E2 || (_M3.E2 = {}));var E3 = /* @__PURE__ */ ((E34) => {E34[E34["B"]="foo".length]="B";return E34;})(E3=_M3.E3 || (_M3.E3 = {}));})(M || (M = {}));
 // Enum with no initializer in either declaration with constant members with the same root module
-var M1;((_M1) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["A"]=0]="A";return E1;})(E1=_M1.E1 || (_M1.E1 = {}));})(M1 || (M1 = {}));
-((_M1) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["B"]=0]="B";return E1;})(E1=_M1.E1 || (_M1.E1 = {}));})(M1 || (M1 = {}));
-((_M1) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["C"]=0]="C";return E1;})(E1=_M1.E1 || (_M1.E1 = {}));})(M1 || (M1 = {}));
+var M1;((_M1) => {var E1 = /* @__PURE__ */ ((E15) => {E15[E15["A"]=0]="A";return E15;})(E1=_M1.E1 || (_M1.E1 = {}));})(M1 || (M1 = {}));
+((_M12) => {var E1 = /* @__PURE__ */ ((E16) => {E16[E16["B"]=0]="B";return E16;})(E1=_M12.E1 || (_M12.E1 = {}));})(M1 || (M1 = {}));
+((_M13) => {var E1 = /* @__PURE__ */ ((E17) => {E17[E17["C"]=0]="C";return E17;})(E1=_M13.E1 || (_M13.E1 = {}));})(M1 || (M1 = {}));
 // Enum with initializer in only one of three declarations with constant members with the same root module
-var M2;((_M2) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["A"]=0]="A";return E1;})(E1=_M2.E1 || (_M2.E1 = {}));})(M2 || (M2 = {}));
-((_M2) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["B"]=0]="B";return E1;})(E1=_M2.E1 || (_M2.E1 = {}));})(M2 || (M2 = {}));
-((_M2) => {var E1 = /* @__PURE__ */ ((E1) => {E1[E1["C"]=0]="C";return E1;})(E1=_M2.E1 || (_M2.E1 = {}));})(M2 || (M2 = {}));
+var M2;((_M22) => {var E1 = /* @__PURE__ */ ((E18) => {E18[E18["A"]=0]="A";return E18;})(E1=_M22.E1 || (_M22.E1 = {}));})(M2 || (M2 = {}));
+((_M23) => {var E1 = /* @__PURE__ */ ((E19) => {E19[E19["B"]=0]="B";return E19;})(E1=_M23.E1 || (_M23.E1 = {}));})(M2 || (M2 = {}));
+((_M24) => {var E1 = /* @__PURE__ */ ((E110) => {E110[E110["C"]=0]="C";return E110;})(E1=_M24.E1 || (_M24.E1 = {}));})(M2 || (M2 = {}));
 "
 `;
 
@@ -162,7 +162,7 @@ exports[`TSC: enums enumShadowedInfinityNaN 1`] = `
 }
 {
 	let NaN = {};
-	var En = /* @__PURE__ */ ((En) => {En[En["X"]=NaN]="X";return En;})(En || {});
+	var En = /* @__PURE__ */ ((En2) => {En2[En2["X"]=NaN]="X";return En2;})(En || {});
 }
 "
 `;

@@ -139,12 +139,12 @@ foo(person);
 exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesWithModule 1`] = `
 "// module export
 var m;((_m) => {})(m || (m = {}));
-((_m) => {var z = _m.x;var y = { a: _m.x, x: _m.x };})(m || (m = {}));
+((_m2) => {var z = _m2.x;var y = { a: _m2.x, x: _m2.x };})(m || (m = {}));
 "
 `;
 
 exports[`TSC: es6/shorthandPropertyAssignment objectLiteralShorthandPropertiesWithModuleES6 1`] = `
 "var m;((_m) => {})(m || (m = {}));
-((_m) => {var z = _m.x;var y = { a: _m.x, x: _m.x };})(m || (m = {}));
+((_m2) => {var z = _m2.x;var y = { a: _m2.x, x: _m2.x };})(m || (m = {}));
 "
 `;
