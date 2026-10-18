@@ -523,6 +523,7 @@ pub fn makeTempVarSpan(self: anytype) !Span {
         self.temp_var_counter += 1;
         // 카운터는 함수마다 되감긴다. 이전 함수의 같은 슬롯을 남기지 않는다.
         _ = self.temp_span_by_counter.remove(idx);
+        _ = self.temp_symbol_ids_by_counter.remove(idx);
         const name = tempVarName(idx, &buf);
         if (collidesWithPrivateField(self, name)) continue;
         // #4220: 사용자 식별자(_a 등)와 충돌하면 skip — 충돌 시 temp 대입이
@@ -2065,6 +2066,8 @@ pub fn cloneNode(self: anytype, idx: NodeIndex) !NodeIndex {
 pub const TempCapture = struct {
     span: Span,
     paren_assign: NodeIndex,
+    symbol_id: ?symbol_mod.SymbolId = null,
+    reference_scope: ScopeId = .none,
 };
 
 pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
@@ -2075,6 +2078,32 @@ pub fn captureToTemp(self: anytype, value: NodeIndex, span: Span) !TempCapture {
         .span = temp_span,
         // 합성 paren 제거(#4042 PR8): bare assign — 첫 사용 자리의 precedence 가 괄호 재유도.
         .paren_assign = assign,
+    };
+}
+
+/// Capture a value in a temp whose semantic output scope is already known.
+/// Reserve its SymbolId before creating the assignment reference, attach that
+/// reference directly, and retain the ID by allocator slot for the later var
+/// hoist. Deferred owners keep the existing pending-reference handoff.
+pub fn captureToTempWithIdentity(self: anytype, value: NodeIndex, span: Span) !TempCapture {
+    const temp_span = try makeTempVarSpan(self);
+    const counter_index = self.temp_var_counter - 1;
+    const identity = try self.reserveSyntheticTempIdentityForReference(
+        temp_span,
+        span,
+        self.current_scope,
+    );
+    const temp_lhs = try makeTempVarRef(self, temp_span, span);
+    const assign = try makeAssignExpr(self, temp_lhs, value, span, @backingInt(token_mod.Kind.eq));
+    if (identity) |exact| {
+        try self.addSyntheticRefInScope(temp_lhs, exact.symbol_id, exact.reference_scope, .{ .write = true });
+        try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(exact.symbol_id));
+    }
+    return .{
+        .span = temp_span,
+        .paren_assign = assign,
+        .symbol_id = if (identity) |exact| exact.symbol_id else null,
+        .reference_scope = if (identity) |exact| exact.reference_scope else .none,
     };
 }
 

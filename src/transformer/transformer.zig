@@ -443,6 +443,9 @@ pub const Transformer = struct {
     /// 카운터를 되감아 같은 이름을 재사용해도 각 temp의 생성 위치는 고유하다.
     /// hoist는 이름을 다시 만들지 않고 이 위치를 가져와야 한다.
     temp_span_by_counter: std.AutoHashMapUnmanaged(u32, Span) = .empty,
+    /// Producer-owned exact identities for temp slots whose output scope is
+    /// known when the temp is created.
+    temp_symbol_ids_by_counter: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// #4598: `es2022_tla.lowerProgram` 이 만든 async IIFE **statement** 의 인덱스.
     /// emitter 가 `__esm` factory 본문에서 이 문장을 `return <expr>;` 로 방출해
     /// `init_X()` 가 **초기화 완료 promise** 를 돌려주게 한다(소비자가 기다릴 대상).
@@ -1012,6 +1015,8 @@ pub const Transformer = struct {
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const reserveSyntheticTempSymbolInScope = @import("transformer/semantic_edit.zig").reserveSyntheticTempSymbolInScope;
+    pub const reserveSyntheticTempIdentityForReference = @import("transformer/semantic_edit.zig").reserveSyntheticTempIdentityForReference;
+    pub const SyntheticTempReferenceIdentity = @import("transformer/semantic_edit.zig").SyntheticTempReferenceIdentity;
     pub const recordGeneratorStateTempSymbol = @import("transformer/semantic_edit.zig").recordGeneratorStateTempSymbol;
     pub const recordPendingExactSymbolRef = @import("transformer/semantic_edit.zig").recordPendingExactSymbolRef;
     pub const registerGeneratedWrapperTemp = @import("transformer/semantic_edit.zig").registerGeneratedWrapperTemp;
@@ -1055,6 +1060,7 @@ pub const Transformer = struct {
     pub const ensureSymbolDeclaration = @import("transformer/semantic_edit.zig").ensureSymbolDeclaration;
     pub const ensureSymbolDeclarationAtNode = @import("transformer/semantic_edit.zig").ensureSymbolDeclarationAtNode;
     pub const bindHoistedTemp = @import("transformer/semantic_edit.zig").bindHoistedTemp;
+    pub const bindHoistedTempWithProducerSymbol = @import("transformer/semantic_edit.zig").bindHoistedTempWithProducerSymbol;
     pub const bindSyntheticTempInScope = @import("transformer/semantic_edit.zig").bindSyntheticTempInScope;
     pub const trackNullishIdentifierCopies = @import("transformer/semantic_edit.zig").trackNullishIdentifierCopies;
     pub const replaceUserReferenceWithCopy = @import("transformer/semantic_edit.zig").replaceUserReferenceWithCopy;
