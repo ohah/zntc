@@ -302,7 +302,7 @@ pub const SyntheticKind = enum(u8) {
     /// Standalone output selects its spelling from the exact SymbolId.
     block_scoping_loop_ret_binding,
     /// Cached function binding generated for a downlevel tagged template.
-    /// Standalone output selects its spelling from the exact SymbolId.
+    /// Standalone output and the bundler linker select its spelling from this exact SymbolId.
     tagged_template_function_binding,
     /// ES5 lexical `this` capture. Standalone output and the bundler linker
     /// select its spelling from this exact SymbolId after generated bindings are known.
