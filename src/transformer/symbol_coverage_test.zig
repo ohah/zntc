@@ -2515,7 +2515,7 @@ test "#4819 constructor spread capture refs reserve one immediate SymbolId" {
     try std.testing.expectEqual(@as(usize, 2), exact_refs);
 }
 
-test "#4819 prehoisted class key write reserves one immediate SymbolId" {
+test "#4819 prehoisted class key write and read keep the producer SymbolId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -2560,7 +2560,7 @@ test "#4819 prehoisted class key write reserves one immediate SymbolId" {
         const id = transformer.getSymbolIdAt(@fromBackingInt(@intCast(index))) orelse continue;
         if (id == temp_id.*) exact_refs += 1;
     }
-    try std.testing.expectEqual(@as(usize, 1), exact_refs);
+    try std.testing.expectEqual(@as(usize, 2), exact_refs);
 }
 
 test "#4819 known hoisted temp refs attach to an existing exact SymbolId" {

@@ -69,6 +69,7 @@ test {
     _ = @import("es2020_temp_identity_semantic_test.zig");
     _ = @import("es2021_temp_identity_semantic_test.zig");
     _ = @import("es2015_spread_temp_identity_semantic_test.zig");
+    _ = @import("class_key_temp_identity_semantic_test.zig");
     _ = @import("private_field_temp_identity_semantic_test.zig");
     _ = @import("arrow_body_temp_semantic_test.zig");
     _ = @import("lexical_capture_semantic_test.zig");
