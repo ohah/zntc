@@ -184,6 +184,10 @@ test "#4819 standalone lowered destructuring temps finalize by SymbolId unless d
         "function run() { const _a = 1; const { [pick()]: value = _a } = input; return value; }",
         true,
     );
+    try checkStandaloneDestructuringTempNameMarking(
+        "function run() { const _a = 1; const [[value] = []] = input; return [value, _a]; }",
+        true,
+    );
 }
 
 test "#4819 computed-key default destructuring temp retains its SymbolId" {
