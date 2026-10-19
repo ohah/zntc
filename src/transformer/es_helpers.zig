@@ -1590,20 +1590,39 @@ pub fn resolveGeneratedName(self: anytype, name: []const u8) ![]const u8 {
 /// visible names in direct-eval strings. Unlike `resolveSyntheticName`, this
 /// path deliberately does not exempt temp-like names such as `_c` and `_s`.
 pub fn resolveGeneratedNameAvoidingDynamicEval(self: anytype, name: []const u8, scope_id: ScopeId) ![]const u8 {
-    if (self.synthetic_names.get(name)) |resolved| return resolved;
+    if (scope_id.isNone()) return try resolveGeneratedName(self, name);
+
+    const cache_key = try scopedSyntheticNameCacheKey(self, name, scope_id);
+    if (self.scoped_generated_names.get(cache_key)) |cached| return cached;
+
+    // Reuse the module-wide preferred spelling only when it is also safe in
+    // this output scope. A stricter scope may need a different suffix, but
+    // that must not rewrite the spelling already selected for another scope.
+    if (self.synthetic_names.get(name)) |cached| {
+        if (!try nameAppearsInDynamicEvalString(self, scope_id, cached)) {
+            try self.scoped_generated_names.put(self.allocator, cache_key, cached);
+            return cached;
+        }
+    }
+
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     const arena = self.name_arena.?.allocator();
     const key = try arena.dupe(u8, name);
-    var resolved: []const u8 = key;
+    var resolved = key;
     var suffix: usize = 2;
-    while (try nameAppearsInSource(self, resolved) or self.synthetic_taken.contains(resolved) or
-        self.synthetic_names.contains(resolved) or
-        try nameAppearsInDynamicEvalString(self, scope_id, resolved)) : (suffix += 1)
-    {
+    while (true) {
+        if (!(try nameAppearsInSource(self, resolved)) and
+            !self.synthetic_taken.contains(resolved) and
+            !self.synthetic_names.contains(resolved) and
+            !(try nameAppearsInDynamicEvalString(self, scope_id, resolved))) break;
         resolved = try std.fmt.allocPrint(arena, "{s}{d}", .{ name, suffix });
+        suffix += 1;
     }
-    try self.synthetic_names.put(self.allocator, key, resolved);
+
+    if (!self.synthetic_names.contains(name))
+        try self.synthetic_names.put(self.allocator, key, resolved);
     try self.synthetic_taken.put(self.allocator, resolved, {});
+    try self.scoped_generated_names.put(self.allocator, cache_key, resolved);
     return resolved;
 }
 
