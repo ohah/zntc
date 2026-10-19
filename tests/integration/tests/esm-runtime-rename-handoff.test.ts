@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import { createFixture, runNode, runZntc } from './helpers';
 
 const COLLISION_CASES = Array.from({ length: 10 }, (_, index) =>
-  Array.from({ length: index + 1 }, (_, suffix) => (suffix === 0 ? '__esm' : `__esm$${suffix + 1}`)),
+  Array.from({ length: index + 1 }, (_, suffix) =>
+    suffix === 0 ? '__esm' : `__esm$${suffix + 1}`,
+  ),
 );
 
 describe('ESM runtime factory rename handoff by producer SymbolId (#5955)', () => {
