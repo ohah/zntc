@@ -2644,7 +2644,10 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       },
       {
         name: 'Switch',
-        observe: (candidate: string) => `eval(\`typeof ${candidate}\`)`,
+        observe: (candidate: string) => {
+          const splitAt = Math.floor(candidate.length / 2);
+          return `eval(\`typeof \${${JSON.stringify(candidate.slice(0, splitAt))} + ${JSON.stringify(candidate.slice(splitAt))}}\`)`;
+        },
       },
       {
         name: 'Button',
