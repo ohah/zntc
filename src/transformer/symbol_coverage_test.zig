@@ -4190,6 +4190,94 @@ test "#4819 Flow component classic JSX reads are recorded in the transform graph
     try std.testing.expectEqual(@as(u32, 5), edited.symbols.items[react_symbol].reference_count);
 }
 
+test "#4819 Flow forwardRef helper avoids ten hostile static eval names in early-name mode" {
+    const eval_arguments = [_][]const u8{
+        "'View_withRef'",
+        "'View_withRef' + ''",
+        "'' + 'View_withRef'",
+        "('View_withRef' + '')",
+        "'View_' + 'withRef'",
+        "'View' + '_withRef'",
+        "'View' + ('_withRef')",
+        "`View_withRef`",
+        "`${'View_withRef'}`",
+        "'View_\\x77ithRef'",
+    };
+
+    for (eval_arguments) |eval_argument| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = try std.fmt.allocPrint(
+            allocator,
+            "// @flow\nimport React from 'react';\nfunction observe() {{ eval({s}); }}\n" ++
+                "export component View(ref?: mixed, value: number, ...props: {{ label?: string }}) {{ " ++
+                "return <div value={{value}} />; }}",
+            .{eval_argument},
+        );
+        try std.testing.expectEqualStrings("View_withRef2", try transformFlowForwardRefHelperForTest(allocator, source));
+    }
+}
+
+fn transformFlowForwardRefHelperForTest(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
+    const FunctionExtra = @import("../parser/ast.zig").FunctionExtra;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".jsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = false,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var helper_name_idx: ?AstNodeIndex = null;
+    var helper_name: ?[]const u8 = null;
+    for (transformer.ast.nodes.items) |node| {
+        if (node.tag != .function_declaration) continue;
+        const name_idx = transformer.readNodeIdx(node.data.extra, FunctionExtra.name);
+        if (name_idx.isNone()) continue;
+        const name = transformer.ast.getText(transformer.ast.getNode(name_idx).span);
+        if (!std.mem.startsWith(u8, name, "View_withRef")) continue;
+        helper_name_idx = name_idx;
+        helper_name = name;
+    }
+    const binding = helper_name_idx orelse return error.MissingFlowForwardRefHelperBinding;
+    const name = helper_name orelse return error.MissingFlowForwardRefHelperName;
+    const symbol_id = transformer.getSymbolIdAt(binding) orelse return error.MissingFlowForwardRefHelperSymbolId;
+    const symbol = edited.symbols.items[symbol_id];
+    try std.testing.expectEqual(SymbolKind.function_decl, symbol.kind);
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+    var forward_ref_argument_found = false;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference or
+            !std.mem.eql(u8, transformer.ast.getText(node.span), name)) continue;
+        try std.testing.expectEqual(@as(?u32, symbol_id), edited.symbol_ids[raw]);
+        forward_ref_argument_found = true;
+    }
+    try std.testing.expect(forward_ref_argument_found);
+    return name;
+}
+
 test "#4819 JSX dev runtime call binds its isolated import symbol" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -516,7 +516,7 @@ pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex
     if (!name_idx.isNone() and !forward_ref_argument.isNone()) {
         const old_name_span = self.ast.getNode(name_idx).data.string_ref;
         const old_name = self.ast.getText(old_name_span);
-        const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution)
+        const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled)
             try es_helpers.resolveScopedGeneratedOutputName(self, old_name, self.current_scope)
         else
             .{ .name = try es_helpers.resolveGeneratedName(self, old_name), .late = false };
