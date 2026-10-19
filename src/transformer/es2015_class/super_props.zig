@@ -388,12 +388,11 @@ pub fn SuperProps(comptime Transformer: type) type {
         fn buildSuperBaseViaProtoChain(self: *Transformer, alias_name_span: Span, span: Span) Transformer.Error!NodeIndex {
             _ = span;
             const reference = try es_helpers.makeSyntheticRefFromSpan(self, alias_name_span);
-            if (self.semantic_edit_enabled and !try self.trackVisibleDeclaredSyntheticTempReferenceInScope(
-                alias_name_span,
-                reference,
-                self.current_scope,
-                .{ .read = true },
-            )) std.debug.panic("super proto-chain alias read has no exact temp identity", .{});
+            if (self.semantic_edit_enabled) {
+                const symbol_id = self.current_super_proto_chain_symbol_id orelse
+                    std.debug.panic("super proto-chain alias read has no producer SymbolId", .{});
+                try self.addSyntheticRefInScope(reference, symbol_id, self.current_scope, .{ .read = true });
+            }
             return reference;
         }
 

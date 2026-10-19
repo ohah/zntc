@@ -494,6 +494,7 @@ pub const Saved = struct {
     static_receiver: ?Span,
     in_extracted_fn: bool,
     via_proto_chain: bool,
+    proto_chain_symbol_id: ?SymbolId,
     this_alias: bool,
 };
 
@@ -509,6 +510,7 @@ pub fn enterMethod(self: *Transformer, home: ?Span) Saved {
         .static_receiver = self.current_super_static_receiver,
         .in_extracted_fn = self.current_super_in_extracted_fn,
         .via_proto_chain = self.current_super_via_proto_chain,
+        .proto_chain_symbol_id = self.current_super_proto_chain_symbol_id,
         .this_alias = self.super_call_this_alias,
     };
     self.current_super_home_object = home;
@@ -519,6 +521,7 @@ pub fn enterMethod(self: *Transformer, home: ?Span) Saved {
         self.current_super_static_receiver = null;
         self.current_super_in_extracted_fn = false;
         self.current_super_via_proto_chain = false;
+        self.current_super_proto_chain_symbol_id = null;
         self.super_call_this_alias = false;
     }
     return saved;
@@ -532,6 +535,7 @@ pub fn leaveMethod(self: *Transformer, saved: Saved) void {
     self.current_super_static_receiver = saved.static_receiver;
     self.current_super_in_extracted_fn = saved.in_extracted_fn;
     self.current_super_via_proto_chain = saved.via_proto_chain;
+    self.current_super_proto_chain_symbol_id = saved.proto_chain_symbol_id;
     self.super_call_this_alias = saved.this_alias;
 }
 
