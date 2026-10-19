@@ -1176,15 +1176,15 @@ const StandaloneRuntimeHelperNameResolver = struct {
     fn resolve(self: StandaloneRuntimeHelperNameResolver, base_name: []const u8, minify: bool) TranspileError![]const u8 {
         const transformer = self.transformer;
         const canonical_name = runtime_helper_names.helperName(base_name, minify);
-        const local_name = es_helpers.resolveRuntimeHelperName(transformer, canonical_name) catch return error.OutOfMemory;
-        if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports) return local_name;
+        if (!transformer.semantic_edit_enabled or transformer.options.emit_runtime_helper_imports)
+            return es_helpers.resolveRuntimeHelperName(transformer, canonical_name) catch return error.OutOfMemory;
 
         const symbol_id = transformer.runtime_helper_symbol_ids.get(base_name) orelse return error.TransformError;
         const raw_id = @backingInt(symbol_id);
         if (raw_id >= transformer.symbols.len) return error.TransformError;
         const symbol = transformer.symbols[raw_id];
         if (symbol.kind != .import_binding or symbol.synthetic_kind != .runtime_helper_preamble or
-            !std.mem.eql(u8, symbol.synthetic_name, local_name))
+            !isRuntimeHelperStagingName(canonical_name, symbol.synthetic_name))
             return error.TransformError;
         if (self.final_renames) |renames| {
             if (renames.get(@intCast(raw_id))) |renamed| return renamed;
@@ -1195,6 +1195,19 @@ const StandaloneRuntimeHelperNameResolver = struct {
         return symbol.synthetic_name;
     }
 };
+
+/// Early collision resolution may append a numeric suffix to a helper's
+/// canonical staging spelling. Keep the exact SymbolId check tied to that
+/// helper family, so a corrupted helper-name index cannot return another
+/// helper's otherwise-valid preamble binding.
+fn isRuntimeHelperStagingName(canonical_name: []const u8, staging_name: []const u8) bool {
+    if (std.mem.eql(u8, canonical_name, staging_name)) return true;
+    if (!std.mem.startsWith(u8, staging_name, canonical_name)) return false;
+    const suffix = staging_name[canonical_name.len..];
+    if (suffix.len == 0) return false;
+    const counter = std.fmt.parseInt(u32, suffix, 10) catch return false;
+    return counter >= 2;
+}
 
 /// Choose late standalone names after lowering, from exact SymbolIds and the
 /// complete output symbol set. Runtime helpers and generated locals consume
