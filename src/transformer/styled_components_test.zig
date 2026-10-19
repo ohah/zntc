@@ -1624,6 +1624,7 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
         .jsx_runtime = .automatic,
         .jsx_filename = "/src/App.tsx",
         .emit_jsx_runtime_imports = true,
+        .defer_runtime_helper_name_resolution = true,
     };
     var transformer = try helpers.Transformer.init(allocator, &parser.ast, options);
     try transformer.initSymbolIds(analyzer.symbol_ids.items);
@@ -1661,6 +1662,10 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
     try std.testing.expectEqual(SymbolKind.variable_const, symbol.kind);
     try std.testing.expectEqual(program_scope, symbol.scope_id);
     try std.testing.expectEqualStrings(name, symbol.synthetic_name);
+    try std.testing.expectEqual(
+        @as(?@import("../semantic/symbol.zig").SyntheticKind, .standalone_temp_binding),
+        symbol.synthetic_kind,
+    );
 
     var original_binding: ?@import("../parser/ast.zig").NodeIndex = null;
     for (reachable) |raw| {
@@ -1696,6 +1701,187 @@ test "#4819 styled cssProp generated component keeps its exact symbol" {
     }
     try std.testing.expectEqual(@as(usize, 1), binding_count);
     try std.testing.expectEqual(@as(usize, 1), read_count);
+}
+
+const StyledCssPropHostileCase = struct {
+    source: []const u8,
+    extension: []const u8 = ".tsx",
+    component_count: usize = 1,
+    late_name: bool = true,
+    classic_jsx: bool = false,
+    must_avoid_name: ?[]const u8 = null,
+};
+
+fn expectStyledCssPropHostileCase(backing_allocator: std.mem.Allocator, hostile_case: StyledCssPropHostileCase) !void {
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const ast_walk = @import("../parser/ast_walk.zig");
+    const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
+    const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
+    const NodeIndex = @import("../parser/ast.zig").NodeIndex;
+    const Component = struct { node: NodeIndex, symbol_id: u32, name: []const u8 };
+
+    var arena = std.heap.ArenaAllocator.init(backing_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try helpers.Scanner.init(allocator, hostile_case.source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(hostile_case.extension);
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_strict_mode = parser.is_strict_mode;
+    analyzer.is_module = parser.is_module;
+    analyzer.is_ts = parser.source_mode == .ts;
+    analyzer.is_flow = parser.is_flow;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, .{
+        .styled_components = true,
+        .styled_components_css_prop = true,
+        .jsx_transform = true,
+        .jsx_runtime = if (hostile_case.classic_jsx) .classic else .automatic,
+        .jsx_filename = "/src/StyledAdversarial.tsx",
+        .emit_jsx_runtime_imports = !hostile_case.classic_jsx,
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var components: std.ArrayList(Component) = .empty;
+    for (reachable) |raw| {
+        if (raw < transformer.parser_node_count) continue;
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        if (!std.mem.startsWith(u8, name, "_styled_")) continue;
+        const node_index: NodeIndex = @fromBackingInt(@intCast(raw));
+        const symbol_id = transformer.getSymbolIdAt(node_index) orelse return error.MissingStyledComponentSymbolId;
+        try components.append(allocator, .{ .node = node_index, .symbol_id = symbol_id, .name = name });
+    }
+    try std.testing.expectEqual(hostile_case.component_count, components.items.len);
+
+    const edited = (try transformer.finishSemanticEdit()) orelse return error.MissingStyledComponentSemanticEdit;
+    const program_scope = transformer.programScope();
+    for (components.items, 0..) |component, index| {
+        for (components.items[0..index]) |earlier| {
+            try std.testing.expect(earlier.symbol_id != component.symbol_id);
+        }
+        if (hostile_case.must_avoid_name) |name|
+            try std.testing.expect(!std.mem.eql(u8, component.name, name));
+
+        const symbol = edited.symbols.items[component.symbol_id];
+        try std.testing.expectEqual(SymbolKind.variable_const, symbol.kind);
+        try std.testing.expectEqual(program_scope, symbol.scope_id);
+        try std.testing.expectEqualStrings(component.name, symbol.synthetic_name);
+        try std.testing.expectEqual(component.symbol_id, edited.symbol_ids[@backingInt(component.node)].?);
+        if (hostile_case.late_name) {
+            try std.testing.expectEqual(@as(?SyntheticKind, .standalone_temp_binding), symbol.synthetic_kind);
+        } else {
+            try std.testing.expectEqual(@as(?SyntheticKind, null), symbol.synthetic_kind);
+        }
+
+        var read_count: usize = 0;
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != component.symbol_id or reference.node_index.isNone()) continue;
+            const raw = @backingInt(reference.node_index);
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, raw) != null);
+            try std.testing.expectEqual(.identifier_reference, transformer.ast.nodes.items[raw].tag);
+            try std.testing.expect(reference.flags.read);
+            try std.testing.expect(!reference.flags.write);
+            read_count += 1;
+        }
+        try std.testing.expect(read_count > 0);
+    }
+}
+
+test "#4819 styled cssProp final-name identity survives ten hostile input shapes" {
+    const cases = [_]StyledCssPropHostileCase{
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\const _styled_0 = 17;
+            \\function App() { return <div css={`color: red;`} />; }
+            ,
+            .must_avoid_name = "_styled_0",
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\function App() { const _styled_0 = 17; return <div css={`color: red;`} />; }
+            ,
+            .must_avoid_name = "_styled_0",
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\function App() { return <><div css={{ color: "red" }} /><span css={{ color: "blue" }} /></>; }
+            ,
+            .component_count = 2,
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\function App({ color, gap }) { return <div css={{ color, padding: `${gap}px` }} />; }
+            ,
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\function App({ color, gap }) { return <div css={`color: ${color}; padding: ${gap}px;`} />; }
+            ,
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\function Outer() { function Inner() { return <section css={{ color: "red" }} />; } return <Inner />; }
+            ,
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\function App() { return <div css={{ color: "red" }} />; }
+            \\function Dynamic(name) { eval(name); }
+            ,
+            .late_name = false,
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\eval("_styled_0");
+            \\function App() { return <div css={{ color: "red" }} />; }
+            ,
+            .late_name = false,
+        },
+        .{
+            .source =
+            \\import styled from "styled-components";
+            \\function App(suffix) { eval("_styled_" + suffix); return <div css={{ color: "red" }} />; }
+            ,
+            .late_name = false,
+        },
+        .{
+            .source =
+            \\function App(obj) { with (obj) { return <div css={{ color: "red" }} />; } }
+            ,
+            .extension = ".jsx",
+            .late_name = false,
+            .classic_jsx = true,
+        },
+    };
+
+    for (cases) |hostile_case| try expectStyledCssPropHostileCase(std.testing.allocator, hostile_case);
 }
 
 test "#4819 styled cssProp generated callbacks keep exact parameter identity" {
