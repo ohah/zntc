@@ -41,6 +41,7 @@ pub const es_helpers = @import("es_helpers.zig");
 pub const minify = @import("minify.zig");
 
 test {
+    _ = @import("transformer/refresh.zig");
     _ = transformer;
     _ = ast_plugin_mod;
     _ = @import("transformer/namespace.zig");

@@ -161,7 +161,7 @@ pub fn makeRefreshHandle(self: *Transformer) Error!Span {
 }
 
 fn resolveRefreshHandleName(self: *Transformer, base_name: []const u8) Error![]const u8 {
-    if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution) {
+    if (self.semantic_edit_enabled) {
         const output_name = try es_helpers.resolveScopedGeneratedOutputName(self, base_name, self.programScope());
         return output_name.name;
     }
@@ -905,6 +905,133 @@ test "#4819 React Refresh handles keep staging names when descendant eval can ob
         const symbol: Symbol = edited.symbols.items[raw_id];
         try std.testing.expectEqual(@as(?@import("../../semantic/symbol.zig").SyntheticKind, null), symbol.synthetic_kind);
     }
+}
+
+test "#4819 React Refresh early-name path avoids descendant direct eval names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function App() { eval('_c' + '2'); eval('_s' + '2'); useState(0); return null; }";
+    const names = try transformRefreshNamesForTest(allocator, source);
+    try std.testing.expectEqual(@as(usize, 1), names.registration_count);
+    try std.testing.expectEqual(@as(usize, 1), names.signature_count);
+    try std.testing.expectEqualStrings("_c3", names.registration_name.?);
+    try std.testing.expectEqualStrings("_s3", names.signature_name.?);
+}
+
+test "#4819 React Refresh avoids ten hostile static eval name forms in early-name mode" {
+    const EvalForm = enum {
+        literal_single,
+        concat_suffix,
+        concat_prefix,
+        parenthesized_concat,
+        template_literal,
+        escaped_literal,
+        nested_concat,
+        template_expression,
+        literal_double,
+        three_part_concat,
+    };
+    const forms = [_]EvalForm{
+        .literal_single,
+        .concat_suffix,
+        .concat_prefix,
+        .parenthesized_concat,
+        .template_literal,
+        .escaped_literal,
+        .nested_concat,
+        .template_expression,
+        .literal_double,
+        .three_part_concat,
+    };
+
+    for (forms, 0..) |form, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const occupied_suffix: u32 = @intCast(index + 2);
+        const suffix = try std.fmt.allocPrint(allocator, "{d}", .{occupied_suffix});
+        const eval_expression = try switch (form) {
+            .literal_single => std.fmt.allocPrint(allocator, "'_c{s}'", .{suffix}),
+            .concat_suffix => std.fmt.allocPrint(allocator, "'_c' + '{s}'", .{suffix}),
+            .concat_prefix => std.fmt.allocPrint(allocator, "'_' + 'c{s}'", .{suffix}),
+            .parenthesized_concat => std.fmt.allocPrint(allocator, "('_c' + ('{s}'))", .{suffix}),
+            .template_literal => std.fmt.allocPrint(allocator, "`_c{s}`", .{suffix}),
+            .escaped_literal => std.fmt.allocPrint(allocator, "'\\x5fc{s}'", .{suffix}),
+            .nested_concat => std.fmt.allocPrint(allocator, "'_c' + ('{s}' + '')", .{suffix}),
+            .template_expression => std.fmt.allocPrint(allocator, "`${{'_c'}}{s}`", .{suffix}),
+            .literal_double => std.fmt.allocPrint(allocator, "\"_c{s}\"", .{suffix}),
+            .three_part_concat => std.fmt.allocPrint(allocator, "'_' + 'c' + '{s}'", .{suffix}),
+        };
+
+        var source: []const u8 = "const _c = 0;\n";
+        var reserved_suffix: u32 = 2;
+        while (reserved_suffix < occupied_suffix) : (reserved_suffix += 1) {
+            source = try std.fmt.allocPrint(allocator, "{s}const _c{d} = 0;\n", .{ source, reserved_suffix });
+        }
+        source = try std.fmt.allocPrint(
+            allocator,
+            "{s}function App() {{ eval({s}); useState(0); return null; }}",
+            .{ source, eval_expression },
+        );
+
+        const names = try transformRefreshNamesForTest(allocator, source);
+        const observed_name = try std.fmt.allocPrint(allocator, "_c{d}", .{occupied_suffix});
+        const expected_name = try std.fmt.allocPrint(allocator, "_c{d}", .{occupied_suffix + 1});
+        try std.testing.expectEqual(@as(usize, 1), names.registration_count);
+        try std.testing.expectEqualStrings(expected_name, names.registration_name.?);
+        try std.testing.expect(!std.mem.eql(u8, observed_name, names.registration_name.?));
+    }
+}
+
+const RefreshNamesForTest = struct {
+    registration_count: usize,
+    signature_count: usize,
+    registration_name: ?[]const u8,
+    signature_name: ?[]const u8,
+};
+
+fn transformRefreshNamesForTest(allocator: std.mem.Allocator, source: []const u8) !RefreshNamesForTest {
+    const Scanner = @import("../../lexer/scanner.zig").Scanner;
+    const Parser = @import("../../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../../semantic/analyzer.zig").SemanticAnalyzer;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .react_refresh = true,
+        .react_refresh_hook_signatures = true,
+        .defer_runtime_helper_name_resolution = false,
+        .jsx_filename = "/src/App.tsx",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    return .{
+        .registration_count = transformer.plugins.refresh.registrations.items.len,
+        .signature_count = transformer.plugins.refresh.signatures.items.len,
+        .registration_name = if (transformer.plugins.refresh.registrations.items.len == 0)
+            null
+        else
+            transformer.ast.getText(transformer.plugins.refresh.registrations.items[0].handle_span),
+        .signature_name = if (transformer.plugins.refresh.signatures.items.len == 0)
+            null
+        else
+            transformer.ast.getText(transformer.plugins.refresh.signatures.items[0].handle_span),
+    };
 }
 
 test "computeRefreshEnabled: react_refresh=true + matching path" {
