@@ -2625,22 +2625,33 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
   });
 
   test('Flow ref-component generated-name cache respects direct eval in each output scope', async () => {
+    const escapedIdentifier = (candidate: string, braced = false) => {
+      const last = candidate.slice(-1);
+      const codeUnit = last.charCodeAt(0).toString(16).padStart(4, '0');
+      const escape = braced
+        ? `\\u{${Number.parseInt(codeUnit, 16).toString(16)}}`
+        : `\\u${codeUnit}`;
+      return `${candidate.slice(0, -1)}${escape}`;
+    };
+    const typeofEval = (candidate: string) =>
+      `eval(${JSON.stringify(`typeof ${escapedIdentifier(candidate, true)}`)})`;
+    const concatenatedEval = (candidate: string) => {
+      const splitAt = Math.floor(candidate.length / 2);
+      return `eval('typeof ' + ${JSON.stringify(candidate.slice(0, splitAt))} + ${JSON.stringify(candidate.slice(splitAt))})`;
+    };
     const cases = [
       {
         name: 'Card',
-        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+        observe: typeofEval,
       },
       {
         name: 'Badge',
         observe: (candidate: string) =>
-          `(() => { try { eval(${JSON.stringify(candidate)}); return 'present'; } catch (error) { return error.name; } })()`,
+          `(() => { try { eval(${JSON.stringify(escapedIdentifier(candidate, true))}); return 'present'; } catch (error) { return error.name; } })()`,
       },
       {
         name: 'Panel',
-        observe: (candidate: string) => {
-          const splitAt = Math.floor(candidate.length / 2);
-          return `eval('typeof ' + ${JSON.stringify(candidate.slice(0, splitAt))} + ${JSON.stringify(candidate.slice(splitAt))})`;
-        },
+        observe: concatenatedEval,
       },
       {
         name: 'Switch',
@@ -2651,36 +2662,31 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       },
       {
         name: 'Button',
-        observe: (candidate: string) => {
-          const escaped = `${candidate.slice(0, -1)}\\u0032`;
-          return `eval(${JSON.stringify(`typeof ${escaped}`)})`;
-        },
+        observe: (candidate: string) =>
+          `eval(${JSON.stringify(`typeof ${escapedIdentifier(candidate)}`)})`,
       },
       {
         name: 'Field',
-        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+        observe: typeofEval,
         inBlock: true,
       },
       {
         name: 'Modal',
-        observe: (candidate: string) => `(() => eval(${JSON.stringify(`typeof ${candidate}`)}))()`,
+        observe: (candidate: string) => `(() => ${typeofEval(candidate)})()`,
       },
       {
         name: 'Dialog',
         reserve: 1,
-        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+        observe: typeofEval,
       },
       {
         name: 'Menu',
         reserve: 2,
-        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+        observe: typeofEval,
       },
       {
         name: 'Tab',
-        observe: (candidate: string) => {
-          const splitAt = Math.floor(candidate.length / 2);
-          return `eval('typeof ' + ${JSON.stringify(candidate.slice(0, splitAt))} + ${JSON.stringify(candidate.slice(splitAt))})`;
-        },
+        observe: concatenatedEval,
         beforeComponent: true,
         primeCache: false,
       },
@@ -2718,14 +2724,18 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
         ];
       },
     );
-    const fixture = await createFixture({
-      'input.js': [
-        '// @flow',
-        'const React = { forwardRef: (fn) => fn };',
-        ...functions,
-        `console.log(${cases.map(({ name }) => `dynamic${name}()`).join(', ')});`,
-      ].join('\n'),
-    });
+    const source = [
+      '// @flow',
+      'const React = { forwardRef: (fn) => fn };',
+      ...functions,
+      `console.log(${cases.map(({ name }) => `dynamic${name}()`).join(', ')});`,
+    ].join('\n');
+    // Keep the tested spelling out of raw source so source collision checks
+    // cannot hide a broken direct-eval reservation.
+    for (const { name, reserve = 0 } of cases) {
+      expect(source).not.toContain(`${name}_withRef${reserve + 2}`);
+    }
+    const fixture = await createFixture({ 'input.js': source });
     cleanup = fixture.cleanup;
     const input = join(fixture.dir, 'input.js');
     const output = join(fixture.dir, 'output.js');
