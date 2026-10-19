@@ -141,8 +141,11 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
         // (기존 raw extends text inline; side-effect 중복 가능하나 anon class extends getBase()
         // + private member 조합 자체가 극히 드묾).
         const saved_super_via_proto_chain = self.current_super_via_proto_chain;
+        const saved_super_proto_chain_symbol_id = self.current_super_proto_chain_symbol_id;
         self.current_super_via_proto_chain = false;
+        self.current_super_proto_chain_symbol_id = null;
         defer self.current_super_via_proto_chain = saved_super_via_proto_chain;
+        defer self.current_super_proto_chain_symbol_id = saved_super_proto_chain_symbol_id;
         // VSHADOW: V8 fix trigger 시 alias var decl 을 별도 array 에 reserve, class 뒤에 emit.
         // method body 안 super-prop access 는 alias 식별자 (unique tmp name) 참조 → local
         // `let D = 1` shadow 영향 차단. alias init 식은 class 와 *같은* outer scope 에서 평가되어
@@ -189,8 +192,10 @@ pub fn visitClass(self: *Transformer, source_idx: NodeIndex, node: Node) Error!N
                             std.debug.panic("super proto-chain alias class has no source scope", .{});
                         break :blk self.outputScopeParent(class_scope);
                     };
-                    _ = try self.declareSyntheticTempInScope(alias_binding, node.span, alias_scope) orelse
+                    const alias_symbol_id = try self.declareSyntheticTempInScope(alias_binding, node.span, alias_scope) orelse
                         std.debug.panic("super proto-chain alias has no SymbolId", .{});
+                    self.current_super_proto_chain_symbol_id = alias_symbol_id;
+                    self.forgetSyntheticTempSymbolLookup(alias_span, alias_scope);
                 }
                 const class_old_idx = if (!raw_name_idx.isNone()) raw_name_idx else NodeIndex.none;
                 // The postlude reads the class name outside the class body;

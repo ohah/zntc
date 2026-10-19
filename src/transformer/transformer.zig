@@ -572,6 +572,9 @@ pub const Transformer = struct {
     /// 형태로 emit. D 의 prototype chain 은 class declaration 시 고정되므로 1회 평가 보장
     /// + bundler 도 D identifier 의 reference 추적이 자연스러움.
     current_super_via_proto_chain: bool = false,
+    /// Producer-owned identity for the generated prototype-chain alias. The
+    /// name span remains only for emitting the identifier text.
+    current_super_proto_chain_symbol_id: ?SymbolId = null,
     /// 클래스 멤버의 계산된 키(`[super.k]`)가 볼 **바깥** super 문맥 (#4735). 키는 클래스 정의
     /// 시점에 바깥 함수에서 평가되므로 `super` 도 바깥 home 을 가리킨다. 그런데 키는 클래스가
     /// 자기 super 문맥을 세운 뒤에 방문되므로, 클래스 진입 때 키 노드(와 그 안쪽 식)에 바깥
@@ -832,6 +835,7 @@ pub const Transformer = struct {
         in_extracted_fn: bool,
         home_object: ?Span,
         via_proto_chain: bool,
+        proto_chain_symbol_id: ?SymbolId,
         this_alias: bool,
         class_super_parameter: ?ClassSuperParameter,
         class_name_node: NodeIndex,
@@ -841,7 +845,8 @@ pub const Transformer = struct {
         /// 아무 super 문맥도 없는 상태(최상위). 이 안의 클래스 키에는 `super` 가 올 수 없다.
         pub fn isEmpty(ctx: SuperContext) bool {
             return ctx.class == null and !ctx.method_is_static and !ctx.is_static and ctx.static_receiver == null and
-                !ctx.in_extracted_fn and ctx.home_object == null and !ctx.via_proto_chain and !ctx.this_alias and
+                !ctx.in_extracted_fn and ctx.home_object == null and !ctx.via_proto_chain and
+                ctx.proto_chain_symbol_id == null and !ctx.this_alias and
                 ctx.class_super_parameter == null;
         }
     };
@@ -856,6 +861,7 @@ pub const Transformer = struct {
             .in_extracted_fn = self.current_super_in_extracted_fn,
             .home_object = self.current_super_home_object,
             .via_proto_chain = self.current_super_via_proto_chain,
+            .proto_chain_symbol_id = self.current_super_proto_chain_symbol_id,
             .this_alias = self.super_call_this_alias,
             .class_super_parameter = self.active_class_super_parameter,
             .class_name_node = self.current_class_name_node,
@@ -873,6 +879,7 @@ pub const Transformer = struct {
         self.current_super_in_extracted_fn = ctx.in_extracted_fn;
         self.current_super_home_object = ctx.home_object;
         self.current_super_via_proto_chain = ctx.via_proto_chain;
+        self.current_super_proto_chain_symbol_id = ctx.proto_chain_symbol_id;
         self.super_call_this_alias = ctx.this_alias;
         self.active_class_super_parameter = ctx.class_super_parameter;
         self.current_class_name_node = ctx.class_name_node;
@@ -1051,7 +1058,6 @@ pub const Transformer = struct {
     pub const trackSyntheticTempReference = @import("transformer/semantic_edit.zig").trackSyntheticTempReference;
     pub const trackSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackSyntheticTempReferenceInScope;
     pub const trackKnownSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackKnownSyntheticTempReferenceInScope;
-    pub const trackVisibleDeclaredSyntheticTempReferenceInScope = @import("transformer/semantic_edit.zig").trackVisibleDeclaredSyntheticTempReferenceInScope;
     pub const replaceUserReference = @import("transformer/semantic_edit.zig").replaceUserReference;
     pub const trackUserReadFromBinding = @import("transformer/semantic_edit.zig").trackUserReadFromBinding;
     pub const trackExactOutputRead = @import("transformer/semantic_edit.zig").trackExactOutputRead;

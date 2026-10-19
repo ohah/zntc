@@ -15,6 +15,7 @@ const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const Symbol = @import("../semantic/symbol.zig").Symbol;
 const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const SyntheticKind = @import("../semantic/symbol.zig").SyntheticKind;
+const Span = @import("../lexer/token.zig").Span;
 const Scope = @import("../semantic/scope.zig").Scope;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
 const transformer_mod = @import("transformer.zig");
@@ -2735,7 +2736,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
     const reachable = try @import("../parser/ast_walk.zig").collectReachableNodeIndicesFrom(allocator, transformer.ast, transformed_root);
     defer allocator.free(reachable);
 
-    var alias_name_opt: ?[]const u8 = null;
+    var alias_name_span_opt: ?Span = null;
     // Generator lowering may move the alias initializer into a state-machine
     // assignment, so find the name from the actual __superGet base first.
     // The initializer fallback keeps this test useful for paths that do not
@@ -2755,11 +2756,11 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
             const base: AstNodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[args_start]));
             const base_node = transformer.ast.getNode(base);
             if (base_node.tag != .identifier_reference) continue;
-            alias_name_opt = transformer.ast.getText(base_node.data.string_ref);
+            alias_name_span_opt = base_node.data.string_ref;
             break;
         }
     }
-    if (alias_name_opt == null) {
+    if (alias_name_span_opt == null) {
         for (reachable) |raw| {
             const node = transformer.ast.nodes.items[raw];
             if (node.tag != .variable_declarator) continue;
@@ -2774,17 +2775,17 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
             const binding = transformer.readNodeIdx(node.data.extra, 0);
             const binding_node = transformer.ast.getNode(binding);
             if (binding_node.tag != .binding_identifier) continue;
-            alias_name_opt = transformer.ast.getText(binding_node.data.string_ref);
+            alias_name_span_opt = binding_node.data.string_ref;
             break;
         }
     }
-    const alias_text = alias_name_opt orelse return error.MissingSuperProtoAliasBinding;
+    const alias_name_span = alias_name_span_opt orelse return error.MissingSuperProtoAliasBindingSpan;
     var alias_binding: ?AstNodeIndex = null;
     for (reachable) |raw| {
         const index: usize = raw;
         const node = transformer.ast.nodes.items[index];
         if (index < transformer.parser_node_count or node.tag != .binding_identifier) continue;
-        if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), alias_text)) continue;
+        if (node.data.string_ref.start != alias_name_span.start or node.data.string_ref.end != alias_name_span.end) continue;
         if (alias_binding != null) return error.DuplicateSuperProtoAliasBinding;
         alias_binding = @fromBackingInt(@intCast(index));
     }
@@ -2794,6 +2795,23 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
     const alias_name = transformer.ast.getText(binding_node.data.string_ref);
     const alias_id = transformer.getSymbolIdAt(alias_binding_node) orelse return error.MissingSuperProtoAliasBindingSymbol;
     try std.testing.expect(alias_id >= analyzer.symbols.items.len);
+    const alias_owner_scope = transformer.semantic_editor.?.symbols.items[alias_id].scope_id;
+    try std.testing.expect(transformer.lookupSyntheticTempSymbol(alias_name_span, alias_owner_scope) == null);
+    const live_editor = &transformer.semantic_editor.?;
+    var live_alias_reference_count: usize = 0;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .identifier_reference or
+            node.data.string_ref.start != alias_name_span.start or
+            node.data.string_ref.end != alias_name_span.end) continue;
+        try std.testing.expectEqual(alias_id, transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))) orelse
+            return error.MissingLiveSuperProtoAliasReadSymbol);
+        const reference = (try live_editor.referenceForNode(@fromBackingInt(@intCast(raw)))) orelse
+            return error.MissingLiveSuperProtoAliasReference;
+        try std.testing.expectEqual(alias_id, @backingInt(reference.symbol_id));
+        live_alias_reference_count += 1;
+    }
+    try std.testing.expect(live_alias_reference_count > 0);
 
     var alias_class_read: ?AstNodeIndex = null;
     for (reachable) |raw| {
@@ -2827,7 +2845,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
         const index: usize = raw;
         const node = transformer.ast.nodes.items[index];
         if (index < transformer.parser_node_count or node.tag != .binding_identifier) continue;
-        if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), alias_name)) continue;
+        if (node.data.string_ref.start != alias_name_span.start or node.data.string_ref.end != alias_name_span.end) continue;
         const binding_id = transformer.getSymbolIdAt(@fromBackingInt(@intCast(index))) orelse
             std.debug.panic("super alias binding has no live SymbolId at node {d}: {s}", .{ index, alias_name });
         try std.testing.expectEqual(alias_id, binding_id);
@@ -2841,7 +2859,7 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
         const index: usize = raw;
         const node = transformer.ast.nodes.items[index];
         if (index < transformer.parser_node_count or node.tag != .binding_identifier) continue;
-        if (!std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), alias_name)) continue;
+        if (node.data.string_ref.start != alias_name_span.start or node.data.string_ref.end != alias_name_span.end) continue;
         try std.testing.expectEqual(alias_id, edited.symbol_ids[index] orelse return error.MissingSuperProtoAliasBindingSymbolAfterEdit);
         edited_binding_count += 1;
     }
@@ -2858,14 +2876,39 @@ fn expectSuperProtoAliasSymbolIdentity(source: []const u8, lower_generator: bool
     }
     try std.testing.expect(alias_class_reference_found);
     var alias_reference_count: u32 = 0;
+    var alias_read_reference_count: u32 = 0;
     for (reachable) |raw| {
         const node = transformer.ast.nodes.items[raw];
         if (node.tag != .identifier_reference or
-            !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), alias_name)) continue;
+            node.data.string_ref.start != alias_name_span.start or node.data.string_ref.end != alias_name_span.end) continue;
         try std.testing.expectEqual(alias_id, edited.symbol_ids[raw] orelse return error.MissingReachableSuperProtoAliasReadSymbol);
+        var matching_read = false;
+        for (edited.references) |reference| {
+            if (reference.node_index != @as(AstNodeIndex, @fromBackingInt(@intCast(raw)))) continue;
+            try std.testing.expectEqual(alias_id, @backingInt(reference.symbol_id));
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            if (reference.flags.read) alias_read_reference_count += 1;
+            try std.testing.expect(reference.scope_id != alias_owner_scope);
+            var cursor = reference.scope_id;
+            var visible_from_owner = false;
+            var hops: usize = 0;
+            while (!cursor.isNone() and hops < edited.scopes.len) : (hops += 1) {
+                if (cursor == alias_owner_scope) {
+                    visible_from_owner = true;
+                    break;
+                }
+                if (cursor.toIndex() >= edited.scopes.len) break;
+                cursor = edited.scopes[cursor.toIndex()].parent;
+            }
+            try std.testing.expect(visible_from_owner);
+            matching_read = true;
+            break;
+        }
+        try std.testing.expect(matching_read);
         alias_reference_count += 1;
     }
     try std.testing.expect(alias_reference_count >= 1);
+    try std.testing.expect(alias_read_reference_count > 0);
     try std.testing.expectEqual(alias_reference_count, edited.symbols.items[alias_id].reference_count);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
@@ -2895,6 +2938,36 @@ test "#4819 super proto-chain alias keeps its exact SymbolId" {
         "function getBase() { return class Base {}; } class Child extends getBase() { #value() { return super.value?.(); } method() { return this.#value(); } }",
         false,
         true,
+    );
+    try expectSuperProtoAliasSymbolIdentity(
+        "function getBase() { return class Base {}; } class Child extends getBase() { #value() { const _a = 1; return () => super.value; } method() { return this.#value()(); } }",
+        false,
+        false,
+    );
+    try expectSuperProtoAliasSymbolIdentity(
+        "function getBase() { return class Base {}; } class Child extends getBase() { #value() { return 1; } *method() { yield super.value; } }",
+        true,
+        false,
+    );
+    try expectSuperProtoAliasSymbolIdentity(
+        "function getBase() { return class Base {}; } class Child extends getBase() { #value() { const _a = 1; const object = { read() { return super.toString(); } }; { let _a = 2; return super.value + super.other + object.read(); } } method() { return this.#value(); } }",
+        false,
+        false,
+    );
+    try expectSuperProtoAliasSymbolIdentity(
+        "function getBase() { return class Base {}; } function build(_a, _a2) { if (_a) { return class Child extends getBase() { #value() { const _a = _a2; return super.value; } }; } }",
+        false,
+        false,
+    );
+    try expectSuperProtoAliasSymbolIdentity(
+        "function getBase() { return class Base {}; } function build() { return class Child extends getBase() { #value() { const _a = 1; return super.value?.(); } }; }",
+        false,
+        true,
+    );
+    try expectSuperProtoAliasSymbolIdentity(
+        "function getBase() { return class Base {}; } class Child extends getBase() { #value() { const Inner = class { [super.value]() {} }; return super.value; } method() { return this.#value(); } }",
+        false,
+        false,
     );
 }
 
