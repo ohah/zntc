@@ -748,9 +748,10 @@ pub const SuperSpreadArgsShell = struct {
 
 /// derived class 합성 constructor 의 기본 shell `(...args)` 과 `super(...args);` 를 생성.
 /// has_super=true 경로에서만 호출. 두 노드는 독립 반환 — caller 가 scratch/body 조립에 배치.
-pub fn buildSuperSpreadArgsShell(self: anytype) Error!SuperSpreadArgsShell {
+pub fn buildSuperSpreadArgsShell(self: anytype, class_scope: ScopeId) Error!SuperSpreadArgsShell {
     const zero_span = Span{ .start = 0, .end = 0 };
-    const args_span = try self.ast.addString("args");
+    const args_name = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "args", class_scope);
+    const args_span = try self.ast.addString(args_name);
 
     // ...args formal parameter
     const args_id = try es_helpers.makeSyntheticBinding(self, args_span);
@@ -868,7 +869,7 @@ pub fn buildConstructorWithFieldAssignments(
     // extends가 있으면: constructor(...args) { super(...args); this.x = v; }
     var super_shell: ?SuperSpreadArgsShell = null;
     const params_node: NodeIndex = if (has_super) blk: {
-        const shell = try buildSuperSpreadArgsShell(self);
+        const shell = try buildSuperSpreadArgsShell(self, class_scope);
         super_shell = shell;
         try self.scratch.append(self.allocator, shell.super_stmt);
         break :blk shell.params_node;
