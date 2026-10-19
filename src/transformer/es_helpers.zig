@@ -545,6 +545,19 @@ pub fn makeTempVarSpan(self: anytype) !Span {
     }
 }
 
+/// Return the producer identity carried by the allocator slot for this exact
+/// span, without resolving a semantic binding by name or scope.
+pub fn producerTempSymbolIdForSpan(self: anytype, name_span: Span) ?symbol_mod.SymbolId {
+    var iter = self.temp_span_by_counter.iterator();
+    while (iter.next()) |entry| {
+        const candidate = entry.value_ptr.*;
+        if (candidate.start != name_span.start or candidate.end != name_span.end) continue;
+        const raw_symbol_id = self.temp_symbol_ids_by_counter.get(entry.key_ptr.*) orelse return null;
+        return @fromBackingInt(raw_symbol_id);
+    }
+    return null;
+}
+
 /// Record a generated temp reference only when its exact name span is still
 /// owned by the active temp allocator. This lets class lowering attach a
 /// prehoisted computed-key reference after moving it into its final function
@@ -559,15 +572,14 @@ pub fn trackKnownHoistedTempRef(
     const ref = self.ast.getNode(node);
     if (ref.tag != .identifier_reference and ref.tag != .assignment_target_identifier) return false;
     const name_span = ref.data.string_ref;
+    if (producerTempSymbolIdForSpan(self, name_span)) |producer_id| {
+        if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
+            return true;
+    }
     var iter = self.temp_span_by_counter.iterator();
     while (iter.next()) |entry| {
         const candidate = entry.value_ptr.*;
         if (candidate.start == name_span.start and candidate.end == name_span.end) {
-            if (self.temp_symbol_ids_by_counter.get(entry.key_ptr.*)) |raw_symbol_id| {
-                const producer_id: symbol_mod.SymbolId = @fromBackingInt(raw_symbol_id);
-                if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
-                    return true;
-            }
             if (!try self.trackKnownSyntheticTempReferenceInScope(candidate, node, scope, flags))
                 try self.trackHoistedTempRefInScope(candidate, node, scope, flags);
             return true;
