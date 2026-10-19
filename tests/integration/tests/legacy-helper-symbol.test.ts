@@ -91,6 +91,132 @@ console.log(__extends, new Child() instanceof Base);
     expect(runtime.stdout).toBe('40 true\n');
   });
 
+  test('direct eval in source scopes cannot observe standalone ES5 runtime helpers', async () => {
+    const cases = [
+      {
+        name: 'candidate suffix remains visible to direct eval',
+        setup: 'globalThis.__extends2 = 42;',
+        body: `function read() { return eval('__extends') === globalThis.__extends && eval('__extends2') === globalThis.__extends2; } console.log(read());`,
+        expected: 'true',
+        helperName: '__extends3',
+      },
+      {
+        name: 'plain typeof reference',
+        helperName: '__extends2',
+        body: `function read() { return eval('typeof __extends'); } console.log(read());`,
+        expected: 'number',
+      },
+      {
+        name: 'global value comparison',
+        helperName: '__extends2',
+        body: `function read() { return eval('__extends') === globalThis.__extends; } console.log(read());`,
+        expected: 'true',
+      },
+      {
+        name: 'statically concatenated eval source',
+        helperName: '__extends2',
+        body: `function read() { return eval('__ext' + 'ends') === globalThis.__extends; } console.log(read());`,
+        expected: 'true',
+      },
+      {
+        name: 'template eval source',
+        helperName: '__extends2',
+        body: 'function read() { return eval(`__extends === globalThis.__extends`); } console.log(read());',
+        expected: 'true',
+      },
+      {
+        name: 'escaped identifier in eval source',
+        helperName: '__extends2',
+        body: String.raw`function read() { return eval('__ext\u0065nds') === globalThis.__extends; } console.log(read());`,
+        expected: 'true',
+      },
+      {
+        name: 'nested function eval',
+        helperName: '__extends2',
+        body: `function read() { return (function() { return eval('__extends') === globalThis.__extends; })(); } console.log(read());`,
+        expected: 'true',
+      },
+      {
+        name: 'nested arrow eval',
+        helperName: '__extends2',
+        body: `function read() { return (() => eval('__extends') === globalThis.__extends)(); } console.log(read());`,
+        expected: 'true',
+      },
+      {
+        name: 'static method eval',
+        helperName: '__extends2',
+        body: `class Reader { static read() { return eval('__extends') === globalThis.__extends; } } console.log(Reader.read());`,
+        expected: 'true',
+      },
+      {
+        name: 'getter eval',
+        helperName: '__extends2',
+        body: `class Reader { get value() { return eval('__extends') === globalThis.__extends; } } console.log(new Reader().value);`,
+        expected: 'true',
+      },
+      {
+        name: 'constructor eval',
+        helperName: '__extends2',
+        body: `class Reader { constructor() { this.value = eval('__extends') === globalThis.__extends; } } console.log(new Reader().value);`,
+        expected: 'true',
+      },
+    ];
+
+    const actual: {
+      name: string;
+      compileExitCode: number;
+      runtimeExitCode: number | null;
+      stdout: string;
+      helperAlias: boolean;
+    }[] = [];
+    for (const testCase of cases) {
+      const fixture = await createFixture({
+        'input.ts': `
+${testCase.setup ?? ''}
+globalThis.__extends = 41;
+class Base {}
+class Child extends Base {}
+${testCase.body}
+`,
+      });
+      try {
+        const output = join(fixture.dir, 'out.js');
+        const result = await runZntcInDir(fixture.dir, ['input.ts', '--target=es5', '-o', output]);
+        if (result.exitCode !== 0) {
+          actual.push({
+            name: testCase.name,
+            compileExitCode: result.exitCode,
+            runtimeExitCode: null,
+            stdout: result.stderr,
+            helperAlias: false,
+          });
+          continue;
+        }
+
+        const code = readFileSync(output, 'utf8');
+        const runtime = spawnSync('node', [output], { encoding: 'utf8' });
+        actual.push({
+          name: testCase.name,
+          compileExitCode: result.exitCode,
+          runtimeExitCode: runtime.status,
+          stdout: runtime.stdout.trim(),
+          helperAlias: code.includes(`var ${testCase.helperName} = function`),
+        });
+      } finally {
+        await fixture.cleanup();
+      }
+    }
+    expect(actual).toEqual(
+      cases.map((testCase) => ({
+        name: testCase.name,
+        compileExitCode: 0,
+        runtimeExitCode: 0,
+        stdout: testCase.expected,
+        helperAlias: true,
+      })),
+    );
+  });
+
   test('late helper naming compares escaped source binding StringValues', async () => {
     const fixture = await createFixture({
       'input.ts': String.raw`

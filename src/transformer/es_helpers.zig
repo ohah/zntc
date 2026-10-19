@@ -701,6 +701,20 @@ pub fn nameAppearsInDynamicEvalString(self: anytype, scope_id: ScopeId, name: []
     return false;
 }
 
+/// A program-level generated binding is visible to direct eval in any source
+/// descendant scope. Check each source scope that contains direct eval instead
+/// of asking only the program scope, whose dynamic-scope flags may be lost by
+/// later semantic-editor reanalysis.
+pub fn nameAppearsInAnyDynamicEvalString(self: anytype, name: []const u8) !bool {
+    const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    for (scopes, 0..) |scope, raw| {
+        if (!scope.subtree_has_direct_eval) continue;
+        const eval_scope: ScopeId = @fromBackingInt(@intCast(raw));
+        if (try nameAppearsInDynamicEvalString(self, eval_scope, name)) return true;
+    }
+    return false;
+}
+
 /// Evaluate the string-producing subset without running user code: string
 /// literals, string-only `+`, and templates with statically known strings.
 fn staticStringExpressionValue(self: anytype, idx: NodeIndex, depth: u8) !?[]u8 {
@@ -1240,26 +1254,56 @@ pub fn uniqueSyntheticNameAvoidingDynamicEval(self: anytype, prefix: []const u8,
     }
 }
 
+/// Module-unique synthetic spelling for a program-level generated binding that
+/// can be observed by direct eval in any source scope.
+pub fn uniqueSyntheticNameAvoidingAnyDynamicEval(self: anytype, prefix: []const u8, counter: *u32) ![]const u8 {
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    while (true) {
+        counter.* += 1;
+        const candidate = if (counter.* == 1)
+            try arena.dupe(u8, prefix)
+        else
+            try std.fmt.allocPrint(arena, "{s}{d}", .{ prefix, counter.* });
+        if (self.synthetic_taken.contains(candidate) or
+            try syntheticNameInUse(self, candidate) or
+            self.synthetic_names.contains(candidate) or
+            try nameAppearsInAnyDynamicEvalString(self, candidate)) continue;
+        try self.synthetic_taken.put(self.allocator, candidate, {});
+        return candidate;
+    }
+}
+
 /// Resolve a standalone runtime-helper local without changing bundler imports.
 /// The helper preamble is emitted into the same top-level scope as the user's
 /// file, so both a binding and an unresolved reference with this spelling must
 /// reserve it. The preamble rewriter uses the same cached mapping.
 pub fn resolveRuntimeHelperName(self: anytype, name: []const u8) ![]const u8 {
     if (self.options.emit_runtime_helper_imports) return name;
-    if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution) return name;
+    const program_scope: ScopeId = if (self.parser_node_count > 0)
+        if (self.scope_owner_map.get(self.parser_node_count - 1)) |raw|
+            @fromBackingInt(@intCast(raw))
+        else
+            .none
+    else
+        .none;
+    if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution and
+        (program_scope.isNone() or canUseLateStandaloneOutputName(self, program_scope))) return name;
     if (self.runtime_helper_aliases.get(name)) |resolved| return resolved;
 
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     const arena = self.name_arena.?.allocator();
     const key = try arena.dupe(u8, name);
-    const in_use = self.synthetic_taken.contains(name) or try syntheticNameInUse(self, name);
+    const in_use = self.synthetic_taken.contains(name) or
+        try syntheticNameInUse(self, name) or
+        try nameAppearsInAnyDynamicEvalString(self, name);
     if (!in_use) {
         try self.runtime_helper_aliases.put(self.allocator, key, name);
         return name;
     }
 
     var counter: u32 = 1;
-    const resolved = try uniqueSyntheticName(self, name, &counter);
+    const resolved = try uniqueSyntheticNameAvoidingAnyDynamicEval(self, name, &counter);
     try self.runtime_helper_aliases.put(self.allocator, key, resolved);
     return resolved;
 }
