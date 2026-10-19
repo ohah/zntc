@@ -1667,4 +1667,93 @@ describe('Stage 3 Decorators', () => {
     expect(result.exitCode).toBe(0);
     expect(result.runOutput).toContain('derived-base');
   });
+
+  it('Stage 3 class-this names stay invisible to direct eval in source scopes', async () => {
+    const cases = [
+      {
+        name: 'plain typeof reference',
+        member: "probe() { return eval('typeof _classThis'); }",
+        expression: 'new Example().probe()',
+        expected: 'number',
+      },
+      {
+        name: 'plain value reference',
+        member: "probe() { return eval('_classThis === globalThis._classThis'); }",
+        expression: 'new Example().probe()',
+        expected: 'true',
+      },
+      {
+        name: 'statically concatenated eval source',
+        member: "probe() { return eval('typeof _class' + 'This'); }",
+        expression: 'new Example().probe()',
+        expected: 'number',
+      },
+      {
+        name: 'template eval source',
+        member: 'probe() { return eval(`typeof _classThis`); }',
+        expression: 'new Example().probe()',
+        expected: 'number',
+      },
+      {
+        name: 'escaped identifier in eval source',
+        member: String.raw`probe() { return eval('typeof _classTh\u0069s'); }`,
+        expression: 'new Example().probe()',
+        expected: 'number',
+      },
+      {
+        name: 'nested function eval',
+        member: "probe() { return (function() { return eval('typeof _classThis'); })(); }",
+        expression: 'new Example().probe()',
+        expected: 'number',
+      },
+      {
+        name: 'nested arrow eval',
+        member: "probe() { return (() => eval('typeof _classThis'))(); }",
+        expression: 'new Example().probe()',
+        expected: 'number',
+      },
+      {
+        name: 'static method eval',
+        member: "static probe() { return eval('typeof _classThis'); }",
+        expression: 'Example.probe()',
+        expected: 'number',
+      },
+      {
+        name: 'getter eval',
+        member: "get probe() { return eval('typeof _classThis'); }",
+        expression: 'new Example().probe',
+        expected: 'number',
+      },
+      {
+        name: 'constructor eval',
+        member: "constructor() { this.observed = eval('typeof _classThis'); }",
+        expression: 'new Example().observed',
+        expected: 'number',
+      },
+    ];
+
+    const actual: { name: string; exitCode: number; runOutput: string }[] = [];
+    for (const testCase of cases) {
+      const result = await bundleAndRun({
+        'index.ts': `
+          globalThis._classThis = 41;
+          function mark(value: any, context: any) { return value; }
+          @mark class Example { ${testCase.member} }
+          console.log(${testCase.expression});
+        `,
+      });
+      try {
+        actual.push({
+          name: testCase.name,
+          exitCode: result.exitCode,
+          runOutput: result.runOutput,
+        });
+      } finally {
+        await result.cleanup();
+      }
+    }
+    expect(actual).toEqual(
+      cases.map((testCase) => ({ name: testCase.name, exitCode: 0, runOutput: testCase.expected })),
+    );
+  });
 });
