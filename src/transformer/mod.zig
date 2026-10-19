@@ -80,6 +80,7 @@ test {
     _ = @import("parameter_temp_semantic_test.zig");
     _ = @import("object_super_semantic_test.zig");
     _ = @import("flow_match_semantic_test.zig");
+    _ = @import("generated_name_eval_semantic_test.zig");
     _ = @import("namespace_temp_semantic_test.zig");
     _ = @import("tla_temp_semantic_test.zig");
     _ = @import("destructuring_temp_semantic_test.zig");

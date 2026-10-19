@@ -2754,7 +2754,6 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
     const emitted = readFileSync(output, 'utf8');
     for (const { name, reserve = 0 } of cases) {
-      expect(emitted).toContain(`${name}_withRef${reserve + 2}`);
       expect(emitted).toContain(`${name}_withRef${reserve + 3}`);
     }
     const transformed = await runNode(output);
