@@ -4,12 +4,14 @@ const std = @import("std");
 const Module = @import("../module.zig").Module;
 const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
 const CjsRuntimeInternalSymbolIds = @import("../module.zig").CjsRuntimeInternalSymbolIds;
+const EsmRuntimeInternalSymbolIds = @import("../module.zig").EsmRuntimeInternalSymbolIds;
 const WorkletFactoryLocalBinding = @import("../module.zig").WorkletFactoryLocalBinding;
 const PostGraphOutputBinding = @import("../module.zig").PostGraphOutputBinding;
 const RuntimeHelperImportOutputBinding = @import("../module.zig").RuntimeHelperImportOutputBinding;
 const AliasTable = @import("../module.zig").AliasTable;
 const binding_scanner_mod = @import("../binding_scanner.zig");
 const bundler_symbol = @import("../symbol.zig");
+const runtime_helper_names = @import("../../runtime_helper_names.zig");
 const import_scanner = @import("../import_scanner.zig");
 const stmt_info_mod = @import("../stmt_info.zig");
 const cjs_patterns = @import("../tree_shaker/cjs_patterns.zig");
@@ -7201,6 +7203,9 @@ fn isModuleOwnedSingletonGraphSynthetic(kind: SemanticSyntheticKind) bool {
 
 fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
     const kind = symbol.synthetic_kind orelse return false;
+    // `__esm` has a stable producer slot on Module and carries a linker-chosen
+    // graph-wide spelling. Let the exact slot remapper below own this row.
+    if (kind == .bundler_runtime_helper and std.mem.eql(u8, symbol.synthetic_name, "__esm")) return false;
     return switch (kind) {
         .cjs_exports,
         .cjs_require,
@@ -7208,7 +7213,6 @@ fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
         .cjs_wrapper_exports_parameter,
         .cjs_wrapper_module_parameter,
         .cjs_runtime_factory,
-        .esm_runtime_internal_local,
         .esm_interop_runtime_internal_local,
         .bundler_runtime_helper,
         .require_shim_local,
@@ -7503,6 +7507,352 @@ test "CJS runtime internal renames do not use the generic name and scope fallbac
     try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
 }
 
+const EsmRuntimeInternalRenameSlot = struct {
+    symbol_id: SemanticSymbolId,
+    symbol_kind: SemanticSymbolKind,
+    synthetic_name: []const u8,
+};
+
+fn esmRuntimeInternalRenameSlots(ids: EsmRuntimeInternalSymbolIds) [5]EsmRuntimeInternalRenameSlot {
+    const names: runtime_helper_names.EsmRuntimeInternalNames = .{};
+    return .{
+        .{ .symbol_id = ids.factory_parameter, .symbol_kind = .parameter, .synthetic_name = names.factory_parameter },
+        .{ .symbol_id = ids.result_parameter, .symbol_kind = .parameter, .synthetic_name = names.result_parameter },
+        .{ .symbol_id = ids.catch_parameter, .symbol_kind = .catch_binding, .synthetic_name = names.catch_parameter },
+        .{ .symbol_id = ids.init_function, .symbol_kind = .function_decl, .synthetic_name = names.init_function },
+        .{ .symbol_id = ids.factory_local, .symbol_kind = .variable_var, .synthetic_name = names.factory_local },
+    };
+}
+
+fn validEsmRuntimeInternalRenameSlots(
+    slots: [5]EsmRuntimeInternalRenameSlot,
+    symbols: []const SemanticSymbol,
+) bool {
+    for (slots, 0..) |slot, slot_index| {
+        if (slot.symbol_id.isNone()) return false;
+        const raw: usize = @backingInt(slot.symbol_id);
+        if (raw >= symbols.len) return false;
+        const symbol = symbols[raw];
+        if (symbol.synthetic_kind != .esm_runtime_internal_local or
+            symbol.kind != slot.symbol_kind or
+            !std.mem.eql(u8, symbol.synthetic_name, slot.synthetic_name)) return false;
+        for (slots[0..slot_index]) |prior| {
+            if (prior.symbol_id == slot.symbol_id) return false;
+        }
+    }
+    return true;
+}
+
+/// ESM runtime locals have stable producer slots on Module. Reanalysis creates
+/// fresh semantic indexes and can move their scopes, so preserve linker names
+/// through those slots instead of matching the synthetic spelling and scope.
+fn remapEsmRuntimeInternalRenames(
+    allocator: std.mem.Allocator,
+    module_index: bundler_symbol.ModuleIndex,
+    old_symbols: []const SemanticSymbol,
+    new_symbols: []const SemanticSymbol,
+    old_renames: []const ?[]const u8,
+    old_ids: ?EsmRuntimeInternalSymbolIds,
+    new_ids: ?EsmRuntimeInternalSymbolIds,
+    rebuilt: *bundler_symbol.RenameTable,
+) !void {
+    const old_slots = esmRuntimeInternalRenameSlots(old_ids orelse return);
+    const new_slots = esmRuntimeInternalRenameSlots(new_ids orelse return);
+    if (!validEsmRuntimeInternalRenameSlots(old_slots, old_symbols) or
+        !validEsmRuntimeInternalRenameSlots(new_slots, new_symbols)) return;
+    for (old_slots) |slot| {
+        if (@backingInt(slot.symbol_id) >= old_renames.len) return;
+    }
+
+    for (old_slots, new_slots) |old_slot, new_slot| {
+        const old_index: usize = @backingInt(old_slot.symbol_id);
+        const new_index: usize = @backingInt(new_slot.symbol_id);
+        const rename = old_renames[old_index] orelse continue;
+        const new_id = bundler_symbol.SymbolID.make(module_index, new_index);
+        // Keep an exact NodeIndex mapping when it already supplied evidence.
+        if (rebuilt.get(new_id) != null) continue;
+        try rebuilt.put(allocator, new_id, rename);
+    }
+}
+
+fn validEsmRuntimeFactorySymbol(symbol_id: SemanticSymbolId, symbols: []const SemanticSymbol) bool {
+    if (symbol_id.isNone()) return false;
+    const raw: usize = @backingInt(symbol_id);
+    if (raw >= symbols.len) return false;
+    const symbol = symbols[raw];
+    return symbol.synthetic_kind == .bundler_runtime_helper and
+        symbol.kind == .variable_var and
+        std.mem.eql(u8, symbol.synthetic_name, "__esm");
+}
+
+/// The graph-wide ESM factory name is collision-selected by its producer ID.
+/// Carry it to the refreshed row by Module's exact slot, not by its spelling.
+fn remapEsmRuntimeFactoryRename(
+    allocator: std.mem.Allocator,
+    module_index: bundler_symbol.ModuleIndex,
+    old_symbols: []const SemanticSymbol,
+    new_symbols: []const SemanticSymbol,
+    old_renames: []const ?[]const u8,
+    old_id: ?SemanticSymbolId,
+    new_id: ?SemanticSymbolId,
+    rebuilt: *bundler_symbol.RenameTable,
+) !void {
+    const old_symbol_id = old_id orelse return;
+    const new_symbol_id = new_id orelse return;
+    if (!validEsmRuntimeFactorySymbol(old_symbol_id, old_symbols) or
+        !validEsmRuntimeFactorySymbol(new_symbol_id, new_symbols)) return;
+    const old_index: usize = @backingInt(old_symbol_id);
+    if (old_index >= old_renames.len) return;
+    const rename = old_renames[old_index] orelse return;
+    const new_id_key = bundler_symbol.SymbolID.make(module_index, @backingInt(new_symbol_id));
+    // Keep a NodeIndex mapping if it already supplied more specific evidence.
+    if (rebuilt.get(new_id_key) != null) return;
+    try rebuilt.put(allocator, new_id_key, rename);
+}
+
+test "ESM runtime factory rename follows its exact producer slot" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(9));
+    const old_id: SemanticSymbolId = @fromBackingInt(@as(u32, 0));
+    const new_id: SemanticSymbolId = @fromBackingInt(@as(u32, 2));
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__esm"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 5, "__esm"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 6, "other_helper"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 7, "__esm"),
+    };
+    const old_renames: [1]?[]const u8 = .{"__esm$2"};
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+    try remapEsmRuntimeFactoryRename(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        old_id,
+        new_id,
+        &rebuilt,
+    );
+
+    const expected_id = bundler_symbol.SymbolID.make(module_index, 2);
+    try std.testing.expectEqual(@as(u32, 1), rebuilt.count());
+    try std.testing.expectEqualStrings("__esm$2", rebuilt.get(expected_id).?);
+}
+
+test "ESM runtime producer slots bypass the generic name and scope remapper" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(9));
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 1, "fn"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__esm"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 1, "fn"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__esm"),
+    };
+    const renames: [2]?[]const u8 = .{ "fn_final", "__esm$2" };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &renames,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+}
+
+test "ESM runtime factory rename remapping rejects invalid slot evidence" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(9));
+    const ids = [_]SemanticSymbolId{ @fromBackingInt(@as(u32, 0)), @fromBackingInt(@as(u32, 1)) };
+    const symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__esm"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 2, "__esm"),
+    };
+    const renames: [2]?[]const u8 = .{ "__esm$2", "__esm$3" };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapEsmRuntimeFactoryRename(std.testing.allocator, module_index, &symbols, &symbols, &renames, null, ids[1], &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+    try remapEsmRuntimeFactoryRename(std.testing.allocator, module_index, &symbols, &symbols, &renames, ids[0], null, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const short_renames: [1]?[]const u8 = .{"__esm$2"};
+    try remapEsmRuntimeFactoryRename(std.testing.allocator, module_index, &symbols, &symbols, &short_renames, ids[1], ids[0], &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_old_kind = symbols;
+    wrong_old_kind[0] = graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .function_decl, 1, "__esm");
+    try remapEsmRuntimeFactoryRename(std.testing.allocator, module_index, &wrong_old_kind, &symbols, &renames, ids[0], ids[1], &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_new_name = symbols;
+    wrong_new_name[1] = graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 2, "__toBinary");
+    try remapEsmRuntimeFactoryRename(std.testing.allocator, module_index, &symbols, &wrong_new_name, &renames, ids[0], ids[1], &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const target_id = bundler_symbol.SymbolID.make(module_index, 1);
+    try rebuilt.put(std.testing.allocator, target_id, "from_node_anchor");
+    try remapEsmRuntimeFactoryRename(std.testing.allocator, module_index, &symbols, &symbols, &renames, ids[0], ids[1], &rebuilt);
+    try std.testing.expectEqual(@as(u32, 1), rebuilt.count());
+    try std.testing.expectEqualStrings("from_node_anchor", rebuilt.get(target_id).?);
+}
+
+test "ESM runtime internal renames follow exact producer slots across reanalysis" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(9));
+    const old_ids: EsmRuntimeInternalSymbolIds = .{
+        .factory_parameter = @fromBackingInt(@as(u32, 0)),
+        .result_parameter = @fromBackingInt(@as(u32, 1)),
+        .catch_parameter = @fromBackingInt(@as(u32, 2)),
+        .init_function = @fromBackingInt(@as(u32, 3)),
+        .factory_local = @fromBackingInt(@as(u32, 4)),
+    };
+    const new_ids: EsmRuntimeInternalSymbolIds = .{
+        .factory_parameter = @fromBackingInt(@as(u32, 6)),
+        .result_parameter = @fromBackingInt(@as(u32, 1)),
+        .catch_parameter = @fromBackingInt(@as(u32, 5)),
+        .init_function = @fromBackingInt(@as(u32, 3)),
+        .factory_local = @fromBackingInt(@as(u32, 7)),
+    };
+    const names: runtime_helper_names.EsmRuntimeInternalNames = .{};
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 1, names.factory_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 1, names.result_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .catch_binding, 2, names.catch_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .function_decl, 2, names.init_function),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .variable_var, 2, names.factory_local),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 12, "decoy"),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 7, names.result_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .catch_binding, 8, names.catch_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .function_decl, 9, names.init_function),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .variable_var, 10, names.factory_local),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .catch_binding, 11, names.catch_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 6, names.factory_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .variable_var, 13, names.factory_local),
+    };
+    const old_renames: [5]?[]const u8 = .{
+        "factory_parameter_final",
+        "result_parameter_final",
+        "catch_parameter_final",
+        "init_function_final",
+        "factory_local_final",
+    };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+    try remapEsmRuntimeInternalRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        old_ids,
+        new_ids,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 5), rebuilt.count());
+    try std.testing.expectEqualStrings("factory_parameter_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 6)).?);
+    try std.testing.expectEqualStrings("result_parameter_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 1)).?);
+    try std.testing.expectEqualStrings("catch_parameter_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 5)).?);
+    try std.testing.expectEqualStrings("init_function_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 3)).?);
+    try std.testing.expectEqualStrings("factory_local_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 7)).?);
+}
+
+test "ESM runtime internal rename remapping fails closed on invalid slot evidence" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(9));
+    const ids: EsmRuntimeInternalSymbolIds = .{
+        .factory_parameter = @fromBackingInt(@as(u32, 0)),
+        .result_parameter = @fromBackingInt(@as(u32, 1)),
+        .catch_parameter = @fromBackingInt(@as(u32, 2)),
+        .init_function = @fromBackingInt(@as(u32, 3)),
+        .factory_local = @fromBackingInt(@as(u32, 4)),
+    };
+    const names: runtime_helper_names.EsmRuntimeInternalNames = .{};
+    const symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 1, names.factory_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 1, names.result_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .catch_binding, 2, names.catch_parameter),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .function_decl, 2, names.init_function),
+        graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .variable_var, 2, names.factory_local),
+    };
+    const renames: [5]?[]const u8 = .{ "fn_final", "res_final", "e_final", "init_final", "f_final" };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &symbols, &renames, null, ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &symbols, &renames, ids, null, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const short_renames: [4]?[]const u8 = .{ "fn_final", "res_final", "e_final", "init_final" };
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &symbols, &short_renames, ids, ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var duplicate_old = ids;
+    duplicate_old.result_parameter = duplicate_old.factory_parameter;
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &symbols, &renames, duplicate_old, ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var duplicate_new = ids;
+    duplicate_new.factory_local = duplicate_new.init_function;
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &symbols, &renames, ids, duplicate_new, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var out_of_bounds = ids;
+    out_of_bounds.catch_parameter = @fromBackingInt(@as(u32, 5));
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &symbols, &renames, ids, out_of_bounds, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_old_kind = symbols;
+    wrong_old_kind[0] = graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .function_decl, 1, names.factory_parameter);
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &wrong_old_kind, &symbols, &renames, ids, ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_new_synthetic = symbols;
+    wrong_new_synthetic[4] = graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 2, names.factory_local);
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &wrong_new_synthetic, &renames, ids, ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_new_name = symbols;
+    wrong_new_name[4] = graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .variable_var, 2, "not_factory_local");
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &wrong_new_name, &renames, ids, ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const factory_id = bundler_symbol.SymbolID.make(module_index, 0);
+    try rebuilt.put(std.testing.allocator, factory_id, "node_anchor_final");
+    try remapEsmRuntimeInternalRenames(std.testing.allocator, module_index, &symbols, &symbols, &renames, ids, ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 5), rebuilt.count());
+    try std.testing.expectEqualStrings("node_anchor_final", rebuilt.get(factory_id).?);
+}
+
 test "graph-owned singleton synthetic renames follow producer identity" {
     const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
     const expected_id = bundler_symbol.SymbolID.make(module_index, 1);
@@ -7727,6 +8077,10 @@ fn captureRenamesToPending(
     new_sem: *const ModuleSemanticData,
     old_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
     new_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
+    old_esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds,
+    new_esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds,
+    old_esm_runtime_factory_symbol: ?SemanticSymbolId,
+    new_esm_runtime_factory_symbol: ?SemanticSymbolId,
     scratch_allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
 ) !void {
@@ -7780,8 +8134,123 @@ fn captureRenamesToPending(
         new_cjs_runtime_internal_symbols,
         &rebuilt,
     );
+    try remapEsmRuntimeInternalRenames(
+        arena,
+        module.index,
+        old_sem.symbols.items,
+        new_sem.symbols.items,
+        old_renames,
+        old_esm_runtime_internal_symbols,
+        new_esm_runtime_internal_symbols,
+        &rebuilt,
+    );
+    try remapEsmRuntimeFactoryRename(
+        arena,
+        module.index,
+        old_sem.symbols.items,
+        new_sem.symbols.items,
+        old_renames,
+        old_esm_runtime_factory_symbol,
+        new_esm_runtime_factory_symbol,
+        &rebuilt,
+    );
     module.pending_renames = rebuilt;
     module.pending_rename_capture_seen = true;
+}
+
+test "rename capture carries ESM factory alias through the production handoff" {
+    const allocator = std.testing.allocator;
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(12));
+    const old_factory_id: SemanticSymbolId = @fromBackingInt(@as(u32, 0));
+    const new_factory_id: SemanticSymbolId = @fromBackingInt(@as(u32, 1));
+    const old_internal_ids: EsmRuntimeInternalSymbolIds = .{
+        .factory_parameter = @fromBackingInt(@as(u32, 1)),
+        .result_parameter = @fromBackingInt(@as(u32, 2)),
+        .catch_parameter = @fromBackingInt(@as(u32, 3)),
+        .init_function = @fromBackingInt(@as(u32, 4)),
+        .factory_local = @fromBackingInt(@as(u32, 5)),
+    };
+    const new_internal_ids: EsmRuntimeInternalSymbolIds = .{
+        .factory_parameter = @fromBackingInt(@as(u32, 2)),
+        .result_parameter = @fromBackingInt(@as(u32, 3)),
+        .catch_parameter = @fromBackingInt(@as(u32, 4)),
+        .init_function = @fromBackingInt(@as(u32, 5)),
+        .factory_local = @fromBackingInt(@as(u32, 6)),
+    };
+    var ast = ast_mod.Ast.init(allocator, "");
+    defer ast.deinit();
+
+    var module = Module.init(module_index, "entry.mjs");
+    module.ast = ast;
+    defer module.pending_renames.deinit(allocator);
+
+    var old_symbols: std.ArrayList(SemanticSymbol) = .empty;
+    defer old_symbols.deinit(allocator);
+    try old_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__esm"));
+    for (esmRuntimeInternalRenameSlots(old_internal_ids), 0..) |slot, index| {
+        try old_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, slot.symbol_kind, @intCast(index + 2), slot.synthetic_name));
+    }
+    var new_symbols: std.ArrayList(SemanticSymbol) = .empty;
+    defer new_symbols.deinit(allocator);
+    try new_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 5, "decoy"));
+    try new_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 6, "__esm"));
+    for (esmRuntimeInternalRenameSlots(new_internal_ids), 0..) |slot, index| {
+        try new_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, slot.symbol_kind, @intCast(index + 7), slot.synthetic_name));
+    }
+
+    const old_sem = ModuleSemanticData{
+        .symbols = old_symbols,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    const new_sem = ModuleSemanticData{
+        .symbols = new_symbols,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    var rename_table: bundler_symbol.RenameTable = .{};
+    defer rename_table.deinit(allocator);
+    try rename_table.put(allocator, bundler_symbol.SymbolID.make(module_index, 0), "__esm$2");
+    const internal_rename_names = [_][]const u8{
+        "factory_parameter_final",
+        "result_parameter_final",
+        "catch_parameter_final",
+        "init_function_final",
+        "factory_local_final",
+    };
+    for (internal_rename_names, 0..) |name, index| {
+        try rename_table.put(allocator, bundler_symbol.SymbolID.make(module_index, index + 1), name);
+    }
+
+    try captureRenamesToPending(
+        &module,
+        &rename_table,
+        old_sem,
+        &new_sem,
+        null,
+        null,
+        old_internal_ids,
+        new_internal_ids,
+        old_factory_id,
+        new_factory_id,
+        allocator,
+        allocator,
+    );
+
+    const new_key = bundler_symbol.SymbolID.make(module_index, 1);
+    try std.testing.expectEqual(@as(u32, 6), module.pending_renames.count());
+    try std.testing.expectEqualStrings("__esm$2", module.pending_renames.get(new_key).?);
+    for (internal_rename_names, 0..) |name, index| {
+        const new_internal_key = bundler_symbol.SymbolID.make(module_index, index + 2);
+        try std.testing.expectEqualStrings(name, module.pending_renames.get(new_internal_key).?);
+    }
+    try std.testing.expect(module.pending_rename_capture_seen);
 }
 
 /// 재분석 전 semantic 을 돌려준다 — 리네임 이관(`captureRenamesAfterResync`)은 합성 심볼이 표시된
@@ -7993,6 +8462,8 @@ fn captureRenamesAfterResync(
     rename_table: ?*const bundler_symbol.RenameTable,
     previous_semantic: ?ModuleSemanticData,
     previous_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
+    previous_esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds,
+    previous_esm_runtime_factory_symbol: ?SemanticSymbolId,
 ) !void {
     if (self.minify_identifiers) return;
     const rt = rename_table orelse return;
@@ -8005,6 +8476,10 @@ fn captureRenamesAfterResync(
         new_sem,
         previous_cjs_runtime_internal_symbols,
         module.cjs_runtime_internal_symbols,
+        previous_esm_runtime_internal_symbols,
+        module.esm_runtime_internal_symbols,
+        previous_esm_runtime_factory_symbol,
+        module.esm_runtime_factory_symbol,
         self.allocator,
         arena_alloc,
     );
@@ -8231,6 +8706,8 @@ pub fn resyncAfterConstMaterialization(
 
     _ = &(module.ast orelse return);
     const previous_cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols;
+    const previous_esm_runtime_internal_symbols = module.esm_runtime_internal_symbols;
+    const previous_esm_runtime_factory_symbol = module.esm_runtime_factory_symbol;
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
     if (self.wrapper_symbols_registered) try self.registerWrapperSymbols();
@@ -8241,6 +8718,8 @@ pub fn resyncAfterConstMaterialization(
         rename_table,
         previous_semantic,
         previous_cjs_runtime_internal_symbols,
+        previous_esm_runtime_internal_symbols,
+        previous_esm_runtime_factory_symbol,
     );
 }
 
@@ -8436,6 +8915,8 @@ pub fn resyncAfterAstMutation(
     defer resync_scope.end();
 
     const previous_cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols;
+    const previous_esm_runtime_internal_symbols = module.esm_runtime_internal_symbols;
+    const previous_esm_runtime_factory_symbol = module.esm_runtime_factory_symbol;
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     // The fresh analysis counts references in the current AST, which already
     // reflects prepass minify edits (inlined constants, folded dead branches).
@@ -8455,6 +8936,8 @@ pub fn resyncAfterAstMutation(
         rename_table,
         previous_semantic,
         previous_cjs_runtime_internal_symbols,
+        previous_esm_runtime_internal_symbols,
+        previous_esm_runtime_factory_symbol,
     );
 }
 
