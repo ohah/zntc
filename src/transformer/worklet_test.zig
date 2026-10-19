@@ -135,6 +135,57 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     try std.testing.expect(report.hasCompleteExactCoverage());
 }
 
+test "Worklet factory output hints avoid direct-eval names with semantic edits" {
+    const Scanner = @import("../lexer/scanner.zig").Scanner;
+    const Parser = @import("../parser/parser.zig").Parser;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\const handlers = {
+        \\  call() { "worklet"; return eval("call"); },
+        \\  get read() { "worklet"; return eval("read"); }
+        \\};
+    ;
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    const plugins = [_]Plugin{worklet_plugin_mod.plugin()};
+    var transformer = try transformer_mod.Transformer.init(allocator, &parser.ast, .{
+        .plugins = &plugins,
+        .jsx_filename = "test.ts",
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var found_call = false;
+    var found_read = false;
+    for (edited.symbols.items) |symbol| {
+        if (symbol.synthetic_kind != .worklet_factory_local) continue;
+        if (std.mem.eql(u8, symbol.output_name_hint, "call2")) found_call = true;
+        if (std.mem.eql(u8, symbol.output_name_hint, "read2")) found_read = true;
+    }
+    try std.testing.expect(found_call);
+    try std.testing.expect(found_read);
+}
+
 test "Worklet semantic-less class factory avoids a captured source binding" {
     const sources = [_][]const u8{
         \\const Clazz_\u005fclassFactory = 73;
@@ -198,6 +249,54 @@ test "#4819 Worklet method factory does not capture an escaped same-name local" 
         },
     }
     try std.testing.expectEqualStrings("73\n", actual.stdout);
+}
+
+test "#4819 Worklet factory local avoids a direct-eval method name" {
+    const source =
+        \\globalThis.call = "global method";
+        \\globalThis["call" + "2"] = "global candidate";
+        \\globalThis.read = "global getter";
+        \\globalThis["commit" + "2"] = "global unique candidate";
+        \\const commit = "outer closure";
+        \\const handlers = {
+        \\  call() { "worklet"; return eval("ca" + "ll") + ":" + eval("call" + "2"); },
+        \\  get read() { "worklet"; return ev\u0061l("read"); },
+        \\  commit() { "worklet"; return commit + ":" + eval("commit" + "2"); }
+        \\};
+        \\console.log(handlers.call());
+        \\console.log(handlers.read());
+        \\console.log(handlers.commit());
+    ;
+
+    var result = try transformWorklet(std.testing.allocator, source);
+    defer result.deinit();
+    const code = try generateCode(&result);
+    defer std.testing.allocator.free(code);
+
+    const actual = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", code },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    switch (actual.term) {
+        .exited => |code_status| if (code_status != 0) {
+            std.debug.print("node stderr:\n{s}\n", .{actual.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => {
+            std.debug.print("node stderr:\n{s}\n", .{actual.stderr});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try std.testing.expectEqualStrings(
+        "global method:global candidate\nglobal getter\nouter closure:global unique candidate\n",
+        actual.stdout,
+    );
 }
 
 test "Worklet class factory accepts long class identifier names" {
