@@ -813,7 +813,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const metadata_name = if (metadata_late_output_name)
         try es_helpers.deferSyntheticOutputName(self, "_metadata")
     else
-        try es_helpers.resolveSyntheticName(self, "_metadata");
+        try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "_metadata", class_parent_scope);
     const metadata_decl = try self.buildMetadataDecl(metadata_name);
     const metadata_binding = generatedLetBinding(self, metadata_decl);
     try static_block_stmts.append(self.allocator, metadata_decl);
