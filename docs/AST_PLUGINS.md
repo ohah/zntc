@@ -159,6 +159,19 @@ trailing_nodes가 있으면 함수 뒤에 삽입
 > 하나뿐이다. `rn_codegen_plugin` 은 `.transform`(string 훅)만 사용하므로
 > 위 AST 훅 흐름과는 별개 경로다.
 
+### 생성 바인딩과 심볼 ID
+
+`onFunction` 플러그인이 생성한 바인딩은 삽입 위치의 정확한 `ScopeId`에 등록해야 한다. Zig 플러그인은
+`AstTransformCtx.registerSyntheticBinding(binding, .variable_var/.variable_let/.variable_const)`로 binding의
+`SymbolId`를 받고, 플러그인이 만든 참조에는 `bindReferenceToSymbol(reference, symbol_id)`를 호출한다.
+`parseAndInjectStatements`도 단순 식별자 형태의 `var`/`let`/`const` trailing declaration을 등록하고, 같은
+코드 조각 안의 참조를 그 ID에 연결한다. `var`는 `scope_id`를 가장 가까운 var 스코프에 두고 원래 삽입
+스코프를 `origin_scope`에 보존한다. 복사 경로는 최상위 trailing statement의 식별자 binding만 지원한다.
+구조분해, TypeScript 타입 주석, 중첩 블록 선언, 함수 안쪽 선언은 지원하지 않아 해당 statement를 건너뛴다.
+
+의미 그래프가 없는 transformer-only 호출은 `SymbolId`를 만들 수 없어 등록 결과가 `null`이다. semantic edit가
+활성화된 상태에서 삽입 scope가 없으면 변환은 실패한다. 이름 문자열로 나중에 심볼을 복구하는 fallback은 사용하지 않는다.
+
 ## 내장 플러그인 추가 방법
 
 1. `src/transformer/plugins/my_plugin.zig` 생성
