@@ -1106,13 +1106,14 @@ fn buildClassFactoryAssignment(
     // The generated function name is visible from its body. If it uses the
     // public factory spelling, a same-named source capture inside the
     // reconstructed class resolves to this function instead of the source
-    // binding. Keep the identity exact, but use a private staging spelling
-    // until the linker can choose a collision-safe output name.
+    // binding. Direct eval inside a reconstructed method can also observe the
+    // enclosing factory binding, so reserve eval-visible names when choosing
+    // its final spelling as well as using a private staging name.
     var factory_name_counter: u32 = 0;
     const binding_name = if (t.semantic_edit_enabled)
         try es_helpers.uniqueSyntheticName(t, "__zntcWorkletClassFactory", &factory_name_counter)
     else
-        try es_helpers.uniqueSyntheticName(t, factory_name, &factory_name_counter);
+        try es_helpers.uniqueSyntheticNameAvoidingAnyDynamicEval(t, factory_name, &factory_name_counter);
     const binding_name_span = try t.ast.addString(binding_name);
     const binding_node = try es_helpers.makeExactSyntheticBindingFromSpan(t, binding_name_span);
     const empty_params = try t.ast.addNodeList(&.{});
@@ -1143,7 +1144,11 @@ fn buildClassFactoryAssignment(
         const editor = if (t.semantic_editor) |*existing| existing else unreachable;
         const symbol = &editor.symbols.items[@backingInt(symbol_id)];
         symbol.synthetic_kind = .worklet_factory_local;
-        symbol.output_name_hint = try t.allocator.dupe(u8, t.ast.getText(factory_name_span));
+        const output_name_hint = if (t.current_scope.isNone())
+            try es_helpers.resolveSyntheticNameAvoidingAnyDynamicEval(t, factory_name)
+        else
+            try es_helpers.resolveSyntheticNameAvoidingDynamicEval(t, factory_name, t.current_scope);
+        symbol.output_name_hint = try t.allocator.dupe(u8, output_name_hint);
     }
     const factory_body = try buildClassFactoryBody(t, class_name_span, stripped_body, factory_scope);
     t.ast.extra_data.items[t.ast.getNode(inner_fn).data.extra + ast_mod.FunctionExtra.body] = @backingInt(factory_body.node);

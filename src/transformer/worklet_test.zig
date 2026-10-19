@@ -135,7 +135,7 @@ test "Worklet: generated factory locals keep exact semantic coverage" {
     try std.testing.expect(report.hasCompleteExactCoverage());
 }
 
-test "Worklet factory output hints avoid direct-eval names with semantic edits" {
+test "Worklet class factory output hints avoid direct-eval names with semantic edits" {
     const Scanner = @import("../lexer/scanner.zig").Scanner;
     const Parser = @import("../parser/parser.zig").Parser;
     const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
@@ -147,6 +147,10 @@ test "Worklet factory output hints avoid direct-eval names with semantic edits" 
         \\  call() { "worklet"; return eval("call"); },
         \\  get read() { "worklet"; return eval("read"); }
         \\};
+        \\class Clazz {
+        \\  __workletClass = true;
+        \\  read() { return eval("Clazz__classFactory"); }
+        \\}
     ;
 
     var scanner = try Scanner.init(allocator, source);
@@ -177,13 +181,16 @@ test "Worklet factory output hints avoid direct-eval names with semantic edits" 
     const edited = (try transformer.finishSemanticEdit()).?;
     var found_call = false;
     var found_read = false;
+    var found_class_factory = false;
     for (edited.symbols.items) |symbol| {
         if (symbol.synthetic_kind != .worklet_factory_local) continue;
         if (std.mem.eql(u8, symbol.output_name_hint, "call2")) found_call = true;
         if (std.mem.eql(u8, symbol.output_name_hint, "read2")) found_read = true;
+        if (std.mem.eql(u8, symbol.output_name_hint, "Clazz__classFactory2")) found_class_factory = true;
     }
     try std.testing.expect(found_call);
     try std.testing.expect(found_read);
+    try std.testing.expect(found_class_factory);
 }
 
 test "Worklet semantic-less class factory avoids a captured source binding" {
@@ -295,6 +302,80 @@ test "#4819 Worklet factory local avoids a direct-eval method name" {
     }
     try std.testing.expectEqualStrings(
         "global method:global candidate\nglobal getter\nouter closure:global unique candidate\n",
+        actual.stdout,
+    );
+}
+
+test "#4819 Worklet class factory local avoids ten direct-eval names without semantic edits" {
+    const source =
+        \\globalThis['C0__' + 'classFactory'] = "global:0";
+        \\class C0 { __workletClass = true; read() { return eval('C0__classFactory'); } }
+        \\console.log(new (C0['C0__' + 'classFactory']())().read());
+        \\globalThis['C1__' + 'classFactory'] = "global:1";
+        \\class C1 { __workletClass = true; read() { return eval("C1__classFactory"); } }
+        \\console.log(new (C1['C1__' + 'classFactory']())().read());
+        \\globalThis['C2__' + 'classFactory'] = "global:2";
+        \\class C2 { __workletClass = true; read() { return eval('C2__' + 'classFactory'); } }
+        \\console.log(new (C2['C2__' + 'classFactory']())().read());
+        \\globalThis['C3__' + 'classFactory'] = "global:3";
+        \\class C3 { __workletClass = true; read() { return eval(`C3__classFactory`); } }
+        \\console.log(new (C3['C3__' + 'classFactory']())().read());
+        \\globalThis['C4__' + 'classFactory'] = "global:4";
+        \\class C4 { __workletClass = true; read() { return eval(('C4__classFactory')); } }
+        \\console.log(new (C4['C4__' + 'classFactory']())().read());
+        \\globalThis['C5__' + 'classFactory'] = "global:5";
+        \\class C5 { __workletClass = true; read() { return eval('C5__classFact\\u006fry'); } }
+        \\console.log(new (C5['C5__' + 'classFactory']())().read());
+        \\globalThis['C6__' + 'classFactory'] = "global:6";
+        \\class C6 { __workletClass = true; read() { return eval('C6__' + `classFactory`); } }
+        \\console.log(new (C6['C6__' + 'classFactory']())().read());
+        \\globalThis['C7__' + 'classFactory'] = "global:7";
+        \\class C7 { __workletClass = true; read() { return eval(`C7__` + `classFactory`); } }
+        \\console.log(new (C7['C7__' + 'classFactory']())().read());
+        \\globalThis['C8__' + 'classFactory'] = "global:8";
+        \\class C8 { __workletClass = true; read() { return eval((`C8__classFactory`)); } }
+        \\console.log(new (C8['C8__' + 'classFactory']())().read());
+        \\globalThis['C9__' + 'classFactory'] = "global:9";
+        \\class C9 { __workletClass = true; read() { return eval('C9' + '__classFactory'); } }
+        \\console.log(new (C9['C9__' + 'classFactory']())().read());
+    ;
+
+    var result = try transformWorklet(std.testing.allocator, source);
+    defer result.deinit();
+    const code = try generateCode(&result);
+    defer std.testing.allocator.free(code);
+    for (0..10) |index| {
+        const expected_name = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "function C{d}__classFactory2()",
+            .{index},
+        );
+        defer std.testing.allocator.free(expected_name);
+        try std.testing.expect(std.mem.indexOf(u8, code, expected_name) != null);
+    }
+
+    const actual = std.process.run(std.testing.allocator, std.testing.io, .{
+        .argv = &.{ "node", "-e", code },
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    }) catch |err| switch (err) {
+        error.FileNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(actual.stdout);
+    defer std.testing.allocator.free(actual.stderr);
+    switch (actual.term) {
+        .exited => |code_status| if (code_status != 0) {
+            std.debug.print("node stderr:\n{s}\n", .{actual.stderr});
+            return error.TestUnexpectedResult;
+        },
+        else => {
+            std.debug.print("node stderr:\n{s}\n", .{actual.stderr});
+            return error.TestUnexpectedResult;
+        },
+    }
+    try std.testing.expectEqualStrings(
+        "global:0\nglobal:1\nglobal:2\nglobal:3\nglobal:4\nglobal:5\nglobal:6\nglobal:7\nglobal:8\nglobal:9\n",
         actual.stdout,
     );
 }
