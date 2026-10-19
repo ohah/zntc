@@ -771,6 +771,7 @@ pub fn buildStage3LetDeclarations(
     member_infos: []Stage3MemberInfo,
     has_instance: bool,
     has_static: bool,
+    class_this_name: []const u8,
     class_decorators_binding: *NodeIndex,
     class_descriptor_binding: *NodeIndex,
     class_extra_initializers_binding: *NodeIndex,
@@ -784,7 +785,7 @@ pub fn buildStage3LetDeclarations(
     defer stmts.deinit(self.allocator);
 
     // let _classThis; — static { _classThis = this; } 에서 항상 사용
-    const class_this = try makeLetWithBinding(self, zero_span, "_classThis", .none);
+    const class_this = try makeLetWithExactBinding(self, zero_span, class_this_name, .none);
     class_this_binding.* = class_this.binding;
     try stmts.append(self.allocator, class_this.declaration);
 
@@ -884,6 +885,18 @@ const LetWithBinding = struct {
 fn makeLetWithBinding(self: anytype, span: Span, name: []const u8, init: NodeIndex) Error!LetWithBinding {
     const name_span = try self.ast.addString(name);
     const binding = try es_helpers.makeSyntheticBinding(self, name_span);
+    return try makeLetDeclarationWithBinding(self, span, binding, init);
+}
+
+/// Build a declaration around a spelling that has already been resolved.
+/// Re-running the global synthetic allocator can silently select another
+/// spelling than the exact references attached to this binding.
+fn makeLetWithExactBinding(self: anytype, span: Span, name: []const u8, init: NodeIndex) Error!LetWithBinding {
+    const binding = try es_helpers.makeExactSyntheticBinding(self, name);
+    return try makeLetDeclarationWithBinding(self, span, binding, init);
+}
+
+fn makeLetDeclarationWithBinding(self: anytype, span: Span, binding: NodeIndex, init: NodeIndex) Error!LetWithBinding {
     const declarator = try self.addExtraNode(.variable_declarator, span, &.{
         @backingInt(binding), @backingInt(NodeIndex.none), @backingInt(init),
     });

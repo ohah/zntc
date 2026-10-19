@@ -731,7 +731,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const class_this_name = if (class_this_late_output_name)
         try es_helpers.deferSyntheticOutputName(self, "_classThis")
     else
-        try es_helpers.resolveSyntheticName(self, "_classThis");
+        try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "_classThis", class_parent_scope);
     const classThis_span = try self.ast.addString(class_this_name);
     if (class_deco_len > 0) {
         inline for (.{ "_classDecorators", "_classDescriptor", "_classExtraInitializers" }) |name| {
@@ -1177,6 +1177,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         member_infos.items,
         has_instance_decorators,
         has_static_decorators,
+        class_this_name,
         &class_decorators_binding,
         &class_descriptor_binding,
         &class_extra_initializers_binding,
