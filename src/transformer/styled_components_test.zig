@@ -2166,6 +2166,94 @@ test "#4819 auto-injected styled import keeps its staging name when descendant e
     try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
 }
 
+test "#4819 auto-injected styled alias avoids ten hostile static eval names in early-name mode" {
+    const eval_arguments = [_][]const u8{
+        "'_styled'",
+        "'_styled' + ''",
+        "'' + '_styled'",
+        "('_styled' + '')",
+        "'_' + 'styled'",
+        "'_' + 'sty' + 'led'",
+        "'_sty' + ('led')",
+        "`_styled`",
+        "`${'_styled'}`",
+        "'\\x5fstyled'",
+    };
+
+    for (eval_arguments) |eval_argument| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const source = try std.fmt.allocPrint(
+            allocator,
+            "const styled = 0;\nfunction observe() {{ eval({s}); }}\nfunction App() {{ return <div css={{{{ color: 'red' }}}} />; }}",
+            .{eval_argument},
+        );
+        try std.testing.expectEqualStrings("_styled2", try transformStyledCssAliasForEarlyNameTest(allocator, source));
+    }
+}
+
+fn transformStyledCssAliasForEarlyNameTest(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const ast_walk = @import("../parser/ast_walk.zig");
+    var scanner = try helpers.Scanner.init(allocator, source);
+    var parser = helpers.Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try helpers.Transformer.init(allocator, &parser.ast, .{
+        .styled_components = true,
+        .styled_components_css_prop = true,
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .jsx_filename = "test.tsx",
+        .defer_runtime_helper_name_resolution = false,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const symbol_id = transformer.plugins.styled_components.css_prop_inject_symbol_id orelse
+        return error.MissingStyledCssPropSymbolId;
+    const symbol_id_raw = @backingInt(symbol_id);
+    const symbol = edited.symbols.items[symbol_id_raw];
+    const injected_name = transformer.plugins.styled_components.css_prop_inject_name;
+    try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.import_binding, symbol.kind);
+    try std.testing.expectEqual(transformer.programScope(), symbol.scope_id);
+
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var import_found = false;
+    var reference_found = false;
+    for (reachable) |raw| {
+        const node_idx: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw));
+        const node = transformer.ast.getNode(node_idx);
+        if ((node.tag == .import_default_specifier or node.tag == .identifier_reference) and
+            std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), injected_name))
+        {
+            try std.testing.expectEqual(symbol_id_raw, transformer.getSymbolIdAt(node_idx) orelse return error.MissingStyledCssPropReferenceSymbolId);
+            if (node.tag == .import_default_specifier) import_found = true;
+            if (node.tag == .identifier_reference) reference_found = true;
+        }
+    }
+    try std.testing.expect(import_found);
+    try std.testing.expect(reference_found);
+    return injected_name;
+}
+
 test "styled (cssProp) #4339: top-level-await wrap 시에도 추출된 module-level decl 보존" {
     // TLA 다운레벨(async IIFE wrap)과 cssProp 추출이 동시에 일어나는 파일. 과거엔 program 의
     // TLA wrap 이 early-return 해 css_prop_pending_decls 가 hoist 되지 않고 소실(undefined ref).
