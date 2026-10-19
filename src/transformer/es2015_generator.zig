@@ -426,6 +426,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             return ref;
         }
 
+        /// Create a state-temp reference from the SymbolId already held by its
+        /// producer. This path deliberately does not consult the span-keyed
+        /// generator temp registry; only the callback reference scope is deferred.
+        fn makeGeneratorTempRefWithProducerSymbol(
+            self: *Transformer,
+            name_span: Span,
+            node_span: Span,
+            symbol_id: @import("../semantic/symbol.zig").SymbolId,
+            flags: @import("../semantic/symbol.zig").ReferenceFlags,
+        ) Transformer.Error!NodeIndex {
+            if (!self.semantic_edit_enabled or self.state_machine_depth == 0)
+                std.debug.panic("producer-owned generator temp reference escaped its semantic state machine", .{});
+            const ref = try es_helpers.makeTempVarRef(self, name_span, node_span);
+            try self.trackGeneratorStateReference(ref, symbol_id, self.current_scope, flags);
+            return ref;
+        }
+
         /// 사용자 바인딩(`origin`)에서 온 이름을 wrapper 최상단 `var` 목록에 등록한다. 목록은 이름만
         /// 담으므로, 선언을 만들 때 심볼을 물려줄 수 있게 원래 바인딩을 따로 기록한다.
         fn registerGeneratorVar(self: *Transformer, span: Span, origin: NodeIndex) Transformer.Error!void {
@@ -2089,17 +2106,23 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             const value = try visitExprWithYieldExtraction(self, expr_idx, ops, next_label);
             const temp_span = try es_helpers.makeTempVarSpan(self);
             try self.generator_temp_var_spans.append(self.allocator, temp_span);
-            if (self.semantic_edit_enabled) {
-                _ = (try ensureGeneratorStateTempSymbol(self, temp_span, self.ast.getNode(expr_idx).span)) orelse
-                    std.debug.panic("class-header generator temp has no exact SymbolId", .{});
-            }
-            const lhs = try makeGeneratorTempRef(self, temp_span, temp_span, .{ .write = true });
+            const producer_symbol: ?@import("../semantic/symbol.zig").SymbolId = if (self.semantic_edit_enabled)
+                (try ensureGeneratorStateTempSymbol(self, temp_span, self.ast.getNode(expr_idx).span)) orelse
+                    std.debug.panic("class-header generator temp has no exact SymbolId", .{})
+            else
+                null;
+            const lhs = if (producer_symbol) |symbol_id|
+                try makeGeneratorTempRefWithProducerSymbol(self, temp_span, temp_span, symbol_id, .{ .write = true })
+            else
+                try makeGeneratorTempRef(self, temp_span, temp_span, .{ .write = true });
             const assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = temp_span,
                 .data = .{ .binary = .{ .left = lhs, .right = value, .flags = 0 } },
             });
             try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = try es_helpers.makeExprStmt(self, assign, temp_span) } });
+            if (producer_symbol) |symbol_id|
+                return makeGeneratorTempRefWithProducerSymbol(self, temp_span, temp_span, symbol_id, .{ .read = true });
             return makeGeneratorTempRef(self, temp_span, temp_span, .{ .read = true });
         }
 
@@ -3138,6 +3161,133 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     }
     const exact_binding = hoisted_binding orelse return error.MissingAssignmentTempBinding;
     try std.testing.expectEqual(@as(?u32, assignment_id), transformer.getSymbolIdAt(exact_binding));
+}
+
+test "#4819 class-header generator temps carry producer IDs across hostile sources" {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    const sources = [_][]const u8{
+        "const _a = 0; function* g() { class C extends (yield Base) {} }",
+        "function* g(_a) { class C { [yield _a]() {} } }",
+        "const _b = 1; function* g() { class C extends (yield (Base + 3)) {} }",
+        "function* outer() { function inner(_a) { return _a; } class C extends (yield Base) {} }",
+        "function* g() { class C { [yield (flag ? A : B)]() {} } }",
+        "function* g() { try { class C extends (yield Base) {} } catch (_a) { yield 10; } }",
+        "async function* g() { class C extends (yield await Promise.resolve(Base)) {} }",
+        "function* g() { class C extends (yield Base) { [yield key]() {} } }",
+        "function* g() { class C { [yield first]() {} [yield second]() {} } }",
+        "function* g() { class A extends (yield BaseA) {} class B { [yield keyB]() {} } }",
+    };
+
+    for (sources) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        var scanner = try Scanner.init(allocator, source);
+        var parser = Parser.init(allocator, &scanner);
+        _ = try parser.parse();
+        try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+        var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+        try analyzer.analyze();
+        try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+        var transformer = try Transformer.init(allocator, &parser.ast, .{
+            .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        });
+        try transformer.initSymbolIds(analyzer.symbol_ids.items);
+        transformer.symbols = analyzer.symbols.items;
+        transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+        transformer.references = analyzer.references.items;
+        transformer.scopes = analyzer.scopes.items;
+        transformer.scope_maps = analyzer.scope_maps.items;
+        transformer.scope_owner_map = analyzer.scope_owner_map;
+        transformer.unresolved_references = &analyzer.unresolved_references;
+        transformer.semantic_edit_enabled = true;
+        const generator_scope = transformer.programScope();
+        var reference_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+        for (transformer.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .function_declaration) continue;
+            const owner_raw = analyzer.scope_owner_map.get(@intCast(raw)) orelse continue;
+            reference_scope = @fromBackingInt(@intCast(owner_raw));
+            break;
+        }
+        transformer.current_scope = reference_scope orelse return error.MissingGeneratorReferenceScope;
+        transformer.generator_state_machine_scope = generator_scope;
+        transformer.state_machine_depth = 1;
+        transformer.in_async_generator_body = std.mem.startsWith(u8, source, "async function*");
+        try std.testing.expect(transformer.current_scope != generator_scope);
+
+        var operations: std.ArrayList(Operation) = .empty;
+        var next_label: u32 = 1;
+        var first_class: NodeIndex = .none;
+        var class_count: usize = 0;
+        const original_node_count = transformer.ast.nodes.items.len;
+        for (transformer.ast.nodes.items[0..original_node_count], 0..) |node, raw| {
+            if (node.tag != .class_declaration) continue;
+            const class_idx: NodeIndex = @fromBackingInt(@intCast(raw));
+            if (first_class.isNone()) first_class = class_idx;
+            _ = try ES2015Generator(Transformer).extractClassHeaderYields(
+                &transformer,
+                class_idx,
+                &operations,
+                &next_label,
+            );
+            class_count += 1;
+        }
+        if (first_class.isNone()) return error.MissingGeneratorClassHeader;
+        try std.testing.expect(class_count > 0);
+        try std.testing.expect(next_label > 1);
+        const temp_count = transformer.generator_state_temp_symbols.count();
+        try std.testing.expect(temp_count > 0);
+        try std.testing.expectEqual(temp_count * 2, transformer.generator_state_semantic_refs.items.len);
+
+        for (transformer.generator_state_semantic_refs.items) |reference| {
+            try std.testing.expectEqual(@as(?u32, reference.symbol_id), transformer.getSymbolIdAt(reference.node));
+            try std.testing.expectEqual(transformer.current_scope, reference.scope);
+            var reads: usize = 0;
+            var writes: usize = 0;
+            for (transformer.generator_state_semantic_refs.items) |same_symbol| {
+                if (same_symbol.symbol_id != reference.symbol_id) continue;
+                if (same_symbol.flags.read) reads += 1;
+                if (same_symbol.flags.write) writes += 1;
+            }
+            try std.testing.expectEqual(@as(usize, 1), reads);
+            try std.testing.expectEqual(@as(usize, 1), writes);
+        }
+
+        // No registry entry is created for this second producer. Exact
+        // reference registration must work from the producer handle alone.
+        const direct_span = try es_helpers.makeTempVarSpan(&transformer);
+        const direct_id = (try transformer.reserveSyntheticTempSymbolInScope(
+            direct_span,
+            transformer.ast.getNode(first_class).span,
+            transformer.generator_state_machine_scope,
+        )) orelse return error.MissingDirectProducerSymbolId;
+        const map_count = transformer.generator_state_temp_symbols.count();
+        const direct_ref = try ES2015Generator(Transformer).makeGeneratorTempRefWithProducerSymbol(
+            &transformer,
+            direct_span,
+            direct_span,
+            direct_id,
+            .{ .read = true },
+        );
+        try std.testing.expectEqual(map_count, transformer.generator_state_temp_symbols.count());
+        try std.testing.expectEqual(@as(?u32, @backingInt(direct_id)), transformer.getSymbolIdAt(direct_ref));
+        const direct_record = transformer.generator_state_semantic_refs.items[
+            transformer.generator_state_semantic_refs.items.len - 1
+        ];
+        try std.testing.expectEqual(@backingInt(direct_id), direct_record.symbol_id);
+        try std.testing.expectEqual(transformer.current_scope, direct_record.scope);
+        try std.testing.expect(direct_record.flags.read);
+        try std.testing.expect(!direct_record.flags.write);
+
+        const symbols = if (transformer.semantic_editor) |*editor| editor.symbols.items else unreachable;
+        const raw_direct_id: usize = @intCast(@backingInt(direct_id));
+        try std.testing.expect(raw_direct_id < symbols.len);
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbols[raw_direct_id].kind);
+        try std.testing.expectEqual(transformer.generator_state_machine_scope, symbols[raw_direct_id].scope_id);
+    }
 }
 
 test "generator state name handoff survives nested cache invalidation" {
