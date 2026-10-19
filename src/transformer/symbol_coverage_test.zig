@@ -3982,6 +3982,118 @@ test "#4819 Emotion css prop reads the exact imported SymbolId in its use scope"
     try std.testing.expectEqual(@as(u32, 0), edited.symbols.items[shadow_id].reference_count);
 }
 
+test "#4819 Emotion css alias early-name path avoids descendant direct eval names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "import { css as cx } from '@emotion/react'; " ++
+        "const _emotionCss = 0; " ++
+        "function render(cx) { eval('_emotionCss' + '2'); return <div css={{ color: 'red' }} />; }";
+    try std.testing.expectEqualStrings("_emotionCss3", try transformEmotionCssAliasForTest(allocator, source));
+}
+
+test "#4819 Emotion css alias avoids hostile static eval name forms in early-name mode" {
+    const EvalForm = enum {
+        literal_single,
+        concat_suffix,
+        concat_prefix,
+        parenthesized_concat,
+        split_middle,
+        three_part_concat,
+        nested_concat,
+        template_literal,
+        template_expression,
+        double_quote_concat,
+        escaped_literal,
+    };
+    const forms = [_]EvalForm{
+        .literal_single,
+        .concat_suffix,
+        .concat_prefix,
+        .parenthesized_concat,
+        .split_middle,
+        .three_part_concat,
+        .nested_concat,
+        .template_literal,
+        .template_expression,
+        .double_quote_concat,
+        .escaped_literal,
+    };
+
+    for (forms, 0..) |form, index| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const allocator = arena.allocator();
+        const occupied_suffix: u32 = @intCast(index + 2);
+        const suffix = try std.fmt.allocPrint(allocator, "{d}", .{occupied_suffix});
+        const eval_expression = try switch (form) {
+            .literal_single => std.fmt.allocPrint(allocator, "'_emotionCss{s}'", .{suffix}),
+            .concat_suffix => std.fmt.allocPrint(allocator, "'_emotionCss' + '{s}'", .{suffix}),
+            .concat_prefix => std.fmt.allocPrint(allocator, "'_' + 'emotionCss{s}'", .{suffix}),
+            .parenthesized_concat => std.fmt.allocPrint(allocator, "('_emotionCss' + ('{s}'))", .{suffix}),
+            .split_middle => std.fmt.allocPrint(allocator, "'_emotion' + 'Css{s}'", .{suffix}),
+            .three_part_concat => std.fmt.allocPrint(allocator, "'_' + 'emotion' + 'Css{s}'", .{suffix}),
+            .nested_concat => std.fmt.allocPrint(allocator, "'_emotionCss' + ('{s}' + '')", .{suffix}),
+            .template_literal => std.fmt.allocPrint(allocator, "`_emotionCss{s}`", .{suffix}),
+            .template_expression => std.fmt.allocPrint(allocator, "`${{'_emotionCss'}}{s}`", .{suffix}),
+            .double_quote_concat => std.fmt.allocPrint(allocator, "\"_emotionCss\" + \"{s}\"", .{suffix}),
+            .escaped_literal => std.fmt.allocPrint(allocator, "'\\x5femotionCss{s}'", .{suffix}),
+        };
+
+        var source: []const u8 = "import { css as cx } from '@emotion/react';\nconst _emotionCss = 0;\n";
+        var reserved_suffix: u32 = 2;
+        while (reserved_suffix < occupied_suffix) : (reserved_suffix += 1) {
+            source = try std.fmt.allocPrint(allocator, "{s}const _emotionCss{d} = 0;\n", .{ source, reserved_suffix });
+        }
+        source = try std.fmt.allocPrint(allocator, "{s}function render(cx) {{ eval({s}); return <div css=", .{ source, eval_expression });
+        source = try std.fmt.allocPrint(allocator, "{s}{s}", .{ source, "{{ color: 'red' } } />; }" });
+
+        const actual_name = try transformEmotionCssAliasForTest(allocator, source);
+        const expected_name = try std.fmt.allocPrint(allocator, "_emotionCss{d}", .{occupied_suffix + 1});
+        try std.testing.expectEqualStrings(expected_name, actual_name);
+    }
+}
+
+fn transformEmotionCssAliasForTest(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".tsx");
+    _ = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .emotion = true,
+        .jsx_transform = true,
+        .jsx_runtime = .classic,
+        .defer_runtime_helper_name_resolution = false,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+
+    const alias_binding = transformer.plugins.emotion.css_prop_alias_binding orelse
+        return error.MissingEmotionCssAliasBinding;
+    const alias_symbol = transformer.getSymbolIdAt(alias_binding) orelse
+        return error.MissingEmotionCssAliasSymbol;
+    try std.testing.expectEqual(SymbolKind.import_binding, edited.symbols.items[alias_symbol].kind);
+    try std.testing.expectEqual(transformer.programScope(), edited.symbols.items[alias_symbol].scope_id);
+    return transformer.ast.getText(transformer.ast.getNode(alias_binding).span);
+}
+
 test "#4819 Emotion css prop import keeps its staging name when descendant eval can observe it" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
