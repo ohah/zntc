@@ -585,10 +585,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
 
             // 마지막에 _ref 반환 (array pattern 의 값은 원래 우변)
-            try self.scratch.append(self.allocator, if (value_temp) |temp|
-                try es_helpers.makeTrackedTempRef(self, temp.span, span, .{ .read = true })
-            else
-                try makeDestructuringTempReadWithIdentity(self, temp_span, temp_span, temp_identity));
+            try self.scratch.append(self.allocator, if (value_temp) |temp| blk: {
+                // The capture already owns the exact identity. Drop the
+                // span index before creating this final read so the known
+                // owner cannot silently fall back to name/span lookup.
+                if (temp.symbol_id != null)
+                    self.forgetSyntheticTempSymbolLookup(temp.span, temp.reference_scope);
+                break :blk try es_helpers.makeCapturedTempRef(self, temp, span, .{ .read = true });
+            } else try makeDestructuringTempReadWithIdentity(self, temp_span, temp_span, temp_identity));
 
             // sequence expression
             const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
