@@ -314,25 +314,26 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             rhs: NodeIndex,
             span: Span,
         ) Transformer.Error!NodeIndex {
-            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+            const temp_span = temp_identity.span;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
             // _ref = rhs — 배열 패턴은 `__read` 로 배열을 만든다. 이터러블(Set·제너레이터)에
             // 인덱스·slice 를 바로 쓰면 틀린다 (#4791, 선언 경로와 같은 규칙).
-            const init_lhs = try makeDestructuringTempWrite(self, temp_span, temp_span);
+            const init_lhs = try es_helpers.makeTempRefFromIdentity(self, temp_identity, span, .{ .write = true });
             const init_value = if (pattern.tag == .array_pattern) try buildArrayRead(self, rhs, pattern, span) else rhs;
             const init_assign = try es_helpers.makeAssignExpr(self, init_lhs, init_value, span, 0);
             try self.scratch.append(self.allocator, init_assign);
 
             if (pattern.tag == .object_pattern) {
-                try emitObjectPatternAssignments(self, pattern, temp_span, span);
+                try emitObjectPatternAssignments(self, pattern, temp_span, span, temp_identity);
             } else if (pattern.tag == .array_pattern) {
-                try emitArrayPatternAssignments(self, pattern, temp_span, span);
+                try emitArrayPatternAssignments(self, pattern, temp_span, span, temp_identity);
             }
 
             // 마지막에 _ref 노출 — destructuring assignment 의 평가 결과 (rhs) 와 일관
-            try self.scratch.append(self.allocator, try makeDestructuringTempRead(self, temp_span, temp_span));
+            try self.scratch.append(self.allocator, try makeDestructuringTempReadWithIdentity(self, temp_span, temp_span, temp_identity));
 
             const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
             return self.ast.addNode(.{
@@ -344,7 +345,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
         /// object_pattern 의 각 binding_property 를 `target = _ref.key` assignment 로 emit.
         /// emitObjectPatternDeclarators 와 같은 traversal — declarator 대신 assignment 를 만든다.
-        fn emitObjectPatternAssignments(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+        fn emitObjectPatternAssignments(
+            self: *Transformer,
+            pattern: Node,
+            ref_span: Span,
+            span: Span,
+            identity: es_helpers.TempIdentityCapture,
+        ) Transformer.Error!void {
             const opd_start = pattern.data.list.start;
             const split = self.ast.nodeListSplitRest(pattern.data.list);
             const non_rest_len: u32 = @intCast(split.elements.len);
@@ -361,7 +368,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const value_idx = prop.data.binary.right;
                 if (key_idx.isNone()) continue;
 
-                const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
+                const ref = try makeDestructuringTempReadWithIdentity(self, ref_span, ref_span, identity);
                 const key_node = self.ast.getNode(key_idx);
                 const access_result = try emitObjectMemberAccessForRest(
                     self,
@@ -399,7 +406,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             key_idx,
                             key_node.tag,
                             access_result.computed_key_temp_identity,
-                            null,
+                            identity,
                             span,
                         );
                         if (try emitNestedPatternAssignment(self, inner_target_node, defaulted, span)) continue;
@@ -425,7 +432,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // rest property: `rest = __rest(_ref, [앞 키들])` (#4750). 예전엔 무시해 rest 가
             // undefined 로 남았다 — 상태 기계가 `let {…, ...r} = v` 를 이 경로로 낮춘다.
             if (split.rest_operand) |rest_inner| {
-                const parts = try buildRestCall(self, rest_inner, ref_span, exclude_keys.items, span, null);
+                const parts = try buildRestCall(self, rest_inner, ref_span, exclude_keys.items, span, identity);
                 const target = try restAssignTarget(self, rest_inner, parts.binding);
                 try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, target, parts.call, span, 0));
                 self.runtime_helpers.rest = true;
@@ -446,20 +453,27 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         /// 못한다 (#4712). 처리했으면 true.
         fn emitNestedPatternAssignment(self: *Transformer, target: Node, value: NodeIndex, span: Span) Transformer.Error!bool {
             if (target.tag != .object_pattern and target.tag != .array_pattern) return false;
-            const inner_span = try es_helpers.makeTempVarSpan(self);
-            const inner_lhs = try makeDestructuringTempWrite(self, inner_span, inner_span);
+            const inner_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+            const inner_span = inner_identity.span;
+            const inner_lhs = try es_helpers.makeTempRefFromIdentity(self, inner_identity, span, .{ .write = true });
             const inner_value = if (target.tag == .array_pattern) try buildArrayRead(self, value, target, span) else value;
             try self.scratch.append(self.allocator, try es_helpers.makeAssignExpr(self, inner_lhs, inner_value, span, 0));
             if (target.tag == .object_pattern) {
-                try emitObjectPatternAssignments(self, target, inner_span, span);
+                try emitObjectPatternAssignments(self, target, inner_span, span, inner_identity);
             } else {
-                try emitArrayPatternAssignments(self, target, inner_span, span);
+                try emitArrayPatternAssignments(self, target, inner_span, span, inner_identity);
             }
             return true;
         }
 
         /// array_pattern 의 각 element 를 `target = _ref[idx]` assignment 로 emit.
-        fn emitArrayPatternAssignments(self: *Transformer, pattern: Node, ref_span: Span, span: Span) Transformer.Error!void {
+        fn emitArrayPatternAssignments(
+            self: *Transformer,
+            pattern: Node,
+            ref_span: Span,
+            span: Span,
+            identity: es_helpers.TempIdentityCapture,
+        ) Transformer.Error!void {
             const apd_start = pattern.data.list.start;
             const split = self.ast.nodeListSplitRest(pattern.data.list);
             const non_rest_len: u32 = @intCast(split.elements.len);
@@ -469,14 +483,14 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const elem = self.ast.getNode(@fromBackingInt(@intCast(raw_idx)));
                 if (elem.tag == .elision) continue;
 
-                const elem_access = try makeArrayAccess(self, ref_span, idx, span, null);
+                const elem_access = try makeArrayAccess(self, ref_span, idx, span, identity);
 
                 if (elem.tag == .assignment_pattern) {
                     const inner_target = elem.data.binary.left;
                     const inner_target_node = self.ast.getNode(inner_target);
                     const default_val = try self.visitNode(elem.data.binary.right);
                     const void_zero = try es_helpers.makeVoidZero(self, span);
-                    const elem_access2 = try makeArrayAccess(self, ref_span, idx, span, null);
+                    const elem_access2 = try makeArrayAccess(self, ref_span, idx, span, identity);
                     const eq_check = try self.ast.addNode(.{
                         .tag = .binary_expression,
                         .span = span,
@@ -509,7 +523,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
             // rest element: `rest = _ref.slice(N)` (#4750). 패턴이면 재귀로 푼다.
             if (split.rest_operand) |rest_inner| {
-                const slice = try buildArraySlice(self, ref_span, non_rest_len, span, null);
+                const slice = try buildArraySlice(self, ref_span, non_rest_len, span, identity);
                 const rest_node = self.ast.getNode(rest_inner);
                 if (try emitNestedPatternAssignment(self, rest_node, slice, span)) return;
                 const target = if (rest_node.tag == .binding_identifier)
@@ -551,10 +565,11 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 try buildArrayRead(self, array_source, left_node, span)
             else
                 new_right;
-            const temp_span = try es_helpers.makeTempVarSpan(self);
+            const temp_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+            const temp_span = temp_identity.span;
 
             // _ref = obj
-            const temp_ref = try makeDestructuringTempWrite(self, temp_span, temp_span);
+            const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_identity, span, .{ .write = true });
             const init_assign = try self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,
@@ -564,16 +579,16 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
 
             // 각 property/element를 assignment로 변환
             if (left_node.tag == .object_assignment_target) {
-                try emitObjectAssignments(self, left_node, temp_span, span);
+                try emitObjectAssignments(self, left_node, temp_span, span, temp_identity);
             } else if (left_node.tag == .array_assignment_target) {
-                try emitArrayAssignments(self, left_node, temp_span, span);
+                try emitArrayAssignments(self, left_node, temp_span, span, temp_identity);
             }
 
             // 마지막에 _ref 반환 (array pattern 의 값은 원래 우변)
             try self.scratch.append(self.allocator, if (value_temp) |temp|
                 try es_helpers.makeTrackedTempRef(self, temp.span, span, .{ .read = true })
             else
-                try makeDestructuringTempRead(self, temp_span, temp_span));
+                try makeDestructuringTempReadWithIdentity(self, temp_span, temp_span, temp_identity));
 
             // sequence expression
             const seq_list = try self.ast.addNodeList(self.scratch.items[scratch_top..]);
@@ -585,7 +600,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
         }
 
         /// object_assignment_target의 각 property를 assignment로 변환.
-        fn emitObjectAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
+        fn emitObjectAssignments(
+            self: *Transformer,
+            target: Node,
+            ref_span: Span,
+            span: Span,
+            identity: es_helpers.TempIdentityCapture,
+        ) Transformer.Error!void {
             const oa_start = target.data.list.start;
             const split = self.ast.nodeListSplitRest(target.data.list);
             const non_rest_len: u32 = @intCast(split.elements.len);
@@ -600,7 +621,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 const key_idx = prop.data.binary.left;
                 if (key_idx.isNone()) continue;
 
-                const ref = try makeDestructuringTempRead(self, ref_span, ref_span);
+                const ref = try makeDestructuringTempReadWithIdentity(self, ref_span, ref_span, identity);
                 const key_node = self.ast.getNode(key_idx);
                 const access_result = try emitObjectMemberAccessForRest(
                     self,
@@ -638,7 +659,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             key_idx,
                             key_node.tag,
                             access_result.computed_key_temp_identity,
-                            null,
+                            identity,
                             span,
                         );
                     } else access;
@@ -664,7 +685,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                             key_idx,
                             key_node.tag,
                             access_result.computed_key_temp_identity,
-                            null,
+                            identity,
                             span,
                         );
                         try emitTargetAssignOrRecurse(self, right_node.data.binary.left, rhs, span);
@@ -675,14 +696,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             }
 
             if (split.rest_operand) |rest_inner| {
-                const rest_assign = try buildRestAssignment(self, rest_inner, ref_span, exclude_keys.items, span);
+                const rest_assign = try buildRestAssignment(self, rest_inner, ref_span, exclude_keys.items, span, identity);
                 try self.scratch.append(self.allocator, rest_assign);
                 self.runtime_helpers.rest = true;
             }
         }
 
         /// array_assignment_target의 각 element를 assignment로 변환.
-        fn emitArrayAssignments(self: *Transformer, target: Node, ref_span: Span, span: Span) Transformer.Error!void {
+        fn emitArrayAssignments(
+            self: *Transformer,
+            target: Node,
+            ref_span: Span,
+            span: Span,
+            identity: es_helpers.TempIdentityCapture,
+        ) Transformer.Error!void {
             const aa_start = target.data.list.start;
             const split = self.ast.nodeListSplitRest(target.data.list);
             const non_rest_len: u32 = @intCast(split.elements.len);
@@ -694,7 +721,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 if (elem.tag == .elision) continue;
 
                 // _ref[idx]
-                const access = try makeArrayAccess(self, ref_span, idx, span, null);
+                const access = try makeArrayAccess(self, ref_span, idx, span, identity);
 
                 if (elem.tag == .assignment_target_with_default) {
                     // [x = 1] → x = _ref[0] === void 0 ? 1 : _ref[0]
@@ -706,7 +733,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         .data = .{ .binary = .{ .left = access, .right = void_zero, .flags = @backingInt(token_mod.Kind.eq3) } },
                     });
                     // _ref[idx] 다시 생성 (access는 eq_check에서 소비)
-                    const access2 = try makeArrayAccess(self, ref_span, idx, span, null);
+                    const access2 = try makeArrayAccess(self, ref_span, idx, span, identity);
                     const conditional = try self.ast.addNode(.{
                         .tag = .conditional_expression,
                         .span = span,
@@ -721,7 +748,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             // rest element: `rest = _ref.slice(N)` (#4789). `_ref` 는 `__read` 로 만든 배열이라
             // 이터러블이어도 slice 가 있다. 좌변이 패턴·멤버·private 이면 같은 분기로 간다.
             if (split.rest_operand) |rest_inner| {
-                const slice = try buildArraySlice(self, ref_span, non_rest_len, span, null);
+                const slice = try buildArraySlice(self, ref_span, non_rest_len, span, identity);
                 try emitTargetAssignOrRecurse(self, rest_inner, slice, span);
             }
         }
@@ -746,8 +773,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             const target_node = self.ast.getNode(target_old_idx);
             if (target_node.tag == .object_assignment_target or target_node.tag == .array_assignment_target or target_node.tag == .object_pattern or target_node.tag == .array_pattern) {
                 // nested: _inner = value; 각 element 재귀 emit.
-                const inner_span = try es_helpers.makeTempVarSpan(self);
-                const inner_lhs = try makeDestructuringTempWrite(self, inner_span, inner_span);
+                const inner_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+                const inner_span = inner_identity.span;
+                const inner_lhs = try es_helpers.makeTempRefFromIdentity(self, inner_identity, span, .{ .write = true });
                 const inner_value = if (target_node.tag == .array_assignment_target or target_node.tag == .array_pattern)
                     try buildArrayRead(self, value, target_node, span)
                 else
@@ -759,9 +787,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                 });
                 try self.scratch.append(self.allocator, init);
                 if (target_node.tag == .object_assignment_target or target_node.tag == .object_pattern) {
-                    try emitObjectAssignments(self, target_node, inner_span, span);
+                    try emitObjectAssignments(self, target_node, inner_span, span, inner_identity);
                 } else {
-                    try emitArrayAssignments(self, target_node, inner_span, span);
+                    try emitArrayAssignments(self, target_node, inner_span, span, inner_identity);
                 }
                 return;
             }
@@ -1318,8 +1346,9 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             ref_span: Span,
             exclude_keys: []const NodeIndex,
             span: Span,
+            identity: es_helpers.TempIdentityCapture,
         ) Transformer.Error!NodeIndex {
-            const parts = try buildRestCall(self, rest_idx, ref_span, exclude_keys, span, null);
+            const parts = try buildRestCall(self, rest_idx, ref_span, exclude_keys, span, identity);
             return self.ast.addNode(.{
                 .tag = .assignment_expression,
                 .span = span,

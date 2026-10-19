@@ -101,6 +101,67 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+test "#4819 reserved temp handle survives producer span lookup removal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const source = "function run() {}";
+    var scanner = try Scanner.init(alloc, source);
+    var parser = Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+
+    var function_scope: ?u32 = null;
+    var function_node: ?@import("../parser/ast.zig").NodeIndex = null;
+    var owners = analyzer.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        if (parser.ast.nodes.items[entry.key_ptr.*].tag != .function_declaration) continue;
+        function_scope = entry.value_ptr.*;
+        function_node = @fromBackingInt(@intCast(entry.key_ptr.*));
+    }
+    const owner = function_scope orelse return error.MissingFunctionScope;
+    const function_idx = function_node orelse return error.MissingFunctionNode;
+    const span = parser.ast.getNode(function_idx).span;
+
+    var transformer = try Transformer.init(alloc, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @fromBackingInt(@intCast(owner));
+
+    const identity = try es_helpers.reserveTrackedTempIdentity(&transformer, span);
+    const counter = transformer.temp_var_counter - 1;
+    const producer_id = transformer.temp_symbol_ids_by_counter.get(counter) orelse
+        return error.MissingProducerTempSymbolId;
+    transformer.forgetSyntheticTempSymbolLookup(identity.span, identity.reference_scope);
+    try std.testing.expect(transformer.lookupSyntheticTempSymbol(identity.span, identity.reference_scope) == null);
+
+    const write = try es_helpers.makeTempRefFromIdentity(&transformer, identity, span, .{ .write = true });
+    const read = try es_helpers.makeTempRefFromIdentity(&transformer, identity, span, .{ .read = true });
+    try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(write));
+    try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(read));
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    const write_ref = (try editor.referenceForNode(write)) orelse return error.MissingProducerWriteReference;
+    const read_ref = (try editor.referenceForNode(read)) orelse return error.MissingProducerReadReference;
+    try std.testing.expectEqual(producer_id, @backingInt(write_ref.symbol_id));
+    try std.testing.expectEqual(producer_id, @backingInt(read_ref.symbol_id));
+    try std.testing.expectEqual(identity.reference_scope, write_ref.scope_id);
+    try std.testing.expectEqual(identity.reference_scope, read_ref.scope_id);
+    try std.testing.expect(write_ref.flags.write and !write_ref.flags.read);
+    try std.testing.expect(read_ref.flags.read and !read_ref.flags.write);
+}
+
 test "#4819 assignment computed-key temp carries its producer SymbolId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -128,31 +189,36 @@ test "#4819 assignment computed-key temp carries its producer SymbolId" {
     transformer.semantic_edit_enabled = true;
 
     _ = try transformer.transform();
-    try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
-    var producer_ids = transformer.temp_symbol_ids_by_counter.iterator();
-    const producer_entry = producer_ids.next() orelse return error.MissingComputedKeyProducerIdentity;
-    const producer_id: u32 = producer_entry.value_ptr.*;
-    const producer_span = transformer.temp_span_by_counter.get(producer_entry.key_ptr.*) orelse
-        return error.MissingComputedKeyProducerSpan;
+    try std.testing.expectEqual(@as(usize, 2), transformer.temp_symbol_ids_by_counter.count());
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
-    const producer_symbol = editor.symbols.items[@intCast(producer_id)];
-    const mapped_id = transformer.lookupSyntheticTempSymbol(producer_span, producer_symbol.scope_id) orelse
-        return error.MissingComputedKeyMappedIdentity;
-    try std.testing.expectEqual(producer_id, @backingInt(mapped_id));
-    var producer_reads: usize = 0;
-    var producer_writes: usize = 0;
-    for (transformer.ast.nodes.items, 0..) |node, raw| {
-        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
-        if (node.data.string_ref.start != producer_span.start or node.data.string_ref.end != producer_span.end) continue;
-        try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))));
-        const reference = (try editor.referenceForNode(@fromBackingInt(@intCast(raw)))) orelse
-            return error.MissingComputedKeyReference;
-        try std.testing.expectEqual(producer_id, @backingInt(reference.symbol_id));
-        if (reference.flags.read) producer_reads += 1;
-        if (reference.flags.write) producer_writes += 1;
+    var verified_producers: usize = 0;
+    var producer_ids = transformer.temp_symbol_ids_by_counter.iterator();
+    while (producer_ids.next()) |producer_entry| {
+        const producer_id: u32 = producer_entry.value_ptr.*;
+        const producer_span = transformer.temp_span_by_counter.get(producer_entry.key_ptr.*) orelse
+            return error.MissingComputedKeyProducerSpan;
+        const producer_symbol = editor.symbols.items[@intCast(producer_id)];
+        const mapped_id = transformer.lookupSyntheticTempSymbol(producer_span, producer_symbol.scope_id) orelse
+            return error.MissingComputedKeyMappedIdentity;
+        try std.testing.expectEqual(producer_id, @backingInt(mapped_id));
+        var producer_reads: usize = 0;
+        var producer_writes: usize = 0;
+        for (transformer.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+            if (node.data.string_ref.start != producer_span.start or node.data.string_ref.end != producer_span.end) continue;
+            const node_idx: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw));
+            try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(node_idx));
+            const reference = (try editor.referenceForNode(node_idx)) orelse
+                return error.MissingComputedKeyReference;
+            try std.testing.expectEqual(producer_id, @backingInt(reference.symbol_id));
+            if (reference.flags.read) producer_reads += 1;
+            if (reference.flags.write) producer_writes += 1;
+        }
+        try std.testing.expect(producer_reads > 0);
+        try std.testing.expectEqual(@as(usize, 1), producer_writes);
+        verified_producers += 1;
     }
-    try std.testing.expect(producer_reads >= 2);
-    try std.testing.expectEqual(@as(usize, 1), producer_writes);
+    try std.testing.expectEqual(@as(usize, 2), verified_producers);
 
     _ = try transformer.finishSemanticEdit();
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
@@ -399,6 +465,46 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
             .target = .es2015,
             .min_temps = 1,
         },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let y = 0; ({ nested: { value: y = 1 }, x = 2 } = {}); return [x, y, _a]; } }",
+            .target = .es5,
+            .min_temps = 2,
+        },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let y = 0; [x, [y]] = [1, [2]]; return [x, y, _a]; } }",
+            .target = .es5,
+            .min_temps = 2,
+        },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let rest; [x, ...rest] = [1, 2, 3]; return [x, rest[0], _a]; } }",
+            .target = .es5,
+            .min_temps = 1,
+        },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let y = 0; ({ [getKey()]: x, nested: { [getKey()]: y } } = source); return [x, y, _a]; } }",
+            .target = .es5,
+            .min_temps = 3,
+        },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let y = 0; ({ prop: obj.value, nested: [y], x } = source); return [x, y, _a]; } }",
+            .target = .es5,
+            .min_temps = 2,
+        },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let rest; ({ [key]: x = fallback(), ...rest } = source); return [x, rest.value, _a]; } }",
+            .target = .es5,
+            .min_temps = 2,
+        },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let y = 0; let rest; [x = fallback(), y, ...rest] = source; return [x, y, rest[0], _a]; } }",
+            .target = .es5,
+            .min_temps = 1,
+        },
+        .{
+            .source = "function run() { const _a = 99; let x = 0; { let _ref = 1; let y = 0; ({ x, nested: { value: y } } = makeValue()); return [x, _ref, y, _a]; } }",
+            .target = .es5,
+            .min_temps = 2,
+        },
     };
     for (cases) |case| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -442,9 +548,27 @@ test "#4819 assignment destructuring temps have exact hoisted IDs and nested rea
         transformer.unresolved_references = &analyzer.unresolved_references;
         transformer.semantic_edit_enabled = true;
         _ = try transformer.transform();
+        // Every function-owned assignment temp in these fixtures has a known
+        // producer scope, so no identity handoff may remain name/span-pending.
+        try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
         const edited = (try transformer.finishSemanticEdit()).?;
         try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
         const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
+
+        // Assignment root and nested temps reserve their producer SymbolIds
+        // before their first writes. The counter map is the later hoist
+        // handoff, so every reserved ID must survive as a function-owned var.
+        var producer_identity_count: usize = 0;
+        var producer_identities = transformer.temp_symbol_ids_by_counter.valueIterator();
+        while (producer_identities.next()) |raw_id| {
+            const id: usize = @intCast(raw_id.*);
+            try std.testing.expect(id >= original_symbol_count and id < edited.symbols.items.len);
+            const symbol = edited.symbols.items[id];
+            try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+            try std.testing.expectEqual(expected_function_scope, @backingInt(symbol.scope_id));
+            producer_identity_count += 1;
+        }
+        try std.testing.expect(producer_identity_count >= case.min_temps);
 
         var temp_count: usize = 0;
         for (edited.symbols.items[original_symbol_count..], original_symbol_count..) |symbol, si| {
