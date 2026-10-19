@@ -158,13 +158,14 @@ pub fn JsxLowering(comptime Transformer: type) type {
         /// resync 분석기가 이 ref 를 user scope 가 아닌 helper_scope_map 으로 binding
         /// 시킨다 — 사용자가 같은 이름의 식별자를 선언해도 충돌 회피 (#3068).
         fn makeJsxRuntimeRef(self: *Transformer, name: []const u8, node_span: Span) Transformer.Error!NodeIndex {
-            const defer_output_name = if (self.semantic_edit_enabled) blk: {
-                const program_scope = self.programScope();
-                break :blk helpers.canUseLateStandaloneOutputName(self, program_scope) or
-                    helpers.canUseLateGraphOutputName(self, program_scope);
-            } else false;
+            const program_scope = if (self.semantic_edit_enabled) self.programScope() else .none;
+            const defer_output_name = self.semantic_edit_enabled and
+                (helpers.canUseLateStandaloneOutputName(self, program_scope) or
+                    helpers.canUseLateGraphOutputName(self, program_scope));
             const local = if (defer_output_name)
                 name
+            else if (!program_scope.isNone())
+                try helpers.resolveSyntheticNameAvoidingDynamicEval(self, name, program_scope)
             else
                 try helpers.resolveSyntheticName(self, name);
             self.jsx_import_info.setLocal(name, local);
