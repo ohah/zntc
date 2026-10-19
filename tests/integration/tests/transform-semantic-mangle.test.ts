@@ -2624,6 +2624,130 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     }
   });
 
+  test('Flow ref-component generated-name cache respects direct eval in each output scope', async () => {
+    const cases = [
+      {
+        name: 'Card',
+        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+      },
+      {
+        name: 'Badge',
+        observe: (candidate: string) =>
+          `(() => { try { eval(${JSON.stringify(candidate)}); return 'present'; } catch (error) { return error.name; } })()`,
+      },
+      {
+        name: 'Panel',
+        observe: (candidate: string) => {
+          const splitAt = Math.floor(candidate.length / 2);
+          return `eval('typeof ' + ${JSON.stringify(candidate.slice(0, splitAt))} + ${JSON.stringify(candidate.slice(splitAt))})`;
+        },
+      },
+      {
+        name: 'Switch',
+        observe: (candidate: string) => `eval(\`typeof ${candidate}\`)`,
+      },
+      {
+        name: 'Button',
+        observe: (candidate: string) => {
+          const escaped = `${candidate.slice(0, -1)}\\u0032`;
+          return `eval(${JSON.stringify(`typeof ${escaped}`)})`;
+        },
+      },
+      {
+        name: 'Field',
+        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+        inBlock: true,
+      },
+      {
+        name: 'Modal',
+        observe: (candidate: string) => `(() => eval(${JSON.stringify(`typeof ${candidate}`)}))()`,
+      },
+      {
+        name: 'Dialog',
+        reserve: 1,
+        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+      },
+      {
+        name: 'Menu',
+        reserve: 2,
+        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+      },
+      {
+        name: 'Tab',
+        observe: (candidate: string) => `eval(${JSON.stringify(`typeof ${candidate}`)})`,
+        beforeComponent: true,
+        primeCache: false,
+      },
+    ];
+    const component = (name: string) =>
+      `component ${name}(ref?: mixed, ...props: {}) { return null; }`;
+    const functions = cases.flatMap(
+      ({
+        name,
+        observe,
+        reserve = 0,
+        beforeComponent = false,
+        inBlock = false,
+        primeCache = true,
+      }) => {
+        const base = `${name}_withRef`;
+        const candidate = `${base}${reserve + 2}`;
+        const reservedBindings = [
+          base,
+          ...Array.from({ length: reserve }, (_, index) => `${base}${index + 2}`),
+        ]
+          .map((binding) => `const ${binding} = 'source-binding';`)
+          .join('\n');
+        const declaration = component(name);
+        const observation = inBlock
+          ? `let observed; { observed = ${observe(candidate)}; }`
+          : `const observed = ${observe(candidate)};`;
+        const body = beforeComponent
+          ? `${observation}\n${declaration}`
+          : `${declaration}\n${observation}`;
+        return [
+          reservedBindings,
+          ...(primeCache ? [`function plain${name}() { ${declaration} }`] : []),
+          `function dynamic${name}() { ${body} return observed; }`,
+        ];
+      },
+    );
+    const fixture = await createFixture({
+      'input.js': [
+        '// @flow',
+        'const React = { forwardRef: (fn) => fn };',
+        ...functions,
+        `console.log(${cases.map(({ name }) => `dynamic${name}()`).join(', ')});`,
+      ].join('\n'),
+    });
+    cleanup = fixture.cleanup;
+    const input = join(fixture.dir, 'input.js');
+    const output = join(fixture.dir, 'output.js');
+    const result = await runZntc([input, '-o', output, '--target=esnext', '--flow'], {
+      env: { ...process.env, ZNTC_DEBUG_SYMBOL_COVERAGE: '1' },
+    });
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stderr).toMatch(/symbol-coverage .*missing=0 wrong=0/);
+    const identity = result.stderr
+      .split(/\r?\n/)
+      .find((line) => line.includes('zntc: symbol-identity '));
+    expect(identity).toBeDefined();
+    expect(identity).toMatch(/clean=1(?:\s|$)/);
+    for (const counter of EXACT_ZERO_COUNTERS) {
+      expect(identity, `${counter}: ${identity}`).toMatch(new RegExp(`${counter}=0(?:\\s|$)`));
+    }
+    const emitted = readFileSync(output, 'utf8');
+    for (const { name, reserve = 0 } of cases) {
+      expect(emitted).toContain(`${name}_withRef${reserve + 2}`);
+      expect(emitted).toContain(`${name}_withRef${reserve + 3}`);
+    }
+    const transformed = await runNode(output);
+    expect(transformed.stderr).toBe('');
+    expect(transformed.stdout.trim()).toBe(
+      ['undefined', 'ReferenceError', ...Array.from({ length: 8 }, () => 'undefined')].join(' '),
+    );
+  });
+
   test('exported Flow ref-component preserves export identity and exact symbols', async () => {
     const fixture = await createFixture({
       'input.mjs': `

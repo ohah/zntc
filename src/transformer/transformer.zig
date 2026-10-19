@@ -408,6 +408,9 @@ pub const Transformer = struct {
     /// Early collision names are scope-specific when direct eval can observe
     /// them. Do not let a stricter scope rewrite another scope's spelling.
     scoped_synthetic_names: std.StringHashMapUnmanaged([]const u8) = .empty,
+    /// Generated output names have the same per-scope direct-eval constraint,
+    /// while retaining a module-wide preferred spelling when scopes agree.
+    scoped_generated_names: std.StringHashMapUnmanaged([]const u8) = .empty,
     /// Standalone runtime helpers share the output's top-level scope with user
     /// declarations. Cache collision-free helper locals by their emitted name.
     runtime_helper_aliases: std.StringHashMapUnmanaged([]const u8) = .empty,
