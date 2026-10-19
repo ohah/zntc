@@ -10,7 +10,7 @@ test "generated-name eval cache is scoped and reserves decoded names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
-    const source = "function plain() {} function dynamic() { eval(\"typeof Cache_withRef\\\\u0032\"); eval(`typeof ${\"Loop_withRef\" + \"2\"}`); }";
+    const source = "const Loop_withRef = 0; function plain() {} function dynamic() { eval(\"typeof Cache_withRef\\\\u0032\"); eval(`typeof Loop_withRef${\"2\"}`); }";
 
     var scanner = try Scanner.init(allocator, source);
     var parser = Parser.init(allocator, &scanner);
@@ -44,10 +44,12 @@ test "generated-name eval cache is scoped and reserves decoded names" {
     var transformer = try Transformer.init(allocator, &parser.ast, .{});
     transformer.scopes = analyzer.scopes.items;
     try transformer.synthetic_names.put(allocator, try allocator.dupe(u8, base), try allocator.dupe(u8, cached));
-    try transformer.synthetic_taken.put(allocator, try allocator.dupe(u8, cached), {});
 
     const plain_name = try es_helpers.resolveGeneratedNameAvoidingDynamicEval(&transformer, base, plain);
     try std.testing.expectEqualStrings(cached, plain_name);
+    // The output scopes can independently own the same preferred spelling;
+    // clear the global reservation to isolate the dynamic-eval cache check.
+    _ = transformer.synthetic_taken.remove(cached);
 
     const dynamic_name = try es_helpers.resolveGeneratedNameAvoidingDynamicEval(&transformer, base, dynamic);
     try std.testing.expectEqualStrings("Cache_withRef3", dynamic_name);
