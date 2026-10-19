@@ -375,7 +375,7 @@ fn hasShadowingBindingName(self: *Transformer, name: []const u8, owner: NodeInde
 fn ensureCssPropAlias(self: *Transformer) Error!NodeIndex {
     if (self.plugins.emotion.css_prop_alias_binding) |binding| return binding;
 
-    const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled and self.options.defer_runtime_helper_name_resolution)
+    const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled)
         try es_helpers.resolveScopedSyntheticOutputName(self, "_emotionCss", self.programScope())
     else
         .{ .name = try es_helpers.resolveSyntheticName(self, "_emotionCss"), .late = false };
