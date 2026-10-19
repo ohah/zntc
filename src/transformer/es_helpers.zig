@@ -563,6 +563,11 @@ pub fn trackKnownHoistedTempRef(
     while (iter.next()) |entry| {
         const candidate = entry.value_ptr.*;
         if (candidate.start == name_span.start and candidate.end == name_span.end) {
+            if (self.temp_symbol_ids_by_counter.get(entry.key_ptr.*)) |raw_symbol_id| {
+                const producer_id: symbol_mod.SymbolId = @fromBackingInt(raw_symbol_id);
+                if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
+                    return true;
+            }
             if (!try self.trackKnownSyntheticTempReferenceInScope(candidate, node, scope, flags))
                 try self.trackHoistedTempRefInScope(candidate, node, scope, flags);
             return true;

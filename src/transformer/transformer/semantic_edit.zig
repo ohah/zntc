@@ -3498,6 +3498,52 @@ pub fn trackKnownSyntheticTempReferenceInScope(
     return true;
 }
 
+/// Attach a generated temp reference using the identity saved by its allocator
+/// slot. The ID is authoritative; the text checks only guard that the node and
+/// producer still describe the same generated identifier.
+pub fn trackKnownSyntheticTempReferenceByIdInScope(
+    self: *Transformer,
+    symbol_id: SymbolId,
+    node: NodeIndex,
+    scope: ScopeId,
+    flags: ReferenceFlags,
+) Transformer.Error!bool {
+    if (!self.semantic_edit_enabled or node.isNone() or scope.isNone() or
+        syntheticTempOutputScopeIsDeferred(self, scope)) return false;
+
+    const editor = try editorFor(self);
+    const raw_id = @backingInt(symbol_id);
+    if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
+    const reference = self.ast.getNode(node);
+    if (reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier)
+        return editError(error.InvalidSymbol);
+    const name_span = reference.data.string_ref;
+    const producer_name = editor.symbols.items[raw_id].name;
+    if (producer_name.start != name_span.start or producer_name.end != name_span.end or
+        !editor.symbolVisibleFrom(symbol_id, scope)) return editError(error.InvalidSymbol);
+
+    if (self.getSymbolIdAt(node)) |existing_id| {
+        if (existing_id != raw_id) return editError(error.InvalidSymbol);
+        const existing = (editor.referenceForNode(node) catch |err| return editError(err)) orelse
+            return editError(error.InvalidSymbol);
+        if (existing.symbol_id != symbol_id or !std.meta.eql(existing.flags, flags))
+            return editError(error.InvalidSymbol);
+        if (existing.scope_id != scope) {
+            editor.relocateReference(
+                node,
+                scope,
+                symbol_id,
+                existing.stmt_idx,
+                existing.scope_stmt_idx,
+            ) catch |err| return editError(err);
+        }
+        return true;
+    }
+
+    try addSyntheticRefInScope(self, node, symbol_id, scope, flags);
+    return true;
+}
+
 fn lookupVisibleSyntheticTempSymbol(
     self: *Transformer,
     name_span: Span,
