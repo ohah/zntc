@@ -1189,9 +1189,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             decl_kind: ast_mod.VariableDeclarationKind,
         ) Transformer.Error!ObjectMemberAccessResult {
             if (key_node.tag == .computed_property_key) {
-                const key_span = try es_helpers.makeTempVarSpan(self);
-                var direct_temp: ?DestructuringTemp = null;
                 var computed_key_temp_identity: ?es_helpers.TempIdentityCapture = null;
+                const key_span = switch (mode) {
+                    .decl => try es_helpers.makeTempVarSpan(self),
+                    .assign => blk: {
+                        // The first assignment to this key temp is its
+                        // producer. Reserve its exact identity now whenever
+                        // the output var scope is already known; state-machine
+                        // lowering keeps the pending span handoff.
+                        const identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+                        computed_key_temp_identity = identity;
+                        break :blk identity.span;
+                    },
+                };
+                var direct_temp: ?DestructuringTemp = null;
                 const capture: NodeIndex = switch (mode) {
                     .decl => blk: {
                         const key_temp = try makeDestructuringTempBinding(self, key_span);
@@ -1201,15 +1212,13 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                         break :blk try es_helpers.makeDeclarator(self, key_temp.binding, key_value, span);
                     },
                     .assign => blk: {
-                        // Assignment lowering may not know the key temp's owner
-                        // SymbolId yet. Preserve the deferred span handoff so
-                        // computed defaults can read the same captured key.
-                        computed_key_temp_identity = .{ .span = key_span };
+                        const identity = computed_key_temp_identity.?;
+                        const write = try es_helpers.makeTempRefFromIdentity(self, identity, span, .{ .write = true });
                         break :blk try self.ast.addNode(.{
                             .tag = .assignment_expression,
                             .span = span,
                             .data = .{ .binary = .{
-                                .left = try makeDestructuringTempWrite(self, key_span, span),
+                                .left = write,
                                 .right = try self.visitNode(key_node.data.unary.operand),
                                 .flags = @backingInt(token_mod.Kind.eq),
                             } },

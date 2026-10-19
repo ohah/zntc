@@ -101,7 +101,7 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
-test "#4819 assignment computed-key defaults retain deferred temp capture" {
+test "#4819 assignment computed-key temp carries its producer SymbolId" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -128,9 +128,114 @@ test "#4819 assignment computed-key defaults retain deferred temp capture" {
     transformer.semantic_edit_enabled = true;
 
     _ = try transformer.transform();
+    try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
+    var producer_ids = transformer.temp_symbol_ids_by_counter.iterator();
+    const producer_entry = producer_ids.next() orelse return error.MissingComputedKeyProducerIdentity;
+    const producer_id: u32 = producer_entry.value_ptr.*;
+    const producer_span = transformer.temp_span_by_counter.get(producer_entry.key_ptr.*) orelse
+        return error.MissingComputedKeyProducerSpan;
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    var producer_reads: usize = 0;
+    var producer_writes: usize = 0;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        if (node.data.string_ref.start != producer_span.start or node.data.string_ref.end != producer_span.end) continue;
+        try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(@fromBackingInt(@intCast(raw))));
+        const reference = (try editor.referenceForNode(@fromBackingInt(@intCast(raw)))) orelse
+            return error.MissingComputedKeyReference;
+        try std.testing.expectEqual(producer_id, @backingInt(reference.symbol_id));
+        if (reference.flags.read) producer_reads += 1;
+        if (reference.flags.write) producer_writes += 1;
+    }
+    try std.testing.expect(producer_reads >= 2);
+    try std.testing.expectEqual(@as(usize, 1), producer_writes);
+
     _ = try transformer.finishSemanticEdit();
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+}
+
+fn checkAssignmentComputedKeyProducerIdentity(allocator: std.mem.Allocator, source: []const u8) !void {
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const scope_anchor = if (std.mem.indexOf(u8, source, "getKey()") != null) "getKey" else "key";
+    var expected_reference_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+    for (analyzer.references.items) |reference| {
+        const node = parser.ast.getNode(reference.node_index);
+        if (node.tag != .identifier_reference or !reference.flags.read) continue;
+        if (!std.mem.eql(u8, parser.ast.getText(node.data.string_ref), scope_anchor)) continue;
+        expected_reference_scope = reference.scope_id;
+        break;
+    }
+    const exact_reference_scope = expected_reference_scope orelse return error.MissingComputedKeyScopeAnchor;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .emit_runtime_helper_imports = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    try std.testing.expect(transformer.temp_symbol_ids_by_counter.count() > 0);
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    var producer_ids = transformer.temp_symbol_ids_by_counter.iterator();
+    while (producer_ids.next()) |entry| {
+        const producer_id: u32 = entry.value_ptr.*;
+        const producer_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse
+            return error.MissingComputedKeyProducerSpan;
+        var reads: usize = 0;
+        var writes: usize = 0;
+        for (transformer.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+            if (node.data.string_ref.start != producer_span.start or node.data.string_ref.end != producer_span.end) continue;
+            const node_idx: @import("../parser/ast.zig").NodeIndex = @fromBackingInt(@intCast(raw));
+            try std.testing.expectEqual(@as(?u32, producer_id), transformer.getSymbolIdAt(node_idx));
+            const reference = (try editor.referenceForNode(node_idx)) orelse return error.MissingComputedKeyReference;
+            try std.testing.expectEqual(producer_id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(exact_reference_scope, reference.scope_id);
+            try std.testing.expectEqual(transformer.nearestVarScope(reference.scope_id), editor.symbols.items[producer_id].scope_id);
+            if (reference.flags.read) reads += 1;
+            if (reference.flags.write) writes += 1;
+        }
+        try std.testing.expect(reads > 0 and writes > 0);
+    }
+
+    _ = try transformer.finishSemanticEdit();
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+}
+
+test "#4819 hostile: computed-key assignment producers keep exact identities across ten scopes" {
+    const cases = [_][]const u8{
+        "function run(input) { let key = 'x'; let value; ({ [key]: value } = input); }",
+        "function run(input) { const key = 'x'; let value; ({ [key]: value = 1 } = input); }",
+        "function run(input) { const key = 'x'; let value, rest; ({ [key]: value = 1, ...rest } = input); }",
+        "function run(input) { const key = 'x'; let value; ({ nested: { [key]: value } } = input); }",
+        "function run(input) { const key = 'x'; let value; ([{ [key]: value }] = input); }",
+        "function run(input) { const key = 'x'; let value; return ({ [key]: value } = input); }",
+        "function run(input) { const key = 'x'; { let value; ({ [key]: value } = input); } }",
+        "function run(input) { const key = 'x'; let value; const assign = () => ({ [key]: value } = input); return assign(); }",
+        "let calls = 0; function getKey() { calls++; return 'x'; } function run(input) { let value; ({ [getKey()]: value } = input); return [calls, value]; }",
+        "function run(input) { const _a = 1; const key = 'x'; let value; eval('typeof _a'); ({ [key]: value } = input); return [_a, value]; }",
+    };
+
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        try checkAssignmentComputedKeyProducerIdentity(arena.allocator(), source);
+    }
 }
 
 fn checkStandaloneDestructuringTempNameMarking(source: []const u8, expected_late: bool) !void {
