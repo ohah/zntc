@@ -1816,7 +1816,9 @@ pub fn maybeExtractCssProp(self: *Transformer, jsx_node: ast_mod.Node) Error!?as
         try self.declareSyntheticInScope(binding_id, jsx_node.span, SymbolKind.variable_const, self.programScope())
     else
         null;
-    es_helpers.markStandaloneLateSyntheticTemp(self, binding_symbol, self.programScope());
+    if (self.semantic_edit_enabled) {
+        es_helpers.markStandaloneLateSyntheticTemp(self, binding_symbol, self.programScope());
+    }
     const none_idx = @backingInt(NodeIndex.none);
     const declarator = try self.addExtraNode(.variable_declarator, zero, &.{
         @backingInt(binding_id),
