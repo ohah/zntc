@@ -509,8 +509,16 @@ fn chooseFactoryLocalName(
     if (api.transformer.semantic_edit_enabled) {
         var counter: u32 = 0;
         const staging_name = es_helpers.uniqueSyntheticName(api.transformer, "__zntcWorkletFactoryLocal", &counter) catch return error.OutOfMemory;
-        const output_name_hint = api.getAllocator().dupe(u8, func_name) catch return error.OutOfMemory;
-        return .{ .ast_name = staging_name, .output_name_hint = output_name_hint };
+        const output_name_hint = if (api.transformer.current_scope.isNone())
+            es_helpers.resolveSyntheticNameAvoidingAnyDynamicEval(api.transformer, func_name) catch return error.OutOfMemory
+        else
+            es_helpers.resolveSyntheticNameAvoidingDynamicEval(
+                api.transformer,
+                func_name,
+                api.transformer.current_scope,
+            ) catch return error.OutOfMemory;
+        const owned_output_name_hint = api.getAllocator().dupe(u8, output_name_hint) catch return error.OutOfMemory;
+        return .{ .ast_name = staging_name, .output_name_hint = owned_output_name_hint };
     }
 
     var needs_unique = force_unique;
@@ -522,9 +530,28 @@ fn chooseFactoryLocalName(
             }
         }
     }
-    if (!needs_unique) return .{ .ast_name = es_helpers.resolveSyntheticName(api.transformer, func_name) catch return error.OutOfMemory };
+    if (!needs_unique) {
+        const resolved = if (api.transformer.current_scope.isNone())
+            es_helpers.resolveSyntheticNameAvoidingAnyDynamicEval(api.transformer, func_name) catch return error.OutOfMemory
+        else
+            es_helpers.resolveSyntheticNameAvoidingDynamicEval(
+                api.transformer,
+                func_name,
+                api.transformer.current_scope,
+            ) catch return error.OutOfMemory;
+        return .{ .ast_name = resolved };
+    }
     var counter: u32 = 0;
-    return .{ .ast_name = es_helpers.uniqueSyntheticName(api.transformer, func_name, &counter) catch return error.OutOfMemory };
+    const unique = if (api.transformer.current_scope.isNone())
+        es_helpers.uniqueSyntheticNameAvoidingAnyDynamicEval(api.transformer, func_name, &counter) catch return error.OutOfMemory
+    else
+        es_helpers.uniqueSyntheticNameAvoidingDynamicEval(
+            api.transformer,
+            func_name,
+            &counter,
+            api.transformer.current_scope,
+        ) catch return error.OutOfMemory;
+    return .{ .ast_name = unique };
 }
 
 // ================================================================

@@ -677,6 +677,10 @@ pub fn nameAppearsInDynamicEvalString(self: anytype, scope_id: ScopeId, name: []
     }
     if (!has_direct_eval) return false;
 
+    return try nameAppearsInAnySourceString(self, name);
+}
+
+fn nameAppearsInAnySourceString(self: anytype, name: []const u8) !bool {
     for (self.ast.nodes.items, 0..) |node, raw| {
         if (node.tag == .string_literal) {
             const literal = self.ast.getText(node.span);
@@ -701,17 +705,55 @@ pub fn nameAppearsInDynamicEvalString(self: anytype, scope_id: ScopeId, name: []
     return false;
 }
 
+fn isDirectEvalCallee(ast: *const ast_mod.Ast, source: NodeIndex) bool {
+    var idx = source;
+    while (!idx.isNone() and @backingInt(idx) < ast.nodes.items.len) {
+        const node = ast.getNode(idx);
+        if (node.tag == .parenthesized_expression or ast_mod.Node.Tag.isTransparentTypeWrapper(node.tag)) {
+            idx = node.data.unary.operand;
+            continue;
+        }
+        if (node.tag != .identifier_reference) return false;
+        const raw_name = ast.identifierNameText(node);
+        if (std.mem.eql(u8, raw_name, "eval")) return true;
+        if (std.mem.indexOfScalar(u8, raw_name, '\\') == null) return false;
+        var decode_buffer: [64]u8 = undefined;
+        const decoded = Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer) orelse return false;
+        return std.mem.eql(u8, decoded, "eval");
+    }
+    return false;
+}
+
+fn astContainsDirectEvalCall(self: anytype) bool {
+    const extras = self.ast.extra_data.items;
+    for (self.ast.nodes.items) |node| {
+        if (node.tag != .call_expression) continue;
+        const extra = node.data.extra;
+        if (extra > extras.len or extras.len - extra < 4) return true;
+        if ((extras[extra + 3] & ast_mod.CallFlags.optional_chain) != 0) continue;
+        if (isDirectEvalCallee(self.ast, self.ast.readExtraNode(extra, 0))) return true;
+    }
+    return false;
+}
+
 /// A program-level generated binding is visible to direct eval in any source
 /// descendant scope. Check each source scope that contains direct eval instead
 /// of asking only the program scope, whose dynamic-scope flags may be lost by
 /// later semantic-editor reanalysis.
 pub fn nameAppearsInAnyDynamicEvalString(self: anytype, name: []const u8) !bool {
     const scopes = if (self.semantic_editor) |*editor| editor.scopes.items else self.scopes;
+    var has_dynamic_eval_scope = false;
     for (scopes, 0..) |scope, raw| {
         if (!scope.subtree_has_direct_eval) continue;
+        has_dynamic_eval_scope = true;
         const eval_scope: ScopeId = @fromBackingInt(@intCast(raw));
         if (try nameAppearsInDynamicEvalString(self, eval_scope, name)) return true;
     }
+    // Some standalone transforms intentionally run without semantic scopes.
+    // Keep their generated bindings safe by detecting direct eval from the AST
+    // and applying the same conservative static-string scan.
+    if (!has_dynamic_eval_scope and astContainsDirectEvalCall(self))
+        return try nameAppearsInAnySourceString(self, name);
     return false;
 }
 
@@ -1384,6 +1426,36 @@ pub fn resolveSyntheticNameAvoidingDynamicEval(self: anytype, name: []const u8, 
         if (try syntheticNameInUse(self, candidate) or self.synthetic_taken.contains(candidate) or
             self.synthetic_names.contains(candidate) or
             try nameAppearsInDynamicEvalString(self, scope_id, candidate)) continue;
+        scoped_resolved = candidate;
+        break;
+    }
+    try self.scoped_synthetic_names.put(self.allocator, cache_key, scoped_resolved);
+    try self.synthetic_taken.put(self.allocator, scoped_resolved, {});
+    return scoped_resolved;
+}
+
+/// Resolve a generated local when its owner scope is unavailable. Direct eval
+/// can still observe the binding through a closure, so reserve every statically
+/// visible eval name in the module instead of falling back to spelling-only
+/// collision checks.
+pub fn resolveSyntheticNameAvoidingAnyDynamicEval(self: anytype, name: []const u8) ![]const u8 {
+    const cache_key = try scopedSyntheticNameCacheKey(self, name, .none);
+    if (self.scoped_synthetic_names.get(cache_key)) |cached| return cached;
+
+    const resolved = try resolveSyntheticName(self, name);
+    if (!try nameAppearsInAnyDynamicEvalString(self, resolved)) {
+        try self.scoped_synthetic_names.put(self.allocator, cache_key, resolved);
+        return resolved;
+    }
+
+    const arena = self.name_arena.?.allocator();
+    var scoped_resolved: []const u8 = undefined;
+    var suffix: u32 = 2;
+    while (true) : (suffix += 1) {
+        const candidate = try std.fmt.allocPrint(arena, "{s}{d}", .{ name, suffix });
+        if (try syntheticNameInUse(self, candidate) or self.synthetic_taken.contains(candidate) or
+            self.synthetic_names.contains(candidate) or
+            try nameAppearsInAnyDynamicEvalString(self, candidate)) continue;
         scoped_resolved = candidate;
         break;
     }
