@@ -77,10 +77,6 @@ test "#4819 assignment destructuring temp refs receive their producer SymbolId" 
     const temp_span = name_span orelse return error.MissingDestructuringTemp;
     const id = transformer.lookupSyntheticTempSymbol(temp_span, transformer.current_scope) orelse
         return error.MissingDestructuringTempSymbol;
-    try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
-    var producer_ids = transformer.temp_symbol_ids_by_counter.iterator();
-    const producer_id = producer_ids.next() orelse return error.MissingComputedKeyProducerIdentity;
-    try std.testing.expectEqual(@backingInt(id), producer_id.value_ptr.*);
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
     try std.testing.expectEqual(source_symbol_count + 1, editor.symbols.items.len);
     var reads: usize = 0;
@@ -139,6 +135,10 @@ test "#4819 assignment computed-key temp carries its producer SymbolId" {
     const producer_span = transformer.temp_span_by_counter.get(producer_entry.key_ptr.*) orelse
         return error.MissingComputedKeyProducerSpan;
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    const producer_symbol = editor.symbols.items[@intCast(producer_id)];
+    const mapped_id = transformer.lookupSyntheticTempSymbol(producer_span, producer_symbol.scope_id) orelse
+        return error.MissingComputedKeyMappedIdentity;
+    try std.testing.expectEqual(producer_id, @backingInt(mapped_id));
     var producer_reads: usize = 0;
     var producer_writes: usize = 0;
     for (transformer.ast.nodes.items, 0..) |node, raw| {
