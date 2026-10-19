@@ -2054,7 +2054,7 @@ pub const AssignmentTargetRef = struct {
 };
 
 const AssignmentTempRefs = struct {
-    span: Span,
+    identity: TempIdentityCapture,
     declaration_span: Span,
     first_write: NodeIndex,
     value_read: NodeIndex,
@@ -2072,9 +2072,16 @@ const AssignmentReferenceCopies = struct {
 pub fn trackAssignmentTargetRefs(self: anytype, target: AssignmentTargetRef, use_value: bool, use_write: bool) !void {
     for (target.temps) |maybe_temp| {
         const temp = maybe_temp orelse continue;
-        try self.trackSyntheticTempReference(temp.span, temp.declaration_span, temp.first_write, .{ .write = true });
-        if (use_value) try self.trackSyntheticTempReference(temp.span, temp.declaration_span, temp.value_read, .{ .read = true });
-        if (use_write) try self.trackSyntheticTempReference(temp.span, temp.declaration_span, temp.write_read, .{ .read = true });
+        if (temp.identity.symbol_id) |symbol_id| {
+            if (use_value)
+                try self.addSyntheticRefInScope(temp.value_read, symbol_id, temp.identity.reference_scope, .{ .read = true });
+            if (use_write)
+                try self.addSyntheticRefInScope(temp.write_read, symbol_id, temp.identity.reference_scope, .{ .read = true });
+        } else {
+            try self.trackSyntheticTempReference(temp.identity.span, temp.declaration_span, temp.first_write, .{ .write = true });
+            if (use_value) try self.trackSyntheticTempReference(temp.identity.span, temp.declaration_span, temp.value_read, .{ .read = true });
+            if (use_write) try self.trackSyntheticTempReference(temp.identity.span, temp.declaration_span, temp.write_read, .{ .read = true });
+        }
     }
     for (target.references) |maybe_reference| {
         const reference = maybe_reference orelse continue;
@@ -2163,7 +2170,8 @@ fn makeSingleEvalExpr(
     }
 
     const visited = try self.visitNode(old_idx);
-    const temp_span = try makeTempVarSpan(self);
+    const identity = try reserveTrackedTempIdentity(self, span);
+    const temp_span = identity.span;
     const temp_lhs = try makeTempVarRef(self, temp_span, span);
     const assign = try self.ast.addNode(.{
         .tag = .assignment_expression,
@@ -2176,6 +2184,8 @@ fn makeSingleEvalExpr(
     });
     const value_ref = try makeTempVarRef(self, temp_span, span);
     const write_ref = try makeTempVarRef(self, temp_span, span);
+    if (identity.symbol_id) |symbol_id|
+        try self.addSyntheticRefInScope(temp_lhs, symbol_id, identity.reference_scope, .{ .write = true });
     return .{
         // 합성 paren 제거(#4042 PR8): assign 을 직접 둔다 — 첫 사용 자리(member object/
         // binary-left 등)의 precedence 가 `(temp = value)` 괄호를 재유도한다.
@@ -2183,7 +2193,7 @@ fn makeSingleEvalExpr(
         .value = value_ref,
         .write = write_ref,
         .temp = .{
-            .span = temp_span,
+            .identity = identity,
             .declaration_span = span,
             .first_write = temp_lhs,
             .value_read = value_ref,
