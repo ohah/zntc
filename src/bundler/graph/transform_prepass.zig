@@ -3,6 +3,7 @@
 const std = @import("std");
 const Module = @import("../module.zig").Module;
 const ModuleSemanticData = @import("../module.zig").ModuleSemanticData;
+const CjsRuntimeInternalSymbolIds = @import("../module.zig").CjsRuntimeInternalSymbolIds;
 const WorkletFactoryLocalBinding = @import("../module.zig").WorkletFactoryLocalBinding;
 const PostGraphOutputBinding = @import("../module.zig").PostGraphOutputBinding;
 const RuntimeHelperImportOutputBinding = @import("../module.zig").RuntimeHelperImportOutputBinding;
@@ -21,6 +22,7 @@ const token_mod = @import("../../lexer/token.zig");
 const Scanner = @import("../../lexer/scanner.zig").Scanner;
 const NodeTag = ast_mod.Node.Tag;
 const SemanticSymbol = @import("../../semantic/symbol.zig").Symbol;
+const SemanticSymbolId = @import("../../semantic/symbol.zig").SymbolId;
 const SemanticSymbolKind = @import("../../semantic/symbol.zig").SymbolKind;
 const SemanticSyntheticKind = @import("../../semantic/symbol.zig").SyntheticKind;
 const ScopeId = @import("../../semantic/scope.zig").ScopeId;
@@ -7206,7 +7208,6 @@ fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
         .cjs_wrapper_exports_parameter,
         .cjs_wrapper_module_parameter,
         .cjs_runtime_factory,
-        .cjs_runtime_internal_local,
         .esm_runtime_internal_local,
         .esm_interop_runtime_internal_local,
         .bundler_runtime_helper,
@@ -7276,6 +7277,230 @@ fn graphOwnedSyntheticRenameTestSymbol(
         .synthetic_kind = synthetic_kind,
         .synthetic_name = name,
     };
+}
+
+const CjsRuntimeInternalRenameSlot = struct {
+    symbol_id: SemanticSymbolId,
+    symbol_kind: SemanticSymbolKind,
+};
+
+fn cjsRuntimeInternalRenameSlots(ids: CjsRuntimeInternalSymbolIds) [4]CjsRuntimeInternalRenameSlot {
+    return .{
+        .{ .symbol_id = ids.callback_parameter, .symbol_kind = .parameter },
+        .{ .symbol_id = ids.module_parameter, .symbol_kind = .parameter },
+        .{ .symbol_id = ids.catch_parameter, .symbol_kind = .catch_binding },
+        .{ .symbol_id = ids.require_function, .symbol_kind = .function_decl },
+    };
+}
+
+fn validCjsRuntimeInternalRenameSlots(
+    slots: [4]CjsRuntimeInternalRenameSlot,
+    symbols: []const SemanticSymbol,
+) bool {
+    for (slots, 0..) |slot, slot_index| {
+        if (slot.symbol_id.isNone()) return false;
+        const raw: usize = @backingInt(slot.symbol_id);
+        if (raw >= symbols.len) return false;
+        const symbol = symbols[raw];
+        if (symbol.synthetic_kind != .cjs_runtime_internal_local or symbol.kind != slot.symbol_kind) return false;
+        for (slots[0..slot_index]) |prior| {
+            if (prior.symbol_id == slot.symbol_id) return false;
+        }
+    }
+    return true;
+}
+
+/// These four runtime locals have stable producer slots on Module. Reanalysis
+/// assigns fresh semantic indexes and may change names/scopes, so carry their
+/// linker names by the old/new slot IDs instead of a structural name match.
+fn remapCjsRuntimeInternalRenames(
+    allocator: std.mem.Allocator,
+    module_index: bundler_symbol.ModuleIndex,
+    old_symbols: []const SemanticSymbol,
+    new_symbols: []const SemanticSymbol,
+    old_renames: []const ?[]const u8,
+    old_ids: ?CjsRuntimeInternalSymbolIds,
+    new_ids: ?CjsRuntimeInternalSymbolIds,
+    rebuilt: *bundler_symbol.RenameTable,
+) !void {
+    const old_slots = cjsRuntimeInternalRenameSlots(old_ids orelse return);
+    const new_slots = cjsRuntimeInternalRenameSlots(new_ids orelse return);
+    if (!validCjsRuntimeInternalRenameSlots(old_slots, old_symbols) or
+        !validCjsRuntimeInternalRenameSlots(new_slots, new_symbols)) return;
+    for (old_slots) |slot| {
+        if (@backingInt(slot.symbol_id) >= old_renames.len) return;
+    }
+
+    for (old_slots, new_slots) |old_slot, new_slot| {
+        const old_index: usize = @backingInt(old_slot.symbol_id);
+        const new_index: usize = @backingInt(new_slot.symbol_id);
+        const rename = old_renames[old_index] orelse continue;
+        const new_id = bundler_symbol.SymbolID.make(module_index, new_index);
+        // Preserve an AST-anchor mapping if it already reached this row.
+        if (rebuilt.get(new_id) != null) continue;
+        try rebuilt.put(allocator, new_id, rename);
+    }
+}
+
+test "CJS runtime internal renames follow exact producer slots across reanalysis" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
+    const old_ids: CjsRuntimeInternalSymbolIds = .{
+        .callback_parameter = @fromBackingInt(@as(u32, 0)),
+        .module_parameter = @fromBackingInt(@as(u32, 1)),
+        .catch_parameter = @fromBackingInt(@as(u32, 2)),
+        .require_function = @fromBackingInt(@as(u32, 3)),
+    };
+    const new_ids: CjsRuntimeInternalSymbolIds = .{
+        .callback_parameter = @fromBackingInt(@as(u32, 3)),
+        .module_parameter = @fromBackingInt(@as(u32, 1)),
+        .catch_parameter = @fromBackingInt(@as(u32, 4)),
+        .require_function = @fromBackingInt(@as(u32, 2)),
+    };
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 1, "old_callback"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 1, "old_module"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .catch_binding, 2, "old_catch"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .function_decl, 2, "old_require"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        .{
+            .name = Span.EMPTY,
+            .kind = .variable_let,
+            .scope_id = @fromBackingInt(@as(u32, 0)),
+            .declaration_span = Span.EMPTY,
+        },
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 8, "new_module"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .function_decl, 9, "new_require"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 7, "new_callback"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .catch_binding, 9, "new_catch"),
+    };
+    const old_renames: [4]?[]const u8 = .{ "callback_final", "module_final", "catch_final", "require_final" };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+    try remapCjsRuntimeInternalRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        old_ids,
+        new_ids,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 4), rebuilt.count());
+    try std.testing.expectEqualStrings("callback_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 3)).?);
+    try std.testing.expectEqualStrings("module_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 1)).?);
+    try std.testing.expectEqualStrings("catch_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 4)).?);
+    try std.testing.expectEqualStrings("require_final", rebuilt.get(bundler_symbol.SymbolID.make(module_index, 2)).?);
+}
+
+test "CJS runtime internal rename remapping fails closed on invalid slot evidence" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
+    const valid_ids: CjsRuntimeInternalSymbolIds = .{
+        .callback_parameter = @fromBackingInt(@as(u32, 0)),
+        .module_parameter = @fromBackingInt(@as(u32, 1)),
+        .catch_parameter = @fromBackingInt(@as(u32, 2)),
+        .require_function = @fromBackingInt(@as(u32, 3)),
+    };
+    const valid_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 1, "cb"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 1, "mod"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .catch_binding, 2, "err"),
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .function_decl, 2, "require"),
+    };
+    const renames: [4]?[]const u8 = .{ "cb_final", "mod_final", "err_final", "require_final" };
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &renames, null, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &renames, valid_ids, null, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const short_renames: [3]?[]const u8 = .{ "cb_final", "mod_final", "err_final" };
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &short_renames, valid_ids, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var duplicate_old = valid_ids;
+    duplicate_old.module_parameter = duplicate_old.callback_parameter;
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &renames, duplicate_old, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var duplicate_new = valid_ids;
+    duplicate_new.module_parameter = duplicate_new.callback_parameter;
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &renames, valid_ids, duplicate_new, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var out_of_bounds = valid_ids;
+    out_of_bounds.catch_parameter = @fromBackingInt(@as(u32, 4));
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &renames, valid_ids, out_of_bounds, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var old_out_of_bounds = valid_ids;
+    old_out_of_bounds.callback_parameter = @fromBackingInt(@as(u32, 4));
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &renames, old_out_of_bounds, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_old_kind = valid_symbols;
+    wrong_old_kind[0] = graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .function_decl, 1, "cb");
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &wrong_old_kind, &valid_symbols, &renames, valid_ids, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_old_synthetic = valid_symbols;
+    wrong_old_synthetic[0] = graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .parameter, 1, "cb");
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &wrong_old_synthetic, &valid_symbols, &renames, valid_ids, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_new_kind = valid_symbols;
+    wrong_new_kind[3] = graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 1, "require");
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &wrong_new_kind, &renames, valid_ids, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    var wrong_new_synthetic = valid_symbols;
+    wrong_new_synthetic[3] = graphOwnedSyntheticRenameTestSymbol(.esm_runtime_internal_local, .function_decl, 1, "require");
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &wrong_new_synthetic, &renames, valid_ids, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    const callback_id = bundler_symbol.SymbolID.make(module_index, 0);
+    try rebuilt.put(std.testing.allocator, callback_id, "node_anchor_final");
+    try remapCjsRuntimeInternalRenames(std.testing.allocator, module_index, &valid_symbols, &valid_symbols, &renames, valid_ids, valid_ids, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 4), rebuilt.count());
+    try std.testing.expectEqualStrings("node_anchor_final", rebuilt.get(callback_id).?);
+}
+
+test "CJS runtime internal renames do not use the generic name and scope fallback" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(7));
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 1, "stable_callback"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_internal_local, .parameter, 1, "stable_callback"),
+    };
+    const old_renames: [1]?[]const u8 = .{"callback_final"};
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
 }
 
 test "graph-owned singleton synthetic renames follow producer identity" {
@@ -7500,6 +7725,8 @@ fn captureRenamesToPending(
     rename_table: *const bundler_symbol.RenameTable,
     old_sem: ModuleSemanticData,
     new_sem: *const ModuleSemanticData,
+    old_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
+    new_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
     scratch_allocator: std.mem.Allocator,
     arena: std.mem.Allocator,
 ) !void {
@@ -7541,6 +7768,16 @@ fn captureRenamesToPending(
         old_sem.symbols.items,
         new_sem.symbols.items,
         old_renames,
+        &rebuilt,
+    );
+    try remapCjsRuntimeInternalRenames(
+        arena,
+        module.index,
+        old_sem.symbols.items,
+        new_sem.symbols.items,
+        old_renames,
+        old_cjs_runtime_internal_symbols,
+        new_cjs_runtime_internal_symbols,
         &rebuilt,
     );
     module.pending_renames = rebuilt;
@@ -7755,12 +7992,22 @@ fn captureRenamesAfterResync(
     arena_alloc: std.mem.Allocator,
     rename_table: ?*const bundler_symbol.RenameTable,
     previous_semantic: ?ModuleSemanticData,
+    previous_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
 ) !void {
     if (self.minify_identifiers) return;
     const rt = rename_table orelse return;
     const old_sem = previous_semantic orelse return;
     const new_sem = if (module.semantic) |*sem| sem else return;
-    try captureRenamesToPending(module, rt, old_sem, new_sem, self.allocator, arena_alloc);
+    try captureRenamesToPending(
+        module,
+        rt,
+        old_sem,
+        new_sem,
+        previous_cjs_runtime_internal_symbols,
+        module.cjs_runtime_internal_symbols,
+        self.allocator,
+        arena_alloc,
+    );
 }
 
 fn refreshStableBindingRefsFromSemanticGraph(
@@ -7983,10 +8230,18 @@ pub fn resyncAfterConstMaterialization(
     defer const_scope.end();
 
     _ = &(module.ast orelse return);
+    const previous_cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols;
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
     if (self.wrapper_symbols_registered) try self.registerWrapperSymbols();
-    try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
+    try captureRenamesAfterResync(
+        self,
+        module,
+        arena_alloc,
+        rename_table,
+        previous_semantic,
+        previous_cjs_runtime_internal_symbols,
+    );
 }
 
 /// Rebuild graph-facing module metadata from the transformed AST without
@@ -8180,6 +8435,7 @@ pub fn resyncAfterAstMutation(
     var resync_scope = profile.begin(.graph_resync);
     defer resync_scope.end();
 
+    const previous_cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols;
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     // The fresh analysis counts references in the current AST, which already
     // reflects prepass minify edits (inlined constants, folded dead branches).
@@ -8192,7 +8448,14 @@ pub fn resyncAfterAstMutation(
     // finalize registers them there are none, and this runs on discovery
     // workers where the graph-wide registration races other modules (#5604).
     if (self.wrapper_symbols_registered) try self.registerWrapperSymbols();
-    try captureRenamesAfterResync(self, module, arena_alloc, rename_table, previous_semantic);
+    try captureRenamesAfterResync(
+        self,
+        module,
+        arena_alloc,
+        rename_table,
+        previous_semantic,
+        previous_cjs_runtime_internal_symbols,
+    );
 }
 
 /// #4438 디스크 캐시 load 경로 전용 — parser 없이 복원된 `module.ast`(+semantic)만으로
