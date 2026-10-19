@@ -847,7 +847,8 @@ pub fn ES2022(comptime Transformer: type) type {
             var args_ref: NodeIndex = .none;
 
             if (has_super) {
-                const args_span = try self.ast.addString("args");
+                const args_name = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(self, "args", class_scope);
+                const args_span = try self.ast.addString(args_name);
                 args_binding = try es_helpers.makeSyntheticBinding(self, args_span);
                 const rest_param = try self.ast.addNode(.{
                     .tag = .rest_element,

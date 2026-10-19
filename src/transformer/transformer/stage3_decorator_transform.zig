@@ -1055,7 +1055,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
 
             var super_shell: ?class_member_helpers.SuperSpreadArgsShell = null;
             const ctor_params_node: NodeIndex = if (has_super) blk: {
-                const shell = try buildSuperSpreadArgsShell(self);
+                const shell = try buildSuperSpreadArgsShell(self, class_parent_scope);
                 super_shell = shell;
                 try self.scratch.append(self.allocator, shell.super_stmt);
                 break :blk shell.params_node;
