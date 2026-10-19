@@ -2195,6 +2195,88 @@ test "#4819 assignment target temps exclude unused candidate references" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+test "#4819 assignment target temp references keep producer SymbolIds after span lookup is dropped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(
+        allocator,
+        "function getObject() { return {}; } function getKey() { return 'x'; } getObject()[getKey()] ||= 1;",
+    );
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
+        return error.MissingProgramScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @fromBackingInt(@intCast(program_scope));
+
+    var member_target: ?AstNodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .computed_member_expression) {
+            member_target = @fromBackingInt(@intCast(index));
+            break;
+        }
+    }
+    const left = member_target orelse return error.MissingAssignmentMemberTarget;
+    const left_span = transformer.ast.getNode(left).span;
+    const prepared = (try es_helpers.prepareAssignmentTargetRef(&transformer, left, left_span)) orelse
+        return error.MissingPreparedAssignmentTarget;
+
+    var temp_count: usize = 0;
+    for (prepared.temps) |maybe_temp| {
+        const temp = maybe_temp orelse continue;
+        const symbol_id = temp.identity.symbol_id orelse return error.MissingProducerTempSymbolId;
+        const producer_write = (try transformer.semantic_editor.?.referenceForNode(temp.first_write)) orelse
+            return error.MissingProducerTempWriteReference;
+        try std.testing.expectEqual(symbol_id, producer_write.symbol_id);
+        try std.testing.expectEqual(temp.identity.reference_scope, producer_write.scope_id);
+        try std.testing.expect(producer_write.flags.write);
+        try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), transformer.getSymbolIdAt(temp.first_write));
+        var matched_temp_slot = false;
+        var temp_slots = transformer.temp_span_by_counter.iterator();
+        while (temp_slots.next()) |entry| {
+            if (entry.value_ptr.start != temp.identity.span.start or entry.value_ptr.end != temp.identity.span.end) continue;
+            try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), transformer.temp_symbol_ids_by_counter.get(entry.key_ptr.*));
+            if (matched_temp_slot) return error.DuplicateProducerTempSlot;
+            matched_temp_slot = true;
+        }
+        try std.testing.expect(matched_temp_slot);
+        try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(temp.value_read));
+        try std.testing.expectEqual(@as(?u32, null), transformer.getSymbolIdAt(temp.write_read));
+        transformer.forgetSyntheticTempSymbolLookup(temp.identity.span, temp.identity.reference_scope);
+        temp_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), temp_count);
+    try std.testing.expectEqual(@as(usize, 0), transformer.synthetic_temp_symbol_ids.count());
+
+    try es_helpers.trackAssignmentTargetRefs(&transformer, prepared, true, true);
+    for (prepared.temps) |maybe_temp| {
+        const temp = maybe_temp orelse continue;
+        const symbol_id = temp.identity.symbol_id.?;
+        inline for (.{ temp.value_read, temp.write_read }) |reference_node| {
+            const reference = (try transformer.semantic_editor.?.referenceForNode(reference_node)) orelse
+                return error.MissingTrackedAssignmentTempReadReference;
+            try std.testing.expectEqual(symbol_id, reference.symbol_id);
+            try std.testing.expectEqual(temp.identity.reference_scope, reference.scope_id);
+            try std.testing.expect(reference.flags.read);
+            try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), transformer.getSymbolIdAt(reference_node));
+        }
+    }
+}
+
 test "#4819 tracked temp references reserve exact symbols in known scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

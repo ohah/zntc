@@ -41,54 +41,59 @@ fn checkExactES2021MemberCapture(
     transformer.semantic_edit_enabled = true;
 
     _ = try transformer.transform();
-    try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
+    try std.testing.expect(transformer.temp_symbol_ids_by_counter.count() > 0);
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 
-    var temp_symbol_iterator = transformer.temp_symbol_ids_by_counter.iterator();
-    const counter_entry = temp_symbol_iterator.next().?;
-    const id: u32 = counter_entry.value_ptr.*;
-    const counter_name = transformer.temp_span_by_counter.get(counter_entry.key_ptr.*) orelse
-        return error.MissingProducerTempSlot;
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
-    try std.testing.expect(id < editor.symbols.items.len);
-    try std.testing.expect(id >= source_symbol_count);
-    try std.testing.expectEqual(SymbolKind.variable_var, editor.symbols.items[id].kind);
-    try std.testing.expectEqual(editor.symbols.items[id].name.start, counter_name.start);
-    try std.testing.expectEqual(editor.symbols.items[id].name.end, counter_name.end);
-    var reads: usize = 0;
-    var writes: usize = 0;
-    var nested_scope_references: usize = 0;
-    for (editor.references.items) |reference| {
-        if (@backingInt(reference.symbol_id) != id) continue;
-        try std.testing.expect(editor.symbolVisibleFrom(reference.symbol_id, reference.scope_id));
-        if (reference.scope_id != editor.symbols.items[id].scope_id) nested_scope_references += 1;
-        if (reference.flags.read) reads += 1;
-        if (reference.flags.write) writes += 1;
+    var producer_ids: std.ArrayList(u32) = .empty;
+    var temp_symbol_iterator = transformer.temp_symbol_ids_by_counter.iterator();
+    while (temp_symbol_iterator.next()) |counter_entry| {
+        const id: u32 = counter_entry.value_ptr.*;
+        const counter_name = transformer.temp_span_by_counter.get(counter_entry.key_ptr.*) orelse
+            return error.MissingProducerTempSlot;
+        try std.testing.expect(id < editor.symbols.items.len);
+        try std.testing.expect(id >= source_symbol_count);
+        const symbol = editor.symbols.items[id];
+        try std.testing.expectEqual(SymbolKind.variable_var, symbol.kind);
+        try std.testing.expectEqual(symbol.name.start, counter_name.start);
+        try std.testing.expectEqual(symbol.name.end, counter_name.end);
+        var reads: usize = 0;
+        var writes: usize = 0;
+        var nested_scope_references: usize = 0;
+        for (editor.references.items) |reference| {
+            if (@backingInt(reference.symbol_id) != id) continue;
+            try std.testing.expect(editor.symbolVisibleFrom(reference.symbol_id, reference.scope_id));
+            if (reference.scope_id != symbol.scope_id) nested_scope_references += 1;
+            if (reference.flags.read) reads += 1;
+            if (reference.flags.write) writes += 1;
+        }
+        try std.testing.expect(!symbol.scope_id.isNone());
+        if (forbidden_temp_name) |name|
+            try std.testing.expect(!std.mem.eql(u8, name, editor.ast.getText(symbol.name)));
+        try std.testing.expectEqual(@as(usize, 1), reads);
+        try std.testing.expectEqual(@as(usize, 1), writes);
+        if (expect_nested_reference_scope)
+            try std.testing.expect(nested_scope_references > 0)
+        else
+            try std.testing.expectEqual(@as(usize, 0), nested_scope_references);
+        try producer_ids.append(allocator, id);
     }
-    const binding_scope = editor.symbols.items[id].scope_id;
-    try std.testing.expect(!binding_scope.isNone());
-    const temp_name = editor.ast.getText(editor.symbols.items[id].name);
-    if (forbidden_temp_name) |name| try std.testing.expect(!std.mem.eql(u8, name, temp_name));
-
-    try std.testing.expectEqual(@as(usize, 1), reads);
-    try std.testing.expectEqual(@as(usize, 1), writes);
-    if (expect_nested_reference_scope)
-        try std.testing.expect(nested_scope_references > 0)
-    else
-        try std.testing.expectEqual(@as(usize, 0), nested_scope_references);
+    try std.testing.expect(producer_ids.items.len > 0);
 
     const edited = (try transformer.finishSemanticEdit()).?;
-    var exact_bindings: usize = 0;
-    for (transformer.ast.nodes.items, 0..) |node, raw| {
-        if (node.tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
-        if (edited.symbol_ids[raw]) |symbol_id| {
-            if (symbol_id == id) exact_bindings += 1;
+    for (producer_ids.items) |id| {
+        var exact_bindings: usize = 0;
+        for (transformer.ast.nodes.items, 0..) |node, raw| {
+            if (node.tag != .binding_identifier or raw >= edited.symbol_ids.len) continue;
+            if (edited.symbol_ids[raw]) |symbol_id| {
+                if (symbol_id == id) exact_bindings += 1;
+            }
         }
-    }
-    try std.testing.expectEqual(@as(usize, 1), exact_bindings);
-    for (edited.references) |reference| {
-        if (reference.node_index.isNone() or @backingInt(reference.symbol_id) != id) continue;
-        try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(reference.node_index)]);
+        try std.testing.expectEqual(@as(usize, 1), exact_bindings);
+        for (edited.references) |reference| {
+            if (reference.node_index.isNone() or @backingInt(reference.symbol_id) != id) continue;
+            try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(reference.node_index)]);
+        }
     }
 }
 
