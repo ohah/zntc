@@ -66,6 +66,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
         pub const LoopClosureResult = struct {
             loop_fn: NodeIndex,
             loop_function: NodeIndex,
+            loop_binding: NodeIndex,
+            loop_symbol_id: ?SymbolId,
+            loop_owner_scope: ScopeId,
             generator_function_scope: ?ScopeId = null,
             call_and_check: NodeIndex,
             ret_temp_span: ?Span = null,
@@ -823,6 +826,13 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             const loop_name_span = try self.ast.addString(loop_name);
             const loop_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, loop_name_span);
             const loop_symbol = try self.declareSyntheticVar(loop_binding, span);
+            const loop_owner_scope = if (loop_symbol) |symbol| blk: {
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                const raw_id = @backingInt(symbol);
+                if (raw_id >= symbols.len)
+                    std.debug.panic("extracted loop binding has an invalid exact SymbolId", .{});
+                break :blk symbols[raw_id].scope_id;
+            } else .none;
             if (late_loop_output_name) {
                 const symbol = loop_symbol orelse
                     std.debug.panic("late-named extracted loop has no exact SymbolId", .{});
@@ -928,6 +938,9 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             return .{
                 .loop_fn = loop_var,
                 .loop_function = func_expr,
+                .loop_binding = loop_binding,
+                .loop_symbol_id = loop_symbol,
+                .loop_owner_scope = loop_owner_scope,
                 .generator_function_scope = generator_function_scope,
                 .call_and_check = call_block,
                 .ret_temp_span = ret_temp_span,
