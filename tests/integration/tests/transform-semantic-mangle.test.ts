@@ -2767,9 +2767,14 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     // that production path with the same hostile inputs, rather than only the
     // standalone semantic-edit path above.
     const combinedBundledOutput = join(fixture.dir, 'flow-component-combined-bundle.js');
-    const combinedBundledResult = await runZntc(
-      ['--bundle', '--platform=node', input, '-o', combinedBundledOutput, '--flow'],
-    );
+    const combinedBundledResult = await runZntc([
+      '--bundle',
+      '--platform=node',
+      input,
+      '-o',
+      combinedBundledOutput,
+      '--flow',
+    ]);
     expect(combinedBundledResult.exitCode, combinedBundledResult.stderr).toBe(0);
     const combinedBundle = readFileSync(combinedBundledOutput, 'utf8');
     for (const { name, reserve = 0 } of cases) {
@@ -2801,9 +2806,10 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       const observation = inBlock
         ? `let observed; { observed = ${observe(candidate)}; }`
         : `const observed = ${observe(candidate)};`;
-      const bundleObservation = name === 'Switch'
-        ? `const observed = eval(\`typeof ${candidate.slice(0, -1)}\${${JSON.stringify(candidate.slice(-1))}}\`);`
-        : observation;
+      const bundleObservation =
+        name === 'Switch'
+          ? `const observed = eval(\`typeof ${candidate.slice(0, -1)}\${${JSON.stringify(candidate.slice(-1))}}\`);`
+          : observation;
       const body = beforeComponent
         ? `${bundleObservation}\n${declaration}`
         : `${declaration}\n${bundleObservation}`;
@@ -2819,15 +2825,22 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       try {
         const bundleInput = join(bundleFixture.dir, 'input.js');
         const bundledOutput = join(bundleFixture.dir, 'output.js');
-        const bundledResult = await runZntc(
-          ['--bundle', '--platform=node', bundleInput, '-o', bundledOutput, '--flow'],
-        );
+        const bundledResult = await runZntc([
+          '--bundle',
+          '--platform=node',
+          bundleInput,
+          '-o',
+          bundledOutput,
+          '--flow',
+        ]);
         expect(bundledResult.exitCode, `${name}: ${bundledResult.stderr}`).toBe(0);
         const bundled = readFileSync(bundledOutput, 'utf8');
         expect(bundled, name).toContain(`${base}${reserve + 3}`);
         const bundledRun = await runNode(bundledOutput);
         expect(bundledRun.stderr, name).toBe('');
-        expect(bundledRun.stdout.trim(), name).toBe(name === 'Badge' ? 'ReferenceError' : 'undefined');
+        expect(bundledRun.stdout.trim(), name).toBe(
+          name === 'Badge' ? 'ReferenceError' : 'undefined',
+        );
       } finally {
         await bundleFixture.cleanup();
       }
