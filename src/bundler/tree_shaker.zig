@@ -705,7 +705,7 @@ pub const TreeShaker = struct {
                 const m = self.moduleAtMut(@intCast(i)) orelse continue;
                 m.is_included = self.included.isSet(i);
                 // counter$4 fix: tree_shaker_active=true mirror — isStatementAliveBySym /
-                // isLocalBindingAlive 가 reachable_stmts=null + is_included=false 케이스를
+                // isBindingAliveBySymbol 가 reachable_stmts=null + is_included=false 케이스를
                 // *진짜 dead* 로 처리하기 위한 신호. tree_shaking=false 면 이 mirror 자체가
                 // 안 일어나서 default false 유지.
                 m.tree_shaker_active = true;

@@ -1032,11 +1032,14 @@ pub fn buildInlineObjectStr(
         // namespace 객체에서 제외 → `ns.x`===undefined, `"x" in ns`===false (Node 동형).
         if (ambiguity_possible and self.isAmbiguousStarExport(@fromBackingInt(@intCast(target_mod_idx)), exp.exported)) continue;
         // declaration 이 tree-shaken 되어 emit 안 되면 namespace getter 도 skip —
-        // dangling reference 방지. declaration 모듈은 init_mod (lazy init) 있으면
-        // 그쪽, 없으면 target (정적 export).
-        const decl_mod_idx = exp.init_mod orelse target_mod_idx;
+        // dangling reference 방지. exact SID가 있으면 그 owner module에서 검사하고,
+        // SID가 없는 의도된 fallback은 init_mod/target module의 전체 DCE만 반영한다.
+        const decl_mod_idx = if (exp.binding_symbol.semanticIndex() != null)
+            @backingInt(exp.binding_symbol.moduleIndex())
+        else
+            exp.init_mod orelse target_mod_idx;
         if (self.graph.getModule(@fromBackingInt(@intCast(decl_mod_idx)))) |decl_mod| {
-            if (!decl_mod.isLocalBindingAlive(exp.local)) continue;
+            if (!decl_mod.isBindingAliveBySymbol(exp.binding_symbol)) continue;
         }
         if (!first) try buf.appendSlice(self.allocator, list_sep);
         first = false;

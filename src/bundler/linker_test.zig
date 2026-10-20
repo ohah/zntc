@@ -1751,6 +1751,98 @@ test "linker: external import not resolved (no binding)" {
     try std.testing.expectEqual(@as(usize, 0), linker.diagnostics.items.len);
 }
 
+test "namespace export collection carries exact SID through local and aliased exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "provider.ts", "export const live = 1;\n");
+    try writeFile(tmp.dir, "barrel.ts", "export { live as public } from './provider.ts';\n");
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './barrel.ts'; console.log(ns.public);\n");
+
+    var result = try buildAndLink(std.testing.allocator, &tmp, "entry.ts");
+    defer result.linker.deinit();
+    defer result.destroyGraph();
+    defer result.cache.deinit();
+
+    const provider_idx = findModuleIdx(result.graph, "provider.ts") orelse return error.MissingProvider;
+    const provider = result.graph.getModule(provider_idx) orelse return error.MissingProvider;
+    const local_export = provider.findExportBinding("live") orelse return error.MissingLocalExport;
+    const expected_symbol = local_export.symbol;
+    try std.testing.expect(expected_symbol.semanticIndex() != null);
+    try std.testing.expectEqual(provider_idx, expected_symbol.moduleIndex());
+
+    const barrel_idx = findModuleIdx(result.graph, "barrel.ts") orelse return error.MissingBarrel;
+    var exports: std.ArrayList(Linker.NsExportPair) = .empty;
+    defer exports.deinit(std.testing.allocator);
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    defer seen.deinit(std.testing.allocator);
+    var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer visited.deinit(std.testing.allocator);
+    try result.linker.collectExportsRecursive(&exports, &seen, &visited, barrel_idx, 0);
+
+    var found_alias = false;
+    for (exports.items) |pair| {
+        if (!std.mem.eql(u8, pair.exported, "public")) continue;
+        found_alias = true;
+        try std.testing.expectEqual(expected_symbol, pair.binding_symbol);
+    }
+    try std.testing.expect(found_alias);
+
+    exports.clearRetainingCapacity();
+    seen.clearRetainingCapacity();
+    visited.clearRetainingCapacity();
+    try result.linker.collectExportsRecursive(&exports, &seen, &visited, provider_idx, 0);
+    var found_direct = false;
+    for (exports.items) |pair| {
+        if (!std.mem.eql(u8, pair.exported, "live")) continue;
+        found_direct = true;
+        try std.testing.expectEqual(expected_symbol, pair.binding_symbol);
+    }
+    try std.testing.expect(found_direct);
+}
+
+test "namespace inline object filters re-export getters by the provider SID" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.ts", "import * as ns from './barrel.ts'; console.log(ns.public);\n");
+    try writeFile(tmp.dir, "barrel.ts", "export { actual as public, dead as hidden } from './provider.ts';\n");
+    try writeFile(tmp.dir, "provider.ts", "export const actual = 1; export const dead = 2;\n");
+
+    var result = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.ts");
+    defer result.linker.deinit();
+    defer result.destroyGraph();
+    defer result.cache.deinit();
+
+    const provider_idx = findModuleIdx(result.graph, "provider.ts") orelse return error.MissingProvider;
+    const provider = @constCast(result.graph.getModule(provider_idx) orelse return error.MissingProvider);
+    const actual = provider.findExportBinding("actual") orelse return error.MissingActualExport;
+    const dead = provider.findExportBinding("dead") orelse return error.MissingDeadExport;
+    const actual_index = provider.exportBindingSemanticIndex(actual.*) orelse return error.MissingActualSID;
+    const dead_index = provider.exportBindingSemanticIndex(dead.*) orelse return error.MissingDeadSID;
+
+    var symbol_to_stmt = try std.testing.allocator.alloc(?u32, provider.semantic.?.symbols.items.len);
+    defer std.testing.allocator.free(symbol_to_stmt);
+    @memset(symbol_to_stmt, null);
+    symbol_to_stmt[actual_index] = 1;
+    symbol_to_stmt[dead_index] = 2;
+    var reachable = try std.DynamicBitSet.initEmpty(std.testing.allocator, 3);
+    defer reachable.deinit();
+    reachable.set(1);
+    provider.symbol_to_stmt = symbol_to_stmt;
+    provider.reachable_stmts = &reachable;
+    provider.tree_shaker_active = true;
+    provider.is_included = true;
+
+    const barrel_idx = findModuleIdx(result.graph, "barrel.ts") orelse return error.MissingBarrel;
+    const namespace = try result.linker.buildNamespaceInlineObject(
+        @backingInt(barrel_idx),
+        @backingInt(barrel_idx),
+        0,
+    );
+    defer std.testing.allocator.free(namespace);
+    try std.testing.expect(std.mem.indexOf(u8, namespace, "public") != null);
+    try std.testing.expect(std.mem.indexOf(u8, namespace, "hidden") == null);
+}
+
 // ============================================================
 // Rename Tests
 // ============================================================

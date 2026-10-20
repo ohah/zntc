@@ -436,7 +436,7 @@ fn makeTestModule(alloc: std.mem.Allocator, index: u32, path: []const u8) Module
 /// 크로스-청크 export 목록에서 뺄지 말지의 결정표.
 ///
 /// `tree_shaker_active=true` + `is_included=false` = 모듈 자체가 emit 안 됨 →
-/// `isLocalBindingAlive` 가 dead 판정하는 가장 단순한 경로. 나머지 축(래핑 /
+/// `isExportBindingAlive` 가 dead 판정하는 가장 단순한 경로. 나머지 축(래핑 /
 /// star 소스 / 청크 entry+non-minify / export kind)은 전부 **유지(false)** 쪽으로
 /// 보수 폴백해야 한다 — 잘못 빼면 소비자가 미바인딩(ReferenceError) 된다.
 fn shakenDecisionModule(dead: bool) Module {
