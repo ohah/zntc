@@ -4328,6 +4328,92 @@ fn reanchorDetachedDeclarations(
     }
 }
 
+/// Check that deferred temp handoffs which survived into the emitted AST now
+/// point at the exact semantic reference created for their producer. Dead
+/// lowered nodes may remain in the side tables, but live nodes must never
+/// silently leave semantic editing without a SymbolId and output ScopeId.
+pub fn validateDeferredGeneratedTempHandoffs(
+    self: *Transformer,
+    editor: *SemanticEditor,
+    live: *const std.AutoHashMapUnmanaged(u32, void),
+) bool {
+    const valid_temp_reference = struct {
+        fn check(
+            transformer: *Transformer,
+            semantic_editor: *SemanticEditor,
+            node_index: NodeIndex,
+            expected_symbol_id: ?u32,
+            expected_flags: ReferenceFlags,
+            expected_name: Span,
+        ) bool {
+            if (node_index.isNone() or @backingInt(node_index) >= transformer.ast.nodes.items.len) return false;
+            const node = transformer.ast.getNode(node_index);
+            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) return false;
+            const name_span = node.data.string_ref;
+            if (name_span.start != expected_name.start or name_span.end != expected_name.end) return false;
+            const raw_symbol_id = transformer.getSymbolIdAt(node_index) orelse return false;
+            if (expected_symbol_id) |expected| {
+                if (raw_symbol_id != expected) return false;
+            }
+            if (raw_symbol_id >= semantic_editor.symbols.items.len) return false;
+            const symbol = semantic_editor.symbols.items[raw_symbol_id];
+            if (symbol.kind != .variable_var or symbol.name.start != name_span.start or
+                symbol.name.end != name_span.end or symbol.scope_id.isNone() or
+                @backingInt(symbol.scope_id) >= semantic_editor.scopes.items.len or
+                !std.mem.eql(u8, symbol.synthetic_name, transformer.ast.getText(name_span))) return false;
+            const reference = (semantic_editor.referenceForNode(node_index) catch return false) orelse return false;
+            if (reference.node_index != node_index or @backingInt(reference.symbol_id) != raw_symbol_id or
+                !std.meta.eql(reference.flags, expected_flags) or reference.scope_id.isNone() or
+                @backingInt(reference.scope_id) >= semantic_editor.scopes.items.len) return false;
+            if (!scopeWithin(semantic_editor.scopes.items, reference.scope_id, symbol.scope_id)) return false;
+            return true;
+        }
+    }.check;
+
+    var chains = self.pending_temp_ref_chains.iterator();
+    while (chains.next()) |entry| {
+        const name_start = entry.key_ptr.*;
+        var cursor: ?usize = entry.value_ptr.first;
+        var last: ?usize = null;
+        var visited: usize = 0;
+        while (cursor) |index| {
+            if (index >= self.pending_temp_refs.items.len or visited >= self.pending_temp_refs.items.len) return false;
+            visited += 1;
+            const pending = self.pending_temp_refs.items[index];
+            if (pending.name_start != name_start or pending.scope.isNone() or
+                @backingInt(pending.scope) >= editor.scopes.items.len or pending.node.isNone() or
+                @backingInt(pending.node) >= self.ast.nodes.items.len) return false;
+            const reference_node = self.ast.getNode(pending.node);
+            if (reference_node.tag != .identifier_reference and reference_node.tag != .assignment_target_identifier) return false;
+            if (reference_node.data.string_ref.start != name_start) return false;
+            if (live.contains(@backingInt(pending.node)) and
+                !valid_temp_reference(self, editor, pending.node, null, pending.flags, reference_node.data.string_ref)) return false;
+            last = index;
+            cursor = pending.next;
+        }
+        if (last == null or last.? != entry.value_ptr.last) return false;
+    }
+
+    for (self.generator_state_temp_refs.items) |pending| {
+        if (pending.reference.isNone() or !live.contains(@backingInt(pending.reference))) continue;
+        if (pending.binding.isNone() or !live.contains(@backingInt(pending.binding)) or
+            @backingInt(pending.binding) >= self.ast.nodes.items.len) return false;
+        const binding = self.ast.getNode(pending.binding);
+        if (binding.tag != .binding_identifier or pending.scope.isNone() or
+            @backingInt(pending.scope) >= editor.scopes.items.len) return false;
+        const symbol_id = self.getSymbolIdAt(pending.binding) orelse return false;
+        if (symbol_id >= editor.symbols.items.len) return false;
+        const symbol = editor.symbols.items[symbol_id];
+        if (symbol.kind != .variable_var or symbol.scope_id.isNone() or
+            @backingInt(symbol.scope_id) >= editor.scopes.items.len or
+            symbol.name.start != binding.data.string_ref.start or
+            symbol.name.end != binding.data.string_ref.end or
+            !std.mem.eql(u8, symbol.synthetic_name, self.ast.getText(binding.data.string_ref))) return false;
+        if (!valid_temp_reference(self, editor, pending.reference, symbol_id, pending.flags, binding.data.string_ref)) return false;
+    }
+    return true;
+}
+
 /// 변환 중 복사된 사용자 식별자와 scope owner도 편집 결과에 합친다.
 pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.Result {
     if (!self.semantic_edit_enabled) return null;
@@ -4394,6 +4480,8 @@ pub fn finishSemanticEdit(self: *Transformer) Transformer.Error!?SemanticEditor.
             var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
             defer live.deinit(self.allocator);
             for (reachable) |raw| try live.put(self.allocator, raw, {});
+            if (!validateDeferredGeneratedTempHandoffs(self, editor, &live))
+                std.debug.panic("semantic edit finished with unresolved deferred generated temp handoffs", .{});
             try reanchorDetachedDeclarations(self, editor, &live);
             var i = editor.references.items.len;
             while (i > 0) {
