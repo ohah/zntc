@@ -4947,6 +4947,62 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
+test "#4819 pending extracted for-of producers assign temp identities immediately" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = "function run(source) { for (const value of source) use(value); }";
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var source_loop: ?AstNodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, index| {
+        if (node.tag == .for_of_statement) source_loop = @fromBackingInt(@intCast(index));
+    }
+    const loop = source_loop orelse return error.MissingForOfLoop;
+    const loop_scope = analyzer.scope_owner_map.get(@backingInt(loop)) orelse return error.MissingForOfScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
+    transformer.pending_loop_extraction_depth = 1;
+
+    const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
+    _ = try lowering.rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, false);
+
+    for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        const name = transformer.ast.getText(node.data.string_ref);
+        if (!std.mem.startsWith(u8, name, "_") or std.mem.eql(u8, name, "_err")) continue;
+        const reference_node: AstNodeIndex = @fromBackingInt(@intCast(raw));
+        const id = transformer.getSymbolIdAt(reference_node) orelse {
+            return error.MissingPendingExtractedForOfProducerSymbol;
+        };
+        const editor = if (transformer.semantic_editor) |*existing| existing else return error.MissingSemanticEditor;
+        const reference = try editor.referenceForNode(reference_node) orelse {
+            return error.MissingPendingExtractedForOfProducerReference;
+        };
+        try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+        try std.testing.expect(!reference.scope_id.isNone());
+    }
+}
+
 test "#4819 generator for-await temporaries bind exact symbols during lowering" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

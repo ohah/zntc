@@ -885,3 +885,289 @@ test "#4819 extracted loop body temps bind to the exact generated function scope
     if (!exact.isClean()) symbol_coverage.printExact("loop-body-temp-test", exact);
     try std.testing.expect(exact.isClean());
 }
+
+test "#4819 extracted loop for-of temps retain exact references" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source =
+        \\function collect(values) {
+        \\  let index = 0;
+        \\  const readers = [];
+        \\  while (index < 1) {
+        \\    const local = index;
+        \\    for (const value of values) readers.push(value + local);
+        \\    readers.push(() => local);
+        \\    index++;
+        \\  }
+        \\  return readers;
+        \\}
+    ;
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const loop_body = try findLoopFunctionBody(allocator, transformer.ast, root);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try symbol_coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    if (!report.hasCompleteExactCoverage()) symbol_coverage.printStrict("extracted-loop-for-of-temp-identity.mjs", &report);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+    var function_scope: ScopeId = .none;
+    var function_owner_count: usize = 0;
+    var owners = edited.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
+        const owner_node = transformer.ast.getNode(owner);
+        if (owner_node.tag != .function_expression or
+            @as(NodeIndex, @fromBackingInt(@intCast(transformer.ast.extra_data.items[owner_node.data.extra + 2]))) != loop_body) continue;
+        function_scope = @fromBackingInt(@intCast(entry.value_ptr.*));
+        function_owner_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), function_owner_count);
+
+    const expected_temp_names = [_][]const u8{ "_a", "_b", "_c", "_d", "_step" };
+    for (expected_temp_names) |expected_name| {
+        var temp_symbol_id: ?u32 = null;
+        for (edited.symbols.items, 0..) |symbol, raw_id| {
+            if (!std.mem.eql(u8, symbol.synthetic_name, expected_name)) continue;
+            try std.testing.expect(temp_symbol_id == null);
+            temp_symbol_id = @intCast(raw_id);
+            try std.testing.expectEqual(function_scope, symbol.scope_id);
+        }
+        const id = temp_symbol_id orelse return error.MissingExtractedForOfTempSymbol;
+        var reference_count: usize = 0;
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != id or reference.node_index.isNone()) continue;
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                @backingInt(reference.node_index),
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected_scope, reference.scope_id);
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count > 0);
+    }
+}
+
+fn expectExtractedForOfTempHandoff(source: []const u8, expected_steps: usize) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+
+    var source_for_of_count: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag == .for_of_statement) source_for_of_count += 1;
+    }
+    try std.testing.expect(source_for_of_count >= expected_steps);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const loop_body = try findLoopFunctionBody(allocator, transformer.ast, root);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var report = try symbol_coverage.checkStrictWithExactExternalEvidence(
+        allocator,
+        transformer.ast,
+        root,
+        transformer.parser_node_count,
+        edited.symbol_ids,
+        edited.symbols.items,
+        edited.scopes,
+        &edited.scope_owner_map,
+        edited.references,
+        if (transformer.synthetic_idents) |*synthetic| synthetic else null,
+        .{
+            .unresolved_reference_nodes = &analyzer.unresolved_reference_nodes,
+            .explicit_global_reference_nodes = &transformer.explicit_global_reference_nodes,
+            .reference_origin_map = &transformer.reference_origin_map,
+        },
+    );
+    defer report.deinit(allocator);
+    try std.testing.expect(report.hasCompleteExactCoverage());
+
+    var loop_function_scope: ScopeId = .none;
+    var owners = edited.scope_owner_map.iterator();
+    while (owners.next()) |entry| {
+        const owner: NodeIndex = @fromBackingInt(@intCast(entry.key_ptr.*));
+        const owner_node = transformer.ast.getNode(owner);
+        if (owner_node.tag != .function_expression or
+            @as(NodeIndex, @fromBackingInt(@intCast(transformer.ast.extra_data.items[owner_node.data.extra + 2]))) != loop_body) continue;
+        loop_function_scope = @fromBackingInt(@intCast(entry.value_ptr.*));
+    }
+    try std.testing.expect(!loop_function_scope.isNone());
+
+    var output_parents = try output_scope.buildParentMap(allocator, transformer.ast, root);
+    defer output_parents.deinit(allocator);
+    var step_symbols: usize = 0;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (!std.mem.startsWith(u8, symbol.synthetic_name, "_step")) continue;
+        var cursor = symbol.scope_id;
+        var belongs_to_loop = false;
+        while (!cursor.isNone()) {
+            if (cursor == loop_function_scope) {
+                belongs_to_loop = true;
+                break;
+            }
+            if (cursor.toIndex() >= edited.scopes.len) break;
+            cursor = edited.scopes[cursor.toIndex()].parent;
+        }
+        if (!belongs_to_loop) continue;
+        step_symbols += 1;
+        var reference_count: usize = 0;
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != raw_id or reference.node_index.isNone()) continue;
+            const expected_scope = output_scope.expectedScope(
+                transformer.ast,
+                root,
+                &output_parents,
+                &edited.scope_owner_map,
+                @backingInt(reference.node_index),
+            ) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(expected_scope, reference.scope_id);
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count > 0);
+    }
+    try std.testing.expect(step_symbols >= expected_steps);
+}
+
+test "#4819 hostile extracted for-of temp identity input matrix" {
+    const cases = [_]struct { source: []const u8, expected_steps: usize }{
+        .{ .source =
+        \\function run(values) {
+        \\  let index = 0; const readers = [];
+        \\  while (index < 1) { const local = index; for (const value of values) readers.push(value + local); readers.push(() => local); index++; }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(values) {
+        \\  let index = 0; const readers = [];
+        \\  do { const local = index; for (const value of values) readers.push(value + local); readers.push(() => local); index++; } while (index < 1);
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(values) {
+        \\  const readers = [];
+        \\  for (let index = 0; index < 1; index++) { const local = index; for (const value of values) readers.push(value + local); readers.push(() => local); }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(groups) {
+        \\  const readers = [];
+        \\  for (const key in groups) { const local = key; for (const value of groups[key]) readers.push(value + local); readers.push(() => local); }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(groups) {
+        \\  let index = 0; const readers = [];
+        \\  while (index < 1) { const outer = index; do { const local = outer; for (const value of groups) readers.push(value + local); readers.push(() => local); index++; } while (index < 1); }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(values) {
+        \\  let index = 0; const readers = [];
+        \\  while (index < 1) { const local = index; try { for (const value of values) readers.push(value + local); readers.push(() => local); } finally { index++; } }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(groups) {
+        \\  let index = 0; const readers = [];
+        \\  while (index < 1) { const local = index; for (const group of groups) { for (const value of group) readers.push(() => local + value); } readers.push(() => local); index++; }
+        \\  return readers;
+        \\}
+        , .expected_steps = 2 },
+        .{ .source =
+        \\function run(entries) {
+        \\  let index = 0; const readers = [];
+        \\  while (index < 1) { const local = index; for (const [key, value] of entries) readers.push(() => local + key + value); readers.push(() => local); index++; }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(values) {
+        \\  let index = 0; const readers = [];
+        \\  while (index < 1) { const local = index; const visible = eval("local"); for (const value of values) readers.push(value + visible); readers.push(() => local); index++; }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+        .{ .source =
+        \\function run(values) {
+        \\  let index = 0; const readers = [];
+        \\  while (index < 1) { const local = index; for (const value of values) { if (value < 0) continue; readers.push(() => local + value); if (value > 1) break; } readers.push(() => local); index++; }
+        \\  return readers;
+        \\}
+        , .expected_steps = 1 },
+    };
+    for (cases) |case| try expectExtractedForOfTempHandoff(case.source, case.expected_steps);
+}
