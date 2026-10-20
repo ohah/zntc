@@ -119,7 +119,10 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const late_step_output_name = stable_scope and es_helpers.canUseLateStandaloneOutputName(self, loop_scope);
             const step = try uniqueStepName(self, loop_scope, late_step_output_name);
             if (register_sm_temps) {
-                try self.generator_temp_var_spans.appendSlice(self.allocator, &.{ norm, did_err, err_val, iter, step });
+                try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpans(
+                    self,
+                    &.{ norm, did_err, err_val, iter, step },
+                );
             }
 
             // var _a = true; var _b = false; var _c = void 0;
@@ -354,7 +357,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const keys_binding = try self.createSyntheticTempBinding(names.keys, span, temp_scope);
             const key_binding = try self.createSyntheticTempBinding(key, span, temp_scope);
             const idx_binding = try self.createSyntheticTempBinding(names.idx, span, temp_scope);
-            try self.generator_temp_var_spans.appendSlice(self.allocator, &.{
+            try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpans(self, &.{
                 obj_binding.name_span,
                 keys_binding.name_span,
                 key_binding.name_span,

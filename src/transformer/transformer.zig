@@ -97,6 +97,15 @@ pub const GeneratedTempBinding = struct {
     owner_scope: ScopeId = .none,
 };
 
+/// Exact identity reserved for one generator temp at producer creation. The
+/// record is aligned by index with `generator_temp_var_spans` so hoisting
+/// preserves emission order without recovering identity from a span.
+pub const GeneratorTempProducerIdentity = struct {
+    symbol_id: ?u32 = null,
+    owner_scope: ScopeId = .none,
+    producer_owned: bool = false,
+};
+
 /// Generated state-callback references retain their producer-selected binding
 /// node until the callback's final scope exists.
 pub const GeneratedTempReference = struct {
@@ -597,11 +606,12 @@ pub const Transformer = struct {
     /// collectForOperations에서 update nop 추가 직전에 설정.
     generator_loop_continue_label: ?u32 = null,
 
-    /// ES2015 generator: for-of 변환에서 생성한 임시 변수 span.
-    /// buildGeneratorBody에서 호이스팅 변수에 추가.
+    /// ES2015 generator state-machine temps hoisted into the wrapper.
     generator_temp_var_spans: std.ArrayList(token_mod.Span) = .empty,
-    /// Creation-time identities for exact generated temps awaiting their final
-    /// state-machine wrapper bindings, keyed by the interned name Span start.
+    /// Producer identities aligned with generator_temp_var_spans.
+    generator_temp_producer_identities: std.ArrayListUnmanaged(GeneratorTempProducerIdentity) = .empty,
+    /// Legacy span-indexed identities for generator temp paths that have not
+    /// yet been migrated to direct producer handles.
     generator_state_temp_symbols: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// Exact generated `_state` reference nodes awaiting their callback binding.
     /// Each state machine records its starting offset, so nested lowering cannot
