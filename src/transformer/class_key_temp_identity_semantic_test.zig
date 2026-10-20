@@ -7,6 +7,7 @@ const SymbolKind = @import("../semantic/symbol.zig").SymbolKind;
 const Transformer = @import("transformer.zig").Transformer;
 const TransformOptions = @import("transformer.zig").TransformOptions;
 const ast_walk = @import("../parser/ast_walk.zig");
+const class_decorator = @import("transformer/class_decorator.zig");
 
 fn sameSpan(a: Span, b: Span) bool {
     return a.start == b.start and a.end == b.end;
@@ -181,4 +182,96 @@ test "#4819 class computed-key temps keep producer identity across hostile scope
         false,
         true,
     );
+}
+
+test "#4819 lowered computed fields retain their producer identity across hostile scopes" {
+    // These assignment-semantics cases move field initialization out of the
+    // class body. The key temp must keep one producer ID across the pre-class
+    // write and the lowered field read, including legacy decorator lowering.
+    try checkClassKeyTempIdentity("function key() { return 'x'; } class Box { [key()] = 1; }", true, false, false);
+    try checkClassKeyTempIdentity("const _a = 2; class Box { static [Symbol.for('x')] = _a; }", true, false, false);
+    try checkClassKeyTempIdentity("function make(key) { return class { [key()] = 3; }; }", true, false, false);
+    try checkClassKeyTempIdentity("function make() { const _a = 'x'; class Box { [String(_a)] = this.value; } return Box; }", true, false, false);
+    try checkClassKeyTempIdentity("function make() { eval('_a'); return class { [nextKey()] = 4; }; }", true, false, false);
+    try checkClassKeyTempIdentity("try { throw 'x'; } catch (error) { class Box { [error] = 5; } }", true, false, false);
+    try checkClassKeyTempIdentity("class Box extends getBase() { [nextKey()] = super.value; }", true, false, false);
+    try checkClassKeyTempIdentity("const source = { next() { return 'x'; } }; class Box { [source.next()] = source.next(); }", true, false, false);
+    try checkClassKeyTempIdentity("function dec() {} function key() { return 'x'; } class Box { @dec [key()] = 6; }", true, false, true);
+    try checkClassKeyTempIdentity("function dec() {} function key() { return 'x'; } const Box = class { @dec static [key()] = 7; };", true, false, true);
+}
+
+test "#4819 moved computed-field helper preserves exact producer IDs" {
+    const source =
+        \\function key() { return "x"; }
+        \\function effect() { return key(); }
+        \\const holder = { next() { return "x"; } };
+        \\const _a = 1;
+        \\function dec() {}
+        \\class A { [key()] = 1; }
+        \\class B { static [holder.next()] = 2; }
+        \\function make(k) { return class { [k()] = 3; }; }
+        \\function nested() { const local = "x"; return class N { [String(local)] = 4; }; }
+        \\function evalScope() { eval("_a"); return class E { [key()] = 5; }; }
+        \\try { throw "x"; } catch (error) { class C { [error] = 6; } }
+        \\const D = class { [this.key] = 7; };
+        \\class E { @dec [key()] = 8; }
+        \\const F = class { static [Symbol.for("x")] = 9; };
+        \\class G { [effect()] = 10; }
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    analyzer.collect_unresolved_reference_nodes = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const program_scope = analyzer.scope_owner_map.get(@backingInt(root)) orelse
+        return error.MissingProgramScope;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.unresolved_reference_nodes = &analyzer.unresolved_reference_nodes;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = @fromBackingInt(@intCast(program_scope));
+
+    var computed_keys: usize = 0;
+    for (parser.ast.nodes.items) |node| {
+        if (node.tag != .computed_property_key) continue;
+        const moved = try class_decorator.captureMovedFieldComputedKey(&transformer, node.data.unary.operand, node.span);
+        const id = moved.capture.symbol_id orelse return error.MissingMovedFieldProducerSymbol;
+        const symbol = transformer.semantic_editor.?.symbols.items[@backingInt(id)];
+        try std.testing.expectEqual(@as(u32, program_scope), @backingInt(symbol.scope_id));
+        try std.testing.expectEqual(node.span.start, symbol.declaration_span.start);
+        try std.testing.expectEqual(node.span.end, symbol.declaration_span.end);
+        const assignment = transformer.ast.getNode(moved.capture.paren_assign);
+        const write = assignment.data.binary.left;
+        try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(write));
+        try std.testing.expectEqual(@as(?u32, @backingInt(id)), transformer.getSymbolIdAt(moved.read));
+
+        const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+        const write_reference = (try editor.referenceForNode(write)) orelse return error.MissingMovedFieldWrite;
+        const read_reference = (try editor.referenceForNode(moved.read)) orelse return error.MissingMovedFieldRead;
+        try std.testing.expectEqual(id, write_reference.symbol_id);
+        try std.testing.expect(write_reference.flags.write);
+        try std.testing.expectEqual(id, read_reference.symbol_id);
+        try std.testing.expect(read_reference.flags.read);
+        try std.testing.expect(editor.symbolVisibleFrom(id, read_reference.scope_id));
+        computed_keys += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 10), computed_keys);
+    try std.testing.expectEqual(@as(usize, 10), transformer.temp_symbol_ids_by_counter.count());
 }
