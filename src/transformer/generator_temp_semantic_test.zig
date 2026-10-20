@@ -933,6 +933,22 @@ test "#4819 generator loop producer identities survive ten hostile input shapes"
     for (sources) |source| try expectForAwaitSyntheticCoverage(source, .es5, true);
 }
 
+test "#4819 extracted generator loop control temps survive ten hostile input shapes" {
+    const sources = [_][]const u8{
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); if(i) break; } }",
+        "function* g(){ outer: for(let i=0;i<3;i++){ yield (()=>i)(); if(i) break outer; continue outer; } }",
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); if(i) return i; } }",
+        "function* g(items){ outer: for(let i of items){ yield (()=>i)(); if(i) break outer; } }",
+        "function* g(items){ for(let i in items){ yield (()=>i)(); if(i) break; else continue; } }",
+        "function* g(){ outer: for(let i=0;i<3;i++){ for(let j=0;j<2;j++){ yield (()=>i+j)(); if(j) break outer; } } }",
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); try { if(i) break; } finally { yield i; } } }",
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); switch(i){ case 1: break; default: if(i) continue; } } }",
+        "async function* g(items){ for await(let i of items){ yield (()=>i)(); if(i) break; } }",
+        "async function* g(items){ outer: for await(let i of items){ yield (()=>i)(); if(i) break outer; } }",
+    };
+    for (sources) |source| try expectForAwaitSyntheticCoverage(source, .es5, false);
+}
+
 test "#4819 for-await lowering registers every generated temp reference" {
     const source =
         \\const _a=1,_b=2,_step=3,_ret=4,_errObj=5,_err=6;

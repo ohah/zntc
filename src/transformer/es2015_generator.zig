@@ -400,6 +400,53 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try self.generator_temp_var_spans.append(self.allocator, span);
         }
 
+        /// Preserve a known source owner while moving a loop control temp into
+        /// this generated callback's wrapper declaration. Semantic-edit
+        /// completion relocates the exact SymbolId after validating the live
+        /// callback handoff.
+        pub fn appendGeneratorTempSpanWithDeferredIdentity(
+            self: *Transformer,
+            span: Span,
+            symbol_id: SymbolId,
+            source_scope: ScopeId,
+            wrapper_scope: ScopeId,
+        ) Transformer.Error!void {
+            if (!self.semantic_edit_enabled or self.state_machine_depth == 0)
+                std.debug.panic("deferred generator temp identity has no active semantic state machine", .{});
+            if (self.generator_state_machine_scope.isNone() or wrapper_scope != self.generator_state_machine_scope or
+                source_scope.isNone())
+                std.debug.panic("deferred generator temp has no exact source or wrapper owner", .{});
+            if (self.generator_temp_var_spans.items.len != self.generator_temp_producer_identities.items.len)
+                std.debug.panic("generator temp spans and producer identities are out of sync", .{});
+
+            const editor = if (self.semantic_editor) |*value| value else std.debug.panic("deferred generator temp identity has no semantic editor", .{});
+            const raw_id: usize = @intCast(@backingInt(symbol_id));
+            if (raw_id >= editor.symbols.items.len or editor.symbols.items[raw_id].scope_id != source_scope)
+                std.debug.panic("deferred generator temp SymbolId changed its exact source owner", .{});
+            var cursor = wrapper_scope;
+            var source_is_ancestor = false;
+            for (0..editor.scopes.items.len) |_| {
+                if (cursor.isNone() or cursor.toIndex() >= editor.scopes.items.len) break;
+                if (cursor == source_scope) {
+                    source_is_ancestor = true;
+                    break;
+                }
+                cursor = editor.scopes.items[cursor.toIndex()].parent;
+            }
+            if (!source_is_ancestor)
+                std.debug.panic("deferred generator temp wrapper is outside its exact source owner", .{});
+
+            try self.generator_temp_producer_identities.append(self.allocator, .{
+                .symbol_id = @backingInt(symbol_id),
+                .owner_scope = wrapper_scope,
+                .producer_owned = true,
+            });
+            errdefer self.generator_temp_producer_identities.shrinkRetainingCapacity(
+                self.generator_temp_producer_identities.items.len - 1,
+            );
+            try self.generator_temp_var_spans.append(self.allocator, span);
+        }
+
         pub fn appendGeneratorTempSpans(self: *Transformer, spans: []const Span) Transformer.Error!void {
             for (spans) |span| try appendGeneratorTempSpan(self, span);
         }
@@ -1081,7 +1128,26 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             if (flow.needsRetVar()) {
                 const ret_temp_span = result.ret_temp_span orelse
                     std.debug.panic("extracted generator control-flow check lost its exact return-temp span", .{});
-                try appendGeneratorTempSpan(self, ret_temp_span);
+                if (result.ret_temp_symbol_id) |symbol_id| {
+                    if (result.ret_temp_owner_scope == self.generator_state_machine_scope and
+                        !result.ret_temp_owner_scope.isNone())
+                    {
+                        try appendGeneratorTempSpanWithIdentity(self, ret_temp_span, symbol_id, result.ret_temp_owner_scope);
+                    } else {
+                        try appendGeneratorTempSpanWithDeferredIdentity(
+                            self,
+                            ret_temp_span,
+                            symbol_id,
+                            result.ret_temp_owner_scope,
+                            self.generator_state_machine_scope,
+                        );
+                    }
+                } else {
+                    // A missing call scope is an intentional deferred binding
+                    // path. Its pending handoff is checked when semantic edit
+                    // finishes, so keep the span until that owner is known.
+                    try appendGeneratorTempSpan(self, ret_temp_span);
+                }
             }
 
             // body 만 교체한 새 루프 노드.
@@ -3247,6 +3313,72 @@ fn checkGeneratorTempProducerFixture(source: []const u8) !void {
     }
     try std.testing.expect(generator_count > 0);
     try std.testing.expect(direct_producer_count > 0);
+}
+
+test "#4819 deferred generator temp identity bypasses the span registry" {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "function* g(){ yield 1; }");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var wrapper_scope: ?ScopeId = null;
+    var declaration_span: ?Span = null;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .function_declaration) continue;
+        const flags = transformer.readU32(node.data.extra, ast_mod.FunctionExtra.flags);
+        if (flags & ast_mod.FunctionFlags.is_generator == 0) continue;
+        const owner = analyzer.scope_owner_map.get(@intCast(raw)) orelse return error.MissingDeferredGeneratorOwner;
+        wrapper_scope = @fromBackingInt(@intCast(owner));
+        declaration_span = node.span;
+        break;
+    }
+    const callback_scope = wrapper_scope orelse return error.MissingDeferredGeneratorOwner;
+    const declaration = declaration_span orelse return error.MissingDeferredGeneratorDeclaration;
+    const source_scope = transformer.programScope();
+    const name_span = try transformer.ast.addString("_ret_direct");
+    const symbol_id = (try transformer.reserveSyntheticTempSymbolInScope(name_span, declaration, source_scope)) orelse
+        return error.MissingDeferredGeneratorSymbol;
+
+    transformer.generator_state_machine_scope = callback_scope;
+    transformer.state_machine_depth = 1;
+    const Generator = ES2015Generator(Transformer);
+    try Generator.appendGeneratorTempSpanWithDeferredIdentity(
+        &transformer,
+        name_span,
+        symbol_id,
+        source_scope,
+        callback_scope,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
+    try std.testing.expectEqual(@as(usize, 1), transformer.generator_temp_var_spans.items.len);
+    try std.testing.expectEqual(name_span.start, transformer.generator_temp_var_spans.items[0].start);
+    try std.testing.expectEqual(name_span.end, transformer.generator_temp_var_spans.items[0].end);
+    try std.testing.expectEqual(@as(usize, 1), transformer.generator_temp_producer_identities.items.len);
+    const identity = transformer.generator_temp_producer_identities.items[0];
+    try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), identity.symbol_id);
+    try std.testing.expectEqual(callback_scope, identity.owner_scope);
+    try std.testing.expect(identity.producer_owned);
 }
 
 test "#4819 generator yield and branch temps keep producer IDs through hoisting" {
