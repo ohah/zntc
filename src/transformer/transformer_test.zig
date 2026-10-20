@@ -304,6 +304,33 @@ fn expectUnscopedDynamicEvalNameReserved(name: []const u8, source: []const u8) !
     try std.testing.expect(!try es_helpers.nameAppearsInAnyDynamicEvalString(&transformer, resolved));
 }
 
+fn expectUnscopedGeneratedDynamicEvalNameReserved(name: []const u8, source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(std.testing.allocator, &parser.ast, .{});
+    defer transformer.deinit();
+
+    const ordinary_name = try es_helpers.resolveGeneratedName(&transformer, name);
+    try std.testing.expectEqualStrings(name, ordinary_name);
+    try std.testing.expect(try es_helpers.nameAppearsInAnyDynamicEvalString(&transformer, ordinary_name));
+
+    const resolved = try es_helpers.resolveGeneratedNameAvoidingDynamicEval(&transformer, name, .none);
+    const expected = try std.fmt.allocPrint(allocator, "{s}3", .{name});
+    try std.testing.expectEqualStrings(expected, resolved);
+    try std.testing.expect(!try es_helpers.nameAppearsInAnyDynamicEvalString(&transformer, resolved));
+    try std.testing.expectEqualStrings(resolved, try es_helpers.resolveGeneratedNameAvoidingDynamicEval(&transformer, name, .none));
+    try std.testing.expectEqualStrings(resolved, try es_helpers.resolveGeneratedName(&transformer, name));
+    const colliding_name = try es_helpers.resolveGeneratedName(&transformer, resolved);
+    try std.testing.expect(!std.mem.eql(u8, resolved, colliding_name));
+}
+
 fn expectUnscopedUniqueDynamicEvalNameReserved(name: []const u8, source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -339,6 +366,24 @@ test "#6003 graphless synthetic resolver reserves direct-eval names module-wide"
     };
 
     for (cases) |case| try expectUnscopedDynamicEvalNameReserved(case.name, case.source);
+}
+
+test "#6003 graphless generated resolver reserves direct-eval names module-wide" {
+    const cases = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "Escaped_withRef", .source = "function f(){ eval('typeof Escaped_\\u0077ithRef'); eval('typeof Escaped_\\u0077ithRef2'); }" },
+        .{ .name = "Braced_withRef", .source = "function f(){ eval('typeof Braced_\\u{77}ithRef'); eval('typeof Braced_\\u{77}ithRef2'); }" },
+        .{ .name = "Split_withRef", .source = "const f = () => { eval('typeof ' + 'Split_' + 'withRef'); eval('typeof ' + 'Split_' + 'withRef2'); };" },
+        .{ .name = "Nested_withRef", .source = "function f(){ eval(('typeof Nested_' + ('with' + 'Ref'))); eval(('typeof Nested_' + ('with' + 'Ref2'))); }" },
+        .{ .name = "Template_withRef", .source = "function f(){ eval(`typeof Template_${\"withRef\"}`); eval(`typeof Template_${\"withRef2\"}`); }" },
+        .{ .name = "Method_withRef", .source = "const object = { method(){ eval(`typeof Method_${'withRef'}`); eval(`typeof Method_${'withRef2'}`); } };" },
+        .{ .name = "Mixed_withRef", .source = "class C { method(){ eval('typeof ' + `Mixed_${\"withRef\"}`); eval('typeof ' + `Mixed_${\"withRef2\"}`); } }" },
+        .{ .name = "Suffix_withRef", .source = "try { eval('typeof Suffix_\\u0077ithRef'); } catch(error) { eval('typeof Suffix_\\u0077ithRef2'); }" },
+        .{ .name = "ParenTemplate_withRef", .source = "class C { static { eval((`ParenTemplate_${\"withRef\"}`)); eval((`ParenTemplate_${\"withRef2\"}`)); } }" },
+        .{ .name = "TemplateExpr_withRef", .source = "function* generator(){ eval(`typeof TemplateExpr_${'with' + 'Ref'}`); eval(`typeof TemplateExpr_${'with' + 'Ref2'}`); yield 0; }" },
+        .{ .name = "SourceCollision_withRef", .source = "const SourceCollision_withRef2 = 0; function f(){ eval('typeof SourceCollision_\\u0077ithRef'); }" },
+    };
+
+    for (cases) |case| try expectUnscopedGeneratedDynamicEvalNameReserved(case.name, case.source);
 }
 
 test "#6003 graphless unique-name allocator reserves direct-eval names module-wide" {

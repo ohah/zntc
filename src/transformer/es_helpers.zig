@@ -1738,7 +1738,7 @@ pub fn resolveGeneratedName(self: anytype, name: []const u8) ![]const u8 {
 /// visible names in direct-eval strings. Unlike `resolveSyntheticName`, this
 /// path deliberately does not exempt temp-like names such as `_c` and `_s`.
 pub fn resolveGeneratedNameAvoidingDynamicEval(self: anytype, name: []const u8, scope_id: ScopeId) ![]const u8 {
-    if (scope_id.isNone()) return try resolveGeneratedName(self, name);
+    if (scope_id.isNone()) return try resolveGeneratedNameAvoidingAnyDynamicEval(self, name);
 
     const cache_key = try scopedSyntheticNameCacheKey(self, name, scope_id);
     if (self.scoped_generated_names.get(cache_key)) |cached| return cached;
@@ -1772,6 +1772,30 @@ pub fn resolveGeneratedNameAvoidingDynamicEval(self: anytype, name: []const u8, 
     try self.synthetic_taken.put(self.allocator, resolved, {});
     try self.scoped_generated_names.put(self.allocator, cache_key, resolved);
     return resolved;
+}
+
+/// Resolve a generated local when its owner scope is unavailable. Since a
+/// generated program binding can be observed by eval in any source scope,
+/// reserve all statically visible eval names before sharing the spelling with
+/// later binding and reference producers.
+pub fn resolveGeneratedNameAvoidingAnyDynamicEval(self: anytype, name: []const u8) ![]const u8 {
+    const resolved = try resolveGeneratedName(self, name);
+    if (!try nameAppearsInAnyDynamicEvalString(self, resolved)) return resolved;
+
+    if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+    const arena = self.name_arena.?.allocator();
+    var suffix: usize = 2;
+    while (true) : (suffix += 1) {
+        const candidate = try std.fmt.allocPrint(arena, "{s}{d}", .{ name, suffix });
+        if (try nameAppearsInSource(self, candidate) or self.synthetic_taken.contains(candidate) or
+            self.synthetic_names.contains(candidate) or
+            try nameAppearsInAnyDynamicEvalString(self, candidate)) continue;
+
+        const key = try arena.dupe(u8, name);
+        try self.synthetic_names.put(self.allocator, key, candidate);
+        try self.synthetic_taken.put(self.allocator, candidate, {});
+        return candidate;
+    }
 }
 
 /// 사용자 코드가 `name` 을 변수로 쓰는지 — 선언한 바인딩(분석기 심볼)이나 선언 없이 참조한 전역.
