@@ -917,6 +917,22 @@ fn expectForAwaitSyntheticCoverage(source: []const u8, target: TransformOptions.
     try std.testing.expect(marked_count > 0);
 }
 
+test "#4819 generator loop producer identities survive ten hostile input shapes" {
+    const sources = [_][]const u8{
+        "function* run(source) { for (const value of source) yield value; }",
+        "function* run(source) { for (const [left, right] of source) { yield left; yield right; } }",
+        "function* run(source) { outer: for (const value of source) { try { if (value) continue outer; } catch (error) { yield error; } finally { yield value; } } }",
+        "const _a=0,_b=0,_c=0,_d=0,_step=0; function* run(source) { eval(''); for (const value of source) yield value; }",
+        "function* run(source) { for (const key in source) yield key; }",
+        "const _c=0,_d=0,_keys=0,_idx=0; function* run(source) { for (const key in source) { if (key) yield source[key]; } }",
+        "async function* run(source) { for await (const value of source) yield await value; }",
+        "const _iter=0,_step=0,_ret=0,_errObj=0; async function* run(source) { outer: for await (const value of source) { try { for await (const inner of value) { if (inner) break outer; yield await inner; } } catch (error) { yield error; } finally { void value; } } }",
+        "async function* run(source) { eval(''); outer: for await (const value of source) { if (value) continue outer; yield value; } }",
+        "function* outer(source) { for (const key in source) yield key; async function* inner() { for await (const value of source) yield await value; } yield inner; } function* sibling(source) { for (const value of source) yield value; }",
+    };
+    for (sources) |source| try expectForAwaitSyntheticCoverage(source, .es5, true);
+}
+
 test "#4819 for-await lowering registers every generated temp reference" {
     const source =
         \\const _a=1,_b=2,_step=3,_ret=4,_errObj=5,_err=6;

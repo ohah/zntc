@@ -41,6 +41,7 @@ const Tag = Node.Tag;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const SymbolId = @import("../semantic/symbol.zig").SymbolId;
 const Scanner = @import("../lexer/scanner.zig").Scanner;
 const Parser = @import("../parser/parser.zig").Parser;
 const es_helpers = @import("es_helpers.zig");
@@ -365,6 +366,38 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 identity.symbol_id = raw_id;
                 identity.owner_scope = self.generator_state_machine_scope;
             }
+        }
+
+        /// Append a generator temp together with the exact identity already
+        /// held by its lowering binding. Loop lowerers use this path instead
+        /// of round-tripping through the span-keyed state-temp registry.
+        pub fn appendGeneratorTempSpanWithIdentity(
+            self: *Transformer,
+            span: Span,
+            symbol_id: ?SymbolId,
+            owner_scope: ScopeId,
+        ) Transformer.Error!void {
+            if (self.generator_temp_var_spans.items.len != self.generator_temp_producer_identities.items.len)
+                std.debug.panic("generator temp spans and producer identities are out of sync", .{});
+            var identity: GeneratorTempProducerIdentity = .{};
+            if (self.semantic_edit_enabled and self.state_machine_depth > 0) {
+                const symbol = symbol_id orelse
+                    std.debug.panic("generator loop temp has no exact producer SymbolId", .{});
+                if (owner_scope.isNone() or self.generator_state_machine_scope.isNone() or
+                    owner_scope != self.generator_state_machine_scope)
+                    std.debug.panic("generator loop temp has no exact wrapper owner ScopeId", .{});
+                const raw_id = @backingInt(symbol);
+                const symbols = if (self.semantic_editor) |*editor| editor.symbols.items else self.symbols;
+                if (raw_id >= symbols.len or symbols[raw_id].scope_id != owner_scope)
+                    std.debug.panic("generator loop temp SymbolId changed its exact wrapper owner", .{});
+                identity.symbol_id = raw_id;
+                identity.owner_scope = owner_scope;
+            }
+            try self.generator_temp_producer_identities.append(self.allocator, identity);
+            errdefer self.generator_temp_producer_identities.shrinkRetainingCapacity(
+                self.generator_temp_producer_identities.items.len - 1,
+            );
+            try self.generator_temp_var_spans.append(self.allocator, span);
         }
 
         pub fn appendGeneratorTempSpans(self: *Transformer, spans: []const Span) Transformer.Error!void {

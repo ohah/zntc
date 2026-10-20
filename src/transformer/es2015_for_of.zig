@@ -118,13 +118,6 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             // can defer its output spelling until all symbols are known.
             const late_step_output_name = stable_scope and es_helpers.canUseLateStandaloneOutputName(self, loop_scope);
             const step = try uniqueStepName(self, loop_scope, late_step_output_name);
-            if (register_sm_temps) {
-                try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpans(
-                    self,
-                    &.{ norm, did_err, err_val, iter, step },
-                );
-            }
-
             // var _a = true; var _b = false; var _c = void 0;
             const norm_binding = try es_helpers.makeSyntheticBinding(self, norm);
             const norm_symbol = if (stable_scope) blk: {
@@ -137,7 +130,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try self.declareSyntheticTempInScope(norm_binding, span, loop_scope)
             else
                 null;
-            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(norm, norm_symbol);
+            if (register_sm_temps) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+                self,
+                norm,
+                norm_symbol,
+                generated_temp_scope,
+            );
             const norm_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, norm_binding, try es_helpers.makeBoolLiteral(self, true), span),
             }, .@"var", span);
@@ -152,7 +150,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try self.declareSyntheticTempInScope(did_binding, span, loop_scope)
             else
                 null;
-            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(did_err, did_symbol);
+            if (register_sm_temps) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+                self,
+                did_err,
+                did_symbol,
+                generated_temp_scope,
+            );
             const did_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, did_binding, try es_helpers.makeBoolLiteral(self, false), span),
             }, .@"var", span);
@@ -167,7 +170,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 try self.declareSyntheticTempInScope(err_binding, span, loop_scope)
             else
                 null;
-            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(err_val, err_symbol);
+            if (register_sm_temps) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+                self,
+                err_val,
+                err_symbol,
+                generated_temp_scope,
+            );
             const err_decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, err_binding, try es_helpers.makeVoidZero(self, span), span),
             }, .@"var", span);
@@ -187,7 +195,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 es_helpers.markStandaloneLateSyntheticTemp(self, symbol, loop_scope);
                 break :blk symbol;
             } else try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
-            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(iter, iter_symbol);
+            if (register_sm_temps) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+                self,
+                iter,
+                iter_symbol,
+                generated_temp_scope,
+            );
             const step_binding = try es_helpers.makeExactSyntheticBindingFromSpan(self, step);
             const step_symbol = if (register_sm_temps)
                 try self.declareSyntheticTempInScope(step_binding, span, generated_temp_scope)
@@ -205,7 +218,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 const symbol = step_symbol orelse std.debug.panic("late-named for-of step has no exact SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, self.ast.getText(step), .for_of_step_binding, "_step");
             }
-            if (register_sm_temps) try self.recordGeneratorStateTempSymbol(step, step_symbol);
+            if (register_sm_temps) try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpanWithIdentity(
+                self,
+                step,
+                step_symbol,
+                generated_temp_scope,
+            );
             const for_init = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, iter_binding, values_call, span),
                 try es_helpers.makeDeclarator(self, step_binding, .none, span),
@@ -357,18 +375,12 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const keys_binding = try self.createSyntheticTempBinding(names.keys, span, temp_scope);
             const key_binding = try self.createSyntheticTempBinding(key, span, temp_scope);
             const idx_binding = try self.createSyntheticTempBinding(names.idx, span, temp_scope);
-            try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpans(self, &.{
-                obj_binding.name_span,
-                keys_binding.name_span,
-                key_binding.name_span,
-                idx_binding.name_span,
-            });
-            if (self.semantic_edit_enabled) {
-                try self.recordGeneratorStateTempSymbol(obj_binding.name_span, obj_binding.symbol_id);
-                try self.recordGeneratorStateTempSymbol(keys_binding.name_span, keys_binding.symbol_id);
-                try self.recordGeneratorStateTempSymbol(key_binding.name_span, key_binding.symbol_id);
-                try self.recordGeneratorStateTempSymbol(idx_binding.name_span, idx_binding.symbol_id);
-            }
+            const generator = @import("es2015_generator.zig").ES2015Generator(Transformer);
+            const identity_owner = temp_scope orelse .none;
+            try generator.appendGeneratorTempSpanWithIdentity(self, obj_binding.name_span, obj_binding.symbol_id, identity_owner);
+            try generator.appendGeneratorTempSpanWithIdentity(self, keys_binding.name_span, keys_binding.symbol_id, identity_owner);
+            try generator.appendGeneratorTempSpanWithIdentity(self, key_binding.name_span, key_binding.symbol_id, identity_owner);
+            try generator.appendGeneratorTempSpanWithIdentity(self, idx_binding.name_span, idx_binding.symbol_id, identity_owner);
 
             // var _obj = object, _keys = [], _k;
             const empty = try self.ast.addListNode(.array_expression, span, .{ .start = 0, .len = 0 });
