@@ -37,7 +37,6 @@ pub fn ES2020(comptime Transformer: type) type {
         const TempIdentityScopes = struct {
             reservation_scope: ScopeId,
             reference_scope: ScopeId,
-            generator_state_temp: bool = false,
         };
 
         const TrackedTempCapture = struct {
@@ -63,8 +62,6 @@ pub fn ES2020(comptime Transformer: type) type {
                 scopes.reservation_scope,
             ) orelse
                 std.debug.panic("known-scope ES2020 temp identity reservation returned no SymbolId", .{});
-            if (scopes.generator_state_temp)
-                try self.recordGeneratorStateTempSymbol(name_span, symbol_id);
             try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(symbol_id));
             return .{ .symbol_id = symbol_id, .reference_scope = scopes.reference_scope };
         }
@@ -83,7 +80,6 @@ pub fn ES2020(comptime Transformer: type) type {
                 return .{
                     .reservation_scope = reservation_scope,
                     .reference_scope = self.current_scope,
-                    .generator_state_temp = reservation_scope == self.generator_state_machine_scope,
                 };
             }
 

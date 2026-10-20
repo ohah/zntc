@@ -204,7 +204,7 @@ fn checkES2020GeneratorProducerHandle(
     transformer.semantic_edit_enabled = true;
 
     const function_owner = for (parser.ast.nodes.items, 0..) |node, raw| {
-        if (node.tag == .function_declaration and node.span.start == 0)
+        if (node.tag == .function_declaration)
             break @as(ast_mod.NodeIndex, @fromBackingInt(@intCast(raw)));
     } else return error.MissingGeneratorFunction;
     const function_scope = transformer.originalFunctionScope(function_owner);
@@ -244,7 +244,8 @@ fn checkES2020GeneratorProducerHandle(
     }
 
     try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
-    try std.testing.expectEqual(@as(usize, 1), transformer.generator_state_temp_symbols.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
+    try std.testing.expectEqual(@as(usize, 1), transformer.temp_symbol_ids_by_counter.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
     var temp_iterator = transformer.synthetic_temp_symbol_ids.iterator();
@@ -255,8 +256,18 @@ fn checkES2020GeneratorProducerHandle(
     try std.testing.expectEqual(SymbolKind.variable_var, symbol.kind);
     try std.testing.expectEqual(function_scope, symbol.origin_scope);
     try std.testing.expectEqual(@as(?@TypeOf(symbol.synthetic_kind.?), null), symbol.synthetic_kind);
-    const recorded_id = transformer.generator_state_temp_symbols.get(symbol.name.start) orelse
-        return error.MissingGeneratorTempIdentity;
+    var producer_counter: ?u32 = null;
+    var span_iterator = transformer.temp_span_by_counter.iterator();
+    while (span_iterator.next()) |entry| {
+        const span = entry.value_ptr.*;
+        if (span.start == symbol.name.start and span.end == symbol.name.end) {
+            producer_counter = entry.key_ptr.*;
+            break;
+        }
+    }
+    const counter = producer_counter orelse return error.MissingTempProducerCounter;
+    const recorded_id = transformer.temp_symbol_ids_by_counter.get(counter) orelse
+        return error.MissingGeneratorTempProducerIdentity;
     try std.testing.expectEqual(@as(u32, @intCast(symbol_id)), recorded_id);
 
     var reference_count: usize = 0;
@@ -329,4 +340,17 @@ test "#4819 ES2020 generator temp producer preserves nested reference ScopeId" {
         true,
         true,
     );
+}
+
+test "#4819 ES2020 generator temp producer avoids span registry across ten hostile inputs" {
+    try checkES2020GeneratorProducerHandle("function* value(make) { yield make()?.field; }", "make()?.field", true, false);
+    try checkES2020GeneratorProducerHandle("function* value(make) { yield make() ?? 1; }", "make() ?? 1", false, false);
+    try checkES2020GeneratorProducerHandle("function* value(make) { if (make()) { yield make()?.field; } }", "make()?.field", true, true);
+    try checkES2020GeneratorProducerHandle("function* value(make) { if (make()) { yield make() ?? 1; } }", "make() ?? 1", false, true);
+    try checkES2020GeneratorProducerHandle("function* value(_a, _b, _step, make) { eval(''); yield make()?.field; }", "make()?.field", true, false);
+    try checkES2020GeneratorProducerHandle("function* value(make, key) { yield make()?.[key()]; }", "make()?.[key()]", true, false);
+    try checkES2020GeneratorProducerHandle("function* value(make) { yield make()?.(); }", "make()?.()", true, false);
+    try checkES2020GeneratorProducerHandle("function* value(make, fallback) { yield make().field ?? fallback; }", "make().field ?? fallback", false, false);
+    try checkES2020GeneratorProducerHandle("function* value(_a, make) { if (make()) { eval(''); yield make() ?? _a; } }", "make() ?? _a", false, true);
+    try checkES2020GeneratorProducerHandle("async function* value(make) { yield await make()?.field; }", "make()?.field", true, false);
 }
