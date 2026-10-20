@@ -2788,6 +2788,31 @@ pub fn createSyntheticTempBinding(
     return .{ .node = node, .name_span = name_span, .symbol_id = symbol_id };
 }
 
+/// Attach the binding half of a temp to the SymbolId already carried by its
+/// producer. This avoids recovering a known identity through the span/scope
+/// registry when the hoisted declaration is emitted later.
+pub fn createSyntheticTempBindingWithIdentity(
+    self: *Transformer,
+    requested_name: Span,
+    scope: ScopeId,
+    symbol_id: SymbolId,
+) Transformer.Error!SyntheticBinding {
+    const node = try es_helpers.makeSyntheticBinding(self, requested_name);
+    const name_span = self.ast.getNode(node).data.string_ref;
+    const editor = try editorFor(self);
+    const raw_id = @backingInt(symbol_id);
+    if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
+    const owner_scope = variableScope(self, scope);
+    const symbol = editor.symbols.items[raw_id];
+    if (symbol.kind != .variable_var or symbol.scope_id != owner_scope or
+        symbol.name.start != requested_name.start or symbol.name.end != requested_name.end or
+        !std.mem.eql(u8, symbol.synthetic_name, self.ast.getText(name_span)))
+        return editError(error.InvalidSymbol);
+    try setSymbolId(self, node, symbol_id);
+    es_helpers.markStandaloneLateSyntheticTemp(self, symbol_id, owner_scope);
+    return .{ .node = node, .name_span = name_span, .symbol_id = symbol_id };
+}
+
 /// Carry the exact identity from a lowering-created generator temp binding to
 /// the wrapper declaration emitted after state-machine operation collection.
 pub fn recordGeneratorStateTempSymbol(self: *Transformer, name_span: Span, symbol: ?SymbolId) Transformer.Error!void {

@@ -990,6 +990,7 @@ pub const Transformer = struct {
     pub const declareSyntheticVar = @import("transformer/semantic_edit.zig").declareSyntheticVar;
     pub const SyntheticBinding = @import("transformer/semantic_edit.zig").SyntheticBinding;
     pub const createSyntheticTempBinding = @import("transformer/semantic_edit.zig").createSyntheticTempBinding;
+    pub const createSyntheticTempBindingWithIdentity = @import("transformer/semantic_edit.zig").createSyntheticTempBindingWithIdentity;
     pub const bindClassSelfStorage = @import("transformer/semantic_edit.zig").bindClassSelfStorage;
     pub const cloneGeneratedClassSelfReference = @import("transformer/semantic_edit.zig").cloneGeneratedClassSelfReference;
     pub const programScope = @import("transformer/semantic_edit.zig").programScope;
