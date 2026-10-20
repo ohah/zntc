@@ -380,6 +380,43 @@ pub const SemanticEditor = struct {
         self.reanchorDeclaration(id, node);
     }
 
+    /// Attach a generated `var` redeclaration to its existing var-scope
+    /// identity. Source analysis merges these declarations without replacing
+    /// the original declaration reference, so keep that behavior here too.
+    pub fn attachVarRedeclaration(self: *SemanticEditor, node: NodeIndex, id: SymbolId, lexical_scope: ScopeId) Error!void {
+        if (!self.validSymbol(id)) return error.InvalidSymbol;
+        const slot = try self.ensureNodeSlot(node);
+        const binding = self.ast.getNode(node);
+        if (binding.tag != .binding_identifier) return error.InvalidNode;
+        const target = try self.bindingScope(lexical_scope, .variable_var);
+        const symbol = self.symbols.items[@backingInt(id)];
+        if (symbol.scope_id != target) return error.InvalidScope;
+        const compatible_kind = symbol.kind == .parameter or symbol.kind == .variable_var or symbol.kind.isFunctionLike();
+        if (!compatible_kind) return error.DuplicateBinding;
+        const existing_name = if (symbol.synthetic_name.len > 0) symbol.synthetic_name else self.ast.getText(symbol.name);
+        const incoming_name = self.ast.getText(binding.data.string_ref);
+        if (!Scanner.identifierNamesEqual(existing_name, incoming_name)) return error.InvalidSymbol;
+        if (self.symbol_ids.items[slot]) |existing| {
+            if (existing != @backingInt(id)) return error.AlreadyBound;
+        } else {
+            // The analyzer records each duplicate `var` declaration as a
+            // declaration row so tree shaking keeps its initializer write.
+            // Parameter merges intentionally have no extra declaration row.
+            if (symbol.kind == .variable_var or symbol.kind.isFunctionLike()) {
+                try self.references.append(self.allocator, .{
+                    .node_index = .none,
+                    .declaration_node_index = node,
+                    .scope_id = target,
+                    .symbol_id = id,
+                    .stmt_idx = Reference.NO_STMT,
+                    .scope_stmt_idx = Reference.NO_STMT,
+                    .flags = .{ .declare = true },
+                });
+            }
+            self.symbol_ids.items[slot] = @backingInt(id);
+        }
+    }
+
     /// Change the exact identity of an output binding after a lowering splits
     /// one source binding into separate storage and callback bindings.
     pub fn rebindBinding(self: *SemanticEditor, node: NodeIndex, id: SymbolId) Error!void {

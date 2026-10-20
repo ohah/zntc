@@ -14,6 +14,7 @@ const Tag = Node.Tag;
 pub const NodeIndex = ast_mod.NodeIndex;
 const NodeList = ast_mod.NodeList;
 const Ast = ast_mod.Ast;
+const Scanner = @import("../lexer/scanner.zig").Scanner;
 const token_mod = @import("../lexer/token.zig");
 const Span = token_mod.Span;
 const ScopeId = @import("../semantic/scope.zig").ScopeId;
@@ -168,19 +169,66 @@ pub const AstTransformCtx = struct {
             .variable_var, .variable_let, .variable_const => {},
             else => std.debug.panic("plugin trailing binding has an unsupported SymbolKind", .{}),
         }
+
+        // The parsed plugin snippet may use an escaped spelling such as
+        // `\\u0078`. Normalize the binding before it enters the semantic
+        // scope map so equivalent spellings share the same producer identity.
+        const raw_name = transformer.ast.getText(node.data.string_ref);
+        var decode_buffer: [256]u8 = undefined;
+        if (Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer)) |decoded_name| {
+            if (!std.mem.eql(u8, raw_name, decoded_name)) {
+                const normalized_span = try transformer.ast.addString(decoded_name);
+                transformer.ast.nodes.items[@backingInt(binding)].span = normalized_span;
+                transformer.ast.nodes.items[@backingInt(binding)].data.string_ref = normalized_span;
+            }
+        }
+        const name_span = transformer.ast.getNode(binding).data.string_ref;
+        const name = transformer.ast.getText(name_span);
+
         // Keep the source lexical scope as origin_scope. SemanticEditor moves
         // `var` to its nearest var owner while preserving that origin.
-        const symbol_id = (try transformer.declareSyntheticInScope(binding, node.span, kind, self.insertion_scope)) orelse return null;
+        const expected_owner = if (kind == .variable_var)
+            transformer.nearestVarScope(self.insertion_scope)
+        else
+            self.insertion_scope;
+        var reused_var_symbol = false;
+        const symbol_id = blk: {
+            if (kind == .variable_var) {
+                const scopes = if (transformer.semantic_editor) |*editor| editor.scopes.items else transformer.scopes;
+                const scope_maps = if (transformer.semantic_editor) |*editor| editor.scope_maps.items else transformer.scope_maps;
+                const symbols = if (transformer.semantic_editor) |*editor| editor.symbols.items else transformer.symbols;
+                if (expected_owner.toIndex() >= scopes.len or expected_owner.toIndex() >= scope_maps.len)
+                    std.debug.panic("plugin-generated var has an invalid owner ScopeId", .{});
+                if (scope_maps[expected_owner.toIndex()].get(name)) |raw_id| {
+                    if (raw_id >= symbols.len) std.debug.panic("plugin-generated var found an invalid SymbolId", .{});
+                    const symbol = symbols[raw_id];
+                    if (symbol.scope_id != expected_owner)
+                        std.debug.panic("plugin-generated var scope map points outside its owner", .{});
+                    const existing_name = if (symbol.synthetic_name.len > 0)
+                        symbol.synthetic_name
+                    else
+                        transformer.ast.getText(symbol.name);
+                    if (!Scanner.identifierNamesEqual(existing_name, name))
+                        std.debug.panic("plugin-generated var scope map name does not match its SymbolId", .{});
+                    const can_redeclare = symbol.kind == .parameter or symbol.kind == .variable_var or symbol.kind.isFunctionLike();
+                    if (can_redeclare) {
+                        if (raw_id > std.math.maxInt(u32))
+                            std.debug.panic("plugin-generated var SymbolId exceeds its representation", .{});
+                        const existing_id: SymbolId = @fromBackingInt(@intCast(raw_id));
+                        try transformer.bindSyntheticVarRedeclaration(binding, existing_id, self.insertion_scope);
+                        reused_var_symbol = true;
+                        break :blk existing_id;
+                    }
+                }
+            }
+            break :blk (try transformer.declareSyntheticInScope(binding, node.span, kind, self.insertion_scope)) orelse return null;
+        };
         const editor = if (transformer.semantic_editor) |*semantic_editor| semantic_editor else std.debug.panic("plugin-generated binding lost its semantic editor", .{});
         const raw_symbol_id: usize = @intCast(@backingInt(symbol_id));
         if (raw_symbol_id >= editor.symbols.items.len)
             std.debug.panic("plugin-generated binding has an invalid SymbolId", .{});
         const symbol = editor.symbols.items[raw_symbol_id];
-        const expected_owner = if (kind == .variable_var)
-            transformer.nearestVarScope(self.insertion_scope)
-        else
-            self.insertion_scope;
-        if (symbol.scope_id != expected_owner or symbol.origin_scope != self.insertion_scope)
+        if (symbol.scope_id != expected_owner or (!reused_var_symbol and symbol.origin_scope != self.insertion_scope))
             std.debug.panic("plugin-generated binding has an inexact producer ScopeId", .{});
         return symbol_id;
     }
@@ -246,7 +294,6 @@ pub const AstTransformCtx = struct {
     /// JS AST 플러그인의 trailingCode 문자열을 AST 노드로 변환하는 데 사용.
     /// 반환된 슬라이스는 caller가 getAllocator().free()로 해제해야 한다.
     pub fn parseAndInjectStatements(self: *AstTransformCtx, code: []const u8) Error![]const NodeIndex {
-        const Scanner = @import("../lexer/scanner.zig").Scanner;
         const Parser = @import("../parser/parser.zig").Parser;
         const alloc = self.transformer.allocator;
 
@@ -296,12 +343,17 @@ pub const AstTransformCtx = struct {
         }
 
         var generated_symbols: std.StringHashMapUnmanaged(SymbolId) = .empty;
-        defer generated_symbols.deinit(alloc);
+        var generated_symbol_names: std.ArrayList([]const u8) = .empty;
+        defer {
+            generated_symbols.deinit(alloc);
+            for (generated_symbol_names.items) |name| alloc.free(name);
+            generated_symbol_names.deinit(alloc);
+        }
 
         // Register every generated declaration before binding any reference
         // in the snippet. This preserves forward references and TDZ identity
         // when a plugin injects multiple statements at once.
-        for (result[0..count]) |statement| try self.registerInjectedDeclarations(statement, &generated_symbols);
+        for (result[0..count]) |statement| try self.registerInjectedDeclarations(statement, &generated_symbols, &generated_symbol_names);
         for (result[0..count]) |statement| try self.bindInjectedReferences(statement, &generated_symbols);
         return result[0..count];
     }
@@ -310,6 +362,7 @@ pub const AstTransformCtx = struct {
         self: *AstTransformCtx,
         root: NodeIndex,
         generated_symbols: *std.StringHashMapUnmanaged(SymbolId),
+        generated_symbol_names: *std.ArrayList([]const u8),
     ) Error!void {
         if (!self.transformer.semantic_edit_enabled) return;
         if (self.insertion_scope.isNone())
@@ -344,7 +397,12 @@ pub const AstTransformCtx = struct {
                 const symbol_id = (try self.registerSyntheticBinding(binding, symbol_kind)) orelse
                     std.debug.panic("plugin trailing declaration lost its exact SymbolId", .{});
                 const name = self.transformer.ast.getText(self.transformer.ast.getNode(binding).data.string_ref);
-                try generated_symbols.put(self.transformer.allocator, name, symbol_id);
+                const stable_name = try self.transformer.allocator.dupe(u8, name);
+                generated_symbol_names.append(self.transformer.allocator, stable_name) catch {
+                    self.transformer.allocator.free(stable_name);
+                    return error.OutOfMemory;
+                };
+                try generated_symbols.put(self.transformer.allocator, stable_name, symbol_id);
             }
         }
     }
@@ -380,7 +438,17 @@ pub const AstTransformCtx = struct {
             const node = transformer.ast.nodes.items[raw];
             if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier and node.tag != .jsx_identifier) continue;
 
-            const name = transformer.ast.getText(node.data.string_ref);
+            const raw_name = transformer.ast.getText(node.data.string_ref);
+            var decode_buffer: [256]u8 = undefined;
+            var name = raw_name;
+            if (Scanner.decodeIdentifierEscapesInto(raw_name, &decode_buffer)) |decoded_name| {
+                if (!std.mem.eql(u8, raw_name, decoded_name)) {
+                    const normalized_span = try transformer.ast.addString(decoded_name);
+                    transformer.ast.nodes.items[raw].span = normalized_span;
+                    transformer.ast.nodes.items[raw].data.string_ref = normalized_span;
+                    name = decoded_name;
+                }
+            }
             if (generated_symbols.get(name)) |symbol_id| {
                 try self.bindReferenceToSymbol(reference, symbol_id);
             } else if (transformer.lexicalSymbolIdAtScope(name, self.insertion_scope)) |raw_id| {
@@ -805,4 +873,190 @@ test "NAPI trailing declarations and references keep exact binding and insertion
     }
     for (generated_reference_counts) |count| try std.testing.expectEqual(@as(usize, 2), count);
     _ = root;
+}
+
+const VarRedeclarationFixtureState = struct {
+    bindings: [7]NodeIndex = @splat(.none),
+    binding_count: usize = 0,
+    insertion_scope: ?u32 = null,
+    parameter_binding: NodeIndex = .none,
+    parameter_reference: NodeIndex = .none,
+    escaped_reference: NodeIndex = .none,
+    nested_insertion_scope: ?u32 = null,
+};
+
+fn injectVarRedeclarationFixture(
+    ctx: ?*anyopaque,
+    api: *AstTransformCtx,
+    func: FunctionInfo,
+) @import("../bundler/plugin.zig").PluginError!void {
+    const state: *VarRedeclarationFixtureState = @ptrCast(@alignCast(ctx orelse return error.PluginFailed));
+    const code = if (func.name) |name| blk: {
+        if (std.mem.eql(u8, name, "marker")) {
+            state.insertion_scope = @backingInt(api.insertion_scope);
+            break :blk "var existing = 41; var injected = 1; var injected = 2; var marker = 5; var \\u0078 = 1; var x = 2; var y = 31; throw \\u0078;";
+        }
+        if (std.mem.eql(u8, name, "nestedMarker")) {
+            state.nested_insertion_scope = @backingInt(api.insertion_scope);
+            break :blk "var value = value + 1; throw value;";
+        }
+        return;
+    } else return;
+    const statements = try api.parseAndInjectStatements(code);
+    defer api.getAllocator().free(statements);
+    for (statements) |statement| {
+        const node = api.getNode(statement);
+        if (node.tag == .variable_declaration) {
+            const extra = node.data.extra;
+            const start = api.transformer.ast.extra_data.items[extra + 1];
+            const len = api.transformer.ast.extra_data.items[extra + 2];
+            var i: u32 = 0;
+            while (i < len) : (i += 1) {
+                const declarator_raw = api.transformer.ast.extra_data.items[start + i];
+                const declarator = api.transformer.ast.nodes.items[declarator_raw];
+                const binding = api.transformer.ast.readExtraNode(declarator.data.extra, 0);
+                if (std.mem.eql(u8, func.name.?, "marker")) {
+                    if (state.binding_count >= state.bindings.len) return error.PluginFailed;
+                    state.bindings[state.binding_count] = binding;
+                    state.binding_count += 1;
+                } else {
+                    if (!std.mem.eql(u8, api.getText(api.getNode(binding).data.string_ref), "value"))
+                        return error.PluginFailed;
+                    state.parameter_binding = binding;
+                }
+            }
+        } else if (node.tag == .throw_statement) {
+            const reference = node.data.unary.operand;
+            if (std.mem.eql(u8, func.name.?, "marker")) {
+                state.escaped_reference = reference;
+            } else {
+                state.parameter_reference = reference;
+            }
+        }
+        try api.addTrailingStatement(statement);
+    }
+}
+
+test "NAPI plugin var redeclarations reuse the exact existing SymbolId" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(
+        alloc,
+        "\"use strict\"; var existing = 40; var \\u0079 = 30; function marker() {} function outer(value) { { function nestedMarker() {} } }",
+    );
+    var parser = @import("../parser/parser.zig").Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var state = VarRedeclarationFixtureState{};
+    const plugins = [_]transformer_mod.Plugin{.{
+        .name = "var-redeclaration-identity-test",
+        .context = @ptrCast(&state),
+        .onFunction = injectVarRedeclarationFixture,
+    }};
+    var transformer = try Transformer.init(alloc, &parser.ast, .{ .plugins = &plugins });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    _ = try transformer.transform();
+    try std.testing.expectEqual(state.bindings.len, state.binding_count);
+    const insertion_scope: ScopeId = @fromBackingInt(state.insertion_scope orelse return error.TestUnexpectedResult);
+    const var_scope = transformer.nearestVarScope(insertion_scope);
+    const source_symbol_id = analyzer.scope_maps.items[var_scope.toIndex()].get("existing") orelse
+        return error.TestUnexpectedResult;
+    const function_symbol_id = analyzer.scope_maps.items[var_scope.toIndex()].get("marker") orelse
+        return error.TestUnexpectedResult;
+    const escaped_source_symbol_id = analyzer.scope_maps.items[var_scope.toIndex()].get("y") orelse
+        return error.TestUnexpectedResult;
+    var parameter_symbol_id: ?usize = null;
+    for (analyzer.symbols.items, 0..) |symbol, raw| {
+        if (symbol.kind == .parameter and std.mem.eql(u8, parser.ast.getText(symbol.name), "value")) {
+            parameter_symbol_id = raw;
+            break;
+        }
+    }
+    const existing_binding_id = transformer.getSymbolIdAt(state.bindings[0]) orelse return error.TestUnexpectedResult;
+    const first_injected_binding_id = transformer.getSymbolIdAt(state.bindings[1]) orelse return error.TestUnexpectedResult;
+    const second_injected_binding_id = transformer.getSymbolIdAt(state.bindings[2]) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, @intCast(source_symbol_id)), existing_binding_id);
+    try std.testing.expectEqual(first_injected_binding_id, second_injected_binding_id);
+    try std.testing.expectEqual(@as(u32, @intCast(function_symbol_id)), transformer.getSymbolIdAt(state.bindings[3]).?);
+    try std.testing.expectEqual(@as(u32, @intCast(escaped_source_symbol_id)), transformer.getSymbolIdAt(state.bindings[6]).?);
+    try std.testing.expectEqual(transformer.getSymbolIdAt(state.bindings[4]).?, transformer.getSymbolIdAt(state.bindings[5]).?);
+    try std.testing.expectEqual(transformer.getSymbolIdAt(state.bindings[4]).?, transformer.getSymbolIdAt(state.escaped_reference).?);
+    try std.testing.expect(parameter_symbol_id != null);
+    try std.testing.expect(!state.parameter_binding.isNone());
+    try std.testing.expect(transformer.getSymbolIdAt(state.parameter_binding) != null);
+    try std.testing.expectEqual(@as(u32, @intCast(parameter_symbol_id.?)), transformer.getSymbolIdAt(state.parameter_binding).?);
+
+    const editor = if (transformer.semantic_editor) |*semantic_editor| semantic_editor else return error.TestUnexpectedResult;
+    for (state.bindings, 0..) |binding, index| {
+        const symbol_id = transformer.getSymbolIdAt(binding) orelse return error.TestUnexpectedResult;
+        const symbol = editor.symbols.items[symbol_id];
+        try std.testing.expectEqual(var_scope, symbol.scope_id);
+        if (index != 3) try std.testing.expectEqual(.variable_var, symbol.kind);
+    }
+    const parameter_insertion_scope: ScopeId = @fromBackingInt(state.nested_insertion_scope orelse return error.TestUnexpectedResult);
+    const parameter_owner_scope = editor.symbols.items[parameter_symbol_id.?].scope_id;
+    try std.testing.expectEqual(parameter_owner_scope, transformer.nearestVarScope(parameter_insertion_scope));
+    try std.testing.expectEqual(parameter_owner_scope, editor.symbols.items[transformer.getSymbolIdAt(state.parameter_binding).?].scope_id);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    for (state.bindings) |binding| {
+        const symbol_id = transformer.getSymbolIdAt(binding) orelse return error.TestUnexpectedResult;
+        var found_declaration = false;
+        for (edited.references) |reference| {
+            if (reference.flags.declare and reference.declaration_node_index == binding and
+                @backingInt(reference.symbol_id) == symbol_id)
+            {
+                found_declaration = true;
+                break;
+            }
+        }
+        try std.testing.expect(found_declaration);
+    }
+
+    var post_transform_analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(alloc, transformer.ast);
+    post_transform_analyzer.enable_stmt_info = true;
+    try post_transform_analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), post_transform_analyzer.errors.items.len);
+    const repeated_symbol_id = post_transform_analyzer.symbol_ids.items[@backingInt(state.bindings[1])] orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        post_transform_analyzer.symbol_ids.items[@backingInt(state.bindings[2])],
+        @as(?u32, @intCast(repeated_symbol_id)),
+    );
+    var found_indexed_redeclaration = false;
+    for (post_transform_analyzer.references.items) |reference| {
+        if (reference.flags.declare and reference.declaration_node_index == state.bindings[2] and
+            @backingInt(reference.symbol_id) == repeated_symbol_id)
+        {
+            try std.testing.expect(reference.stmt_idx != @import("../semantic/symbol.zig").Reference.NO_STMT);
+            try std.testing.expect(reference.scope_stmt_idx != @import("../semantic/symbol.zig").Reference.NO_STMT);
+            found_indexed_redeclaration = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_indexed_redeclaration);
+    const escaped_repeat_id = post_transform_analyzer.symbol_ids.items[@backingInt(state.bindings[4])] orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(
+        post_transform_analyzer.symbol_ids.items[@backingInt(state.bindings[5])],
+        @as(?u32, @intCast(escaped_repeat_id)),
+    );
+    const post_parameter_id = post_transform_analyzer.symbol_ids.items[@backingInt(state.parameter_binding)] orelse
+        return error.TestUnexpectedResult;
+    const post_parameter_ref_id = post_transform_analyzer.symbol_ids.items[@backingInt(state.parameter_reference)] orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(post_parameter_id, post_parameter_ref_id);
 }

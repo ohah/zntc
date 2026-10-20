@@ -275,6 +275,10 @@ pub const SemanticAnalyzer = struct {
     /// Exact SymbolId coverage audit can retain declaration-node anchors
     /// without enabling statement indexing or changing optimizer inputs.
     enable_exact_declaration_anchors: bool = false,
+    /// `var` 선언 노드는 문자열 테이블에서 같은 이름의 Span을 공유할 수 있다.
+    /// 그런 AST에서는 Span 시작점으로 첫 선언과 재선언을 구분할 수 없으므로,
+    /// 방문한 첫 binding NodeIndex를 SymbolId별로 보관한다.
+    var_redeclaration_first_nodes: std.AutoHashMapUnmanaged(u32, u32) = .empty,
     /// import 바인딩/namespace 멤버 변형(`marker = v`/`ns.x = v`/`delete ns.x`) 검출 활성화.
     /// 번들 단계(parse_module)에서만 true — esbuild/rolldown 처럼 *bundle* 시에만 에러
     /// (single-file transpile/transform 은 통과). false 면 checkImportMutation no-op.
@@ -442,6 +446,7 @@ pub const SemanticAnalyzer = struct {
         self.errors.deinit(self.allocator);
         self.symbol_ids.deinit(self.allocator);
         self.helper_scope_map.deinit(self.allocator);
+        self.var_redeclaration_first_nodes.deinit(self.allocator);
         self.references.deinit(self.allocator);
         self.numeric_const_texts.deinit(self.allocator);
         for (self.class_private_declared.items) |*map| map.deinit(self.allocator);
@@ -1521,8 +1526,26 @@ pub const SemanticAnalyzer = struct {
                 const sid = self.symbol_ids.items[ni] orelse return;
                 if (sid >= self.symbols.items.len) return;
                 const symbol = self.symbols.items[sid];
-                if (symbol.kind != .variable_var or symbol.name.start == node.span.start) return;
-                self.recordDeclareRef(sid, symbol.scope_id, ni);
+                if (symbol.kind != .variable_var) return;
+                if (symbol.name.start != node.span.start) {
+                    self.recordDeclareRef(sid, symbol.scope_id, ni);
+                    return;
+                }
+                // Parser source spans are unique per occurrence, so the
+                // declaration's name span identifies the original binding.
+                // Synthetic ASTs can intern equal names to one shared span;
+                // track the first visited binding node to retain each later
+                // redeclaration as a separate statement declaration.
+                if (node.span.start & Ast.STRING_TABLE_BIT == 0) return;
+                const seen = self.var_redeclaration_first_nodes.getOrPut(self.allocator, sid) catch {
+                    self.alloc_failed = true;
+                    return;
+                };
+                if (seen.found_existing) {
+                    if (seen.value_ptr.* != ni) self.recordDeclareRef(sid, symbol.scope_id, ni);
+                } else {
+                    seen.value_ptr.* = ni;
+                }
             },
             .array_pattern, .object_pattern => {
                 const split = self.ast.nodeListSplitRest(node.data.list);

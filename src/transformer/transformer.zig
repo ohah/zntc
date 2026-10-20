@@ -1027,6 +1027,7 @@ pub const Transformer = struct {
     pub const relocateRuntimeHelperRef = @import("transformer/semantic_edit.zig").relocateRuntimeHelperRef;
     pub const trackRuntimeHelperRefWithId = @import("transformer/semantic_edit.zig").trackRuntimeHelperRefWithId;
     pub const declareSyntheticInScope = @import("transformer/semantic_edit.zig").declareSyntheticInScope;
+    pub const bindSyntheticVarRedeclaration = @import("transformer/semantic_edit.zig").bindSyntheticVarRedeclaration;
     pub const declareSyntheticTempInScope = @import("transformer/semantic_edit.zig").declareSyntheticTempInScope;
     pub const reserveSyntheticTempSymbolInScope = @import("transformer/semantic_edit.zig").reserveSyntheticTempSymbolInScope;
     pub const reserveSyntheticTempIdentityForReference = @import("transformer/semantic_edit.zig").reserveSyntheticTempIdentityForReference;
