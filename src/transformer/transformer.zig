@@ -552,6 +552,9 @@ pub const Transformer = struct {
     /// 방문 중인 객체 리터럴들이 home 임시 변수를 배정한 메서드 목록 (#4729).
     /// 키는 method_definition 의 extra 인덱스 — 메서드 방문 함수가 `Node` 만 받기 때문.
     object_super_homes: std.ArrayList(ObjectSuperHome) = .empty,
+    /// object-super home 의 producer가 만든 실제 참조 노드. final AST에서 이름 문자열로
+    /// 다시 찾지 않고, 이 NodeIndex들을 최종 owner scope에 연결한다.
+    object_super_home_references: std.ArrayList(ObjectSuperHomeReference) = .empty,
     /// `_obj`, `_obj2`, … — arrow 파라미터로 쓰는 home 이름 카운터 (#4729).
     object_home_counter: u32 = 0,
     /// `_stack`/`_error`/`_hasError` 이름 접미사 카운터 — using 낮추기마다 고유 (#4730).
@@ -758,6 +761,7 @@ pub const Transformer = struct {
     pub const RefreshRegistration = plugin_state.RefreshRegistration;
     pub const RefreshSignature = plugin_state.RefreshSignature;
     pub const ObjectSuperHome = struct { method_extra: u32, home: Span };
+    pub const ObjectSuperHomeReference = struct { home: Span, node: NodeIndex };
 
     /// super 참조가 Parent.prototype.* / Parent.* 호출 형태로 lowering 되어야 하는지 판정.
     /// - `unsupported.class`: ES2015 미만 타겟이라 class 자체가 lowering 됨

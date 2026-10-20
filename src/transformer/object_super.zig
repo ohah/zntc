@@ -238,6 +238,20 @@ pub fn prepareHome(self: *Transformer, node: Node, allow_late_output_name: bool)
 }
 
 pub fn release(self: *Transformer, mark: usize) void {
+    var retained: usize = 0;
+    for (self.object_super_home_references.items) |reference| {
+        var released = false;
+        for (self.object_super_homes.items[mark..]) |home| {
+            if (sameSpan(home.home, reference.home)) {
+                released = true;
+                break;
+            }
+        }
+        if (released) continue;
+        self.object_super_home_references.items[retained] = reference;
+        retained += 1;
+    }
+    self.object_super_home_references.shrinkRetainingCapacity(retained);
     self.object_super_homes.shrinkRetainingCapacity(mark);
 }
 
@@ -368,13 +382,14 @@ fn trackHoistedHomeReferences(
     reparent_from_scope: ScopeId,
 ) Transformer.Error!void {
     if (!self.semantic_edit_enabled or root_scope.isNone()) return;
+    var home_refs = try collectObjectSuperHomeReferences(self, name_span);
+    defer home_refs.deinit(self.allocator);
     if (symbol_id) |id|
         try self.addSyntheticRefInScope(write_ref, id, root_scope, .{ .write = true })
     else if (!callback_binding.isNone())
         try self.trackGeneratedCallbackTempReference(callback_binding, write_ref, root_scope, .{ .write = true })
     else
         try self.trackHoistedTempRefInScope(name_span, write_ref, root_scope, .{ .write = true });
-    const name = self.ast.getText(name_span);
     const Work = struct { node: NodeIndex, scope: ScopeId };
     var queue: std.ArrayList(Work) = .empty;
     defer queue.deinit(self.allocator);
@@ -399,10 +414,7 @@ fn trackHoistedHomeReferences(
             // body scope before attaching the home-temp references.
             try self.reparentGeneratedScope(scope, root_scope);
         }
-        if (work.node != write_ref and
-            (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
-            std.mem.eql(u8, self.ast.getText(node.data.string_ref), name))
-        {
+        if (home_refs.fetchRemove(raw) != null) {
             if (symbol_id) |id|
                 try self.addSyntheticRefInScope(work.node, id, scope, .{ .read = true })
             else if (!callback_binding.isNone())
@@ -413,6 +425,7 @@ fn trackHoistedHomeReferences(
         var it = ast_walk.children(self.ast, node);
         while (it.next()) |child| try queue.append(self.allocator, .{ .node = child, .scope = scope });
     }
+    forgetObjectSuperHomeReferences(self, name_span);
 }
 
 /// Arrow/function home wrappers introduce a real parameter scope after their
@@ -448,7 +461,8 @@ fn bindWrappedHomeParameter(
         }
     }
     const write_ref = self.ast.getNode(assignment).data.binary.left;
-    const name = self.ast.getText(name_span);
+    var home_refs = try collectObjectSuperHomeReferences(self, name_span);
+    defer home_refs.deinit(self.allocator);
     const Work = struct { node: NodeIndex, scope: ScopeId };
     var worklist: std.ArrayList(Work) = .empty;
     defer worklist.deinit(self.allocator);
@@ -475,15 +489,50 @@ fn bindWrappedHomeParameter(
             }
         }
 
-        if (work.node != binding and (node.tag == .identifier_reference or node.tag == .assignment_target_identifier) and
-            std.mem.eql(u8, self.ast.getText(node.data.string_ref), name))
-        {
+        if (work.node == write_ref or home_refs.fetchRemove(raw) != null) {
             const flags: ReferenceFlags = if (work.node == write_ref) .{ .write = true } else .{ .read = true };
             try self.addSyntheticRefInScope(work.node, id, scope, flags);
         }
         var it = ast_walk.children(self.ast, node);
         while (it.next()) |child| try worklist.append(self.allocator, .{ .node = child, .scope = scope });
     }
+    forgetObjectSuperHomeReferences(self, name_span);
+}
+
+fn sameSpan(a: Span, b: Span) bool {
+    return a.start == b.start and a.end == b.end;
+}
+
+/// Home-prototype reads are recorded at their producer as exact NodeIndexes.
+/// Build the short-lived set used while the final output scopes are resolved.
+fn collectObjectSuperHomeReferences(
+    self: *Transformer,
+    home: Span,
+) Transformer.Error!std.AutoHashMapUnmanaged(u32, void) {
+    var nodes: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    errdefer nodes.deinit(self.allocator);
+    for (self.object_super_home_references.items) |reference| {
+        if (!sameSpan(reference.home, home)) continue;
+        try nodes.put(self.allocator, @backingInt(reference.node), {});
+    }
+    return nodes;
+}
+
+fn forgetObjectSuperHomeReferences(self: *Transformer, home: Span) void {
+    var retained: usize = 0;
+    for (self.object_super_home_references.items) |reference| {
+        if (sameSpan(reference.home, home)) continue;
+        self.object_super_home_references.items[retained] = reference;
+        retained += 1;
+    }
+    self.object_super_home_references.shrinkRetainingCapacity(retained);
+}
+
+/// A generated `Object.getPrototypeOf(home)` read keeps the exact reference
+/// node until its wrapper binding and output scope are known.
+pub fn recordHomePrototypeReference(self: *Transformer, home: Span, node: NodeIndex) Transformer.Error!void {
+    if (!self.semantic_edit_enabled) return;
+    try self.object_super_home_references.append(self.allocator, .{ .home = home, .node = node });
 }
 
 pub const Saved = struct {
@@ -544,5 +593,7 @@ pub fn buildHomeProto(self: *Transformer, home: Span, span: Span) Transformer.Er
     const object_ref = try es_helpers.makeGlobalRef(self, "Object");
     const get_proto = try es_helpers.makePropertyName(self, "getPrototypeOf");
     const callee = try es_helpers.makeStaticMember(self, object_ref, get_proto, span);
-    return es_helpers.makeCallExpr(self, callee, &.{try es_helpers.makeTempVarRef(self, home, home)}, span);
+    const home_ref = try es_helpers.makeTempVarRef(self, home, home);
+    try recordHomePrototypeReference(self, home, home_ref);
+    return es_helpers.makeCallExpr(self, callee, &.{home_ref}, span);
 }
