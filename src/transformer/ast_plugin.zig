@@ -407,6 +407,61 @@ pub const AstTransformCtx = struct {
         }
     }
 
+    /// Collect only identifier nodes that occur in lexical reference positions.
+    /// The parser also tags a static member's property name (for example the
+    /// `foo` in `obj.foo`) as `identifier_reference`, although it is a property
+    /// name and must not resolve to a lexical SymbolId.
+    fn collectInjectedReferenceNodeIndices(self: *AstTransformCtx, root: NodeIndex) Error![]u32 {
+        const transformer = self.transformer;
+        const allocator = transformer.allocator;
+        const ast = transformer.ast;
+        if (root.isNone() or ast.nodes.items.len == 0) return &.{};
+
+        var visited = try allocator.alloc(bool, ast.nodes.items.len);
+        defer allocator.free(visited);
+        @memset(visited, false);
+
+        var references: std.ArrayList(u32) = .empty;
+        errdefer references.deinit(allocator);
+        var stack: std.ArrayList(NodeIndex) = .empty;
+        defer stack.deinit(allocator);
+        try stack.append(allocator, root);
+
+        while (stack.pop()) |idx| {
+            if (idx.isNone()) continue;
+            const raw = @backingInt(idx);
+            if (raw >= ast.nodes.items.len or visited[raw]) continue;
+            visited[raw] = true;
+
+            const node = ast.nodes.items[raw];
+            switch (node.tag) {
+                .identifier_reference, .assignment_target_identifier, .jsx_identifier => {
+                    try references.append(allocator, raw);
+                    continue;
+                },
+                .static_member_expression => {
+                    // Its first extra is the object and its second extra is the
+                    // IdentifierName property. Only the object is an expression.
+                    const extra = node.data.extra;
+                    if (extra < ast.extra_data.items.len) {
+                        const object: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
+                        if (!object.isNone()) try stack.append(allocator, object);
+                    }
+                    continue;
+                },
+                else => {},
+            }
+
+            var children = ast_walk.children(ast, node);
+            while (children.next()) |child| {
+                if (!child.isNone() and @backingInt(child) < ast.nodes.items.len)
+                    try stack.append(allocator, child);
+            }
+        }
+
+        return references.toOwnedSlice(allocator);
+    }
+
     /// Bind references parsed from plugin text at the scope where the
     /// trailing statement is inserted. The spelling is used once here to
     /// resolve the source binding; all later consumers receive its exact ID.
@@ -429,14 +484,13 @@ pub const AstTransformCtx = struct {
         if (self.insertion_scope.toIndex() >= scopes.len or self.insertion_scope.toIndex() >= scope_maps.len)
             std.debug.panic("plugin trailing code has an invalid insertion ScopeId", .{});
 
-        const reachable = try ast_walk.collectReachableNodeIndicesFrom(transformer.allocator, transformer.ast, root);
-        defer transformer.allocator.free(reachable);
+        const references = try self.collectInjectedReferenceNodeIndices(root);
+        defer transformer.allocator.free(references);
 
-        for (reachable) |raw| {
+        for (references) |raw| {
             if (raw >= transformer.ast.nodes.items.len) continue;
             const reference: NodeIndex = @fromBackingInt(@intCast(raw));
             const node = transformer.ast.nodes.items[raw];
-            if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier and node.tag != .jsx_identifier) continue;
 
             const raw_name = transformer.ast.getText(node.data.string_ref);
             var decode_buffer: [256]u8 = undefined;
@@ -873,6 +927,109 @@ test "NAPI trailing declarations and references keep exact binding and insertion
     }
     for (generated_reference_counts) |count| try std.testing.expectEqual(@as(usize, 2), count);
     _ = root;
+}
+
+const StaticMemberInjectedReferenceState = struct {
+    binding: NodeIndex = .none,
+    lexical_reference: NodeIndex = .none,
+    property_nodes: [16]NodeIndex = @splat(.none),
+    property_count: usize = 0,
+};
+
+fn injectStaticMemberReferenceFixture(
+    ctx: ?*anyopaque,
+    api: *AstTransformCtx,
+    func: FunctionInfo,
+) @import("../bundler/plugin.zig").PluginError!void {
+    if (func.name == null or !std.mem.eql(u8, func.name.?, "marker")) return;
+    const state: *StaticMemberInjectedReferenceState = @ptrCast(@alignCast(ctx orelse return error.PluginFailed));
+    const statements = try api.parseAndInjectStatements(
+        "const foo = 1; obj.foo; x.foo; y.foo.foo; z.foo; obj.foo; foo.foo; " ++
+            "y.foo.foo.foo; x.foo; z.foo; obj.foo.foo; foo;",
+    );
+    defer api.getAllocator().free(statements);
+
+    for (statements) |statement| {
+        const node = api.getNode(statement);
+        if (node.tag == .variable_declaration) {
+            const extra = node.data.extra;
+            const start = api.transformer.ast.extra_data.items[extra + 1];
+            const declarator_raw = api.transformer.ast.extra_data.items[start];
+            const declarator = api.transformer.ast.nodes.items[declarator_raw];
+            state.binding = api.transformer.ast.readExtraNode(declarator.data.extra, 0);
+        } else if (node.tag == .expression_statement) {
+            const expression = node.data.unary.operand;
+            const expression_node = api.getNode(expression);
+            if (expression_node.tag == .identifier_reference and
+                std.mem.eql(u8, api.getText(expression_node.data.string_ref), "foo"))
+            {
+                state.lexical_reference = expression;
+            }
+        }
+
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(api.getAllocator(), api.transformer.ast, statement);
+        defer api.getAllocator().free(reachable);
+        for (reachable) |raw| {
+            const reachable_node = api.transformer.ast.nodes.items[raw];
+            if (reachable_node.tag != .static_member_expression) continue;
+            const property_raw = api.transformer.ast.extra_data.items[reachable_node.data.extra + 1];
+            if (state.property_count >= state.property_nodes.len) return error.PluginFailed;
+            state.property_nodes[state.property_count] = @fromBackingInt(@intCast(property_raw));
+            state.property_count += 1;
+        }
+        try api.addTrailingStatement(statement);
+    }
+}
+
+test "NAPI injected static member names do not bind lexical SymbolIds" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(alloc, "var obj, x, y, z; function marker() {}");
+    var parser = @import("../parser/parser.zig").Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var state = StaticMemberInjectedReferenceState{};
+    const plugins = [_]transformer_mod.Plugin{.{
+        .name = "static-member-reference-context-test",
+        .context = @ptrCast(&state),
+        .onFunction = injectStaticMemberReferenceFixture,
+    }};
+    var transformer = try Transformer.init(alloc, &parser.ast, .{ .plugins = &plugins });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+
+    try std.testing.expectEqual(@as(usize, 14), state.property_count);
+    try std.testing.expect(!state.binding.isNone());
+    try std.testing.expect(!state.lexical_reference.isNone());
+    const binding_symbol_id = transformer.getSymbolIdAt(state.binding) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(binding_symbol_id, transformer.getSymbolIdAt(state.lexical_reference).?);
+    for (state.property_nodes[0..state.property_count]) |property| {
+        try std.testing.expectEqual(.identifier_reference, transformer.ast.getNode(property).tag);
+        try std.testing.expectEqualStrings("foo", transformer.ast.getText(transformer.ast.getNode(property).data.string_ref));
+        try std.testing.expect(transformer.getSymbolIdAt(property) == null);
+    }
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(@as(u32, 2), edited.symbols.items[binding_symbol_id].reference_count);
+    for (edited.references) |reference| {
+        for (state.property_nodes[0..state.property_count]) |property| {
+            try std.testing.expect(reference.node_index != property);
+        }
+    }
+    try std.testing.expectEqual(@as(u32, binding_symbol_id), edited.symbol_ids[@backingInt(state.lexical_reference)].?);
 }
 
 const VarRedeclarationFixtureState = struct {
