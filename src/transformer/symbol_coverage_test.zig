@@ -4914,8 +4914,24 @@ test "#4819 for-in temporaries bind symbols during lowering" {
     // Model generator operation collection: the wrapper binding identity is
     // known, but references must wait for their final output ScopeIds.
     transformer.state_machine_depth = 1;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForIn(&transformer, loop, parser.ast.getNode(loop));
+    try std.testing.expectEqual(@as(usize, 4), transformer.generator_temp_var_spans.items.len);
+    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
+
+    for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
+        const temp_name = transformer.ast.getText(temp_span);
+        const identity = transformer.generator_temp_producer_identities.items[temp_index];
+        var binding_id: ?u32 = null;
+        for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+            if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), temp_name)) continue;
+            binding_id = if (raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[raw] else null;
+            break;
+        }
+        try std.testing.expectEqual(binding_id orelse return error.MissingGeneratedTempSymbol, identity.symbol_id orelse return error.MissingGeneratorTempProducerIdentity);
+        try std.testing.expectEqual(transformer.generator_state_machine_scope, identity.owner_scope);
+    }
 
     const expected_names = [_][]const u8{ "_c", "_d", "_keys2", "_idx2" };
     var binding_ids: [expected_names.len]?u32 = @splat(null);
@@ -5050,8 +5066,13 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
             const id = if (raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[raw] else null;
             binding_ids[temp_index] = id orelse return error.MissingGeneratedForAwaitTempSymbol;
         }
-        const recorded_id = transformer.generator_state_temp_symbols.get(temp_span.start) orelse return error.MissingRecordedForAwaitTempSymbol;
-        try std.testing.expectEqual(binding_ids[temp_index] orelse return error.MissingGeneratedForAwaitTempSymbol, recorded_id);
+        const identity = transformer.generator_temp_producer_identities.items[temp_index];
+        try std.testing.expectEqual(
+            binding_ids[temp_index] orelse return error.MissingGeneratedForAwaitTempSymbol,
+            identity.symbol_id orelse return error.MissingForAwaitProducerIdentity,
+        );
+        try std.testing.expectEqual(transformer.generator_state_machine_scope, identity.owner_scope);
+        try std.testing.expect(transformer.generator_state_temp_symbols.get(temp_span.start) == null);
     }
 
     for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
@@ -5066,6 +5087,7 @@ test "#4819 generator for-await temporaries bind exact symbols during lowering" 
         }
     }
     for (ref_counts) |count| try std.testing.expect(count > 0);
+    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
 }
 
@@ -5107,6 +5129,7 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
     transformer.semantic_edit_enabled = true;
     transformer.current_scope = @fromBackingInt(@intCast(loop_scope));
     transformer.state_machine_depth = 1;
+    transformer.generator_state_machine_scope = transformer.nearestVarScope(transformer.current_scope);
     const lowering = @import("es2015_for_of.zig").ES2015ForOf(Transformer);
     _ = try lowering.rewriteForOf(&transformer, loop, parser.ast.getNode(loop), .none, true);
     try std.testing.expectEqual(@as(usize, 5), transformer.generator_temp_var_spans.items.len);
@@ -5126,6 +5149,19 @@ test "#4819 generator for-of temporaries bind symbols during lowering" {
         try std.testing.expect(symbol_id != null);
     }
     try std.testing.expectEqual(expected_names.len, found);
+    try std.testing.expectEqual(@as(usize, 0), transformer.generator_state_temp_symbols.count());
+    for (transformer.generator_temp_var_spans.items, 0..) |temp_span, temp_index| {
+        const temp_name = transformer.ast.getText(temp_span);
+        const identity = transformer.generator_temp_producer_identities.items[temp_index];
+        var binding_id: ?u32 = null;
+        for (transformer.ast.nodes.items[transformer.parser_node_count..], transformer.parser_node_count..) |node, raw| {
+            if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), temp_name)) continue;
+            binding_id = if (raw < transformer.symbol_ids.items.len) transformer.symbol_ids.items[raw] else null;
+            break;
+        }
+        try std.testing.expectEqual(binding_id orelse return error.MissingGeneratedForOfTempSymbol, identity.symbol_id orelse return error.MissingForOfProducerIdentity);
+        try std.testing.expectEqual(transformer.generator_state_machine_scope, identity.owner_scope);
+    }
 
     var catch_binding: ?NodeIndex = null;
     var catch_clause_raw: ?u32 = null;

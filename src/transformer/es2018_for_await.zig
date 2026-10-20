@@ -128,16 +128,12 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const ret_temp = try self.createSyntheticTempBinding(ret, span, semantic_scope);
             const errobj_temp = try self.createSyntheticTempBinding(errobj, span, semantic_scope);
             if (register_sm_temps) {
-                try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpans(self, &.{
-                    iter_temp.name_span,
-                    step_temp.name_span,
-                    ret_temp.name_span,
-                    errobj_temp.name_span,
-                });
-                try self.recordGeneratorStateTempSymbol(iter_temp.name_span, iter_temp.symbol_id);
-                try self.recordGeneratorStateTempSymbol(step_temp.name_span, step_temp.symbol_id);
-                try self.recordGeneratorStateTempSymbol(ret_temp.name_span, ret_temp.symbol_id);
-                try self.recordGeneratorStateTempSymbol(errobj_temp.name_span, errobj_temp.symbol_id);
+                const generator = @import("es2015_generator.zig").ES2015Generator(Transformer);
+                const identity_owner = temp_scope;
+                try generator.appendGeneratorTempSpanWithIdentity(self, iter_temp.name_span, iter_temp.symbol_id, identity_owner);
+                try generator.appendGeneratorTempSpanWithIdentity(self, step_temp.name_span, step_temp.symbol_id, identity_owner);
+                try generator.appendGeneratorTempSpanWithIdentity(self, ret_temp.name_span, ret_temp.symbol_id, identity_owner);
+                try generator.appendGeneratorTempSpanWithIdentity(self, errobj_temp.name_span, errobj_temp.symbol_id, identity_owner);
             }
             const decl = try es_helpers.makeVarDeclaration(self, &.{
                 try es_helpers.makeDeclarator(self, iter_temp.node, values_call, span),
