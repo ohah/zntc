@@ -38,6 +38,17 @@ fn makeClassComputedKeyRead(self: *Transformer, capture: es_helpers.TempCapture,
     return es_helpers.makeCapturedTempRef(self, capture, span, .{ .read = true });
 }
 
+pub const MovedFieldComputedKey = struct {
+    capture: es_helpers.TempCapture,
+    read: NodeIndex,
+};
+
+pub fn captureMovedFieldComputedKey(self: *Transformer, value: NodeIndex, span: Span) Error!MovedFieldComputedKey {
+    const property_key = try es_helpers.makeToPropertyKey(self, value, span);
+    const capture = try captureClassComputedKey(self, property_key, span);
+    return .{ .capture = capture, .read = try makeClassComputedKeyRead(self, capture, span) };
+}
+
 fn trackPrivateHelperPrelude(
     self: *Transformer,
     source_idx: NodeIndex,
@@ -453,18 +464,9 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 else
                     field.key;
 
-                // computed field 별 고유 이름. 예전의 하드코딩 `_a`/`_b` 는 같은 스코프의
-                // 다른 temp(상태 기계 temp 등)와 이름이 겹칠 수 있었다. makeTempVarSpan 의
-                // temp 는 감싼 함수/프로그램 최상단에 자동으로 `var` 선언된다.
-                const temp_span = try es_helpers.makeTempVarSpan(self);
-
-                // _a = foo; 대입
-                const temp_ref = try es_helpers.makeTempVarRef(self, temp_span, temp_span);
-                const assign = try self.ast.addNode(.{
-                    .tag = .assignment_expression,
-                    .span = field.span,
-                    .data = .{ .binary = .{ .left = temp_ref, .right = try es_helpers.makeToPropertyKey(self, actual_key, field.span), .flags = 0 } },
-                });
+                // computed key 의 write와 class 내부 read는 같은 producer handle을 공유한다.
+                const moved_key = try captureMovedFieldComputedKey(self, actual_key, field.span);
+                const assign = moved_key.capture.paren_assign;
                 if (as_expression) {
                     try key_assigns.append(self.allocator, assign);
                 } else {
@@ -475,7 +477,7 @@ fn visitClassWithAssignSemanticsInner(self: *Transformer, source_idx: NodeIndex,
                 const new_computed = try self.ast.addNode(.{
                     .tag = .computed_property_key,
                     .span = field.span,
-                    .data = .{ .unary = .{ .operand = temp_ref, .flags = 0 } },
+                    .data = .{ .unary = .{ .operand = moved_key.read, .flags = 0 } },
                 });
                 field.key = new_computed;
             }
