@@ -183,6 +183,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.generator_label_stack.deinit(self.allocator);
     self.label_scope.deinit(self.allocator);
     self.object_super_homes.deinit(self.allocator);
+    self.object_super_home_references.deinit(self.allocator);
     self.generator_temp_var_spans.deinit(self.allocator);
     self.generator_state_temp_symbols.deinit(self.allocator);
     self.generator_state_refs.deinit(self.allocator);
