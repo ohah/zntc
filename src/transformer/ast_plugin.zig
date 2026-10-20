@@ -408,9 +408,8 @@ pub const AstTransformCtx = struct {
     }
 
     /// Collect only identifier nodes that occur in lexical reference positions.
-    /// The parser also tags a static member's property name (for example the
-    /// `foo` in `obj.foo`) as `identifier_reference`, although it is a property
-    /// name and must not resolve to a lexical SymbolId.
+    /// The parser also tags static member and object property names as
+    /// `identifier_reference`; those names must not resolve to lexical symbols.
     fn collectInjectedReferenceNodeIndices(self: *AstTransformCtx, root: NodeIndex) Error![]u32 {
         const transformer = self.transformer;
         const allocator = transformer.allocator;
@@ -447,6 +446,20 @@ pub const AstTransformCtx = struct {
                         const object: NodeIndex = @fromBackingInt(@intCast(ast.extra_data.items[extra]));
                         if (!object.isNone()) try stack.append(allocator, object);
                     }
+                    continue;
+                },
+                .object_property => {
+                    // Match semantic analysis: `{foo}` uses foo as a lexical
+                    // reference, `{foo: value}` uses only value, and `{[key]:
+                    // value}` evaluates both the computed key and the value.
+                    const key = node.data.binary.left;
+                    const value = node.data.binary.right;
+                    if (!key.isNone()) {
+                        const key_node = ast.getNode(key);
+                        if (value.isNone() or key_node.tag == .computed_property_key)
+                            try stack.append(allocator, key);
+                    }
+                    if (!value.isNone()) try stack.append(allocator, value);
                     continue;
                 },
                 else => {},
@@ -600,6 +613,17 @@ pub const AstTransformCtx = struct {
                     .tag = src_node.tag,
                     .span = new_span,
                     .data = .{ .list = new_list },
+                });
+            },
+
+            // Computed object property names contain an expression whose
+            // lexical references must survive the plugin AST copy.
+            .computed_property_key => blk: {
+                const operand = try self.copyNodeFromParsedAst(src_ast, src_node.data.unary.operand);
+                break :blk self.transformer.ast.addNode(.{
+                    .tag = .computed_property_key,
+                    .span = new_span,
+                    .data = .{ .unary = .{ .operand = operand, .flags = src_node.data.unary.flags } },
                 });
             },
 
@@ -935,6 +959,120 @@ const StaticMemberInjectedReferenceState = struct {
     property_nodes: [16]NodeIndex = @splat(.none),
     property_count: usize = 0,
 };
+
+const ObjectPropertyInjectedReferenceState = struct {
+    binding: NodeIndex = .none,
+    static_key_nodes: [16]NodeIndex = @splat(.none),
+    static_key_count: usize = 0,
+    computed_key_count: usize = 0,
+};
+
+fn injectObjectPropertyReferenceFixture(
+    ctx: ?*anyopaque,
+    api: *AstTransformCtx,
+    func: FunctionInfo,
+) @import("../bundler/plugin.zig").PluginError!void {
+    if (func.name == null or !std.mem.eql(u8, func.name.?, "marker")) return;
+    const state: *ObjectPropertyInjectedReferenceState = @ptrCast(@alignCast(ctx orelse return error.PluginFailed));
+    const statements = try api.parseAndInjectStatements(
+        "const foo = 1; " ++
+            "const obj0 = { foo: 0 }; " ++
+            "const obj1 = { foo: 1, value: foo }; " ++
+            "const obj2 = { outer: { foo: 2 } }; " ++
+            "const obj3 = { [foo]: 3 }; " ++
+            "const obj4 = { foo }; " ++
+            "const obj5 = { outer: { [foo.foo]: 5 } }; " ++
+            "const obj6 = [{ foo: foo }]; " ++
+            "const obj7 = { [foo]: { foo: 7 } }; " ++
+            "const obj8 = { outer: { foo: 8, [foo]: foo } }; " ++
+            "const obj9 = { foo: 9, outer: [{ foo }, { [foo]: { foo: 10 } }] }; " ++
+            "foo;",
+    );
+    defer api.getAllocator().free(statements);
+
+    for (statements) |statement| {
+        const statement_node = api.getNode(statement);
+        if (statement_node.tag == .variable_declaration and state.binding.isNone()) {
+            const extra = statement_node.data.extra;
+            const start = api.transformer.ast.extra_data.items[extra + 1];
+            const declarator_raw = api.transformer.ast.extra_data.items[start];
+            const declarator = api.transformer.ast.nodes.items[declarator_raw];
+            const binding = api.transformer.ast.readExtraNode(declarator.data.extra, 0);
+            if (std.mem.eql(u8, api.getText(api.getNode(binding).data.string_ref), "foo"))
+                state.binding = binding;
+        }
+
+        const reachable = try ast_walk.collectReachableNodeIndicesFrom(api.getAllocator(), api.transformer.ast, statement);
+        defer api.getAllocator().free(reachable);
+        for (reachable) |raw| {
+            const reachable_node = api.transformer.ast.nodes.items[raw];
+            if (reachable_node.tag == .computed_property_key) state.computed_key_count += 1;
+            if (reachable_node.tag != .object_property) continue;
+            const key = reachable_node.data.binary.left;
+            const value = reachable_node.data.binary.right;
+            if (key.isNone() or value.isNone()) continue;
+            const key_node = api.getNode(key);
+            if (key_node.tag != .identifier_reference or
+                !std.mem.eql(u8, api.getText(key_node.data.string_ref), "foo")) continue;
+            if (state.static_key_count >= state.static_key_nodes.len) return error.PluginFailed;
+            state.static_key_nodes[state.static_key_count] = key;
+            state.static_key_count += 1;
+        }
+        try api.addTrailingStatement(statement);
+    }
+}
+
+test "NAPI injected object property keys do not bind lexical SymbolIds" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var scanner = try @import("../lexer/scanner.zig").Scanner.init(alloc, "function marker() {}");
+    var parser = @import("../parser/parser.zig").Parser.init(alloc, &scanner);
+    _ = try parser.parse();
+    var analyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer.init(alloc, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var state = ObjectPropertyInjectedReferenceState{};
+    const plugins = [_]transformer_mod.Plugin{.{
+        .name = "object-property-reference-context-test",
+        .context = @ptrCast(&state),
+        .onFunction = injectObjectPropertyReferenceFixture,
+    }};
+    var transformer = try Transformer.init(alloc, &parser.ast, .{ .plugins = &plugins });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+
+    try std.testing.expect(!state.binding.isNone());
+    try std.testing.expectEqual(@as(usize, 8), state.static_key_count);
+    try std.testing.expectEqual(@as(usize, 5), state.computed_key_count);
+    const binding_symbol_id = transformer.getSymbolIdAt(state.binding) orelse return error.TestUnexpectedResult;
+    for (state.static_key_nodes[0..state.static_key_count]) |key| {
+        try std.testing.expectEqual(.identifier_reference, transformer.ast.getNode(key).tag);
+        try std.testing.expectEqualStrings("foo", transformer.ast.getText(transformer.ast.getNode(key).data.string_ref));
+        try std.testing.expect(transformer.getSymbolIdAt(key) == null);
+    }
+
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(@as(u32, 11), edited.symbols.items[binding_symbol_id].reference_count);
+    var exact_foo_reads: usize = 0;
+    for (edited.references) |reference| {
+        if (reference.flags.declare or @backingInt(reference.symbol_id) != binding_symbol_id) continue;
+        try std.testing.expectEqual(.identifier_reference, transformer.ast.getNode(reference.node_index).tag);
+        try std.testing.expectEqualStrings("foo", transformer.ast.getText(transformer.ast.getNode(reference.node_index).data.string_ref));
+        exact_foo_reads += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 11), exact_foo_reads);
+}
 
 fn injectStaticMemberReferenceFixture(
     ctx: ?*anyopaque,
