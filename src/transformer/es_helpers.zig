@@ -2312,6 +2312,10 @@ pub const TempIdentityCapture = struct {
     span: Span,
     symbol_id: ?symbol_mod.SymbolId = null,
     reference_scope: ScopeId = .none,
+    /// Exact var owner selected by the producer. This can differ from the
+    /// lexical scope of its references when a state-machine callback is still
+    /// being assembled.
+    owner_scope: ScopeId = .none,
 };
 
 pub fn reserveTrackedTempIdentity(self: anytype, declaration_span: Span) !TempIdentityCapture {
@@ -2328,6 +2332,39 @@ pub fn reserveTrackedTempIdentity(self: anytype, declaration_span: Span) !TempId
         .span = temp_span,
         .symbol_id = if (identity) |exact| exact.symbol_id else null,
         .reference_scope = if (identity) |exact| exact.reference_scope else .none,
+        .owner_scope = if (identity) |exact| exact.reference_scope else .none,
+    };
+}
+
+/// Reserve an assignment temp against a known final var owner while retaining
+/// the source lexical scope for references emitted during state-machine
+/// collection. The exact producer ID then travels through the counter slot to
+/// the callback binding and is relocated with its references after assembly.
+pub fn reserveTrackedTempIdentityInOutputScope(
+    self: anytype,
+    declaration_span: Span,
+    output_scope: ScopeId,
+    reference_scope: ScopeId,
+) !TempIdentityCapture {
+    const temp_span = try makeTempVarSpan(self);
+    const counter_index = self.temp_var_counter - 1;
+    if (!self.semantic_edit_enabled) return .{
+        .span = temp_span,
+        .owner_scope = output_scope,
+    };
+    if (output_scope.isNone() or reference_scope.isNone())
+        std.debug.panic("state-machine temp producer has no exact owner or reference scope", .{});
+    const symbol_id = (try self.reserveSyntheticTempSymbolInScope(
+        temp_span,
+        declaration_span,
+        output_scope,
+    )) orelse std.debug.panic("state-machine temp producer did not reserve a SymbolId", .{});
+    try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(symbol_id));
+    return .{
+        .span = temp_span,
+        .symbol_id = symbol_id,
+        .reference_scope = reference_scope,
+        .owner_scope = output_scope,
     };
 }
 

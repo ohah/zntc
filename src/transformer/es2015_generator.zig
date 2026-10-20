@@ -590,7 +590,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                                 const is_destructuring = new_left_node.tag == .object_pattern or new_left_node.tag == .array_pattern;
                                 // Destructuring 은 spec 상 compound op 불가 (`{a} += x` invalid) → 전용 helper (flags=0 + paren wrap).
                                 break :plain if (is_destructuring)
-                                    try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span)
+                                    try makeDestructuringAssignStmt(self, new_left, sent_call, stmt.span, self.generator_state_machine_scope)
                                 else
                                     try es_helpers.makeAssignStmt(self, new_left, sent_call, stmt.span, expr.data.binary.flags);
                             };
@@ -1909,7 +1909,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
         /// ES5 호환 statement 로 변환 (#1960). state machine 이 만든 binding pattern
         /// LHS 는 visitNode 트래버설을 거치지 않아 일반 destructuring lowering 이
         /// 도달하지 못하므로 emit 시점에 명시적으로 호출.
-        fn makeDestructuringAssignStmt(self: *Transformer, lhs: NodeIndex, rhs: NodeIndex, span: Span) Transformer.Error!NodeIndex {
+        fn makeDestructuringAssignStmt(self: *Transformer, lhs: NodeIndex, rhs: NodeIndex, span: Span, producer_output_scope: @import("../semantic/scope.zig").ScopeId) Transformer.Error!NodeIndex {
             const lhs_node = self.ast.getNode(lhs);
             // 구조분해가 native 인 타겟(Hermes 등)에서도 단순 대입으로 낮춘다. 바인딩 패턴을
             // 대입 좌변에 그대로 두면 minify 의 스코프 재해석이 패턴 안을 **선언**으로 봐서,
@@ -1917,7 +1917,7 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // `x$N` 으로 리네임될 때 드러남, #4712).
             if (lhs_node.tag == .object_pattern or lhs_node.tag == .array_pattern) {
                 const Es2015D = es2015_destructuring.ES2015Destructuring(Transformer);
-                const seq = try Es2015D.lowerBindingPatternAssignment(self, lhs_node, rhs, span);
+                const seq = try Es2015D.lowerBindingPatternAssignment(self, lhs_node, rhs, span, producer_output_scope);
                 return es_helpers.makeExprStmt(self, seq, span);
             }
             const assign = try self.ast.addNode(.{
@@ -1961,19 +1961,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                     // x = _state.sent()
                     const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const sent_call = try buildSentCall(self, stmt.span);
-                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, sent_call, stmt.span);
+                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, sent_call, stmt.span, self.generator_state_machine_scope);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 } else if (es2015_scan.containsYield(self, init_idx)) {
                     // var x = foo(await y) → 중첩 yield 추출 후 x = foo(_state.sent())
                     const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const new_init = try visitExprWithYieldExtraction(self, init_idx, ops, next_label);
-                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span);
+                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span, self.generator_state_machine_scope);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 } else {
                     // var x = expr (no yield) → x = expr
                     const new_binding = try bindingToAssignTarget(self, try self.visitNode(binding));
                     const new_init = try self.visitNode(init_idx);
-                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span);
+                    const assign_stmt = try makeDestructuringAssignStmt(self, new_binding, new_init, stmt.span, self.generator_state_machine_scope);
                     try ops.append(self.allocator, .{ .code = .statement, .arg = .{ .node = assign_stmt } });
                 }
 
@@ -3161,6 +3161,196 @@ test "#4819 generator state temp producers attach their SymbolIds immediately" {
     }
     const exact_binding = hoisted_binding orelse return error.MissingAssignmentTempBinding;
     try std.testing.expectEqual(@as(?u32, assignment_id), transformer.getSymbolIdAt(exact_binding));
+}
+
+fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp_count: usize) !void {
+    const Transformer = @import("transformer.zig").Transformer;
+    const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
+    const TransformOptions = @import("options.zig").TransformOptions;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es2015),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    var output_scope: ?ScopeId = null;
+    var pattern: NodeIndex = .none;
+    var largest_pattern_span: u32 = 0;
+    var rhs: NodeIndex = .none;
+    for (transformer.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .function_declaration and output_scope == null) {
+            if (analyzer.scope_owner_map.get(@intCast(raw))) |scope_raw|
+                output_scope = @fromBackingInt(@intCast(scope_raw));
+        }
+        if (node.tag == .object_pattern or node.tag == .array_pattern) {
+            const width = node.span.end - node.span.start;
+            if (width > largest_pattern_span) {
+                pattern = @fromBackingInt(@intCast(raw));
+                largest_pattern_span = width;
+            }
+        }
+        if (node.tag == .numeric_literal and rhs.isNone()) rhs = @fromBackingInt(@intCast(raw));
+    }
+    const owner = output_scope orelse return error.MissingGeneratorDestructuringOwner;
+    if (pattern.isNone()) return error.MissingGeneratorDestructuringPattern;
+    if (rhs.isNone()) return error.MissingGeneratorDestructuringRhs;
+    const pattern_node = transformer.ast.getNode(pattern);
+    const saved_counter = transformer.temp_var_counter;
+    transformer.current_scope = owner;
+    transformer.generator_state_machine_scope = owner;
+    transformer.state_machine_depth = 1;
+
+    const statement = try ES2015Generator(Transformer).makeDestructuringAssignStmt(
+        &transformer,
+        pattern,
+        rhs,
+        pattern_node.span,
+        owner,
+    );
+    try std.testing.expectEqual(expected_temp_count, transformer.temp_symbol_ids_by_counter.count());
+    var producer_slots_without_pending_refs = transformer.temp_symbol_ids_by_counter.iterator();
+    while (producer_slots_without_pending_refs.next()) |entry| {
+        const name_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse
+            return error.MissingGeneratorDestructuringTempSpan;
+        try std.testing.expect(!transformer.pending_temp_ref_chains.contains(name_span.start));
+    }
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, statement);
+    const editor = &transformer.semantic_editor.?;
+    var identities = transformer.temp_symbol_ids_by_counter.iterator();
+    var identity_count: usize = 0;
+    while (identities.next()) |entry| {
+        const name_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse
+            return error.MissingGeneratorDestructuringTempSpan;
+        const id = entry.value_ptr.*;
+        if (id >= editor.symbols.items.len) return error.InvalidGeneratorDestructuringSymbolId;
+        const symbol = editor.symbols.items[id];
+        try std.testing.expectEqual(owner, symbol.scope_id);
+        try std.testing.expectEqual(name_span.start, symbol.name.start);
+        try std.testing.expectEqual(name_span.end, symbol.name.end);
+
+        var reference_count: usize = 0;
+        for (reachable) |raw| {
+            if (raw >= transformer.symbol_ids.items.len or transformer.symbol_ids.items[raw] != id) continue;
+            const node: NodeIndex = @fromBackingInt(@intCast(raw));
+            switch (transformer.ast.getNode(node).tag) {
+                .identifier_reference, .assignment_target_identifier => {},
+                else => continue,
+            }
+            const reference = (try editor.referenceForNode(node)) orelse
+                return error.MissingGeneratorDestructuringProducerReference;
+            try std.testing.expectEqual(id, @backingInt(reference.symbol_id));
+            try std.testing.expectEqual(owner, reference.scope_id);
+            reference_count += 1;
+        }
+        try std.testing.expect(reference_count > 0);
+        try std.testing.expectEqual(symbol.reference_count, reference_count);
+        identity_count += 1;
+    }
+    try std.testing.expectEqual(expected_temp_count, identity_count);
+
+    const body_list = try transformer.ast.addNodeList(&.{statement});
+    const body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = pattern_node.span,
+        .data = .{ .list = body_list },
+    });
+    var callback_temps: std.ArrayListUnmanaged(@import("transformer/lists.zig").HoistedStateTemp) = .empty;
+    const hoisted_body = try transformer.hoistStateMachineTempsAndRestore(body, saved_counter, pattern_node.span, &callback_temps);
+    var carried_count: usize = 0;
+    for (callback_temps.items) |temp| {
+        var expected_id: ?u32 = null;
+        var producer_slots = transformer.temp_symbol_ids_by_counter.iterator();
+        while (producer_slots.next()) |entry| {
+            const producer_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse continue;
+            if (producer_span.start != temp.name_span.start or producer_span.end != temp.name_span.end) continue;
+            expected_id = entry.value_ptr.*;
+        }
+        const producer_id = expected_id orelse continue;
+        const hoisted_id = temp.symbol_id orelse return error.MissingHoistedProducerSymbolId;
+        try std.testing.expectEqual(producer_id, hoisted_id);
+        carried_count += 1;
+    }
+    try std.testing.expectEqual(expected_temp_count, carried_count);
+
+    const generated = try ES2015Generator(Transformer).buildGeneratorHelperCallWithProto(
+        &transformer,
+        hoisted_body,
+        .none,
+        pattern_node.span,
+    );
+    try transformer.bindGeneratedState(
+        owner,
+        owner,
+        generated.callback,
+        generated.state_param,
+        transformer.generator_state_refs.items.len,
+        &.{},
+        callback_temps.items,
+        pattern_node.span,
+    );
+    producer_slots_without_pending_refs = transformer.temp_symbol_ids_by_counter.iterator();
+    while (producer_slots_without_pending_refs.next()) |entry| {
+        const name_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse continue;
+        try std.testing.expect(!transformer.pending_temp_ref_chains.contains(name_span.start));
+    }
+    const callback_scope = transformer.outputOwnedScope(generated.callback) orelse
+        return error.MissingGeneratorDestructuringCallbackScope;
+    var finalized_identities: usize = 0;
+    var finalized_slots = transformer.temp_symbol_ids_by_counter.iterator();
+    while (finalized_slots.next()) |entry| {
+        const name_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse continue;
+        const id = entry.value_ptr.*;
+        const symbol = editor.symbols.items[id];
+        try std.testing.expectEqual(callback_scope, symbol.scope_id);
+        var binding_found = false;
+        for (callback_temps.items) |temp| {
+            if (temp.name_span.start != name_span.start or temp.name_span.end != name_span.end) continue;
+            try std.testing.expectEqual(@as(?u32, id), transformer.getSymbolIdAt(temp.binding));
+            binding_found = true;
+        }
+        try std.testing.expect(binding_found);
+        var finalized_references: usize = 0;
+        for (editor.references.items) |reference| {
+            if (@backingInt(reference.symbol_id) != id) continue;
+            try std.testing.expectEqual(callback_scope, reference.scope_id);
+            finalized_references += 1;
+        }
+        try std.testing.expect(finalized_references > 0);
+        finalized_identities += 1;
+    }
+    try std.testing.expectEqual(expected_temp_count, finalized_identities);
+}
+
+test "#4819 state-machine destructuring assignment carries exact producer IDs through hoisting" {
+    const fixtures = [_]struct { source: []const u8, temps: usize }{
+        .{ .source = "function* f(key, output, rest) { let { [key()]: output, ...rest } = 1; }", .temps = 2 },
+        .{ .source = "function* f(key, output) { let { [key]: output } = 1; }", .temps = 2 },
+        .{ .source = "function* f(output) { let [output] = 1; }", .temps = 1 },
+        .{ .source = "function* f(output) { let [, output] = 1; }", .temps = 1 },
+        .{ .source = "function* f(output) { let { item: { value: output } } = 1; }", .temps = 1 },
+        .{ .source = "function* f(key, output) { let { [key()]: output } = 1; }", .temps = 2 },
+        .{ .source = "function* f(key, output, rest) { let { [key()]: output, ...rest } = 1; }", .temps = 2 },
+        .{ .source = "function* f(output) { let { output } = 1; }", .temps = 1 },
+        .{ .source = "function* f(output) { let { value: output } = 1; }", .temps = 1 },
+        .{ .source = "function* f(key, first, second) { let { [key()]: first, ['other']: second } = 1; }", .temps = 3 },
+    };
+    for (fixtures) |fixture| try checkGeneratorDestructuringProducerIdentity(fixture.source, fixture.temps);
 }
 
 test "#4819 class-header generator temps carry producer IDs across hostile sources" {

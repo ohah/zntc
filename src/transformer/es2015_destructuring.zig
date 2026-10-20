@@ -313,8 +313,12 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             pattern: Node,
             rhs: NodeIndex,
             span: Span,
+            producer_output_scope: ?@import("../semantic/scope.zig").ScopeId,
         ) Transformer.Error!NodeIndex {
-            const temp_identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+            const temp_identity = if (producer_output_scope) |output_scope|
+                try es_helpers.reserveTrackedTempIdentityInOutputScope(self, span, output_scope, self.current_scope)
+            else
+                try es_helpers.reserveTrackedTempIdentity(self, span);
             const temp_span = temp_identity.span;
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -380,6 +384,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     .assign,
                     span,
                     .@"var",
+                    identity.owner_scope,
                 );
                 const member_access = access_result.member;
 
@@ -637,6 +642,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     .assign,
                     span,
                     .@"var",
+                    identity.owner_scope,
                 );
                 const access = access_result.member;
 
@@ -884,6 +890,7 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
                     .decl,
                     span,
                     decl_kind,
+                    .none,
                 );
                 const member_access = access_result.member;
 
@@ -1219,17 +1226,20 @@ pub fn ES2015Destructuring(comptime Transformer: type) type {
             mode: ComputedKeyMode,
             span: Span,
             decl_kind: ast_mod.VariableDeclarationKind,
+            producer_output_scope: @import("../semantic/scope.zig").ScopeId,
         ) Transformer.Error!ObjectMemberAccessResult {
             if (key_node.tag == .computed_property_key) {
                 var computed_key_temp_identity: ?es_helpers.TempIdentityCapture = null;
                 const key_span = switch (mode) {
                     .decl => try es_helpers.makeTempVarSpan(self),
                     .assign => blk: {
-                        // The first assignment to this key temp is its
-                        // producer. Reserve its exact identity now whenever
-                        // the output var scope is already known; state-machine
-                        // lowering keeps the pending span handoff.
-                        const identity = try es_helpers.reserveTrackedTempIdentity(self, span);
+                        // State-machine lowering knows the eventual var owner
+                        // even though the callback scope itself is created
+                        // later. Keep the producer ID across that handoff.
+                        const identity = if (!producer_output_scope.isNone())
+                            try es_helpers.reserveTrackedTempIdentityInOutputScope(self, span, producer_output_scope, self.current_scope)
+                        else
+                            try es_helpers.reserveTrackedTempIdentity(self, span);
                         computed_key_temp_identity = identity;
                         break :blk identity.span;
                     },
