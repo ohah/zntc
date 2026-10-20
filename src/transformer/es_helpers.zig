@@ -1481,6 +1481,28 @@ pub fn resolveSyntheticNameAvoidingAnyDynamicEval(self: anytype, name: []const u
     return scoped_resolved;
 }
 
+/// Resolve a generated name against direct-eval strings and update the shared
+/// base-name cache when that check selects a scoped alias. Legacy synthetic
+/// reference constructors receive only the base spelling, so they must see
+/// the same choice as the producer that pre-resolved the binding.
+pub fn resolveSyntheticNameAvoidingDynamicEvalAndRemember(
+    self: anytype,
+    name: []const u8,
+    scope_id: ScopeId,
+) ![]const u8 {
+    const resolved = if (scope_id.isNone())
+        try resolveSyntheticNameAvoidingAnyDynamicEval(self, name)
+    else
+        try resolveSyntheticNameAvoidingDynamicEval(self, name, scope_id);
+
+    if (!std.mem.eql(u8, name, resolved)) {
+        if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+        const key = try self.name_arena.?.allocator().dupe(u8, name);
+        try self.synthetic_names.put(self.allocator, key, resolved);
+    }
+    return resolved;
+}
+
 /// Keep a stable internal spelling for a generated name whose exact SymbolId
 /// will receive its emitted spelling in the standalone final-name pass.
 ///
