@@ -2210,6 +2210,37 @@ test "ESM re-export: CJS require member access keeps re-export source body" {
     try std.testing.expect(std.mem.indexOf(u8, result.output, "module.exports = { registerAsset, getAssetByID }") != null);
 }
 
+test "ESM re-export: CJS export value is not replaced by a same-named local const" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value } from './facade.mjs';
+        \\globalThis.fromCjs = value;
+    );
+    try writeFile(tmp.dir, "facade.mjs", "export { value } from './provider.cjs';");
+    try writeFile(tmp.dir, "provider.cjs",
+        \\const value = 1;
+        \\exports.value = 99;
+    );
+
+    const entry = try absPath(&tmp, "entry.mjs");
+    defer std.testing.allocator.free(entry);
+
+    var b = Bundler.init(std.testing.allocator, .{
+        .entry_points = &.{entry},
+        .minify_syntax = true,
+    });
+    defer b.deinit();
+    const result = try b.bundle(std.testing.io);
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(!result.hasErrors());
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exports.value = 99") != null or
+        std.mem.indexOf(u8, result.output, "exports.value=99") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "globalThis.fromCjs = 1") == null and
+        std.mem.indexOf(u8, result.output, "globalThis.fromCjs=1") == null);
+}
+
 test "RN asset registry: scale-only asset keeps Metro base name and scale" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
