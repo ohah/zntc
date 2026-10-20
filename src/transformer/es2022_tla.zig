@@ -416,7 +416,7 @@ fn splitWrappedDeclaration(comptime Transformer: type, self: *Transformer, decl_
         const expr = if (binding_node.tag == .binding_identifier)
             try es_helpers.makeAssignExpr(self, try bindingWriteTarget(Transformer, self, binding), init, declarator.span, 0)
         else
-            try @import("es2015_destructuring.zig").ES2015Destructuring(Transformer).lowerBindingPatternAssignment(self, binding_node, init, declarator.span);
+            try @import("es2015_destructuring.zig").ES2015Destructuring(Transformer).lowerBindingPatternAssignment(self, binding_node, init, declarator.span, null);
         try body.append(self.allocator, try es_helpers.makeExprStmt(self, expr, declarator.span));
     }
     if (kept.items.len > 0) try body.append(self.allocator, try es_helpers.makeVarDeclaration(self, kept.items, kind, decl.span));
