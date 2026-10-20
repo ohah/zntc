@@ -48,6 +48,7 @@ const ALLOWLIST = {
   "src/transformer/es2015_block_scoping.zig::collectChildIndices": { class: "iterative_safe", note: "one-level collector feeding caller stack" },
   "src/transformer/transformer/worklet.zig::collectAllIdentifiers": { class: "iterative_safe", note: "explicit stack (worklet)" },
   "src/transformer/transformer/worklet.zig::collectNewExpressionCallees": { class: "iterative_safe", note: "explicit stack (worklet)" },
+  "src/transformer/ast_plugin.zig::collectInjectedReferenceNodeIndices": { class: "iterative_safe", note: "explicit NodeIndex stack + visited bitmap skips static member property names while retaining receiver references" },
   "src/transformer/transformer/worklet.zig::walkBodyForClosureAnalysis": { class: "iterative_safe", allowDirectRecursion: true, note: "explicit stack for ordinary AST descent; recursion only enters nested function bodies and is bounded by source nesting" },
   "src/bundler/tree_shaker/const_materialize.zig::anyReachableNode": { class: "iterative_safe", note: "numeric_dfs_stack" },
   "src/semantic/reference_walk.zig::collectIdentifierReferences": { class: "iterative_safe", note: "explicit edge stack and one-level child collector" },
