@@ -128,7 +128,7 @@ pub fn ES2018ForAwait(comptime Transformer: type) type {
             const ret_temp = try self.createSyntheticTempBinding(ret, span, semantic_scope);
             const errobj_temp = try self.createSyntheticTempBinding(errobj, span, semantic_scope);
             if (register_sm_temps) {
-                try self.generator_temp_var_spans.appendSlice(self.allocator, &.{
+                try @import("es2015_generator.zig").ES2015Generator(Transformer).appendGeneratorTempSpans(self, &.{
                     iter_temp.name_span,
                     step_temp.name_span,
                     ret_temp.name_span,

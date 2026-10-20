@@ -151,6 +151,7 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.capture_binding_ids.deinit(self.allocator);
     self.bound_temp_symbols.deinit(self.allocator);
     self.generator_state_bindings.deinit(self.allocator);
+    self.generator_temp_producer_identities.deinit(self.allocator);
     self.generator_state_temp_refs.deinit(self.allocator);
     self.generated_body_binding_moves.deinit(self.allocator);
     self.helper_ref_nodes.deinit(self.allocator);

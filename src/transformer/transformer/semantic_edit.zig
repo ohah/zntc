@@ -2790,21 +2790,24 @@ pub fn createSyntheticTempBinding(
 
 /// Attach the binding half of a temp to the SymbolId already carried by its
 /// producer. This avoids recovering a known identity through the span/scope
-/// registry when the hoisted declaration is emitted later.
+/// registry when the hoisted declaration is emitted later. Keep the producer's
+/// resolved spelling unchanged; generator scope moves are finalized after the
+/// wrapper binding is created.
 pub fn createSyntheticTempBindingWithIdentity(
     self: *Transformer,
     requested_name: Span,
     scope: ScopeId,
     symbol_id: SymbolId,
 ) Transformer.Error!SyntheticBinding {
-    const node = try es_helpers.makeSyntheticBinding(self, requested_name);
+    const node = try es_helpers.makeExactSyntheticBindingFromSpan(self, requested_name);
     const name_span = self.ast.getNode(node).data.string_ref;
     const editor = try editorFor(self);
     const raw_id = @backingInt(symbol_id);
     if (raw_id >= editor.symbols.items.len) return editError(error.InvalidSymbol);
     const owner_scope = variableScope(self, scope);
     const symbol = editor.symbols.items[raw_id];
-    if (symbol.kind != .variable_var or symbol.scope_id != owner_scope or
+    const scope_mismatch = symbol.scope_id != owner_scope;
+    if ((scope_mismatch and self.state_machine_depth == 0) or symbol.kind != .variable_var or
         symbol.name.start != requested_name.start or symbol.name.end != requested_name.end or
         !std.mem.eql(u8, symbol.synthetic_name, self.ast.getText(name_span)))
         return editError(error.InvalidSymbol);
@@ -2818,12 +2821,32 @@ pub fn createSyntheticTempBindingWithIdentity(
 pub fn recordGeneratorStateTempSymbol(self: *Transformer, name_span: Span, symbol: ?SymbolId) Transformer.Error!void {
     if (!self.semantic_edit_enabled or self.state_machine_depth == 0) return;
     const id = symbol orelse return;
+    if (self.generator_temp_var_spans.items.len != self.generator_temp_producer_identities.items.len)
+        std.debug.panic("generator temp spans and producer identities are out of sync", .{});
     const gop = try self.generator_state_temp_symbols.getOrPut(self.allocator, name_span.start);
     if (gop.found_existing) {
         if (gop.value_ptr.* != @backingInt(id)) std.debug.panic("generator temp Span was assigned multiple symbols", .{});
-        return;
+    } else {
+        gop.value_ptr.* = @backingInt(id);
     }
-    gop.value_ptr.* = @backingInt(id);
+    for (self.generator_temp_var_spans.items, 0..) |temp_span, index| {
+        if (temp_span.start != name_span.start or temp_span.end != name_span.end) continue;
+        const identity = &self.generator_temp_producer_identities.items[index];
+        if (identity.symbol_id) |existing| {
+            if (existing != @backingInt(id)) std.debug.panic("generator temp identity changed SymbolId", .{});
+        } else {
+            identity.symbol_id = @backingInt(id);
+        }
+        const owner_scope = self.generator_state_machine_scope;
+        if (identity.owner_scope.isNone()) {
+            identity.owner_scope = owner_scope;
+        } else if (identity.owner_scope != owner_scope) {
+            std.debug.panic("generator temp SymbolId owner changed before hoisting", .{});
+        }
+    }
+    // Some assignment targets reserve their identity before the wrapper var
+    // is added to the span list. appendGeneratorTempSpan copies this legacy
+    // reservation into the aligned slot when that declaration is registered.
 }
 
 pub fn registerGeneratedWrapperTemp(self: *Transformer, binding: NodeIndex, name_span: Span, declaration_span: Span, owner_scope: ScopeId) Transformer.Error!?SymbolId {
