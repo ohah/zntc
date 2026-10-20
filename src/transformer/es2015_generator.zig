@@ -400,6 +400,25 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             try self.generator_temp_var_spans.append(self.allocator, span);
         }
 
+        /// Carry a loop binding's producer-owned identity into the state
+        /// machine's hoist list. Unlike a generic identity-bearing declaration,
+        /// an extracted `_loop` declaration is created after the original
+        /// hoisted-variable scan, so the producer record must identify it.
+        pub fn appendGeneratorTempSpanWithProducerIdentity(
+            self: *Transformer,
+            span: Span,
+            symbol_id: SymbolId,
+            owner_scope: ScopeId,
+        ) Transformer.Error!void {
+            try appendGeneratorTempSpanWithIdentity(self, span, symbol_id, owner_scope);
+            const identity = &self.generator_temp_producer_identities.items[
+                self.generator_temp_producer_identities.items.len - 1
+            ];
+            if (identity.symbol_id == null or identity.owner_scope != owner_scope)
+                std.debug.panic("generator loop producer identity was not retained", .{});
+            identity.producer_owned = true;
+        }
+
         /// Preserve a known source owner while moving a loop control temp into
         /// this generated callback's wrapper declaration. Semantic-edit
         /// completion relocates the exact SymbolId after validating the live
@@ -637,6 +656,19 @@ pub fn ES2015Generator(comptime Transformer: type) type {
                 // 이 선언이 없으면 minify 가 둘을 다른 이름으로 찍는다 (#4760).
                 const origin = self.generator_var_origins.get(spanKey(temp_span));
                 const producer = self.generator_temp_producer_identities.items[temp_index];
+                if (origin) |source| {
+                    if (producer.symbol_id) |producer_id| {
+                        const source_id = self.getSymbolIdAt(source) orelse
+                            if (self.semantic_edit_enabled)
+                                std.debug.panic("generator source binding lost its exact SymbolId", .{})
+                            else
+                                producer_id;
+                        if (producer_id != source_id)
+                            std.debug.panic("generator producer and source binding disagree on SymbolId", .{});
+                        if (self.semantic_edit_enabled and producer.owner_scope != wrapper_scope)
+                            std.debug.panic("generator source binding producer changed its exact owner ScopeId", .{});
+                    }
+                }
                 const binding = if (origin) |source|
                     try self.makeUserBinding(temp_span, source)
                 else if (producer.symbol_id) |raw_id| blk: {
@@ -1106,24 +1138,30 @@ pub fn ES2015Generator(comptime Transformer: type) type {
             // 일반 호이스팅 스캔(`collectHoistedVars`)에 안 잡힌다 — 등록을 빠뜨리면
             // `ReferenceError: _loop is not defined`.
             const loop_fn_node = self.ast.getNode(result.loop_fn);
-            const loop_name_span = blk: {
-                const decl_start = self.readU32(loop_fn_node.data.extra, 1);
-                const decl_len = self.readU32(loop_fn_node.data.extra, 2);
-                for (0..decl_len) |offset| {
-                    const decl_raw = self.ast.extra_data.items[decl_start + offset];
-                    const declarator = self.ast.getNode(@as(NodeIndex, @fromBackingInt(@intCast(decl_raw))));
-                    if (declarator.tag != .variable_declarator or
-                        self.readNodeIdx(declarator.data.extra, 2) != result.loop_function) continue;
-                    const binding = self.ast.getNode(self.readNodeIdx(declarator.data.extra, 0));
-                    break :blk binding.data.string_ref;
-                }
-                std.debug.panic("extracted generator loop binding missing from its declaration", .{});
-            };
+            const loop_binding_node = self.ast.getNode(result.loop_binding);
+            if (loop_binding_node.tag != .binding_identifier)
+                std.debug.panic("extracted generator loop result lost its exact binding node", .{});
+            const loop_name_span = loop_binding_node.data.string_ref;
             // ⚠️ 등록은 **collectVarDeclWithYield 뒤**에 해야 한다. 그 안에서 `_loopN` 의
             // generator 본문이 낮아지며 자기 상태 기계를 만드는데, 먼저 넣어 두면 그
             // 안쪽 리스트로 들어가 `var _loop;` 이 엉뚱한 함수에 선언된다.
             try collectVarDeclWithYield(self, loop_fn_node, ops, next_label);
-            try appendGeneratorTempSpan(self, loop_name_span);
+            if (self.semantic_edit_enabled) {
+                const loop_symbol_id = result.loop_symbol_id orelse
+                    std.debug.panic("extracted generator loop lost its producer SymbolId", .{});
+                const loop_owner_scope = result.loop_owner_scope;
+                if (loop_owner_scope.isNone() or loop_owner_scope != self.generator_state_machine_scope)
+                    std.debug.panic("extracted generator loop binding owner changed before state-machine hoisting", .{});
+                if (self.generator_var_origins.get(spanKey(loop_name_span))) |origin| {
+                    if (origin != result.loop_binding or self.getSymbolIdAt(origin) != @as(?u32, @backingInt(loop_symbol_id)))
+                        std.debug.panic("extracted generator loop AST handoff disagrees with its producer identity", .{});
+                } else {
+                    std.debug.panic("extracted generator loop binding was not registered by its producer", .{});
+                }
+                try appendGeneratorTempSpanWithProducerIdentity(self, loop_name_span, loop_symbol_id, loop_owner_scope);
+            } else {
+                try appendGeneratorTempSpan(self, loop_name_span);
+            }
             // break/continue/return 신호를 받는 `_ret` 도 같은 이유로 등록한다.
             if (flow.needsRetVar()) {
                 const ret_temp_span = result.ret_temp_span orelse
@@ -3215,7 +3253,7 @@ test "ES2015 generator module compiles" {
     _ = ES2015Generator;
 }
 
-fn checkGeneratorTempProducerFixture(source: []const u8) !void {
+fn checkGeneratorTempProducerFixture(source: []const u8, require_extracted_loop_producer: bool) !void {
     const Transformer = @import("transformer.zig").Transformer;
     const SemanticAnalyzer = @import("../semantic/analyzer.zig").SemanticAnalyzer;
     const TransformOptions = @import("options.zig").TransformOptions;
@@ -3250,6 +3288,7 @@ fn checkGeneratorTempProducerFixture(source: []const u8) !void {
     const original_node_count = transformer.ast.nodes.items.len;
     var generator_count: usize = 0;
     var direct_producer_count: usize = 0;
+    var extracted_loop_producer_count: usize = 0;
     for (transformer.ast.nodes.items[0..original_node_count], 0..) |node, raw| {
         if (node.tag != .function_declaration and node.tag != .function_expression) continue;
         const extra = node.data.extra;
@@ -3276,9 +3315,15 @@ fn checkGeneratorTempProducerFixture(source: []const u8) !void {
         );
         generator_count += 1;
 
-        for (transformer.generator_temp_producer_identities.items) |identity| {
+        for (transformer.generator_temp_producer_identities.items, 0..) |identity, identity_index| {
             if (!identity.producer_owned) continue;
             direct_producer_count += 1;
+            const producer_name = transformer.ast.getText(transformer.generator_temp_var_spans.items[identity_index]);
+            if (std.mem.startsWith(u8, producer_name, "_loop") or
+                std.mem.startsWith(u8, producer_name, "__zntc_loop"))
+            {
+                extracted_loop_producer_count += 1;
+            }
             const raw_id = identity.symbol_id orelse return error.MissingGeneratorProducerSymbolId;
             try std.testing.expectEqual(owner_scope, identity.owner_scope);
             const editor = if (transformer.semantic_editor) |*value| value else return error.MissingGeneratorProducerEditor;
@@ -3313,6 +3358,7 @@ fn checkGeneratorTempProducerFixture(source: []const u8) !void {
     }
     try std.testing.expect(generator_count > 0);
     try std.testing.expect(direct_producer_count > 0);
+    if (require_extracted_loop_producer) try std.testing.expect(extracted_loop_producer_count > 0);
 }
 
 test "#4819 deferred generator temp identity bypasses the span registry" {
@@ -3394,7 +3440,23 @@ test "#4819 generator yield and branch temps keep producer IDs through hoisting"
         "function* outer(){ yield (yield 1) ?? 2; function* inner(){ yield (yield 3) ? 4 : 5; } yield inner; }",
         "function* g(){ yield (yield 1) || (yield 2); eval(''); }",
     };
-    for (hostile_sources) |source| try checkGeneratorTempProducerFixture(source);
+    for (hostile_sources) |source| try checkGeneratorTempProducerFixture(source, false);
+}
+
+test "#4819 extracted generator loop bindings carry producer IDs through hoisting" {
+    const hostile_sources = [_][]const u8{
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); } }",
+        "function* g(){ outer: for(let i=0;i<3;i++){ yield (()=>i)(); if(i) break outer; continue outer; } }",
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); if(i) return i; } }",
+        "function* g(items){ for(let i of items){ yield (()=>i)(); if(i) break; } }",
+        "function* g(items){ for(let i in items){ yield (()=>i)(); if(i) continue; } }",
+        "function* g(){ outer: for(let i=0;i<3;i++){ for(let j=0;j<2;j++){ yield (()=>i+j)(); if(j) break outer; } } }",
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); try { if(i) break; } finally { yield i; } } }",
+        "function* g(){ for(let i=0;i<3;i++){ yield (()=>i)(); switch(i){ case 1: break; default: if(i) continue; } } }",
+        "async function* g(items){ for await(let i of items){ yield (()=>i)(); if(i) break; } }",
+        "async function* g(items){ outer: for await(let i of items){ yield (()=>i)(); if(i) break outer; } }",
+    };
+    for (hostile_sources) |source| try checkGeneratorTempProducerFixture(source, true);
 }
 
 test "#4819 generator state temp producers attach their SymbolIds immediately" {
