@@ -285,6 +285,79 @@ test "#6003 dynamic resolver keeps source and unresolved names reserved per scop
     try std.testing.expectEqualStrings(first, first_again);
 }
 
+fn expectUnscopedDynamicEvalNameReserved(name: []const u8, source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+
+    const resolved = try es_helpers.resolveSyntheticNameAvoidingDynamicEval(&transformer, name, .none);
+    const expected = try std.fmt.allocPrint(allocator, "{s}3", .{name});
+    try std.testing.expectEqualStrings(expected, resolved);
+    try std.testing.expect(!try es_helpers.nameAppearsInAnyDynamicEvalString(&transformer, resolved));
+}
+
+fn expectUnscopedUniqueDynamicEvalNameReserved(name: []const u8, source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".js");
+    _ = try parser.parse();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    defer transformer.deinit();
+
+    var counter: u32 = 0;
+    const resolved = try es_helpers.uniqueSyntheticNameAvoidingDynamicEval(&transformer, name, &counter, .none);
+    const expected = try std.fmt.allocPrint(allocator, "{s}3", .{name});
+    try std.testing.expectEqualStrings(expected, resolved);
+    try std.testing.expect(!try es_helpers.nameAppearsInAnyDynamicEvalString(&transformer, resolved));
+}
+
+test "#6003 graphless synthetic resolver reserves direct-eval names module-wide" {
+    const cases = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "_state", .source = "function f(){ eval('typeof _state'); eval('typeof _state2'); }" },
+        .{ .name = "_super", .source = "const f = () => { eval('typeof _super'); eval('typeof _super2'); };" },
+        .{ .name = "_classThis", .source = "class C { method(){ eval('typeof ' + '_classThis'); eval('typeof _classThis2'); } }" },
+        .{ .name = "_metadata", .source = "const object = { method(){ eval(`typeof _metadata`); eval('typeof _metadata2'); } };" },
+        .{ .name = "_step", .source = "function f(){ eval('typeof \\u005fstep'); eval('typeof _step2'); }" },
+        .{ .name = "_loop", .source = "function f(){ eval(('typeof _loop')); eval('typeof _loop2'); }" },
+        .{ .name = "_ret", .source = "try {} catch(error) { eval('typeof _ret'); eval('typeof _ret2'); }" },
+        .{ .name = "args", .source = "class C { static { eval('typeof args'); eval('typeof args2'); } }" },
+        .{ .name = "_obj", .source = "function outer(){ function inner(){ eval('typeof _obj'); eval('typeof _obj2'); } }" },
+        .{ .name = "_newTarget", .source = "function* generator(){ eval('typeof _newTarget'); eval('typeof _newTarget2'); yield 0; }" },
+    };
+
+    for (cases) |case| try expectUnscopedDynamicEvalNameReserved(case.name, case.source);
+}
+
+test "#6003 graphless unique-name allocator reserves direct-eval names module-wide" {
+    const cases = [_]struct { name: []const u8, source: []const u8 }{
+        .{ .name = "_state", .source = "function f(){ eval('typeof _state'); eval('typeof _state2'); }" },
+        .{ .name = "_super", .source = "const f = () => { eval('typeof _super'); eval('typeof _super2'); };" },
+        .{ .name = "_classThis", .source = "class C { method(){ eval('typeof ' + '_classThis'); eval('typeof _classThis2'); } }" },
+        .{ .name = "_metadata", .source = "const object = { method(){ eval(`typeof _metadata`); eval('typeof _metadata2'); } };" },
+        .{ .name = "_step", .source = "function f(){ eval('typeof \\u005fstep'); eval('typeof _step2'); }" },
+        .{ .name = "_loop", .source = "function f(){ eval(('typeof _loop')); eval('typeof _loop2'); }" },
+        .{ .name = "_ret", .source = "try {} catch(error) { eval('typeof _ret'); eval('typeof _ret2'); }" },
+        .{ .name = "args", .source = "class C { static { eval('typeof args'); eval('typeof args2'); } }" },
+        .{ .name = "_obj", .source = "function outer(){ function inner(){ eval('typeof _obj'); eval('typeof _obj2'); } }" },
+        .{ .name = "_newTarget", .source = "function* generator(){ eval('typeof _newTarget'); eval('typeof _newTarget2'); yield 0; }" },
+    };
+
+    for (cases) |case| try expectUnscopedUniqueDynamicEvalNameReserved(case.name, case.source);
+}
+
 test "#4819 for-of step names avoid escaped direct eval identifiers" {
     const source = "function f(){ eval('typeof \\u005fstep'); }";
     var ast = Ast.init(std.testing.allocator, source);
