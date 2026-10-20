@@ -518,8 +518,14 @@ pub fn visitFlowComponentWrapper(self: *Transformer, node: Node) Error!NodeIndex
         const old_name = self.ast.getText(old_name_span);
         const output_name: es_helpers.ScopedSyntheticOutputName = if (self.semantic_edit_enabled)
             try es_helpers.resolveScopedGeneratedOutputName(self, old_name, self.current_scope)
-        else
-            .{ .name = try es_helpers.resolveGeneratedName(self, old_name), .late = false };
+        else blk: {
+            // Without semantic editing there is no trustworthy output scope,
+            // so reserve names visible to direct eval anywhere in the source.
+            break :blk .{
+                .name = try es_helpers.resolveGeneratedNameAvoidingDynamicEval(self, old_name, .none),
+                .late = false,
+            };
+        };
         helper_output_name = output_name;
         const resolved_name = output_name.name;
         if (!std.mem.eql(u8, old_name, resolved_name)) {

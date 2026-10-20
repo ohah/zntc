@@ -2663,7 +2663,7 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
       {
         name: 'Button',
         observe: (candidate: string) =>
-          `eval(${JSON.stringify(`typeof ${escapedIdentifier(candidate)}`)})`,
+          `ev\\u0061l(${JSON.stringify(`typeof ${escapedIdentifier(candidate)}`)})`,
       },
       {
         name: 'Field',
@@ -2761,6 +2761,77 @@ describe('#4819 transform semantic graph for JavaScript mangling', () => {
     expect(transformed.stdout.trim()).toBe(
       ['undefined', 'ReferenceError', ...Array.from({ length: 8 }, () => 'undefined')].join(' '),
     );
+
+    // Plain Flow modules can skip the bundler graph pre-pass and use the
+    // emitter's semantic-edit-disabled legacy transformer fallback. Exercise
+    // that production path with the same hostile inputs, rather than only the
+    // standalone semantic-edit path above.
+    const combinedBundledOutput = join(fixture.dir, 'flow-component-combined-bundle.js');
+    const combinedBundledResult = await runZntc(
+      ['--bundle', '--platform=node', input, '-o', combinedBundledOutput, '--flow'],
+    );
+    expect(combinedBundledResult.exitCode, combinedBundledResult.stderr).toBe(0);
+    const combinedBundle = readFileSync(combinedBundledOutput, 'utf8');
+    for (const { name, reserve = 0 } of cases) {
+      expect(combinedBundle).toContain(`${name}_withRef${reserve + 3}`);
+    }
+    const combinedBundleRun = await runNode(combinedBundledOutput);
+    expect(combinedBundleRun.stderr).toBe('');
+    expect(combinedBundleRun.stdout.trim()).toBe(
+      ['undefined', 'ReferenceError', ...Array.from({ length: 8 }, () => 'undefined')].join(' '),
+    );
+
+    for (const {
+      name,
+      observe,
+      reserve = 0,
+      beforeComponent = false,
+      inBlock = false,
+      primeCache = true,
+    } of cases) {
+      const base = `${name}_withRef`;
+      const candidate = `${base}${reserve + 2}`;
+      const reservedBindings = [
+        base,
+        ...Array.from({ length: reserve }, (_, index) => `${base}${index + 2}`),
+      ]
+        .map((binding) => `const ${binding} = 'source-binding';`)
+        .join('\n');
+      const declaration = component(name);
+      const observation = inBlock
+        ? `let observed; { observed = ${observe(candidate)}; }`
+        : `const observed = ${observe(candidate)};`;
+      const bundleObservation = name === 'Switch'
+        ? `const observed = eval(\`typeof ${candidate.slice(0, -1)}\${${JSON.stringify(candidate.slice(-1))}}\`);`
+        : observation;
+      const body = beforeComponent
+        ? `${bundleObservation}\n${declaration}`
+        : `${declaration}\n${bundleObservation}`;
+      const bundledSource = [
+        '// @flow',
+        'const React = { forwardRef: (fn) => fn };',
+        reservedBindings,
+        ...(primeCache ? [`function plain${name}() { ${declaration} }`] : []),
+        `function dynamic${name}() { ${body} return observed; }`,
+        `console.log(dynamic${name}());`,
+      ].join('\n');
+      const bundleFixture = await createFixture({ 'input.js': bundledSource });
+      try {
+        const bundleInput = join(bundleFixture.dir, 'input.js');
+        const bundledOutput = join(bundleFixture.dir, 'output.js');
+        const bundledResult = await runZntc(
+          ['--bundle', '--platform=node', bundleInput, '-o', bundledOutput, '--flow'],
+        );
+        expect(bundledResult.exitCode, `${name}: ${bundledResult.stderr}`).toBe(0);
+        const bundled = readFileSync(bundledOutput, 'utf8');
+        expect(bundled, name).toContain(`${base}${reserve + 3}`);
+        const bundledRun = await runNode(bundledOutput);
+        expect(bundledRun.stderr, name).toBe('');
+        expect(bundledRun.stdout.trim(), name).toBe(name === 'Badge' ? 'ReferenceError' : 'undefined');
+      } finally {
+        await bundleFixture.cleanup();
+      }
+    }
   });
 
   test('exported Flow ref-component preserves export identity and exact symbols', async () => {
