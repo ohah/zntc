@@ -920,6 +920,11 @@ pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.No
     // declared with the class (`var _a = k`) is an ordinary read.
     const ref = blk: {
         const hoisted = try es_helpers.makeIdentifierRefFromSpan(self, self.ast.getNode(temp).data.string_ref);
+        const producer_id = es_helpers.producerTempSymbolIdAtRef(self, temp);
+        if (producer_id) |symbol_id| {
+            if (try self.trackKnownSyntheticTempReferenceByIdInScope(symbol_id, hoisted, scope, .{ .read = true }))
+                break :blk hoisted;
+        }
         if (try es_helpers.trackKnownHoistedTempRef(self, hoisted, scope, .{ .read = true })) {
             if (self.semantic_edit_enabled and !self.syntheticTempOutputScopeIsDeferred(scope)) {
                 const hoisted_symbol_id = self.getSymbolIdAt(hoisted) orelse
@@ -931,6 +936,9 @@ pub fn nameByRuntimeKey(self: anytype, value: ast_mod.NodeIndex, key: ast_mod.No
             }
             break :blk hoisted;
         }
+        // A direct producer ID that cannot be attached at this deferred owner
+        // must not fall through to a same-spelled source-name lookup.
+        if (producer_id != null) return value;
         if (self.semantic_edit_enabled and self.getSymbolIdAt(temp) == null) return value;
         // The key position keeps the emitted node: read the binding afresh.
         break :blk try self.makeUserRefNamedAtScope(self.ast.getText(self.ast.getNode(temp).data.string_ref), temp, scope);
