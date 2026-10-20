@@ -814,27 +814,8 @@ fn checkDestructuringParameterTempSymbols(source: []const u8) !void {
         try std.testing.expectEqual(symbol.reference_count, live_references);
     }
 
-    var exact_temp_ids = transformer.destructuring_temp_symbol_ids.iterator();
-    var mapped_temp_count: usize = 0;
-    while (exact_temp_ids.next()) |entry| {
-        const raw_symbol_index = entry.value_ptr.*;
-        const symbol_index: usize = @intCast(raw_symbol_index);
-        try std.testing.expect(symbol_index >= original_symbol_count and symbol_index < edited.symbols.items.len);
-        const symbol = edited.symbols.items[symbol_index];
-        try std.testing.expect(symbol.kind == .parameter or symbol.kind == .variable_var);
-        try std.testing.expectEqual(expected_function_scope, @backingInt(symbol.scope_id));
-
-        var binding_count: usize = 0;
-        for (reachable) |raw| {
-            if (transformer.ast.nodes.items[raw].tag != .binding_identifier) continue;
-            if (raw < edited.symbol_ids.len and edited.symbol_ids[raw] == raw_symbol_index) binding_count += 1;
-        }
-        try std.testing.expectEqual(@as(usize, 1), binding_count);
-        mapped_temp_count += 1;
-    }
     try std.testing.expectEqual(@as(usize, 1), parameter_temps);
     try std.testing.expect(function_var_temps > 0);
-    try std.testing.expect(mapped_temp_count <= function_var_temps);
 }
 
 fn expectRegisteredParameterTemp(
@@ -845,7 +826,6 @@ fn expectRegisteredParameterTemp(
 ) !u32 {
     const raw_id = transformer.getSymbolIdAt(binding) orelse return error.MissingCreationSymbolId;
     const name_span = transformer.ast.getNode(binding).data.string_ref;
-    try std.testing.expect(transformer.destructuring_temp_symbol_ids.get(name_span.start) == null);
     try std.testing.expect(transformer.lookupSyntheticTempSymbol(name_span, expected_scope) == null);
 
     const editor = transformer.semantic_editor orelse return error.MissingSemanticEditor;
@@ -1168,7 +1148,6 @@ fn lowerDestructuringParametersWithoutSemanticEditing(source: []const u8) !void 
         function.span,
     );
     defer lowered.body_stmts.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
 }
 
 test "#4819 semantic-disabled low-level parameter lowering remains a no-op for temp ownership" {

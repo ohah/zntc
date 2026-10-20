@@ -2509,16 +2509,6 @@ pub fn makeTempRefFromIdentity(
     return ref;
 }
 
-pub fn makeTrackedTempRef(self: anytype, name_span: Span, node_span: Span, flags: @import("../semantic/mod.zig").ReferenceFlags) !NodeIndex {
-    const ref = try makeTempVarRef(self, name_span, node_span);
-    if (self.destructuring_temp_symbol_ids.get(name_span.start)) |raw_id| {
-        try self.addSyntheticRefInScope(ref, @fromBackingInt(@intCast(raw_id)), self.current_scope, flags);
-    } else {
-        try self.trackSyntheticTempReference(name_span, node_span, ref, flags);
-    }
-    return ref;
-}
-
 /// `callee(receiver, ...args)` 호출 노드를 만든다 — 기존 args extra-list 를 ArrayList 로
 /// 복사하지 않고 receiver 1 개만 prepend 해서 새 NodeList 를 만든다.
 /// `args` 는 같은 `extra_data` 를 가리키므로 미리 capacity 를 확보한 뒤 append 한다.
@@ -2967,9 +2957,6 @@ pub fn buildForOfLoopVarAssign(self: anytype, left: NodeIndex, elem: NodeIndex, 
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
             try self.scratch.append(self.allocator, temp_decl);
 
-            const saved_temp_kind = self.destructuring_temp_kind;
-            self.destructuring_temp_kind = .variable_var;
-            defer self.destructuring_temp_kind = saved_temp_kind;
             try es2015_destruct.emitPatternDeclaratorsWithIdentity(self, binding_node, temp_identity, span, .@"var");
             if (temp.symbol_id == null)
                 try self.bindSyntheticTempInScope(temp.node, temp.name_span, span, .variable_var, self.current_scope);

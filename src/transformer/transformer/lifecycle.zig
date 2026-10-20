@@ -164,7 +164,6 @@ pub fn deinitExceptAst(self: *Transformer) void {
     self.parameter_capture_statements.deinit(self.allocator);
     self.parameter_body_var_copies.deinit(self.allocator);
     self.destructuring_temp_bindings.deinit(self.allocator);
-    self.destructuring_temp_symbol_ids.deinit(self.allocator);
     self.synthetic_temp_symbol_ids.deinit(self.allocator);
     for (self.namespace_export_frames.items) |*frame| frame.exported_symbol_ids.deinit(self.allocator);
     self.namespace_export_frames.deinit(self.allocator);

@@ -7,6 +7,17 @@ const TransformOptions = @import("transformer.zig").TransformOptions;
 const ast_walk = @import("../parser/ast_walk.zig");
 const ESTarget = @import("compat.zig").ESTarget;
 const es_helpers = @import("es_helpers.zig");
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+
+fn symbolVisibleFrom(scopes: []const @import("../semantic/scope.zig").Scope, declared: ScopeId, use: ScopeId) bool {
+    var cursor = use;
+    var remaining = scopes.len + 1;
+    while (!cursor.isNone() and @backingInt(cursor) < scopes.len and remaining > 0) : (remaining -= 1) {
+        if (cursor == declared) return true;
+        cursor = scopes[@backingInt(cursor)].parent;
+    }
+    return false;
+}
 
 fn collectGeneratedTempSymbolIds(allocator: std.mem.Allocator, transformer: anytype, edited: anytype, original_symbol_count: usize) !std.ArrayList(u32) {
     var ids: std.ArrayList(u32) = .empty;
@@ -21,6 +32,106 @@ fn collectGeneratedTempSymbolIds(allocator: std.mem.Allocator, transformer: anyt
     }
     _ = transformer;
     return ids;
+}
+
+fn checkDestructuringTempIdentityGraph(allocator: std.mem.Allocator, source: []const u8) !void {
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const original_symbol_count = analyzer.symbols.items.len;
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+        .defer_runtime_helper_name_resolution = true,
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    _ = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
+    try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
+
+    const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
+    var temp_ids = try collectGeneratedTempSymbolIds(allocator, &transformer, edited, original_symbol_count);
+    defer temp_ids.deinit(allocator);
+    try std.testing.expect(temp_ids.items.len > 0);
+    var standalone_temp_count: usize = 0;
+    for (temp_ids.items) |raw_id| {
+        const id: usize = raw_id;
+        try std.testing.expect(id < edited.symbols.items.len);
+        const symbol = edited.symbols.items[id];
+        if (std.mem.startsWith(u8, symbol.synthetic_name, "__")) continue;
+        try std.testing.expect(!symbol.scope_id.isNone());
+        try std.testing.expectEqual(.variable_var, symbol.kind);
+        try std.testing.expectEqual(.function, edited.scopes[@backingInt(symbol.scope_id)].kind);
+        switch (symbol.synthetic_kind orelse return error.MissingDestructuringTempNameMark) {
+            .standalone_temp_binding => {
+                standalone_temp_count += 1;
+            },
+            .for_of_step_binding => {},
+            else => return error.UnexpectedDestructuringTempNameMark,
+        }
+        try std.testing.expectEqual(@as(?usize, id), edited.scope_maps[@backingInt(symbol.scope_id)].get(symbol.synthetic_name));
+
+        var binding_count: usize = 0;
+        for (reachable) |raw_node| {
+            if (transformer.ast.nodes.items[raw_node].tag != .binding_identifier) continue;
+            if (raw_node < edited.symbol_ids.len and edited.symbol_ids[raw_node] == raw_id) binding_count += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), binding_count);
+
+        var reference_count: u32 = 0;
+        var read_count: u32 = 0;
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != id or reference.flags.declare) continue;
+            try std.testing.expect(std.mem.indexOfScalar(u32, reachable, @backingInt(reference.node_index)) != null);
+            try std.testing.expectEqual(@as(?u32, raw_id), transformer.getSymbolIdAt(reference.node_index));
+            const reference_node = transformer.ast.getNode(reference.node_index);
+            try std.testing.expectEqual(symbol.name.start, reference_node.data.string_ref.start);
+            try std.testing.expectEqual(symbol.name.end, reference_node.data.string_ref.end);
+            try std.testing.expect(reference.flags.read or reference.flags.write);
+            try std.testing.expect(symbolVisibleFrom(edited.scopes, symbol.scope_id, reference.scope_id));
+            if (reference.flags.read) read_count += 1;
+            reference_count += 1;
+        }
+        try std.testing.expect(read_count > 0);
+        try std.testing.expectEqual(symbol.reference_count, reference_count);
+    }
+    try std.testing.expect(standalone_temp_count > 0);
+}
+
+test "#4819 destructuring temps keep exact producer IDs across hostile patterns" {
+    const cases = [_][]const u8{
+        "function run(input) { const { first: { seed } } = input; return seed; }",
+        "function run(input) { let [[head, { value = 2 }], ...tail] = input; return [head, value, tail]; }",
+        "function run(input) { let _a = 77, result; ({ part: { value: result = _a } = {} } = input); return result; }",
+        "function run(input) { let _a = 88, value = 0; return ([[value] = []] = input); }",
+        "function run(input, key) { const { [key]: value, ...rest } = input; return [value, rest]; }",
+        "function run(input, key) { let value; ({ [key]: { value = 1 } = {} } = input); return value; }",
+        "function run(items) { const out = []; for (const { item: { value = 0 }, ...rest } of items) out.push(() => [value, rest]); return out; }",
+        "function run(source) { const out = []; for (const { x } in source) out.push(() => x); return out; }",
+        "function run({ rows: [{ name = 'x' } = []] = [] } = {}) { return name; }",
+        "function run([{ [key()]: value = 1 } = []] = []) { return value; }",
+    };
+
+    try std.testing.expectEqual(@as(usize, 10), cases.len);
+    for (cases) |source| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        try checkDestructuringTempIdentityGraph(arena.allocator(), source);
+    }
 }
 
 test "#4819 assignment destructuring temp refs receive their producer SymbolId" {
@@ -467,7 +578,6 @@ fn checkStandaloneDestructuringTempNameMarking(source: []const u8, expected_late
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
     const reachable = try ast_walk.collectReachableNodeIndices(allocator, transformer.ast);
-    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     var temp_ids = try collectGeneratedTempSymbolIds(allocator, &transformer, edited, original_symbol_count);
     defer temp_ids.deinit(allocator);
@@ -556,7 +666,6 @@ test "#4819 computed-key default destructuring temp retains its SymbolId" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
 
@@ -774,7 +883,6 @@ test "#4819 for-of destructuring temps get exact IDs before emitted reads" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
     const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
@@ -861,7 +969,6 @@ test "#4819 for-of loop helper destructuring temps carry exact IDs into nested p
 
     const emitted = try es_helpers.buildForOfLoopVarAssign(&transformer, left, element, for_of_node.span);
     try std.testing.expectEqual(.variable_declaration, transformer.ast.getNode(emitted).tag);
-    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
     const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
@@ -1011,7 +1118,6 @@ test "#4819 ES5 destructuring temps keep exact IDs in hoisted function scope" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
     var temp_ids = try collectGeneratedTempSymbolIds(alloc, &transformer, edited, original_symbol_count);
@@ -1086,7 +1192,6 @@ test "#4819 ES2015 object-rest temps keep const and let block scopes" {
     transformer.semantic_edit_enabled = true;
     _ = try transformer.transform();
     const edited = (try transformer.finishSemanticEdit()).?;
-    try std.testing.expectEqual(@as(usize, 0), transformer.destructuring_temp_symbol_ids.count());
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_ref_chains.count());
     const reachable = try ast_walk.collectReachableNodeIndices(alloc, transformer.ast);
     var temp_ids = try collectGeneratedTempSymbolIds(alloc, &transformer, edited, original_symbol_count);
