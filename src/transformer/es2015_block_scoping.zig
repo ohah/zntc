@@ -69,11 +69,15 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             generator_function_scope: ?ScopeId = null,
             call_and_check: NodeIndex,
             ret_temp_span: ?Span = null,
+            ret_temp_symbol_id: ?SymbolId = null,
+            ret_temp_owner_scope: ScopeId = .none,
         };
 
         const ControlFlowCheck = struct {
             node: NodeIndex,
             ret_temp_span: ?Span = null,
+            ret_temp_symbol_id: ?SymbolId = null,
+            ret_temp_owner_scope: ScopeId = .none,
         };
 
         /// for 루프의 init에서 let/const 변수 이름을 수집한다.
@@ -897,10 +901,14 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
             // --- 제어 흐름 후처리: var _ret = await _loop(i); if (...) ... ---
             var final_stmt: NodeIndex = undefined;
             var ret_temp_span: ?Span = null;
+            var ret_temp_symbol_id: ?SymbolId = null;
+            var ret_temp_owner_scope: ScopeId = .none;
             if (needs_ret_var) {
                 const control_flow_check = try buildControlFlowCheck(self, call_expr, flow, local_label, call_scope, span);
                 final_stmt = control_flow_check.node;
                 ret_temp_span = control_flow_check.ret_temp_span;
+                ret_temp_symbol_id = control_flow_check.ret_temp_symbol_id;
+                ret_temp_owner_scope = control_flow_check.ret_temp_owner_scope;
             } else {
                 final_stmt = try self.ast.addNode(.{
                     .tag = .expression_statement,
@@ -923,6 +931,8 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .generator_function_scope = generator_function_scope,
                 .call_and_check = call_block,
                 .ret_temp_span = ret_temp_span,
+                .ret_temp_symbol_id = ret_temp_symbol_id,
+                .ret_temp_owner_scope = ret_temp_owner_scope,
             };
         }
 
@@ -1562,7 +1572,12 @@ pub fn ES2015BlockScoping(comptime Transformer: type) type {
                 .span = span,
                 .data = .{ .list = block_list },
             });
-            return .{ .node = block, .ret_temp_span = ret_name_span };
+            return .{
+                .node = block,
+                .ret_temp_span = ret_name_span,
+                .ret_temp_symbol_id = ret_symbol,
+                .ret_temp_owner_scope = if (ret_symbol != null) binding_scope else .none,
+            };
         }
     };
 }
