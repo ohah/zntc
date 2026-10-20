@@ -9,6 +9,7 @@ const TransformOptions = @import("transformer.zig").TransformOptions;
 const Reference = @import("../semantic/symbol.zig").Reference;
 const output_scope = @import("output_scope_test_utils.zig");
 const es_helpers = @import("es_helpers.zig");
+const semantic_edit = @import("transformer/semantic_edit.zig");
 const BlockScoping = @import("es2015_block_scoping.zig").ES2015BlockScoping(Transformer);
 
 fn checkGeneratedTemps(source: []const u8, target: TransformOptions.compat.ESTarget, expected: usize, has_state: bool) !void {
@@ -662,6 +663,139 @@ test "#4819 callback temp reference binds through its exact producer node" {
         try std.testing.expectEqual(callback_scope_raw, @backingInt(reference_record.scope_id));
     }
     try std.testing.expectEqual(@as(usize, source_symbol_count + 3), editor.symbols.items.len);
+
+    var live: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    defer live.deinit(allocator);
+    for (transformer.generator_state_temp_refs.items) |pending| {
+        try live.put(allocator, @backingInt(pending.binding), {});
+        try live.put(allocator, @backingInt(pending.reference), {});
+    }
+    const tracked = transformer.generator_state_temp_refs.items[0];
+    const binding_name = transformer.ast.getNode(tracked.binding).data.string_ref;
+    const chain_index = transformer.pending_temp_refs.items.len;
+    try transformer.pending_temp_refs.append(allocator, .{
+        .name_start = binding_name.start,
+        .node = tracked.reference,
+        .scope = tracked.scope,
+        .flags = tracked.flags,
+    });
+    try transformer.pending_temp_ref_chains.put(allocator, binding_name.start, .{
+        .first = chain_index,
+        .last = chain_index,
+    });
+    try std.testing.expect(semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+
+    const chain = transformer.pending_temp_ref_chains.getPtr(binding_name.start).?;
+    transformer.pending_temp_refs.items[chain_index].name_start += 1;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.pending_temp_refs.items[chain_index].name_start = binding_name.start;
+
+    chain.last = transformer.pending_temp_refs.items.len;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    chain.last = chain_index;
+
+    transformer.pending_temp_refs.items[chain_index].next = chain_index;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.pending_temp_refs.items[chain_index].next = null;
+
+    const binding_slot = @backingInt(tracked.binding);
+    const reference_slot = @backingInt(tracked.reference);
+    const original_binding_id = transformer.symbol_ids.items[binding_slot];
+    const original_reference_id = transformer.symbol_ids.items[reference_slot];
+    const alternate_id = if (id_raw + 1 < editor.symbols.items.len) id_raw + 1 else id_raw - 1;
+    const saved_binding = transformer.generator_state_temp_refs.items[0].binding;
+    transformer.generator_state_temp_refs.items[0].binding = .none;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.generator_state_temp_refs.items[0].binding = saved_binding;
+
+    const removed_binding_from_live = live.remove(binding_slot);
+    try std.testing.expect(removed_binding_from_live);
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    try live.put(allocator, binding_slot, {});
+
+    transformer.symbol_ids.items[binding_slot] = null;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.symbol_ids.items[binding_slot] = original_binding_id;
+    transformer.symbol_ids.items[binding_slot] = alternate_id;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.symbol_ids.items[binding_slot] = original_binding_id;
+
+    transformer.symbol_ids.items[reference_slot] = null;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.symbol_ids.items[reference_slot] = original_reference_id;
+    transformer.symbol_ids.items[reference_slot] = alternate_id;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.symbol_ids.items[reference_slot] = original_reference_id;
+
+    var record_index: ?usize = null;
+    for (editor.references.items, 0..) |record, index| {
+        if (record.node_index == tracked.reference) {
+            record_index = index;
+            break;
+        }
+    }
+    const reference_record_index = record_index orelse return error.TestUnexpectedResult;
+    const original_record = editor.references.items[reference_record_index];
+    editor.references.items[reference_record_index].node_index = .none;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.references.items[reference_record_index] = original_record;
+
+    var changed_flags = original_record.flags;
+    changed_flags.read = !changed_flags.read;
+    editor.references.items[reference_record_index].flags = changed_flags;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.references.items[reference_record_index] = original_record;
+
+    editor.references.items[reference_record_index].symbol_id = @fromBackingInt(@intCast(alternate_id));
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.references.items[reference_record_index] = original_record;
+
+    editor.references.items[reference_record_index].scope_id = .none;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.references.items[reference_record_index].scope_id = @fromBackingInt(@intCast(editor.scopes.items.len + 2));
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.references.items[reference_record_index] = original_record;
+
+    const original_pending_scope = transformer.generator_state_temp_refs.items[0].scope;
+    editor.references.items[reference_record_index].scope_id = original_pending_scope;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.references.items[reference_record_index] = original_record;
+
+    transformer.generator_state_temp_refs.items[0].scope = .none;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.generator_state_temp_refs.items[0].scope = @fromBackingInt(@intCast(editor.scopes.items.len + 2));
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.generator_state_temp_refs.items[0].scope = original_pending_scope;
+
+    const original_symbol = editor.symbols.items[id_raw];
+    editor.symbols.items[id_raw].kind = .parameter;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.symbols.items[id_raw] = original_symbol;
+    editor.symbols.items[id_raw].name.start += 1;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.symbols.items[id_raw] = original_symbol;
+    editor.symbols.items[id_raw].scope_id = .none;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.symbols.items[id_raw].scope_id = @fromBackingInt(@intCast(editor.scopes.items.len + 2));
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.symbols.items[id_raw] = original_symbol;
+    editor.symbols.items[id_raw].synthetic_name = "wrong_temp_name";
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    editor.symbols.items[id_raw] = original_symbol;
+
+    const original_reference_name = transformer.ast.nodes.items[reference_slot].data.string_ref;
+    const original_reference_tag = transformer.ast.nodes.items[reference_slot].tag;
+    transformer.ast.nodes.items[reference_slot].tag = .binding_identifier;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.ast.nodes.items[reference_slot].tag = original_reference_tag;
+    transformer.ast.nodes.items[reference_slot].data.string_ref.start += 1;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.ast.nodes.items[reference_slot].data.string_ref = original_reference_name;
+
+    const original_binding_tag = transformer.ast.nodes.items[binding_slot].tag;
+    transformer.ast.nodes.items[binding_slot].tag = .identifier_reference;
+    try std.testing.expect(!semantic_edit.validateDeferredGeneratedTempHandoffs(&transformer, editor, &live));
+    transformer.ast.nodes.items[binding_slot].tag = original_binding_tag;
 }
 
 test "#4819 generator state-machine keeps late using temps for exact final naming" {
