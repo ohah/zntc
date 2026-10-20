@@ -123,6 +123,146 @@ test "#4819 anonymous class temp names remain fixed when direct eval can see the
     try expectAnonymousClassTempNameMarks(source, true, 1, 0);
 }
 
+fn expectES5SuperNullishTempIdentity(source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{
+        .unsupported = TransformOptions.compat.fromESTarget(.es5),
+    });
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.synthetic_idents = .empty;
+
+    const root = try transformer.transform();
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    defer allocator.free(reachable);
+    const edited = (try transformer.finishSemanticEdit()).?;
+    var exact_capture_found = false;
+    for (edited.symbols.items, 0..) |symbol, raw_id| {
+        if (symbol.kind != .variable_var or symbol.synthetic_name.len == 0) continue;
+        const id: u32 = @intCast(raw_id);
+        var reads: usize = 0;
+        var writes: usize = 0;
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != id) continue;
+            if (reference.flags.read) reads += 1;
+            if (reference.flags.write) writes += 1;
+            if (!reference.node_index.isNone())
+                try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(reference.node_index)]);
+        }
+        if (reads != 1 or writes != 1) continue;
+
+        var exact_bindings: usize = 0;
+        for (reachable) |raw_node| {
+            if (raw_node >= edited.symbol_ids.len or edited.symbol_ids[raw_node] != id) continue;
+            if (transformer.ast.nodes.items[raw_node].tag == .binding_identifier) exact_bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), exact_bindings);
+        exact_capture_found = true;
+    }
+    try std.testing.expect(exact_capture_found);
+}
+
+test "#4819 producer SymbolId attaches a super temp binding without its span registry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var scanner = try Scanner.init(allocator, "const value = 1;");
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+
+    var value_idx: ?NodeIndex = null;
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag == .numeric_literal) value_idx = @fromBackingInt(@intCast(raw));
+    }
+    const value = value_idx orelse return error.MissingCapturedValue;
+    const value_span = parser.ast.getNode(value).span;
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = transformer.programScope();
+
+    const captured = try es_helpers.captureToTempWithIdentity(&transformer, value, value_span);
+    const symbol_id = captured.symbol_id orelse return error.MissingProducerSymbolId;
+    try std.testing.expectEqual(
+        @as(?@TypeOf(symbol_id), symbol_id),
+        es_helpers.producerTempSymbolIdForSpan(&transformer, captured.span),
+    );
+    const editor = if (transformer.semantic_editor) |*semantic_editor| semantic_editor else return error.MissingSemanticEditor;
+    const producer_symbol = editor.symbols.items[@backingInt(symbol_id)];
+    try std.testing.expectEqual(.variable_var, producer_symbol.kind);
+    try std.testing.expectEqual(transformer.current_scope, producer_symbol.scope_id);
+    try std.testing.expectEqualStrings(transformer.ast.getText(captured.span), producer_symbol.synthetic_name);
+    const assignment = transformer.ast.getNode(captured.paren_assign);
+    const write = assignment.data.binary.left;
+    try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), transformer.getSymbolIdAt(write));
+    var exact_writes: usize = 0;
+    for (editor.references.items) |reference| {
+        if (reference.node_index != write) continue;
+        try std.testing.expectEqual(symbol_id, reference.symbol_id);
+        try std.testing.expectEqual(transformer.current_scope, reference.scope_id);
+        try std.testing.expect(reference.flags.write);
+        exact_writes += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), exact_writes);
+    const registry_key = (@as(u64, @backingInt(transformer.current_scope)) << 32) | captured.span.start;
+    try std.testing.expect(transformer.synthetic_temp_symbol_ids.remove(registry_key));
+
+    const binding = try transformer.createSyntheticTempBindingWithIdentity(
+        captured.span,
+        transformer.current_scope,
+        symbol_id,
+    );
+    try std.testing.expect(!transformer.synthetic_temp_symbol_ids.contains(registry_key));
+    try std.testing.expectEqual(symbol_id, binding.symbol_id.?);
+    try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), transformer.getSymbolIdAt(binding.node));
+    const read = try es_helpers.makeExactSyntheticRefAt(&transformer, binding.name_span, value_span);
+    try transformer.addSyntheticRefInScope(read, symbol_id, transformer.current_scope, .{ .read = true });
+    try std.testing.expectEqual(@as(?u32, @backingInt(symbol_id)), transformer.getSymbolIdAt(read));
+}
+
+test "#4819 ES5 super nullish producer identity survives ten hostile inputs" {
+    const hostile_inputs = [_][]const u8{
+        "class Base {} class Child extends Base { update(key) { return super[key] ??= 1; } }",
+        "class Base {} class Child extends Base { update(log, key) { return super[(log.push('key'), key)] ??= (log.push('rhs'), 2); } }",
+        "class Base {} class Child extends Base { update(key, use) { if (use) { { return super[key] ??= 3; } } return 0; } }",
+        "class Base {} class Child extends Base { static update(key) { return super[key] ??= 4; } }",
+        "class Base {} class Child extends Base { update(key) { const run = () => super[key] ??= 5; return run(); } }",
+        "class Base {} class Child extends Base { update(key) { const run = () => { eval('typeof _a'); return super[key] ??= 6; }; return run(); } }",
+        "class Base {} class Child extends Base { update(_a, key) { return super[key] ??= 7; } }",
+        "class Base {} class Child extends Base { update() { return super['value'] ??= 8; } }",
+        "class Base {} class Child extends Base { update(key, mode) { switch (mode) { case 1: return super[key] ??= 9; default: return 0; } } }",
+        "class Base {} class Child extends Base { constructor(key) { super(); this.value = super[key] ??= 10; } }",
+    };
+    for (hostile_inputs) |source| try expectES5SuperNullishTempIdentity(source);
+}
+
 test "#4819 ES5 computed super assignment and update temps have exact identity" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
