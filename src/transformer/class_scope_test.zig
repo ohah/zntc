@@ -263,6 +263,182 @@ test "#4819 ES5 super nullish producer identity survives ten hostile inputs" {
     for (hostile_inputs) |source| try expectES5SuperNullishTempIdentity(source);
 }
 
+fn expectStage3ComputedKeyIdentityCase(expression: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const source = try std.fmt.allocPrint(allocator,
+        \\const _a = 1, _b = 2, _c = 3;
+        \\function dec(value, context) {{ return value; }}
+        \\function nextKey() {{ return "computed"; }}
+        \\const holder = {{ key() {{ return nextKey(); }}, value: "value" }};
+        \\const dynamic = "dynamic", suffix = "suffix", fallback = "fallback";
+        \\class Box {{
+        \\  @dec [{s}]() {{ return 1; }}
+        \\  @dec [{s}] = 2;
+        \\  @dec accessor [{s}] = 3;
+        \\}}
+    , .{ expression, expression, expression });
+
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".ts");
+    _ = try parser.parse();
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    try analyzer.analyze();
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.unresolved_references = &analyzer.unresolved_references;
+    transformer.semantic_edit_enabled = true;
+
+    const root = try transformer.transform();
+    const edited = (try transformer.finishSemanticEdit()).?;
+    const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, root);
+    defer allocator.free(reachable);
+
+    try std.testing.expectEqual(@as(usize, 3), transformer.temp_symbol_ids_by_counter.count());
+    var metadata_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+    for (reachable) |raw| {
+        const node = transformer.ast.nodes.items[raw];
+        if (node.tag != .binding_identifier or !std.mem.eql(u8, transformer.ast.getText(node.data.string_ref), "_metadata")) continue;
+        if (raw >= edited.symbol_ids.len) return error.MissingStage3MetadataBindingId;
+        const id = edited.symbol_ids[raw] orelse return error.MissingStage3MetadataBindingId;
+        const scope = edited.symbols.items[id].scope_id;
+        if (metadata_scope) |previous| {
+            try std.testing.expectEqual(previous, scope);
+        } else {
+            metadata_scope = scope;
+        }
+    }
+    const exact_metadata_scope = metadata_scope orelse return error.MissingStage3MetadataScope;
+    var producers = transformer.temp_symbol_ids_by_counter.iterator();
+    var saw_three_reads = false;
+    var saw_four_reads = false;
+    var saw_five_reads = false;
+    while (producers.next()) |entry| {
+        const id = entry.value_ptr.*;
+        const symbol = edited.symbols.items[id];
+        try std.testing.expectEqual(@import("../semantic/symbol.zig").SymbolKind.variable_var, symbol.kind);
+
+        // The producer registry is intentionally removed as soon as the
+        // exact handle is carried out of key creation. Consumers succeeding
+        // here cannot be relying on a span/scope re-lookup.
+        var registered = transformer.synthetic_temp_symbol_ids.valueIterator();
+        while (registered.next()) |registered_id| try std.testing.expect(registered_id.* != id);
+
+        var bindings: usize = 0;
+        for (reachable) |raw| {
+            if (raw >= edited.symbol_ids.len or edited.symbol_ids[raw] != id) continue;
+            if (transformer.ast.nodes.items[raw].tag == .binding_identifier) bindings += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 1), bindings);
+
+        var reads: usize = 0;
+        var function_reads: usize = 0;
+        var block_reads: usize = 0;
+        var outer_reads: usize = 0;
+        var writes: usize = 0;
+        var declarations: usize = 0;
+        var writer_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+        var metadata_read_scope: ?@import("../semantic/scope.zig").ScopeId = null;
+        for (edited.references) |reference| {
+            if (@backingInt(reference.symbol_id) != id) continue;
+            if (reference.flags.declare) {
+                try std.testing.expect(reference.node_index.isNone());
+                try std.testing.expectEqual(symbol.scope_id, reference.scope_id);
+                declarations += 1;
+                continue;
+            }
+            if (reference.node_index.isNone() or @backingInt(reference.node_index) >= edited.symbol_ids.len)
+                return error.MissingStage3KeyReferenceNode;
+            try std.testing.expectEqual(@as(?u32, id), edited.symbol_ids[@backingInt(reference.node_index)]);
+
+            var scope = reference.scope_id;
+            var visible_from_reference = false;
+            var hops: usize = 0;
+            while (!scope.isNone() and hops < edited.scopes.len) : (hops += 1) {
+                if (scope == symbol.scope_id) {
+                    visible_from_reference = true;
+                    break;
+                }
+                scope = edited.scopes[scope.toIndex()].parent;
+            }
+            try std.testing.expect(visible_from_reference);
+
+            if (reference.flags.write) {
+                try std.testing.expect(!reference.flags.read);
+                writes += 1;
+                writer_scope = reference.scope_id;
+                continue;
+            }
+            try std.testing.expect(reference.flags.read);
+            reads += 1;
+            switch (edited.scopes[reference.scope_id.toIndex()].kind) {
+                .function => {
+                    function_reads += 1;
+                    const parent = edited.scopes[reference.scope_id.toIndex()].parent;
+                    try std.testing.expect(!parent.isNone());
+                    try std.testing.expectEqual(exact_metadata_scope, parent);
+                },
+                .block => {
+                    try std.testing.expectEqual(exact_metadata_scope, reference.scope_id);
+                    block_reads += 1;
+                    metadata_read_scope = reference.scope_id;
+                },
+                else => outer_reads += 1,
+            }
+        }
+        try std.testing.expectEqual(@as(usize, 1), declarations);
+        try std.testing.expectEqual(@as(usize, 1), writes);
+        try std.testing.expect(metadata_read_scope != null);
+        try std.testing.expect(writer_scope != null);
+        try std.testing.expect(metadata_read_scope.? != writer_scope.?);
+        try std.testing.expectEqual(@as(usize, 1), block_reads); // context.name
+        switch (reads) {
+            3 => {
+                try std.testing.expectEqual(@as(usize, 2), function_reads);
+                try std.testing.expectEqual(@as(usize, 0), outer_reads);
+                saw_three_reads = true;
+            },
+            4 => {
+                try std.testing.expectEqual(@as(usize, 3), function_reads);
+                try std.testing.expectEqual(@as(usize, 0), outer_reads);
+                saw_four_reads = true;
+            },
+            5 => {
+                try std.testing.expectEqual(@as(usize, 3), function_reads);
+                try std.testing.expectEqual(@as(usize, 1), outer_reads); // generated accessor setter key
+                saw_five_reads = true;
+            },
+            else => return error.UnexpectedStage3KeyReadCount,
+        }
+    }
+    try std.testing.expect(saw_three_reads and saw_four_reads and saw_five_reads);
+}
+
+test "#4819 Stage 3 computed decorator keys carry exact identities through all consumers" {
+    const hostile_expressions = [_][]const u8{
+        "nextKey()",
+        "holder.key()",
+        "holder.value + nextKey()",
+        "(nextKey(), holder.value)",
+        "`${nextKey()}-${suffix}`",
+        "Symbol.for(nextKey())",
+        "nextKey()?.name ?? fallback",
+        "((value) => holder[value])(nextKey())",
+        "eval('nextKey()')",
+        "(() => holder[dynamic])()",
+    };
+    for (hostile_expressions) |expression| try expectStage3ComputedKeyIdentityCase(expression);
+}
+
 test "#4819 ES5 computed super assignment and update temps have exact identity" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

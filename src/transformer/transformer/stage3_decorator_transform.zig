@@ -316,6 +316,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         .kind = kind,
                         .name = name_node_idx,
                         .name_temp = decorated_key.temp,
+                        .name_temp_identity = decorated_key.identity,
                         .is_static = is_static,
                         .is_private = is_private,
                         .decorators = decos,
@@ -404,6 +405,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     try member_infos.append(self.allocator, .{
                         .kind = "field",
                         .name_temp = decorated_key.temp,
+                        .name_temp_identity = decorated_key.identity,
                         .name = name_node_idx,
                         .is_static = is_static,
                         .is_private = is_private_field,
@@ -537,6 +539,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         .kind = "accessor",
                         .name = name_node_idx,
                         .name_temp = decorated_key.temp,
+                        .name_temp_identity = decorated_key.identity,
                         .is_static = is_static,
                         .is_private = is_private_accessor,
                         .decorators = decos,
@@ -652,7 +655,10 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     // set x(value) { this.#_x_accessor_storage = value; }
                     if (!is_private_accessor) {
                         const assign_target = try makeThisPrivateField(self, storage_span);
-                        const setter_key = if (decorated_key.temp) |temp| try decoratedKeyRead(self, temp) else new_key;
+                        const setter_key = if (decorated_key.identity) |identity|
+                            try decoratedKeyRead(self, identity)
+                        else
+                            new_key;
                         const setter = try self.buildSetterMethodWithHandles(setter_key, assign_target, is_static, zero_span);
                         if (self.semantic_edit_enabled) {
                             const setter_scope = try self.addGeneratedFunctionScope(class_parent_scope, setter.method);
@@ -961,6 +967,28 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         });
         // 첫 static block 뒤에 삽입 (index 1)
         try new_members.insert(self.allocator, 1, sb);
+    }
+
+    // Computed member key reads in the context object live in this generated
+    // static block. The access callbacks are its nested functions; their
+    // parameter and key references were attached to their exact function
+    // scopes when each callback was created.
+    if (self.semantic_edit_enabled) {
+        if (metadata_block_scope.isNone()) std.debug.panic("Stage 3 member decorators have no metadata block scope", .{});
+        for (member_infos.items) |*info| {
+            if (!info.name_temp_context_ref.isNone()) {
+                try stage3_helpers.attachNameTempReference(
+                    self,
+                    info.name_temp_identity,
+                    info.name_temp,
+                    info.name_temp_context_ref,
+                    metadata_block_scope,
+                );
+            }
+            for (info.access_function_scopes) |scope| {
+                if (!scope.isNone()) try self.reparentGeneratedScope(scope, metadata_block_scope);
+            }
+        }
     }
 
     // Metadata references are recorded as exact nodes by their builders. Once
@@ -1849,7 +1877,11 @@ fn buildPiggybackedInitCall(
     }
 }
 
-const DecoratedKey = struct { key: NodeIndex, temp: ?Span = null };
+const DecoratedKey = struct {
+    key: NodeIndex,
+    temp: ?Span = null,
+    identity: ?es_helpers.TempIdentityCapture = null,
+};
 
 /// A decorated member's runtime computed key `[expr]` runs once, at its place
 /// in the class: `[_a = __toPropertyKey(expr)]` (#5669). The decorator
@@ -1871,9 +1903,12 @@ fn memoizeComputedMemberKey(self: *Transformer, key: NodeIndex, decorated: bool,
         .string_literal, .numeric_literal, .bigint_literal => return .{ .key = key },
         else => {},
     }
-    const temp = try es_helpers.makeTempVarSpan(self);
-    const write = try es_helpers.makeSyntheticRefFromSpan(self, temp);
-    try self.trackSyntheticTempReference(temp, key_node.span, write, .{ .write = true });
+    const identity = try es_helpers.reserveTrackedTempIdentity(self, key_node.span);
+    const temp = identity.span;
+    const write = try es_helpers.makeTempRefFromIdentity(self, identity, key_node.span, .{ .write = true });
+    // All Stage 3 consumers carry `identity`; retaining this span index would
+    // allow a missed consumer to silently reconstruct the producer by name.
+    self.forgetSyntheticTempSymbolLookup(temp, identity.reference_scope);
     const converted = if (to_property_key) blk: {
         self.runtime_helpers.to_property_key = true;
         const callee = try es_helpers.makeRuntimeHelperRef(self, "__toPropertyKey");
@@ -1885,13 +1920,13 @@ fn memoizeComputedMemberKey(self: *Transformer, key: NodeIndex, decorated: bool,
         .span = key_node.span,
         .data = .{ .unary = .{ .operand = assign, .flags = key_node.data.unary.flags } },
     });
-    return .{ .key = new_key, .temp = temp };
+    return .{ .key = new_key, .temp = temp, .identity = identity };
 }
 
 /// `[_a]` reading a memoized decorated key.
-fn decoratedKeyRead(self: *Transformer, temp: Span) Transformer.Error!NodeIndex {
-    const read = try es_helpers.makeSyntheticRefFromSpan(self, temp);
-    try self.trackSyntheticTempReference(temp, temp, read, .{ .read = true });
+fn decoratedKeyRead(self: *Transformer, identity: es_helpers.TempIdentityCapture) Transformer.Error!NodeIndex {
+    const temp = identity.span;
+    const read = try es_helpers.makeTempRefFromIdentity(self, identity, temp, .{ .read = true });
     return self.ast.addNode(.{ .tag = .computed_property_key, .span = temp, .data = .{ .unary = .{ .operand = read, .flags = 0 } } });
 }
 
@@ -1980,13 +2015,11 @@ pub fn lowerPlainAutoAccessors(self: *Transformer, class_idx: NodeIndex, source_
         if (self.semantic_edit_enabled) _ = try self.addGeneratedFunctionScope(class_scope, getter);
         try members.append(self.allocator, getter);
 
-        // The setter's `[_a]` is tracked when the class visits the method
-        // (`trackKnownMethodComputedKey`), not here.
-        const setter_key = if (decorated_key.temp) |temp| try self.ast.addNode(.{
-            .tag = .computed_property_key,
-            .span = temp,
-            .data = .{ .unary = .{ .operand = try es_helpers.makeSyntheticRefFromSpan(self, temp), .flags = 0 } },
-        }) else key;
+        // Carry the exact producer identity through the setter's computed key.
+        const setter_key = if (decorated_key.identity) |identity|
+            try decoratedKeyRead(self, identity)
+        else
+            key;
         const setter = try self.buildSetterMethodWithHandles(setter_key, try makeThisPrivateField(self, storage_span), is_static, member.span);
         if (self.semantic_edit_enabled) {
             const setter_scope = try self.addGeneratedFunctionScope(class_scope, setter.method);

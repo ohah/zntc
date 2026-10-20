@@ -9,6 +9,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const Span = token_mod.Span;
 const Kind = token_mod.Kind;
 const Error = std.mem.Allocator.Error;
+const TempIdentityCapture = es_helpers.TempIdentityCapture;
 
 pub const Stage3MemberInfo = struct {
     /// "method", "getter", "setter", "field", "accessor"
@@ -18,6 +19,14 @@ pub const Stage3MemberInfo = struct {
     /// A runtime computed key evaluated once into this temp (`[_a = …]`,
     /// #5669): the context name and access functions read the temp.
     name_temp: ?Span = null,
+    /// Producer-owned identity for `name_temp`; consumers must not recover it
+    /// from the generated spelling or source span.
+    name_temp_identity: ?TempIdentityCapture = null,
+    /// The context object's `name` read is inside the generated metadata block.
+    name_temp_context_ref: NodeIndex = .none,
+    /// Generated access callbacks are initially created before the metadata
+    /// block scope exists; reparent them once that scope is registered.
+    access_function_scopes: [3]@import("../../semantic/scope.zig").ScopeId = .{ .none, .none, .none },
     /// static 여부
     is_static: bool,
     /// private 여부
@@ -231,7 +240,7 @@ pub fn buildEsDecorateCall(
     };
 
     // arg4: context object { kind: "method", name: "greet", static: false, private: false, access: { ... }, metadata: _metadata }
-    const arg4 = try buildContextObject(self, info.*, metadata_refs);
+    const arg4 = try buildContextObject(self, info, metadata_refs);
 
     // arg5: initializers (null for method/getter/setter, per-field var for field/accessor)
     const arg5 = if (info.initializers_name) |name| blk: {
@@ -339,7 +348,7 @@ pub fn buildClassEsDecorateCall(
 /// context object 생성: { kind: "method", name: "greet", static: false, private: false, access: { has: ..., get: ... }, metadata: _metadata }
 pub fn buildContextObject(
     self: anytype,
-    info: Stage3MemberInfo,
+    info: *Stage3MemberInfo,
     metadata_refs: *std.ArrayList(NodeIndex),
 ) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
@@ -361,7 +370,7 @@ pub fn buildContextObject(
     const name_key = try es_helpers.makePropertyName(self, "name");
     const name_value = if (info.name_temp) |temp| blk: {
         const read = try es_helpers.makeSyntheticRefFromSpan(self, temp);
-        try self.trackSyntheticTempReference(temp, temp, read, .{ .read = true });
+        info.name_temp_context_ref = read;
         break :blk read;
     } else info.name;
     try props.append(self.allocator, try makeObjProp(self, name_key, name_value));
@@ -395,30 +404,52 @@ pub fn buildContextObject(
 /// - method/getter: has + get
 /// - setter: has + set
 /// - field/accessor: has + get + set
-fn bindAccessParameters(self: anytype, owner: NodeIndex, bindings: []const NodeIndex, refs: []const NodeIndex, name_temp: ?Span, temp_read: NodeIndex) Error!void {
-    if (!self.semantic_edit_enabled) return;
+pub fn attachNameTempReference(
+    self: anytype,
+    identity: ?TempIdentityCapture,
+    name_temp: ?Span,
+    reference: NodeIndex,
+    scope: @import("../../semantic/scope.zig").ScopeId,
+) Error!void {
+    if (!self.semantic_edit_enabled or name_temp == null or reference.isNone()) return;
+    const capture = identity orelse std.debug.panic("Stage 3 computed key reference lost its producer identity", .{});
+    if (capture.span.start != name_temp.?.start or capture.span.end != name_temp.?.end)
+        std.debug.panic("Stage 3 computed key handle disagrees with its temp span", .{});
+    if (capture.symbol_id) |symbol_id| {
+        try self.addSyntheticRefInScope(reference, symbol_id, scope, .{ .read = true });
+    } else {
+        try self.trackSyntheticTempReferenceInScope(capture.span, capture.span, reference, scope, .{ .read = true });
+    }
+}
+
+fn bindAccessParameters(
+    self: anytype,
+    owner: NodeIndex,
+    bindings: []const NodeIndex,
+    refs: []const NodeIndex,
+    name_temp: ?Span,
+    name_temp_identity: ?TempIdentityCapture,
+    temp_read: NodeIndex,
+) Error!@import("../../semantic/scope.zig").ScopeId {
+    if (!self.semantic_edit_enabled) return .none;
     std.debug.assert(bindings.len == refs.len);
     const scope = try self.addGeneratedFunctionScope(self.current_scope, owner);
     for (bindings, refs) |binding, ref| {
         const id = try self.declareSyntheticInScope(binding, self.ast.getNode(binding).span, .parameter, scope);
         try self.addSyntheticRefInScope(ref, id, scope, .{ .read = true });
     }
-    _ = name_temp;
-    _ = temp_read;
+    try attachNameTempReference(self, name_temp_identity, name_temp, temp_read, scope);
+    return scope;
 }
 
 /// The key of an access function: a read of the memoized computed key, or
 /// the member name literal.
-fn accessKey(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
+fn accessKey(self: anytype, info: *Stage3MemberInfo) Error!NodeIndex {
     const temp = info.name_temp orelse return info.name;
-    // Resolved from the class like the key write: the temp is declared
-    // outside the access function, which has no binding of its own for it.
-    const read = try es_helpers.makeSyntheticRefFromSpan(self, temp);
-    try self.trackSyntheticTempReference(temp, temp, read, .{ .read = true });
-    return read;
+    return es_helpers.makeSyntheticRefFromSpan(self, temp);
 }
 
-pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex {
+pub fn buildAccessObject(self: anytype, info: *Stage3MemberInfo) Error!NodeIndex {
     const zero_span = Span{ .start = 0, .end = 0 };
     const none = @backingInt(NodeIndex.none);
     var access_props: std.ArrayList(NodeIndex) = .empty;
@@ -493,7 +524,15 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const has_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @backingInt(obj_param), @backingInt(in_expr), 0,
         });
-        try bindAccessParameters(self, has_arrow, &.{obj_param}, &.{obj_ref}, if (info.is_private) null else info.name_temp, in_left);
+        info.access_function_scopes[0] = try bindAccessParameters(
+            self,
+            has_arrow,
+            &.{obj_param},
+            &.{obj_ref},
+            if (info.is_private) null else info.name_temp,
+            if (info.is_private) null else info.name_temp_identity,
+            in_left,
+        );
         try access_props.append(self.allocator, try makeObjProp(self, has_key, has_arrow));
     }
 
@@ -535,7 +574,15 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
         const get_arrow = try self.addExtraNode(.arrow_function_expression, zero_span, &.{
             @backingInt(obj_param), @backingInt(obj_member), 0,
         });
-        try bindAccessParameters(self, get_arrow, &.{obj_param}, &.{obj_ref}, info.name_temp, get_temp_read);
+        info.access_function_scopes[1] = try bindAccessParameters(
+            self,
+            get_arrow,
+            &.{obj_param},
+            &.{obj_ref},
+            info.name_temp,
+            info.name_temp_identity,
+            get_temp_read,
+        );
         try access_props.append(self.allocator, try makeObjProp(self, get_key, get_arrow));
     }
 
@@ -604,7 +651,15 @@ pub fn buildAccessObject(self: anytype, info: Stage3MemberInfo) Error!NodeIndex 
             0, // flags
             none, // ret_type
         });
-        try bindAccessParameters(self, set_fn, &.{ obj_param, val_param }, &.{ obj_ref, val_ref }, info.name_temp, set_temp_read);
+        info.access_function_scopes[2] = try bindAccessParameters(
+            self,
+            set_fn,
+            &.{ obj_param, val_param },
+            &.{ obj_ref, val_ref },
+            info.name_temp,
+            info.name_temp_identity,
+            set_temp_read,
+        );
         try access_props.append(self.allocator, try makeObjProp(self, set_key, set_fn));
     }
 
