@@ -3457,6 +3457,9 @@ pub fn trackHoistedTempRef(self: *Transformer, name_span: Span, node: NodeIndex,
 pub fn trackHoistedTempRefInScope(self: *Transformer, name_span: Span, node: NodeIndex, scope: ScopeId, flags: ReferenceFlags) Transformer.Error!void {
     if (!self.semantic_edit_enabled or scope.isNone()) return;
     if (self.static_field_initializer_depth == 0) {
+        if (es_helpers.producerTempSymbolIdAtRef(self, node)) |producer_id| {
+            if (try trackKnownSyntheticTempReferenceByIdInScope(self, producer_id, node, scope, flags)) return;
+        }
         if (es_helpers.producerTempSymbolIdForSpan(self, name_span)) |producer_id| {
             if (try trackKnownSyntheticTempReferenceByIdInScope(self, producer_id, node, scope, flags)) return;
         }

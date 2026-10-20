@@ -2766,6 +2766,135 @@ test "#4819 known hoisted temp refs use the producer SymbolId after lookup remov
     try std.testing.expectEqual(@as(usize, 0), transformer.pending_temp_refs.items.len);
 }
 
+fn checkKnownHoistedTempRefAfterSlotReuse(source: []const u8, counter_start: u32) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const helpers = @import("es_helpers.zig");
+    var scanner = try Scanner.init(allocator, source);
+    var parser = Parser.init(allocator, &scanner);
+    parser.configureFromExtension(".mjs");
+    const root = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    var analyzer = SemanticAnalyzer.init(allocator, &parser.ast);
+    analyzer.is_module = true;
+    try analyzer.analyze();
+    try std.testing.expectEqual(@as(usize, 0), analyzer.errors.items.len);
+    const program_scope_raw = analyzer.scope_owner_map.get(@backingInt(root)) orelse
+        return error.MissingProgramScope;
+    var nested_scope_raw: ?u32 = null;
+    for (analyzer.scopes.items, 0..) |scope, index| {
+        if (scope.kind == .function) {
+            nested_scope_raw = @intCast(index);
+            break;
+        }
+    }
+    const nested_scope = nested_scope_raw orelse return error.MissingNestedFunctionScope;
+    const program_scope: ScopeId = @fromBackingInt(program_scope_raw);
+    const reference_scope: ScopeId = @fromBackingInt(nested_scope);
+
+    var transformer = try Transformer.init(allocator, &parser.ast, .{});
+    try transformer.initSymbolIds(analyzer.symbol_ids.items);
+    transformer.symbols = analyzer.symbols.items;
+    transformer.class_self_symbol_map = analyzer.class_self_symbol_map;
+    transformer.references = analyzer.references.items;
+    transformer.scopes = analyzer.scopes.items;
+    transformer.scope_maps = analyzer.scope_maps.items;
+    transformer.scope_owner_map = analyzer.scope_owner_map;
+    transformer.semantic_edit_enabled = true;
+    transformer.current_scope = program_scope;
+    transformer.temp_var_counter = counter_start;
+
+    for (parser.ast.nodes.items, 0..) |node, raw| {
+        if (node.tag != .identifier_reference and node.tag != .assignment_target_identifier) continue;
+        const source_node: AstNodeIndex = @fromBackingInt(@intCast(raw));
+        const source_id = transformer.getSymbolIdAt(source_node) orelse continue;
+        if (source_id < transformer.symbols.len)
+            try std.testing.expect(helpers.producerTempSymbolIdAtRef(&transformer, source_node) == null);
+    }
+
+    const span = parser.ast.getNode(root).span;
+    const old = try helpers.reserveTrackedTempIdentity(&transformer, span);
+    const old_id = old.symbol_id orelse return error.MissingOldProducerSymbolId;
+    const old_counter = transformer.temp_var_counter - 1;
+    const retained_ref = try helpers.makeTempRefFromIdentity(&transformer, old, span, .{ .read = true });
+    try std.testing.expectEqual(@as(?u32, @backingInt(old_id)), transformer.getSymbolIdAt(retained_ref));
+
+    // Function transforms restore the allocator counter. A later function can
+    // then reuse the same generated spelling while an earlier reference is
+    // still waiting for its final reference scope.
+    transformer.current_scope = reference_scope;
+    transformer.temp_var_counter = old_counter;
+    const replacement = try helpers.reserveTrackedTempIdentity(&transformer, span);
+    const replacement_id = replacement.symbol_id orelse return error.MissingReplacementProducerSymbolId;
+    try std.testing.expectEqualStrings(
+        transformer.ast.getText(old.span),
+        transformer.ast.getText(replacement.span),
+    );
+    try std.testing.expect(old.span.start != replacement.span.start);
+    try std.testing.expect(old_id != replacement_id);
+
+    try std.testing.expect(try helpers.trackKnownHoistedTempRef(
+        &transformer,
+        retained_ref,
+        reference_scope,
+        .{ .read = true },
+    ));
+    try std.testing.expectEqual(@as(?u32, @backingInt(old_id)), transformer.getSymbolIdAt(retained_ref));
+    const editor = if (transformer.semantic_editor) |*value| value else return error.MissingSemanticEditor;
+    const semantic_ref = (try editor.referenceForNode(retained_ref)) orelse return error.MissingRetainedTempReference;
+    try std.testing.expectEqual(old_id, semantic_ref.symbol_id);
+    try std.testing.expectEqual(reference_scope, semantic_ref.scope_id);
+
+    const hoisted_ref = try helpers.makeTempRefFromIdentity(&transformer, old, span, .{ .read = true });
+    try transformer.trackHoistedTempRefInScope(old.span, hoisted_ref, reference_scope, .{ .read = true });
+    try std.testing.expectEqual(@as(?u32, @backingInt(old_id)), transformer.getSymbolIdAt(hoisted_ref));
+    const hoisted_semantic_ref = (try editor.referenceForNode(hoisted_ref)) orelse return error.MissingHoistedTempReference;
+    try std.testing.expectEqual(old_id, hoisted_semantic_ref.symbol_id);
+    try std.testing.expectEqual(reference_scope, hoisted_semantic_ref.scope_id);
+
+    const parameter_environment = @import("parameter_environment.zig");
+    const value = try helpers.makeNumericLiteral(&transformer, 1);
+    const named = try parameter_environment.nameByRuntimeKey(&transformer, value, retained_ref, null, reference_scope, span);
+    const named_node = transformer.ast.getNode(named);
+    try std.testing.expectEqual(.call_expression, named_node.tag);
+    const named_args_start = transformer.ast.extra_data.items[named_node.data.extra + 1];
+    const named_key_ref: AstNodeIndex = @fromBackingInt(@intCast(transformer.ast.extra_data.items[named_args_start + 1]));
+    try std.testing.expectEqual(@as(?u32, @backingInt(old_id)), transformer.getSymbolIdAt(named_key_ref));
+    var exact_reads: usize = 0;
+    for (editor.references.items) |reference| {
+        if (reference.symbol_id != old_id or !reference.flags.read) continue;
+        if (reference.scope_id == reference_scope) exact_reads += 1;
+    }
+    try std.testing.expect(exact_reads >= 3);
+
+    const computed_key = try transformer.ast.addNode(.{
+        .tag = .computed_property_key,
+        .span = span,
+        .data = .{ .unary = .{ .operand = retained_ref, .flags = 0 } },
+    });
+    const legacy_key = (try helpers.makeLegacyDecoratorComputedKeyRef(&transformer, computed_key)) orelse
+        return error.MissingLegacyDecoratorTempKey;
+    const legacy_ref = transformer.ast.getNode(legacy_key).data.unary.operand;
+    try std.testing.expectEqual(@as(?u32, @backingInt(old_id)), transformer.getSymbolIdAt(legacy_ref));
+}
+
+test "#4819 known hoisted temp refs keep direct SymbolIds across allocator slot reuse" {
+    const hostile_cases = [_]struct { source: []const u8, counter_start: u32 }{
+        .{ .source = "function callback() {} const value = 'value';", .counter_start = 0 },
+        .{ .source = "function outer() { function callback() {} return callback; }", .counter_start = 0 },
+        .{ .source = "const callback = () => 'value';", .counter_start = 0 },
+        .{ .source = "async function callback() { return 'value'; }", .counter_start = 0 },
+        .{ .source = "class Box { method() { return 'value'; } }", .counter_start = 0 },
+        .{ .source = "try { throw 1; } catch (error) { function callback() { return error; } }", .counter_start = 0 },
+        .{ .source = "function outer() { return () => function callback() { return 'value'; }; }", .counter_start = 0 },
+        .{ .source = "function outer() { class Box { method() {} } return Box; }", .counter_start = 0 },
+        .{ .source = "function outer() { { function callback() {} } return callback; }", .counter_start = 0 },
+        .{ .source = "const _a = 7; function callback() { return _a; }", .counter_start = 26 * 10000 },
+    };
+    for (hostile_cases) |case| try checkKnownHoistedTempRefAfterSlotReuse(case.source, case.counter_start);
+}
+
 fn expectGenericHoistedTempProducerIdentity(source: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

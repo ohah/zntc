@@ -558,6 +558,19 @@ pub fn producerTempSymbolIdForSpan(self: anytype, name_span: Span) ?symbol_mod.S
     return null;
 }
 
+/// Return the producer ID already attached to a generated temp reference.
+/// Source references keep their normal move/reanalysis path; a synthetic
+/// temp's node identity survives allocator counter restoration and reuse.
+pub fn producerTempSymbolIdAtRef(self: anytype, node: NodeIndex) ?symbol_mod.SymbolId {
+    if (!self.semantic_edit_enabled or node.isNone()) return null;
+    const reference = self.ast.getNode(node);
+    if (reference.tag != .identifier_reference and reference.tag != .assignment_target_identifier) return null;
+    if (!isTempLikeName(self.ast.getText(reference.data.string_ref))) return null;
+    const raw_symbol_id = self.getSymbolIdAt(node) orelse return null;
+    if (raw_symbol_id < self.symbols.len) return null;
+    return @fromBackingInt(raw_symbol_id);
+}
+
 /// Record a generated temp reference only when its exact name span is still
 /// owned by the active temp allocator. This lets class lowering attach a
 /// prehoisted computed-key reference after moving it into its final function
@@ -572,6 +585,10 @@ pub fn trackKnownHoistedTempRef(
     const ref = self.ast.getNode(node);
     if (ref.tag != .identifier_reference and ref.tag != .assignment_target_identifier) return false;
     const name_span = ref.data.string_ref;
+    if (producerTempSymbolIdAtRef(self, node)) |producer_id| {
+        if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
+            return true;
+    }
     if (producerTempSymbolIdForSpan(self, name_span)) |producer_id| {
         if (try self.trackKnownSyntheticTempReferenceByIdInScope(producer_id, node, scope, flags))
             return true;
@@ -909,7 +926,7 @@ fn isIdentChar(c: u8) bool {
 }
 
 fn isTempLikeName(name: []const u8) bool {
-    if (name.len < 2 or name.len > 6) return false;
+    if (name.len < 2) return false;
     if (name[0] != '_') return false;
     if (name[1] < 'a' or name[1] > 'z') return false;
     for (name[2..]) |c| {
@@ -1074,13 +1091,16 @@ pub fn makeLegacyDecoratorComputedKeyRef(self: anytype, key: NodeIndex) !?NodeIn
     const candidate = self.ast.getNode(candidate_idx);
     if (candidate.tag != .identifier_reference and candidate.tag != .assignment_target_identifier) return null;
 
-    var is_known_temp = false;
+    const producer_id = producerTempSymbolIdAtRef(self, candidate_idx);
+    var is_known_temp = producer_id != null;
     var temp_iter = self.temp_span_by_counter.iterator();
-    while (temp_iter.next()) |entry| {
-        const temp_span = entry.value_ptr.*;
-        if (temp_span.start == candidate.data.string_ref.start and temp_span.end == candidate.data.string_ref.end) {
-            is_known_temp = true;
-            break;
+    if (!is_known_temp) {
+        while (temp_iter.next()) |entry| {
+            const temp_span = entry.value_ptr.*;
+            if (temp_span.start == candidate.data.string_ref.start and temp_span.end == candidate.data.string_ref.end) {
+                is_known_temp = true;
+                break;
+            }
         }
     }
     if (!is_known_temp) return null;
@@ -1089,8 +1109,11 @@ pub fn makeLegacyDecoratorComputedKeyRef(self: anytype, key: NodeIndex) !?NodeIn
     if (self.semantic_edit_enabled) {
         if (self.current_scope.isNone())
             std.debug.panic("legacy decorator computed key has no output reference scope", .{});
-        if (!try trackKnownHoistedTempRef(self, read_ref, self.current_scope, .{ .read = true }))
-            std.debug.panic("legacy decorator computed key lost its exact temp identity", .{});
+        const tracked = if (producer_id) |symbol_id|
+            try self.trackKnownSyntheticTempReferenceByIdInScope(symbol_id, read_ref, self.current_scope, .{ .read = true })
+        else
+            try trackKnownHoistedTempRef(self, read_ref, self.current_scope, .{ .read = true });
+        if (!tracked) std.debug.panic("legacy decorator computed key lost its exact temp identity", .{});
     }
     return try self.ast.addNode(.{
         .tag = .computed_property_key,
