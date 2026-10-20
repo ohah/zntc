@@ -1770,11 +1770,182 @@ const TestResult = struct {
     }
 };
 
+fn expectNoCrossModuleConstFact(r: *TestResult, entry_index: ModuleIndex, local_symbol: u32) !void {
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const sem = entry.semantic orelse return error.MissingEntrySemantic;
+    var const_values = try r.linker.buildCrossModuleConstValues(entry, sem);
+    defer const_values.deinit(std.testing.allocator);
+    try std.testing.expect(const_values.get(local_symbol) == null);
+}
+
 fn buildLinkAndRename(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
     var r = try buildAndLink(allocator, tmp, entry_name);
     try r.linker.computeRenames();
     r.linker.populateImportSymbols();
     return .{ .linker = r.linker, .graph = r.graph, .cache = r.cache };
+}
+
+test "linker: cross-module const facts skip same-named CJS locals behind ESM re-exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value } from './barrel.mjs';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "barrel.mjs", "export { value } from './provider.cjs';");
+    try writeFile(tmp.dir, "provider.cjs",
+        \\const value = 1;
+        \\exports.value = 99;
+    );
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const sem = entry.semantic orelse return error.MissingEntrySemantic;
+    const local_symbol = entry.import_bindings[0].local_symbol.semanticIndex() orelse
+        return error.MissingImportLocalSymbol;
+    var const_values = try r.linker.buildCrossModuleConstValues(entry, sem);
+    defer const_values.deinit(std.testing.allocator);
+
+    // CJS fallback resolves an export name contract, not an exact local binding.
+    // The private `const value = 1` must not replace the runtime export value 99.
+    try std.testing.expect(const_values.get(local_symbol) == null);
+}
+
+test "linker: cross-module const facts follow multi-hop ESM exports by exact binding" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value } from './barrel.mjs';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "barrel.mjs", "export { value } from './middle.mjs';");
+    try writeFile(tmp.dir, "middle.mjs", "export { value } from './provider.mjs';");
+    try writeFile(tmp.dir, "provider.mjs",
+        \\const innerValue = 42;
+        \\const value = 1;
+        \\export { innerValue as value };
+    );
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const sem = entry.semantic orelse return error.MissingEntrySemantic;
+    const local_symbol = entry.import_bindings[0].local_symbol.semanticIndex() orelse
+        return error.MissingImportLocalSymbol;
+
+    // Deliberately poison the name index after linking. The exporter still owns
+    // the exact SID for `innerValue`, so an unrelated local named `value` must
+    // not redirect the const fact through scope_maps.
+    const provider_index = findModuleIdx(r.graph, "provider.mjs") orelse return error.MissingProviderModule;
+    const provider = r.graph.getModule(provider_index) orelse return error.MissingProviderModule;
+    const provider_sem = provider.semantic orelse return error.MissingProviderSemantic;
+    const decoy_symbol = provider_sem.scope_maps[0].get("value") orelse return error.MissingDecoySymbol;
+    var export_local_names: [3]?[]const u8 = .{ null, null, null };
+    for (provider.export_bindings) |export_binding| {
+        if (export_binding.kind == .local and std.mem.eql(u8, export_binding.exported_name, "value")) {
+            export_local_names = .{
+                provider.exportBindingLocalName(export_binding),
+                export_binding.local_name,
+                export_binding.exported_name,
+            };
+            break;
+        }
+    }
+    if (export_local_names[0] == null) return error.MissingProviderExport;
+    var poisoned_scope = @constCast(&provider_sem.scope_maps[0]);
+    for (export_local_names) |maybe_name| {
+        if (maybe_name) |name| try poisoned_scope.put(std.testing.allocator, name, decoy_symbol);
+    }
+
+    var const_values = try r.linker.buildCrossModuleConstValues(entry, sem);
+    defer const_values.deinit(std.testing.allocator);
+
+    const fact = const_values.get(local_symbol) orelse return error.MissingEsmConstFact;
+    try std.testing.expectEqual(semantic_symbol.ConstValue.Kind.number, fact.kind);
+    try std.testing.expectEqualStrings("42", fact.number_text);
+}
+
+test "linker: cross-module const facts fail closed on missing or foreign export IDs" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value } from './provider.mjs';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "provider.mjs", "export const value = 42;");
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const provider_index = findModuleIdx(r.graph, "provider.mjs") orelse return error.MissingProviderModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const local_symbol = entry.import_bindings[0].local_symbol.semanticIndex() orelse
+        return error.MissingImportLocalSymbol;
+
+    const export_entry = blk: {
+        var it = r.linker.export_map.iterator();
+        while (it.next()) |item| {
+            if (item.value_ptr.module_index != provider_index or
+                !std.mem.eql(u8, item.value_ptr.binding.exported_name, "value")) continue;
+            break :blk item.value_ptr;
+        }
+        return error.MissingProviderExport;
+    };
+    const exact_symbol = export_entry.binding.symbol;
+    const exact_kind = export_entry.binding.kind;
+
+    export_entry.binding.symbol = .invalid;
+    try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
+
+    const source_id = exact_symbol.semanticIndex() orelse return error.MissingProviderSymbolId;
+    export_entry.binding.symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, source_id);
+    try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
+
+    export_entry.binding.symbol = bundler_symbol.SymbolRef.makeSemantic(provider_index, std.math.maxInt(u32));
+    try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
+
+    export_entry.binding.symbol = exact_symbol;
+    export_entry.binding.kind = .re_export;
+    try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
+
+    export_entry.binding.symbol = exact_symbol;
+    export_entry.binding.kind = exact_kind;
+}
+
+test "linker: cross-module const facts skip reassigned ESM exports" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value } from './provider.mjs';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "provider.mjs",
+        \\export let value = 42;
+        \\value = 99;
+    );
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const local_symbol = entry.import_bindings[0].local_symbol.semanticIndex() orelse
+        return error.MissingImportLocalSymbol;
+    try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
 }
 
 test "rename: no conflict — no rename" {

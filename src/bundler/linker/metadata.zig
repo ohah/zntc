@@ -1969,18 +1969,16 @@ pub fn buildCrossModuleConstValuesProfiled(
             // 순환 그룹 멤버는 ESM TDZ 순서 보장이 깨져 const inline 안전성을 잃는다 (D065).
             if (target_module.isInCycle()) continue;
             const target_sem = target_module.semantic orelse continue;
-            if (target_sem.scope_maps.len == 0) continue;
-            // export_name → local_name 매핑. namespace object export 는 scalar const 가 아니므로
-            // symbol lookup 전에 제외한다.
-            const local_name = local: {
-                if (self.export_map.get(.{ .module_index = canon.module_index.toU32(), .name = canon.export_name })) |entry| {
-                    if (entry.binding.kind == .re_export_namespace) continue;
-                    break :local target_module.exportBindingLocalName(entry.binding);
-                }
-                break :local canon.export_name;
-            };
-            const target_sym_idx = target_sem.scope_maps[0].get(local_name) orelse continue;
-            if (target_sym_idx >= target_sem.symbols.items.len) continue;
+            // Canonical export-name resolution is a string contract. It does
+            // not identify an ESM local binding for CJS/virtual fallbacks, so
+            // const facts require the canonical module's exact local export SID.
+            // Re-exports and namespace exports have no local scalar binding here.
+            const export_entry = self.export_map.get(.{
+                .module_index = canon.module_index.toU32(),
+                .name = canon.export_name,
+            }) orelse continue;
+            if (export_entry.binding.kind != .local) continue;
+            const target_sym_idx = target_module.exportBindingSemanticIndex(export_entry.binding) orelse continue;
             break :blk Lookup{
                 .sem = target_sem,
                 .sym_idx = target_sym_idx,
