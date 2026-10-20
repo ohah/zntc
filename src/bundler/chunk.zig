@@ -1427,7 +1427,7 @@ pub fn crossChunkExportShakenDecision(
     if (is_chunk_entry and !minify_syntax) return false;
     const eb = m.findExportBinding(export_name) orelse return false;
     if (eb.kind != .local) return false;
-    return !m.isLocalBindingAlive(m.exportBindingLocalName(eb.*));
+    return !m.isExportBindingAlive(eb.*);
 }
 
 fn crossChunkExportIsShaken(

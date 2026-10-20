@@ -717,7 +717,7 @@ pub fn emitEsmWrappedModule(
                     // skip — 안 그러면 dangling reference 가 namespace object 안에 남고,
                     // 그 binding 은 emit 안 되어 mangle 가드도 함께 long source name 으로
                     // 남게 되어 size 회귀.
-                    if (eb.kind == .local and !module.isLocalBindingAlive(module.exportBindingLocalName(eb))) continue;
+                    if (eb.kind == .local and !module.isExportBindingAlive(eb)) continue;
                     try local_entries.append(allocator, .{
                         .name = eb.exported_name,
                         .getter_value = blk: {

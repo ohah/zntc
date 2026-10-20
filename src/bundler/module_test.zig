@@ -1,6 +1,21 @@
 const std = @import("std");
 const module = @import("module.zig");
 const Module = module.Module;
+const ModuleSemanticData = module.ModuleSemanticData;
+const ExportBinding = module.ExportBinding;
+const Span = @import("../lexer/token.zig").Span;
+const ScopeId = @import("../semantic/scope.zig").ScopeId;
+const symbol_mod = @import("symbol.zig");
+const semantic_symbol = @import("../semantic/symbol.zig");
+
+fn livenessTestSymbol() semantic_symbol.Symbol {
+    return .{
+        .name = Span.EMPTY,
+        .scope_id = ScopeId.none,
+        .kind = .variable_const,
+        .declaration_span = Span.EMPTY,
+    };
+}
 
 // ============================================================
 // Tests
@@ -15,6 +30,95 @@ test "Module: init defaults" {
     try std.testing.expect(m.ast == null);
     try std.testing.expectEqual(@as(usize, 0), m.dependencies.items.len);
     try std.testing.expectEqual(@as(usize, 0), m.importers.items.len);
+}
+
+test "Module.isExportBindingAlive uses exact SymbolId across hostile spellings and owners" {
+    const allocator = std.testing.allocator;
+    var test_module = Module.init(@fromBackingInt(@as(u32, 0)), "namespace.ts");
+    defer test_module.deinit(allocator);
+
+    const scope_maps = try allocator.alloc(std.StringHashMapUnmanaged(usize), 1);
+    defer allocator.free(scope_maps);
+    scope_maps[0] = .empty;
+    defer scope_maps[0].deinit(allocator);
+    // All plausible names deliberately point at symbol 0. The exported binding owns symbol 1.
+    for ([_][]const u8{ "counter", "counter$4", "public", "not-a-binding" }) |name| {
+        try scope_maps[0].put(allocator, name, 0);
+    }
+
+    var semantic = ModuleSemanticData{
+        .symbols = .empty,
+        .scopes = &.{},
+        .scope_maps = scope_maps,
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    defer semantic.symbols.deinit(allocator);
+    try semantic.symbols.append(allocator, livenessTestSymbol());
+    try semantic.symbols.append(allocator, livenessTestSymbol());
+    test_module.semantic = semantic;
+    // Statement 0 is dead and statement 1 is reachable. Index 2 is deliberately present in
+    // the map but outside the semantic table, so the symbol-table bounds guard is observable.
+    var reachable = try std.DynamicBitSet.initEmpty(allocator, 2);
+    defer reachable.deinit();
+    reachable.set(1);
+    test_module.reachable_stmts = &reachable;
+    const symbol_to_stmt = [_]?u32{ 0, 1, 0 };
+    test_module.symbol_to_stmt = &symbol_to_stmt;
+    test_module.tree_shaker_active = true;
+    test_module.is_included = true;
+
+    const exact_live = symbol_mod.SymbolRef.makeSemantic(test_module.index, 1);
+    const exact_dead = symbol_mod.SymbolRef.makeSemantic(test_module.index, 0);
+    const base = ExportBinding{
+        .exported_name = "public",
+        .local_name = "counter$4",
+        .local_span = Span.EMPTY,
+        .kind = .local,
+        .symbol = exact_live,
+    };
+    const Scenario = struct {
+        binding: ExportBinding,
+        expected_alive: bool,
+    };
+    const scenarios = [_]Scenario{
+        .{ .binding = base, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "public", .local_name = "counter", .local_span = Span.EMPTY, .kind = .local, .symbol = exact_live }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "public", .local_name = "public", .local_span = Span.EMPTY, .kind = .local, .symbol = exact_live }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "other", .local_name = "not-a-binding$12", .local_span = Span.EMPTY, .kind = .local, .symbol = exact_live }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "renamed", .local_name = "counter", .local_span = Span.EMPTY, .kind = .local, .symbol = exact_live }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "counter", .local_name = "actual", .local_span = Span.EMPTY, .kind = .local, .symbol = exact_dead }, .expected_alive = false },
+        .{ .binding = .{ .exported_name = "public", .local_name = "counter", .local_span = Span.EMPTY, .kind = .local }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "public", .local_name = "counter", .local_span = Span.EMPTY, .kind = .local, .symbol = symbol_mod.SymbolRef.makeSemantic(test_module.index, std.math.maxInt(u32)) }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "public", .local_name = "counter", .local_span = Span.EMPTY, .kind = .local, .symbol = symbol_mod.SymbolRef.makeSemantic(@fromBackingInt(@as(u32, 1)), 0) }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "public", .local_name = "counter", .local_span = Span.EMPTY, .kind = .local, .symbol = symbol_mod.SymbolRef.makeSemantic(test_module.index, 2) }, .expected_alive = true },
+        .{ .binding = .{ .exported_name = "counter", .local_name = "counter", .local_span = Span.EMPTY, .kind = .re_export, .symbol = exact_dead }, .expected_alive = true },
+    };
+    for (scenarios) |scenario| {
+        try std.testing.expectEqual(scenario.expected_alive, test_module.isExportBindingAlive(scenario.binding));
+    }
+
+    // Exact SID lookup does not require a spelling map once the symbol table exists.
+    test_module.semantic.?.scope_maps = &.{};
+    try std.testing.expect(!test_module.isExportBindingAlive(scenarios[5].binding));
+    test_module.symbol_to_stmt = null;
+    try std.testing.expect(test_module.isExportBindingAlive(scenarios[5].binding));
+    test_module.tree_shaker_active = false;
+    test_module.reachable_stmts = null;
+    test_module.symbol_to_stmt = &symbol_to_stmt;
+    try std.testing.expect(test_module.isExportBindingAlive(scenarios[5].binding));
+    test_module.tree_shaker_active = true;
+    test_module.is_included = true;
+    try std.testing.expect(!test_module.isExportBindingAlive(scenarios[5].binding));
+
+    var no_semantic = Module.init(test_module.index, "without-semantic.ts");
+    defer no_semantic.deinit(allocator);
+    try std.testing.expect(no_semantic.isExportBindingAlive(base));
+
+    test_module.tree_shaker_active = true;
+    test_module.is_included = false;
+    try std.testing.expect(!test_module.isExportBindingAlive(scenarios[6].binding));
 }
 
 test "Module: state transitions" {

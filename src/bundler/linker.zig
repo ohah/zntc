@@ -501,6 +501,9 @@ pub const Linker = struct {
     pub const NsExportPair = struct {
         exported: []const u8,
         local: []const u8,
+        /// Canonical local declaration identity used by namespace tree-shaking. This may be
+        /// invalid for graphless/CJS/namespace-expression exports; those stay conservative.
+        binding_symbol: bundler_symbol.SymbolRef = bundler_symbol.SymbolRef.invalid,
         /// buildInlineObjectStr에서 할당된 문자열인 경우 true.
         /// exports ArrayList 해제 시 owned=true인 local만 free.
         owned: bool = false,
@@ -5993,7 +5996,11 @@ pub const Linker = struct {
             var ns_target_mod: ?u32 = null;
             var owns_actual_local = false;
             var cjs_interop: ?SymbolRef = null;
+            var binding_symbol: bundler_symbol.SymbolRef = .invalid;
             var init_mod: ?u32 = if (m.wrap_kind == .esm) mod_i else null;
+            if (eb.kind == .local and m.exportBindingSemanticIndex(eb) != null) {
+                binding_symbol = eb.symbol;
+            }
             const actual_local = if (eb.kind == .re_export_namespace) blk: {
                 ns_target_mod = resolvedRecordModule(m.import_records, eb.import_record_index);
                 break :blk eb_local;
@@ -6004,6 +6011,18 @@ pub const Linker = struct {
                     else
                         null;
                     if (self.graph.getModule(canonical.module_index)) |cmod| {
+                        // `canonical.export_name` selects an export record, not a local spelling.
+                        // Carry its exact local SID only for ordinary semantic local exports;
+                        // synthetic members and interop expressions have no such binding.
+                        if (canonical.synthetic_member == null) {
+                            if (cmod.findExportBinding(canonical.export_name)) |canonical_binding| {
+                                if (canonical_binding.kind == .local and
+                                    cmod.exportBindingSemanticIndex(canonical_binding.*) != null)
+                                {
+                                    binding_symbol = canonical_binding.symbol;
+                                }
+                            }
+                        }
                         for (cmod.export_bindings) |ceb| {
                             if (ceb.kind.isReExportAll() and
                                 std.mem.eql(u8, ceb.exported_name, canonical.export_name) and
@@ -6049,6 +6068,7 @@ pub const Linker = struct {
             try exports.append(self.allocator, .{
                 .exported = eb.exported_name,
                 .local = safe_local,
+                .binding_symbol = binding_symbol,
                 .owned = owns_actual_local,
                 .init_mod = init_mod,
                 .ns_target_mod = ns_target_mod,
