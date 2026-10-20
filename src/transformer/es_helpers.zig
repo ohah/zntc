@@ -1319,6 +1319,8 @@ pub fn uniqueSyntheticName(self: anytype, prefix: []const u8, counter: *u32) ![]
 /// Module-unique synthetic spelling that also avoids names visible to direct
 /// eval in the scope where the generated binding will be observed.
 pub fn uniqueSyntheticNameAvoidingDynamicEval(self: anytype, prefix: []const u8, counter: *u32, scope_id: ScopeId) ![]const u8 {
+    if (scope_id.isNone()) return try uniqueSyntheticNameAvoidingAnyDynamicEval(self, prefix, counter);
+
     if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
     const arena = self.name_arena.?.allocator();
     while (true) {
@@ -1445,9 +1447,21 @@ fn scopedSyntheticNameCacheKey(self: anytype, name: []const u8, scope_id: ScopeI
 }
 
 pub fn resolveSyntheticNameAvoidingDynamicEval(self: anytype, name: []const u8, scope_id: ScopeId) ![]const u8 {
-    // A missing scope has no owner identity to key a local choice by. Keep the
-    // module-wide resolver behavior used by graphless generator handoffs.
-    if (scope_id.isNone()) return try resolveSyntheticName(self, name);
+    // A missing scope cannot constrain visibility to one owner. Conservatively
+    // scan module-wide eval strings, but leave the choice in the base-name cache
+    // so a caller can invalidate it before creating another generated owner.
+    if (scope_id.isNone()) {
+        const cache_key = try scopedSyntheticNameCacheKey(self, name, .none);
+        _ = self.scoped_synthetic_names.remove(cache_key);
+        const resolved = try resolveSyntheticNameAvoidingAnyDynamicEval(self, name);
+        _ = self.scoped_synthetic_names.remove(cache_key);
+        if (!std.mem.eql(u8, name, resolved)) {
+            if (self.name_arena == null) self.name_arena = std.heap.ArenaAllocator.init(self.allocator);
+            const key = try self.name_arena.?.allocator().dupe(u8, name);
+            try self.synthetic_names.put(self.allocator, key, resolved);
+        }
+        return resolved;
+    }
 
     const cache_key = try scopedSyntheticNameCacheKey(self, name, scope_id);
     if (self.scoped_synthetic_names.get(cache_key)) |cached| return cached;
