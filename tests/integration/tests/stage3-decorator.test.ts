@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { bundleAndRun, createFixture, runZntc } from './helpers';
+import { bundleAndRun, createFixture, runZntc, transpileAndRun } from './helpers';
 import { join } from 'node:path';
 
 // TC39 Stage 3 Decorator E2E 테스트
@@ -1754,6 +1754,119 @@ describe('Stage 3 Decorators', () => {
     }
     expect(actual).toEqual(
       cases.map((testCase) => ({ name: testCase.name, exitCode: 0, runOutput: testCase.expected })),
+    );
+  });
+
+  it('Stage 3 class decorator helper names stay invisible to direct eval', async () => {
+    const cases = [
+      {
+        name: 'class decorator array',
+        globalName: '_classDecorators',
+        member: "probe() { return eval('typeof _classDecorators'); }",
+        expression: 'new Example().probe()',
+      },
+      {
+        name: 'class descriptor from constructor',
+        globalName: '_classDescriptor',
+        member: 'constructor() { this.observed = eval("typeof _classDescriptor"); }',
+        expression: 'new Example().observed',
+      },
+      {
+        name: 'class extra initializers from a static method',
+        globalName: '_classExtraInitializers',
+        member: "static probe() { return eval('typeof _classExtraInitializers'); }",
+        expression: 'Example.probe()',
+      },
+      {
+        name: 'instance extra initializers',
+        globalName: '_instanceExtraInitializers',
+        fields: '@mark value = 1;',
+        member: "probe() { return eval('typeof _instanceExtraInitializers'); }",
+        expression: 'new Example().probe()',
+      },
+      {
+        name: 'static extra initializers from nested arrow eval',
+        globalName: '_staticExtraInitializers',
+        fields: '@mark static value = 1;',
+        member: "probe() { return (() => eval('typeof _staticExtraInitializers'))(); }",
+        expression: 'new Example().probe()',
+      },
+      {
+        name: 'member decorator array',
+        globalName: '_probeValue_decorators',
+        fields: '@mark probeValue = 1;',
+        member: "probe() { return eval('typeof _probeValue_decorators'); }",
+        expression: 'new Example().probe()',
+      },
+      {
+        name: 'member initializer array',
+        globalName: '_probeValue_initializers',
+        fields: '@mark probeValue = 1;',
+        member: "probe() { return eval('typeof _probeValue_initializers'); }",
+        expression: 'new Example().probe()',
+      },
+      {
+        name: 'member extra initializer array',
+        globalName: '_probeValue_extraInitializers',
+        fields: '@mark probeValue = 1;',
+        member: "probe() { return eval('typeof _probeValue_extraInitializers'); }",
+        expression: 'new Example().probe()',
+      },
+      {
+        name: 'escaped identifier in eval source',
+        globalName: '_classDecorators',
+        member: String.raw`probe() { return eval('typeof _classD\\u0065corators'); }`,
+        expression: 'new Example().probe()',
+      },
+      {
+        name: 'statically concatenated eval source',
+        globalName: '_classDecorators',
+        member: "probe() { return eval('typeof _class' + 'Decorators'); }",
+        expression: 'new Example().probe()',
+      },
+    ];
+
+    const modes = [
+      { name: 'standalone', bundled: false, args: [] },
+      { name: 'standalone full minify', bundled: false, args: ['--minify'] },
+      { name: 'bundle', bundled: true, args: [] },
+      { name: 'bundle identifier minify', bundled: true, args: ['--minify-identifiers'] },
+      { name: 'bundle full minify', bundled: true, args: ['--minify'] },
+    ];
+    const actual: { name: string; exitCode: number; runOutput: string }[] = [];
+    for (const testCase of cases) {
+      const source = `
+        globalThis.${testCase.globalName} = 41;
+        function mark(value: any, context: any) { return value; }
+        @mark class Example {
+          ${testCase.fields ?? ''}
+          ${testCase.member}
+        }
+        console.log(${testCase.expression});
+      `;
+      for (const mode of modes) {
+        const name = `${testCase.name} / ${mode.name}`;
+        if (mode.bundled) {
+          const result = await bundleAndRun({ 'index.ts': source }, 'index.ts', mode.args);
+          try {
+            actual.push({ name, exitCode: result.exitCode, runOutput: result.runOutput });
+          } finally {
+            await result.cleanup();
+          }
+        } else {
+          const result = await transpileAndRun(source, mode.args, { ext: 'ts' });
+          try {
+            actual.push({ name, exitCode: result.transpileExitCode, runOutput: result.runOutput });
+          } finally {
+            await result.cleanup();
+          }
+        }
+      }
+    }
+    expect(actual).toEqual(
+      cases.flatMap(({ name }) =>
+        modes.map((mode) => ({ name: `${name} / ${mode.name}`, exitCode: 0, runOutput: 'number' })),
+      ),
     );
   });
 });

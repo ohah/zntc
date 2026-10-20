@@ -23,9 +23,17 @@ const extractCleanVarName = stage3_helpers.extractCleanVarName;
 
 const ANON_CLASS_NAME = "_Class";
 
-fn reserveStandaloneLateStage3Name(self: *Transformer, enabled: bool, name: []const u8) Error!void {
-    if (!enabled) return;
-    _ = try es_helpers.deferSyntheticOutputName(self, name);
+fn prepareStage3OutputName(
+    self: *Transformer,
+    late_output_name: bool,
+    scope_id: ScopeId,
+    name: []const u8,
+) Error!void {
+    if (late_output_name) {
+        _ = try es_helpers.deferSyntheticOutputName(self, name);
+    } else {
+        _ = try es_helpers.resolveSyntheticNameAvoidingDynamicEvalAndRemember(self, name, scope_id);
+    }
 }
 
 fn markStandaloneLateStage3Symbol(
@@ -154,6 +162,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
         self.current_scope;
     const late_standalone_output_names = es_helpers.canUseLateStandaloneOutputName(self, class_parent_scope);
     const late_graph_output_names = es_helpers.canUseLateGraphOutputName(self, class_parent_scope);
+    const late_stage3_output_names = late_standalone_output_names or late_graph_output_names;
     const class_deco_start = self.readU32(e, ast_mod.ClassExtra.deco_start);
     const class_deco_len = self.readU32(e, ast_mod.ClassExtra.deco_len);
 
@@ -280,12 +289,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}{s}_decorators", .{ kind_prefix, var_n });
                     defer self.allocator.free(deco_base_name);
                     const deco_vname = try uniqueMemberGeneratedName(self, member_infos.items, deco_base_name);
-                    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, deco_vname);
+                    try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, deco_vname);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
-                    try reserveStandaloneLateStage3Name(
+                    try prepareStage3OutputName(
                         self,
-                        late_standalone_output_names,
+                        late_stage3_output_names,
+                        class_parent_scope,
                         if (is_static) "_staticExtraInitializers" else "_instanceExtraInitializers",
                     );
 
@@ -297,7 +307,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                         const descriptor_base_name = try std.fmt.allocPrint(self.allocator, "_private_{s}_descriptor", .{var_n});
                         defer self.allocator.free(descriptor_base_name);
                         desc_name = try uniqueMemberGeneratedName(self, member_infos.items, descriptor_base_name);
-                        try reserveStandaloneLateStage3Name(self, late_standalone_output_names, desc_name.?);
+                        try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, desc_name.?);
                         m_body = try visitMethodBodyInSourceScope(self, member_idx, self.readNodeIdx(me, ast_mod.MethodExtra.body));
                         m_params = self.ast.functionParamsList(member);
                     }
@@ -369,12 +379,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
                     defer self.allocator.free(deco_base_name);
                     const deco_vname = try uniqueMemberGeneratedName(self, member_infos.items, deco_base_name);
-                    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, deco_vname);
+                    try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, deco_vname);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
-                    try reserveStandaloneLateStage3Name(
+                    try prepareStage3OutputName(
                         self,
-                        late_standalone_output_names,
+                        late_stage3_output_names,
+                        class_parent_scope,
                         if (is_static) "_staticExtraInitializers" else "_instanceExtraInitializers",
                     );
 
@@ -385,8 +396,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     self.allocator.free(names.extra_name);
                     names.init_name = unique_initializers_name;
                     names.extra_name = unique_extra_initializers_name;
-                    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.init_name);
-                    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.extra_name);
+                    try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, names.init_name);
+                    try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, names.extra_name);
                     field_init_name = names.init_name;
 
                     field_member_info_index = member_infos.items.len;
@@ -501,12 +512,13 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     const deco_base_name = try std.fmt.allocPrint(self.allocator, "_{s}_decorators", .{var_n});
                     defer self.allocator.free(deco_base_name);
                     const deco_vname = try uniqueMemberGeneratedName(self, member_infos.items, deco_base_name);
-                    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, deco_vname);
+                    try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, deco_vname);
 
                     if (is_static) has_static_decorators = true else has_instance_decorators = true;
-                    try reserveStandaloneLateStage3Name(
+                    try prepareStage3OutputName(
                         self,
-                        late_standalone_output_names,
+                        late_stage3_output_names,
+                        class_parent_scope,
                         if (is_static) "_staticExtraInitializers" else "_instanceExtraInitializers",
                     );
 
@@ -517,8 +529,8 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                     self.allocator.free(names.extra_name);
                     names.init_name = unique_initializers_name;
                     names.extra_name = unique_extra_initializers_name;
-                    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.init_name);
-                    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, names.extra_name);
+                    try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, names.init_name);
+                    try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, names.extra_name);
 
                     const accessor_member_info_index = member_infos.items.len;
                     try member_infos.append(self.allocator, .{
@@ -625,7 +637,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
                             storage_span,
                             is_static,
                             class_parent_scope,
-                            late_standalone_output_names,
+                            late_stage3_output_names,
                             private_descriptor_name.?,
                             &new_members,
                         );
@@ -735,11 +747,7 @@ pub fn transformStage3Decorators(self: *Transformer, source_idx: NodeIndex, node
     const classThis_span = try self.ast.addString(class_this_name);
     if (class_deco_len > 0) {
         inline for (.{ "_classDecorators", "_classDescriptor", "_classExtraInitializers" }) |name| {
-            if (late_standalone_output_names) {
-                try reserveStandaloneLateStage3Name(self, true, name);
-            } else if (late_graph_output_names) {
-                _ = try es_helpers.deferSyntheticOutputName(self, name);
-            }
+            try prepareStage3OutputName(self, late_stage3_output_names, class_parent_scope, name);
         }
     }
 
@@ -1602,12 +1610,12 @@ fn buildPrivateAccessorDescriptor(
     storage_span: Span,
     is_static: bool,
     class_parent_scope: ScopeId,
-    late_standalone_output_names: bool,
+    late_output_names: bool,
     desc_name: []const u8,
     new_members: *std.ArrayList(NodeIndex),
 ) Error!void {
     const zero_span = Span{ .start = 0, .end = 0 };
-    try reserveStandaloneLateStage3Name(self, late_standalone_output_names, desc_name);
+    try prepareStage3OutputName(self, late_output_names, class_parent_scope, desc_name);
     info.descriptor_name = desc_name;
 
     // function () { return this.#s; }
