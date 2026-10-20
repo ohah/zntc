@@ -19049,6 +19049,95 @@ console.log(new Holder().method(3), Holder.self() === Holder, Holder.value, Hold
     }
   }, 60_000);
 
+  test('NAPI onAstFunction trailingCode merges legal var redeclarations by SymbolId', () => {
+    const cases = [
+      {
+        label: 'existing program var and repeated injected var',
+        source: 'var existing = 40; function marker() {}',
+        functionName: 'marker',
+        trailingCode: [
+          'var existing = 41; var injected = 1; var injected = 2; throw existing + injected;',
+        ],
+        expected: '43\n',
+      },
+      {
+        label: 'outer function parameter',
+        source: 'function outer(value) { function marker() {} } outer(41);',
+        functionName: 'marker',
+        trailingCode: ['var value = value + 1; throw value;'],
+        expected: '42\n',
+      },
+      {
+        label: 'strict program function declaration and var share their binding',
+        source: '"use strict"; function marker() {}',
+        functionName: 'marker',
+        trailingCode: ['var marker = 5; throw marker;'],
+        expected: '5\n',
+      },
+      {
+        label: 'escaped spelling of the same injected var',
+        source: 'function marker() {}',
+        functionName: 'marker',
+        trailingCode: ['var x = 1; var \\u0078 = 2; throw x;'],
+        expected: '2\n',
+      },
+      {
+        label: 'escaped spelling of an injected reference resolves by SymbolId',
+        source: 'function marker() {}',
+        functionName: 'marker',
+        trailingCode: ['var x = 2; throw \\u0078;'],
+        expected: '2\n',
+      },
+    ];
+
+    for (const fixture of cases) {
+      const dir = mkdtempSync(join(tmpdir(), 'zntc-plugin-var-redeclaration-'));
+      const entry = join(dir, 'entry.js');
+      const output = join(dir, 'out.cjs');
+      writeFileSync(entry, fixture.source);
+
+      const coreEntry = join(import.meta.dir, '../../../packages/core/index.ts');
+      const baseOptions = JSON.stringify({
+        entryPoints: [entry],
+        platform: 'node',
+        format: 'cjs',
+        target: 'esnext',
+        minify: true,
+        write: false,
+      });
+      const runner = [
+        `import { build } from ${JSON.stringify(coreEntry)};`,
+        `const result = await build({ ...${baseOptions}, plugins: [{ name: 'var-redeclaration', setup(build) { build.onAstFunction({ filter: /.*/ }, (info) => info.name === ${JSON.stringify(fixture.functionName)} ? { trailingCode: ${JSON.stringify(fixture.trailingCode)} } : null); } }] });`,
+        'if (result.errors.length) { console.error(JSON.stringify(result.errors)); process.exit(1); }',
+        'process.stdout.write(JSON.stringify(result.outputFiles.map((file) => file.text)));',
+      ].join('\n');
+
+      try {
+        const buildResult = spawnSync('bun', ['-e', runner], {
+          cwd: join(import.meta.dir, '../../..'),
+          encoding: 'utf8',
+        });
+        expect(buildResult.status, `${fixture.label}: ${buildResult.stderr}`).toBe(0);
+        const outputs = JSON.parse(buildResult.stdout) as string[];
+        expect(outputs).toHaveLength(1);
+        writeFileSync(output, outputs[0]);
+
+        const execute = spawnSync(
+          'node',
+          [
+            '-e',
+            `try { require(${JSON.stringify(output)}); } catch (error) { process.stdout.write(String(error) + '\\n'); }`,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(execute.status, `${fixture.label}: ${execute.stderr}`).toBe(0);
+        expect(execute.stdout, fixture.label).toBe(fixture.expected);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  }, 60_000);
+
   test('Emotion css prop keeps its exact import identity through bundling and minification', () => {
     const dir = mkdtempSync(join(tmpdir(), 'zntc-emotion-symbol-identity-'));
     const emotionDir = join(dir, 'node_modules', '@emotion', 'react');

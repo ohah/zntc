@@ -71,6 +71,27 @@ fn setSymbolId(self: *Transformer, node: NodeIndex, id: SymbolId) Transformer.Er
     self.symbol_ids.items[index] = @backingInt(id);
 }
 
+/// Bind one generated `var` declaration that source analysis would merge with
+/// an existing var-scope symbol. Unlike `setSymbolId`, this does not reanchor
+/// the symbol's original declaration row to the additional declaration.
+pub fn bindSyntheticVarRedeclaration(
+    self: *Transformer,
+    binding: NodeIndex,
+    id: SymbolId,
+    lexical_scope: ScopeId,
+) Transformer.Error!void {
+    const editor = try editorFor(self);
+    editor.attachVarRedeclaration(binding, id, lexical_scope) catch |err| return editError(err);
+    const index = @backingInt(binding);
+    if (self.symbol_ids.items.len <= index)
+        try self.symbol_ids.appendNTimes(self.allocator, null, index + 1 - self.symbol_ids.items.len);
+    if (self.symbol_ids.items[index]) |existing| {
+        if (existing != @backingInt(id)) std.debug.panic("generated var redeclaration changed SymbolId", .{});
+    } else {
+        self.symbol_ids.items[index] = @backingInt(id);
+    }
+}
+
 fn outputSymbolIdAt(self: *Transformer, editor: *SemanticEditor, node: NodeIndex) ?u32 {
     if (self.getSymbolIdAt(node)) |id| return id;
     if (node.isNone() or @backingInt(node) >= editor.symbol_ids.items.len) return null;
