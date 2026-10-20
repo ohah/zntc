@@ -94,9 +94,13 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const right = node.data.ternary.b;
             const body = node.data.ternary.c;
             const norm = try es_helpers.makeTempVarSpan(self); // _a
+            const norm_counter = self.temp_var_counter - 1;
             const did_err = try es_helpers.makeTempVarSpan(self); // _b
+            const did_counter = self.temp_var_counter - 1;
             const err_val = try es_helpers.makeTempVarSpan(self); // _c
+            const err_counter = self.temp_var_counter - 1;
             const iter = try es_helpers.makeTempVarSpan(self); // _d
+            const iter_counter = self.temp_var_counter - 1;
             // Labeled for-of lowering enters here without visitNode(source_idx),
             // so the traversal cursor can still be the enclosing scope.
             const loop_scope = if (self.semantic_edit_enabled and !register_sm_temps and self.pending_loop_extraction_depth == 0)
@@ -126,6 +130,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 break :blk symbol;
             } else if (register_sm_temps)
                 try self.declareSyntheticTempInScope(norm_binding, span, generated_temp_scope)
+            else if (self.pending_loop_extraction_depth != 0)
+                try self.declareSyntheticTempInScope(norm_binding, span, loop_scope)
             else
                 null;
             if (register_sm_temps) try self.recordGeneratorStateTempSymbol(norm, norm_symbol);
@@ -139,6 +145,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 break :blk symbol;
             } else if (register_sm_temps)
                 try self.declareSyntheticTempInScope(did_binding, span, generated_temp_scope)
+            else if (self.pending_loop_extraction_depth != 0)
+                try self.declareSyntheticTempInScope(did_binding, span, loop_scope)
             else
                 null;
             if (register_sm_temps) try self.recordGeneratorStateTempSymbol(did_err, did_symbol);
@@ -152,6 +160,8 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 break :blk symbol;
             } else if (register_sm_temps)
                 try self.declareSyntheticTempInScope(err_binding, span, generated_temp_scope)
+            else if (self.pending_loop_extraction_depth != 0)
+                try self.declareSyntheticTempInScope(err_binding, span, loop_scope)
             else
                 null;
             if (register_sm_temps) try self.recordGeneratorStateTempSymbol(err_val, err_symbol);
@@ -168,7 +178,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const iter_symbol = if (register_sm_temps)
                 try self.declareSyntheticTempInScope(iter_binding, span, generated_temp_scope)
             else if (self.pending_loop_extraction_depth != 0)
-                null
+                try self.declareSyntheticTempInScope(iter_binding, span, loop_scope)
             else if (stable_scope) blk: {
                 const symbol = try self.declareSyntheticInScope(iter_binding, span, .variable_var, loop_scope);
                 es_helpers.markStandaloneLateSyntheticTemp(self, symbol, loop_scope);
@@ -179,9 +189,15 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const step_symbol = if (register_sm_temps)
                 try self.declareSyntheticTempInScope(step_binding, span, generated_temp_scope)
             else if (self.pending_loop_extraction_depth != 0)
-                null
+                try self.declareSyntheticTempInScope(step_binding, span, loop_scope)
             else
                 try self.declareSyntheticInScope(step_binding, span, .variable_var, loop_scope);
+            if (self.pending_loop_extraction_depth != 0 and !register_sm_temps and self.semantic_edit_enabled) {
+                try recordPendingLoopTempSymbol(self, norm_counter, norm_symbol);
+                try recordPendingLoopTempSymbol(self, did_counter, did_symbol);
+                try recordPendingLoopTempSymbol(self, err_counter, err_symbol);
+                try recordPendingLoopTempSymbol(self, iter_counter, iter_symbol);
+            }
             if (late_step_output_name) {
                 const symbol = step_symbol orelse std.debug.panic("late-named for-of step has no exact SymbolId", .{});
                 es_helpers.markStandaloneLateSyntheticOutputName(self, symbol, self.ast.getText(step), .for_of_step_binding, "_step");
@@ -240,7 +256,7 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
                 const catch_symbol = (try self.declareSyntheticInScope(catch_binding, span, .catch_binding, catch_scope)) orelse
                     std.debug.panic("generated for-of catch binding has no SymbolId", .{});
                 try self.addSyntheticRefInScope(catch_param_read, catch_symbol, catch_scope, .{ .read = true });
-                if (stable_scope or register_sm_temps) {
+                if (stable_scope or register_sm_temps or self.pending_loop_extraction_depth != 0) {
                     try self.addSyntheticRefInScope(did_catch_write, did_symbol orelse std.debug.panic("for-of error flag has no SymbolId", .{}), catch_scope, .{ .write = true });
                     try self.addSyntheticRefInScope(err_catch_write, err_symbol orelse std.debug.panic("for-of error value has no SymbolId", .{}), catch_scope, .{ .write = true });
                 }
@@ -527,6 +543,16 @@ pub fn ES2015ForOf(comptime Transformer: type) type {
             const ref = try makeRefFromSpan(self, name_span);
             try self.addSyntheticRefInScope(ref, symbol, scope, flags);
             return ref;
+        }
+
+        fn recordPendingLoopTempSymbol(self: *Transformer, counter_index: u32, symbol: ?SymbolId) Transformer.Error!void {
+            const id = symbol orelse std.debug.panic("pending extracted for-of temp has no exact SymbolId", .{});
+            if (self.temp_symbol_ids_by_counter.get(counter_index)) |existing| {
+                if (existing != @backingInt(id))
+                    std.debug.panic("pending extracted for-of temp slot changed its SymbolId", .{});
+                return;
+            }
+            try self.temp_symbol_ids_by_counter.put(self.allocator, counter_index, @backingInt(id));
         }
 
         fn makeVarDeclFromSpan(self: *Transformer, name_span: Span, init: NodeIndex, span: Span) Transformer.Error!NodeIndex {
