@@ -7203,9 +7203,11 @@ fn isModuleOwnedSingletonGraphSynthetic(kind: SemanticSyntheticKind) bool {
 
 fn isGraphOwnedSyntheticRename(symbol: SemanticSymbol) bool {
     const kind = symbol.synthetic_kind orelse return false;
-    // `__esm` has a stable producer slot on Module and carries a linker-chosen
-    // graph-wide spelling. Let the exact slot remapper below own this row.
-    if (kind == .bundler_runtime_helper and std.mem.eql(u8, symbol.synthetic_name, "__esm")) return false;
+    // Graph-wide runtime helpers have stable producer slots on Module and
+    // carry linker-chosen spellings. Let their exact slot remappers own them.
+    if (kind == .bundler_runtime_helper and
+        (std.mem.eql(u8, symbol.synthetic_name, "__esm") or
+            std.mem.eql(u8, symbol.synthetic_name, "__toBinary"))) return false;
     return switch (kind) {
         .cjs_exports,
         .cjs_require,
@@ -7608,6 +7610,198 @@ fn remapEsmRuntimeFactoryRename(
     // Keep a NodeIndex mapping if it already supplied more specific evidence.
     if (rebuilt.get(new_id_key) != null) return;
     try rebuilt.put(allocator, new_id_key, rename);
+}
+
+fn validToBinaryRuntimeHelperSymbol(symbol_id: SemanticSymbolId, symbols: []const SemanticSymbol) bool {
+    if (symbol_id.isNone()) return false;
+    const raw: usize = @backingInt(symbol_id);
+    if (raw >= symbols.len) return false;
+    const symbol = symbols[raw];
+    return symbol.synthetic_kind == .bundler_runtime_helper and
+        symbol.kind == .variable_var and
+        std.mem.eql(u8, symbol.synthetic_name, "__toBinary");
+}
+
+/// The graph-wide binary runtime helper name is collision-selected by its
+/// producer ID. Carry it across semantic reanalysis through Module's exact
+/// slot instead of matching its generated spelling and scope.
+fn remapToBinaryRuntimeHelperRename(
+    allocator: std.mem.Allocator,
+    module_index: bundler_symbol.ModuleIndex,
+    old_symbols: []const SemanticSymbol,
+    new_symbols: []const SemanticSymbol,
+    old_renames: []const ?[]const u8,
+    old_id: ?SemanticSymbolId,
+    new_id: ?SemanticSymbolId,
+    rebuilt: *bundler_symbol.RenameTable,
+) !void {
+    const old_symbol_id = old_id orelse return;
+    const new_symbol_id = new_id orelse return;
+    if (!validToBinaryRuntimeHelperSymbol(old_symbol_id, old_symbols) or
+        !validToBinaryRuntimeHelperSymbol(new_symbol_id, new_symbols)) return;
+    const old_index: usize = @backingInt(old_symbol_id);
+    if (old_index >= old_renames.len) return;
+    const rename = old_renames[old_index] orelse return;
+    const new_id_key = bundler_symbol.SymbolID.make(module_index, @backingInt(new_symbol_id));
+    // Keep a NodeIndex mapping if it already supplied more specific evidence.
+    if (rebuilt.get(new_id_key) != null) return;
+    try rebuilt.put(allocator, new_id_key, rename);
+}
+
+test "toBinary runtime helper rename follows its exact producer slot" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(9));
+    const old_id: SemanticSymbolId = @fromBackingInt(@as(u32, 0));
+    const new_id: SemanticSymbolId = @fromBackingInt(@as(u32, 2));
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__toBinary"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 4, "unrelated_helper"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 5, "__toBinary"),
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 7, "__toBinary"),
+    };
+    const old_renames: [1]?[]const u8 = .{"__toBinary$2"};
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    try remapGraphOwnedSyntheticRenames(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        &rebuilt,
+    );
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+    try remapToBinaryRuntimeHelperRename(
+        std.testing.allocator,
+        module_index,
+        &old_symbols,
+        &new_symbols,
+        &old_renames,
+        old_id,
+        new_id,
+        &rebuilt,
+    );
+
+    const expected_id = bundler_symbol.SymbolID.make(module_index, 2);
+    try std.testing.expectEqual(@as(u32, 1), rebuilt.count());
+    try std.testing.expectEqualStrings("__toBinary$2", rebuilt.get(expected_id).?);
+}
+
+test "rename capture carries toBinary alias through its producer slot" {
+    const allocator = std.testing.allocator;
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(12));
+    const old_id: SemanticSymbolId = @fromBackingInt(@as(u32, 0));
+    const new_id: SemanticSymbolId = @fromBackingInt(@as(u32, 2));
+    var ast = ast_mod.Ast.init(allocator, "");
+    defer ast.deinit();
+
+    var module = Module.init(module_index, "entry.mjs");
+    module.ast = ast;
+    module.to_binary_runtime_symbol = old_id;
+    defer module.pending_renames.deinit(allocator);
+
+    var old_symbols: std.ArrayList(SemanticSymbol) = .empty;
+    defer old_symbols.deinit(allocator);
+    try old_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__toBinary"));
+    var new_symbols: std.ArrayList(SemanticSymbol) = .empty;
+    defer new_symbols.deinit(allocator);
+    try new_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 5, "not_the_slot"));
+    try new_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 6, "__toBinary"));
+    try new_symbols.append(allocator, graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 9, "__toBinary"));
+
+    const old_sem = ModuleSemanticData{
+        .symbols = old_symbols,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    const new_sem = ModuleSemanticData{
+        .symbols = new_symbols,
+        .scopes = &.{},
+        .scope_maps = &.{},
+        .exported_names = .empty,
+        .symbol_ids = &.{},
+        .unresolved_references = .empty,
+    };
+    module.semantic = new_sem;
+    module.to_binary_runtime_symbol = new_id;
+
+    var rename_table: bundler_symbol.RenameTable = .{};
+    defer rename_table.deinit(allocator);
+    try rename_table.put(allocator, bundler_symbol.SymbolID.make(module_index, 0), "__toBinary$2");
+
+    const resync_context = .{ .minify_identifiers = false, .allocator = allocator };
+    try captureRenamesAfterResync(
+        resync_context,
+        &module,
+        allocator,
+        &rename_table,
+        old_sem,
+        null,
+        null,
+        old_id,
+        null,
+    );
+
+    const new_key = bundler_symbol.SymbolID.make(module_index, 2);
+    try std.testing.expectEqual(@as(u32, 1), module.pending_renames.count());
+    try std.testing.expectEqualStrings("__toBinary$2", module.pending_renames.get(new_key).?);
+    try std.testing.expect(module.pending_rename_capture_seen);
+}
+
+test "toBinary runtime helper remapping fails closed on hostile slot evidence" {
+    const module_index: bundler_symbol.ModuleIndex = @fromBackingInt(@intCast(9));
+    const old_id: SemanticSymbolId = @fromBackingInt(@as(u32, 0));
+    const new_id: SemanticSymbolId = @fromBackingInt(@as(u32, 0));
+    const old_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__toBinary"),
+    };
+    const new_symbols = [_]SemanticSymbol{
+        graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 8, "__toBinary"),
+    };
+    const renames: [1]?[]const u8 = .{"__toBinary$2"};
+    var rebuilt: bundler_symbol.RenameTable = .{};
+    defer rebuilt.deinit(std.testing.allocator);
+
+    // 1-2: missing old/new producer slots.
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &new_symbols, &renames, null, new_id, &rebuilt);
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &new_symbols, &renames, old_id, null, &rebuilt);
+    // 3-4: slots outside their corresponding semantic snapshots.
+    const out_of_bounds: SemanticSymbolId = @fromBackingInt(@as(u32, 3));
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &new_symbols, &renames, out_of_bounds, new_id, &rebuilt);
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &new_symbols, &renames, old_id, out_of_bounds, &rebuilt);
+    // 5-6: valid indexes that point at the wrong synthetic kind or declaration kind.
+    var wrong_old_synthetic = old_symbols;
+    wrong_old_synthetic[0] = graphOwnedSyntheticRenameTestSymbol(.cjs_runtime_factory, .variable_var, 1, "__toBinary");
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &wrong_old_synthetic, &new_symbols, &renames, old_id, new_id, &rebuilt);
+    var wrong_new_kind = new_symbols;
+    wrong_new_kind[0] = graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .function_decl, 8, "__toBinary");
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &wrong_new_kind, &renames, old_id, new_id, &rebuilt);
+    // 7-8: slot rows with a different runtime-helper spelling.
+    var wrong_old_name = old_symbols;
+    wrong_old_name[0] = graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 1, "__esm");
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &wrong_old_name, &new_symbols, &renames, old_id, new_id, &rebuilt);
+    var wrong_new_name = new_symbols;
+    wrong_new_name[0] = graphOwnedSyntheticRenameTestSymbol(.bundler_runtime_helper, .variable_var, 8, "__esm");
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &wrong_new_name, &renames, old_id, new_id, &rebuilt);
+    // 9: the old slot exists, but the old rename snapshot has no matching row.
+    const short_renames: [0]?[]const u8 = .{};
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &new_symbols, &short_renames, old_id, new_id, &rebuilt);
+    // 10: a missing rename value is not evidence to overwrite the new snapshot.
+    const absent_rename: [1]?[]const u8 = .{null};
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &new_symbols, &absent_rename, old_id, new_id, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 0), rebuilt.count());
+
+    // 11: preserve a stronger exact-node anchor already recorded for the new ID.
+    const expected_id = bundler_symbol.SymbolID.make(module_index, 0);
+    try rebuilt.put(std.testing.allocator, expected_id, "from_node_anchor");
+    try remapToBinaryRuntimeHelperRename(std.testing.allocator, module_index, &old_symbols, &new_symbols, &renames, old_id, new_id, &rebuilt);
+    try std.testing.expectEqual(@as(u32, 1), rebuilt.count());
+    try std.testing.expectEqualStrings("from_node_anchor", rebuilt.get(expected_id).?);
 }
 
 test "ESM runtime factory rename follows its exact producer slot" {
@@ -8079,6 +8273,8 @@ fn captureRenamesToPending(
     new_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
     old_esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds,
     new_esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds,
+    old_to_binary_runtime_symbol: ?SemanticSymbolId,
+    new_to_binary_runtime_symbol: ?SemanticSymbolId,
     old_esm_runtime_factory_symbol: ?SemanticSymbolId,
     new_esm_runtime_factory_symbol: ?SemanticSymbolId,
     scratch_allocator: std.mem.Allocator,
@@ -8152,6 +8348,16 @@ fn captureRenamesToPending(
         old_renames,
         old_esm_runtime_factory_symbol,
         new_esm_runtime_factory_symbol,
+        &rebuilt,
+    );
+    try remapToBinaryRuntimeHelperRename(
+        arena,
+        module.index,
+        old_sem.symbols.items,
+        new_sem.symbols.items,
+        old_renames,
+        old_to_binary_runtime_symbol,
+        new_to_binary_runtime_symbol,
         &rebuilt,
     );
     module.pending_renames = rebuilt;
@@ -8237,6 +8443,8 @@ test "rename capture carries ESM factory alias through the production handoff" {
         null,
         old_internal_ids,
         new_internal_ids,
+        null,
+        null,
         old_factory_id,
         new_factory_id,
         allocator,
@@ -8463,6 +8671,7 @@ fn captureRenamesAfterResync(
     previous_semantic: ?ModuleSemanticData,
     previous_cjs_runtime_internal_symbols: ?CjsRuntimeInternalSymbolIds,
     previous_esm_runtime_internal_symbols: ?EsmRuntimeInternalSymbolIds,
+    previous_to_binary_runtime_symbol: ?SemanticSymbolId,
     previous_esm_runtime_factory_symbol: ?SemanticSymbolId,
 ) !void {
     if (self.minify_identifiers) return;
@@ -8478,6 +8687,8 @@ fn captureRenamesAfterResync(
         module.cjs_runtime_internal_symbols,
         previous_esm_runtime_internal_symbols,
         module.esm_runtime_internal_symbols,
+        previous_to_binary_runtime_symbol,
+        module.to_binary_runtime_symbol,
         previous_esm_runtime_factory_symbol,
         module.esm_runtime_factory_symbol,
         self.allocator,
@@ -8707,6 +8918,7 @@ pub fn resyncAfterConstMaterialization(
     _ = &(module.ast orelse return);
     const previous_cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols;
     const previous_esm_runtime_internal_symbols = module.esm_runtime_internal_symbols;
+    const previous_to_binary_runtime_symbol = module.to_binary_runtime_symbol;
     const previous_esm_runtime_factory_symbol = module.esm_runtime_factory_symbol;
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     try refreshStableBindingRefsFromSemanticGraph(self, module, arena_alloc, .graph_resync_binding_refs);
@@ -8719,6 +8931,7 @@ pub fn resyncAfterConstMaterialization(
         previous_semantic,
         previous_cjs_runtime_internal_symbols,
         previous_esm_runtime_internal_symbols,
+        previous_to_binary_runtime_symbol,
         previous_esm_runtime_factory_symbol,
     );
 }
@@ -8916,6 +9129,7 @@ pub fn resyncAfterAstMutation(
 
     const previous_cjs_runtime_internal_symbols = module.cjs_runtime_internal_symbols;
     const previous_esm_runtime_internal_symbols = module.esm_runtime_internal_symbols;
+    const previous_to_binary_runtime_symbol = module.to_binary_runtime_symbol;
     const previous_esm_runtime_factory_symbol = module.esm_runtime_factory_symbol;
     const previous_semantic = try refreshSemanticAndStmtInfoAfterAstMutation(self, module, arena_alloc);
     // The fresh analysis counts references in the current AST, which already
@@ -8937,6 +9151,7 @@ pub fn resyncAfterAstMutation(
         previous_semantic,
         previous_cjs_runtime_internal_symbols,
         previous_esm_runtime_internal_symbols,
+        previous_to_binary_runtime_symbol,
         previous_esm_runtime_factory_symbol,
     );
 }
