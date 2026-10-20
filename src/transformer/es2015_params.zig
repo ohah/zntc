@@ -40,7 +40,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
             name_span: Span,
             declaration_span: Span,
             kind: SymbolKind,
-            retain_span_lookup: bool,
         ) Transformer.Error!es_helpers.TempIdentityCapture {
             if (!self.semantic_edit_enabled) return .{ .span = name_span };
             const scope = self.current_scope;
@@ -64,11 +63,7 @@ pub fn ES2015Params(comptime Transformer: type) type {
             const symbol = editor.symbols.items[raw_id];
             if (symbol.scope_id != scope or symbol.kind != kind)
                 std.debug.panic("destructuring parameter temp SymbolId has the wrong owner", .{});
-            if (retain_span_lookup) {
-                try self.destructuring_temp_symbol_ids.put(self.allocator, name_span.start, raw_id);
-            } else {
-                self.forgetSyntheticTempSymbolLookup(name_span, scope);
-            }
+            self.forgetSyntheticTempSymbolLookup(name_span, scope);
             return .{ .span = name_span, .symbol_id = symbol_id, .reference_scope = scope };
         }
 
@@ -79,9 +74,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
             span: Span,
         ) Transformer.Error!void {
             const es2015_destruct = @import("es2015_destructuring.zig").ES2015Destructuring(Transformer);
-            const saved_kind = self.destructuring_temp_kind;
-            self.destructuring_temp_kind = .variable_var;
-            defer self.destructuring_temp_kind = saved_kind;
             try es2015_destruct.emitPatternDeclaratorsWithIdentity(self, pattern, read_identity, span, .@"var");
         }
 
@@ -321,7 +313,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                                 temp_span,
                                 span,
                                 .parameter,
-                                false,
                             );
                             es_helpers.consumeTempVarSpan(self, temp_span);
                             try self.scratch.append(self.allocator, temp_binding);
@@ -509,7 +500,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 temp_span,
                 span,
                 .parameter,
-                false,
             );
             es_helpers.consumeTempVarSpan(self, temp_span);
 
@@ -529,7 +519,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     read_span,
                     span,
                     .variable_var,
-                    false,
                 );
                 es_helpers.consumeTempVarSpan(self, read_span);
                 const read_init = try es2015_destruct.buildArrayRead(self, temp_ref2, pattern_node, span);
@@ -570,7 +559,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 temp_span,
                 span,
                 .parameter,
-                false,
             );
             es_helpers.consumeTempVarSpan(self, temp_span);
 
@@ -589,7 +577,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     read_span,
                     span,
                     .variable_var,
-                    false,
                 );
                 es_helpers.consumeTempVarSpan(self, read_span);
                 const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_identity, span, .{ .read = true });
@@ -719,7 +706,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                 temp_span,
                 span,
                 .variable_var,
-                false,
             );
             es_helpers.consumeTempVarSpan(self, temp_span);
             try body_stmts.append(self.allocator, try buildRestSlice(self, temp_binding, start_index, span));
@@ -738,7 +724,6 @@ pub fn ES2015Params(comptime Transformer: type) type {
                     read_span,
                     span,
                     .variable_var,
-                    false,
                 );
                 es_helpers.consumeTempVarSpan(self, read_span);
                 const temp_ref = try es_helpers.makeTempRefFromIdentity(self, temp_identity, span, .{ .read = true });

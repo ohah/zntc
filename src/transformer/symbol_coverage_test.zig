@@ -2543,7 +2543,7 @@ test "#4819 tracked captures attach the write SymbolId before reads" {
     const assignment = transformer.ast.getNode(captured.paren_assign);
     const write = assignment.data.binary.left;
     const write_id = transformer.getSymbolIdAt(write) orelse return error.MissingCapturedTempWriteSymbol;
-    const read = try helpers.makeTrackedTempRef(&transformer, captured.span, value_node.span, .{ .read = true });
+    const read = try helpers.makeCapturedTempRef(&transformer, captured, value_node.span, .{ .read = true });
     const read_id = transformer.getSymbolIdAt(read) orelse return error.MissingCapturedTempReadSymbol;
     try std.testing.expectEqual(write_id, read_id);
     try std.testing.expectEqual(@as(usize, 1), transformer.synthetic_temp_symbol_ids.count());
