@@ -774,4 +774,35 @@ describe('const_value cross-module 인라인 correctness', () => {
     expect(r.exitCode).toBe(0);
     expect(r.runOutput).toBe('true 10,20,');
   });
+
+  test('CJS re-export는 같은 이름의 private const가 있어도 runtime export 값을 유지', async () => {
+    const r = await bundleAndRun(
+      {
+        'provider.cjs': `const value = 1; exports.value = 99;`,
+        'barrel.ts': `export { value } from "./provider.cjs";`,
+        'index.ts': `import { value } from "./barrel"; console.log(value);`,
+      },
+      'index.ts',
+      ['--platform=node'],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe('99');
+  });
+
+  test('다중 ESM export alias는 최종 provider const 값을 보존', async () => {
+    const r = await bundleAndRun(
+      {
+        'provider.ts': `const value = 1; const actual = 42; export { actual as inner };`,
+        'middle.ts': `export { inner as renamed } from "./provider";`,
+        'barrel.ts': `export { renamed as value } from "./middle";`,
+        'index.ts': `import { value } from "./barrel"; console.log(value);`,
+      },
+      'index.ts',
+      ['--platform=node'],
+    );
+    cleanup = r.cleanup;
+    expect(r.exitCode).toBe(0);
+    expect(r.runOutput).toBe('42');
+  });
 });

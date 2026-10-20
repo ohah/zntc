@@ -1870,6 +1870,53 @@ fn expectNoCrossModuleConstFact(r: *TestResult, entry_index: ModuleIndex, local_
     try std.testing.expect(const_values.get(local_symbol) == null);
 }
 
+const CrossModuleConstFixture = struct {
+    name: []const u8,
+    provider_file: []const u8 = "provider.mjs",
+    provider_source: []const u8,
+    middle_source: ?[]const u8 = null,
+    barrel_source: []const u8,
+    expected_number: ?[]const u8 = null,
+};
+
+fn expectCrossModuleConstFixture(fixture: CrossModuleConstFixture) !void {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeFile(tmp.dir, "entry.mjs",
+        \\import { value } from './barrel.mjs';
+        \\console.log(value);
+    );
+    try writeFile(tmp.dir, "barrel.mjs", fixture.barrel_source);
+    if (fixture.middle_source) |source| try writeFile(tmp.dir, "middle.mjs", source);
+    try writeFile(tmp.dir, fixture.provider_file, fixture.provider_source);
+
+    var r = try buildLinkAndRename(std.testing.allocator, &tmp, "entry.mjs");
+    defer r.linker.deinit();
+    defer r.destroyGraph();
+    defer r.cache.deinit();
+
+    const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
+    const entry = r.graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const sem = entry.semantic orelse return error.MissingEntrySemantic;
+    const local_symbol = entry.import_bindings[0].local_symbol.semanticIndex() orelse
+        return error.MissingImportLocalSymbol;
+    var const_values = try r.linker.buildCrossModuleConstValues(entry, sem);
+    defer const_values.deinit(std.testing.allocator);
+
+    const fact = const_values.get(local_symbol);
+    if (fixture.expected_number) |expected| {
+        const actual = fact orelse {
+            std.debug.print("cross-module const fixture lacked a fact: {s}\n", .{fixture.name});
+            return error.MissingExpectedConstFact;
+        };
+        try std.testing.expectEqual(semantic_symbol.ConstValue.Kind.number, actual.kind);
+        try std.testing.expectEqualStrings(expected, actual.number_text);
+    } else if (fact != null) {
+        std.debug.print("cross-module const fixture received an unsafe fact: {s}\n", .{fixture.name});
+        return error.UnsafeCrossModuleConstFact;
+    }
+}
+
 fn buildLinkAndRename(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, entry_name: []const u8) !TestResult {
     var r = try buildAndLink(allocator, tmp, entry_name);
     try r.linker.computeRenames();
@@ -1983,6 +2030,8 @@ test "linker: cross-module const facts fail closed on missing or foreign export 
     const entry_index = findModuleIdx(r.graph, "entry.mjs") orelse return error.MissingEntryModule;
     const provider_index = findModuleIdx(r.graph, "provider.mjs") orelse return error.MissingProviderModule;
     const entry = r.graph.getModule(entry_index) orelse return error.MissingEntryModule;
+    const provider = r.graph.getModule(provider_index) orelse return error.MissingProviderModule;
+    const provider_sem = provider.semantic orelse return error.MissingProviderSemantic;
     const local_symbol = entry.import_bindings[0].local_symbol.semanticIndex() orelse
         return error.MissingImportLocalSymbol;
 
@@ -2003,6 +2052,10 @@ test "linker: cross-module const facts fail closed on missing or foreign export 
 
     const source_id = exact_symbol.semanticIndex() orelse return error.MissingProviderSymbolId;
     export_entry.binding.symbol = bundler_symbol.SymbolRef.makeSemantic(entry_index, source_id);
+    try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
+
+    const one_past_symbol = @as(u32, @intCast(provider_sem.symbols.items.len));
+    export_entry.binding.symbol = bundler_symbol.SymbolRef.makeSemantic(provider_index, one_past_symbol);
     try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
 
     export_entry.binding.symbol = bundler_symbol.SymbolRef.makeSemantic(provider_index, std.math.maxInt(u32));
@@ -2038,6 +2091,78 @@ test "linker: cross-module const facts skip reassigned ESM exports" {
     const local_symbol = entry.import_bindings[0].local_symbol.semanticIndex() orelse
         return error.MissingImportLocalSymbol;
     try expectNoCrossModuleConstFact(&r, entry_index, local_symbol);
+}
+
+test "linker: cross-module const identity adversarial input matrix" {
+    const fixtures = [_]CrossModuleConstFixture{
+        .{
+            .name = "CJS named export with same-named private const",
+            .provider_file = "provider.cjs",
+            .provider_source = "const value = 1; exports.value = 99;",
+            .barrel_source = "export { value } from './provider.cjs';",
+        },
+        .{
+            .name = "CJS computed named export with same-named private const",
+            .provider_file = "provider.cjs",
+            .provider_source = "const value = 1; exports['value'] = 99;",
+            .barrel_source = "export { value } from './provider.cjs';",
+        },
+        .{
+            .name = "CJS getter export with same-named private const",
+            .provider_file = "provider.cjs",
+            .provider_source = "const value = 1; Object.defineProperty(exports, 'value', { enumerable: true, get() { return 99; } });",
+            .barrel_source = "export { value } from './provider.cjs';",
+        },
+        .{
+            .name = "CJS aliased named export with a same-named private const",
+            .provider_file = "provider.cjs",
+            .provider_source = "const answer = 1; exports.answer = 99;",
+            .barrel_source = "export { answer as value } from './provider.cjs';",
+        },
+        .{
+            .name = "two-hop ESM facade over a CJS same-name export",
+            .provider_file = "provider.cjs",
+            .provider_source = "const value = 1; exports.value = 99;",
+            .middle_source = "export { value } from './provider.cjs';",
+            .barrel_source = "export { value } from './middle.mjs';",
+        },
+        .{
+            .name = "three-hop ESM export aliases preserve the provider const",
+            .provider_source = "const value = 1; const actual = 42; export { actual as inner };",
+            .middle_source = "export { inner as renamed } from './provider.mjs';",
+            .barrel_source = "export { renamed as value } from './middle.mjs';",
+            .expected_number = "42",
+        },
+        .{
+            .name = "nested same-name decoy does not replace an exported alias",
+            .provider_source = "const value = 1; function read() { const value = 2; return value; } const actual = 42; export { actual as value };",
+            .barrel_source = "export { value } from './provider.mjs';",
+            .expected_number = "42",
+        },
+        .{
+            .name = "reassigned ESM alias has no immutable const fact",
+            .provider_source = "let actual = 42; export { actual as value }; actual = 99;",
+            .barrel_source = "export { value } from './provider.mjs';",
+        },
+        .{
+            .name = "cyclic ESM re-export has no const fact",
+            .provider_source = "import './barrel.mjs'; export const value = 42;",
+            .barrel_source = "export { value } from './provider.mjs';",
+        },
+        .{
+            .name = "namespace re-export is not a scalar const fact",
+            .provider_source = "export const actual = 42;",
+            .barrel_source = "export * as value from './provider.mjs';",
+        },
+    };
+
+    try std.testing.expectEqual(@as(usize, 10), fixtures.len);
+    for (fixtures) |fixture| {
+        expectCrossModuleConstFixture(fixture) catch |err| {
+            std.debug.print("failed hostile input: {s}\n", .{fixture.name});
+            return err;
+        };
+    }
 }
 
 test "rename: no conflict — no rename" {
