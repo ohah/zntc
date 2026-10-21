@@ -76,7 +76,7 @@ test "#4819 lowered default object-super home temp reserves and reuses its funct
     const id = home_id orelse return error.MissingObjectHomeSymbol;
     const symbol = editor.symbols.items[@backingInt(id)];
     try std.testing.expectEqual(@backingInt(expected_scope), @backingInt(symbol.scope_id));
-    try std.testing.expect(!transformer.pending_temp_ref_chains.contains(symbol.name.start));
+    try std.testing.expect(!transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(symbol.name)));
 
     var live_reference_count: usize = 0;
     var live_read_count: usize = 0;
@@ -277,7 +277,7 @@ fn checkObjectSuperHomeReferenceHandle(source: []const u8, home_wrap: object_sup
                 try transformer.bindHoistedTempWithProducerSymbol(hoisted_binding, home_span, span, scope, producer_id);
                 break :blk producer_id;
             }
-            try std.testing.expect(transformer.pending_temp_ref_chains.contains(home_span.start));
+            try std.testing.expect(transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(home_span)));
             try transformer.bindHoistedTemp(hoisted_binding, home_span, span, scope);
             const raw_id = transformer.getSymbolIdAt(hoisted_binding) orelse return error.MissingHomeSymbolId;
             break :blk @as(SymbolId, @fromBackingInt(@intCast(raw_id)));

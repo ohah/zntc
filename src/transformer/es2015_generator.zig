@@ -4081,7 +4081,7 @@ fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp
     while (producer_slots_without_pending_refs.next()) |entry| {
         const name_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse
             return error.MissingGeneratorDestructuringTempSpan;
-        try std.testing.expect(!transformer.pending_temp_ref_chains.contains(name_span.start));
+        try std.testing.expect(!transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(name_span)));
     }
     const reachable = try ast_walk.collectReachableNodeIndicesFrom(allocator, transformer.ast, statement);
     const editor = &transformer.semantic_editor.?;
@@ -4160,7 +4160,7 @@ fn checkGeneratorDestructuringProducerIdentity(source: []const u8, expected_temp
     producer_slots_without_pending_refs = transformer.temp_symbol_ids_by_counter.iterator();
     while (producer_slots_without_pending_refs.next()) |entry| {
         const name_span = transformer.temp_span_by_counter.get(entry.key_ptr.*) orelse continue;
-        try std.testing.expect(!transformer.pending_temp_ref_chains.contains(name_span.start));
+        try std.testing.expect(!transformer.pending_temp_ref_chains.contains(transformer.currentPendingTempRefKey(name_span)));
     }
     const callback_scope = transformer.outputOwnedScope(generated.callback) orelse
         return error.MissingGeneratorDestructuringCallbackScope;

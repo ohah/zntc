@@ -2054,7 +2054,15 @@ fn stateTempOutputScope(self: *Transformer, source_scope: ScopeId, target_scope:
 }
 
 fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, binding_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void), traces: *const std.AutoHashMapUnmanaged(u32, GeneratedNodeTrace)) Transformer.Error!void {
-    const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
+    const PendingTempRefKey = @import("../transformer.zig").PendingTempRefKey;
+    const chain_key = PendingTempRefKey.fromSpan(temp.name_span, source_scope);
+    var chain = self.pending_temp_ref_chains.fetchRemove(chain_key);
+    // Non-generator async wrappers do not set `generator_state_machine_scope`.
+    // Their legacy deferred producer owner is only known here; the full span
+    // still isolates the allocation, while generator callbacks take the exact
+    // producer-scope branch above.
+    if (chain == null and !source_scope.isNone())
+        chain = self.pending_temp_ref_chains.fetchRemove(PendingTempRefKey.fromSpan(temp.name_span, .none));
     const editor = try editorFor(self);
     const binding_id = self.getSymbolIdAt(temp.binding);
     const source_bound_id = if (source_scope.isNone()) null else self.bound_temp_symbols.get(
@@ -2140,7 +2148,8 @@ fn bindStateCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedS
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == temp.name_span.start);
+        std.debug.assert(ref.name_start == temp.name_span.start and ref.name_end == temp.name_span.end and
+            (ref.producer_scope == source_scope or ref.producer_scope.isNone()));
         if (live.contains(@backingInt(ref.node))) {
             const trace = traces.get(@backingInt(ref.node)) orelse std.debug.panic("generated temp reference has no final scope trace", .{});
             if (trace.ambiguous_scope) std.debug.panic("generated temp reference has ambiguous output scopes", .{});
@@ -2257,7 +2266,11 @@ pub fn bindGeneratedTempByIdentity(
 }
 
 fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").HoistedStateTemp, declaration_span: Span, source_scope: ScopeId, callback_scope: ScopeId, live: *const std.AutoHashMapUnmanaged(u32, void), live_scopes: *const std.AutoHashMapUnmanaged(u32, void)) Transformer.Error!void {
-    const chain = self.pending_temp_ref_chains.fetchRemove(temp.name_span.start);
+    const PendingTempRefKey = @import("../transformer.zig").PendingTempRefKey;
+    const chain_key = PendingTempRefKey.fromSpan(temp.name_span, source_scope);
+    var chain = self.pending_temp_ref_chains.fetchRemove(chain_key);
+    if (chain == null and !source_scope.isNone())
+        chain = self.pending_temp_ref_chains.fetchRemove(PendingTempRefKey.fromSpan(temp.name_span, .none));
     const editor = try editorFor(self);
     const temp_name = self.ast.getText(temp.name_span);
     const owner_scope = variableScope(self, callback_scope);
@@ -2371,7 +2384,8 @@ fn bindTrackedCallbackTemp(self: *Transformer, temp: @import("lists.zig").Hoiste
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == temp.name_span.start);
+        std.debug.assert(ref.name_start == temp.name_span.start and ref.name_end == temp.name_span.end and
+            (ref.producer_scope == source_scope or ref.producer_scope.isNone()));
         if (live.contains(@backingInt(ref.node))) {
             const scope = try generatedTempRefScope(self, source_scope, callback_scope, ref.scope, live_scopes);
             editor.addReference(ref.node, id, scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
@@ -3454,19 +3468,22 @@ pub fn trackHoistedTempRefInScope(self: *Transformer, name_span: Span, node: Nod
             if (try trackKnownSyntheticTempReferenceByIdInScope(self, producer_id, node, scope, flags)) return;
         }
     }
+    const chain_key = self.currentPendingTempRefKey(name_span);
     try self.generated_temp_spans.append(self.allocator, name_span);
     const index = self.pending_temp_refs.items.len;
     try self.pending_temp_refs.append(self.allocator, .{
         .name_start = name_span.start,
+        .name_end = name_span.end,
+        .producer_scope = chain_key.producer_scope,
         .node = node,
         .scope = scope,
         .flags = flags,
     });
-    if (self.pending_temp_ref_chains.getPtr(name_span.start)) |chain| {
+    if (self.pending_temp_ref_chains.getPtr(chain_key)) |chain| {
         self.pending_temp_refs.items[chain.last].next = index;
         chain.last = index;
     } else {
-        try self.pending_temp_ref_chains.put(self.allocator, name_span.start, .{ .first = index, .last = index });
+        try self.pending_temp_ref_chains.put(self.allocator, chain_key, .{ .first = index, .last = index });
     }
 }
 
@@ -3663,7 +3680,7 @@ pub fn bindHoistedTempWithProducerSymbol(
         });
         return;
     }
-    const chain = self.pending_temp_ref_chains.fetchRemove(name_span.start);
+    const chain = self.pending_temp_ref_chains.fetchRemove(self.currentPendingTempRefKey(name_span));
     const target_scope = if (binding_scope.isNone())
         @as(@import("../../semantic/scope.zig").ScopeId, @fromBackingInt(@intCast(
             self.scope_owner_map.get(self.parser_node_count - 1) orelse std.debug.panic("missing program scope for hoisted temp", .{}),
@@ -3705,7 +3722,7 @@ pub fn bindHoistedTempWithProducerSymbol(
         var i: ?usize = found.value.first;
         while (i) |index| {
             const ref = self.pending_temp_refs.items[index];
-            std.debug.assert(ref.name_start == name_span.start);
+            std.debug.assert(ref.name_start == name_span.start and ref.name_end == name_span.end);
             const reference_scope = blk: {
                 if (!self.options.unsupported.default_params or ref.scope.isNone() or
                     expected_scope.isNone() or expected_scope.toIndex() >= editor.scopes.items.len) break :blk ref.scope;
@@ -3781,13 +3798,13 @@ pub fn bindSyntheticTempInScope(
     if (!self.semantic_edit_enabled) return;
     if (kind == .variable_var or self.state_machine_depth > 0)
         return bindHoistedTemp(self, binding, name_span, declaration_span, scope);
-    const chain = self.pending_temp_ref_chains.fetchRemove(name_span.start);
+    const chain = self.pending_temp_ref_chains.fetchRemove(self.currentPendingTempRefKey(name_span));
     const id = (try declareSyntheticInScope(self, binding, declaration_span, kind, scope)) orelse return;
     es_helpers.markStandaloneLateSyntheticTemp(self, id, scope);
     var i: ?usize = if (chain) |found| found.value.first else null;
     while (i) |index| {
         const ref = self.pending_temp_refs.items[index];
-        std.debug.assert(ref.name_start == name_span.start);
+        std.debug.assert(ref.name_start == name_span.start and ref.name_end == name_span.end);
         const editor = try editorFor(self);
         editor.addReference(ref.node, id, ref.scope, ref.flags, Reference.NO_STMT, Reference.NO_STMT) catch |err| return editError(err);
         try setSymbolId(self, ref.node, id);
@@ -4362,7 +4379,7 @@ pub fn validateDeferredGeneratedTempHandoffs(
 
     var chains = self.pending_temp_ref_chains.iterator();
     while (chains.next()) |entry| {
-        const name_start = entry.key_ptr.*;
+        const key = entry.key_ptr.*;
         var cursor: ?usize = entry.value_ptr.first;
         var last: ?usize = null;
         var visited: usize = 0;
@@ -4370,12 +4387,14 @@ pub fn validateDeferredGeneratedTempHandoffs(
             if (index >= self.pending_temp_refs.items.len or visited >= self.pending_temp_refs.items.len) return false;
             visited += 1;
             const pending = self.pending_temp_refs.items[index];
-            if (pending.name_start != name_start or pending.scope.isNone() or
+            if (pending.name_start != key.name_start or pending.name_end != key.name_end or
+                pending.producer_scope != key.producer_scope or pending.scope.isNone() or
                 @backingInt(pending.scope) >= editor.scopes.items.len or pending.node.isNone() or
                 @backingInt(pending.node) >= self.ast.nodes.items.len) return false;
             const reference_node = self.ast.getNode(pending.node);
             if (reference_node.tag != .identifier_reference and reference_node.tag != .assignment_target_identifier) return false;
-            if (reference_node.data.string_ref.start != name_start) return false;
+            if (reference_node.data.string_ref.start != key.name_start or
+                reference_node.data.string_ref.end != key.name_end) return false;
             if (live.contains(@backingInt(pending.node)) and
                 !valid_temp_reference(self, editor, pending.node, null, pending.flags, reference_node.data.string_ref)) return false;
             last = index;
