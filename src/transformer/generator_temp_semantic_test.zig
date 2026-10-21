@@ -209,7 +209,34 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
     const declarator = try es_helpers.makeDeclarator(&transformer, binding, ast_mod.NodeIndex.none, .EMPTY);
     const declaration = try es_helpers.makeVarDeclaration(&transformer, &.{declarator}, .@"var", .EMPTY);
     const reference_statement = try es_helpers.makeExprStmt(&transformer, reference, .EMPTY);
-    const body_list = try transformer.ast.addNodeList(&.{ preserved_declaration, preserved_reference_statement, declaration, reference_statement });
+
+    // A nested function can own a different var binding whose spelling Span
+    // happens to be identical to the callback temp. The callback handoff must
+    // keep this exact producer separate from a same-span nested binding.
+    const alias_binding = try es_helpers.makeSyntheticBinding(&transformer, name_span);
+    const alias_reference = try es_helpers.makeExactSyntheticRefFromSpan(&transformer, name_span);
+    const alias_declarator = try es_helpers.makeDeclarator(&transformer, alias_binding, ast_mod.NodeIndex.none, .EMPTY);
+    const alias_declaration = try es_helpers.makeVarDeclaration(&transformer, &.{alias_declarator}, .@"var", .EMPTY);
+    const alias_reference_statement = try es_helpers.makeExprStmt(&transformer, alias_reference, .EMPTY);
+    const nested_body = try transformer.ast.addNode(.{
+        .tag = .block_statement,
+        .span = .EMPTY,
+        .data = .{ .list = try transformer.ast.addNodeList(&.{ alias_declaration, alias_reference_statement }) },
+    });
+    const nested_params = try transformer.ast.addFormalParameters(try transformer.ast.addNodeList(&.{}), .EMPTY);
+    const nested_none = @backingInt(ast_mod.NodeIndex.none);
+    const nested_function = try transformer.ast.addNode(.{
+        .tag = .function_expression,
+        .span = .EMPTY,
+        .data = .{ .extra = try transformer.ast.addExtras(&.{ nested_none, @backingInt(nested_params), @backingInt(nested_body), 0, nested_none }) },
+    });
+    const nested_statement = try es_helpers.makeExprStmt(&transformer, nested_function, .EMPTY);
+    const nested_scope = try transformer.addGeneratedFunctionScope(source_scope, nested_function);
+    const alias_id = (try transformer.declareSyntheticInScope(alias_binding, .EMPTY, .variable_var, nested_scope)) orelse
+        return error.MissingNestedAliasSymbol;
+    try transformer.addSyntheticRefInScope(alias_reference, alias_id, nested_scope, .{ .read = true });
+
+    const body_list = try transformer.ast.addNodeList(&.{ preserved_declaration, preserved_reference_statement, declaration, reference_statement, nested_statement });
     const body = try transformer.ast.addNode(.{
         .tag = .block_statement,
         .span = .EMPTY,
@@ -268,6 +295,15 @@ fn checkTrackedCallbackTemp(source: []const u8, expect_late_name: bool) !void {
     const reference_record = (try editor.referenceForNode(reference)) orelse return error.MissingTrackedCallbackReference;
     try std.testing.expectEqual(@as(@import("../semantic/symbol.zig").SymbolId, @fromBackingInt(@intCast(raw_id))), reference_record.symbol_id);
     try std.testing.expectEqual(callback_scope, reference_record.scope_id);
+    const nested_alias_raw = transformer.getSymbolIdAt(alias_binding) orelse return error.MissingNestedAliasSymbolId;
+    try std.testing.expect(nested_alias_raw != raw_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(alias_id)), transformer.getSymbolIdAt(alias_binding));
+    const nested_alias_symbol = transformer.semantic_editor.?.symbols.items[@intCast(@backingInt(alias_id))];
+    try std.testing.expectEqual(nested_scope, nested_alias_symbol.scope_id);
+    const nested_alias_reference = (try editor.referenceForNode(alias_reference)) orelse return error.MissingNestedAliasReference;
+    try std.testing.expectEqual(alias_id, nested_alias_reference.symbol_id);
+    try std.testing.expectEqual(nested_scope, nested_alias_reference.scope_id);
+    try std.testing.expectEqual(@as(?u32, @backingInt(alias_id)), transformer.getSymbolIdAt(alias_reference));
 }
 
 test "#4819 tracked callback-local temp finalizes through its exact SymbolId" {
